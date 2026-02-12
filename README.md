@@ -1,4 +1,4 @@
-# Oversteer OSS
+# Oversteer
 
 Lean browser automation SDK for coding agents and script replay.
 
@@ -19,14 +19,14 @@ npm install oversteer playwright
 ```ts
 import { Oversteer } from 'oversteer'
 
-const ov = new Oversteer({ name: 'my-scraper' })
+const ov = new Oversteer({ name: 'my-scraper', ai: { model: 'gpt-5.1' } })
 await ov.launch({ headless: false })
 
 await ov.page.goto('https://example.com')
 const html = await ov.snapshot()
 
-await ov.click({ description: 'login-button', element: 3 })
-await ov.input({ description: 'email', element: 8, text: 'user@example.com' })
+await ov.click({ description: 'login-button' })
+await ov.input({ description: 'email', text: 'user@example.com' })
 await ov.page.keyboard.press('Enter')
 
 await ov.close()
@@ -76,16 +76,7 @@ resolution/extraction.
 ```ts
 const ov = new Oversteer({
     name: 'run-mode',
-    ai: {
-        resolve: async ({ html, description }) => {
-            // return { element: 12 } or { selector: 'button[type="submit"]' }
-            return { element: 12 }
-        },
-        extract: async ({ html, schema }) => {
-            // return extracted data or an ExtractionPlan
-            return { items: [] }
-        },
-    },
+    ai: { model: 'gpt-5.1' },
 })
 ```
 
