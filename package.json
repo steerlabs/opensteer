@@ -1,6 +1,7 @@
 {
     "name": "oversteer",
     "version": "0.1.0",
+    "packageManager": "pnpm@10.29.3",
     "description": "Open-source browser automation SDK with robust selectors and deterministic replay.",
     "license": "MIT",
     "type": "module",
@@ -33,7 +34,7 @@
         "test:integration": "vitest run tests/integration",
         "test:ai": "vitest run tests/ai tests/e2e/ai-resolve.test.ts",
         "test:e2e": "vitest run tests/e2e",
-        "test:app:dev": "cd tests/test-app && npm run dev",
+        "test:app:dev": "pnpm --dir tests/test-app run dev",
         "typecheck": "tsc -p tsconfig.json --noEmit"
     },
     "dependencies": {
@@ -61,6 +62,11 @@
         "zod": {
             "optional": true
         }
+    },
+    "pnpm": {
+        "onlyBuiltDependencies": [
+            "esbuild"
+        ]
     },
     "engines": {
         "node": ">=20"

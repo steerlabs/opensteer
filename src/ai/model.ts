@@ -29,7 +29,7 @@ export async function getModelProvider(modelStr: string) {
         mod = await import(pkg)
     } catch {
         throw new Error(
-            `To use AI resolution with model '${modelStr}', install: npm install ai ${pkg}`
+            `To use AI resolution with model '${modelStr}', install 'ai' and '${pkg}' with your package manager.`
         )
     }
 

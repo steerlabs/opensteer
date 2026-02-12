@@ -11,7 +11,10 @@ Everything else is raw Playwright via `ov.page` and `ov.context`.
 ## Install
 
 ```bash
+# npm
 npm install oversteer playwright
+# pnpm
+pnpm add oversteer playwright
 ```
 
 ## Quickstart

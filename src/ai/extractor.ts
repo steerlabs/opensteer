@@ -17,7 +17,7 @@ export function createExtractCallback(
             generateText = aiMod.generateText
         } catch {
             throw new Error(
-                `To use AI extraction with model '${model}', install: npm install ai`
+                `To use AI extraction with model '${model}', install 'ai' with your package manager.`
             )
         }
 

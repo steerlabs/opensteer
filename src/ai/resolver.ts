@@ -17,14 +17,14 @@ export function createResolveCallback(
             generateObject = aiMod.generateObject
         } catch {
             throw new Error(
-                `To use AI resolution with model '${model}', install: npm install ai`
+                `To use AI resolution with model '${model}', install 'ai' with your package manager.`
             )
         }
         try {
             z = await import('zod')
         } catch {
             throw new Error(
-                `To use AI resolution with model '${model}', install: npm install zod`
+                `To use AI resolution with model '${model}', install 'zod' with your package manager.`
             )
         }
 

@@ -3,7 +3,10 @@
 ## 1) Install
 
 ```bash
+# npm
 npm install oversteer playwright
+# pnpm
+pnpm add oversteer playwright
 ```
 
 ## 2) Launch and navigate

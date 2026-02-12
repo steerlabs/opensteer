@@ -11,7 +11,7 @@ This suite validates description-driven LLM resolution and extraction against li
 ## Run locally
 
 ```bash
-RUN_LIVE_WEB=1 npm run test:live-web
+RUN_LIVE_WEB=1 pnpm run test:live-web
 ```
 
 ## Environment variables
@@ -41,7 +41,7 @@ Run one scenario:
 RUN_LIVE_WEB=1 \
 LIVE_WEB_SCENARIOS=wikipedia-search \
 LIVE_WEB_MODEL=gpt-5.1 \
-npm run test:live-web
+pnpm run test:live-web
 ```
 
 Strict judge mode:
@@ -49,11 +49,11 @@ Strict judge mode:
 ```bash
 RUN_LIVE_WEB=1 \
 LIVE_WEB_JUDGE_MODE=strict \
-npm run test:live-web
+pnpm run test:live-web
 ```
 
 ## Notes
 
-- This suite is intentionally manual/explicit and is not part of default `npm test`.
+- This suite is intentionally manual/explicit and is not part of default `pnpm test`.
 - Deterministic checks are the primary pass criteria.
 - In `advisory` mode, judge failures do not fail the test.

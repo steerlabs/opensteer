@@ -4,11 +4,14 @@ Thanks for contributing to Oversteer OSS.
 
 ## Development
 
+This repo uses pnpm for development and CI.
+
 ```bash
-npm install
-npm run typecheck
-npm run test
-npm run build
+corepack enable
+pnpm install --frozen-lockfile
+pnpm run typecheck
+pnpm run test
+pnpm run build
 ```
 
 ## Guidelines

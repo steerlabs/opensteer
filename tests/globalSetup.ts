@@ -9,13 +9,13 @@ const URL_FILE = path.resolve(process.cwd(), 'tests/.test-app-url')
 
 export default async function setup() {
     if (!fs.existsSync(path.join(TEST_APP_ROOT, 'node_modules'))) {
-        execSync('npm install --no-fund --no-audit', {
+        execSync('pnpm install --frozen-lockfile', {
             cwd: TEST_APP_ROOT,
             stdio: 'inherit',
         })
     }
 
-    execSync('npm run build', {
+    execSync('pnpm run build', {
         cwd: TEST_APP_ROOT,
         stdio: 'inherit',
     })

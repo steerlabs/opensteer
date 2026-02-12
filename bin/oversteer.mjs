@@ -350,7 +350,7 @@ async function main() {
     if (!isServerRunning()) {
         if (!existsSync(SERVER_SCRIPT)) {
             error(
-                `Server script not found: ${SERVER_SCRIPT}. Run 'npm run build' first.`
+                `Server script not found: ${SERVER_SCRIPT}. Run the build script first.`
             )
         }
         startServer()
