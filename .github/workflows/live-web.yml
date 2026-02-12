@@ -1,0 +1,42 @@
+name: live-web
+
+on:
+    workflow_dispatch:
+        inputs:
+            scenarios:
+                description: Comma-separated scenario ids to run (optional)
+                required: false
+                default: ''
+            model:
+                description: Resolver/extractor model id
+                required: false
+                default: gemini-2.0-flash
+            judge_mode:
+                description: Judge mode (advisory or strict)
+                required: false
+                default: advisory
+
+jobs:
+    test-live-web:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 20
+                  cache: npm
+            - name: Install
+              run: npm install
+            - name: Run Live Web Suite
+              env:
+                  RUN_LIVE_WEB: '1'
+                  LIVE_WEB_MODEL: ${{ inputs.model }}
+                  LIVE_WEB_SCENARIOS: ${{ inputs.scenarios }}
+                  LIVE_WEB_JUDGE: '1'
+                  LIVE_WEB_JUDGE_MODE: ${{ inputs.judge_mode }}
+                  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+                  GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
+                  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+                  XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+                  GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+              run: npm run test:live-web

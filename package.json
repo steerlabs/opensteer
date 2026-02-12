@@ -1,0 +1,79 @@
+{
+    "name": "oversteer",
+    "version": "0.1.0",
+    "description": "Open-source browser automation SDK with robust selectors and deterministic replay.",
+    "license": "MIT",
+    "type": "module",
+    "bin": {
+        "oversteer": "./bin/oversteer.mjs"
+    },
+    "main": "./dist/index.cjs",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js",
+            "require": "./dist/index.cjs"
+        }
+    },
+    "files": [
+        "dist",
+        "bin",
+        "README.md",
+        "LICENSE",
+        "CHANGELOG.md"
+    ],
+    "scripts": {
+        "build": "tsup src/index.ts src/cli/server.ts --dts --format esm,cjs --external ai --external zod --external @ai-sdk/openai --external @ai-sdk/anthropic --external @ai-sdk/google --external @ai-sdk/xai --external @ai-sdk/groq",
+        "test": "vitest run",
+        "test:live-web": "vitest run --config vitest.live-web.config.ts",
+        "test:unit": "vitest run tests/html tests/element-path tests/config.test.ts tests/storage",
+        "test:actions": "vitest run tests/actions",
+        "test:integration": "vitest run tests/integration",
+        "test:ai": "vitest run tests/ai tests/e2e/ai-resolve.test.ts",
+        "test:e2e": "vitest run tests/e2e",
+        "test:app:dev": "cd tests/test-app && npm run dev",
+        "typecheck": "tsc -p tsconfig.json --noEmit"
+    },
+    "dependencies": {
+        "cheerio": "^1.0.0-rc.12",
+        "dotenv": "^17.2.4",
+        "playwright": "^1.50.0"
+    },
+    "devDependencies": {
+        "@ai-sdk/openai": "^3.0.26",
+        "@types/node": "^22.10.0",
+        "ai": "^6.0.77",
+        "tsup": "^8.0.1",
+        "typescript": "^5.6.3",
+        "vitest": "^2.1.8",
+        "zod": "^4.3.6"
+    },
+    "peerDependencies": {
+        "ai": ">=4.0.0",
+        "zod": ">=3.0.0"
+    },
+    "peerDependenciesMeta": {
+        "ai": {
+            "optional": true
+        },
+        "zod": {
+            "optional": true
+        }
+    },
+    "engines": {
+        "node": ">=20"
+    },
+    "keywords": [
+        "browser-automation",
+        "selectors",
+        "playwright",
+        "llm",
+        "agents"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/oversteer-ai/oversteer"
+    }
+}

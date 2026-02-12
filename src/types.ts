@@ -1,0 +1,228 @@
+import type { BrowserContextOptions } from 'playwright'
+import type { ElementPath } from './element-path/types.js'
+
+export type SnapshotMode =
+    | 'action'
+    | 'extraction'
+    | 'clickable'
+    | 'scrollable'
+    | 'full'
+
+export interface SnapshotOptions {
+    mode?: SnapshotMode
+    withCounters?: boolean
+    markInteractive?: boolean
+}
+
+export interface AiResolveArgs {
+    html: string
+    action: string
+    description: string
+    url: string | null
+}
+
+export interface AiResolveResult {
+    element?: number
+    selector?: string
+    path?: ElementPath
+}
+
+export type AiResolveCallbackResult =
+    | AiResolveResult
+    | number
+    | string
+    | null
+    | undefined
+
+export type AiResolveCallback = (
+    args: AiResolveArgs
+) => Promise<AiResolveCallbackResult>
+
+export interface AiExtractArgs<TSchema = ExtractSchema> {
+    html: string
+    schema: TSchema
+    description?: string
+    prompt?: string
+    url: string | null
+}
+
+export type AiExtractResult<TData = unknown> = TData | ExtractionPlan | string
+
+export type AiExtractCallback = <TSchema = ExtractSchema, TData = unknown>(
+    args: AiExtractArgs<TSchema>
+) => Promise<AiExtractResult<TData>>
+
+export interface AiConfig {
+    model?: string
+    resolve?: AiResolveCallback
+    extract?: AiExtractCallback
+    temperature?: number
+    maxTokens?: number | null
+}
+
+export interface GotoOptions {
+    timeout?: number
+    waitUntil?: 'commit' | 'domcontentloaded' | 'load' | 'networkidle'
+    settleMs?: number
+}
+
+export interface LaunchOptions {
+    headless?: boolean
+    executablePath?: string
+    slowMo?: number
+    context?: BrowserContextOptions
+}
+
+export interface OversteerBrowserConfig {
+    headless?: boolean
+    executablePath?: string
+    slowMo?: number
+}
+
+export interface OversteerStorageConfig {
+    rootDir?: string
+}
+
+export interface OversteerConfig {
+    name?: string
+    browser?: OversteerBrowserConfig
+    storage?: OversteerStorageConfig
+    ai?: AiConfig
+    debug?: boolean
+}
+
+export interface BaseActionOptions {
+    description?: string
+    element?: number
+    selector?: string
+}
+
+export interface ClickOptions extends BaseActionOptions {
+    button?: 'left' | 'right' | 'middle'
+    clickCount?: number
+    modifiers?: Array<'Alt' | 'Control' | 'Meta' | 'Shift'>
+}
+
+export interface HoverOptions extends BaseActionOptions {
+    force?: boolean
+    position?: {
+        x: number
+        y: number
+    }
+}
+
+export interface InputOptions extends BaseActionOptions {
+    text: string
+    clear?: boolean
+    pressEnter?: boolean
+}
+
+export interface SelectOptions extends BaseActionOptions {
+    value?: string
+    label?: string
+    index?: number
+}
+
+export interface ScrollOptions extends BaseActionOptions {
+    direction?: 'up' | 'down' | 'left' | 'right'
+    amount?: number
+}
+
+export interface ExtractSchemaField {
+    element?: number
+    selector?: string
+    attribute?: string
+    source?: 'current_url'
+}
+
+export type ExtractSchemaValue =
+    | ExtractSchemaField
+    | string
+    | number
+    | boolean
+    | null
+    | ExtractSchema
+    | ExtractSchema[]
+
+export interface ExtractSchema {
+    [key: string]: ExtractSchemaValue
+}
+
+export interface ExtractOptions<
+    TSchema = ExtractSchema,
+> extends BaseActionOptions {
+    schema?: TSchema
+    prompt?: string
+    snapshot?: SnapshotOptions
+}
+
+export interface ExtractionFieldPlan {
+    element?: number
+    selector?: string
+    attribute?: string
+    source?: 'current_url'
+}
+
+export interface ExtractionPlan {
+    fields?: Record<string, ExtractionFieldPlan>
+    paths?: Record<string, ElementPath>
+    data?: unknown
+}
+
+export interface ExtractFromPlanOptions<TSchema = ExtractSchema> {
+    description?: string
+    schema: TSchema
+    plan: ExtractionPlan
+}
+
+export interface ActionResult {
+    method: string
+    namespace: string
+    persisted: boolean
+    pathFile: string | null
+    selectorUsed?: string | null
+}
+
+export interface ExtractionRunResult<T = unknown> {
+    namespace: string
+    persisted: boolean
+    pathFile: string | null
+    data: T
+    paths: Record<string, ElementPath>
+}
+
+export interface StateResult {
+    url: string
+    title: string
+    html: string
+}
+
+export interface TabInfo {
+    index: number
+    url: string
+    title: string
+    active: boolean
+}
+
+export interface CookieParam {
+    name: string
+    value: string
+    url?: string
+    domain?: string
+    path?: string
+    expires?: number
+    httpOnly?: boolean
+    secure?: boolean
+    sameSite?: 'Strict' | 'Lax' | 'None'
+}
+
+export interface FileUploadOptions extends BaseActionOptions {
+    paths: string[]
+}
+
+export interface BoundingBox {
+    x: number
+    y: number
+    width: number
+    height: number
+}
