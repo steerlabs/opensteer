@@ -441,220 +441,18 @@ export async function resolveCountersBatch(
                             .trim()
                     },
 
-                    isDataUrl(value: string | null | undefined): boolean {
-                        return String(value || '')
-                            .trim()
-                            .toLowerCase()
-                            .startsWith('data:')
-                    },
-
-                    toAbsoluteUrl(candidate: string, baseUrl: string): string {
-                        try {
-                            return new URL(candidate, baseUrl).toString()
-                        } catch {
-                            return candidate
-                        }
-                    },
-
-                    selectMiddleSrcsetCandidate(
-                        srcset: string | null | undefined
-                    ): string | null {
-                        const input = String(srcset || '').trim()
-                        if (!input) return null
-
-                        const candidates = input
-                            .split(',')
-                            .map((entry) => entry.trim())
-                            .filter(Boolean)
-                            .map((entry) => entry.split(/\s+/)[0] || '')
-                            .filter(Boolean)
-
-                        if (!candidates.length) return null
-                        return (
-                            candidates[Math.floor(candidates.length / 2)] ||
-                            candidates[0] ||
-                            null
-                        )
-                    },
-
-                    isUrlKey(key: string): boolean {
-                        const normalized = String(key || '').toLowerCase()
-                        return ['url', 'link', 'href'].some((hint) =>
-                            normalized.includes(hint)
-                        )
-                    },
-
-                    isImageKey(key: string): boolean {
-                        const normalized = String(key || '').toLowerCase()
-                        return [
-                            'image',
-                            'img',
-                            'photo',
-                            'thumbnail',
-                            'picture',
-                            'logo',
-                            'avatar',
-                        ].some((hint) => normalized.includes(hint))
-                    },
-
-                    resolveMediaUrl(
-                        node: Element,
-                        baseUrl: string
-                    ): string | null {
-                        const tag = node.tagName.toLowerCase()
-                        const src = helpers.normalizeWhitespace(
-                            node.getAttribute('src')
-                        )
-                        const srcset = helpers.normalizeWhitespace(
-                            node.getAttribute('srcset')
-                        )
-                        if (
-                            ![
-                                'img',
-                                'source',
-                                'video',
-                                'audio',
-                                'iframe',
-                            ].includes(tag) &&
-                            !src &&
-                            !srcset
-                        ) {
-                            return null
-                        }
-
-                        if (src && !helpers.isDataUrl(src)) {
-                            return (
-                                helpers.normalizeWhitespace(
-                                    helpers.toAbsoluteUrl(src, baseUrl)
-                                ) || null
-                            )
-                        }
-
-                        for (const attr of [
-                            'data-src',
-                            'data-lazy-src',
-                            'data-original',
-                            'data-lazy',
-                            'data-image',
-                            'data-url',
-                        ]) {
-                            const lazySrc = helpers.normalizeWhitespace(
-                                node.getAttribute(attr)
-                            )
-                            if (!lazySrc || helpers.isDataUrl(lazySrc)) continue
-                            return (
-                                helpers.normalizeWhitespace(
-                                    helpers.toAbsoluteUrl(lazySrc, baseUrl)
-                                ) || null
-                            )
-                        }
-
-                        const srcsetCandidate =
-                            helpers.selectMiddleSrcsetCandidate(
-                                node.getAttribute('srcset') ||
-                                    node.getAttribute('data-srcset') ||
-                                    node.getAttribute('data-lazy-srcset')
-                            )
-                        if (
-                            srcsetCandidate &&
-                            !helpers.isDataUrl(srcsetCandidate)
-                        ) {
-                            return (
-                                helpers.normalizeWhitespace(
-                                    helpers.toAbsoluteUrl(
-                                        srcsetCandidate,
-                                        baseUrl
-                                    )
-                                ) || null
-                            )
-                        }
-
-                        if (src) {
-                            return (
-                                helpers.normalizeWhitespace(
-                                    helpers.toAbsoluteUrl(src, baseUrl)
-                                ) || null
-                            )
-                        }
-
-                        return null
-                    },
-
                     readValue(
                         element: Element,
-                        key: string,
                         attribute?: string
                     ): string | null {
-                        let target = element
-                        const wantsUrl = helpers.isUrlKey(key)
-                        const wantsImage = helpers.isImageKey(key)
-                        if (
-                            wantsUrl &&
-                            !wantsImage &&
-                            !target.getAttribute('href')
-                        ) {
-                            const anchor = target.closest(
-                                'a[href], area[href], link[href]'
-                            )
-                            if (anchor) target = anchor
-                        }
-
                         if (attribute) {
-                            const raw = target.getAttribute(attribute)
+                            const raw = element.getAttribute(attribute)
                             const text = helpers.normalizeWhitespace(raw)
                             return text || null
                         }
 
-                        const baseUrl = document.baseURI || ''
-                        const tag = target.tagName.toLowerCase()
-                        const href = helpers.normalizeWhitespace(
-                            target.getAttribute('href')
-                        )
-                        if (
-                            (['a', 'area', 'link'].includes(tag) || wantsUrl) &&
-                            href
-                        ) {
-                            return (
-                                helpers.normalizeWhitespace(
-                                    helpers.toAbsoluteUrl(href, baseUrl)
-                                ) || null
-                            )
-                        }
-
-                        const mediaUrl = helpers.resolveMediaUrl(
-                            target,
-                            baseUrl
-                        )
-                        if (mediaUrl) return mediaUrl
-
-                        if (
-                            ['input', 'textarea', 'select', 'option'].includes(
-                                tag
-                            )
-                        ) {
-                            const control = target as
-                                | HTMLInputElement
-                                | HTMLTextAreaElement
-                                | HTMLSelectElement
-                                | HTMLOptionElement
-                            const value =
-                                typeof control.value === 'string'
-                                    ? control.value
-                                    : target.getAttribute('value')
-                            const normalized =
-                                helpers.normalizeWhitespace(value)
-                            if (normalized) return normalized
-                        }
-
-                        if (tag === 'meta') {
-                            const content = helpers.normalizeWhitespace(
-                                target.getAttribute('content')
-                            )
-                            if (content) return content
-                        }
-
                         const text = helpers.normalizeWhitespace(
-                            target.textContent
+                            element.textContent
                         )
                         return text || null
                     },
@@ -697,11 +495,7 @@ export async function resolveCountersBatch(
 
                     values.push({
                         key: entry.key,
-                        value: helpers.readValue(
-                            target,
-                            String(entry.key || ''),
-                            entry.attribute
-                        ),
+                        value: helpers.readValue(target, entry.attribute),
                     })
                 }
 

@@ -37,6 +37,16 @@ const scenarios = [
         blurb: 'Named and anonymous iframes, each with nested controls and live state updates.',
     },
     {
+        href: '/products',
+        title: 'Product Catalog',
+        blurb: 'Purpose-built extraction fixture with product name and URL in the same anchor element.',
+    },
+    {
+        href: '/products-contexts',
+        title: 'Product Contexts',
+        blurb: 'Equivalent product list fixtures rendered inside iframe and shadow DOM contexts.',
+    },
+    {
         href: '/scroll',
         title: 'Scroll Containers',
         blurb: 'Nested vertical/horizontal scroll regions and independent scroll positions.',

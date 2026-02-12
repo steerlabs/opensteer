@@ -32,7 +32,7 @@
         "test:unit": "vitest run tests/html tests/element-path tests/config.test.ts tests/storage",
         "test:actions": "vitest run tests/actions",
         "test:integration": "vitest run tests/integration",
-        "test:ai": "vitest run tests/ai tests/e2e/ai-resolve.test.ts",
+        "test:ai": "vitest run tests/ai tests/e2e/ai-resolve.test.ts tests/e2e/ai-extract-products.test.ts",
         "test:e2e": "vitest run tests/e2e",
         "test:app:dev": "pnpm --dir tests/test-app run dev",
         "typecheck": "tsc -p tsconfig.json --noEmit"

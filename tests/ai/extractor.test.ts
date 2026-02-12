@@ -37,6 +37,38 @@ describe('ai/extractor', () => {
         })
     })
 
+    it('maps $c/$a leaf descriptors to element + attribute field plans', async () => {
+        mockedGenerateText.mockResolvedValueOnce({
+            text: JSON.stringify({
+                contains_data: true,
+                data: {
+                    name: 3,
+                    url: { $c: 3, $a: 'href' },
+                    image: { $c: 9, $a: 'src' },
+                },
+            }),
+        } as never)
+
+        const extract = createExtractCallback('gpt-5-mini')
+        const result = await extract({
+            html: '<a c="3" href="/products/switches-70">Switches x 70</a><img c="9" src="/hero.png" />',
+            schema: {
+                name: 'string',
+                url: 'string',
+                image: 'string',
+            },
+            url: null,
+        })
+
+        expect(result).toEqual({
+            fields: {
+                name: { element: 3 },
+                url: { element: 3, attribute: 'href' },
+                image: { element: 9, attribute: 'src' },
+            },
+        })
+    })
+
     it('returns empty fields when contains_data is false', async () => {
         mockedGenerateText.mockResolvedValueOnce({
             text: JSON.stringify({

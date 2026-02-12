@@ -297,15 +297,14 @@ describe('integration/counter-bindings', () => {
         ).rejects.toThrow(/snapshot\(\) again/i)
     })
 
-    it('extracts semantic attribute values for counter-based fields by default', async () => {
+    it('uses text content by default and attributes only when requested for counter fields', async () => {
         await setFixture(
             page,
             `
-            <a id="doc-link" href="https://example.com/guides/intro">
-              <span id="doc-link-label">Intro guide</span>
-            </a>
+            <a id="doc-link" href="https://example.com/guides/intro">Intro guide</a>
             <img id="hero-image" src="https://cdn.example.com/hero.png" alt="Hero" />
             <input id="sku-input" value="SKU-9000" />
+            <p id="details" data-content="Product details">Visible details</p>
             `
         )
 
@@ -314,10 +313,6 @@ describe('integration/counter-bindings', () => {
         const $$ = cheerio.load(html)
 
         const linkCounter = Number.parseInt($$('#doc-link').attr('c') || '', 10)
-        const nestedLinkCounter = Number.parseInt(
-            $$('#doc-link-label').attr('c') || '',
-            10
-        )
         const imageCounter = Number.parseInt(
             $$('#hero-image').attr('c') || '',
             10
@@ -326,31 +321,50 @@ describe('integration/counter-bindings', () => {
             $$('#sku-input').attr('c') || '',
             10
         )
+        const detailsCounter = Number.parseInt(
+            $$('#details').attr('c') || '',
+            10
+        )
 
         expect(Number.isFinite(linkCounter)).toBe(true)
-        expect(Number.isFinite(nestedLinkCounter)).toBe(true)
         expect(Number.isFinite(imageCounter)).toBe(true)
         expect(Number.isFinite(inputCounter)).toBe(true)
+        expect(Number.isFinite(detailsCounter)).toBe(true)
 
         const data = await ov.extract<{
-            link: string | null
-            productUrl: string | null
-            image: string | null
-            sku: string | null
+            name: string | null
+            url: string | null
+            imageText: string | null
+            imageSrc: string | null
+            skuText: string | null
+            skuValue: string | null
+            detailsText: string | null
+            detailsContent: string | null
         }>({
             schema: {
-                link: { element: linkCounter },
-                productUrl: { element: nestedLinkCounter },
-                image: { element: imageCounter },
-                sku: { element: inputCounter },
+                name: { element: linkCounter },
+                url: { element: linkCounter, attribute: 'href' },
+                imageText: { element: imageCounter },
+                imageSrc: { element: imageCounter, attribute: 'src' },
+                skuText: { element: inputCounter },
+                skuValue: { element: inputCounter, attribute: 'value' },
+                detailsText: { element: detailsCounter },
+                detailsContent: {
+                    element: detailsCounter,
+                    attribute: 'data-content',
+                },
             },
         })
 
         expect(data).toEqual({
-            link: 'https://example.com/guides/intro',
-            productUrl: 'https://example.com/guides/intro',
-            image: 'https://cdn.example.com/hero.png',
-            sku: 'SKU-9000',
+            name: 'Intro guide',
+            url: 'https://example.com/guides/intro',
+            imageText: null,
+            imageSrc: 'https://cdn.example.com/hero.png',
+            skuText: null,
+            skuValue: 'SKU-9000',
+            detailsText: 'Visible details',
+            detailsContent: 'Product details',
         })
     })
 

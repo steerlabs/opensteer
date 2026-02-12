@@ -11,6 +11,9 @@ import { IframeContentPage } from './pages/IframeContent'
 import { ScrollPage } from './pages/ScrollPage'
 import { NavigationPage } from './pages/NavigationPage'
 import { ShadowDomPage } from './pages/ShadowDomPage'
+import { ProductCatalogPage } from './pages/ProductCatalogPage'
+import { ProductContextsPage } from './pages/ProductContextsPage'
+import { IframeProductsPage } from './pages/IframeProductsPage'
 
 const links = [
     { to: '/', label: 'Index' },
@@ -22,6 +25,8 @@ const links = [
     { to: '/widgets', label: 'Widgets' },
     { to: '/iframe', label: 'Iframe' },
     { to: '/shadow', label: 'Shadow' },
+    { to: '/products', label: 'Products' },
+    { to: '/products-contexts', label: 'Product Contexts' },
     { to: '/scroll', label: 'Scroll' },
     { to: '/navigation', label: 'Navigation' },
 ]
@@ -66,7 +71,16 @@ export function App(): JSX.Element {
                         path="/iframe/content"
                         element={<IframeContentPage />}
                     />
+                    <Route
+                        path="/iframe/products"
+                        element={<IframeProductsPage />}
+                    />
                     <Route path="/shadow" element={<ShadowDomPage />} />
+                    <Route path="/products" element={<ProductCatalogPage />} />
+                    <Route
+                        path="/products-contexts"
+                        element={<ProductContextsPage />}
+                    />
                     <Route path="/scroll" element={<ScrollPage />} />
                     <Route path="/navigation" element={<NavigationPage />} />
                 </Routes>

@@ -15,16 +15,12 @@ export interface ArraySelector {
     fields: FieldSelector[]
 }
 
-async function readAutoValueFromHandle(
+async function readFieldValueFromHandle(
     element: ElementHandle<Element>,
-    options: { key: string; attribute?: string; pageUrl: string }
+    options: { attribute?: string }
 ): Promise<string | null> {
     return element.evaluate(
         (target, payload) => {
-            function __name<T>(value: T): T {
-                return value
-            }
-
             const normalizeWhitespace = (
                 value: string | null | undefined
             ): string =>
@@ -32,184 +28,17 @@ async function readAutoValueFromHandle(
                     .replace(/\s+/g, ' ')
                     .trim()
 
-            const isDataUrl = (value: string | null | undefined): boolean =>
-                String(value || '')
-                    .trim()
-                    .toLowerCase()
-                    .startsWith('data:')
-
-            const toAbsoluteUrl = (
-                candidate: string,
-                baseUrl: string
-            ): string => {
-                try {
-                    return new URL(candidate, baseUrl).toString()
-                } catch {
-                    return candidate
-                }
-            }
-
-            const selectMiddleSrcsetCandidate = (
-                srcset: string | null | undefined
-            ): string | null => {
-                const input = String(srcset || '').trim()
-                if (!input) return null
-
-                const candidates = input
-                    .split(',')
-                    .map((entry) => entry.trim())
-                    .filter(Boolean)
-                    .map((entry) => entry.split(/\s+/)[0] || '')
-                    .filter(Boolean)
-
-                if (!candidates.length) return null
-                return (
-                    candidates[Math.floor(candidates.length / 2)] ||
-                    candidates[0] ||
-                    null
-                )
-            }
-
-            const isUrlKey = (key: string): boolean => {
-                const normalized = String(key || '').toLowerCase()
-                return ['url', 'link', 'href'].some((hint) =>
-                    normalized.includes(hint)
-                )
-            }
-
-            const isImageKey = (key: string): boolean => {
-                const normalized = String(key || '').toLowerCase()
-                return [
-                    'image',
-                    'img',
-                    'photo',
-                    'thumbnail',
-                    'picture',
-                    'logo',
-                    'avatar',
-                ].some((hint) => normalized.includes(hint))
-            }
-
-            const resolveMediaUrl = (
-                node: Element,
-                baseUrl: string
-            ): string | null => {
-                const tag = node.tagName.toLowerCase()
-                const src = normalizeWhitespace(node.getAttribute('src'))
-                const srcset = normalizeWhitespace(node.getAttribute('srcset'))
-                if (
-                    !['img', 'source', 'video', 'audio', 'iframe'].includes(
-                        tag
-                    ) &&
-                    !src &&
-                    !srcset
-                ) {
-                    return null
-                }
-
-                if (src && !isDataUrl(src)) {
-                    return (
-                        normalizeWhitespace(toAbsoluteUrl(src, baseUrl)) || null
-                    )
-                }
-
-                for (const attr of [
-                    'data-src',
-                    'data-lazy-src',
-                    'data-original',
-                    'data-lazy',
-                    'data-image',
-                    'data-url',
-                ]) {
-                    const lazySrc = normalizeWhitespace(node.getAttribute(attr))
-                    if (!lazySrc || isDataUrl(lazySrc)) continue
-                    return (
-                        normalizeWhitespace(toAbsoluteUrl(lazySrc, baseUrl)) ||
-                        null
-                    )
-                }
-
-                const srcsetCandidate = selectMiddleSrcsetCandidate(
-                    node.getAttribute('srcset') ||
-                        node.getAttribute('data-srcset') ||
-                        node.getAttribute('data-lazy-srcset')
-                )
-                if (srcsetCandidate && !isDataUrl(srcsetCandidate)) {
-                    return (
-                        normalizeWhitespace(
-                            toAbsoluteUrl(srcsetCandidate, baseUrl)
-                        ) || null
-                    )
-                }
-
-                if (src) {
-                    return (
-                        normalizeWhitespace(toAbsoluteUrl(src, baseUrl)) || null
-                    )
-                }
-                return null
-            }
-
-            let targetNode: Element = target
-            const key = String(payload.key || '')
-            const wantsUrl = isUrlKey(key)
-            const wantsImage = isImageKey(key)
-
-            if (wantsUrl && !wantsImage && !targetNode.getAttribute('href')) {
-                const anchor = targetNode.closest(
-                    'a[href], area[href], link[href]'
-                )
-                if (anchor) {
-                    targetNode = anchor
-                }
-            }
-
             if (payload.attribute) {
-                const raw = targetNode.getAttribute(payload.attribute)
+                const raw = target.getAttribute(payload.attribute)
                 const text = normalizeWhitespace(raw)
                 return text || null
             }
 
-            const tag = targetNode.tagName.toLowerCase()
-            const href = normalizeWhitespace(targetNode.getAttribute('href'))
-            if ((['a', 'area', 'link'].includes(tag) || wantsUrl) && href) {
-                return (
-                    normalizeWhitespace(toAbsoluteUrl(href, payload.pageUrl)) ||
-                    null
-                )
-            }
-
-            const mediaUrl = resolveMediaUrl(targetNode, payload.pageUrl)
-            if (mediaUrl) return mediaUrl
-
-            if (['input', 'textarea', 'select', 'option'].includes(tag)) {
-                const control = targetNode as
-                    | HTMLInputElement
-                    | HTMLTextAreaElement
-                    | HTMLSelectElement
-                    | HTMLOptionElement
-                const value =
-                    typeof control.value === 'string'
-                        ? control.value
-                        : targetNode.getAttribute('value')
-                const normalized = normalizeWhitespace(value)
-                if (normalized) return normalized
-            }
-
-            if (tag === 'meta') {
-                const content = normalizeWhitespace(
-                    targetNode.getAttribute('content')
-                )
-                if (content) return content
-            }
-
-            const text = normalizeWhitespace(targetNode.textContent)
+            const text = normalizeWhitespace(target.textContent)
             return text || null
         },
         {
-            key: options.key,
             attribute: options.attribute,
-            pageUrl: options.pageUrl,
         }
     )
 }
@@ -230,12 +59,10 @@ export async function extractWithPaths(
         }
 
         try {
-            result[field.key] = await readAutoValueFromHandle(
+            result[field.key] = await readFieldValueFromHandle(
                 resolved.element,
                 {
-                    key: field.key,
                     attribute: field.attribute,
-                    pageUrl: page.url(),
                 }
             )
         } finally {
@@ -283,10 +110,8 @@ export async function extractArrayWithPaths(
 
                 try {
                     const value = target
-                        ? await readAutoValueFromHandle(target, {
-                              key,
+                        ? await readFieldValueFromHandle(target, {
                               attribute: field.attribute,
-                              pageUrl: page.url(),
                           })
                         : null
 

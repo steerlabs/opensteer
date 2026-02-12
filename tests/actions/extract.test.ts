@@ -76,43 +76,47 @@ describe('extractWithPaths', () => {
         })
     })
 
-    it('prefers semantic attributes for links, images, and controls by default', async () => {
+    it('uses text content by default and attributes only when requested', async () => {
         await setFixture(
             page,
             `
         <article>
-          <a id="doc-link" href="https://example.com/docs/get-started">
-            <span id="doc-link-label">Read docs</span>
-          </a>
+          <a id="doc-link" href="https://example.com/docs/get-started">Read docs</a>
           <img id="hero-image" src="https://cdn.example.com/assets/hero.png" alt="Hero" />
           <input id="sku-input" value="SKU-4242" />
+          <meta id="page-meta" content="Product details" />
         </article>
       `
         )
 
         const linkPath = await buildElementPathFromSelector(page, '#doc-link')
-        const nestedLinkPath = await buildElementPathFromSelector(
-            page,
-            '#doc-link-label'
-        )
         const imagePath = await buildElementPathFromSelector(
             page,
             '#hero-image'
         )
         const inputPath = await buildElementPathFromSelector(page, '#sku-input')
+        const metaPath = await buildElementPathFromSelector(page, '#page-meta')
 
         const data = await extractWithPaths(page, [
-            { key: 'link', path: linkPath! },
-            { key: 'productUrl', path: nestedLinkPath! },
-            { key: 'image', path: imagePath! },
-            { key: 'sku', path: inputPath! },
+            { key: 'name', path: linkPath! },
+            { key: 'url', path: linkPath!, attribute: 'href' },
+            { key: 'imageText', path: imagePath! },
+            { key: 'imageSrc', path: imagePath!, attribute: 'src' },
+            { key: 'skuText', path: inputPath! },
+            { key: 'skuValue', path: inputPath!, attribute: 'value' },
+            { key: 'metaText', path: metaPath! },
+            { key: 'metaContent', path: metaPath!, attribute: 'content' },
         ])
 
         expect(data).toEqual({
-            link: 'https://example.com/docs/get-started',
-            productUrl: 'https://example.com/docs/get-started',
-            image: 'https://cdn.example.com/assets/hero.png',
-            sku: 'SKU-4242',
+            name: 'Read docs',
+            url: 'https://example.com/docs/get-started',
+            imageText: null,
+            imageSrc: 'https://cdn.example.com/assets/hero.png',
+            skuText: null,
+            skuValue: 'SKU-4242',
+            metaText: null,
+            metaContent: 'Product details',
         })
     })
 })
