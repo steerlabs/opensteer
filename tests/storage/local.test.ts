@@ -13,7 +13,7 @@ describe('LocalSelectorStorage', () => {
             'my_selector_id.json'
         )
         expect(storage.getNamespaceDir()).toContain(
-            path.join('.oversteer', 'selectors', 'demo-suite')
+            path.join('.opensteer', 'selectors', 'demo-suite')
         )
     })
 

@@ -1,8 +1,8 @@
 import type { Frame, Page } from 'playwright'
 
-export const OVERSTEER_INTERACTIVE_ATTR = 'data-oversteer-interactive'
-export const OVERSTEER_HIDDEN_ATTR = 'data-oversteer-hidden'
-export const OVERSTEER_SCROLLABLE_ATTR = 'data-oversteer-scrollable'
+export const OPENSTEER_INTERACTIVE_ATTR = 'data-opensteer-interactive'
+export const OPENSTEER_HIDDEN_ATTR = 'data-opensteer-hidden'
+export const OPENSTEER_SCROLLABLE_ATTR = 'data-opensteer-scrollable'
 
 export interface MarkInteractivityOptions {
     markAttribute?: string
@@ -12,7 +12,7 @@ export interface MarkInteractivityOptions {
 export async function markInteractiveElements(
     page: Page,
     {
-        markAttribute = OVERSTEER_INTERACTIVE_ATTR,
+        markAttribute = OPENSTEER_INTERACTIVE_ATTR,
         skipIfAlreadyMarked = true,
     }: MarkInteractivityOptions = {}
 ): Promise<void> {
@@ -204,8 +204,8 @@ export async function markInteractiveElements(
             {
                 markAttribute,
                 skipIfAlreadyMarked,
-                hiddenAttr: OVERSTEER_HIDDEN_ATTR,
-                scrollableAttr: OVERSTEER_SCROLLABLE_ATTR,
+                hiddenAttr: OPENSTEER_HIDDEN_ATTR,
+                scrollableAttr: OPENSTEER_SCROLLABLE_ATTR,
             }
         )
     }

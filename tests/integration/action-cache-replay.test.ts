@@ -3,7 +3,7 @@ import os from 'os'
 import path from 'path'
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { BrowserContext, Page } from 'playwright'
-import { Oversteer } from '../../src/oversteer.js'
+import { Opensteer } from '../../src/opensteer.js'
 import { closeTestBrowser, createTestPage } from '../helpers/browser.js'
 import { gotoRoute } from '../helpers/integration.js'
 
@@ -29,7 +29,7 @@ describe('integration/action-cache-replay', () => {
     it('replays cached input/select/hover/click paths without AI', async () => {
         await gotoRoute(page, '/forms')
 
-        const first = Oversteer.from(page, {
+        const first = Opensteer.from(page, {
             name: 'action-cache-replay',
             storage: { rootDir },
         })
@@ -62,7 +62,7 @@ describe('integration/action-cache-replay', () => {
 
         await gotoRoute(page, '/forms')
 
-        const second = Oversteer.from(page, {
+        const second = Opensteer.from(page, {
             name: 'action-cache-replay',
             storage: { rootDir },
         })
@@ -103,7 +103,7 @@ describe('integration/action-cache-replay', () => {
     it('replays cached scroll target path without AI', async () => {
         await gotoRoute(page, '/scroll')
 
-        const first = Oversteer.from(page, {
+        const first = Opensteer.from(page, {
             name: 'action-cache-replay-scroll',
             storage: { rootDir },
         })
@@ -120,7 +120,7 @@ describe('integration/action-cache-replay', () => {
             ;(el as HTMLElement).scrollTop = 0
         })
 
-        const second = Oversteer.from(page, {
+        const second = Opensteer.from(page, {
             name: 'action-cache-replay-scroll',
             storage: { rootDir },
         })

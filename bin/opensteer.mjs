@@ -9,9 +9,9 @@ import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
-const RUNTIME_DIR = join(homedir(), '.oversteer')
-const SOCKET_PATH = join(RUNTIME_DIR, 'oversteer.sock')
-const PID_PATH = join(RUNTIME_DIR, 'oversteer.pid')
+const RUNTIME_DIR = join(homedir(), '.opensteer')
+const SOCKET_PATH = join(RUNTIME_DIR, 'opensteer.sock')
+const PID_PATH = join(RUNTIME_DIR, 'opensteer.pid')
 const SERVER_SCRIPT = join(__dirname, '..', 'dist', 'cli', 'server.js')
 
 const CONNECT_TIMEOUT = 15000
@@ -280,7 +280,7 @@ function error(msg) {
 }
 
 function printHelp() {
-    console.log(`Usage: oversteer <command> [options]
+    console.log(`Usage: opensteer <command> [options]
 
 Navigation:
   open <url>                Open browser and navigate to URL

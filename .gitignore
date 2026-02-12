@@ -3,4 +3,4 @@ dist/
 .env
 .DS_Store
 *.tgz
-.oversteer/selectors/
+.opensteer/selectors/

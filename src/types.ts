@@ -65,20 +65,20 @@ export interface LaunchOptions {
     context?: BrowserContextOptions
 }
 
-export interface OversteerBrowserConfig {
+export interface OpensteerBrowserConfig {
     headless?: boolean
     executablePath?: string
     slowMo?: number
 }
 
-export interface OversteerStorageConfig {
+export interface OpensteerStorageConfig {
     rootDir?: string
 }
 
-export interface OversteerConfig {
+export interface OpensteerConfig {
     name?: string
-    browser?: OversteerBrowserConfig
-    storage?: OversteerStorageConfig
+    browser?: OpensteerBrowserConfig
+    storage?: OpensteerStorageConfig
     model?: string
     debug?: boolean
 }

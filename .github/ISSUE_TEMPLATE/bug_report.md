@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report a problem with Oversteer OSS
+about: Report a problem with Opensteer OSS
 ---
 
 **Describe the bug**

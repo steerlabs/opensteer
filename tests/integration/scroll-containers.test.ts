@@ -56,7 +56,7 @@ describe('integration/scroll-containers', () => {
     it('creates scrollable mode snapshots with marker attributes', async () => {
         const snapshot = await prepareSnapshot(page, { mode: 'scrollable' })
 
-        expect(snapshot.cleanedHtml).toContain('data-oversteer-scrollable')
+        expect(snapshot.cleanedHtml).toContain('data-opensteer-scrollable')
         expect(snapshot.cleanedHtml).toContain('c="')
     })
 })

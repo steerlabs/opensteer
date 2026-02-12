@@ -3,12 +3,12 @@ import os from 'os'
 import path from 'path'
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { BrowserContext, Page } from 'playwright'
-import { Oversteer } from '../../src/oversteer.js'
+import { Opensteer } from '../../src/opensteer.js'
 import { closeTestBrowser, createTestPage } from '../helpers/browser.js'
 import { gotoRoute } from '../helpers/integration.js'
 
 /**
- * Runs sequential, script-like actions through the Oversteer class
+ * Runs sequential, script-like actions through the Opensteer class
  * where every action is resolved by an LLM via `description` only.
  *
  * No `selector`, no `element` counter -- the AI sees the page HTML
@@ -37,7 +37,7 @@ describe('e2e/script-actions', () => {
         async () => {
             await gotoRoute(page, '/forms')
 
-            const ov = Oversteer.from(page, {
+            const ov = Opensteer.from(page, {
                 name: 'script-form',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
@@ -84,7 +84,7 @@ describe('e2e/script-actions', () => {
             // All descriptors should have been persisted
             const namespaceDir = path.join(
                 rootDir,
-                '.oversteer',
+                '.opensteer',
                 'selectors',
                 'script-form'
             )
@@ -115,7 +115,7 @@ describe('e2e/script-actions', () => {
         async () => {
             await gotoRoute(page, '/navigation')
 
-            const ov = Oversteer.from(page, {
+            const ov = Opensteer.from(page, {
                 name: 'script-nav',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
@@ -179,7 +179,7 @@ describe('e2e/script-actions', () => {
         async () => {
             await gotoRoute(page, '/overlays')
 
-            const ov = Oversteer.from(page, {
+            const ov = Opensteer.from(page, {
                 name: 'script-dynamic',
                 model: 'gpt-5-mini',
                 storage: { rootDir },

@@ -1,4 +1,4 @@
-export { Oversteer } from './oversteer.js'
+export { Opensteer } from './opensteer.js'
 export { waitForVisualStability } from './navigation.js'
 export * from './types.js'
 export * from './actions/index.js'

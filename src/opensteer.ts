@@ -23,7 +23,7 @@ import type {
     HoverOptions,
     InputOptions,
     LaunchOptions,
-    OversteerConfig,
+    OpensteerConfig,
     ScrollOptions,
     SelectOptions,
     SnapshotOptions,
@@ -159,8 +159,8 @@ interface ParsedAiExtractResult {
     data?: unknown
 }
 
-export class Oversteer {
-    private readonly config: OversteerConfig
+export class Opensteer {
+    private readonly config: OpensteerConfig
     private readonly aiResolve: AiResolveCallback
     private readonly aiExtract: AiExtractCallback
     private readonly namespace: string
@@ -173,7 +173,7 @@ export class Oversteer {
     private ownsBrowser = false
     private snapshotCache: PreparedSnapshot | null = null
 
-    constructor(config: OversteerConfig = {}) {
+    constructor(config: OpensteerConfig = {}) {
         const resolved = resolveConfig(config)
         const model = resolved.model
 
@@ -232,7 +232,7 @@ export class Oversteer {
     get page(): Page {
         if (!this.pageRef) {
             throw new Error(
-                'Browser page is not initialized. Call launch() or Oversteer.from(page).'
+                'Browser page is not initialized. Call launch() or Opensteer.from(page).'
             )
         }
 
@@ -242,7 +242,7 @@ export class Oversteer {
     get context(): BrowserContext {
         if (!this.contextRef) {
             throw new Error(
-                'Browser context is not initialized. Call launch() or Oversteer.from(page).'
+                'Browser context is not initialized. Call launch() or Opensteer.from(page).'
             )
         }
 
@@ -252,7 +252,7 @@ export class Oversteer {
     async launch(options: LaunchOptions = {}): Promise<void> {
         if (this.pageRef && !this.ownsBrowser) {
             throw new Error(
-                'This Oversteer instance is attached to an external page via Oversteer.from().'
+                'This Opensteer instance is attached to an external page via Opensteer.from().'
             )
         }
 
@@ -269,8 +269,8 @@ export class Oversteer {
         this.snapshotCache = null
     }
 
-    static from(page: Page, config: OversteerConfig = {}): Oversteer {
-        const instance = new Oversteer(config)
+    static from(page: Page, config: OpensteerConfig = {}): Opensteer {
+        const instance = new Opensteer(config)
         instance.pageRef = page
         instance.contextRef = page.context()
         instance.browser = null
@@ -1080,7 +1080,7 @@ export class Oversteer {
         return this.namespace
     }
 
-    getConfig(): OversteerConfig {
+    getConfig(): OpensteerConfig {
         return this.config
     }
 

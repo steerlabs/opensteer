@@ -4,7 +4,7 @@ import path from 'path'
 import { createHash } from 'crypto'
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { BrowserContext, Page } from 'playwright'
-import { Oversteer } from '../../src/oversteer.js'
+import { Opensteer } from '../../src/opensteer.js'
 import { closeTestBrowser, createTestPage } from '../helpers/browser.js'
 import { setFixture } from '../helpers/fixture.js'
 
@@ -51,7 +51,7 @@ describe('integration/extract-array-cache', () => {
             ],
         }
 
-        const ov = Oversteer.from(page, {
+        const ov = Opensteer.from(page, {
             name: 'extract-array-cache',
             storage: {
                 rootDir: storageRoot,
@@ -101,7 +101,7 @@ describe('integration/extract-array-cache', () => {
             .slice(0, 16)
         const storedPath = path.join(
             storageRoot,
-            '.oversteer',
+            '.opensteer',
             'selectors',
             'extract-array-cache',
             `${storageKey}.json`

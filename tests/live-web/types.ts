@@ -1,5 +1,5 @@
 import type { Page } from 'playwright'
-import type { Oversteer } from '../../src/oversteer.js'
+import type { Opensteer } from '../../src/opensteer.js'
 import type { ActionResult } from '../../src/types.js'
 
 export type JudgeMode = 'advisory' | 'strict'
@@ -55,7 +55,7 @@ export interface ScenarioResult {
 
 export interface ScenarioContext {
     page: Page
-    ov: Oversteer
+    ov: Opensteer
 }
 
 export interface LiveWebScenario {

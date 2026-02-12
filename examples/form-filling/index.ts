@@ -1,8 +1,8 @@
-import { Oversteer } from '../../src/index.js'
+import { Opensteer } from '../../src/index.js'
 import 'dotenv/config'
 
 async function run() {
-    const ov = new Oversteer({
+    const ov = new Opensteer({
         name: 'contact-form',
         model: 'gpt-5-mini',
     })

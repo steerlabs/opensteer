@@ -4,7 +4,7 @@ import {
     type BrowserContext,
     type Page,
 } from 'playwright'
-import type { LaunchOptions, OversteerBrowserConfig } from '../types.js'
+import type { LaunchOptions, OpensteerBrowserConfig } from '../types.js'
 
 export interface BrowserSession {
     browser: Browser
@@ -14,9 +14,9 @@ export interface BrowserSession {
 
 export class BrowserPool {
     private browser: Browser | null = null
-    private readonly defaults: OversteerBrowserConfig
+    private readonly defaults: OpensteerBrowserConfig
 
-    constructor(defaults: OversteerBrowserConfig = {}) {
+    constructor(defaults: OpensteerBrowserConfig = {}) {
         this.defaults = defaults
     }
 

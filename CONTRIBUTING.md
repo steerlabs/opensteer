@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for contributing to Oversteer OSS.
+Thanks for contributing to Opensteer OSS.
 
 ## Development
 

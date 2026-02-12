@@ -3,15 +3,15 @@ import { homedir } from 'os'
 import { mkdirSync } from 'fs'
 
 function getRuntimeDir(): string {
-    const dir = join(homedir(), '.oversteer')
+    const dir = join(homedir(), '.opensteer')
     mkdirSync(dir, { recursive: true })
     return dir
 }
 
 export function getSocketPath(): string {
-    return join(getRuntimeDir(), 'oversteer.sock')
+    return join(getRuntimeDir(), 'opensteer.sock')
 }
 
 export function getPidPath(): string {
-    return join(getRuntimeDir(), 'oversteer.pid')
+    return join(getRuntimeDir(), 'opensteer.pid')
 }

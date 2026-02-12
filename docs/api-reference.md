@@ -1,15 +1,15 @@
 # API Reference
 
-## Oversteer
+## Opensteer
 
 ```ts
-new Oversteer(config?: OversteerConfig)
+new Opensteer(config?: OpensteerConfig)
 ```
 
 ### Lifecycle
 
 - `launch(options?: LaunchOptions): Promise<void>`
-- `static from(page: Page, config?: OversteerConfig): Oversteer`
+- `static from(page: Page, config?: OpensteerConfig): Opensteer`
 - `close(): Promise<void>`
 
 ### Raw Playwright
@@ -57,10 +57,10 @@ interface ActionResult {
 }
 ```
 
-## OversteerConfig
+## OpensteerConfig
 
 ```ts
-interface OversteerConfig {
+interface OpensteerConfig {
     name?: string
     browser?: {
         headless?: boolean
@@ -75,11 +75,11 @@ interface OversteerConfig {
 }
 ```
 
-`model` defaults to `gpt-5.1`. You can also set `OVERSTEER_MODEL`.
+`model` defaults to `gpt-5.1`. You can also set `OPENSTEER_MODEL`.
 
 ## AI helpers
 
-For advanced integration, Oversteer still exports:
+For advanced integration, Opensteer still exports:
 
 - `createResolveCallback(model)`
 - `createExtractCallback(model)`

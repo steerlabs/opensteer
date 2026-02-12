@@ -52,7 +52,7 @@ export function IndexPage(): JSX.Element {
     return (
         <main className="page-shell">
             <h1 id="index-title" className="page-title">
-                Oversteer OSS Test Fixtures
+                Opensteer OSS Test Fixtures
             </h1>
             <p className="page-subtitle">
                 This app emulates rich production interfaces with many

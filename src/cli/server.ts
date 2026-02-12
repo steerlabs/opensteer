@@ -1,11 +1,11 @@
 import { createServer, type Socket } from 'net'
 import { writeFileSync, unlinkSync, existsSync } from 'fs'
-import { Oversteer } from '../oversteer.js'
+import { Opensteer } from '../opensteer.js'
 import type { CliRequest, CliResponse } from './protocol.js'
 import { getSocketPath, getPidPath } from './paths.js'
 import { getCommandHandler } from './commands.js'
 
-let instance: Oversteer | null = null
+let instance: Opensteer | null = null
 
 const socketPath = getSocketPath()
 const pidPath = getPidPath()
@@ -34,7 +34,7 @@ async function handleRequest(
             const name = args.name as string | undefined
 
             if (!instance) {
-                instance = new Oversteer({
+                instance = new Opensteer({
                     name: name ?? 'cli',
                     browser: { headless: headless ?? false },
                 })
@@ -90,7 +90,7 @@ async function handleRequest(
         sendResponse(socket, {
             id,
             ok: false,
-            error: "No browser session. Call 'oversteer open' first.",
+            error: "No browser session. Call 'opensteer open' first.",
         })
         return
     }

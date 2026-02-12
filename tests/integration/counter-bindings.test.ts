@@ -1,7 +1,7 @@
 import * as cheerio from 'cheerio'
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { BrowserContext, Page } from 'playwright'
-import { Oversteer } from '../../src/oversteer.js'
+import { Opensteer } from '../../src/opensteer.js'
 import { resolveElementPath } from '../../src/element-path/resolver.js'
 import { prepareSnapshot } from '../../src/html/pipeline.js'
 import { closeTestBrowser, createTestPage } from '../helpers/browser.js'
@@ -32,7 +32,7 @@ describe('integration/counter-bindings', () => {
             `
         )
 
-        const ov = Oversteer.from(page)
+        const ov = Opensteer.from(page)
 
         const first = await ov.snapshot({ mode: 'full', withCounters: true })
         const first$ = cheerio.load(first)
@@ -68,7 +68,7 @@ describe('integration/counter-bindings', () => {
             `
         )
 
-        const ov = Oversteer.from(page)
+        const ov = Opensteer.from(page)
 
         const first = await ov.snapshot({ mode: 'full', withCounters: true })
         const first$ = cheerio.load(first)
@@ -170,7 +170,7 @@ describe('integration/counter-bindings', () => {
             .locator('#inside-input')
             .waitFor({ state: 'visible' })
 
-        const ov = Oversteer.from(page)
+        const ov = Opensteer.from(page)
         const html = await ov.snapshot({ mode: 'full', withCounters: true })
         const $$ = cheerio.load(html)
         const counter = Number.parseInt(
@@ -206,7 +206,7 @@ describe('integration/counter-bindings', () => {
             `
         )
 
-        const ov = Oversteer.from(page)
+        const ov = Opensteer.from(page)
         const html = await ov.snapshot({ mode: 'full', withCounters: true })
         const $$ = cheerio.load(html)
         const counter = Number.parseInt(
@@ -236,7 +236,7 @@ describe('integration/counter-bindings', () => {
             .locator('#inside')
             .waitFor({ state: 'visible' })
 
-        const ov = Oversteer.from(page)
+        const ov = Opensteer.from(page)
         const html = await ov.snapshot({
             mode: 'full',
             withCounters: true,
@@ -309,7 +309,7 @@ describe('integration/counter-bindings', () => {
             `
         )
 
-        const ov = Oversteer.from(page)
+        const ov = Opensteer.from(page)
         const html = await ov.snapshot({ mode: 'full', withCounters: true })
         const $$ = cheerio.load(html)
 
@@ -363,7 +363,7 @@ describe('integration/counter-bindings', () => {
             `
         )
 
-        const ov = Oversteer.from(page)
+        const ov = Opensteer.from(page)
         const html = await ov.snapshot({ mode: 'full', withCounters: true })
         const $$ = cheerio.load(html)
         const targetCounter = Number.parseInt($$('#target').attr('c') || '', 10)
@@ -405,7 +405,7 @@ describe('integration/counter-bindings', () => {
             .locator('#inside-input')
             .waitFor({ state: 'visible' })
 
-        const ov = Oversteer.from(page)
+        const ov = Opensteer.from(page)
         const html = await ov.snapshot({ mode: 'full', withCounters: true })
         const $$ = cheerio.load(html)
         const counter = Number.parseInt(
@@ -432,7 +432,7 @@ describe('integration/counter-bindings', () => {
             `
         )
 
-        const ov = Oversteer.from(page)
+        const ov = Opensteer.from(page)
         const html = await ov.snapshot({ mode: 'full', withCounters: true })
         const $$ = cheerio.load(html)
 
@@ -456,7 +456,7 @@ describe('integration/counter-bindings', () => {
             `
         )
 
-        const ov = Oversteer.from(page)
+        const ov = Opensteer.from(page)
 
         const first = await ov.snapshot({ mode: 'full', withCounters: true })
         const first$ = cheerio.load(first)
@@ -490,7 +490,7 @@ describe('integration/counter-bindings', () => {
             `
         )
 
-        const ov = Oversteer.from(page)
+        const ov = Opensteer.from(page)
         await ov.snapshot({ mode: 'full', withCounters: true })
 
         await page.evaluate(() => {
@@ -502,11 +502,11 @@ describe('integration/counter-bindings', () => {
                 | null
             if (!a || !b) return
 
-            const value = Number(a['__oversteerCounterValue'])
+            const value = Number(a['__opensteerCounterValue'])
             if (!Number.isFinite(value) || value <= 0) return
 
-            b['__oversteerCounterOwner'] = true
-            b['__oversteerCounterValue'] = value
+            b['__opensteerCounterOwner'] = true
+            b['__opensteerCounterValue'] = value
             b.setAttribute('c', String(value))
         })
 
@@ -537,7 +537,7 @@ describe('integration/counter-bindings', () => {
             `
         )
 
-        const ov = Oversteer.from(page)
+        const ov = Opensteer.from(page)
         const html = await ov.snapshot({ mode: 'full', withCounters: true })
         const $$ = cheerio.load(html)
         const counter = Number.parseInt($$('#replace-btn').attr('c') || '', 10)
@@ -566,7 +566,7 @@ describe('integration/counter-bindings', () => {
             `
         )
 
-        const ov = Oversteer.from(page)
+        const ov = Opensteer.from(page)
         const html = await ov.snapshot({ mode: 'full', withCounters: true })
         const $$ = cheerio.load(html)
 

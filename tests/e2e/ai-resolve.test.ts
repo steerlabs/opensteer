@@ -11,7 +11,7 @@ import {
     vi,
 } from 'vitest'
 import type { BrowserContext, Page } from 'playwright'
-import { Oversteer } from '../../src/oversteer.js'
+import { Opensteer } from '../../src/opensteer.js'
 import { closeTestBrowser, createTestPage } from '../helpers/browser.js'
 import { gotoRoute } from '../helpers/integration.js'
 
@@ -38,7 +38,7 @@ describe('e2e/ai-resolve', () => {
         async () => {
             await gotoRoute(page, '/forms')
 
-            const ov = Oversteer.from(page, {
+            const ov = Opensteer.from(page, {
                 name: 'ai-e2e',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
@@ -66,7 +66,7 @@ describe('e2e/ai-resolve', () => {
             // Verify descriptor file exists on disk
             const namespaceDir = path.join(
                 rootDir,
-                '.oversteer',
+                '.opensteer',
                 'selectors',
                 'ai-e2e'
             )
@@ -96,7 +96,7 @@ describe('e2e/ai-resolve', () => {
             await gotoRoute(page, '/forms')
 
             // First run: populate the cache
-            const ov1 = Oversteer.from(page, {
+            const ov1 = Opensteer.from(page, {
                 name: 'ai-e2e-replay',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
@@ -123,7 +123,7 @@ describe('e2e/ai-resolve', () => {
             await gotoRoute(page, '/forms')
 
             // Second run: reuse the same rootDir, descriptors should be cached
-            const ov2 = Oversteer.from(page, {
+            const ov2 = Opensteer.from(page, {
                 name: 'ai-e2e-replay',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
@@ -166,7 +166,7 @@ describe('e2e/ai-resolve', () => {
         async () => {
             await gotoRoute(page, '/data')
 
-            const ov = Oversteer.from(page, {
+            const ov = Opensteer.from(page, {
                 name: 'ai-e2e-extract',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
@@ -182,7 +182,7 @@ describe('e2e/ai-resolve', () => {
             // Verify descriptor was persisted
             const namespaceDir = path.join(
                 rootDir,
-                '.oversteer',
+                '.opensteer',
                 'selectors',
                 'ai-e2e-extract'
             )

@@ -101,7 +101,7 @@ export function loadLiveWebRunConfig(): LiveWebRunConfig {
 
     const model = (
         process.env.LIVE_WEB_MODEL ||
-        process.env.OVERSTEER_MODEL ||
+        process.env.OPENSTEER_MODEL ||
         DEFAULT_MODEL
     ).trim()
 

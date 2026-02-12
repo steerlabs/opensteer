@@ -110,7 +110,7 @@ describe('integration/extraction-cleaning', () => {
 
             expect(html).not.toContain('class=')
             expect(html).not.toContain('style=')
-            expect(html).not.toContain('data-oversteer-hidden=')
+            expect(html).not.toContain('data-opensteer-hidden=')
         })
 
         it('does not contain script or style tags', async () => {
@@ -192,7 +192,7 @@ describe('integration/extraction-cleaning', () => {
             expect(snapshot.cleanedHtml).toContain('Data Extraction')
             expect(snapshot.cleanedHtml).toContain('Overlays')
             expect(snapshot.cleanedHtml).toContain(
-                'Oversteer OSS Test Fixtures'
+                'Opensteer OSS Test Fixtures'
             )
         })
 

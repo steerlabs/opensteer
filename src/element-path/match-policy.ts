@@ -63,7 +63,7 @@ const MATCH_ATTRIBUTE_PRIORITY = [
     'placeholder',
 ] as const
 
-const INTERNAL_ATTR_PREFIXES = ['data-ov-', 'data-oversteer-']
+const INTERNAL_ATTR_PREFIXES = ['data-ov-', 'data-opensteer-']
 
 export interface AttributeFilterOptions {
     tag?: string

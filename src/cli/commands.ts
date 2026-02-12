@@ -1,8 +1,8 @@
-import type { Oversteer } from '../oversteer.js'
+import type { Opensteer } from '../opensteer.js'
 import type { ExtractSchema, SnapshotMode } from '../types.js'
 
 type CommandHandler = (
-    ov: Oversteer,
+    ov: Opensteer,
     args: Record<string, unknown>
 ) => Promise<unknown>
 

@@ -1,7 +1,7 @@
-import { Oversteer } from '../../src/index.js'
+import { Opensteer } from '../../src/index.js'
 
 async function run() {
-    const ov = new Oversteer({ name: 'basic-usage' })
+    const ov = new Opensteer({ name: 'basic-usage' })
     await ov.launch({ headless: false })
 
     try {

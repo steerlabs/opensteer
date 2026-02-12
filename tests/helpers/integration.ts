@@ -1,8 +1,8 @@
 import type { Page } from 'playwright'
 import {
-    OVERSTEER_HIDDEN_ATTR,
-    OVERSTEER_INTERACTIVE_ATTR,
-    OVERSTEER_SCROLLABLE_ATTR,
+    OPENSTEER_HIDDEN_ATTR,
+    OPENSTEER_INTERACTIVE_ATTR,
+    OPENSTEER_SCROLLABLE_ATTR,
 } from '../../src/html/interactivity.js'
 import { getTestAppRoute } from './testApp.js'
 
@@ -24,13 +24,13 @@ export async function getMarkedIds(
 }
 
 export async function getInteractiveIds(page: Page): Promise<string[]> {
-    return getMarkedIds(page, OVERSTEER_INTERACTIVE_ATTR)
+    return getMarkedIds(page, OPENSTEER_INTERACTIVE_ATTR)
 }
 
 export async function getHiddenIds(page: Page): Promise<string[]> {
-    return getMarkedIds(page, OVERSTEER_HIDDEN_ATTR)
+    return getMarkedIds(page, OPENSTEER_HIDDEN_ATTR)
 }
 
 export async function getScrollableIds(page: Page): Promise<string[]> {
-    return getMarkedIds(page, OVERSTEER_SCROLLABLE_ATTR)
+    return getMarkedIds(page, OPENSTEER_SCROLLABLE_ATTR)
 }

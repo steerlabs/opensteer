@@ -4,7 +4,7 @@ import path from 'path'
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import * as cheerio from 'cheerio'
 import type { BrowserContext, Page } from 'playwright'
-import { Oversteer } from '../../src/oversteer.js'
+import { Opensteer } from '../../src/opensteer.js'
 import { closeTestBrowser, createTestPage } from '../helpers/browser.js'
 import { gotoRoute } from '../helpers/integration.js'
 
@@ -25,10 +25,10 @@ describe('e2e/smoke', () => {
         await closeTestBrowser()
     })
 
-    it('runs the full Oversteer lifecycle end-to-end', async () => {
+    it('runs the full Opensteer lifecycle end-to-end', async () => {
         const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-e2e-smoke-'))
 
-        const ov = Oversteer.from(page, {
+        const ov = Opensteer.from(page, {
             name: 'e2e-smoke',
             storage: { rootDir },
         })
@@ -99,7 +99,7 @@ describe('e2e/smoke', () => {
 
         const namespaceDir = path.join(
             rootDir,
-            '.oversteer',
+            '.opensteer',
             'selectors',
             'e2e-smoke'
         )

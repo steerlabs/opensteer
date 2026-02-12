@@ -1,14 +1,14 @@
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import type { OversteerConfig } from './types.js'
+import type { OpensteerConfig } from './types.js'
 
-export interface ResolvedOversteerConfig extends OversteerConfig {
+export interface ResolvedOpensteerConfig extends OpensteerConfig {
     model: string
 }
 
 const DEFAULT_CONFIG: Required<
-    Pick<OversteerConfig, 'browser' | 'storage' | 'debug' | 'model'>
+    Pick<OpensteerConfig, 'browser' | 'storage' | 'debug' | 'model'>
 > = {
     browser: {
         headless: false,
@@ -38,13 +38,13 @@ function assertNoLegacyAiConfig(source: string, config: unknown): void {
     }
 }
 
-export function loadConfigFile(rootDir: string): Partial<OversteerConfig> {
-    const configPath = path.join(rootDir, '.oversteer', 'config.json')
+export function loadConfigFile(rootDir: string): Partial<OpensteerConfig> {
+    const configPath = path.join(rootDir, '.opensteer', 'config.json')
     if (!fs.existsSync(configPath)) return {}
 
     try {
         const raw = fs.readFileSync(configPath, 'utf8')
-        return JSON.parse(raw) as Partial<OversteerConfig>
+        return JSON.parse(raw) as Partial<OpensteerConfig>
     } catch {
         return {}
     }
@@ -96,40 +96,40 @@ function parseNumber(value: string | undefined): number | undefined {
 }
 
 export function resolveConfig(
-    input: OversteerConfig = {}
-): ResolvedOversteerConfig {
-    if (process.env.OVERSTEER_AI_MODEL) {
+    input: OpensteerConfig = {}
+): ResolvedOpensteerConfig {
+    if (process.env.OPENSTEER_AI_MODEL) {
         throw new Error(
-            'OVERSTEER_AI_MODEL is no longer supported. Use OVERSTEER_MODEL instead.'
+            'OPENSTEER_AI_MODEL is no longer supported. Use OPENSTEER_MODEL instead.'
         )
     }
 
-    assertNoLegacyAiConfig('Oversteer constructor config', input as unknown)
+    assertNoLegacyAiConfig('Opensteer constructor config', input as unknown)
 
     const rootDir =
         input.storage?.rootDir ??
         DEFAULT_CONFIG.storage.rootDir ??
         process.cwd()
     const fileConfig = loadConfigFile(rootDir)
-    assertNoLegacyAiConfig('.oversteer/config.json', fileConfig as unknown)
+    assertNoLegacyAiConfig('.opensteer/config.json', fileConfig as unknown)
 
-    const envConfig: Partial<OversteerConfig> = {
+    const envConfig: Partial<OpensteerConfig> = {
         browser: {
-            headless: parseBool(process.env.OVERSTEER_HEADLESS),
-            executablePath: process.env.OVERSTEER_BROWSER_PATH || undefined,
-            slowMo: parseNumber(process.env.OVERSTEER_SLOW_MO),
+            headless: parseBool(process.env.OPENSTEER_HEADLESS),
+            executablePath: process.env.OPENSTEER_BROWSER_PATH || undefined,
+            slowMo: parseNumber(process.env.OPENSTEER_SLOW_MO),
         },
-        model: process.env.OVERSTEER_MODEL || undefined,
-        debug: parseBool(process.env.OVERSTEER_DEBUG),
+        model: process.env.OPENSTEER_MODEL || undefined,
+        debug: parseBool(process.env.OPENSTEER_DEBUG),
     }
 
     const mergedWithFile = mergeDeep(DEFAULT_CONFIG, fileConfig)
     const mergedWithEnv = mergeDeep(mergedWithFile, envConfig)
-    return mergeDeep(mergedWithEnv, input) as ResolvedOversteerConfig
+    return mergeDeep(mergedWithEnv, input) as ResolvedOpensteerConfig
 }
 
 export function resolveNamespace(
-    config: OversteerConfig,
+    config: OpensteerConfig,
     rootDir: string
 ): string {
     if (config.name && config.name.trim()) return config.name.trim()
@@ -160,7 +160,7 @@ function getCallerFilePath(): string | null {
         if (!rawPath) continue
         if (rawPath.includes('node:internal')) continue
         if (rawPath.includes('node_modules')) continue
-        if (rawPath.includes('/oversteer-oss/src/')) continue
+        if (rawPath.includes('/opensteer-oss/src/')) continue
 
         try {
             if (rawPath.startsWith('file://')) {

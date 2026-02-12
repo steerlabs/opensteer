@@ -1,8 +1,8 @@
-# Oversteer
+# Opensteer
 
 Lean browser automation SDK for coding agents and script replay.
 
-`oversteer` wraps only operations that need descriptor resolution (`snapshot`,
+`opensteer` wraps only operations that need descriptor resolution (`snapshot`,
 `click`, `dblclick`, `rightclick`, `hover`, `input`, `select`, `scroll`,
 `extract`, `extractFromPlan`, `state`).
 
@@ -12,17 +12,17 @@ Everything else is raw Playwright via `ov.page` and `ov.context`.
 
 ```bash
 # npm
-npm install oversteer playwright
+npm install opensteer playwright
 # pnpm
-pnpm add oversteer playwright
+pnpm add opensteer playwright
 ```
 
 ## Quickstart
 
 ```ts
-import { Oversteer } from "oversteer";
+import { Opensteer } from "opensteer";
 
-const ov = new Oversteer({ name: "my-scraper" }); // defaults to model: 'gpt-5.1'
+const ov = new Opensteer({ name: "my-scraper" }); // defaults to model: 'gpt-5.1'
 await ov.launch({ headless: false });
 
 await ov.page.goto("https://example.com");
@@ -39,8 +39,8 @@ await ov.close();
 
 - `ov.page`: raw Playwright `Page`
 - `ov.context`: raw Playwright `BrowserContext`
-- Oversteer methods: descriptor-aware operations that can persist selectors
-- Selector storage: `.oversteer/selectors/<namespace>`
+- Opensteer methods: descriptor-aware operations that can persist selectors
+- Selector storage: `.opensteer/selectors/<namespace>`
 
 ## Resolution Chain
 
@@ -73,11 +73,11 @@ stable descriptions for replay.
 
 ### Run (script replay / built-in LLM)
 
-Oversteer uses built-in LLM resolve/extract by default. You can override the
-default model with top-level `model` or `OVERSTEER_MODEL`.
+Opensteer uses built-in LLM resolve/extract by default. You can override the
+default model with top-level `model` or `OPENSTEER_MODEL`.
 
 ```ts
-const ov = new Oversteer({
+const ov = new Opensteer({
   name: "run-mode",
   model: "gpt-5-mini",
 });

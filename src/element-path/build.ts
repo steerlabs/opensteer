@@ -90,7 +90,7 @@ export async function buildElementPathFromHandle(
             'referrerpolicy',
             'autocomplete',
         ])
-        const INTERNAL_ATTR_PREFIXES = ['data-ov-', 'data-oversteer-']
+        const INTERNAL_ATTR_PREFIXES = ['data-ov-', 'data-opensteer-']
         const LAZY_LOADING_MEDIA_TAGS = new Set([
             'img',
             'video',

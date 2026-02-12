@@ -12,10 +12,10 @@ describe('cleanForAction', () => {
       <html c="1">
         <body c="2">
           <script>window.bad = true</script>
-          <button c="3" id="submit" data-oversteer-interactive="1" aria-label="Submit order">
+          <button c="3" id="submit" data-opensteer-interactive="1" aria-label="Submit order">
             Submit
           </button>
-          <div c="4" data-oversteer-hidden="1">Hidden copy</div>
+          <div c="4" data-opensteer-hidden="1">Hidden copy</div>
           <div c="5" style="display:none">Also hidden</div>
         </body>
       </html>
@@ -201,7 +201,7 @@ describe('cleanForExtraction', () => {
         <body c="3">
           <script>alert("xss")</script>
           <noscript>Enable JS</noscript>
-          <div c="4" data-oversteer-hidden="1">Hidden</div>
+          <div c="4" data-opensteer-hidden="1">Hidden</div>
           <div c="5" style="display:none">Also hidden</div>
           <p c="6">Visible content</p>
         </body>
@@ -356,7 +356,7 @@ describe('cleanForScrollable', () => {
     it('keeps scrollable containers and marker attrs', () => {
         const html = `
       <div c="1">
-        <div c="2" data-oversteer-scrollable="y" class="panel">
+        <div c="2" data-opensteer-scrollable="y" class="panel">
           <p c="3">Scrollable</p>
         </div>
         <div c="4">Static</div>
@@ -364,7 +364,7 @@ describe('cleanForScrollable', () => {
     `
 
         const cleaned = cleanForScrollable(html)
-        expect(cleaned).toContain('data-oversteer-scrollable="y"')
+        expect(cleaned).toContain('data-opensteer-scrollable="y"')
         expect(cleaned).toContain('c="2"')
         expect(cleaned).toContain('Static')
     })

@@ -194,7 +194,7 @@ async function serializeFrameRecursive(
                     if (/^on[a-z]/i.test(key)) return false
                     if (ATTRIBUTE_DENY_KEYS.has(key)) return false
                     if (key.startsWith('data-ov-')) return false
-                    if (key.startsWith('data-oversteer-')) return false
+                    if (key.startsWith('data-opensteer-')) return false
                     if (
                         helpers.isMediaTag(tag) &&
                         VOLATILE_LAZY_LOADING_ATTRS.has(key)

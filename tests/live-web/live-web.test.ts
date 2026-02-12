@@ -3,7 +3,7 @@ import os from 'os'
 import path from 'path'
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { BrowserContext, Page } from 'playwright'
-import { Oversteer } from '../../src/oversteer.js'
+import { Opensteer } from '../../src/opensteer.js'
 import { closeTestBrowser, createTestPage } from '../helpers/browser.js'
 import { loadLiveWebRunConfig } from './env.js'
 import { runLiveWebJudge } from './judge.js'
@@ -65,10 +65,10 @@ describeLiveWeb('live-web/validation', () => {
         testCase(
             `${scenario.id}: ${scenario.title}`,
             async () => {
-                let ov: Oversteer | null = null
+                let ov: Opensteer | null = null
 
                 try {
-                    ov = Oversteer.from(page, {
+                    ov = Opensteer.from(page, {
                         name: `live-web-${scenario.id}`,
                         model: liveWebConfig.model,
                         storage: {

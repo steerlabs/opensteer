@@ -3,7 +3,7 @@ import os from 'os'
 import path from 'path'
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { BrowserContext, Page } from 'playwright'
-import { Oversteer } from '../../src/oversteer.js'
+import { Opensteer } from '../../src/opensteer.js'
 import { closeTestBrowser, createTestPage } from '../helpers/browser.js'
 import { gotoRoute } from '../helpers/integration.js'
 
@@ -38,7 +38,7 @@ describe('e2e/iframe-actions', () => {
                 state: 'visible',
             })
 
-            const ov = Oversteer.from(page, {
+            const ov = Opensteer.from(page, {
                 name: 'iframe-named',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
@@ -78,7 +78,7 @@ describe('e2e/iframe-actions', () => {
                 state: 'visible',
             })
 
-            const ov = Oversteer.from(page, {
+            const ov = Opensteer.from(page, {
                 name: 'iframe-anon',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
@@ -119,7 +119,7 @@ describe('e2e/iframe-actions', () => {
                 state: 'visible',
             })
 
-            const ov = Oversteer.from(page, {
+            const ov = Opensteer.from(page, {
                 name: 'iframe-extract',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
@@ -135,7 +135,7 @@ describe('e2e/iframe-actions', () => {
 
             const namespaceDir = path.join(
                 rootDir,
-                '.oversteer',
+                '.opensteer',
                 'selectors',
                 'iframe-extract'
             )

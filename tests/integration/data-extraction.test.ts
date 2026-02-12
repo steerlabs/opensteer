@@ -13,7 +13,7 @@ import type { BrowserContext, Page } from 'playwright'
 import { prepareSnapshot } from '../../src/html/pipeline.js'
 import { performClick } from '../../src/actions/click.js'
 import { buildElementPathFromSelector } from '../../src/element-path/build.js'
-import { Oversteer } from '../../src/oversteer.js'
+import { Opensteer } from '../../src/opensteer.js'
 import { closeTestBrowser, createTestPage } from '../helpers/browser.js'
 import { gotoRoute } from '../helpers/integration.js'
 
@@ -58,9 +58,9 @@ describe('integration/data-extraction', () => {
         })
     })
 
-    it('extracts string values through Oversteer schema selectors', async () => {
+    it('extracts string values through Opensteer schema selectors', async () => {
         const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-int-data-'))
-        const ov = Oversteer.from(page, {
+        const ov = Opensteer.from(page, {
             name: 'integration-data',
             storage: { rootDir },
         })
@@ -92,7 +92,7 @@ describe('integration/data-extraction', () => {
     it('resolves CURRENT_URL from schema source and replays from cache', async () => {
         const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-int-data-'))
 
-        const ov = Oversteer.from(page, {
+        const ov = Opensteer.from(page, {
             name: 'integration-data-current-url',
             storage: { rootDir },
         })

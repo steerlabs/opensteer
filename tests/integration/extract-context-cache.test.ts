@@ -6,7 +6,7 @@ import * as cheerio from 'cheerio'
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { BrowserContext, Page } from 'playwright'
 import { prepareSnapshot } from '../../src/html/pipeline.js'
-import { Oversteer } from '../../src/oversteer.js'
+import { Opensteer } from '../../src/opensteer.js'
 import { closeTestBrowser, createTestPage } from '../helpers/browser.js'
 import { setFixture } from '../helpers/fixture.js'
 
@@ -47,7 +47,7 @@ describe('integration/extract-context-cache', () => {
             '#frame-host + ov-iframe-root #headline'
         )
 
-        const ov = Oversteer.from(page, {
+        const ov = Opensteer.from(page, {
             name: 'extract-context-iframe-scalar',
             storage: { rootDir: storageRoot },
         })
@@ -105,7 +105,7 @@ describe('integration/extract-context-cache', () => {
             '#shadow-host ov-shadow-root #shadow-title'
         )
 
-        const ov = Oversteer.from(page, {
+        const ov = Opensteer.from(page, {
             name: 'extract-context-shadow-scalar',
             storage: { rootDir: storageRoot },
         })
@@ -188,7 +188,7 @@ describe('integration/extract-context-cache', () => {
             '#frame-host + ov-iframe-root #products > li:nth-child(2) .price'
         )
 
-        const ov = Oversteer.from(page, {
+        const ov = Opensteer.from(page, {
             name: 'extract-context-iframe-array',
             storage: { rootDir: storageRoot },
         })
@@ -298,7 +298,7 @@ describe('integration/extract-context-cache', () => {
             '#shadow-host ov-shadow-root #products > li:nth-child(2) .price'
         )
 
-        const ov = Oversteer.from(page, {
+        const ov = Opensteer.from(page, {
             name: 'extract-context-shadow-array',
             storage: { rootDir: storageRoot },
         })
@@ -394,7 +394,7 @@ function readStoredSelector(
         .slice(0, 16)
     const selectorPath = path.join(
         rootDir,
-        '.oversteer',
+        '.opensteer',
         'selectors',
         namespace,
         `${key}.json`

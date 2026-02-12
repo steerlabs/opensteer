@@ -33,7 +33,7 @@ export function App(): JSX.Element {
                 <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/80 backdrop-blur">
                     <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-2 px-4 py-3">
                         <p className="mr-4 text-sm font-semibold tracking-[0.12em] text-slate-500">
-                            OVERSTEER TEST APP
+                            OPENSTEER TEST APP
                         </p>
                         {links.map((link) => (
                             <NavLink

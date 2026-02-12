@@ -2,9 +2,9 @@ import * as cheerio from 'cheerio'
 import type { CheerioAPI, Cheerio } from 'cheerio'
 import type { AnyNode, Element } from 'domhandler'
 import {
-    OVERSTEER_HIDDEN_ATTR,
-    OVERSTEER_INTERACTIVE_ATTR,
-    OVERSTEER_SCROLLABLE_ATTR,
+    OPENSTEER_HIDDEN_ATTR,
+    OPENSTEER_INTERACTIVE_ATTR,
+    OPENSTEER_SCROLLABLE_ATTR,
 } from './interactivity.js'
 import {
     OV_BOUNDARY_ATTR,
@@ -29,7 +29,7 @@ const TEXT_ATTR_MAX = 150
 const URL_ATTR_MAX = 500
 
 const NOISE_SELECTORS = [
-    `[${OVERSTEER_HIDDEN_ATTR}]`,
+    `[${OPENSTEER_HIDDEN_ATTR}]`,
     '[hidden]',
     "[style*='display: none']",
     "[style*='display:none']",
@@ -115,7 +115,7 @@ function isClickable(
     context: ClickableContext
 ): boolean {
     if (context.hasPreMarked) {
-        return el.attr(OVERSTEER_INTERACTIVE_ATTR) !== undefined
+        return el.attr(OPENSTEER_INTERACTIVE_ATTR) !== undefined
     }
 
     const tag = ((el[0] as Element | undefined)?.tagName || '').toLowerCase()
@@ -444,7 +444,7 @@ export function cleanForFull(html: string): string {
 
     $('*').each(function () {
         const el = $(this as Element)
-        el.removeAttr(OVERSTEER_HIDDEN_ATTR)
+        el.removeAttr(OPENSTEER_HIDDEN_ATTR)
     })
 
     return compactHtml($.html())
@@ -551,7 +551,7 @@ export function cleanForClickable(html: string): string {
     removeComments($)
 
     const context: ClickableContext = {
-        hasPreMarked: $(`[${OVERSTEER_INTERACTIVE_ATTR}]`).length > 0,
+        hasPreMarked: $(`[${OPENSTEER_INTERACTIVE_ATTR}]`).length > 0,
     }
 
     const flattenPreserveClickables = (root: Cheerio<AnyNode>): void => {
@@ -614,9 +614,9 @@ export function cleanForClickable(html: string): string {
 
         stripToAttrs(el, baseKeep)
 
-        el.removeAttr(OVERSTEER_INTERACTIVE_ATTR)
-        el.removeAttr(OVERSTEER_HIDDEN_ATTR)
-        el.removeAttr(OVERSTEER_SCROLLABLE_ATTR)
+        el.removeAttr(OPENSTEER_INTERACTIVE_ATTR)
+        el.removeAttr(OPENSTEER_HIDDEN_ATTR)
+        el.removeAttr(OPENSTEER_SCROLLABLE_ATTR)
     })
 
     const htmlOut = deduplicateImages($.html())
@@ -640,7 +640,7 @@ export function cleanForScrollable(html: string): string {
         const isBoundary = isBoundaryTag(tag)
         const scrollable = Object.prototype.hasOwnProperty.call(
             attrs,
-            OVERSTEER_SCROLLABLE_ATTR
+            OPENSTEER_SCROLLABLE_ATTR
         )
 
         if (!scrollable && !isBoundary) {
@@ -650,7 +650,7 @@ export function cleanForScrollable(html: string): string {
 
         const keep = new Set<string>([
             'c',
-            OVERSTEER_SCROLLABLE_ATTR,
+            OPENSTEER_SCROLLABLE_ATTR,
             OV_NODE_ID_ATTR,
             OV_BOUNDARY_ATTR,
             OV_UNAVAILABLE_ATTR,
@@ -672,7 +672,7 @@ export function cleanForAction(html: string): string {
     const indicatorMark = 'data-keep-indicator'
 
     const context: ClickableContext = {
-        hasPreMarked: $(`[${OVERSTEER_INTERACTIVE_ATTR}]`).length > 0,
+        hasPreMarked: $(`[${OPENSTEER_INTERACTIVE_ATTR}]`).length > 0,
     }
 
     $('*').each(function () {
@@ -809,9 +809,9 @@ export function cleanForAction(html: string): string {
 
         el.removeAttr(clickableMark)
         el.removeAttr(indicatorMark)
-        el.removeAttr(OVERSTEER_INTERACTIVE_ATTR)
-        el.removeAttr(OVERSTEER_HIDDEN_ATTR)
-        el.removeAttr(OVERSTEER_SCROLLABLE_ATTR)
+        el.removeAttr(OPENSTEER_INTERACTIVE_ATTR)
+        el.removeAttr(OPENSTEER_HIDDEN_ATTR)
+        el.removeAttr(OPENSTEER_SCROLLABLE_ATTR)
     })
 
     const htmlOut = deduplicateImages($.html())

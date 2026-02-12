@@ -7,7 +7,7 @@ import {
     resolveConfig,
     resolveNamespace,
 } from '../src/config.js'
-import type { OversteerConfig } from '../src/types.js'
+import type { OpensteerConfig } from '../src/types.js'
 
 const ORIGINAL_ENV = { ...process.env }
 
@@ -22,7 +22,7 @@ describe('config', () => {
         )
         expect(loadConfigFile(root)).toEqual({})
 
-        const configDir = path.join(root, '.oversteer')
+        const configDir = path.join(root, '.opensteer')
         fs.mkdirSync(configDir, { recursive: true })
         fs.writeFileSync(path.join(configDir, 'config.json'), '{oops', 'utf8')
 
@@ -31,9 +31,9 @@ describe('config', () => {
 
     it('resolveConfig merges defaults, file config, env config, then explicit input', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-config-merge-'))
-        fs.mkdirSync(path.join(root, '.oversteer'), { recursive: true })
+        fs.mkdirSync(path.join(root, '.opensteer'), { recursive: true })
         fs.writeFileSync(
-            path.join(root, '.oversteer', 'config.json'),
+            path.join(root, '.opensteer', 'config.json'),
             JSON.stringify(
                 {
                     browser: { headless: true, slowMo: 111 },
@@ -46,10 +46,10 @@ describe('config', () => {
             'utf8'
         )
 
-        process.env.OVERSTEER_HEADLESS = 'false'
-        process.env.OVERSTEER_SLOW_MO = '250'
-        process.env.OVERSTEER_DEBUG = 'true'
-        process.env.OVERSTEER_MODEL = 'gemini-2.0-flash'
+        process.env.OPENSTEER_HEADLESS = 'false'
+        process.env.OPENSTEER_SLOW_MO = '250'
+        process.env.OPENSTEER_DEBUG = 'true'
+        process.env.OPENSTEER_MODEL = 'gemini-2.0-flash'
 
         const resolved = resolveConfig({
             storage: { rootDir: root },
@@ -69,29 +69,29 @@ describe('config', () => {
         expect(resolved.model).toBe('gpt-5.1')
     })
 
-    it('resolveConfig uses OVERSTEER_MODEL when explicit model is missing', () => {
-        process.env.OVERSTEER_MODEL = 'gpt-5-mini'
+    it('resolveConfig uses OPENSTEER_MODEL when explicit model is missing', () => {
+        process.env.OPENSTEER_MODEL = 'gpt-5-mini'
         const resolved = resolveConfig({})
         expect(resolved.model).toBe('gpt-5-mini')
     })
 
     it('throws when legacy ai config is passed directly', () => {
-        const legacyConfig: OversteerConfig = {
+        const legacyConfig: OpensteerConfig = {
             storage: { rootDir: process.cwd() },
             // @ts-expect-error - validates hard rejection of removed legacy config.
             ai: { model: 'gpt-5-mini' },
         }
 
         expect(() => resolveConfig(legacyConfig)).toThrow(
-            'Legacy "ai" config is no longer supported in Oversteer constructor config. Use top-level "model" instead.'
+            'Legacy "ai" config is no longer supported in Opensteer constructor config. Use top-level "model" instead.'
         )
     })
 
-    it('throws when legacy ai config exists in .oversteer/config.json', () => {
+    it('throws when legacy ai config exists in .opensteer/config.json', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-config-ai-'))
-        fs.mkdirSync(path.join(root, '.oversteer'), { recursive: true })
+        fs.mkdirSync(path.join(root, '.opensteer'), { recursive: true })
         fs.writeFileSync(
-            path.join(root, '.oversteer', 'config.json'),
+            path.join(root, '.opensteer', 'config.json'),
             JSON.stringify({ ai: { model: 'gpt-5-mini' } }),
             'utf8'
         )
@@ -101,14 +101,14 @@ describe('config', () => {
                 storage: { rootDir: root },
             })
         ).toThrow(
-            'Legacy "ai" config is no longer supported in .oversteer/config.json. Use top-level "model" instead.'
+            'Legacy "ai" config is no longer supported in .opensteer/config.json. Use top-level "model" instead.'
         )
     })
 
-    it('throws when OVERSTEER_AI_MODEL is set', () => {
-        process.env.OVERSTEER_AI_MODEL = 'gpt-5-mini'
+    it('throws when OPENSTEER_AI_MODEL is set', () => {
+        process.env.OPENSTEER_AI_MODEL = 'gpt-5-mini'
         expect(() => resolveConfig({})).toThrow(
-            'OVERSTEER_AI_MODEL is no longer supported. Use OVERSTEER_MODEL instead.'
+            'OPENSTEER_AI_MODEL is no longer supported. Use OPENSTEER_MODEL instead.'
         )
     })
 

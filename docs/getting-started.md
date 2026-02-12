@@ -4,17 +4,17 @@
 
 ```bash
 # npm
-npm install oversteer playwright
+npm install opensteer playwright
 # pnpm
-pnpm add oversteer playwright
+pnpm add opensteer playwright
 ```
 
 ## 2) Launch and navigate
 
 ```ts
-import { Oversteer } from 'oversteer'
+import { Opensteer } from 'opensteer'
 
-const ov = new Oversteer({ name: 'my-scraper' })
+const ov = new Opensteer({ name: 'my-scraper' })
 await ov.launch({ headless: false })
 
 await ov.page.goto('https://example.com')
@@ -42,13 +42,13 @@ await ov.input({ description: 'email', text: 'user@example.com' })
 ## 5) Optional model override
 
 ```ts
-const ov = new Oversteer({
+const ov = new Opensteer({
     name: 'my-scraper',
     model: 'gpt-5.1',
 })
 ```
 
-Or set `OVERSTEER_MODEL=gpt-5.1` in the environment.
+Or set `OPENSTEER_MODEL=gpt-5.1` in the environment.
 
 ## 6) Close
 

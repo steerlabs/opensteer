@@ -288,8 +288,8 @@ function countInRoot(
 
 function isPathDebugEnabled(): boolean {
     const value =
-        process.env.OVERSTEER_DEBUG_PATH ||
-        process.env.OVERSTEER_DEBUG ||
+        process.env.OPENSTEER_DEBUG_PATH ||
+        process.env.OPENSTEER_DEBUG ||
         process.env.DEBUG_SELECTORS
     if (!value) return false
     const normalized = value.trim().toLowerCase()
@@ -299,9 +299,9 @@ function isPathDebugEnabled(): boolean {
 function debugPath(message: string, data?: unknown): void {
     if (!isPathDebugEnabled()) return
     if (data !== undefined) {
-        console.log(`[oversteer:path] ${message}`, data)
+        console.log(`[opensteer:path] ${message}`, data)
     } else {
-        console.log(`[oversteer:path] ${message}`)
+        console.log(`[opensteer:path] ${message}`)
     }
 }
 

@@ -37,12 +37,12 @@ export class LocalSelectorStorage {
         return `${safe}.json`
     }
 
-    getOversteerDir(): string {
-        return path.join(this.rootDir, '.oversteer')
+    getOpensteerDir(): string {
+        return path.join(this.rootDir, '.opensteer')
     }
 
     getNamespaceDir(): string {
-        return path.join(this.getOversteerDir(), 'selectors', this.namespace)
+        return path.join(this.getOpensteerDir(), 'selectors', this.namespace)
     }
 
     getRegistryPath(): string {
