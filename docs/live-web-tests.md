@@ -17,7 +17,7 @@ RUN_LIVE_WEB=1 npm run test:live-web
 ## Environment variables
 
 - `RUN_LIVE_WEB`: Set to `1` to enable this suite.
-- `LIVE_WEB_MODEL`: Resolver/extractor model. Default: `gemini-2.0-flash`.
+- `LIVE_WEB_MODEL`: Resolver/extractor model. Default: `gpt-5.1`.
 - `LIVE_WEB_SCENARIOS`: Optional comma-separated scenario ids.
 - `LIVE_WEB_JUDGE`: `1` (default) enables judge, `0` disables judge.
 - `LIVE_WEB_JUDGE_MODE`: `advisory` (default) or `strict`.
@@ -40,7 +40,7 @@ Run one scenario:
 ```bash
 RUN_LIVE_WEB=1 \
 LIVE_WEB_SCENARIOS=wikipedia-search \
-LIVE_WEB_MODEL=gemini-2.0-flash \
+LIVE_WEB_MODEL=gpt-5.1 \
 npm run test:live-web
 ```
 

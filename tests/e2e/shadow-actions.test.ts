@@ -36,7 +36,7 @@ describe('e2e/shadow-actions', () => {
 
             const ov = Oversteer.from(page, {
                 name: 'shadow-basic',
-                ai: { model: 'gpt-5-mini' },
+                model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 
@@ -70,7 +70,7 @@ describe('e2e/shadow-actions', () => {
 
             const ov = Oversteer.from(page, {
                 name: 'shadow-disambiguate',
-                ai: { model: 'gpt-5-mini' },
+                model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 
@@ -94,7 +94,7 @@ describe('e2e/shadow-actions', () => {
 
             const ov = Oversteer.from(page, {
                 name: 'shadow-extract',
-                ai: { model: 'gpt-5-mini' },
+                model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 

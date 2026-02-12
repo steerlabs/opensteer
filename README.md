@@ -17,19 +17,19 @@ npm install oversteer playwright
 ## Quickstart
 
 ```ts
-import { Oversteer } from 'oversteer'
+import { Oversteer } from "oversteer";
 
-const ov = new Oversteer({ name: 'my-scraper', ai: { model: 'gpt-5.1' } })
-await ov.launch({ headless: false })
+const ov = new Oversteer({ name: "my-scraper" }); // defaults to model: 'gpt-5.1'
+await ov.launch({ headless: false });
 
-await ov.page.goto('https://example.com')
-const html = await ov.snapshot()
+await ov.page.goto("https://example.com");
+const html = await ov.snapshot();
 
-await ov.click({ description: 'login-button' })
-await ov.input({ description: 'email', text: 'user@example.com' })
-await ov.page.keyboard.press('Enter')
+await ov.click({ description: "login-button" });
+await ov.input({ description: "email", text: "user@example.com" });
+await ov.page.keyboard.press("Enter");
 
-await ov.close()
+await ov.close();
 ```
 
 ## Core Model
@@ -46,7 +46,7 @@ For actions like `click`/`input`/`hover`/`select`/`scroll`:
 1. Use persisted path for `description` (if present)
 2. Use `element` counter from snapshot
 3. Use explicit CSS `selector`
-4. Use `ai.resolve` callback (if configured + `description` provided)
+4. Use built-in LLM resolution (`description` required)
 5. Throw
 
 When steps 2-4 resolve and `description` is provided, the path is persisted.
@@ -54,11 +54,11 @@ When steps 2-4 resolve and `description` is provided, the path is persisted.
 ## Snapshot Modes
 
 ```ts
-await ov.snapshot() // action mode (default)
-await ov.snapshot({ mode: 'extraction' })
-await ov.snapshot({ mode: 'clickable' })
-await ov.snapshot({ mode: 'scrollable' })
-await ov.snapshot({ mode: 'full' })
+await ov.snapshot(); // action mode (default)
+await ov.snapshot({ mode: "extraction" });
+await ov.snapshot({ mode: "clickable" });
+await ov.snapshot({ mode: "scrollable" });
+await ov.snapshot({ mode: "full" });
 ```
 
 ## Two Usage Patterns
@@ -68,16 +68,16 @@ await ov.snapshot({ mode: 'full' })
 Use `snapshot()` + `element` counters while exploring in real time, then persist
 stable descriptions for replay.
 
-### Run (script replay / LLM callbacks)
+### Run (script replay / built-in LLM)
 
-Provide `ai.resolve` and/or `ai.extract` callbacks for description-driven
-resolution/extraction.
+Oversteer uses built-in LLM resolve/extract by default. You can override the
+default model with top-level `model` or `OVERSTEER_MODEL`.
 
 ```ts
 const ov = new Oversteer({
-    name: 'run-mode',
-    ai: { model: 'gpt-5.1' },
-})
+  name: "run-mode",
+  model: "gpt-5-mini",
+});
 ```
 
 ## Docs

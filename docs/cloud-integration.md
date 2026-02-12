@@ -2,15 +2,14 @@
 
 The OSS SDK is local-first and does not include a cloud execution mode.
 
-To integrate hosted LLMs or remote services, configure callbacks under `ai`:
+Oversteer includes built-in LLM resolution/extraction and uses `gpt-5.1` by
+default. You can override the model with top-level `model` or
+`OVERSTEER_MODEL`:
 
 ```ts
 const ov = new Oversteer({
     name: 'my-scraper',
-    ai: {
-        resolve: async ({ html, description }) => ({ element: 5 }),
-        extract: async ({ html, schema }) => ({ items: [] }),
-    },
+    model: 'gpt-5.1',
 })
 ```
 

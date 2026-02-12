@@ -8,7 +8,6 @@ import {
     describe,
     expect,
     it,
-    vi,
 } from 'vitest'
 import type { BrowserContext, Page } from 'playwright'
 import { prepareSnapshot } from '../../src/html/pipeline.js'
@@ -90,25 +89,17 @@ describe('integration/data-extraction', () => {
         expect(data.itemName).toBe('Aurora Lamp')
     })
 
-    it('resolves CURRENT_URL from AI extraction data and replays from cache', async () => {
+    it('resolves CURRENT_URL from schema source and replays from cache', async () => {
         const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-int-data-'))
-        const extract = vi.fn(async () => ({
-            data: {
-                pageUrl: 'CURRENT_URL',
-            },
-        }))
 
         const ov = Oversteer.from(page, {
             name: 'integration-data-current-url',
             storage: { rootDir },
-            ai: {
-                extract,
-            },
         })
 
         const description = 'extract current page url'
         const schema = {
-            pageUrl: '',
+            pageUrl: { source: 'current_url' as const },
         }
 
         const first = await ov.extract<{ pageUrl: string }>({
@@ -117,11 +108,9 @@ describe('integration/data-extraction', () => {
         })
         const second = await ov.extract<{ pageUrl: string }>({
             description,
-            schema,
         })
 
         expect(first).toEqual({ pageUrl: page.url() })
         expect(second).toEqual({ pageUrl: page.url() })
-        expect(extract).toHaveBeenCalledTimes(1)
     })
 })

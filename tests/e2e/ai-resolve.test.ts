@@ -1,7 +1,15 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
+import {
+    afterAll,
+    afterEach,
+    beforeEach,
+    describe,
+    expect,
+    it,
+    vi,
+} from 'vitest'
 import type { BrowserContext, Page } from 'playwright'
 import { Oversteer } from '../../src/oversteer.js'
 import { closeTestBrowser, createTestPage } from '../helpers/browser.js'
@@ -32,7 +40,7 @@ describe('e2e/ai-resolve', () => {
 
             const ov = Oversteer.from(page, {
                 name: 'ai-e2e',
-                ai: { model: 'gpt-5-mini' },
+                model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 
@@ -90,7 +98,7 @@ describe('e2e/ai-resolve', () => {
             // First run: populate the cache
             const ov1 = Oversteer.from(page, {
                 name: 'ai-e2e-replay',
-                ai: { model: 'gpt-5-mini' },
+                model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 
@@ -117,17 +125,10 @@ describe('e2e/ai-resolve', () => {
             // Second run: reuse the same rootDir, descriptors should be cached
             const ov2 = Oversteer.from(page, {
                 name: 'ai-e2e-replay',
-                ai: { model: 'gpt-5-mini' },
+                model: 'gpt-5-mini',
                 storage: { rootDir },
             })
-
-            // Wrap the auto-wired resolve callback to spy on it
-            const originalResolve = ov2.getConfig().ai!.resolve!
-            let aiCallCount = 0
-            ov2.getConfig().ai!.resolve = async (args) => {
-                aiCallCount++
-                return originalResolve(args)
-            }
+            const snapshotSpy = vi.spyOn(ov2, 'snapshot')
 
             // Fill form fields again
             await ov2.input({
@@ -143,8 +144,8 @@ describe('e2e/ai-resolve', () => {
                 description: 'The submit profile button',
             })
 
-            // AI resolve should NOT have been invoked (cached path taken)
-            expect(aiCallCount).toBe(0)
+            // AI resolve should not be needed when replaying from cached paths.
+            expect(snapshotSpy).toHaveBeenCalledTimes(0)
             // Already existed, no re-persist
             expect(secondResult.persisted).toBe(false)
 
@@ -167,7 +168,7 @@ describe('e2e/ai-resolve', () => {
 
             const ov = Oversteer.from(page, {
                 name: 'ai-e2e-extract',
-                ai: { model: 'gpt-5-mini' },
+                model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 

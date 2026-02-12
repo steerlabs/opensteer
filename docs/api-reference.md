@@ -70,37 +70,17 @@ interface OversteerConfig {
     storage?: {
         rootDir?: string
     }
-    ai?: {
-        model?: string
-        resolve?: AiResolveCallback
-        extract?: AiExtractCallback
-        temperature?: number
-        maxTokens?: number | null
-    }
+    model?: string
     debug?: boolean
 }
 ```
 
-## AI callbacks
+`model` defaults to `gpt-5.1`. You can also set `OVERSTEER_MODEL`.
 
-### `ai.resolve`
+## AI helpers
 
-Input: `{ html, action, description, url }`
+For advanced integration, Oversteer still exports:
 
-Return one of:
-
-- `{ element: number }`
-- `{ selector: string }`
-- `{ path: ElementPath }`
-- `number` (counter)
-- `string` (counter string or selector)
-
-### `ai.extract`
-
-Input: `{ html, schema, description?, prompt?, url }`
-
-Return one of:
-
-- extracted data object/array/value
-- `ExtractionPlan`
-- JSON string containing either of the above
+- `createResolveCallback(model)`
+- `createExtractCallback(model)`
+- `getModelProvider(model)`

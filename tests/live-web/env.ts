@@ -1,6 +1,6 @@
 import type { JudgeMode, LiveWebRunConfig } from './types.js'
 
-const DEFAULT_MODEL = 'gemini-2.0-flash'
+const DEFAULT_MODEL = 'gpt-5.1'
 const DEFAULT_JUDGE_FAIL_CONFIDENCE = 0.8
 
 function parseBoolEnv(name: string, fallback: boolean): boolean {
@@ -101,7 +101,7 @@ export function loadLiveWebRunConfig(): LiveWebRunConfig {
 
     const model = (
         process.env.LIVE_WEB_MODEL ||
-        process.env.OVERSTEER_AI_MODEL ||
+        process.env.OVERSTEER_MODEL ||
         DEFAULT_MODEL
     ).trim()
 

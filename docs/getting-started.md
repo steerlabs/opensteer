@@ -36,17 +36,16 @@ await ov.click({ description: 'login-btn' })
 await ov.input({ description: 'email', text: 'user@example.com' })
 ```
 
-## 5) Optional AI callbacks
+## 5) Optional model override
 
 ```ts
 const ov = new Oversteer({
     name: 'my-scraper',
-    ai: {
-        resolve: async ({ description }) => ({ element: 12 }),
-        extract: async ({ html, schema }) => ({ items: [] }),
-    },
+    model: 'gpt-5.1',
 })
 ```
+
+Or set `OVERSTEER_MODEL=gpt-5.1` in the environment.
 
 ## 6) Close
 

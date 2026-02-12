@@ -40,7 +40,7 @@ describe('e2e/iframe-actions', () => {
 
             const ov = Oversteer.from(page, {
                 name: 'iframe-named',
-                ai: { model: 'gpt-5-mini' },
+                model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 
@@ -80,7 +80,7 @@ describe('e2e/iframe-actions', () => {
 
             const ov = Oversteer.from(page, {
                 name: 'iframe-anon',
-                ai: { model: 'gpt-5-mini' },
+                model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 
@@ -121,7 +121,7 @@ describe('e2e/iframe-actions', () => {
 
             const ov = Oversteer.from(page, {
                 name: 'iframe-extract',
-                ai: { model: 'gpt-5-mini' },
+                model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 

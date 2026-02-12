@@ -4,7 +4,7 @@ import 'dotenv/config'
 async function run() {
     const ov = new Oversteer({
         name: 'contact-form',
-        ai: { model: 'gpt-5-mini' },
+        model: 'gpt-5-mini',
     })
     await ov.launch({ headless: false })
 

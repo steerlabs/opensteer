@@ -39,7 +39,7 @@ describe('e2e/script-actions', () => {
 
             const ov = Oversteer.from(page, {
                 name: 'script-form',
-                ai: { model: 'gpt-5-mini' },
+                model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 
@@ -117,7 +117,7 @@ describe('e2e/script-actions', () => {
 
             const ov = Oversteer.from(page, {
                 name: 'script-nav',
-                ai: { model: 'gpt-5-mini' },
+                model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 
@@ -181,7 +181,7 @@ describe('e2e/script-actions', () => {
 
             const ov = Oversteer.from(page, {
                 name: 'script-dynamic',
-                ai: { model: 'gpt-5-mini' },
+                model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 

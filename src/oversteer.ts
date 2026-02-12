@@ -5,6 +5,8 @@ import { resolveConfig, resolveNamespace } from './config.js'
 import { waitForVisualStability } from './navigation.js'
 import type {
     ActionResult,
+    AiExtractCallback,
+    AiResolveCallback,
     BaseActionOptions,
     BoundingBox,
     ClickOptions,
@@ -159,6 +161,8 @@ interface ParsedAiExtractResult {
 
 export class Oversteer {
     private readonly config: OversteerConfig
+    private readonly aiResolve: AiResolveCallback
+    private readonly aiExtract: AiExtractCallback
     private readonly namespace: string
     private readonly storage: LocalSelectorStorage
     private readonly pool: BrowserPool
@@ -171,48 +175,58 @@ export class Oversteer {
 
     constructor(config: OversteerConfig = {}) {
         const resolved = resolveConfig(config)
-
-        if (resolved.ai?.model) {
-            const modelStr = resolved.ai.model
-            const modelOpts = {
-                temperature: resolved.ai.temperature,
-                maxTokens: resolved.ai.maxTokens,
-            }
-
-            if (!resolved.ai.resolve) {
-                resolved.ai.resolve = (...args) =>
-                    import('./ai/resolver.js').then((m) =>
-                        m.createResolveCallback(modelStr, modelOpts)(...args)
-                    )
-            }
-
-            if (!resolved.ai.extract) {
-                resolved.ai.extract = ((
-                    ...args: [
-                        Parameters<NonNullable<typeof resolved.ai.extract>>[0],
-                    ]
-                ) =>
-                    import('./ai/extractor.js').then((m) =>
-                        m.createExtractCallback(
-                            modelStr,
-                            modelOpts
-                        )(
-                            ...(args as [
-                                Parameters<
-                                    NonNullable<typeof resolved.ai.extract>
-                                >[0],
-                            ])
-                        )
-                    )) as NonNullable<typeof resolved.ai.extract>
-            }
-        }
+        const model = resolved.model
 
         this.config = resolved
+        this.aiResolve = this.createLazyResolveCallback(model)
+        this.aiExtract = this.createLazyExtractCallback(model)
 
         const rootDir = resolved.storage?.rootDir || process.cwd()
         this.namespace = resolveNamespace(resolved, rootDir)
         this.storage = new LocalSelectorStorage(rootDir, this.namespace)
         this.pool = new BrowserPool(resolved.browser || {})
+    }
+
+    private createLazyResolveCallback(model: string): AiResolveCallback {
+        let resolverPromise: Promise<AiResolveCallback> | null = null
+
+        return async (...args: [Parameters<AiResolveCallback>[0]]) => {
+            try {
+                if (!resolverPromise) {
+                    resolverPromise = import('./ai/resolver.js').then((m) =>
+                        m.createResolveCallback(model)
+                    )
+                }
+
+                const resolver = await resolverPromise
+                return resolver(...args)
+            } catch (err) {
+                resolverPromise = null
+                throw err
+            }
+        }
+    }
+
+    private createLazyExtractCallback(model: string): AiExtractCallback {
+        let extractorPromise: Promise<AiExtractCallback> | null = null
+
+        const extract: AiExtractCallback = async (args) => {
+            try {
+                if (!extractorPromise) {
+                    extractorPromise = import('./ai/extractor.js').then((m) =>
+                        m.createExtractCallback(model)
+                    )
+                }
+
+                const extractor = await extractorPromise
+                return extractor(args)
+            } catch (err) {
+                extractorPromise = null
+                throw err
+            }
+        }
+
+        return extract
     }
 
     get page(): Page {
@@ -991,7 +1005,7 @@ export class Oversteer {
 
         if (!fields.length) {
             throw new Error(
-                'Extraction did not resolve any field targets. Provide schema hints or configure ai.extract.'
+                'Extraction did not resolve any field targets. Provide schema hints or a clearer description.'
             )
         }
 
@@ -1215,7 +1229,7 @@ export class Oversteer {
             }
         }
 
-        if (this.config.ai?.resolve && options.description) {
+        if (options.description) {
             const resolved = await this.resolvePathWithAi(
                 action,
                 options.description
@@ -1248,7 +1262,7 @@ export class Oversteer {
         }
 
         throw new Error(
-            `Could not resolve path for ${action}. Provide element, selector, or description with ai.resolve configured.`
+            `Could not resolve path for ${action}. Provide element, selector, or description.`
         )
     }
 
@@ -1256,12 +1270,9 @@ export class Oversteer {
         action: string,
         description: string
     ): Promise<{ path?: ElementPath; counter?: number } | null> {
-        const resolver = this.config.ai?.resolve
-        if (!resolver) return null
-
         const html = await this.snapshot({ mode: 'action' })
 
-        const response = await resolver({
+        const response = await this.aiResolve({
             html,
             action,
             description,
@@ -1626,20 +1637,13 @@ export class Oversteer {
     private async parseAiExtractPlan(
         options: ExtractOptions
     ): Promise<ParsedAiExtractResult> {
-        const extractor = this.config.ai?.extract
-        if (!extractor) {
-            throw new Error(
-                'No ai.extract callback configured. Provide schema path hints or configure ai.extract.'
-            )
-        }
-
         const html = await this.snapshot({
             mode: 'extraction',
             withCounters: true,
             ...(options.snapshot || {}),
         })
 
-        const response = await extractor({
+        const response = await this.aiExtract({
             html,
             schema: options.schema,
             description: options.description,
@@ -3177,7 +3181,7 @@ function parseAiExtractResponse(response: unknown): ExtractionPlan {
         try {
             return JSON.parse(trimmed) as ExtractionPlan
         } catch {
-            throw new Error('ai.extract returned a non-JSON string.')
+            throw new Error('LLM extraction returned a non-JSON string.')
         }
     }
 

@@ -52,14 +52,6 @@ export type AiExtractCallback = <TSchema = ExtractSchema, TData = unknown>(
     args: AiExtractArgs<TSchema>
 ) => Promise<AiExtractResult<TData>>
 
-export interface AiConfig {
-    model?: string
-    resolve?: AiResolveCallback
-    extract?: AiExtractCallback
-    temperature?: number
-    maxTokens?: number | null
-}
-
 export interface GotoOptions {
     timeout?: number
     waitUntil?: 'commit' | 'domcontentloaded' | 'load' | 'networkidle'
@@ -87,7 +79,7 @@ export interface OversteerConfig {
     name?: string
     browser?: OversteerBrowserConfig
     storage?: OversteerStorageConfig
-    ai?: AiConfig
+    model?: string
     debug?: boolean
 }
 

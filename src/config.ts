@@ -3,11 +3,13 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import type { OversteerConfig } from './types.js'
 
+export interface ResolvedOversteerConfig extends OversteerConfig {
+    model: string
+}
+
 const DEFAULT_CONFIG: Required<
-    Pick<OversteerConfig, 'browser' | 'storage' | 'debug'>
-> & {
-    ai: NonNullable<OversteerConfig['ai']>
-} = {
+    Pick<OversteerConfig, 'browser' | 'storage' | 'debug' | 'model'>
+> = {
     browser: {
         headless: false,
         executablePath: undefined,
@@ -16,8 +18,24 @@ const DEFAULT_CONFIG: Required<
     storage: {
         rootDir: process.cwd(),
     },
-    ai: {},
+    model: 'gpt-5.1',
     debug: false,
+}
+
+function hasLegacyAiConfig(config: unknown): boolean {
+    if (!config || typeof config !== 'object') return false
+    return Object.prototype.hasOwnProperty.call(
+        config as Record<string, unknown>,
+        'ai'
+    )
+}
+
+function assertNoLegacyAiConfig(source: string, config: unknown): void {
+    if (hasLegacyAiConfig(config)) {
+        throw new Error(
+            `Legacy "ai" config is no longer supported in ${source}. Use top-level "model" instead.`
+        )
+    }
 }
 
 export function loadConfigFile(rootDir: string): Partial<OversteerConfig> {
@@ -77,12 +95,23 @@ function parseNumber(value: string | undefined): number | undefined {
     return parsed
 }
 
-export function resolveConfig(input: OversteerConfig = {}): OversteerConfig {
+export function resolveConfig(
+    input: OversteerConfig = {}
+): ResolvedOversteerConfig {
+    if (process.env.OVERSTEER_AI_MODEL) {
+        throw new Error(
+            'OVERSTEER_AI_MODEL is no longer supported. Use OVERSTEER_MODEL instead.'
+        )
+    }
+
+    assertNoLegacyAiConfig('Oversteer constructor config', input as unknown)
+
     const rootDir =
         input.storage?.rootDir ??
         DEFAULT_CONFIG.storage.rootDir ??
         process.cwd()
     const fileConfig = loadConfigFile(rootDir)
+    assertNoLegacyAiConfig('.oversteer/config.json', fileConfig as unknown)
 
     const envConfig: Partial<OversteerConfig> = {
         browser: {
@@ -90,20 +119,13 @@ export function resolveConfig(input: OversteerConfig = {}): OversteerConfig {
             executablePath: process.env.OVERSTEER_BROWSER_PATH || undefined,
             slowMo: parseNumber(process.env.OVERSTEER_SLOW_MO),
         },
+        model: process.env.OVERSTEER_MODEL || undefined,
         debug: parseBool(process.env.OVERSTEER_DEBUG),
     }
 
     const mergedWithFile = mergeDeep(DEFAULT_CONFIG, fileConfig)
     const mergedWithEnv = mergeDeep(mergedWithFile, envConfig)
-    const mergedWithInput = mergeDeep(mergedWithEnv, input)
-
-    if (process.env.OVERSTEER_AI_MODEL) {
-        mergedWithInput.ai = mergedWithInput.ai || {}
-        mergedWithInput.ai.model =
-            mergedWithInput.ai.model || process.env.OVERSTEER_AI_MODEL
-    }
-
-    return mergedWithInput
+    return mergeDeep(mergedWithEnv, input) as ResolvedOversteerConfig
 }
 
 export function resolveNamespace(

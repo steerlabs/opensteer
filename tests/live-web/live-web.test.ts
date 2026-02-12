@@ -70,9 +70,7 @@ describeLiveWeb('live-web/validation', () => {
                 try {
                     ov = Oversteer.from(page, {
                         name: `live-web-${scenario.id}`,
-                        ai: {
-                            model: liveWebConfig.model,
-                        },
+                        model: liveWebConfig.model,
                         storage: {
                             rootDir,
                         },
