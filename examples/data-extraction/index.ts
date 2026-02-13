@@ -10,7 +10,9 @@ async function run() {
   await ov.launch({ headless: false });
 
   try {
-    await ov.goto("https://kbdfans.com/search?q=linear+switches&type=product");
+    await ov.goto(
+      "https://kbdfans.com/search?type=product%2Cquery&options%5Bprefix%5D=last&q=tactile+switches",
+    );
 
     console.log("Starting extraction...");
     const data = await ov.extract({

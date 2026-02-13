@@ -52,6 +52,11 @@ function buildClauseSelector(node: PathNode, clause: MatchClause): string {
     if (!value) return ''
 
     const op = clause.op || 'exact'
+    if (key === 'class' && op === 'exact') {
+        const classClauses = buildClassTokenSelectors(value)
+        if (classClauses) return classClauses
+    }
+
     if (op === 'startsWith') {
         return `[${key}^="${escapeCssAttrValue(value)}"]`
     }
@@ -60,4 +65,29 @@ function buildClauseSelector(node: PathNode, clause: MatchClause): string {
     }
 
     return `[${key}="${escapeCssAttrValue(value)}"]`
+}
+
+function buildClassTokenSelectors(value: string): string {
+    const tokens = tokenizeClassValue(value)
+    if (!tokens.length) {
+        return `[class="${escapeCssAttrValue(value)}"]`
+    }
+
+    return tokens
+        .map((token) => `[class~="${escapeCssAttrValue(token)}"]`)
+        .join('')
+}
+
+function tokenizeClassValue(value: string): string[] {
+    const seen = new Set<string>()
+    const out: string[] = []
+
+    for (const token of String(value || '').split(/\s+/)) {
+        const normalized = token.trim()
+        if (!normalized || seen.has(normalized)) continue
+        seen.add(normalized)
+        out.push(normalized)
+    }
+
+    return out
 }

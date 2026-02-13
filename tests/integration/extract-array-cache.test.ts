@@ -123,8 +123,10 @@ describe('integration/extract-array-cache', () => {
                 root?: unknown
                 products?: {
                     $array?: {
-                        itemParentPath?: unknown
-                        item?: Record<string, unknown>
+                        variants?: Array<{
+                            itemParentPath?: unknown
+                            item?: Record<string, unknown>
+                        }>
                     }
                 }
             }
@@ -134,10 +136,12 @@ describe('integration/extract-array-cache', () => {
         expect(stored.path?.root).toBeUndefined()
 
         const productsNode = stored.path?.products?.$array
-        expect(productsNode?.itemParentPath).toBeTruthy()
-        const fieldKeys = Object.keys(productsNode?.item || {}).sort()
+        expect(productsNode?.variants?.length).toBe(1)
+        const firstVariant = productsNode?.variants?.[0]
+        expect(firstVariant?.itemParentPath).toBeTruthy()
+        const fieldKeys = Object.keys(firstVariant?.item || {}).sort()
         expect(fieldKeys).toEqual(['pageUrl', 'price', 'title'])
-        expect(productsNode?.item?.pageUrl).toEqual({ $source: 'current_url' })
+        expect(firstVariant?.item?.pageUrl).toEqual({ $source: 'current_url' })
 
         await page.evaluate(() => {
             const list = document.querySelector('#products')

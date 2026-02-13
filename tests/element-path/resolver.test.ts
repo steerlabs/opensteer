@@ -247,6 +247,14 @@ describe('element-path/resolver', () => {
             brokenPath.context[brokenPath.context.length - 1]?.host.at(-1)
         if (!hostTail) throw new Error('Expected shadow context host node.')
         hostTail.attrs.id = 'missing-shadow-host'
+        hostTail.match = [
+            {
+                kind: 'attr',
+                key: 'id',
+                op: 'exact',
+                value: 'missing-shadow-host',
+            },
+        ]
 
         await expect(
             resolveElementPath(page, brokenPath)

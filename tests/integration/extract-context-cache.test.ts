@@ -421,7 +421,7 @@ function getArrayItemParentContextKind(
     const node = readPathNode(stored, key)
     if (!node) return undefined
     const candidate = node as StoredArrayPathNode
-    return candidate.$array?.itemParentPath?.context?.[0]?.kind
+    return candidate.$array?.variants?.[0]?.itemParentPath?.context?.[0]?.kind
 }
 
 function readPathNode(stored: StoredSelectorFile, key: string): unknown {
@@ -454,8 +454,10 @@ interface StoredValuePathNode {
 
 interface StoredArrayPathNode {
     $array?: {
-        itemParentPath?: {
-            context?: Array<{ kind?: string }>
-        }
+        variants?: Array<{
+            itemParentPath?: {
+                context?: Array<{ kind?: string }>
+            }
+        }>
     }
 }

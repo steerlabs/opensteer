@@ -234,6 +234,18 @@ export async function buildElementPathFromHandle(
                 })
             },
 
+            tokenizeClassValue(value: string): string[] {
+                const seen = new Set<string>()
+                const out: string[] = []
+                for (const token of String(value || '').split(/\s+/)) {
+                    const normalized = token.trim()
+                    if (!normalized || seen.has(normalized)) continue
+                    seen.add(normalized)
+                    out.push(normalized)
+                }
+                return out
+            },
+
             clauseKey(clause: EvalMatchClause): string {
                 return JSON.stringify(clause)
             },
@@ -291,6 +303,18 @@ export async function buildElementPathFromHandle(
                         .replace(/\\/g, '\\\\')
                         .replace(/"/g, '\\"')
                     const op = clause.op || 'exact'
+                    if (key === 'class' && op === 'exact') {
+                        const tokens = helpers.tokenizeClassValue(value)
+                        if (tokens.length) {
+                            for (const token of tokens) {
+                                const escapedToken = String(token)
+                                    .replace(/\\/g, '\\\\')
+                                    .replace(/"/g, '\\"')
+                                selector += `[class~="${escapedToken}"]`
+                            }
+                            continue
+                        }
+                    }
                     if (op === 'startsWith')
                         selector += `[${key}^="${escaped}"]`
                     else if (op === 'contains')
@@ -441,22 +465,8 @@ export async function buildElementPathFromHandle(
                 }))
 
                 const pools = nodes.map((node) => {
-                    const all = helpers.buildClausePool(node)
-                    const initial: EvalMatchClause[] = []
-                    const remaining: EvalMatchClause[] = []
-                    for (const clause of all) {
-                        if (
-                            clause &&
-                            clause.kind === 'attr' &&
-                            (clause.key === 'id' || clause.key === 'class')
-                        ) {
-                            initial.push(clause)
-                            continue
-                        }
-                        remaining.push(clause)
-                    }
-                    node.match = initial
-                    return remaining
+                    node.match = []
+                    return [...helpers.buildClausePool(node)]
                 })
 
                 const matchesNode = (

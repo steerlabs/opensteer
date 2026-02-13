@@ -16,6 +16,16 @@ export interface ArraySelector {
     fields: FieldSelector[]
 }
 
+export interface ArrayRowMetadata {
+    key: string
+    order: number
+}
+
+export interface ArrayExtractedRow {
+    values: Record<string, unknown>
+    meta: ArrayRowMetadata
+}
+
 async function readFieldValueFromHandle(
     element: ElementHandle<Element>,
     options: { attribute?: string }
@@ -68,25 +78,31 @@ export async function extractArrayWithPaths(
     page: Page,
     array: ArraySelector
 ): Promise<Array<Record<string, unknown>>> {
+    const rows = await extractArrayRowsWithPaths(page, array)
+    return rows.map((row) => row.values)
+}
+
+export async function extractArrayRowsWithPaths(
+    page: Page,
+    array: ArraySelector
+): Promise<Array<ArrayExtractedRow>> {
     const itemParentPath = sanitizeElementPath(array.itemParentPath)
     const fieldPlans = array.fields.map((field) => {
         const normalized = sanitizeElementPath(field.path)
         return {
             key: field.key,
             attribute: field.attribute,
-            candidates:
-                normalized.nodes.length > 0
-                    ? buildPathCandidates(normalized.nodes)
-                    : [],
+            candidates: buildArrayFieldPathCandidates(normalized),
         }
     })
 
     const itemHandles = await queryAllByElementPath(page, itemParentPath)
     if (!itemHandles.length) return []
 
-    const result: Array<Record<string, unknown>> = []
+    const result: Array<ArrayExtractedRow> = []
     for (const item of itemHandles) {
         try {
+            const meta = await readArrayRowMetadata(item)
             const row: Record<string, unknown> = {}
 
             for (const field of fieldPlans) {
@@ -118,7 +134,7 @@ export async function extractArrayWithPaths(
                 }
             }
 
-            result.push(row)
+            result.push({ values: row, meta })
         } finally {
             await item.dispose()
         }
@@ -282,6 +298,62 @@ async function queryBySelectorInShadowRoot(
     return elements
 }
 
+async function readArrayRowMetadata(
+    item: ElementHandle<Element>
+): Promise<ArrayRowMetadata> {
+    return item.evaluate(
+        (
+            element,
+            payload
+        ): {
+            key: string
+            order: number
+        } => {
+            const globals = window as unknown as Record<string, unknown>
+
+            let next = Number(globals[payload.nextCounterKey] || 1)
+            if (!Number.isFinite(next) || next <= 0) {
+                next = 1
+            }
+
+            const existing = (
+                element as unknown as Record<string, unknown>
+            )[payload.rowKeyProperty]
+            let key =
+                typeof existing === 'string' && existing.trim().length > 0
+                    ? existing
+                    : ''
+
+            if (!key) {
+                key = `ov-row-${next}`
+                next += 1
+                Object.defineProperty(element, payload.rowKeyProperty, {
+                    value: key,
+                    writable: true,
+                    configurable: true,
+                })
+                globals[payload.nextCounterKey] = next
+            }
+
+            const root = element.getRootNode()
+            const orderedElements =
+                root instanceof ShadowRoot
+                    ? Array.from(root.querySelectorAll('*'))
+                    : Array.from(element.ownerDocument.querySelectorAll('*'))
+            const order = orderedElements.indexOf(element)
+
+            return {
+                key,
+                order: order >= 0 ? order : Number.MAX_SAFE_INTEGER,
+            }
+        },
+        {
+            rowKeyProperty: '__opensteerArrayRowKey',
+            nextCounterKey: '__opensteerArrayRowCounter',
+        }
+    )
+}
+
 async function resolveFirstWithinElement(
     root: ElementHandle<Element>,
     selectors: string[]
@@ -327,6 +399,32 @@ async function queryFirstByCandidates(
     }
 
     return fallback
+}
+
+function buildArrayFieldPathCandidates(path: ElementPath): string[] {
+    const strict = path.nodes.length ? buildPathCandidates(path.nodes) : []
+    const relaxedNodes = stripPositionClauses(path.nodes)
+    const relaxed = relaxedNodes.length ? buildPathCandidates(relaxedNodes) : []
+
+    return dedupeSelectors([...strict, ...relaxed])
+}
+
+function stripPositionClauses(nodes: ElementPath['nodes']): ElementPath['nodes'] {
+    return (nodes || []).map((node) => ({
+        ...node,
+        match: (node.match || []).filter((clause) => clause.kind !== 'position'),
+    }))
+}
+
+function dedupeSelectors(selectors: string[]): string[] {
+    const out: string[] = []
+    const seen = new Set<string>()
+    for (const selector of selectors) {
+        if (!selector || seen.has(selector)) continue
+        seen.add(selector)
+        out.push(selector)
+    }
+    return out
 }
 
 async function queryAllByCandidates(

@@ -38,19 +38,14 @@ import {
     cloneElementPath,
     sanitizeElementPath,
 } from './element-path/build.js'
-import type {
-    ElementPath,
-    MatchClause,
-    PathNode,
-} from './element-path/types.js'
+import type { ElementPath } from './element-path/types.js'
 import { performClick } from './actions/click.js'
 import { performHover } from './actions/hover.js'
 import { performInput } from './actions/input.js'
 import { performScroll } from './actions/scroll.js'
 import { performSelect } from './actions/select.js'
 import {
-    countArrayItemsWithPath,
-    extractArrayWithPaths,
+    extractArrayRowsWithPaths,
     extractWithPaths,
     type FieldSelector,
 } from './actions/extract.js'
@@ -78,39 +73,22 @@ import {
     resolveCountersBatch,
     type CounterRequest,
 } from './html/counter-runtime.js'
-
-interface PersistedExtractField {
-    elementPath: ElementPath
-    attribute?: string
-}
-
-interface PersistedExtractSourceNode {
-    $source: 'current_url'
-}
-
-interface PersistedExtractArrayNode {
-    $array: {
-        itemParentPath: ElementPath
-        item: PersistedExtractNode
-    }
-}
-
-interface PersistedExtractValueNode {
-    $path: ElementPath
-    attribute?: string
-}
-
-interface PersistedExtractObjectNode {
-    [key: string]: PersistedExtractNode
-}
-
-type PersistedExtractNode =
-    | PersistedExtractValueNode
-    | PersistedExtractSourceNode
-    | PersistedExtractArrayNode
-    | PersistedExtractObjectNode
-
-type PersistedExtractPayload = PersistedExtractObjectNode
+import {
+    buildPersistedExtractPayload,
+    collectArrayItemFieldDescriptors,
+    isPersistablePathField,
+    isPersistedArrayNode,
+    isPersistedSourceNode,
+    isPersistedValueNode,
+    type ArrayItemFieldDescriptor,
+    type ArrayItemPathFieldDescriptor,
+    type ArrayItemSourceFieldDescriptor,
+    type PersistableExtractField,
+    type PersistedExtractArrayNode,
+    type PersistedExtractNode,
+    type PersistedExtractObjectNode,
+    type PersistedExtractPayload,
+} from './extraction/array-consolidation.js'
 
 interface PathResolutionResult {
     path: ElementPath | null
@@ -141,22 +119,16 @@ type ExtractFieldTarget =
     | CounterExtractFieldTarget
     | CurrentUrlExtractFieldTarget
 
-interface PersistablePathField {
-    key: string
-    path: ElementPath
-    attribute?: string
-}
-
-interface PersistableSourceField {
-    key: string
-    source: 'current_url'
-}
-
-type PersistableExtractField = PersistablePathField | PersistableSourceField
-
 interface ParsedAiExtractResult {
     fields: ExtractFieldTarget[]
     data?: unknown
+}
+
+interface MergedArrayVariantRow {
+    identity: string
+    order: number
+    coverage: number
+    value: unknown
 }
 
 export class Opensteer {
@@ -1342,13 +1314,20 @@ export class Opensteer {
         element: number
     ): Promise<ElementPath | null> {
         const indexedPath = await this.readPathFromCounterIndex(element)
-        if (indexedPath) return indexedPath
-
-        const handle = await this.resolveCounterHandle(element)
+        let handle: ElementHandle | null = null
         try {
-            const path = await buildElementPathFromHandle(handle)
-            if (!path) return null
-            return this.normalizePath(path)
+            handle = await this.resolveCounterHandle(element)
+        } catch (err) {
+            if (indexedPath) return indexedPath
+            throw err
+        }
+
+        try {
+            const builtPath = await buildElementPathFromHandle(handle)
+            if (builtPath) {
+                return this.withIndexedIframeContext(builtPath, indexedPath)
+            }
+            return indexedPath
         } finally {
             await handle.dispose()
         }
@@ -1365,21 +1344,46 @@ export class Opensteer {
         counter: number
     ): Promise<ElementPath> {
         const indexedPath = await this.readPathFromCounterIndex(counter)
+        const builtPath = await buildElementPathFromHandle(handle)
+        if (builtPath) {
+            const normalized = this.withIndexedIframeContext(
+                builtPath,
+                indexedPath
+            )
+            if (normalized.nodes.length) return normalized
+        }
         if (indexedPath) return indexedPath
 
-        const path = await buildElementPathFromHandle(handle)
-        if (!path) {
-            throw new Error(
-                `Unable to build element path from counter ${counter} during ${action}.`
-            )
+        throw new Error(
+            `Unable to build element path from counter ${counter} during ${action}.`
+        )
+    }
+
+    private withIndexedIframeContext(
+        builtPath: ElementPath,
+        indexedPath: ElementPath | null
+    ): ElementPath {
+        const normalizedBuilt = this.normalizePath(builtPath)
+        if (!indexedPath) return normalizedBuilt
+
+        const iframePrefix = collectIframeContextPrefix(indexedPath)
+        if (!iframePrefix.length) return normalizedBuilt
+
+        const merged: ElementPath = {
+            context: [
+                ...cloneContextHops(iframePrefix),
+                ...cloneContextHops(normalizedBuilt.context),
+            ],
+            nodes: cloneElementPath(normalizedBuilt).nodes,
         }
-        const normalized = this.normalizePath(path)
-        if (!normalized.nodes.length) {
-            throw new Error(
-                `Unable to build element path from counter ${counter} during ${action}.`
-            )
-        }
-        return normalized
+
+        const normalized = this.normalizePath(merged)
+        if (normalized.nodes.length) return normalized
+
+        const fallback = this.normalizePath(indexedPath)
+        if (fallback.nodes.length) return fallback
+
+        return normalizedBuilt
     }
 
     private async readPathFromCounterIndex(
@@ -1548,90 +1552,106 @@ export class Opensteer {
                 continue
             }
 
-            const arrayNode = child.$array
-            if (isPersistedValueNode(arrayNode.item)) {
-                const rows = await extractArrayWithPaths(this.page, {
-                    itemParentPath: this.normalizePath(
-                        arrayNode.itemParentPath
-                    ),
-                    fields: [
-                        {
-                            key: '',
-                            path: this.normalizePath(arrayNode.item.$path),
-                            attribute: arrayNode.item.attribute,
-                        },
-                    ],
-                })
-                result[key] = rows.map((row) => row.value ?? null)
-                continue
-            }
-
-            if (isPersistedSourceNode(arrayNode.item)) {
-                const count = await countArrayItemsWithPath(
-                    this.page,
-                    this.normalizePath(arrayNode.itemParentPath)
-                )
-                result[key] = Array.from({ length: count }, () => pageUrl)
-                continue
-            }
-
-            if (isPersistedArrayNode(arrayNode.item)) {
-                throw new Error(
-                    `Nested array extraction is not supported for cached array field "${key}".`
-                )
-            }
-
-            const descriptors = collectArrayItemFieldDescriptors(arrayNode.item)
-            const itemFields = descriptors
-                .filter(
-                    (descriptor): descriptor is ArrayItemPathFieldDescriptor =>
-                        descriptor.kind === 'path'
-                )
-                .map((descriptor) => ({
-                    key: descriptor.path,
-                    path: this.normalizePath(descriptor.selector.elementPath),
-                    attribute: descriptor.selector.attribute,
-                }))
-            const currentUrlFields = descriptors
-                .filter(
-                    (
-                        descriptor
-                    ): descriptor is ArrayItemSourceFieldDescriptor =>
-                        descriptor.kind === 'source'
-                )
-                .map((descriptor) => descriptor.path)
-
-            const rows =
-                itemFields.length > 0
-                    ? await extractArrayWithPaths(this.page, {
-                          itemParentPath: this.normalizePath(
-                              arrayNode.itemParentPath
-                          ),
-                          fields: itemFields,
-                      })
-                    : Array.from(
-                          {
-                              length: await countArrayItemsWithPath(
-                                  this.page,
-                                  this.normalizePath(arrayNode.itemParentPath)
-                              ),
-                          },
-                          () => ({})
-                      )
-            result[key] = rows.map((row) => {
-                const flat = row as Record<string, unknown>
-                for (const fieldPath of currentUrlFields) {
-                    if (!fieldPath) {
-                        flat.value = pageUrl
-                        continue
-                    }
-                    flat[fieldPath] = pageUrl
-                }
-                return inflateExtractResult(flat)
-            })
+            result[key] = await this.extractPersistedArrayVariants(
+                child,
+                key,
+                pageUrl
+            )
         }
 
         return result
+    }
+
+    private async extractPersistedArrayVariants(
+        arrayNode: PersistedExtractArrayNode,
+        fieldKey: string,
+        pageUrl: string
+    ): Promise<unknown[]> {
+        const rowsByIdentity = new Map<string, MergedArrayVariantRow>()
+
+        for (const variant of arrayNode.$array.variants) {
+            const descriptors = collectArrayItemFieldDescriptors(variant.item)
+            const extracted = await this.extractPersistedArrayVariantRows(
+                variant,
+                descriptors,
+                fieldKey,
+                pageUrl
+            )
+
+            for (const row of extracted) {
+                const existing = rowsByIdentity.get(row.identity)
+                if (!existing || row.coverage > existing.coverage) {
+                    rowsByIdentity.set(row.identity, row)
+                }
+            }
+        }
+
+        return [...rowsByIdentity.values()]
+            .sort((left, right) => {
+                if (left.order !== right.order) {
+                    return left.order - right.order
+                }
+                return left.identity.localeCompare(right.identity)
+            })
+            .map((row) => row.value)
+    }
+
+    private async extractPersistedArrayVariantRows(
+        variant: PersistedExtractArrayNode['$array']['variants'][number],
+        descriptors: ArrayItemFieldDescriptor[],
+        fieldKey: string,
+        pageUrl: string
+    ): Promise<MergedArrayVariantRow[]> {
+        const pathFields = descriptors
+            .filter((descriptor): descriptor is ArrayItemPathFieldDescriptor => {
+                return descriptor.kind === 'path'
+            })
+            .map((descriptor) => ({
+                key: descriptor.path,
+                path: this.normalizePath(descriptor.selector.elementPath),
+                attribute: descriptor.selector.attribute,
+            }))
+
+        const currentUrlFields = descriptors
+            .filter(
+                (
+                    descriptor
+                ): descriptor is ArrayItemSourceFieldDescriptor =>
+                    descriptor.kind === 'source'
+            )
+            .map((descriptor) => descriptor.path)
+
+        const extractedRows = await extractArrayRowsWithPaths(this.page, {
+            itemParentPath: this.normalizePath(variant.itemParentPath),
+            fields: pathFields,
+        })
+
+        const isPrimitiveArrayItem = descriptors.every((descriptor) => {
+            return String(descriptor.path || '').trim() === ''
+        })
+
+        return extractedRows.map((row) => {
+            const flat = row.values as Record<string, unknown>
+
+            for (const fieldPath of currentUrlFields) {
+                if (!fieldPath) {
+                    flat.value = pageUrl
+                    continue
+                }
+                flat[fieldPath] = pageUrl
+            }
+
+            const value = isPrimitiveArrayItem
+                ? (flat.value ?? null)
+                : inflateExtractResult(flat)
+
+            return {
+                identity: row.meta.key,
+                order: row.meta.order,
+                coverage: computeArrayRowCoverage(value, flat),
+                value,
+            }
+        })
     }
 
     private async parseAiExtractPlan(
@@ -1976,6 +1996,26 @@ function formatActionFailureMessage(
     return `${action} action failed for ${label}: ${cause}`
 }
 
+function cloneContextHops(
+    context: ElementPath['context'] | undefined
+): ElementPath['context'] {
+    return JSON.parse(JSON.stringify(context || [])) as ElementPath['context']
+}
+
+function collectIframeContextPrefix(path: ElementPath): ElementPath['context'] {
+    const context = path.context || []
+    let lastIframeIndex = -1
+
+    for (let index = 0; index < context.length; index += 1) {
+        if (context[index]?.kind === 'iframe') {
+            lastIframeIndex = index
+        }
+    }
+
+    if (lastIframeIndex < 0) return []
+    return cloneContextHops(context.slice(0, lastIframeIndex + 1))
+}
+
 function normalizeSchemaValue(
     value: ExtractSchemaValue
 ): ExtractSchemaField | null {
@@ -2038,36 +2078,12 @@ function buildPathMap(fields: FieldSelector[]): Record<string, ElementPath> {
     return out
 }
 
-function isPersistablePathField(
-    field: PersistableExtractField
-): field is PersistablePathField {
-    return 'path' in field
-}
-
 function toPathFields(fields: PersistableExtractField[]): FieldSelector[] {
     return fields.filter(isPersistablePathField).map((field) => ({
         key: field.key,
         path: field.path,
         attribute: field.attribute,
     }))
-}
-
-interface IndexedArrayField {
-    source: PersistableExtractField
-    arrayPath: string
-    index: number
-    fieldPath: string
-}
-
-interface ConsolidatedArrayField {
-    path: string
-    node: PersistedExtractNode
-}
-
-interface ConsolidatedArrayDescriptor {
-    path: string
-    itemParentPath: ElementPath
-    fields: ConsolidatedArrayField[]
 }
 
 interface DataPathPropertyToken {
@@ -2081,108 +2097,6 @@ interface DataPathIndexToken {
 }
 
 type DataPathToken = DataPathPropertyToken | DataPathIndexToken
-
-interface ArrayItemPathFieldDescriptor {
-    kind: 'path'
-    path: string
-    selector: PersistedExtractField
-}
-
-interface ArrayItemSourceFieldDescriptor {
-    kind: 'source'
-    path: string
-    source: 'current_url'
-}
-
-type ArrayItemFieldDescriptor =
-    | ArrayItemPathFieldDescriptor
-    | ArrayItemSourceFieldDescriptor
-
-function isPersistedValueNode(
-    node: unknown
-): node is PersistedExtractValueNode {
-    if (!node || typeof node !== 'object' || Array.isArray(node)) return false
-    const record = node as Record<string, unknown>
-    return !!record.$path
-}
-
-function isPersistedSourceNode(
-    node: unknown
-): node is PersistedExtractSourceNode {
-    if (!node || typeof node !== 'object' || Array.isArray(node)) return false
-    const record = node as Record<string, unknown>
-    return record.$source === 'current_url'
-}
-
-function isPersistedArrayNode(
-    node: unknown
-): node is PersistedExtractArrayNode {
-    if (!node || typeof node !== 'object' || Array.isArray(node)) return false
-    const record = node as Record<string, unknown>
-    return !!record.$array
-}
-
-function isPersistedObjectNode(
-    node: unknown
-): node is PersistedExtractObjectNode {
-    return (
-        !!node &&
-        typeof node === 'object' &&
-        !Array.isArray(node) &&
-        !isPersistedValueNode(node) &&
-        !isPersistedSourceNode(node) &&
-        !isPersistedArrayNode(node)
-    )
-}
-
-function collectArrayItemFieldDescriptors(
-    node: PersistedExtractNode,
-    prefix = ''
-): ArrayItemFieldDescriptor[] {
-    if (isPersistedValueNode(node)) {
-        return [
-            {
-                kind: 'path',
-                path: prefix,
-                selector: {
-                    elementPath: cloneElementPath(node.$path),
-                    attribute: node.attribute,
-                },
-            },
-        ]
-    }
-
-    if (isPersistedSourceNode(node)) {
-        return [
-            {
-                kind: 'source',
-                path: prefix,
-                source: 'current_url',
-            },
-        ]
-    }
-
-    if (isPersistedArrayNode(node)) {
-        throw new Error(
-            'Nested array extraction descriptors are not supported in cached array item selectors.'
-        )
-    }
-
-    const out: ArrayItemFieldDescriptor[] = []
-    for (const [key, child] of Object.entries(node)) {
-        const nextPath = joinDataPath(prefix, key)
-        out.push(...collectArrayItemFieldDescriptors(child, nextPath))
-    }
-    return out
-}
-
-function joinDataPath(base: string, key: string): string {
-    const normalizedBase = String(base || '').trim()
-    const normalizedKey = String(key || '').trim()
-    if (!normalizedBase) return normalizedKey
-    if (!normalizedKey) return normalizedBase
-    return `${normalizedBase}.${normalizedKey}`
-}
 
 function inflateExtractResult(flat: Record<string, unknown>): unknown {
     let root: unknown = {}
@@ -2320,18 +2234,6 @@ function parseDataPath(path: string): DataPathToken[] | null {
     return tokens
 }
 
-function encodeDataPath(tokens: DataPathToken[]): string {
-    let out = ''
-    for (const token of tokens) {
-        if (token.kind === 'prop') {
-            out = out ? `${out}.${token.key}` : token.key
-            continue
-        }
-        out += `[${token.index}]`
-    }
-    return out
-}
-
 function normalizePersistedExtractPayload(
     raw: unknown
 ): PersistedExtractPayload {
@@ -2392,7 +2294,9 @@ function normalizePersistedExtractNode(
                 `Invalid persisted extraction source node at "${label}": unsupported "$source" value.`
             )
         }
-        return createSourceNode(source)
+        return {
+            $source: source,
+        }
     }
 
     if (record.$array) {
@@ -2408,32 +2312,64 @@ function normalizePersistedExtractNode(
 
         const arrayRecord = record.$array as Record<string, unknown>
         if (
-            !arrayRecord.itemParentPath ||
-            typeof arrayRecord.itemParentPath !== 'object'
+            arrayRecord.itemParentPath !== undefined ||
+            arrayRecord.item !== undefined
         ) {
             throw new Error(
-                `Invalid persisted extraction array node at "${label}": itemParentPath is required.`
-            )
-        }
-        if (
-            !arrayRecord.item ||
-            typeof arrayRecord.item !== 'object' ||
-            Array.isArray(arrayRecord.item)
-        ) {
-            throw new Error(
-                `Invalid persisted extraction array node at "${label}": item is required.`
+                `Legacy persisted extraction array format detected at "${label}". Clear cached selectors in .opensteer/selectors/<namespace> and rerun extraction.`
             )
         }
 
-        return {
-            $array: {
+        if (!Array.isArray(arrayRecord.variants) || !arrayRecord.variants.length) {
+            throw new Error(
+                `Invalid persisted extraction array node at "${label}": variants must be a non-empty array.`
+            )
+        }
+
+        const variants = arrayRecord.variants.map((variantRaw, index) => {
+            if (
+                !variantRaw ||
+                typeof variantRaw !== 'object' ||
+                Array.isArray(variantRaw)
+            ) {
+                throw new Error(
+                    `Invalid persisted extraction array variant at "${label}"[${index}]: expected an object.`
+                )
+            }
+
+            const variant = variantRaw as Record<string, unknown>
+            if (
+                !variant.itemParentPath ||
+                typeof variant.itemParentPath !== 'object'
+            ) {
+                throw new Error(
+                    `Invalid persisted extraction array variant at "${label}"[${index}]: itemParentPath is required.`
+                )
+            }
+            if (
+                !variant.item ||
+                typeof variant.item !== 'object' ||
+                Array.isArray(variant.item)
+            ) {
+                throw new Error(
+                    `Invalid persisted extraction array variant at "${label}"[${index}]: item is required.`
+                )
+            }
+
+            return {
                 itemParentPath: sanitizeElementPath(
-                    arrayRecord.itemParentPath as ElementPath
+                    variant.itemParentPath as ElementPath
                 ),
                 item: normalizePersistedExtractNode(
-                    arrayRecord.item,
-                    `${label}[]`
+                    variant.item,
+                    `${label}[${index}]`
                 ),
+            }
+        })
+
+        return {
+            $array: {
+                variants,
             },
         }
     }
@@ -2456,723 +2392,49 @@ function normalizePersistedExtractNode(
     return objectNode
 }
 
-function buildPersistedExtractPayload(
-    fields: PersistableExtractField[]
-): PersistedExtractPayload {
-    const normalizedFields: PersistableExtractField[] = fields.map((field) => {
-        const key = String(field.key || '').trim()
-        if (isPersistablePathField(field)) {
-            return {
-                key,
-                path: sanitizeElementPath(field.path),
-                attribute: field.attribute,
-            }
-        }
-        return {
-            key,
-            source: 'current_url',
-        }
-    })
-
-    const grouped = new Map<string, IndexedArrayField[]>()
-    for (const field of normalizedFields) {
-        const parsed = parseIndexedArrayFieldKey(field.key)
-        if (!parsed) continue
-
-        const list = grouped.get(parsed.arrayPath) || []
-        list.push({
-            source: field,
-            arrayPath: parsed.arrayPath,
-            index: parsed.index,
-            fieldPath: parsed.fieldPath,
-        })
-        grouped.set(parsed.arrayPath, list)
+function computeArrayRowCoverage(
+    value: unknown,
+    flat: Record<string, unknown>
+): number {
+    if (isPrimitiveLike(value)) {
+        return value == null ? 0 : 1
     }
 
-    const consumedFieldKeys = new Set<string>()
-    const arrays: ConsolidatedArrayDescriptor[] = []
-    for (const [arrayPath, entries] of grouped) {
-        const descriptor = buildPersistedArrayDescriptor(arrayPath, entries)
-        if (!descriptor) continue
-        arrays.push(descriptor)
-        for (const entry of entries) {
-            consumedFieldKeys.add(entry.source.key)
-        }
-    }
+    const flatCoverage = Object.values(flat).reduce<number>((sum, current) => {
+        return current == null ? sum : sum + 1
+    }, 0)
+    if (flatCoverage > 0) return flatCoverage
 
-    const root: PersistedExtractObjectNode = {}
-
-    for (const field of normalizedFields) {
-        if (!field.key || consumedFieldKeys.has(field.key)) continue
-        insertNodeAtPath(root, field.key, createNodeFromPersistableField(field))
-    }
-
-    for (const descriptor of arrays.sort((a, b) =>
-        a.path.localeCompare(b.path)
-    )) {
-        const item = buildArrayItemNode(descriptor.fields)
-        insertNodeAtPath(root, descriptor.path, {
-            $array: {
-                itemParentPath: cloneElementPath(descriptor.itemParentPath),
-                item,
-            },
-        })
-    }
-
-    return root
+    return countNonNullLeaves(value)
 }
 
-function createValueNode(
-    selector: PersistedExtractField
-): PersistedExtractValueNode {
-    return {
-        $path: cloneElementPath(selector.elementPath),
-        attribute: selector.attribute,
-    }
-}
+function countNonNullLeaves(value: unknown): number {
+    if (value == null) return 0
 
-function createSourceNode(source: 'current_url'): PersistedExtractSourceNode {
-    return {
-        $source: source,
-    }
-}
-
-function createNodeFromPersistableField(
-    field: PersistableExtractField
-): PersistedExtractNode {
-    if (!isPersistablePathField(field)) {
-        return createSourceNode('current_url')
-    }
-    return createValueNode({
-        elementPath: field.path,
-        attribute: field.attribute,
-    })
-}
-
-function buildArrayItemNode(
-    fields: ConsolidatedArrayField[]
-): PersistedExtractNode {
-    if (!fields.length) {
-        throw new Error(
-            'Unable to build persisted array item descriptor: no fields were consolidated.'
+    if (Array.isArray(value)) {
+        return value.reduce<number>(
+            (sum, current) => sum + countNonNullLeaves(current),
+            0
         )
     }
 
-    if (fields.length === 1 && String(fields[0]?.path || '').trim() === '') {
-        return clonePersistedExtractNode(fields[0]!.node)
-    }
-
-    const node: PersistedExtractObjectNode = {}
-
-    for (const field of fields) {
-        const path = String(field.path || '').trim()
-        if (!path) {
-            throw new Error(
-                'Unable to build persisted array item descriptor: mixed primitive and object field paths.'
-            )
-        }
-        insertNodeAtPath(node, path, clonePersistedExtractNode(field.node))
-    }
-
-    return node
-}
-
-function insertNodeAtPath(
-    root: PersistedExtractObjectNode,
-    path: string,
-    node: PersistedExtractNode
-): void {
-    const tokens = parseDataPath(path)
-    if (!tokens || !tokens.length) {
-        throw new Error(
-            `Invalid persisted extraction path "${path}": expected a non-empty object path.`
+    if (typeof value === 'object') {
+        return Object.values(value as Record<string, unknown>).reduce<number>(
+            (sum, current) => sum + countNonNullLeaves(current),
+            0
         )
     }
 
-    if (tokens.some((token) => token.kind === 'index')) {
-        throw new Error(
-            `Invalid persisted extraction path "${path}": nested array indices are not supported in cached descriptors.`
-        )
-    }
-
-    let current: PersistedExtractObjectNode = root
-    for (let i = 0; i < tokens.length; i++) {
-        const token = tokens[i]
-        if (token.kind !== 'prop') {
-            throw new Error(
-                `Invalid persisted extraction path "${path}": expected object segment.`
-            )
-        }
-
-        const isLast = i === tokens.length - 1
-        if (isLast) {
-            const existing = current[token.key]
-            if (existing) {
-                throw new Error(
-                    `Conflicting persisted extraction path "${path}" detected while building descriptor tree.`
-                )
-            }
-            current[token.key] = node
-            return
-        }
-
-        const next = current[token.key]
-        if (!next) {
-            const created: PersistedExtractObjectNode = {}
-            current[token.key] = created
-            current = created
-            continue
-        }
-
-        if (!isPersistedObjectNode(next)) {
-            throw new Error(
-                `Conflicting persisted extraction path "${path}" detected at "${token.key}".`
-            )
-        }
-
-        current = next
-    }
+    return 1
 }
 
-function parseIndexedArrayFieldKey(
-    key: string
-): { arrayPath: string; index: number; fieldPath: string } | null {
-    const tokens = parseDataPath(key)
-    if (!tokens || !tokens.length) return null
-
-    const firstArrayIndex = tokens.findIndex((token) => token.kind === 'index')
-    if (firstArrayIndex <= 0) return null
-
-    const indexToken = tokens[firstArrayIndex]
-    if (!indexToken || indexToken.kind !== 'index') return null
-
-    const arrayPathTokens = tokens.slice(0, firstArrayIndex)
-    const arrayPath = encodeDataPath(arrayPathTokens)
-    if (!arrayPath) return null
-
-    return {
-        arrayPath,
-        index: indexToken.index,
-        fieldPath: encodeDataPath(tokens.slice(firstArrayIndex + 1)),
-    }
-}
-
-function buildPersistedArrayDescriptor(
-    arrayPath: string,
-    entries: IndexedArrayField[]
-): ConsolidatedArrayDescriptor | null {
-    const fieldsByIndex = new Map<number, IndexedArrayField[]>()
-    for (const entry of entries) {
-        const list = fieldsByIndex.get(entry.index) || []
-        list.push(entry)
-        fieldsByIndex.set(entry.index, list)
-    }
-
-    if (!fieldsByIndex.size) return null
-
-    const itemRootsByIndex = new Map<number, ElementPath>()
-    for (const [index, indexEntries] of fieldsByIndex) {
-        const root = buildItemRootForArrayIndex(indexEntries)
-        if (!root) continue
-        itemRootsByIndex.set(index, root)
-    }
-    if (!itemRootsByIndex.size) return null
-
-    const mergedItemPath = mergeElementPathsByMajority([
-        ...itemRootsByIndex.values(),
-    ])
-    if (!mergedItemPath) return null
-
-    const keyStats = new Map<
-        string,
-        { indices: Set<number>; entries: IndexedArrayField[] }
-    >()
-    for (const entry of entries) {
-        if (!itemRootsByIndex.has(entry.index)) continue
-        const stat = keyStats.get(entry.fieldPath) || {
-            indices: new Set<number>(),
-            entries: [],
-        }
-        stat.indices.add(entry.index)
-        stat.entries.push(entry)
-        keyStats.set(entry.fieldPath, stat)
-    }
-
-    const threshold = majorityThreshold(itemRootsByIndex.size)
-    const mergedFields: ConsolidatedArrayField[] = []
-    for (const [fieldPath, stat] of keyStats) {
-        if (stat.indices.size < threshold) continue
-
-        const relativePaths: ElementPath[] = []
-        const attributes: Array<string | undefined> = []
-        const sources: Array<PersistableSourceField['source']> = []
-        for (const entry of stat.entries) {
-            if (isPersistablePathField(entry.source)) {
-                const root = itemRootsByIndex.get(entry.index)
-                if (!root) continue
-
-                const relativePath = toRelativeElementPath(
-                    entry.source.path,
-                    root
-                )
-                if (!relativePath) continue
-
-                relativePaths.push(relativePath)
-                attributes.push(entry.source.attribute)
-                continue
-            }
-
-            if (entry.source.source === 'current_url') {
-                sources.push('current_url')
-            }
-        }
-
-        if (relativePaths.length >= threshold) {
-            const mergedFieldPath = mergeElementPathsByMajority(relativePaths)
-            if (!mergedFieldPath) continue
-
-            mergedFields.push({
-                path: fieldPath,
-                node: createValueNode({
-                    elementPath: mergedFieldPath,
-                    attribute: pickModeString(
-                        attributes,
-                        majorityThreshold(relativePaths.length)
-                    ),
-                }),
-            })
-            continue
-        }
-
-        const dominantSource = pickModeString(sources, threshold)
-        if (dominantSource === 'current_url') {
-            mergedFields.push({
-                path: fieldPath,
-                node: createSourceNode('current_url'),
-            })
-        }
-    }
-
-    if (!mergedFields.length) return null
-    mergedFields.sort((a, b) => a.path.localeCompare(b.path))
-
-    return {
-        path: arrayPath,
-        itemParentPath: mergedItemPath,
-        fields: mergedFields,
-    }
-}
-
-function buildItemRootForArrayIndex(
-    entries: IndexedArrayField[]
-): ElementPath | null {
-    if (!entries.length) return null
-    const paths = entries
-        .map((entry) =>
-            isPersistablePathField(entry.source)
-                ? sanitizeElementPath(entry.source.path)
-                : null
-        )
-        .filter((path): path is ElementPath => !!path)
-    if (!paths.length) return null
-    const prefixLength = getCommonPathPrefixLength(paths)
-    if (prefixLength <= 0) return null
-
-    const base = paths[0]
-    if (!base) return null
-
-    return sanitizeElementPath({
-        context: clonePathContext(base.context),
-        nodes: clonePathNodes(base.nodes.slice(0, prefixLength)),
-    })
-}
-
-function getCommonPathPrefixLength(paths: ElementPath[]): number {
-    if (!paths.length) return 0
-    const nodeChains = paths.map((path) => path.nodes)
-    const minLength = Math.min(...nodeChains.map((nodes) => nodes.length))
-    if (!Number.isFinite(minLength) || minLength <= 0) return 0
-
-    for (let i = 0; i < minLength; i++) {
-        const first = nodeChains[0]?.[i]
-        if (!first) return i
-        for (let j = 1; j < nodeChains.length; j++) {
-            const candidate = nodeChains[j]?.[i]
-            if (!candidate || !arePathNodesEquivalent(first, candidate)) {
-                return i
-            }
-        }
-    }
-
-    return minLength
-}
-
-function arePathNodesEquivalent(a: PathNode, b: PathNode): boolean {
-    if (
-        String(a.tag || '*').toLowerCase() !==
-        String(b.tag || '*').toLowerCase()
-    ) {
-        return false
-    }
-
-    if (
-        Number(a.position?.nthChild || 0) !== Number(b.position?.nthChild || 0)
-    ) {
-        return false
-    }
-    if (
-        Number(a.position?.nthOfType || 0) !==
-        Number(b.position?.nthOfType || 0)
-    ) {
-        return false
-    }
-
-    const aId = String(a.attrs?.id || '')
-    const bId = String(b.attrs?.id || '')
-    if ((aId || bId) && aId !== bId) return false
-
-    const aClass = String(a.attrs?.class || '')
-    const bClass = String(b.attrs?.class || '')
-    if ((aClass || bClass) && aClass !== bClass) return false
-
-    return true
-}
-
-function toRelativeElementPath(
-    absolute: ElementPath,
-    root: ElementPath
-): ElementPath | null {
-    const normalizedAbsolute = sanitizeElementPath(absolute)
-    const normalizedRoot = sanitizeElementPath(root)
-
-    if (
-        stableStringify(normalizedAbsolute.context) !==
-        stableStringify(normalizedRoot.context)
-    ) {
-        return null
-    }
-
-    const absoluteNodes = normalizedAbsolute.nodes
-    const rootNodes = normalizedRoot.nodes
-    if (rootNodes.length > absoluteNodes.length) return null
-
-    for (let i = 0; i < rootNodes.length; i++) {
-        const absNode = absoluteNodes[i]
-        const rootNode = rootNodes[i]
-        if (!absNode || !rootNode) return null
-        if (!arePathNodesEquivalent(absNode, rootNode)) {
-            return null
-        }
-    }
-
-    return {
-        context: [],
-        nodes: clonePathNodes(absoluteNodes.slice(rootNodes.length)),
-    }
-}
-
-function mergeElementPathsByMajority(paths: ElementPath[]): ElementPath | null {
-    if (!paths.length) return null
-    const normalized = paths.map((path) => sanitizeElementPath(path))
-    const contextKey = pickModeString(
-        normalized.map((path) => stableStringify(path.context)),
-        1
+function isPrimitiveLike(value: unknown): boolean {
+    return (
+        value == null ||
+        typeof value === 'string' ||
+        typeof value === 'number' ||
+        typeof value === 'boolean'
     )
-    if (!contextKey) return null
-
-    const sameContext = normalized.filter(
-        (path) => stableStringify(path.context) === contextKey
-    )
-    if (!sameContext.length) return null
-
-    const targetLength =
-        pickModeNumber(
-            sameContext.map((path) => path.nodes.length),
-            1
-        ) ??
-        sameContext[0]?.nodes.length ??
-        0
-    const aligned = sameContext.filter(
-        (path) => path.nodes.length === targetLength
-    )
-    if (!aligned.length) return null
-
-    const threshold = majorityThreshold(aligned.length)
-    const nodes: PathNode[] = []
-    for (let i = 0; i < targetLength; i++) {
-        const nodesAtIndex = aligned
-            .map((path) => path.nodes[i])
-            .filter((node): node is PathNode => !!node)
-        if (!nodesAtIndex.length) return null
-        nodes.push(mergePathNodeByMajority(nodesAtIndex, threshold))
-    }
-
-    return sanitizeElementPath({
-        context: clonePathContext(sameContext[0]?.context || []),
-        nodes,
-    })
-}
-
-function mergePathNodeByMajority(
-    nodes: PathNode[],
-    threshold: number
-): PathNode {
-    const tag =
-        pickModeString(
-            nodes.map((node) => String(node.tag || '*').toLowerCase()),
-            threshold
-        ) || '*'
-    const attrs = mergeAttributesByMajority(
-        nodes.map((node) => node.attrs || {}),
-        threshold
-    )
-    const mergedPosition = mergePositionByMajority(
-        nodes.map((node) => node.position),
-        threshold
-    )
-    const match = mergeMatchByMajority(
-        nodes.map((node) => node.match || []),
-        attrs,
-        mergedPosition.position,
-        threshold,
-        {
-            hasNthChild: mergedPosition.hasNthChild,
-            hasNthOfType: mergedPosition.hasNthOfType,
-        }
-    )
-
-    return {
-        tag,
-        attrs,
-        position: mergedPosition.position,
-        match,
-    }
-}
-
-function mergeAttributesByMajority(
-    attrsList: Array<Record<string, string>>,
-    threshold: number
-): Record<string, string> {
-    const keys = new Set<string>()
-    for (const attrs of attrsList) {
-        for (const key of Object.keys(attrs || {})) keys.add(key)
-    }
-
-    const out: Record<string, string> = {}
-    for (const key of keys) {
-        const value = pickModeString(
-            attrsList.map((attrs) =>
-                attrs && typeof attrs[key] === 'string' ? attrs[key] : undefined
-            ),
-            threshold
-        )
-        if (!value) continue
-        out[key] = value
-    }
-    return out
-}
-
-function mergePositionByMajority(
-    positions: Array<PathNode['position'] | undefined>,
-    threshold: number
-): {
-    position: PathNode['position']
-    hasNthChild: boolean
-    hasNthOfType: boolean
-} {
-    const nthChild = pickModeNumber(
-        positions.map((position) => position?.nthChild),
-        threshold
-    )
-    const nthOfType = pickModeNumber(
-        positions.map((position) => position?.nthOfType),
-        threshold
-    )
-
-    return {
-        position: {
-            nthChild: nthChild ?? 1,
-            nthOfType: nthOfType ?? 1,
-        },
-        hasNthChild: nthChild != null,
-        hasNthOfType: nthOfType != null,
-    }
-}
-
-function mergeMatchByMajority(
-    matchLists: MatchClause[][],
-    attrs: Record<string, string>,
-    position: PathNode['position'],
-    threshold: number,
-    positionFlags: { hasNthChild: boolean; hasNthOfType: boolean } = {
-        hasNthChild: true,
-        hasNthOfType: true,
-    }
-): MatchClause[] {
-    const counts = new Map<string, number>()
-    for (const list of matchLists) {
-        const unique = new Set<string>()
-        for (const clause of list || []) {
-            if (!clause || typeof clause !== 'object') continue
-            unique.add(JSON.stringify(clause))
-        }
-        for (const key of unique) {
-            counts.set(key, (counts.get(key) || 0) + 1)
-        }
-    }
-
-    const merged: MatchClause[] = []
-    for (const [encoded, count] of counts) {
-        if (count < threshold) continue
-        let clause: MatchClause | null = null
-        try {
-            clause = JSON.parse(encoded) as MatchClause
-        } catch {
-            clause = null
-        }
-        if (!clause) continue
-
-        if (clause.kind === 'attr') {
-            const key = String(clause.key || '').trim()
-            if (!key) continue
-            if (clause.value === undefined && attrs[key] === undefined) continue
-            merged.push({
-                kind: 'attr',
-                key,
-                op:
-                    clause.op === 'startsWith' || clause.op === 'contains'
-                        ? clause.op
-                        : 'exact',
-                value: clause.value,
-            })
-            continue
-        }
-
-        if (clause.axis === 'nthOfType') {
-            if (!positionFlags.hasNthOfType) continue
-            merged.push({ kind: 'position', axis: 'nthOfType' })
-            continue
-        }
-
-        if (!positionFlags.hasNthChild) continue
-        merged.push({ kind: 'position', axis: 'nthChild' })
-    }
-
-    if (!merged.length) {
-        if (attrs.id) {
-            merged.push({ kind: 'attr', key: 'id', op: 'exact' })
-        }
-        if (attrs.class) {
-            merged.push({
-                kind: 'attr',
-                key: 'class',
-                op: 'exact',
-                value: attrs.class,
-            })
-        }
-    }
-
-    merged.sort(compareMatchClauses)
-    return dedupeMatchClauses(merged)
-}
-
-function compareMatchClauses(a: MatchClause, b: MatchClause): number {
-    if (a.kind !== b.kind) {
-        return a.kind === 'attr' ? -1 : 1
-    }
-
-    if (a.kind === 'position' && b.kind === 'position') {
-        if (a.axis === b.axis) return 0
-        return a.axis === 'nthOfType' ? -1 : 1
-    }
-
-    if (a.kind === 'attr' && b.kind === 'attr') {
-        const rank = (key: string): number => {
-            if (key === 'id') return 0
-            if (key === 'class') return 1
-            return 2
-        }
-        const ra = rank(a.key)
-        const rb = rank(b.key)
-        if (ra !== rb) return ra - rb
-        return a.key.localeCompare(b.key)
-    }
-
-    return 0
-}
-
-function dedupeMatchClauses(clauses: MatchClause[]): MatchClause[] {
-    const seen = new Set<string>()
-    const out: MatchClause[] = []
-    for (const clause of clauses) {
-        const key = JSON.stringify(clause)
-        if (seen.has(key)) continue
-        seen.add(key)
-        out.push(clause)
-    }
-    return out
-}
-
-function majorityThreshold(count: number): number {
-    return Math.floor(count / 2) + 1
-}
-
-function pickModeString(
-    values: Array<string | undefined>,
-    minCount: number
-): string | undefined {
-    const counts = new Map<string, number>()
-    let best: string | undefined = undefined
-    let bestCount = 0
-    for (const value of values) {
-        if (value == null || value === '') continue
-        const count = (counts.get(value) || 0) + 1
-        counts.set(value, count)
-        if (count > bestCount) {
-            best = value
-            bestCount = count
-        }
-    }
-    if (best == null || bestCount < minCount) return undefined
-    return best
-}
-
-function pickModeNumber(
-    values: Array<number | undefined>,
-    minCount: number
-): number | undefined {
-    const counts = new Map<number, number>()
-    let best: number | undefined = undefined
-    let bestCount = 0
-    for (const value of values) {
-        if (!Number.isFinite(value) || value == null) continue
-        const normalized = Math.trunc(value)
-        if (normalized <= 0) continue
-        const count = (counts.get(normalized) || 0) + 1
-        counts.set(normalized, count)
-        if (count > bestCount) {
-            best = normalized
-            bestCount = count
-        }
-    }
-    if (best == null || bestCount < minCount) return undefined
-    return best
-}
-
-function clonePathContext(
-    context: ElementPath['context']
-): ElementPath['context'] {
-    return JSON.parse(JSON.stringify(context || [])) as ElementPath['context']
-}
-
-function clonePathNodes(nodes: PathNode[]): PathNode[] {
-    return JSON.parse(JSON.stringify(nodes || [])) as PathNode[]
-}
-
-function clonePersistedExtractNode(
-    node: PersistedExtractNode
-): PersistedExtractNode {
-    return JSON.parse(JSON.stringify(node)) as PersistedExtractNode
 }
 
 function parseAiExtractResponse(response: unknown): ExtractionPlan {
