@@ -8,6 +8,17 @@ import { Opensteer } from '../../src/opensteer.js'
 import { closeTestBrowser, createTestPage } from '../helpers/browser.js'
 import { setFixture } from '../helpers/fixture.js'
 
+interface ListAttributeProduct {
+    name: string | null
+    imageUrl: string | null
+    retinaImageUrl: string | null
+    pingUrl: string | null
+}
+
+interface ListAttributeProductsResult {
+    products: ListAttributeProduct[]
+}
+
 describe('integration/extract-array-cache', () => {
     let context: BrowserContext
     let page: Page
@@ -156,4 +167,169 @@ describe('integration/extract-array-cache', () => {
             ],
         })
     })
+
+    it('normalizes list-valued attributes when replaying cached array extraction', async () => {
+        await setFixture(
+            page,
+            `
+            <section>
+              <ul id="products">
+                <li class="card">
+                  <a
+                    class="name"
+                    href="/products/apple"
+                    ping="https://tracker.example.com/apple https://backup.example.com/apple"
+                  >
+                    Apple
+                  </a>
+                  <img
+                    class="responsive"
+                    srcset="/images/apple-320.jpg 320w, /images/apple-1280.jpg 1280w"
+                  />
+                  <img
+                    class="retina"
+                    imagesrcset="/images/apple-1x.jpg 1x, /images/apple-3x.jpg 3x"
+                  />
+                </li>
+                <li class="card">
+                  <a
+                    class="name"
+                    href="/products/banana"
+                    ping="https://tracker.example.com/banana https://backup.example.com/banana"
+                  >
+                    Banana
+                  </a>
+                  <img
+                    class="responsive"
+                    srcset="/images/banana-640.jpg 640w, /images/banana-1440.jpg 1440w"
+                  />
+                  <img
+                    class="retina"
+                    imagesrcset="/images/banana-1x.jpg 1x, /images/banana-2x.jpg 2x"
+                  />
+                </li>
+              </ul>
+            </section>
+            `
+        )
+
+        const description = 'array cache replay list attributes'
+        const schema = {
+            products: [
+                {
+                    name: '',
+                    imageUrl: '',
+                    retinaImageUrl: '',
+                    pingUrl: '',
+                },
+            ],
+        }
+
+        const ov = Opensteer.from(page, {
+            name: 'extract-array-cache-list-attrs',
+            storage: {
+                rootDir: storageRoot,
+            },
+        })
+
+        const seededExpectedProducts: ListAttributeProduct[] = [
+            buildListAttributeProduct(
+                'Apple',
+                '/images/apple-1280.jpg',
+                '/images/apple-3x.jpg',
+                'https://tracker.example.com/apple'
+            ),
+            buildListAttributeProduct(
+                'Banana',
+                '/images/banana-1440.jpg',
+                '/images/banana-2x.jpg',
+                'https://tracker.example.com/banana'
+            ),
+        ]
+
+        const seeded = await ov.extractFromPlan<ListAttributeProductsResult>({
+            description,
+            schema,
+            plan: {
+                fields: {
+                    ...buildListAttributeFieldPlan(0),
+                    ...buildListAttributeFieldPlan(1),
+                },
+            },
+        })
+
+        expect(seeded.data).toEqual({
+            products: seededExpectedProducts,
+        })
+
+        await page.evaluate(() => {
+            const list = document.querySelector('#products')
+            if (!list) return
+
+            const li = document.createElement('li')
+            li.className = 'card'
+            li.innerHTML = `
+                <a class="name" href="/products/cherry" ping="https://tracker.example.com/cherry https://backup.example.com/cherry">Cherry</a>
+                <img class="responsive" srcset="/images/cherry-800.jpg 800w, /images/cherry-1600.jpg 1600w" />
+                <img class="retina" imagesrcset="/images/cherry-1x.jpg 1x, /images/cherry-4x.jpg 4x" />
+            `
+            list.appendChild(li)
+        })
+
+        const replayedExpectedProducts: ListAttributeProduct[] = [
+            ...seededExpectedProducts,
+            buildListAttributeProduct(
+                'Cherry',
+                '/images/cherry-1600.jpg',
+                '/images/cherry-4x.jpg',
+                'https://tracker.example.com/cherry'
+            ),
+        ]
+
+        const replayed = await ov.extract<ListAttributeProductsResult>({
+            description,
+            schema,
+        })
+
+        expect(replayed).toEqual({
+            products: replayedExpectedProducts,
+        })
+    })
 })
+
+function buildListAttributeFieldPlan(
+    itemIndex: number
+): Record<string, { selector: string; attribute?: string }> {
+    const nth = itemIndex + 1
+    return {
+        [`products[${itemIndex}].name`]: {
+            selector: `#products li:nth-child(${nth}) .name`,
+        },
+        [`products[${itemIndex}].imageUrl`]: {
+            selector: `#products li:nth-child(${nth}) .responsive`,
+            attribute: 'srcset',
+        },
+        [`products[${itemIndex}].retinaImageUrl`]: {
+            selector: `#products li:nth-child(${nth}) .retina`,
+            attribute: 'imagesrcset',
+        },
+        [`products[${itemIndex}].pingUrl`]: {
+            selector: `#products li:nth-child(${nth}) .name`,
+            attribute: 'ping',
+        },
+    }
+}
+
+function buildListAttributeProduct(
+    name: string,
+    imageUrl: string,
+    retinaImageUrl: string,
+    pingUrl: string
+): ListAttributeProduct {
+    return {
+        name,
+        imageUrl,
+        retinaImageUrl,
+        pingUrl,
+    }
+}

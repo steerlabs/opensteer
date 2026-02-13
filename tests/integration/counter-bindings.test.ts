@@ -303,6 +303,9 @@ describe('integration/counter-bindings', () => {
             `
             <a id="doc-link" href="https://example.com/guides/intro">Intro guide</a>
             <img id="hero-image" src="https://cdn.example.com/hero.png" alt="Hero" />
+            <img id="responsive-image" src="https://cdn.example.com/hero-480.png" srcset="https://cdn.example.com/hero-480.png 480w, https://cdn.example.com/hero-1200.png 1200w, https://cdn.example.com/hero-960.png 960w" />
+            <img id="retina-image" src="https://cdn.example.com/hero-1x.png" imagesrcset="https://cdn.example.com/hero-1x.png 1x, https://cdn.example.com/hero-3x.png 3x" />
+            <a id="tracked-link" href="https://example.com/checkout" ping="https://tracker.example.com/ping https://backup.example.com/ping">Checkout</a>
             <input id="sku-input" value="SKU-9000" />
             <p id="details" data-content="Product details">Visible details</p>
             `
@@ -317,6 +320,18 @@ describe('integration/counter-bindings', () => {
             $$('#hero-image').attr('c') || '',
             10
         )
+        const responsiveImageCounter = Number.parseInt(
+            $$('#responsive-image').attr('c') || '',
+            10
+        )
+        const retinaImageCounter = Number.parseInt(
+            $$('#retina-image').attr('c') || '',
+            10
+        )
+        const trackedLinkCounter = Number.parseInt(
+            $$('#tracked-link').attr('c') || '',
+            10
+        )
         const inputCounter = Number.parseInt(
             $$('#sku-input').attr('c') || '',
             10
@@ -328,6 +343,9 @@ describe('integration/counter-bindings', () => {
 
         expect(Number.isFinite(linkCounter)).toBe(true)
         expect(Number.isFinite(imageCounter)).toBe(true)
+        expect(Number.isFinite(responsiveImageCounter)).toBe(true)
+        expect(Number.isFinite(retinaImageCounter)).toBe(true)
+        expect(Number.isFinite(trackedLinkCounter)).toBe(true)
         expect(Number.isFinite(inputCounter)).toBe(true)
         expect(Number.isFinite(detailsCounter)).toBe(true)
 
@@ -336,6 +354,9 @@ describe('integration/counter-bindings', () => {
             url: string | null
             imageText: string | null
             imageSrc: string | null
+            responsiveImageSrc: string | null
+            retinaImageSrc: string | null
+            trackingPing: string | null
             skuText: string | null
             skuValue: string | null
             detailsText: string | null
@@ -346,6 +367,18 @@ describe('integration/counter-bindings', () => {
                 url: { element: linkCounter, attribute: 'href' },
                 imageText: { element: imageCounter },
                 imageSrc: { element: imageCounter, attribute: 'src' },
+                responsiveImageSrc: {
+                    element: responsiveImageCounter,
+                    attribute: 'srcset',
+                },
+                retinaImageSrc: {
+                    element: retinaImageCounter,
+                    attribute: 'imagesrcset',
+                },
+                trackingPing: {
+                    element: trackedLinkCounter,
+                    attribute: 'ping',
+                },
                 skuText: { element: inputCounter },
                 skuValue: { element: inputCounter, attribute: 'value' },
                 detailsText: { element: detailsCounter },
@@ -361,6 +394,9 @@ describe('integration/counter-bindings', () => {
             url: 'https://example.com/guides/intro',
             imageText: null,
             imageSrc: 'https://cdn.example.com/hero.png',
+            responsiveImageSrc: 'https://cdn.example.com/hero-1200.png',
+            retinaImageSrc: 'https://cdn.example.com/hero-3x.png',
+            trackingPing: 'https://tracker.example.com/ping',
             skuText: null,
             skuValue: 'SKU-9000',
             detailsText: 'Visible details',

@@ -57,6 +57,9 @@ describe('ai/prompts', () => {
             expect(prompt).toContain('$a')
             expect(prompt).toContain('textContent')
             expect(prompt).toContain('CURRENT_URL')
+            expect(prompt).toContain(
+                'prefer "$a": "src" over "$a": "srcset"'
+            )
         })
     })
 

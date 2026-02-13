@@ -83,6 +83,9 @@ describe('extractWithPaths', () => {
         <article>
           <a id="doc-link" href="https://example.com/docs/get-started">Read docs</a>
           <img id="hero-image" src="https://cdn.example.com/assets/hero.png" alt="Hero" />
+          <img id="responsive-image" srcset="https://cdn.example.com/assets/hero-480.png 480w, https://cdn.example.com/assets/hero-1280.png 1280w, https://cdn.example.com/assets/hero-960.png 960w" />
+          <img id="retina-image" imagesrcset="https://cdn.example.com/assets/hero-1x.png 1x, https://cdn.example.com/assets/hero-3x.png 3x" />
+          <a id="tracked-link" href="https://example.com/checkout" ping="https://tracker.example.com/ping https://backup.example.com/ping">Checkout</a>
           <input id="sku-input" value="SKU-4242" />
           <meta id="page-meta" content="Product details" />
         </article>
@@ -94,6 +97,18 @@ describe('extractWithPaths', () => {
             page,
             '#hero-image'
         )
+        const responsiveImagePath = await buildElementPathFromSelector(
+            page,
+            '#responsive-image'
+        )
+        const retinaImagePath = await buildElementPathFromSelector(
+            page,
+            '#retina-image'
+        )
+        const trackedLinkPath = await buildElementPathFromSelector(
+            page,
+            '#tracked-link'
+        )
         const inputPath = await buildElementPathFromSelector(page, '#sku-input')
         const metaPath = await buildElementPathFromSelector(page, '#page-meta')
 
@@ -102,6 +117,21 @@ describe('extractWithPaths', () => {
             { key: 'url', path: linkPath!, attribute: 'href' },
             { key: 'imageText', path: imagePath! },
             { key: 'imageSrc', path: imagePath!, attribute: 'src' },
+            {
+                key: 'responsiveImageSrc',
+                path: responsiveImagePath!,
+                attribute: 'srcset',
+            },
+            {
+                key: 'retinaImageSrc',
+                path: retinaImagePath!,
+                attribute: 'imagesrcset',
+            },
+            {
+                key: 'trackingPing',
+                path: trackedLinkPath!,
+                attribute: 'ping',
+            },
             { key: 'skuText', path: inputPath! },
             { key: 'skuValue', path: inputPath!, attribute: 'value' },
             { key: 'metaText', path: metaPath! },
@@ -113,6 +143,9 @@ describe('extractWithPaths', () => {
             url: 'https://example.com/docs/get-started',
             imageText: null,
             imageSrc: 'https://cdn.example.com/assets/hero.png',
+            responsiveImageSrc: 'https://cdn.example.com/assets/hero-1280.png',
+            retinaImageSrc: 'https://cdn.example.com/assets/hero-3x.png',
+            trackingPing: 'https://tracker.example.com/ping',
             skuText: null,
             skuValue: 'SKU-4242',
             metaText: null,

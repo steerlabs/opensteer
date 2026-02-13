@@ -39,6 +39,7 @@ Respond with ONLY a JSON object (no markdown, no explanation):
 Rules:
 - Use integer counters for text extraction
 - Use { "$c": N, "$a": "..." } only when the value must come from an attribute (e.g. href, src, value, content)
+- When a field expects a single image URL and both src and srcset exist, prefer "$a": "src" over "$a": "srcset"
 - Use "CURRENT_URL" only when the field explicitly asks for the current page URL
 - If a field's data is not found on the page, return null
 - For array fields, expand to include ALL matching items on the page

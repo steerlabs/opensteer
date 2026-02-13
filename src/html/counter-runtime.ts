@@ -1,6 +1,7 @@
 import type { ElementHandle, Frame, Page } from 'playwright'
 import type { SerializedNodeMeta } from './serializer.js'
 import { OV_NODE_ID_ATTR } from './serializer.js'
+import { normalizeExtractedValue } from '../extract-value-normalization.js'
 import {
     OV_COUNTER_NEXT_KEY,
     OV_COUNTER_OWNER_KEY,
@@ -433,28 +434,15 @@ export async function resolveCountersBatch(
                         return map
                     },
 
-                    normalizeWhitespace(
-                        value: string | null | undefined
-                    ): string {
-                        return String(value || '')
-                            .replace(/\s+/g, ' ')
-                            .trim()
-                    },
-
-                    readValue(
+                    readRawValue(
                         element: Element,
-                        attribute?: string
+                        attribute?: string | null
                     ): string | null {
                         if (attribute) {
-                            const raw = element.getAttribute(attribute)
-                            const text = helpers.normalizeWhitespace(raw)
-                            return text || null
+                            return element.getAttribute(attribute)
                         }
 
-                        const text = helpers.normalizeWhitespace(
-                            element.textContent
-                        )
-                        return text || null
+                        return element.textContent
                     },
                 }
 
@@ -495,7 +483,7 @@ export async function resolveCountersBatch(
 
                     values.push({
                         key: entry.key,
-                        value: helpers.readValue(target, entry.attribute),
+                        value: helpers.readRawValue(target, entry.attribute),
                     })
                 }
 
@@ -518,8 +506,14 @@ export async function resolveCountersBatch(
             throw buildCounterFailureError(first.nodeId, first.reason)
         }
 
+        const attributeByKey = new Map(
+            entries.map((entry) => [entry.key, entry.attribute])
+        )
         for (const item of result.values) {
-            out[item.key] = item.value
+            out[item.key] = normalizeExtractedValue(
+                item.value,
+                attributeByKey.get(item.key)
+            )
         }
     }
 

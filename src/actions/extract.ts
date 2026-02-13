@@ -3,6 +3,7 @@ import type { ElementPath } from '../element-path/types.js'
 import { sanitizeElementPath } from '../element-path/build.js'
 import { buildPathCandidates } from '../element-path/match-selectors.js'
 import { resolveElementPath } from '../element-path/resolver.js'
+import { normalizeExtractedValue } from '../extract-value-normalization.js'
 
 export interface FieldSelector {
     key: string
@@ -19,28 +20,18 @@ async function readFieldValueFromHandle(
     element: ElementHandle<Element>,
     options: { attribute?: string }
 ): Promise<string | null> {
-    return element.evaluate(
+    const raw = await element.evaluate(
         (target, payload) => {
-            const normalizeWhitespace = (
-                value: string | null | undefined
-            ): string =>
-                String(value || '')
-                    .replace(/\s+/g, ' ')
-                    .trim()
-
-            if (payload.attribute) {
-                const raw = target.getAttribute(payload.attribute)
-                const text = normalizeWhitespace(raw)
-                return text || null
-            }
-
-            const text = normalizeWhitespace(target.textContent)
-            return text || null
+            return payload.attribute
+                ? target.getAttribute(payload.attribute)
+                : target.textContent
         },
         {
             attribute: options.attribute,
         }
     )
+
+    return normalizeExtractedValue(raw, options.attribute)
 }
 
 export async function extractWithPaths(
