@@ -1,6 +1,11 @@
 import * as cheerio from 'cheerio'
 import type { Frame, Page } from 'playwright'
 import { cloneElementPath, sanitizeElementPath } from '../element-path/build.js'
+import {
+    DEFERRED_MATCH_ATTR_KEYS,
+    MATCH_ATTRIBUTE_PRIORITY,
+    STABLE_PRIMARY_ATTR_KEYS,
+} from '../element-path/match-policy.js'
 import type { ContextHop, ElementPath } from '../element-path/types.js'
 import { ENSURE_NAME_SHIM_SCRIPT, OV_FRAME_TOKEN_KEY, OV_INSTANCE_TOKEN_KEY } from './runtime-keys.js'
 
@@ -83,6 +88,9 @@ async function serializeFrameRecursive(
             boundaryAttr,
             frameTokenKey,
             instanceTokenKey,
+            matchAttributePriority,
+            stablePrimaryAttrKeys,
+            deferredMatchAttrKeys,
         }) => {
             // tsx/esbuild can inject __name(...) helpers into function bodies.
             // Browser-evaluated scripts don't have that helper, so provide a local shim.
@@ -119,24 +127,23 @@ async function serializeFrameRecursive(
             ])
 
             const MAX_ATTRIBUTE_VALUE_LENGTH = 300
-            const MATCH_ATTRIBUTE_PRIORITY = [
-                'id',
-                'class',
-                'data-testid',
-                'data-test',
-                'data-qa',
-                'data-cy',
-                'name',
-                'for',
-                'aria-label',
-                'aria-labelledby',
-                'role',
-                'type',
-                'href',
-                'title',
-                'alt',
-                'placeholder',
-            ]
+            const ATTRIBUTE_PRIORITY: string[] = Array.isArray(
+                matchAttributePriority
+            )
+                ? matchAttributePriority.map((key) => String(key))
+                : []
+            const STABLE_PRIMARY_ATTR_KEY_SET = new Set<string>(
+                (Array.isArray(stablePrimaryAttrKeys)
+                    ? stablePrimaryAttrKeys
+                    : []
+                ).map((key) => String(key))
+            )
+            const DEFERRED_MATCH_ATTR_KEY_SET = new Set<string>(
+                (Array.isArray(deferredMatchAttrKeys)
+                    ? deferredMatchAttrKeys
+                    : []
+                ).map((key) => String(key))
+            )
 
             let counter = 1
             const entries: Array<{
@@ -224,8 +231,8 @@ async function serializeFrameRecursive(
 
                 sortAttributeKeys(keys: string[]): string[] {
                     return [...keys].sort((a, b) => {
-                        const ai = MATCH_ATTRIBUTE_PRIORITY.indexOf(a)
-                        const bi = MATCH_ATTRIBUTE_PRIORITY.indexOf(b)
+                        const ai = ATTRIBUTE_PRIORITY.indexOf(a)
+                        const bi = ATTRIBUTE_PRIORITY.indexOf(b)
                         const ar = ai === -1 ? Number.MAX_SAFE_INTEGER : ai
                         const br = bi === -1 ? Number.MAX_SAFE_INTEGER : bi
                         if (ar !== br) return ar - br
@@ -233,11 +240,31 @@ async function serializeFrameRecursive(
                     })
                 },
 
+                isIdLikeAttributeKey(rawKey: string): boolean {
+                    const key = String(rawKey || '').trim().toLowerCase()
+                    if (!key) return false
+                    if (key === 'id') return true
+                    return /(?:^|[-_:])id$/.test(key)
+                },
+
+                shouldDeferMatchAttribute(rawKey: string): boolean {
+                    const key = String(rawKey || '').trim().toLowerCase()
+                    if (!key || key === 'class') return false
+                    if (helpers.isIdLikeAttributeKey(key)) return true
+                    if (DEFERRED_MATCH_ATTR_KEY_SET.has(key)) return true
+                    if (
+                        key.startsWith('data-') &&
+                        !STABLE_PRIMARY_ATTR_KEY_SET.has(key)
+                    )
+                        return true
+                    return !STABLE_PRIMARY_ATTR_KEY_SET.has(key)
+                },
+
                 buildMatchClausePool(
-                    attrs: Record<string, string>,
-                    position: SerializedPathNode['position']
+                    attrs: Record<string, string>
                 ): SerializedPathNode['match'] {
                     const out: SerializedPathNode['match'] = []
+                    const deferred: SerializedPathNode['match'] = []
                     const seen = new Set<string>()
 
                     const push = (
@@ -247,15 +274,6 @@ async function serializeFrameRecursive(
                         if (seen.has(key)) return
                         seen.add(key)
                         out.push(clause)
-                    }
-
-                    const idValue = String(attrs.id || '').trim()
-                    if (idValue) {
-                        push({
-                            kind: 'attr',
-                            key: 'id',
-                            op: 'exact',
-                        })
                     }
 
                     const classValue = String(attrs.class || '').trim()
@@ -271,14 +289,19 @@ async function serializeFrameRecursive(
                     for (const key of helpers.sortAttributeKeys(
                         Object.keys(attrs || {})
                     )) {
-                        if (key === 'id' || key === 'class') continue
+                        if (key === 'class') continue
                         const value = String(attrs[key] || '').trim()
                         if (!value) continue
-                        push({
+                        const clause = {
                             kind: 'attr',
                             key,
                             op: 'exact',
-                        })
+                        } as const
+                        if (helpers.shouldDeferMatchAttribute(key)) {
+                            deferred.push(clause)
+                            continue
+                        }
+                        push(clause)
                     }
 
                     push({
@@ -289,6 +312,16 @@ async function serializeFrameRecursive(
                         kind: 'position',
                         axis: 'nthChild',
                     })
+
+                    const hasPrimary = out.some(
+                        (clause) => clause.kind === 'attr'
+                    )
+
+                    if (!hasPrimary) {
+                        for (const clause of deferred) {
+                            push(clause)
+                        }
+                    }
 
                     return out
                 },
@@ -321,7 +354,7 @@ async function serializeFrameRecursive(
                     }
 
                     const attrs = helpers.collectPathAttrs(node)
-                    const match = helpers.buildMatchClausePool(attrs, position)
+                    const match = helpers.buildMatchClausePool(attrs)
 
                     return {
                         tag,
@@ -344,8 +377,6 @@ async function serializeFrameRecursive(
                             current = parentEl
                             continue
                         }
-                        const rootNode = current.getRootNode()
-                        if (rootNode === root) break
                         break
                     }
                     chain.reverse()
@@ -470,6 +501,9 @@ async function serializeFrameRecursive(
             boundaryAttr: OV_BOUNDARY_ATTR,
             frameTokenKey: OV_FRAME_TOKEN_KEY,
             instanceTokenKey: OV_INSTANCE_TOKEN_KEY,
+            matchAttributePriority: [...MATCH_ATTRIBUTE_PRIORITY],
+            stablePrimaryAttrKeys: [...STABLE_PRIMARY_ATTR_KEYS],
+            deferredMatchAttrKeys: [...DEFERRED_MATCH_ATTR_KEYS],
         }
     )
 

@@ -14,6 +14,9 @@ const DEFAULT_CONFIG: Required<
         headless: false,
         executablePath: undefined,
         slowMo: 0,
+        cdpUrl: undefined,
+        channel: undefined,
+        userDataDir: undefined,
     },
     storage: {
         rootDir: process.cwd(),
@@ -95,6 +98,12 @@ function parseNumber(value: string | undefined): number | undefined {
     return parsed
 }
 
+function resolveOpensteerApiKey(): string | undefined {
+    const value = process.env.OPENSTEER_API_KEY?.trim()
+    if (!value) return undefined
+    return value
+}
+
 export function resolveConfig(
     input: OpensteerConfig = {}
 ): ResolvedOpensteerConfig {
@@ -118,6 +127,9 @@ export function resolveConfig(
             headless: parseBool(process.env.OPENSTEER_HEADLESS),
             executablePath: process.env.OPENSTEER_BROWSER_PATH || undefined,
             slowMo: parseNumber(process.env.OPENSTEER_SLOW_MO),
+            cdpUrl: process.env.OPENSTEER_CDP_URL || undefined,
+            channel: process.env.OPENSTEER_CHANNEL || undefined,
+            userDataDir: process.env.OPENSTEER_USER_DATA_DIR || undefined,
         },
         model: process.env.OPENSTEER_MODEL || undefined,
         debug: parseBool(process.env.OPENSTEER_DEBUG),
@@ -125,7 +137,22 @@ export function resolveConfig(
 
     const mergedWithFile = mergeDeep(DEFAULT_CONFIG, fileConfig)
     const mergedWithEnv = mergeDeep(mergedWithFile, envConfig)
-    return mergeDeep(mergedWithEnv, input) as ResolvedOpensteerConfig
+    const resolved = mergeDeep(mergedWithEnv, input) as ResolvedOpensteerConfig
+
+    const envApiKey = resolveOpensteerApiKey()
+    const inputHasCloudKey = Object.prototype.hasOwnProperty.call(
+        input.cloud || {},
+        'key'
+    )
+
+    if (envApiKey && resolved.cloud?.enabled && !inputHasCloudKey) {
+        resolved.cloud = {
+            ...resolved.cloud,
+            key: envApiKey,
+        }
+    }
+
+    return resolved
 }
 
 export function resolveNamespace(

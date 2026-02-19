@@ -1,6 +1,9 @@
 import type { ElementHandle, Page } from 'playwright'
 import { buildSegmentSelector } from './match-selectors.js'
 import {
+    DEFERRED_MATCH_ATTR_KEYS,
+    MATCH_ATTRIBUTE_PRIORITY,
+    STABLE_PRIMARY_ATTR_KEYS,
     buildLocalClausePool,
     isValidCssAttributeKey,
     shouldKeepAttributeForPath,
@@ -53,7 +56,7 @@ export async function buildElementPathFromHandle(
         await frame.evaluate(ENSURE_NAME_SHIM_SCRIPT)
     }
 
-    const out = await handle.evaluate((target) => {
+    const out = await handle.evaluate((target, policy) => {
         // tsx/esbuild can inject __name(...) into serialized callbacks.
         // Playwright evaluate runs in the page where that helper is absent.
         function __name<T>(value: T): T {
@@ -82,6 +85,12 @@ export async function buildElementPathFromHandle(
             match: EvalMatchClause[]
         }
 
+        interface EvalMatchPolicy {
+            matchAttributePriority: string[]
+            stablePrimaryAttrKeys: string[]
+            deferredMatchAttrKeys: string[]
+        }
+
         const ATTRIBUTE_DENY_KEYS = new Set([
             'style',
             'nonce',
@@ -108,24 +117,24 @@ export async function buildElementPathFromHandle(
             'data-lazy-srcset',
             'data-was-processed',
         ])
-        const ATTRIBUTE_PRIORITY = [
-            'id',
-            'class',
-            'data-testid',
-            'data-test',
-            'data-qa',
-            'data-cy',
-            'name',
-            'for',
-            'aria-label',
-            'aria-labelledby',
-            'role',
-            'type',
-            'href',
-            'title',
-            'alt',
-            'placeholder',
-        ]
+        const resolvedPolicy = (policy || {}) as EvalMatchPolicy
+        const ATTRIBUTE_PRIORITY: string[] = Array.isArray(
+            resolvedPolicy.matchAttributePriority
+        )
+            ? resolvedPolicy.matchAttributePriority.map((key) => String(key))
+            : []
+        const STABLE_PRIMARY_ATTR_KEY_SET = new Set<string>(
+            (Array.isArray(resolvedPolicy.stablePrimaryAttrKeys)
+                ? resolvedPolicy.stablePrimaryAttrKeys
+                : []
+            ).map((key) => String(key))
+        )
+        const DEFERRED_MATCH_ATTR_KEY_SET = new Set<string>(
+            (Array.isArray(resolvedPolicy.deferredMatchAttrKeys)
+                ? resolvedPolicy.deferredMatchAttrKeys
+                : []
+            ).map((key) => String(key))
+        )
 
         const helpers = {
             isValidAttrKey(key: string): boolean {
@@ -205,7 +214,7 @@ export async function buildElementPathFromHandle(
                 }
             },
 
-            buildChain(node: Element, root: Document | ShadowRoot): Element[] {
+            buildChain(node: Element): Element[] {
                 const chain: Element[] = []
                 let current: Element | null = node
                 while (current) {
@@ -215,8 +224,6 @@ export async function buildElementPathFromHandle(
                         current = parent
                         continue
                     }
-                    const rootNode = current.getRootNode()
-                    if (rootNode === root) break
                     break
                 }
                 chain.reverse()
@@ -248,6 +255,16 @@ export async function buildElementPathFromHandle(
 
             clauseKey(clause: EvalMatchClause): string {
                 return JSON.stringify(clause)
+            },
+
+            shouldDeferMatchAttribute(rawKey: string): boolean {
+                const key = String(rawKey || '').trim().toLowerCase()
+                if (!key || key === 'class') return false
+                if (key === 'id' || /(?:^|[-_:])id$/.test(key)) return true
+                if (DEFERRED_MATCH_ATTR_KEY_SET.has(key)) return true
+                if (key.startsWith('data-') && !STABLE_PRIMARY_ATTR_KEY_SET.has(key))
+                    return true
+                return !STABLE_PRIMARY_ATTR_KEY_SET.has(key)
             },
 
             matchClause(
@@ -388,20 +405,8 @@ export async function buildElementPathFromHandle(
             buildClausePool(data: EvalPathNode): EvalMatchClause[] {
                 const attrs = data.attrs || {}
                 const pool: EvalMatchClause[] = []
+                const deferred: EvalMatchClause[] = []
                 const used = new Set<string>()
-
-                if (attrs.id) {
-                    const clause = {
-                        kind: 'attr',
-                        key: 'id',
-                        op: 'exact',
-                    } as const
-                    const key = helpers.clauseKey(clause)
-                    if (!used.has(key)) {
-                        used.add(key)
-                        pool.push(clause)
-                    }
-                }
 
                 const classValue = String(attrs.class || '').trim()
                 if (classValue) {
@@ -420,14 +425,18 @@ export async function buildElementPathFromHandle(
 
                 const extraKeys = helpers.sortAttributeKeys(Object.keys(attrs))
                 for (const key of extraKeys) {
-                    if (key === 'id' || key === 'class') continue
+                    if (key === 'class') continue
                     const value = attrs[key]
                     if (!value || !String(value).trim()) continue
                     const clause = { kind: 'attr', key, op: 'exact' } as const
                     const clauseKey = helpers.clauseKey(clause)
                     if (used.has(clauseKey)) continue
                     used.add(clauseKey)
-                    pool.push(clause)
+                    if (helpers.shouldDeferMatchAttribute(key)) {
+                        deferred.push(clause)
+                    } else {
+                        pool.push(clause)
+                    }
                 }
 
                 const nthOfTypeClause = {
@@ -449,6 +458,13 @@ export async function buildElementPathFromHandle(
                     pool.push(nthChildClause)
                 }
 
+                const hasPrimary = pool.some((clause) => clause.kind === 'attr')
+                if (!hasPrimary) {
+                    for (const clause of deferred) {
+                        pool.push(clause)
+                    }
+                }
+
                 return pool
             },
 
@@ -468,6 +484,19 @@ export async function buildElementPathFromHandle(
                     node.match = []
                     return [...helpers.buildClausePool(node)]
                 })
+
+                for (let idx = 0; idx < pools.length; idx++) {
+                    const pool = pools[idx]
+                    const classIndex = pool.findIndex(
+                        (clause) =>
+                            clause.kind === 'attr' && clause.key === 'class'
+                    )
+                    if (classIndex < 0) continue
+                    const classClause = pool[classIndex]
+                    if (!classClause) continue
+                    nodes[idx].match.push(classClause)
+                    pool.splice(classIndex, 1)
+                }
 
                 const matchesNode = (
                     candidate: Element | null,
@@ -520,7 +549,7 @@ export async function buildElementPathFromHandle(
         const initialRoot =
             targetRoot instanceof ShadowRoot ? targetRoot : document
 
-        const targetChain = helpers.buildChain(target, initialRoot)
+        const targetChain = helpers.buildChain(target)
         const finalizedTarget = helpers.finalizePath(targetChain, initialRoot)
         if (!finalizedTarget) return null
 
@@ -530,7 +559,7 @@ export async function buildElementPathFromHandle(
             const hostRoot = host.getRootNode()
             const normalizedHostRoot =
                 hostRoot instanceof ShadowRoot ? hostRoot : document
-            const hostChain = helpers.buildChain(host, normalizedHostRoot)
+            const hostChain = helpers.buildChain(host)
             const finalizedHost = helpers.finalizePath(
                 hostChain,
                 normalizedHostRoot
@@ -547,6 +576,10 @@ export async function buildElementPathFromHandle(
             context,
             nodes: finalizedTarget.nodes,
         }
+    }, {
+        matchAttributePriority: [...MATCH_ATTRIBUTE_PRIORITY],
+        stablePrimaryAttrKeys: [...STABLE_PRIMARY_ATTR_KEYS],
+        deferredMatchAttrKeys: [...DEFERRED_MATCH_ATTR_KEYS],
     })
 
     if (!out) return null
