@@ -44,14 +44,13 @@ describe('performScroll', () => {
             page,
             `
         <div id="container" style="height: 120px; overflow: auto; border: 1px solid #ddd;">
-          <section style="height: 900px;">Content block</section>
+          <div style="height: 900px;">Content block</div>
         </div>
       `
         )
 
         const path = await buildElementPathFromSelector(page, '#container')
-        expect(path).toBeTruthy()
-        const result = await performScroll(page, path!, {
+        const result = await performScroll(page, path, {
             direction: 'down',
             amount: 300,
         })

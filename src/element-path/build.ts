@@ -461,9 +461,6 @@ export async function buildElementPathFromHandle(
                 const hasPrimary = pool.some((clause) => clause.kind === 'attr')
                 if (!hasPrimary) {
                     for (const clause of deferred) {
-                        const key = helpers.clauseKey(clause)
-                        if (used.has(key)) continue
-                        used.add(key)
                         pool.push(clause)
                     }
                 }
