@@ -21,9 +21,11 @@ jobs:
             tests/test-app/pnpm-lock.yaml
       - name: Install
         run: pnpm install --frozen-lockfile
+      - name: Install Playwright Browsers
+        run: pnpm exec playwright install --with-deps chromium
       - name: Typecheck
         run: pnpm run typecheck
-      - name: Test
-        run: pnpm run test
       - name: Build
         run: pnpm run build
+      - name: Test
+        run: pnpm run test

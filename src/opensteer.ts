@@ -1745,13 +1745,7 @@ export class Opensteer {
         element: number
     ): Promise<ElementPath | null> {
         const indexedPath = await this.readPathFromCounterIndex(element)
-        let handle: ElementHandle | null = null
-        try {
-            handle = await this.resolveCounterHandle(element)
-        } catch (err) {
-            if (indexedPath) return indexedPath
-            throw err
-        }
+        const handle = await this.resolveCounterHandle(element)
 
         try {
             const builtPath = await buildElementPathFromHandle(handle)
