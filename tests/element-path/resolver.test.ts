@@ -85,6 +85,45 @@ describe('element-path/resolver', () => {
         expect(await page.inputValue('#fname')).toBe('Ada')
     })
 
+    it('broadens by dropping outer ancestors when a strict prefix no longer matches', async () => {
+        await setFixture(
+            page,
+            `
+            <div class="shell">
+              <section>
+                <input id="fname" value="" />
+              </section>
+            </div>
+            `
+        )
+
+        const path = await buildElementPathFromSelector(page, '#fname')
+        expect(path).toBeTruthy()
+        if (!path) throw new Error('Expected path to exist.')
+
+        const withBrokenPrefix = cloneElementPath(path)
+        const firstNode = withBrokenPrefix.nodes[0]
+        firstNode.attrs = {
+            ...firstNode.attrs,
+            id: 'missing-root-id',
+        }
+        firstNode.match = [
+            {
+                kind: 'attr',
+                key: 'id',
+                op: 'exact',
+                value: 'missing-root-id',
+            },
+        ]
+
+        const resolved = await resolveElementPath(page, withBrokenPrefix)
+        expect(resolved.usedSelector).not.toContain('missing-root-id')
+        await resolved.element.fill('Grace')
+        await resolved.element.dispose()
+
+        expect(await page.inputValue('#fname')).toBe('Grace')
+    })
+
     it('resolves using remaining match candidates when stored attrs are missing', async () => {
         await setFixture(
             page,

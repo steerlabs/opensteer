@@ -9,18 +9,8 @@ export function buildPathCandidates(domPath: DomPath): string[] {
     const nodes = Array.isArray(domPath) ? domPath : []
     if (!nodes.length) return []
 
-    const pieces = nodes.map((node) => buildSegmentSelector(node))
-    const out: string[] = []
-    const seen = new Set<string>()
-
-    for (let start = 0; start < pieces.length; start++) {
-        const selector = pieces.slice(start).join(' ')
-        if (!selector || seen.has(selector)) continue
-        seen.add(selector)
-        out.push(selector)
-    }
-
-    return out
+    const segments = nodes.map((node) => buildSegmentSelector(node))
+    return buildSuffixCandidates(segments)
 }
 
 export function buildSegmentSelector(node: PathNode): string {
@@ -87,6 +77,22 @@ function tokenizeClassValue(value: string): string[] {
         if (!normalized || seen.has(normalized)) continue
         seen.add(normalized)
         out.push(normalized)
+    }
+
+    return out
+}
+
+function buildSuffixCandidates(segments: string[]): string[] {
+    const out: string[] = []
+    const seen = new Set<string>()
+
+    // Deterministic replay starts strict, then progressively broadens by
+    // dropping left-most ancestor segments.
+    for (let start = 0; start < segments.length; start++) {
+        const selector = segments.slice(start).join(' ')
+        if (!selector || seen.has(selector)) continue
+        seen.add(selector)
+        out.push(selector)
     }
 
     return out

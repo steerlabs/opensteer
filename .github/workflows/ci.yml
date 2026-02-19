@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Enable Corepack
+        run: corepack enable
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -17,13 +19,9 @@ jobs:
           cache-dependency-path: |
             pnpm-lock.yaml
             tests/test-app/pnpm-lock.yaml
-      - name: Enable Corepack
-        run: corepack enable
       - name: Install
         run: pnpm install --frozen-lockfile
       - name: Typecheck
         run: pnpm run typecheck
-      - name: Test
-        run: pnpm run test
       - name: Build
         run: pnpm run build

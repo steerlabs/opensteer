@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { BrowserContext, Page } from 'playwright'
 import { buildElementPathFromSelector } from '../../src/element-path/build.js'
+import type { ElementPath, PathNode } from '../../src/element-path/types.js'
 import { closeTestBrowser, createTestPage } from '../helpers/browser.js'
 import { setFixture } from '../helpers/fixture.js'
 
@@ -19,6 +20,23 @@ describe('element-path/build', () => {
     afterAll(async () => {
         await closeTestBrowser()
     })
+
+    const requirePath = (path: ElementPath | null): ElementPath => {
+        expect(path).toBeTruthy()
+        if (!path) {
+            throw new Error('Expected path to exist.')
+        }
+        return path
+    }
+
+    const requireTargetNode = (path: ElementPath): PathNode => {
+        const target = path.nodes[path.nodes.length - 1]
+        expect(target).toBeTruthy()
+        if (!target) {
+            throw new Error('Expected target node to exist.')
+        }
+        return target
+    }
 
     it('builds a normalized path for standard DOM elements', async () => {
         await setFixture(
@@ -82,5 +100,118 @@ describe('element-path/build', () => {
 
         const path = await buildElementPathFromSelector(page, '#inside-frame')
         expect(path).toBeNull()
+    })
+
+    it('seeds class match clauses on classed nodes before escalating other attrs', async () => {
+        await setFixture(
+            page,
+            `
+            <main class="shell">
+              <section class="panel">
+                <button id="save-btn" class="action primary">Save</button>
+                <button id="cancel-btn" class="action primary">Cancel</button>
+              </section>
+            </main>
+            `
+        )
+
+        const path = await buildElementPathFromSelector(page, '#save-btn')
+
+        const resolved = requirePath(path)
+
+        const classNodes = resolved.nodes.filter(
+            (node) => String(node.attrs.class || '').trim().length > 0
+        )
+        expect(classNodes.length).toBeGreaterThan(0)
+        for (const node of classNodes) {
+            const hasClassMatch = node.match.some(
+                (clause) =>
+                    clause.kind === 'attr' &&
+                    clause.key === 'class' &&
+                    clause.op === 'exact'
+            )
+            expect(hasClassMatch).toBe(true)
+        }
+
+        const target = requireTargetNode(resolved)
+
+        const classIndex = target.match.findIndex(
+            (clause) => clause.kind === 'attr' && clause.key === 'class'
+        )
+        const idIndex = target.match.findIndex(
+            (clause) => clause.kind === 'attr' && clause.key === 'id'
+        )
+
+        expect(classIndex).toBeGreaterThanOrEqual(0)
+        if (idIndex >= 0) {
+            expect(classIndex).toBeLessThan(idIndex)
+        }
+    })
+
+    it('prefers non-id attrs before id when class-only matching is ambiguous', async () => {
+        await setFixture(
+            page,
+            `
+            <main class="shell">
+              <section class="panel">
+                <button id="save-btn" class="action primary" data-testid="save-target">Save</button>
+                <button id="cancel-btn" class="action primary" data-testid="cancel-target">Cancel</button>
+              </section>
+            </main>
+            `
+        )
+
+        const path = await buildElementPathFromSelector(page, '#save-btn')
+
+        const target = requireTargetNode(requirePath(path))
+
+        const hasClass = target.match.some(
+            (clause) => clause.kind === 'attr' && clause.key === 'class'
+        )
+        const hasDataTestId = target.match.some(
+            (clause) => clause.kind === 'attr' && clause.key === 'data-testid'
+        )
+        const hasId = target.match.some(
+            (clause) => clause.kind === 'attr' && clause.key === 'id'
+        )
+
+        expect(hasClass).toBe(true)
+        expect(hasDataTestId).toBe(true)
+        expect(hasId).toBe(false)
+    })
+
+    it('treats data-id style attributes as deferred fallback keys', async () => {
+        await setFixture(
+            page,
+            `
+            <main class="shell">
+              <section class="panel">
+                <button class="action primary" data-testid="save-target" data-id="save-12345">Save</button>
+                <button class="action primary" data-testid="cancel-target" data-id="cancel-67890">Cancel</button>
+              </section>
+            </main>
+            `
+        )
+
+        const path = await buildElementPathFromSelector(
+            page,
+            'button[data-testid="save-target"]'
+        )
+
+        const target = requireTargetNode(requirePath(path))
+
+        const hasClass = target.match.some(
+            (clause) => clause.kind === 'attr' && clause.key === 'class'
+        )
+        const hasDataTestId = target.match.some(
+            (clause) => clause.kind === 'attr' && clause.key === 'data-testid'
+        )
+        const hasDataId = target.match.some(
+            (clause) => clause.kind === 'attr' && clause.key === 'data-id'
+        )
+
+        expect(hasClass).toBe(true)
+        expect(hasDataTestId).toBe(true)
+        expect(hasDataId).toBe(false)
     })
 })
