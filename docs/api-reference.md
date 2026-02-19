@@ -70,12 +70,18 @@ interface OpensteerConfig {
     storage?: {
         rootDir?: string
     }
+    cloud?: {
+        enabled: boolean
+        key?: string
+    }
     model?: string
     debug?: boolean
 }
 ```
 
 `model` defaults to `gpt-5.1`. You can also set `OPENSTEER_MODEL`.
+When `cloud.enabled` is `true`, `cloud.key` falls back to `OPENSTEER_API_KEY`
+if omitted. If `cloud.key` is provided, it overrides the env fallback.
 
 ## AI helpers
 

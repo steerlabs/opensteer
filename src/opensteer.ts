@@ -26,6 +26,7 @@ import type {
     OpensteerConfig,
     ScrollOptions,
     SelectOptions,
+    ScreenshotOptions,
     SnapshotOptions,
     StateResult,
     TabInfo,
@@ -89,6 +90,15 @@ import {
     type PersistedExtractObjectNode,
     type PersistedExtractPayload,
 } from './extraction/array-consolidation.js'
+import type { CloudActionMethod } from './cloud/contracts.js'
+import { ActionWsClient } from './cloud/action-ws-client.js'
+import { CloudCdpClient } from './cloud/cdp-client.js'
+import {
+    cloudNotLaunchedError,
+    cloudUnsupportedMethodError,
+} from './cloud/errors.js'
+import { CloudSessionClient } from './cloud/session-client.js'
+import { collectLocalSelectorCacheEntries } from './cloud/local-cache-sync.js'
 
 interface PathResolutionResult {
     path: ElementPath | null
@@ -131,6 +141,15 @@ interface MergedArrayVariantRow {
     value: unknown
 }
 
+interface CloudRuntimeState {
+    readonly sessionClient: CloudSessionClient
+    readonly cdpClient: CloudCdpClient
+    actionClient: ActionWsClient | null
+    sessionId: string | null
+}
+
+const DEFAULT_CLOUD_BASE_URL = 'https://cloud.oversteer.ai'
+
 export class Opensteer {
     private readonly config: OpensteerConfig
     private readonly aiResolve: AiResolveCallback
@@ -138,6 +157,7 @@ export class Opensteer {
     private readonly namespace: string
     private readonly storage: LocalSelectorStorage
     private readonly pool: BrowserPool
+    private readonly cloud: CloudRuntimeState | null
 
     private browser: Browser | null = null
     private pageRef: Page | null = null
@@ -157,6 +177,26 @@ export class Opensteer {
         this.namespace = resolveNamespace(resolved, rootDir)
         this.storage = new LocalSelectorStorage(rootDir, this.namespace)
         this.pool = new BrowserPool(resolved.browser || {})
+
+        if (resolved.cloud?.enabled) {
+            const key = resolved.cloud.key?.trim()
+            if (!key) {
+                throw new Error(
+                    'Cloud mode requires a non-empty API key via cloud.key or OPENSTEER_API_KEY.'
+                )
+            }
+
+            const baseUrl = resolveCloudBaseUrl()
+            this.cloud = {
+                sessionClient: new CloudSessionClient(baseUrl, key),
+                cdpClient: new CloudCdpClient(),
+                actionClient: null,
+                sessionId: null,
+            }
+            this.bindCloudActionMethods()
+        } else {
+            this.cloud = null
+        }
     }
 
     private createLazyResolveCallback(model: string): AiResolveCallback {
@@ -201,6 +241,247 @@ export class Opensteer {
         return extract
     }
 
+    private bindCloudActionMethods(): void {
+        const instance = this as unknown as {
+            goto: Opensteer['goto']
+            snapshot: Opensteer['snapshot']
+            state: Opensteer['state']
+            click: Opensteer['click']
+            dblclick: Opensteer['dblclick']
+            rightclick: Opensteer['rightclick']
+            hover: Opensteer['hover']
+            input: Opensteer['input']
+            select: Opensteer['select']
+            scroll: Opensteer['scroll']
+            tabs: Opensteer['tabs']
+            newTab: Opensteer['newTab']
+            switchTab: Opensteer['switchTab']
+            closeTab: Opensteer['closeTab']
+            getCookies: Opensteer['getCookies']
+            setCookie: Opensteer['setCookie']
+            clearCookies: Opensteer['clearCookies']
+            exportCookies: Opensteer['exportCookies']
+            importCookies: Opensteer['importCookies']
+            pressKey: Opensteer['pressKey']
+            type: Opensteer['type']
+            getElementText: Opensteer['getElementText']
+            getElementValue: Opensteer['getElementValue']
+            getElementAttributes: Opensteer['getElementAttributes']
+            getElementBoundingBox: Opensteer['getElementBoundingBox']
+            getHtml: Opensteer['getHtml']
+            getTitle: Opensteer['getTitle']
+            screenshot: Opensteer['screenshot']
+            uploadFile: Opensteer['uploadFile']
+            waitForText: Opensteer['waitForText']
+            extract: Opensteer['extract']
+            extractFromPlan: Opensteer['extractFromPlan']
+            clearCache: Opensteer['clearCache']
+        }
+
+        instance.goto = async (url, options) => {
+            await this.invokeCloudAction('goto', { url, options })
+            this.snapshotCache = null
+        }
+
+        instance.snapshot = async (options = {}) => {
+            const html = await this.invokeCloudAction<string>('snapshot', {
+                options,
+            })
+            this.snapshotCache = null
+            return html
+        }
+
+        instance.state = async () => {
+            return await this.invokeCloudAction<StateResult>('state', {})
+        }
+
+        instance.click = async (options) => {
+            this.snapshotCache = null
+            return await this.invokeCloudAction<ActionResult>('click', options)
+        }
+
+        instance.dblclick = async (options) => {
+            this.snapshotCache = null
+            return await this.invokeCloudAction<ActionResult>(
+                'dblclick',
+                options
+            )
+        }
+
+        instance.rightclick = async (options) => {
+            this.snapshotCache = null
+            return await this.invokeCloudAction<ActionResult>(
+                'rightclick',
+                options
+            )
+        }
+
+        instance.hover = async (options) => {
+            this.snapshotCache = null
+            return await this.invokeCloudAction<ActionResult>('hover', options)
+        }
+
+        instance.input = async (options) => {
+            this.snapshotCache = null
+            return await this.invokeCloudAction<ActionResult>('input', options)
+        }
+
+        instance.select = async (options) => {
+            this.snapshotCache = null
+            return await this.invokeCloudAction<ActionResult>('select', options)
+        }
+
+        instance.scroll = async (options = {}) => {
+            this.snapshotCache = null
+            return await this.invokeCloudAction<ActionResult>('scroll', options)
+        }
+
+        instance.tabs = async () => {
+            return await this.invokeCloudAction<TabInfo[]>('tabs', {})
+        }
+
+        instance.newTab = async (url) => {
+            this.snapshotCache = null
+            return await this.invokeCloudAction<TabInfo>('newTab', { url })
+        }
+
+        instance.switchTab = async (index) => {
+            await this.invokeCloudAction('switchTab', { index })
+            this.snapshotCache = null
+        }
+
+        instance.closeTab = async (index) => {
+            await this.invokeCloudAction('closeTab', { index })
+            this.snapshotCache = null
+        }
+
+        instance.getCookies = async (url) => {
+            return await this.invokeCloudAction<import('playwright').Cookie[]>(
+                'getCookies',
+                { url }
+            )
+        }
+
+        instance.setCookie = async (cookie) => {
+            await this.invokeCloudAction('setCookie', cookie)
+        }
+
+        instance.clearCookies = async () => {
+            await this.invokeCloudAction('clearCookies', {})
+        }
+
+        instance.exportCookies = async () => {
+            throw cloudUnsupportedMethodError(
+                'exportCookies',
+                'exportCookies() is not supported in cloud mode v1 because it depends on local filesystem paths.'
+            )
+        }
+
+        instance.importCookies = async () => {
+            throw cloudUnsupportedMethodError(
+                'importCookies',
+                'importCookies() is not supported in cloud mode v1 because it depends on local filesystem paths.'
+            )
+        }
+
+        instance.pressKey = async (key) => {
+            await this.invokeCloudAction('pressKey', { key })
+            this.snapshotCache = null
+        }
+
+        instance.type = async (text) => {
+            await this.invokeCloudAction('type', { text })
+            this.snapshotCache = null
+        }
+
+        instance.getElementText = async (options) => {
+            return await this.invokeCloudAction<string>(
+                'getElementText',
+                options
+            )
+        }
+
+        instance.getElementValue = async (options) => {
+            return await this.invokeCloudAction<string>(
+                'getElementValue',
+                options
+            )
+        }
+
+        instance.getElementAttributes = async (options) => {
+            return await this.invokeCloudAction<Record<string, string>>(
+                'getElementAttributes',
+                options
+            )
+        }
+
+        instance.getElementBoundingBox = async (options) => {
+            return await this.invokeCloudAction<BoundingBox | null>(
+                'getElementBoundingBox',
+                options
+            )
+        }
+
+        instance.getHtml = async (selector) => {
+            return await this.invokeCloudAction<string>('getHtml', { selector })
+        }
+
+        instance.getTitle = async () => {
+            return await this.invokeCloudAction<string>('getTitle', {})
+        }
+
+        instance.screenshot = async (options = {}) => {
+            const b64 = await this.invokeCloudAction<string>('screenshot', options)
+            return Buffer.from(b64, 'base64')
+        }
+
+        instance.uploadFile = async () => {
+            throw cloudUnsupportedMethodError(
+                'uploadFile',
+                'uploadFile() is not supported in cloud mode v1 because file paths must be accessible on the remote server.'
+            )
+        }
+
+        instance.waitForText = async (text, options) => {
+            await this.invokeCloudAction('waitForText', { text, options })
+        }
+
+        instance.extract = (async (options: ExtractOptions) => {
+            return await this.invokeCloudAction<unknown>('extract', options)
+        }) as Opensteer['extract']
+
+        instance.extractFromPlan = (async (options: ExtractFromPlanOptions) => {
+            return await this.invokeCloudAction<ExtractionRunResult>(
+                'extractFromPlan',
+                options as never
+            )
+        }) as Opensteer['extractFromPlan']
+
+        instance.clearCache = () => {
+            this.snapshotCache = null
+
+            if (!this.cloud?.actionClient) return
+            void this.invokeCloudAction('clearCache', {})
+        }
+    }
+
+    private async invokeCloudAction<T>(
+        method: CloudActionMethod,
+        args: unknown
+    ): Promise<T> {
+        const actionClient = this.cloud?.actionClient
+        const sessionId = this.cloud?.sessionId
+        if (!actionClient || !sessionId) {
+            throw cloudNotLaunchedError()
+        }
+
+        const payload =
+            args && typeof args === 'object'
+                ? (args as Record<string, unknown>)
+                : {}
+        return await actionClient.request<T>(method, payload)
+    }
+
     get page(): Page {
         if (!this.pageRef) {
             throw new Error(
@@ -232,7 +513,79 @@ export class Opensteer {
             return
         }
 
-        const session = await this.pool.launch(options)
+        if (this.cloud) {
+            let actionClient: ActionWsClient | null = null
+            let browser: Browser | null = null
+            let sessionId: string | null = null
+
+            try {
+                try {
+                    await this.syncLocalSelectorCacheToCloud()
+                } catch (error) {
+                    if (this.config.debug) {
+                        const message =
+                            error instanceof Error
+                                ? error.message
+                                : String(error)
+                        console.warn(
+                            `[opensteer] cloud selector cache sync failed: ${message}`
+                        )
+                    }
+                }
+
+                const session = await this.cloud.sessionClient.create({
+                    name: this.namespace,
+                    model: this.config.model,
+                    launchContext:
+                        (options.context as Record<string, unknown>) ||
+                        undefined,
+                })
+
+                sessionId = session.sessionId
+                actionClient = await ActionWsClient.connect({
+                    url: session.actionWsUrl,
+                    token: session.actionToken,
+                    sessionId: session.sessionId,
+                })
+
+                const cdpConnection = await this.cloud.cdpClient.connect({
+                    wsUrl: session.cdpWsUrl,
+                    token: session.cdpToken,
+                })
+
+                browser = cdpConnection.browser
+                this.browser = cdpConnection.browser
+                this.contextRef = cdpConnection.context
+                this.pageRef = cdpConnection.page
+                this.ownsBrowser = true
+                this.snapshotCache = null
+
+                this.cloud.actionClient = actionClient
+                this.cloud.sessionId = sessionId
+                return
+            } catch (error) {
+                if (actionClient) {
+                    await actionClient.close().catch(() => undefined)
+                }
+                if (browser) {
+                    await browser.close().catch(() => undefined)
+                }
+                if (sessionId) {
+                    await this.cloud.sessionClient
+                        .close(sessionId)
+                        .catch(() => undefined)
+                }
+                throw error
+            }
+        }
+
+        const session = await this.pool.launch({
+            ...options,
+            cdpUrl: options.cdpUrl ?? this.config.browser?.cdpUrl,
+            channel: options.channel ?? this.config.browser?.channel,
+            userDataDir:
+                options.userDataDir ?? this.config.browser?.userDataDir,
+        })
 
         this.browser = session.browser
         this.contextRef = session.context
@@ -242,6 +595,13 @@ export class Opensteer {
     }
 
     static from(page: Page, config: OpensteerConfig = {}): Opensteer {
+        if (config.cloud?.enabled) {
+            throw cloudUnsupportedMethodError(
+                'Opensteer.from(page)',
+                'Opensteer.from(page) is not supported in cloud mode v1.'
+            )
+        }
+
         const instance = new Opensteer(config)
         instance.pageRef = page
         instance.contextRef = page.context()
@@ -254,6 +614,33 @@ export class Opensteer {
     async close(): Promise<void> {
         this.snapshotCache = null
 
+        if (this.cloud) {
+            const actionClient = this.cloud.actionClient
+            const sessionId = this.cloud.sessionId
+            const browser = this.browser
+
+            this.cloud.actionClient = null
+            this.cloud.sessionId = null
+
+            this.browser = null
+            this.pageRef = null
+            this.contextRef = null
+            this.ownsBrowser = false
+
+            if (actionClient) {
+                await actionClient.close().catch(() => undefined)
+            }
+            if (browser) {
+                await browser.close().catch(() => undefined)
+            }
+            if (sessionId) {
+                await this.cloud.sessionClient
+                    .close(sessionId)
+                    .catch(() => undefined)
+            }
+            return
+        }
+
         if (this.ownsBrowser) {
             await this.pool.close()
         }
@@ -262,6 +649,17 @@ export class Opensteer {
         this.pageRef = null
         this.contextRef = null
         this.ownsBrowser = false
+    }
+
+    private async syncLocalSelectorCacheToCloud(): Promise<void> {
+        if (!this.cloud) return
+
+        const entries = collectLocalSelectorCacheEntries(this.storage)
+        if (!entries.length) return
+
+        await this.cloud.sessionClient.importSelectorCache({
+            entries,
+        })
     }
 
     async goto(url: string, options?: GotoOptions): Promise<void> {
@@ -285,6 +683,15 @@ export class Opensteer {
             title: await this.page.title(),
             html,
         }
+    }
+
+    async screenshot(options: ScreenshotOptions = {}): Promise<Buffer> {
+        return this.page.screenshot({
+            type: options.type ?? 'png',
+            fullPage: options.fullPage,
+            quality: options.type === 'jpeg' ? (options.quality ?? 90) : undefined,
+            omitBackground: options.omitBackground,
+        })
     }
 
     async click(options: ClickOptions): Promise<ActionResult> {
@@ -1178,6 +1585,18 @@ export class Opensteer {
         }
 
         if (options.element != null) {
+            const pathFromElement = await this.tryBuildPathFromCounter(
+                options.element
+            )
+            if (pathFromElement) {
+                return {
+                    path: pathFromElement,
+                    counter: null,
+                    shouldPersist: Boolean(storageKey),
+                    source: 'element',
+                }
+            }
+
             return {
                 path: null,
                 counter: options.element,
@@ -1207,6 +1626,18 @@ export class Opensteer {
                 options.description
             )
             if (resolved?.counter != null) {
+                const pathFromAiCounter = await this.tryBuildPathFromCounter(
+                    resolved.counter
+                )
+                if (pathFromAiCounter) {
+                    return {
+                        path: pathFromAiCounter,
+                        counter: null,
+                        shouldPersist: Boolean(storageKey),
+                        source: 'ai',
+                    }
+                }
+
                 return {
                     path: null,
                     counter: resolved.counter,
@@ -1330,6 +1761,16 @@ export class Opensteer {
             return indexedPath
         } finally {
             await handle.dispose()
+        }
+    }
+
+    private async tryBuildPathFromCounter(
+        counter: number
+    ): Promise<ElementPath | null> {
+        try {
+            return await this.buildPathFromElement(counter)
+        } catch {
+            return null
         }
     }
 
@@ -1782,6 +2223,18 @@ export class Opensteer {
             }
 
             if (normalized.element != null) {
+                const path = await this.tryBuildPathFromCounter(
+                    normalized.element
+                )
+                if (path) {
+                    fields.push({
+                        key: fieldKey,
+                        path,
+                        attribute: normalized.attribute,
+                    })
+                    return
+                }
+
                 fields.push({
                     key: fieldKey,
                     counter: normalized.element,
@@ -1831,6 +2284,16 @@ export class Opensteer {
             }
 
             if (fieldPlan.element != null) {
+                const path = await this.tryBuildPathFromCounter(fieldPlan.element)
+                if (path) {
+                    fields.push({
+                        key,
+                        path,
+                        attribute: fieldPlan.attribute,
+                    })
+                    continue
+                }
+
                 fields.push({
                     key,
                     counter: fieldPlan.element,
@@ -1985,6 +2448,12 @@ export class Opensteer {
     private normalizePath(path: ElementPath): ElementPath {
         return sanitizeElementPath(path)
     }
+}
+
+function resolveCloudBaseUrl(): string {
+    const value = process.env.OPENSTEER_CLOUD_BASE_URL?.trim()
+    if (!value) return DEFAULT_CLOUD_BASE_URL
+    return value.replace(/\/+$/, '')
 }
 
 function formatActionFailureMessage(

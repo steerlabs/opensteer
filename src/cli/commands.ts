@@ -1,3 +1,4 @@
+import { writeFile } from 'node:fs/promises'
 import type { Opensteer } from '../opensteer.js'
 import type { ExtractSchema, SnapshotMode } from '../types.js'
 
@@ -50,10 +51,12 @@ const commands: Record<string, CommandHandler> = {
 
     async screenshot(ov, args) {
         const file = (args.file as string) || 'screenshot.png'
-        await ov.page.screenshot({
-            path: file,
+        const type = file.endsWith('.jpg') || file.endsWith('.jpeg') ? 'jpeg' : 'png'
+        const buffer = await ov.screenshot({
             fullPage: args.fullPage as boolean | undefined,
+            type,
         })
+        await writeFile(file, buffer)
         return { file }
     },
 

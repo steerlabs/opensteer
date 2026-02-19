@@ -32,11 +32,19 @@ async function handleRequest(
             const url = args.url as string | undefined
             const headless = args.headless as boolean | undefined
             const name = args.name as string | undefined
+            const cdpUrl = args['cdp-url'] as string | undefined
+            const channel = args.channel as string | undefined
+            const userDataDir = args['user-data-dir'] as string | undefined
 
             if (!instance) {
                 instance = new Opensteer({
                     name: name ?? 'cli',
-                    browser: { headless: headless ?? false },
+                    browser: {
+                        headless: headless ?? false,
+                        cdpUrl,
+                        channel,
+                        userDataDir,
+                    },
                 })
                 await instance.launch({ headless: headless ?? false })
             }

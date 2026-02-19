@@ -14,6 +14,14 @@ export interface SnapshotOptions {
     markInteractive?: boolean
 }
 
+export interface ScreenshotOptions {
+    fullPage?: boolean
+    type?: 'png' | 'jpeg'
+    /** Ignored for PNG. */
+    quality?: number
+    omitBackground?: boolean
+}
+
 export interface AiResolveArgs {
     html: string
     action: string
@@ -63,22 +71,40 @@ export interface LaunchOptions {
     executablePath?: string
     slowMo?: number
     context?: BrowserContextOptions
+    /** Connect to a running Chrome via CDP. Example: "http://localhost:9222" */
+    cdpUrl?: string
+    /** Use an installed browser: "chrome", "chrome-beta", "msedge" */
+    channel?: string
+    /** Chrome user data directory. Preserves cookies, extensions, and sessions. */
+    userDataDir?: string
 }
 
 export interface OpensteerBrowserConfig {
     headless?: boolean
     executablePath?: string
     slowMo?: number
+    /** Connect to a running Chrome via CDP. Example: "http://localhost:9222" */
+    cdpUrl?: string
+    /** Use an installed browser: "chrome", "chrome-beta", "msedge" */
+    channel?: string
+    /** Chrome user data directory. Preserves cookies, extensions, and sessions. */
+    userDataDir?: string
 }
 
 export interface OpensteerStorageConfig {
     rootDir?: string
 }
 
+export interface OpensteerCloudConfig {
+    enabled: boolean
+    key?: string
+}
+
 export interface OpensteerConfig {
     name?: string
     browser?: OpensteerBrowserConfig
     storage?: OpensteerStorageConfig
+    cloud?: OpensteerCloudConfig
     model?: string
     debug?: boolean
 }

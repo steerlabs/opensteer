@@ -59,7 +59,7 @@ function parseValue(str) {
 function buildRequest(command, flags, positional) {
     const id = 1
     const globalFlags = {}
-    for (const key of ['name', 'headless', 'json']) {
+    for (const key of ['name', 'headless', 'json', 'cdp-url', 'channel', 'user-data-dir']) {
         if (key in flags) {
             globalFlags[key] = flags[key]
             delete flags[key]
@@ -336,6 +336,9 @@ Utility:
 Global Flags:
   --name <namespace>        Storage namespace (default: "cli")
   --headless                Launch browser in headless mode
+  --cdp-url <url>           Connect to running Chrome via CDP (e.g. http://localhost:9222)
+  --channel <browser>       Use installed browser (chrome, chrome-beta, msedge)
+  --user-data-dir <path>    Chrome profile directory for logged-in sessions
   --element <N>             Target element by counter
   --selector <css>          Target element by CSS selector
   --description <text>      Description for selector persistence

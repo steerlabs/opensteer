@@ -75,6 +75,54 @@ describe('config', () => {
         expect(resolved.model).toBe('gpt-5-mini')
     })
 
+    it('resolveConfig ignores OPENSTEER_API_KEY when cloud mode is not enabled', () => {
+        process.env.OPENSTEER_API_KEY = 'osk_env_123'
+
+        const resolved = resolveConfig({})
+        expect(resolved.cloud).toBeUndefined()
+    })
+
+    it('resolveConfig uses OPENSTEER_API_KEY when cloud.key is missing', () => {
+        process.env.OPENSTEER_API_KEY = 'osk_env_123'
+
+        const resolved = resolveConfig({
+            cloud: {
+                enabled: true,
+            },
+        })
+
+        expect(resolved.cloud).toEqual({
+            enabled: true,
+            key: 'osk_env_123',
+        })
+    })
+
+    it('resolveConfig keeps explicit cloud.key over OPENSTEER_API_KEY', () => {
+        process.env.OPENSTEER_API_KEY = 'osk_env_123'
+
+        const resolved = resolveConfig({
+            cloud: {
+                enabled: true,
+                key: 'osk_input_456',
+            },
+        })
+
+        expect(resolved.cloud?.key).toBe('osk_input_456')
+    })
+
+    it('resolveConfig preserves explicit empty cloud.key over OPENSTEER_API_KEY', () => {
+        process.env.OPENSTEER_API_KEY = 'osk_env_123'
+
+        const resolved = resolveConfig({
+            cloud: {
+                enabled: true,
+                key: '   ',
+            },
+        })
+
+        expect(resolved.cloud?.key).toBe('   ')
+    })
+
     it('throws when legacy ai config is passed directly', () => {
         const legacyConfig: OpensteerConfig = {
             storage: { rootDir: process.cwd() },

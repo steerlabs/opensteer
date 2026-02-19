@@ -44,24 +44,63 @@ export const VOLATILE_LAZY_CLASS_TOKENS = new Set([
     'lazyloading',
 ])
 
-const MATCH_ATTRIBUTE_PRIORITY = [
-    'id',
+export const MATCH_ATTRIBUTE_PRIORITY = [
     'class',
     'data-testid',
     'data-test',
     'data-qa',
     'data-cy',
     'name',
-    'for',
-    'aria-label',
-    'aria-labelledby',
     'role',
     'type',
-    'href',
+    'aria-label',
     'title',
+    'placeholder',
+    'for',
+    'aria-controls',
+    'aria-labelledby',
+    'aria-describedby',
+    'id',
+    'href',
+    'value',
+    'src',
+    'srcset',
+    'imagesrcset',
+    'ping',
     'alt',
+] as const
+
+export const STABLE_PRIMARY_ATTR_KEYS = [
+    'data-testid',
+    'data-test',
+    'data-qa',
+    'data-cy',
+    'name',
+    'role',
+    'type',
+    'aria-label',
+    'title',
     'placeholder',
 ] as const
+
+export const DEFERRED_MATCH_ATTR_KEYS = [
+    'href',
+    'src',
+    'srcset',
+    'imagesrcset',
+    'ping',
+    'value',
+    'for',
+    'aria-controls',
+    'aria-labelledby',
+    'aria-describedby',
+] as const
+
+const STABLE_PRIMARY_ATTR_KEY_SET = new Set<string>(STABLE_PRIMARY_ATTR_KEYS)
+const DEFERRED_MATCH_ATTR_KEY_SET = new Set<string>(DEFERRED_MATCH_ATTR_KEYS)
+const MATCH_ATTRIBUTE_PRIORITY_INDEX = new Map<string, number>(
+    MATCH_ATTRIBUTE_PRIORITY.map((key, index) => [key, index])
+)
 
 const INTERNAL_ATTR_PREFIXES = ['data-ov-', 'data-opensteer-']
 
@@ -111,14 +150,8 @@ export function shouldKeepAttributeForPath(
 
 export function sortAttributeKeys(keys: string[]): string[] {
     return [...keys].sort((a, b) => {
-        const ai = MATCH_ATTRIBUTE_PRIORITY.indexOf(
-            a as (typeof MATCH_ATTRIBUTE_PRIORITY)[number]
-        )
-        const bi = MATCH_ATTRIBUTE_PRIORITY.indexOf(
-            b as (typeof MATCH_ATTRIBUTE_PRIORITY)[number]
-        )
-        const ar = ai === -1 ? Number.MAX_SAFE_INTEGER : ai
-        const br = bi === -1 ? Number.MAX_SAFE_INTEGER : bi
+        const ar = MATCH_ATTRIBUTE_PRIORITY_INDEX.get(a) ?? Number.MAX_SAFE_INTEGER
+        const br = MATCH_ATTRIBUTE_PRIORITY_INDEX.get(b) ?? Number.MAX_SAFE_INTEGER
         if (ar !== br) return ar - br
         return a.localeCompare(b)
     })
@@ -131,11 +164,7 @@ export function escapeCssAttrValue(value: string): string {
 export function buildLocalClausePool(node: PathNode): MatchClause[] {
     const attrs = node.attrs || {}
     const pool: MatchClause[] = []
-
-    const idVal = attrs.id
-    if (idVal && idVal.trim()) {
-        pool.push({ kind: 'attr', key: 'id', op: 'exact' })
-    }
+    const deferred: MatchClause[] = []
 
     const classVal = String(attrs.class || '').trim()
     if (classVal) {
@@ -149,16 +178,44 @@ export function buildLocalClausePool(node: PathNode): MatchClause[] {
 
     const keys = sortAttributeKeys(Object.keys(attrs))
     for (const key of keys) {
-        if (key === 'id' || key === 'class') continue
+        if (key === 'class') continue
         const value = attrs[key]
         if (!value || !value.trim()) continue
-        pool.push({ kind: 'attr', key, op: 'exact' })
+        const clause: MatchClause = { kind: 'attr', key, op: 'exact' }
+        if (shouldDeferMatchAttribute(key)) {
+            deferred.push(clause)
+            continue
+        }
+        pool.push(clause)
     }
 
     pool.push({ kind: 'position', axis: 'nthOfType' })
     pool.push({ kind: 'position', axis: 'nthChild' })
 
+    const hasPrimary = pool.some((clause) => clause.kind === 'attr')
+    if (!hasPrimary) {
+        pool.push(...deferred)
+    }
+
     return pool
+}
+
+export function shouldDeferMatchAttribute(rawKey: string): boolean {
+    const key = String(rawKey || '').trim().toLowerCase()
+    if (!key || key === 'class') return false
+    if (isIdLikeAttributeKey(key)) return true
+    if (DEFERRED_MATCH_ATTR_KEY_SET.has(key)) return true
+    if (key.startsWith('data-') && !STABLE_PRIMARY_ATTR_KEY_SET.has(key)) {
+        return true
+    }
+    return !STABLE_PRIMARY_ATTR_KEY_SET.has(key)
+}
+
+export function isIdLikeAttributeKey(rawKey: string): boolean {
+    const key = String(rawKey || '').trim().toLowerCase()
+    if (!key) return false
+    if (key === 'id') return true
+    return /(?:^|[-_:])id$/.test(key)
 }
 
 export function getClauseAttributeValue(
