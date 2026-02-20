@@ -109,10 +109,19 @@ export interface OpensteerConfig {
     debug?: boolean
 }
 
+export interface ActionWaitOptions {
+    enabled?: boolean
+    timeout?: number
+    settleMs?: number
+    networkQuietMs?: number
+    includeNetwork?: boolean
+}
+
 export interface BaseActionOptions {
     description?: string
     element?: number
     selector?: string
+    wait?: false | ActionWaitOptions
 }
 
 export interface ClickOptions extends BaseActionOptions {

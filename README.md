@@ -54,6 +54,23 @@ For actions like `click`/`input`/`hover`/`select`/`scroll`:
 
 When steps 2-4 resolve and `description` is provided, the path is persisted.
 
+## Smart Post-Action Wait
+
+Mutating actions (`click`, `input`, `select`, `scroll`, etc.) include a
+best-effort post-action wait so delayed visual updates are usually settled
+before the method resolves.
+
+You can disable or tune this per call:
+
+```ts
+await ov.click({ description: "Save button", wait: false });
+
+await ov.click({
+  description: "Save button",
+  wait: { timeout: 9000, settleMs: 900, includeNetwork: true, networkQuietMs: 400 },
+});
+```
+
 ## Snapshot Modes
 
 ```ts

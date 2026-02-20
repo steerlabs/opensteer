@@ -75,6 +75,10 @@ import {
     type CounterRequest,
 } from './html/counter-runtime.js'
 import {
+    createPostActionWaitSession,
+    type PostActionKind,
+} from './action-wait.js'
+import {
     buildPersistedExtractPayload,
     collectArrayItemFieldDescriptors,
     isPersistablePathField,
@@ -734,9 +738,11 @@ export class Opensteer {
                     )
                 }
 
-                await handle.hover({
-                    force: options.force,
-                    position: options.position,
+                await this.runWithPostActionWait('hover', options.wait, async () => {
+                    await handle.hover({
+                        force: options.force,
+                        position: options.position,
+                    })
                 })
             } catch (err) {
                 const message =
@@ -770,18 +776,27 @@ export class Opensteer {
         if (!resolution.path) {
             throw new Error('Unable to resolve element path for hover action.')
         }
+        const path = resolution.path
 
-        const result = await performHover(this.page, resolution.path, options)
+        const result = await this.runWithPostActionWait(
+            'hover',
+            options.wait,
+            async () => {
+                const actionResult = await performHover(this.page, path, options)
 
-        if (!result.ok) {
-            throw new Error(
-                formatActionFailureMessage(
-                    'hover',
-                    options.description,
-                    result.error || 'Hover failed.'
-                )
-            )
-        }
+                if (!actionResult.ok) {
+                    throw new Error(
+                        formatActionFailureMessage(
+                            'hover',
+                            options.description,
+                            actionResult.error || 'Hover failed.'
+                        )
+                    )
+                }
+
+                return actionResult
+            }
+        )
         this.snapshotCache = null
 
         const persisted =
@@ -819,14 +834,16 @@ export class Opensteer {
                     )
                 }
 
-                if (options.clear !== false) {
-                    await handle.fill(options.text)
-                } else {
-                    await handle.type(options.text)
-                }
-                if (options.pressEnter) {
-                    await handle.press('Enter')
-                }
+                await this.runWithPostActionWait('input', options.wait, async () => {
+                    if (options.clear !== false) {
+                        await handle.fill(options.text)
+                    } else {
+                        await handle.type(options.text)
+                    }
+                    if (options.pressEnter) {
+                        await handle.press('Enter')
+                    }
+                })
             } catch (err) {
                 const message =
                     err instanceof Error ? err.message : 'Input failed.'
@@ -859,18 +876,27 @@ export class Opensteer {
         if (!resolution.path) {
             throw new Error('Unable to resolve element path for input action.')
         }
+        const path = resolution.path
 
-        const result = await performInput(this.page, resolution.path, options)
+        const result = await this.runWithPostActionWait(
+            'input',
+            options.wait,
+            async () => {
+                const actionResult = await performInput(this.page, path, options)
 
-        if (!result.ok) {
-            throw new Error(
-                formatActionFailureMessage(
-                    'input',
-                    options.description,
-                    result.error || 'Input failed.'
-                )
-            )
-        }
+                if (!actionResult.ok) {
+                    throw new Error(
+                        formatActionFailureMessage(
+                            'input',
+                            options.description,
+                            actionResult.error || 'Input failed.'
+                        )
+                    )
+                }
+
+                return actionResult
+            }
+        )
         this.snapshotCache = null
 
         const persisted =
@@ -908,15 +934,23 @@ export class Opensteer {
                     )
                 }
 
-                if (options.value != null) {
-                    await handle.selectOption(options.value)
-                } else if (options.label != null) {
-                    await handle.selectOption({ label: options.label })
-                } else if (options.index != null) {
-                    await handle.selectOption({ index: options.index })
-                } else {
-                    throw new Error('Select requires value, label, or index.')
-                }
+                await this.runWithPostActionWait(
+                    'select',
+                    options.wait,
+                    async () => {
+                        if (options.value != null) {
+                            await handle.selectOption(options.value)
+                        } else if (options.label != null) {
+                            await handle.selectOption({ label: options.label })
+                        } else if (options.index != null) {
+                            await handle.selectOption({ index: options.index })
+                        } else {
+                            throw new Error(
+                                'Select requires value, label, or index.'
+                            )
+                        }
+                    }
+                )
             } catch (err) {
                 const message =
                     err instanceof Error ? err.message : 'Select failed.'
@@ -949,18 +983,27 @@ export class Opensteer {
         if (!resolution.path) {
             throw new Error('Unable to resolve element path for select action.')
         }
+        const path = resolution.path
 
-        const result = await performSelect(this.page, resolution.path, options)
+        const result = await this.runWithPostActionWait(
+            'select',
+            options.wait,
+            async () => {
+                const actionResult = await performSelect(this.page, path, options)
 
-        if (!result.ok) {
-            throw new Error(
-                formatActionFailureMessage(
-                    'select',
-                    options.description,
-                    result.error || 'Select failed.'
-                )
-            )
-        }
+                if (!actionResult.ok) {
+                    throw new Error(
+                        formatActionFailureMessage(
+                            'select',
+                            options.description,
+                            actionResult.error || 'Select failed.'
+                        )
+                    )
+                }
+
+                return actionResult
+            }
+        )
         this.snapshotCache = null
 
         const persisted =
@@ -999,11 +1042,13 @@ export class Opensteer {
                 }
 
                 const delta = getScrollDelta(options)
-                await handle.evaluate((el, value) => {
-                    if (el instanceof HTMLElement) {
-                        el.scrollBy(value.x, value.y)
-                    }
-                }, delta)
+                await this.runWithPostActionWait('scroll', options.wait, async () => {
+                    await handle.evaluate((el, value) => {
+                        if (el instanceof HTMLElement) {
+                            el.scrollBy(value.x, value.y)
+                        }
+                    }, delta)
+                })
             } catch (err) {
                 const message =
                     err instanceof Error ? err.message : 'Scroll failed.'
@@ -1033,17 +1078,29 @@ export class Opensteer {
             )
         }
 
-        const result = await performScroll(this.page, resolution.path, options)
-
-        if (!result.ok) {
-            throw new Error(
-                formatActionFailureMessage(
-                    'scroll',
-                    options.description,
-                    result.error || 'Scroll failed.'
+        const result = await this.runWithPostActionWait(
+            'scroll',
+            options.wait,
+            async () => {
+                const actionResult = await performScroll(
+                    this.page,
+                    resolution.path,
+                    options
                 )
-            )
-        }
+
+                if (!actionResult.ok) {
+                    throw new Error(
+                        formatActionFailureMessage(
+                            'scroll',
+                            options.description,
+                            actionResult.error || 'Scroll failed.'
+                        )
+                    )
+                }
+
+                return actionResult
+            }
+        )
         this.snapshotCache = null
 
         const persisted =
@@ -1117,12 +1174,16 @@ export class Opensteer {
     // --- Keyboard Input ---
 
     async pressKey(key: string): Promise<void> {
-        await pressKey(this.page, key)
+        await this.runWithPostActionWait('pressKey', undefined, async () => {
+            await pressKey(this.page, key)
+        })
         this.snapshotCache = null
     }
 
     async type(text: string): Promise<void> {
-        await typeText(this.page, text)
+        await this.runWithPostActionWait('type', undefined, async () => {
+            await typeText(this.page, text)
+        })
         this.snapshotCache = null
     }
 
@@ -1250,7 +1311,13 @@ export class Opensteer {
                         resolution.counter
                     )
                 }
-                await handle.setInputFiles(options.paths)
+                await this.runWithPostActionWait(
+                    'uploadFile',
+                    options.wait,
+                    async () => {
+                        await handle.setInputFiles(options.paths)
+                    }
+                )
             } catch (err) {
                 const message =
                     err instanceof Error ? err.message : 'File upload failed.'
@@ -1283,22 +1350,31 @@ export class Opensteer {
         if (!resolution.path) {
             throw new Error('Unable to resolve element path for file upload.')
         }
+        const path = resolution.path
 
-        const result = await performFileUpload(
-            this.page,
-            resolution.path,
-            options.paths
-        )
-
-        if (!result.ok) {
-            throw new Error(
-                formatActionFailureMessage(
-                    'uploadFile',
-                    options.description,
-                    result.error || 'File upload failed.'
+        const result = await this.runWithPostActionWait(
+            'uploadFile',
+            options.wait,
+            async () => {
+                const actionResult = await performFileUpload(
+                    this.page,
+                    path,
+                    options.paths
                 )
-            )
-        }
+
+                if (!actionResult.ok) {
+                    throw new Error(
+                        formatActionFailureMessage(
+                            'uploadFile',
+                            options.description,
+                            actionResult.error || 'File upload failed.'
+                        )
+                    )
+                }
+
+                return actionResult
+            }
+        )
         this.snapshotCache = null
 
         const persisted =
@@ -1472,6 +1548,26 @@ export class Opensteer {
         this.snapshotCache = null
     }
 
+    private async runWithPostActionWait<T>(
+        action: PostActionKind,
+        waitOverride: BaseActionOptions['wait'],
+        execute: () => Promise<T>
+    ): Promise<T> {
+        const waitSession = createPostActionWaitSession(
+            this.page,
+            action,
+            waitOverride
+        )
+
+        try {
+            const result = await execute()
+            await waitSession.wait()
+            return result
+        } finally {
+            waitSession.dispose()
+        }
+    }
+
     private async executeClickVariant(
         method: 'click' | 'dblclick' | 'rightclick',
         options: ClickOptions
@@ -1491,10 +1587,12 @@ export class Opensteer {
                     )
                 }
 
-                await handle.click({
-                    button: options.button,
-                    clickCount: options.clickCount,
-                    modifiers: options.modifiers,
+                await this.runWithPostActionWait(method, options.wait, async () => {
+                    await handle.click({
+                        button: options.button,
+                        clickCount: options.clickCount,
+                        modifiers: options.modifiers,
+                    })
                 })
             } catch (err) {
                 const message =
@@ -1528,18 +1626,25 @@ export class Opensteer {
         if (!resolution.path) {
             throw new Error('Unable to resolve element path for click action.')
         }
+        const path = resolution.path
 
-        const result = await performClick(this.page, resolution.path, options)
-
-        if (!result.ok) {
-            throw new Error(
-                formatActionFailureMessage(
-                    method,
-                    options.description,
-                    result.error || 'Click failed.'
-                )
-            )
-        }
+        const result = await this.runWithPostActionWait(
+            method,
+            options.wait,
+            async () => {
+                const actionResult = await performClick(this.page, path, options)
+                if (!actionResult.ok) {
+                    throw new Error(
+                        formatActionFailureMessage(
+                            method,
+                            options.description,
+                            actionResult.error || 'Click failed.'
+                        )
+                    )
+                }
+                return actionResult
+            }
+        )
         this.snapshotCache = null
 
         const persisted =
