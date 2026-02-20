@@ -32,6 +32,31 @@ new Opensteer(config?: OpensteerConfig)
 - `select(options: SelectOptions): Promise<ActionResult>`
 - `scroll(options?: ScrollOptions): Promise<ActionResult>`
 
+Mutating actions apply a best-effort post-action wait by default so delayed UI
+updates are visible before the method resolves.
+
+Use `wait: false` on action options to disable this behavior per call.
+
+```ts
+interface ActionWaitOptions {
+    enabled?: boolean
+    timeout?: number
+    settleMs?: number
+    networkQuietMs?: number
+    includeNetwork?: boolean
+}
+
+interface BaseActionOptions {
+    description?: string
+    element?: number
+    selector?: string
+    wait?: false | ActionWaitOptions
+}
+```
+
+`pressKey()` and `type()` also use post-action wait internally with default
+profiles, but they do not take per-call wait options.
+
 ### Extraction
 
 - `extract<T>(options: ExtractOptions): Promise<T>`
