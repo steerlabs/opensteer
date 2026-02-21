@@ -2,7 +2,12 @@ import type { Page } from 'playwright'
 import type { ScrollOptions } from '../types.js'
 import type { ElementPath } from '../element-path/types.js'
 import { resolveElementPath } from '../element-path/resolver.js'
-import { formatPathResolutionError } from './path-resolution.js'
+import { probeActionabilityState } from './actionability-probe.js'
+import {
+    classifyActionFailure,
+    defaultActionFailureMessage,
+} from './failure-classifier.js'
+import { classifyPathResolutionFailure } from './path-resolution.js'
 import type { ActionExecutionResult } from './types.js'
 
 function getScrollDelta(options: ScrollOptions): { x: number; y: number } {
@@ -43,7 +48,8 @@ export async function performScroll(
     try {
         resolved = await resolveElementPath(page, path)
     } catch (err) {
-        return { ok: false, error: formatPathResolutionError(err) }
+        const failure = classifyPathResolutionFailure('scroll', err)
+        return { ok: false, error: failure.message, failure }
     }
 
     try {
@@ -62,8 +68,13 @@ export async function performScroll(
             usedSelector: resolved.usedSelector,
         }
     } catch (err) {
-        const message = err instanceof Error ? err.message : 'Scroll failed.'
-        return { ok: false, error: message }
+        const failure = classifyActionFailure({
+            action: 'scroll',
+            error: err,
+            fallbackMessage: defaultActionFailureMessage('scroll'),
+            probe: await probeActionabilityState(resolved.element),
+        })
+        return { ok: false, error: failure.message, failure }
     } finally {
         await resolved.element.dispose()
     }

@@ -58,5 +58,37 @@ describe('performHover', () => {
         const result = await performHover(page, path, {})
         expect(result.ok).toBe(false)
         expect(result.error).toContain('No matching element found')
+        expect(result.failure?.code).toBe('TARGET_NOT_FOUND')
+    })
+
+    it('classifies blocked hover interactions when an overlay is on top', async () => {
+        await setFixture(
+            page,
+            `
+        <style>
+          #hover-target {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            width: 120px;
+            height: 36px;
+          }
+          #overlay {
+            position: absolute;
+            inset: 0;
+            pointer-events: auto;
+          }
+        </style>
+        <button id="hover-target">Hover me</button>
+        <div id="overlay"></div>
+      `
+        )
+
+        page.setDefaultTimeout(1200)
+        const path = await buildElementPathFromSelector(page, '#hover-target')
+        const result = await performHover(page, path!, {})
+
+        expect(result.ok).toBe(false)
+        expect(result.failure?.code).toBe('BLOCKED_BY_INTERCEPTOR')
     })
 })

@@ -2,7 +2,12 @@ import type { Page } from 'playwright'
 import type { SelectOptions } from '../types.js'
 import type { ElementPath } from '../element-path/types.js'
 import { resolveElementPath } from '../element-path/resolver.js'
-import { formatPathResolutionError } from './path-resolution.js'
+import { probeActionabilityState } from './actionability-probe.js'
+import {
+    classifyActionFailure,
+    defaultActionFailureMessage,
+} from './failure-classifier.js'
+import { classifyPathResolutionFailure } from './path-resolution.js'
 import type { ActionExecutionResult } from './types.js'
 
 export async function performSelect(
@@ -14,7 +19,8 @@ export async function performSelect(
     try {
         resolved = await resolveElementPath(page, path)
     } catch (err) {
-        return { ok: false, error: formatPathResolutionError(err) }
+        const failure = classifyPathResolutionFailure('select', err)
+        return { ok: false, error: failure.message, failure }
     }
 
     try {
@@ -25,9 +31,15 @@ export async function performSelect(
         } else if (options.index != null) {
             await resolved.element.selectOption({ index: options.index })
         } else {
+            const failure = classifyActionFailure({
+                action: 'select',
+                error: new Error('Select requires value, label, or index.'),
+                fallbackMessage: defaultActionFailureMessage('select'),
+            })
             return {
                 ok: false,
-                error: 'Select requires value, label, or index.',
+                error: failure.message,
+                failure,
             }
         }
 
@@ -37,8 +49,13 @@ export async function performSelect(
             usedSelector: resolved.usedSelector,
         }
     } catch (err) {
-        const message = err instanceof Error ? err.message : 'Select failed.'
-        return { ok: false, error: message }
+        const failure = classifyActionFailure({
+            action: 'select',
+            error: err,
+            fallbackMessage: defaultActionFailureMessage('select'),
+            probe: await probeActionabilityState(resolved.element),
+        })
+        return { ok: false, error: failure.message, failure }
     } finally {
         await resolved.element.dispose()
     }
