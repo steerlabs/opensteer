@@ -1,4 +1,5 @@
 export * from './types.js'
+export * from './errors.js'
 export * from './click.js'
 export * from './hover.js'
 export * from './input.js'
