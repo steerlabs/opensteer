@@ -1,5 +1,12 @@
 import type { BrowserContextOptions } from 'playwright'
 import type { ElementPath } from './element-path/types.js'
+export type {
+    ActionFailure,
+    ActionFailureBlocker,
+    ActionFailureClassificationSource,
+    ActionFailureCode,
+    ActionFailureDetails,
+} from './action-failure.js'
 
 export type SnapshotMode =
     | 'action'

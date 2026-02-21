@@ -71,6 +71,35 @@ await ov.click({
 });
 ```
 
+## Action Failure Diagnostics
+
+Descriptor-aware interaction methods (`click`, `dblclick`, `rightclick`,
+`hover`, `input`, `select`, `scroll`, `uploadFile`) throw
+`OpensteerActionError` when an interaction cannot be completed.
+
+The error includes structured failure metadata for agent/tooling decisions:
+
+- `error.failure.code` (`ActionFailureCode`)
+- `error.failure.message`
+- `error.failure.retryable`
+- `error.failure.classificationSource`
+- `error.failure.details` (for blocker and observation details when available)
+
+```ts
+import { Opensteer, OpensteerActionError } from "opensteer";
+
+try {
+  await ov.click({ description: "Save button" });
+} catch (err) {
+  if (err instanceof OpensteerActionError) {
+    console.error(err.failure.code); // e.g. BLOCKED_BY_INTERCEPTOR
+    console.error(err.failure.message);
+    console.error(err.failure.classificationSource);
+  }
+  throw err;
+}
+```
+
 ## Snapshot Modes
 
 ```ts

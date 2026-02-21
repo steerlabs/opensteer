@@ -10,6 +10,7 @@ import { OpensteerCloudError } from './errors.js'
 interface CloudHttpErrorBody {
     error?: string
     code?: string
+    details?: Record<string, unknown>
 }
 
 const CACHE_IMPORT_BATCH_SIZE = 200
@@ -154,7 +155,7 @@ async function parseHttpError(
             ? body.error
             : `Cloud request failed with status ${response.status}.`
 
-    return new OpensteerCloudError(code, message, response.status)
+    return new OpensteerCloudError(code, message, response.status, body?.details)
 }
 
 function toCloudErrorCode(

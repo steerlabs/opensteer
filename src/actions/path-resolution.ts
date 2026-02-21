@@ -1,16 +1,20 @@
-import { ElementPathError } from '../element-path/errors.js'
+import type { ActionFailure } from '../action-failure.js'
+import {
+    classifyActionFailure,
+    defaultActionFailureMessage,
+} from './failure-classifier.js'
 
-const NOT_FOUND_CODES = new Set([
-    'ERR_PATH_TARGET_NOT_FOUND',
-    'ERR_PATH_CONTEXT_HOST_NOT_FOUND',
-])
+export function classifyPathResolutionFailure(
+    action: string,
+    err: unknown
+): ActionFailure {
+    return classifyActionFailure({
+        action,
+        error: err,
+        fallbackMessage: defaultActionFailureMessage(action),
+    })
+}
 
 export function formatPathResolutionError(err: unknown): string {
-    if (err instanceof ElementPathError) {
-        if (NOT_FOUND_CODES.has(err.code)) {
-            return `No matching element found. ${err.message}`
-        }
-        return err.message
-    }
-    return err instanceof Error ? err.message : 'Path resolution failed.'
+    return classifyPathResolutionFailure('resolvePath', err).message
 }
