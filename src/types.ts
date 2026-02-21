@@ -84,6 +84,8 @@ export interface LaunchOptions {
     channel?: string
     /** Chrome user data directory. Preserves cookies, extensions, and sessions. */
     userDataDir?: string
+    /** Connection timeout in milliseconds for CDP connections. */
+    timeout?: number
 }
 
 export interface OpensteerBrowserConfig {

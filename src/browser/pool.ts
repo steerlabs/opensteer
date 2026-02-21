@@ -35,7 +35,7 @@ export class BrowserPool {
 
         // ── CDP mode: connect to a running Chrome ──
         if (cdpUrl) {
-            return this.connectOverCDP(cdpUrl)
+            return this.connectOverCDP(cdpUrl, options.timeout)
         }
 
         // ── Real Chrome mode: launch with user profile ──
@@ -54,8 +54,10 @@ export class BrowserPool {
         this.browser = null
     }
 
-    private async connectOverCDP(cdpUrl: string): Promise<BrowserSession> {
-        const browser = await chromium.connectOverCDP(cdpUrl)
+    private async connectOverCDP(cdpUrl: string, timeout?: number): Promise<BrowserSession> {
+        const browser = await chromium.connectOverCDP(cdpUrl, {
+            timeout: timeout ?? 30_000,
+        })
         this.browser = browser
 
         const contexts = browser.contexts()

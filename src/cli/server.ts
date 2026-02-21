@@ -6,6 +6,7 @@ import { getSocketPath, getPidPath } from './paths.js'
 import { getCommandHandler } from './commands.js'
 
 let instance: Opensteer | null = null
+let launchPromise: Promise<void> | null = null
 
 const socketPath = getSocketPath()
 const pidPath = getPidPath()
@@ -46,7 +47,20 @@ async function handleRequest(
                         userDataDir,
                     },
                 })
-                await instance.launch({ headless: headless ?? false })
+                launchPromise = instance.launch({
+                    headless: headless ?? false,
+                    timeout: 30_000,
+                })
+                try {
+                    await launchPromise
+                } catch (err) {
+                    instance = null
+                    throw err
+                } finally {
+                    launchPromise = null
+                }
+            } else if (launchPromise) {
+                await launchPromise
             }
 
             if (url) {
