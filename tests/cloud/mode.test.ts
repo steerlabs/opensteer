@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { Opensteer } from '../../src/opensteer.js'
+import { OpensteerActionError } from '../../src/actions/errors.js'
+import { OpensteerCloudError } from '../../src/cloud/errors.js'
 
 const ORIGINAL_ENV = { ...process.env }
 
@@ -100,5 +102,57 @@ describe('cloud mode', () => {
                 description: 'login button',
             })
         ).rejects.toThrow('Cloud session is not connected. Call launch() first.')
+    })
+
+    it('maps cloud action failures with details into OpensteerActionError', async () => {
+        const ov = new Opensteer({
+            cloud: {
+                enabled: true,
+                key: 'osk_test_123',
+            },
+        })
+
+        const access = ov as unknown as {
+            cloud: {
+                actionClient: {
+                    request: (
+                        method: string,
+                        args: Record<string, unknown>
+                    ) => Promise<unknown>
+                }
+                sessionId: string
+            } | null
+        }
+
+        if (!access.cloud) throw new Error('Expected cloud state to exist.')
+
+        access.cloud.sessionId = 'sess_test_123'
+        access.cloud.actionClient = {
+            request: async () => {
+                throw new OpensteerCloudError(
+                    'CLOUD_ACTION_FAILED',
+                    'cloud click failed',
+                    undefined,
+                    {
+                        actionFailure: {
+                            code: 'BLOCKED_BY_INTERCEPTOR',
+                            message: 'Blocked by overlay.',
+                            retryable: true,
+                            classificationSource: 'typed_error',
+                        },
+                    }
+                )
+            },
+        }
+
+        try {
+            await ov.click({ description: 'login button' })
+            throw new Error('Expected cloud click to fail.')
+        } catch (err) {
+            expect(err).toBeInstanceOf(OpensteerActionError)
+            const actionError = err as OpensteerActionError
+            expect(actionError.failure.code).toBe('BLOCKED_BY_INTERCEPTOR')
+            expect(actionError.failure.message).toBe('Blocked by overlay.')
+        }
     })
 })

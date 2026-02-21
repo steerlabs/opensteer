@@ -1,18 +1,21 @@
-import type { CloudErrorCode } from './contracts.js'
+import type { CloudActionFailureDetails, CloudErrorCode } from './contracts.js'
 
 export class OpensteerCloudError extends Error {
     readonly code: CloudErrorCode | 'CLOUD_TRANSPORT_ERROR'
     readonly status?: number
+    readonly details?: CloudActionFailureDetails | Record<string, unknown>
 
     constructor(
         code: CloudErrorCode | 'CLOUD_TRANSPORT_ERROR',
         message: string,
-        status?: number
+        status?: number,
+        details?: CloudActionFailureDetails | Record<string, unknown>
     ) {
         super(message)
         this.name = 'OpensteerCloudError'
         this.code = code
         this.status = status
+        this.details = details
     }
 }
 

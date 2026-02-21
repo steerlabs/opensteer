@@ -149,7 +149,14 @@ export class ActionWsClient {
             return
         }
 
-        pending.reject(new OpensteerCloudError(parsed.code, parsed.error))
+        pending.reject(
+            new OpensteerCloudError(
+                parsed.code,
+                parsed.error,
+                undefined,
+                parsed.details
+            )
+        )
     }
 
     private rejectAll(error: Error): void {

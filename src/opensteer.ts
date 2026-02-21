@@ -31,6 +31,7 @@ import type {
     StateResult,
     TabInfo,
 } from './types.js'
+import type { ActionFailure } from './action-failure.js'
 import { LocalSelectorStorage, type SelectorFile } from './storage/local.js'
 import { prepareSnapshot, type PreparedSnapshot } from './html/pipeline.js'
 import {
@@ -69,6 +70,12 @@ import {
     getPageTitle,
 } from './actions/element-info.js'
 import { performFileUpload } from './actions/file-upload.js'
+import { OpensteerActionError } from './actions/errors.js'
+import {
+    classifyActionFailure,
+    defaultActionFailureMessage,
+    normalizeActionFailure,
+} from './actions/failure-classifier.js'
 import {
     resolveCounterElement,
     resolveCountersBatch,
@@ -99,6 +106,7 @@ import { ActionWsClient } from './cloud/action-ws-client.js'
 import { CloudCdpClient } from './cloud/cdp-client.js'
 import {
     cloudNotLaunchedError,
+    OpensteerCloudError,
     cloudUnsupportedMethodError,
 } from './cloud/errors.js'
 import { CloudSessionClient } from './cloud/session-client.js'
@@ -153,6 +161,16 @@ interface CloudRuntimeState {
 }
 
 const DEFAULT_CLOUD_BASE_URL = 'https://cloud.oversteer.ai'
+const CLOUD_INTERACTION_METHODS = new Set<CloudActionMethod>([
+    'click',
+    'dblclick',
+    'rightclick',
+    'hover',
+    'input',
+    'select',
+    'scroll',
+    'uploadFile',
+])
 
 export class Opensteer {
     private readonly config: OpensteerConfig
@@ -483,7 +501,59 @@ export class Opensteer {
             args && typeof args === 'object'
                 ? (args as Record<string, unknown>)
                 : {}
-        return await actionClient.request<T>(method, payload)
+        try {
+            return await actionClient.request<T>(method, payload)
+        } catch (err) {
+            if (
+                err instanceof OpensteerCloudError &&
+                err.code === 'CLOUD_ACTION_FAILED' &&
+                CLOUD_INTERACTION_METHODS.has(method)
+            ) {
+                const detailsRecord =
+                    err.details && typeof err.details === 'object'
+                        ? (err.details as Record<string, unknown>)
+                        : null
+                const cloudFailure = normalizeActionFailure(
+                    detailsRecord?.actionFailure
+                )
+                const failure =
+                    cloudFailure ||
+                    classifyActionFailure({
+                        action: method,
+                        error: err,
+                        fallbackMessage: defaultActionFailureMessage(method),
+                    })
+                const description = readCloudActionDescription(payload)
+                throw this.buildActionError(
+                    method,
+                    description,
+                    failure,
+                    null,
+                    err
+                )
+            }
+            throw err
+        }
+    }
+
+    private buildActionError(
+        action: string,
+        description: string | undefined,
+        failure: ActionFailure,
+        selectorUsed?: string | null,
+        cause?: unknown
+    ): OpensteerActionError {
+        return new OpensteerActionError({
+            action,
+            failure,
+            selectorUsed: selectorUsed || null,
+            message: formatActionFailureMessage(
+                action,
+                description,
+                failure.message
+            ),
+            cause,
+        })
     }
 
     get page(): Page {
@@ -727,7 +797,11 @@ export class Opensteer {
         const resolution = await this.resolvePath('hover', options)
 
         if (resolution.counter != null) {
-            const handle = await this.resolveCounterHandle(resolution.counter)
+            const handle = await this.resolveCounterHandleForAction(
+                'hover',
+                options.description,
+                resolution.counter
+            )
             let persistPath: ElementPath | null = null
             try {
                 if (storageKey && resolution.shouldPersist) {
@@ -745,9 +819,18 @@ export class Opensteer {
                     })
                 })
             } catch (err) {
-                const message =
-                    err instanceof Error ? err.message : 'Hover failed.'
-                throw new Error(message)
+                const failure = classifyActionFailure({
+                    action: 'hover',
+                    error: err,
+                    fallbackMessage: defaultActionFailureMessage('hover'),
+                })
+                throw this.buildActionError(
+                    'hover',
+                    options.description,
+                    failure,
+                    `[c="${resolution.counter}"]`,
+                    err
+                )
             } finally {
                 await handle.dispose()
             }
@@ -785,12 +868,20 @@ export class Opensteer {
                 const actionResult = await performHover(this.page, path, options)
 
                 if (!actionResult.ok) {
-                    throw new Error(
-                        formatActionFailureMessage(
-                            'hover',
-                            options.description,
-                            actionResult.error || 'Hover failed.'
-                        )
+                    const failure =
+                        actionResult.failure ||
+                        classifyActionFailure({
+                            action: 'hover',
+                            error:
+                                actionResult.error ||
+                                defaultActionFailureMessage('hover'),
+                            fallbackMessage: defaultActionFailureMessage('hover'),
+                        })
+                    throw this.buildActionError(
+                        'hover',
+                        options.description,
+                        failure,
+                        actionResult.usedSelector || null
                     )
                 }
 
@@ -823,7 +914,11 @@ export class Opensteer {
         const resolution = await this.resolvePath('input', options)
 
         if (resolution.counter != null) {
-            const handle = await this.resolveCounterHandle(resolution.counter)
+            const handle = await this.resolveCounterHandleForAction(
+                'input',
+                options.description,
+                resolution.counter
+            )
             let persistPath: ElementPath | null = null
             try {
                 if (storageKey && resolution.shouldPersist) {
@@ -845,9 +940,18 @@ export class Opensteer {
                     }
                 })
             } catch (err) {
-                const message =
-                    err instanceof Error ? err.message : 'Input failed.'
-                throw new Error(message)
+                const failure = classifyActionFailure({
+                    action: 'input',
+                    error: err,
+                    fallbackMessage: defaultActionFailureMessage('input'),
+                })
+                throw this.buildActionError(
+                    'input',
+                    options.description,
+                    failure,
+                    `[c="${resolution.counter}"]`,
+                    err
+                )
             } finally {
                 await handle.dispose()
             }
@@ -885,12 +989,20 @@ export class Opensteer {
                 const actionResult = await performInput(this.page, path, options)
 
                 if (!actionResult.ok) {
-                    throw new Error(
-                        formatActionFailureMessage(
-                            'input',
-                            options.description,
-                            actionResult.error || 'Input failed.'
-                        )
+                    const failure =
+                        actionResult.failure ||
+                        classifyActionFailure({
+                            action: 'input',
+                            error:
+                                actionResult.error ||
+                                defaultActionFailureMessage('input'),
+                            fallbackMessage: defaultActionFailureMessage('input'),
+                        })
+                    throw this.buildActionError(
+                        'input',
+                        options.description,
+                        failure,
+                        actionResult.usedSelector || null
                     )
                 }
 
@@ -923,7 +1035,11 @@ export class Opensteer {
         const resolution = await this.resolvePath('select', options)
 
         if (resolution.counter != null) {
-            const handle = await this.resolveCounterHandle(resolution.counter)
+            const handle = await this.resolveCounterHandleForAction(
+                'select',
+                options.description,
+                resolution.counter
+            )
             let persistPath: ElementPath | null = null
             try {
                 if (storageKey && resolution.shouldPersist) {
@@ -952,9 +1068,18 @@ export class Opensteer {
                     }
                 )
             } catch (err) {
-                const message =
-                    err instanceof Error ? err.message : 'Select failed.'
-                throw new Error(message)
+                const failure = classifyActionFailure({
+                    action: 'select',
+                    error: err,
+                    fallbackMessage: defaultActionFailureMessage('select'),
+                })
+                throw this.buildActionError(
+                    'select',
+                    options.description,
+                    failure,
+                    `[c="${resolution.counter}"]`,
+                    err
+                )
             } finally {
                 await handle.dispose()
             }
@@ -992,12 +1117,20 @@ export class Opensteer {
                 const actionResult = await performSelect(this.page, path, options)
 
                 if (!actionResult.ok) {
-                    throw new Error(
-                        formatActionFailureMessage(
-                            'select',
-                            options.description,
-                            actionResult.error || 'Select failed.'
-                        )
+                    const failure =
+                        actionResult.failure ||
+                        classifyActionFailure({
+                            action: 'select',
+                            error:
+                                actionResult.error ||
+                                defaultActionFailureMessage('select'),
+                            fallbackMessage: defaultActionFailureMessage('select'),
+                        })
+                    throw this.buildActionError(
+                        'select',
+                        options.description,
+                        failure,
+                        actionResult.usedSelector || null
                     )
                 }
 
@@ -1030,7 +1163,11 @@ export class Opensteer {
         const resolution = await this.resolvePath('scroll', options, true)
 
         if (resolution.counter != null) {
-            const handle = await this.resolveCounterHandle(resolution.counter)
+            const handle = await this.resolveCounterHandleForAction(
+                'scroll',
+                options.description,
+                resolution.counter
+            )
             let persistPath: ElementPath | null = null
             try {
                 if (storageKey && resolution.shouldPersist) {
@@ -1050,9 +1187,18 @@ export class Opensteer {
                     }, delta)
                 })
             } catch (err) {
-                const message =
-                    err instanceof Error ? err.message : 'Scroll failed.'
-                throw new Error(message)
+                const failure = classifyActionFailure({
+                    action: 'scroll',
+                    error: err,
+                    fallbackMessage: defaultActionFailureMessage('scroll'),
+                })
+                throw this.buildActionError(
+                    'scroll',
+                    options.description,
+                    failure,
+                    `[c="${resolution.counter}"]`,
+                    err
+                )
             } finally {
                 await handle.dispose()
             }
@@ -1089,12 +1235,20 @@ export class Opensteer {
                 )
 
                 if (!actionResult.ok) {
-                    throw new Error(
-                        formatActionFailureMessage(
-                            'scroll',
-                            options.description,
-                            actionResult.error || 'Scroll failed.'
-                        )
+                    const failure =
+                        actionResult.failure ||
+                        classifyActionFailure({
+                            action: 'scroll',
+                            error:
+                                actionResult.error ||
+                                defaultActionFailureMessage('scroll'),
+                            fallbackMessage: defaultActionFailureMessage('scroll'),
+                        })
+                    throw this.buildActionError(
+                        'scroll',
+                        options.description,
+                        failure,
+                        actionResult.usedSelector || null
                     )
                 }
 
@@ -1301,7 +1455,11 @@ export class Opensteer {
         const resolution = await this.resolvePath('uploadFile', options)
 
         if (resolution.counter != null) {
-            const handle = await this.resolveCounterHandle(resolution.counter)
+            const handle = await this.resolveCounterHandleForAction(
+                'uploadFile',
+                options.description,
+                resolution.counter
+            )
             let persistPath: ElementPath | null = null
             try {
                 if (storageKey && resolution.shouldPersist) {
@@ -1319,9 +1477,18 @@ export class Opensteer {
                     }
                 )
             } catch (err) {
-                const message =
-                    err instanceof Error ? err.message : 'File upload failed.'
-                throw new Error(message)
+                const failure = classifyActionFailure({
+                    action: 'uploadFile',
+                    error: err,
+                    fallbackMessage: defaultActionFailureMessage('uploadFile'),
+                })
+                throw this.buildActionError(
+                    'uploadFile',
+                    options.description,
+                    failure,
+                    `[c="${resolution.counter}"]`,
+                    err
+                )
             } finally {
                 await handle.dispose()
             }
@@ -1363,12 +1530,21 @@ export class Opensteer {
                 )
 
                 if (!actionResult.ok) {
-                    throw new Error(
-                        formatActionFailureMessage(
-                            'uploadFile',
-                            options.description,
-                            actionResult.error || 'File upload failed.'
-                        )
+                    const failure =
+                        actionResult.failure ||
+                        classifyActionFailure({
+                            action: 'uploadFile',
+                            error:
+                                actionResult.error ||
+                                defaultActionFailureMessage('uploadFile'),
+                            fallbackMessage:
+                                defaultActionFailureMessage('uploadFile'),
+                        })
+                    throw this.buildActionError(
+                        'uploadFile',
+                        options.description,
+                        failure,
+                        actionResult.usedSelector || null
                     )
                 }
 
@@ -1576,7 +1752,11 @@ export class Opensteer {
         const resolution = await this.resolvePath('click', options)
 
         if (resolution.counter != null) {
-            const handle = await this.resolveCounterHandle(resolution.counter)
+            const handle = await this.resolveCounterHandleForAction(
+                method,
+                options.description,
+                resolution.counter
+            )
             let persistPath: ElementPath | null = null
             try {
                 if (storageKey && resolution.shouldPersist) {
@@ -1595,9 +1775,18 @@ export class Opensteer {
                     })
                 })
             } catch (err) {
-                const message =
-                    err instanceof Error ? err.message : 'Click failed.'
-                throw new Error(message)
+                const failure = classifyActionFailure({
+                    action: method,
+                    error: err,
+                    fallbackMessage: defaultActionFailureMessage(method),
+                })
+                throw this.buildActionError(
+                    method,
+                    options.description,
+                    failure,
+                    `[c="${resolution.counter}"]`,
+                    err
+                )
             } finally {
                 await handle.dispose()
             }
@@ -1634,12 +1823,20 @@ export class Opensteer {
             async () => {
                 const actionResult = await performClick(this.page, path, options)
                 if (!actionResult.ok) {
-                    throw new Error(
-                        formatActionFailureMessage(
-                            method,
-                            options.description,
-                            actionResult.error || 'Click failed.'
-                        )
+                    const failure =
+                        actionResult.failure ||
+                        classifyActionFailure({
+                            action: method,
+                            error:
+                                actionResult.error ||
+                                defaultActionFailureMessage(method),
+                            fallbackMessage: defaultActionFailureMessage(method),
+                        })
+                    throw this.buildActionError(
+                        method,
+                        options.description,
+                        failure,
+                        actionResult.usedSelector || null
                     )
                 }
                 return actionResult
@@ -1876,6 +2073,29 @@ export class Opensteer {
     private async resolveCounterHandle(element: number) {
         const snapshot = await this.ensureSnapshotWithCounters()
         return resolveCounterElement(this.page, snapshot, element)
+    }
+
+    private async resolveCounterHandleForAction(
+        action: string,
+        description: string | undefined,
+        element: number
+    ): Promise<ElementHandle> {
+        try {
+            return await this.resolveCounterHandle(element)
+        } catch (err) {
+            const failure = classifyActionFailure({
+                action,
+                error: err,
+                fallbackMessage: defaultActionFailureMessage(action),
+            })
+            throw this.buildActionError(
+                action,
+                description,
+                failure,
+                `[c="${element}"]`,
+                err
+            )
+        }
     }
 
     private async buildPathFromResolvedHandle(
@@ -2562,6 +2782,15 @@ function formatActionFailureMessage(
 ): string {
     const label = description ? `"${description}"` : 'unnamed target'
     return `${action} action failed for ${label}: ${cause}`
+}
+
+function readCloudActionDescription(
+    payload: Record<string, unknown>
+): string | undefined {
+    const description = payload.description
+    if (typeof description !== 'string') return undefined
+    const normalized = description.trim()
+    return normalized.length ? normalized : undefined
 }
 
 function cloneContextHops(

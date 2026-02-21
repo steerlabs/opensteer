@@ -31,6 +31,7 @@ new Opensteer(config?: OpensteerConfig)
 - `input(options: InputOptions): Promise<ActionResult>`
 - `select(options: SelectOptions): Promise<ActionResult>`
 - `scroll(options?: ScrollOptions): Promise<ActionResult>`
+- `uploadFile(options: FileUploadOptions): Promise<ActionResult>`
 
 Mutating actions apply a best-effort post-action wait by default so delayed UI
 updates are visible before the method resolves.
@@ -57,6 +58,18 @@ interface BaseActionOptions {
 `pressKey()` and `type()` also use post-action wait internally with default
 profiles, but they do not take per-call wait options.
 
+When an interaction cannot be completed, descriptor-aware interaction methods
+throw `OpensteerActionError` with structured failure diagnostics:
+
+```ts
+class OpensteerActionError extends Error {
+    readonly action: string
+    readonly code: ActionFailureCode
+    readonly failure: ActionFailure
+    readonly selectorUsed: string | null
+}
+```
+
 ### Extraction
 
 - `extract<T>(options: ExtractOptions): Promise<T>`
@@ -79,6 +92,52 @@ interface ActionResult {
     persisted: boolean
     pathFile: string | null
     selectorUsed?: string | null
+}
+```
+
+## ActionFailure
+
+```ts
+type ActionFailureCode =
+    | 'TARGET_NOT_FOUND'
+    | 'TARGET_UNAVAILABLE'
+    | 'TARGET_STALE'
+    | 'TARGET_AMBIGUOUS'
+    | 'BLOCKED_BY_INTERCEPTOR'
+    | 'NOT_VISIBLE'
+    | 'NOT_ENABLED'
+    | 'NOT_EDITABLE'
+    | 'INVALID_TARGET'
+    | 'INVALID_OPTIONS'
+    | 'ACTION_TIMEOUT'
+    | 'UNKNOWN'
+
+type ActionFailureClassificationSource =
+    | 'typed_error'
+    | 'playwright_call_log'
+    | 'dom_probe'
+    | 'message_heuristic'
+    | 'unknown'
+
+interface ActionFailureBlocker {
+    tag: string
+    id: string | null
+    classes: string[]
+    role: string | null
+    text: string | null
+}
+
+interface ActionFailureDetails {
+    blocker?: ActionFailureBlocker
+    observation?: string
+}
+
+interface ActionFailure {
+    code: ActionFailureCode
+    message: string
+    retryable: boolean
+    classificationSource: ActionFailureClassificationSource
+    details?: ActionFailureDetails
 }
 ```
 

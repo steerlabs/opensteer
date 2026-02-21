@@ -76,5 +76,6 @@ describe('performScroll', () => {
 
         expect(result.ok).toBe(false)
         expect(result.error).toContain('No matching element found')
+        expect(result.failure?.code).toBe('TARGET_NOT_FOUND')
     })
 })

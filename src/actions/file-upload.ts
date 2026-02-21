@@ -1,7 +1,12 @@
 import type { Page } from 'playwright'
 import type { ElementPath } from '../element-path/types.js'
 import { resolveElementPath } from '../element-path/resolver.js'
-import { formatPathResolutionError } from './path-resolution.js'
+import { probeActionabilityState } from './actionability-probe.js'
+import {
+    classifyActionFailure,
+    defaultActionFailureMessage,
+} from './failure-classifier.js'
+import { classifyPathResolutionFailure } from './path-resolution.js'
 import type { ActionExecutionResult } from './types.js'
 
 export async function performFileUpload(
@@ -13,7 +18,8 @@ export async function performFileUpload(
     try {
         resolved = await resolveElementPath(page, path)
     } catch (err) {
-        return { ok: false, error: formatPathResolutionError(err) }
+        const failure = classifyPathResolutionFailure('uploadFile', err)
+        return { ok: false, error: failure.message, failure }
     }
 
     try {
@@ -24,8 +30,13 @@ export async function performFileUpload(
             usedSelector: resolved.usedSelector,
         }
     } catch (err) {
-        const message = err instanceof Error ? err.message : 'File upload failed.'
-        return { ok: false, error: message }
+        const failure = classifyActionFailure({
+            action: 'uploadFile',
+            error: err,
+            fallbackMessage: defaultActionFailureMessage('uploadFile'),
+            probe: await probeActionabilityState(resolved.element),
+        })
+        return { ok: false, error: failure.message, failure }
     } finally {
         await resolved.element.dispose()
     }

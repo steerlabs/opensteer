@@ -1,3 +1,5 @@
+import type { ActionFailure } from '../action-failure.js'
+
 export type CloudActionMethod =
     | 'goto'
     | 'snapshot'
@@ -98,6 +100,11 @@ export interface CloudActionFailure {
     ok: false
     error: string
     code: CloudErrorCode
+    details?: CloudActionFailureDetails
 }
 
 export type CloudActionResponse = CloudActionSuccess | CloudActionFailure
+
+export interface CloudActionFailureDetails {
+    actionFailure?: ActionFailure
+}

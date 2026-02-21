@@ -72,5 +72,16 @@ describe('performSelect', () => {
         expect(invalid.error).toContain(
             'Select requires value, label, or index'
         )
+        expect(invalid.failure?.code).toBe('INVALID_OPTIONS')
+    })
+
+    it('classifies non-select targets as INVALID_TARGET', async () => {
+        await setFixture(page, '<input id="wrong-target" />')
+
+        const path = await buildElementPathFromSelector(page, '#wrong-target')
+        const result = await performSelect(page, path!, { value: 'x' })
+
+        expect(result.ok).toBe(false)
+        expect(result.failure?.code).toBe('INVALID_TARGET')
     })
 })

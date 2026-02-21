@@ -81,5 +81,17 @@ describe('performInput', () => {
 
         expect(result.ok).toBe(false)
         expect(result.error).toContain('No matching element found')
+        expect(result.failure?.code).toBe('TARGET_NOT_FOUND')
+    })
+
+    it('classifies readonly targets as NOT_EDITABLE', async () => {
+        await setFixture(page, '<input id="readonly" value="Ada" readonly />')
+
+        page.setDefaultTimeout(1200)
+        const path = await buildElementPathFromSelector(page, '#readonly')
+        const result = await performInput(page, path!, { text: 'test' })
+
+        expect(result.ok).toBe(false)
+        expect(result.failure?.code).toBe('NOT_EDITABLE')
     })
 })

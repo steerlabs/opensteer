@@ -90,5 +90,40 @@ describe('performClick', () => {
 
         expect(result.ok).toBe(false)
         expect(result.error).toContain('No matching element found')
+        expect(result.failure?.code).toBe('TARGET_NOT_FOUND')
+    })
+
+    it('classifies blocked interactions when an overlay intercepts pointer events', async () => {
+        await setFixture(
+            page,
+            `
+        <style>
+          #target {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            width: 140px;
+            height: 42px;
+          }
+          #overlay {
+            position: absolute;
+            inset: 0;
+            pointer-events: auto;
+          }
+        </style>
+        <button id="target">Blocked target</button>
+        <div id="overlay"></div>
+      `
+        )
+
+        page.setDefaultTimeout(1200)
+        const path = await buildElementPathFromSelector(page, '#target')
+        const result = await performClick(page, path!, {
+            button: 'left',
+            clickCount: 1,
+        })
+
+        expect(result.ok).toBe(false)
+        expect(result.failure?.code).toBe('BLOCKED_BY_INTERCEPTOR')
     })
 })

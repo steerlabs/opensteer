@@ -2,7 +2,12 @@ import type { Page } from 'playwright'
 import type { HoverOptions } from '../types.js'
 import type { ElementPath } from '../element-path/types.js'
 import { resolveElementPath } from '../element-path/resolver.js'
-import { formatPathResolutionError } from './path-resolution.js'
+import { probeActionabilityState } from './actionability-probe.js'
+import {
+    classifyActionFailure,
+    defaultActionFailureMessage,
+} from './failure-classifier.js'
+import { classifyPathResolutionFailure } from './path-resolution.js'
 import type { ActionExecutionResult } from './types.js'
 
 export async function performHover(
@@ -14,7 +19,8 @@ export async function performHover(
     try {
         resolved = await resolveElementPath(page, path)
     } catch (err) {
-        return { ok: false, error: formatPathResolutionError(err) }
+        const failure = classifyPathResolutionFailure('hover', err)
+        return { ok: false, error: failure.message, failure }
     }
 
     try {
@@ -29,8 +35,13 @@ export async function performHover(
             usedSelector: resolved.usedSelector,
         }
     } catch (err) {
-        const message = err instanceof Error ? err.message : 'Hover failed.'
-        return { ok: false, error: message }
+        const failure = classifyActionFailure({
+            action: 'hover',
+            error: err,
+            fallbackMessage: defaultActionFailureMessage('hover'),
+            probe: await probeActionabilityState(resolved.element),
+        })
+        return { ok: false, error: failure.message, failure }
     } finally {
         await resolved.element.dispose()
     }
