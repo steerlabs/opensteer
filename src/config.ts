@@ -191,7 +191,6 @@ function normalizeRemoteOptions(
 export function resolveModeSelection(
     config: Pick<OpensteerConfig, 'mode'>
 ): ModeSelection {
-    const envMode = parseMode(process.env.OPENSTEER_MODE, 'OPENSTEER_MODE')
     const configMode = parseMode(config.mode, 'mode')
 
     if (configMode) {
@@ -201,6 +200,7 @@ export function resolveModeSelection(
         }
     }
 
+    const envMode = parseMode(process.env.OPENSTEER_MODE, 'OPENSTEER_MODE')
     if (envMode) {
         return {
             mode: envMode,
@@ -228,16 +228,16 @@ export function resolveConfig(
         )
     }
 
-    assertNoLegacyAiConfig('Opensteer constructor config', input as unknown)
-    assertNoLegacyModeConfig('Opensteer constructor config', input as unknown)
+    assertNoLegacyAiConfig('Opensteer constructor config', input)
+    assertNoLegacyModeConfig('Opensteer constructor config', input)
 
     const rootDir =
         input.storage?.rootDir ??
         DEFAULT_CONFIG.storage.rootDir ??
         process.cwd()
     const fileConfig = loadConfigFile(rootDir)
-    assertNoLegacyAiConfig('.opensteer/config.json', fileConfig as unknown)
-    assertNoLegacyModeConfig('.opensteer/config.json', fileConfig as unknown)
+    assertNoLegacyAiConfig('.opensteer/config.json', fileConfig)
+    assertNoLegacyModeConfig('.opensteer/config.json', fileConfig)
 
     const envConfig: Partial<OpensteerConfig> = {
         browser: {
