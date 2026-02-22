@@ -8,6 +8,12 @@ importers:
 
   .:
     dependencies:
+      '@ai-sdk/openai':
+        specifier: ^3.0.26
+        version: 3.0.27(zod@4.3.6)
+      ai:
+        specifier: ^6.0.77
+        version: 6.0.83(zod@4.3.6)
       cheerio:
         specifier: ^1.0.0-rc.12
         version: 1.2.0
@@ -20,19 +26,16 @@ importers:
       ws:
         specifier: ^8.18.0
         version: 8.19.0
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
     devDependencies:
-      '@ai-sdk/openai':
-        specifier: ^3.0.26
-        version: 3.0.27(zod@4.3.6)
       '@types/node':
         specifier: ^22.10.0
         version: 22.19.11
       '@types/ws':
         specifier: ^8.5.13
         version: 8.18.1
-      ai:
-        specifier: ^6.0.77
-        version: 6.0.83(zod@4.3.6)
       domhandler:
         specifier: ^5.0.3
         version: 5.0.3
@@ -48,9 +51,6 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.11)
-      zod:
-        specifier: ^4.3.6
-        version: 4.3.6
 
 packages:
 

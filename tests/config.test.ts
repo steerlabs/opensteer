@@ -168,6 +168,20 @@ describe('config', () => {
         expect(namespace).toBe('my-suite')
     })
 
+    it('resolveNamespace keeps safe hierarchy and strips traversal segments', () => {
+        const nested = resolveNamespace(
+            { name: '  team-a/run-1  ' },
+            process.cwd()
+        )
+        expect(nested).toBe('team-a/run-1')
+
+        const sanitized = resolveNamespace(
+            { name: '../../escape' },
+            process.cwd()
+        )
+        expect(sanitized).toBe('escape')
+    })
+
     it('resolveNamespace falls back to caller-derived value when no name is set', () => {
         const namespace = resolveNamespace({}, process.cwd())
         expect(namespace.length).toBeGreaterThan(0)

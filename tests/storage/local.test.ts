@@ -17,6 +17,22 @@ describe('LocalSelectorStorage', () => {
         )
     })
 
+    it('normalizes namespace hierarchy and blocks traversal escapes', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-storage-ns-'))
+
+        const nested = new LocalSelectorStorage(root, 'suite-a/run-1')
+        expect(nested.getNamespace()).toBe('suite-a/run-1')
+        expect(nested.getNamespaceDir()).toContain(
+            path.join('.opensteer', 'selectors', 'suite-a', 'run-1')
+        )
+
+        const escaped = new LocalSelectorStorage(root, '../../escape')
+        expect(escaped.getNamespace()).toBe('escape')
+        expect(escaped.getNamespaceDir()).toContain(
+            path.join('.opensteer', 'selectors', 'escape')
+        )
+    })
+
     it('writes and reads selectors', () => {
         const root = fs.mkdtempSync(
             path.join(os.tmpdir(), 'ov-storage-selector-')

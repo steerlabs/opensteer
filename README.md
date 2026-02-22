@@ -133,6 +133,7 @@ const ov = new Opensteer({
 
 - `docs/getting-started.md`
 - `docs/api-reference.md`
+- `docs/cloud-integration.md`
 - `docs/html-cleaning.md`
 - `docs/selectors.md`
 - `docs/live-web-tests.md`
