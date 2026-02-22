@@ -160,9 +160,10 @@ interface OpensteerConfig {
     storage?: {
         rootDir?: string
     }
-    cloud?: {
-        enabled: boolean
-        key?: string
+    mode?: 'local' | 'remote'
+    remote?: {
+        apiKey?: string
+        baseUrl?: string
     }
     model?: string
     debug?: boolean
@@ -170,13 +171,20 @@ interface OpensteerConfig {
 ```
 
 `model` defaults to `gpt-5.1`. You can also set `OPENSTEER_MODEL`.
-When `cloud.enabled` is `true`, `cloud.key` falls back to `OPENSTEER_API_KEY`
-if omitted. If `cloud.key` is provided, it overrides the env fallback.
-Cloud base URL defaults to `https://cloud.opensteer.com` and can be overridden
-with `OPENSTEER_CLOUD_BASE_URL`.
+Mode defaults to local. You can set `OPENSTEER_MODE=local|remote`.
+If `OPENSTEER_MODE=remote`, remote API key is required via `remote.apiKey` or
+`OPENSTEER_REMOTE_API_KEY`.
+If `mode` is provided in constructor config, it always overrides
+`OPENSTEER_MODE`.
+When remote mode is selected and `remote.apiKey` is omitted, it falls back to
+`OPENSTEER_REMOTE_API_KEY`. If `remote.apiKey` is explicitly provided, it overrides the
+env fallback.
+Remote base URL defaults to `https://remote.opensteer.com` and can be overridden
+with `OPENSTEER_REMOTE_BASE_URL`.
+Remote mode is fail-fast and does not automatically fall back to local mode.
 
-In cloud mode, these methods are unsupported and throw
-`CLOUD_UNSUPPORTED_METHOD`:
+In remote mode, these methods are unsupported and throw
+`REMOTE_UNSUPPORTED_METHOD`:
 
 - `Opensteer.from(page)`
 - `uploadFile()`

@@ -104,16 +104,19 @@ export interface OpensteerStorageConfig {
     rootDir?: string
 }
 
-export interface OpensteerCloudConfig {
-    enabled: boolean
-    key?: string
+export type OpensteerMode = 'local' | 'remote'
+
+export interface OpensteerRemoteOptions {
+    apiKey?: string
+    baseUrl?: string
 }
 
 export interface OpensteerConfig {
     name?: string
     browser?: OpensteerBrowserConfig
     storage?: OpensteerStorageConfig
-    cloud?: OpensteerCloudConfig
+    mode?: OpensteerMode
+    remote?: OpensteerRemoteOptions
     model?: string
     debug?: boolean
 }

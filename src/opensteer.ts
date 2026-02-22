@@ -1,7 +1,11 @@
 import { createHash } from 'crypto'
 import type { Browser, BrowserContext, ElementHandle, Page } from 'playwright'
 import { BrowserPool } from './browser/pool.js'
-import { resolveConfig, resolveNamespace } from './config.js'
+import {
+    resolveConfig,
+    resolveModeSelection,
+    resolveNamespace,
+} from './config.js'
 import { waitForVisualStability } from './navigation.js'
 import type {
     ActionResult,
@@ -102,19 +106,19 @@ import {
     type PersistedExtractPayload,
 } from './extraction/array-consolidation.js'
 import { inflateDataPathObject } from './extraction/data-path.js'
-import type { CloudActionMethod } from './cloud/contracts.js'
-import { ActionWsClient } from './cloud/action-ws-client.js'
+import type { RemoteActionMethod } from './remote/contracts.js'
+import { ActionWsClient } from './remote/action-ws-client.js'
 import {
-    cloudNotLaunchedError,
-    OpensteerCloudError,
-    cloudUnsupportedMethodError,
-} from './cloud/errors.js'
-import { collectLocalSelectorCacheEntries } from './cloud/local-cache-sync.js'
+    remoteNotLaunchedError,
+    OpensteerRemoteError,
+    remoteUnsupportedMethodError,
+} from './remote/errors.js'
+import { collectLocalSelectorCacheEntries } from './remote/local-cache-sync.js'
 import {
-    createCloudRuntimeState,
-    readCloudActionDescription,
-    type CloudRuntimeState,
-} from './cloud/runtime.js'
+    createRemoteRuntimeState,
+    readRemoteActionDescription,
+    type RemoteRuntimeState,
+} from './remote/runtime.js'
 import { stableStringify } from './utils/stable-stringify.js'
 
 interface PathResolutionResult {
@@ -158,7 +162,7 @@ interface MergedArrayVariantRow {
     value: unknown
 }
 
-const CLOUD_INTERACTION_METHODS = new Set<CloudActionMethod>([
+const REMOTE_INTERACTION_METHODS = new Set<RemoteActionMethod>([
     'click',
     'dblclick',
     'rightclick',
@@ -176,7 +180,7 @@ export class Opensteer {
     private readonly namespace: string
     private readonly storage: LocalSelectorStorage
     private readonly pool: BrowserPool
-    private readonly cloud: CloudRuntimeState | null
+    private readonly remote: RemoteRuntimeState | null
 
     private browser: Browser | null = null
     private pageRef: Page | null = null
@@ -186,6 +190,9 @@ export class Opensteer {
 
     constructor(config: OpensteerConfig = {}) {
         const resolved = resolveConfig(config)
+        const modeSelection = resolveModeSelection({
+            mode: resolved.mode,
+        })
         const model = resolved.model
 
         this.config = resolved
@@ -197,17 +204,24 @@ export class Opensteer {
         this.storage = new LocalSelectorStorage(rootDir, this.namespace)
         this.pool = new BrowserPool(resolved.browser || {})
 
-        if (resolved.cloud?.enabled) {
-            const key = resolved.cloud.key?.trim()
-            if (!key) {
+        if (modeSelection.mode === 'remote') {
+            const remoteConfig =
+                resolved.remote && typeof resolved.remote === 'object'
+                    ? resolved.remote
+                    : undefined
+            const apiKey = remoteConfig?.apiKey?.trim()
+            if (!apiKey) {
                 throw new Error(
-                    'Cloud mode requires a non-empty API key via cloud.key or OPENSTEER_API_KEY.'
+                    'Remote mode requires a non-empty API key via remote.apiKey or OPENSTEER_REMOTE_API_KEY.'
                 )
             }
 
-            this.cloud = createCloudRuntimeState(key)
+            this.remote = createRemoteRuntimeState(
+                apiKey,
+                remoteConfig?.baseUrl
+            )
         } else {
-            this.cloud = null
+            this.remote = null
         }
     }
 
@@ -253,23 +267,23 @@ export class Opensteer {
         return extract
     }
 
-    private async invokeCloudActionAndResetCache<T>(
-        method: CloudActionMethod,
+    private async invokeRemoteActionAndResetCache<T>(
+        method: RemoteActionMethod,
         args: unknown
     ): Promise<T> {
-        const result = await this.invokeCloudAction<T>(method, args)
+        const result = await this.invokeRemoteAction<T>(method, args)
         this.snapshotCache = null
         return result
     }
 
-    private async invokeCloudAction<T>(
-        method: CloudActionMethod,
+    private async invokeRemoteAction<T>(
+        method: RemoteActionMethod,
         args: unknown
     ): Promise<T> {
-        const actionClient = this.cloud?.actionClient
-        const sessionId = this.cloud?.sessionId
+        const actionClient = this.remote?.actionClient
+        const sessionId = this.remote?.sessionId
         if (!actionClient || !sessionId) {
-            throw cloudNotLaunchedError()
+            throw remoteNotLaunchedError()
         }
 
         const payload =
@@ -280,25 +294,25 @@ export class Opensteer {
             return await actionClient.request<T>(method, payload)
         } catch (err) {
             if (
-                err instanceof OpensteerCloudError &&
-                err.code === 'CLOUD_ACTION_FAILED' &&
-                CLOUD_INTERACTION_METHODS.has(method)
+                err instanceof OpensteerRemoteError &&
+                err.code === 'REMOTE_ACTION_FAILED' &&
+                REMOTE_INTERACTION_METHODS.has(method)
             ) {
                 const detailsRecord =
                     err.details && typeof err.details === 'object'
                         ? (err.details as Record<string, unknown>)
                         : null
-                const cloudFailure = normalizeActionFailure(
+                const remoteFailure = normalizeActionFailure(
                     detailsRecord?.actionFailure
                 )
                 const failure =
-                    cloudFailure ||
+                    remoteFailure ||
                     classifyActionFailure({
                         action: method,
                         error: err,
                         fallbackMessage: defaultActionFailureMessage(method),
                     })
-                const description = readCloudActionDescription(payload)
+                const description = readRemoteActionDescription(payload)
                 throw this.buildActionError(
                     method,
                     description,
@@ -362,14 +376,14 @@ export class Opensteer {
             return
         }
 
-        if (this.cloud) {
+        if (this.remote) {
             let actionClient: ActionWsClient | null = null
             let browser: Browser | null = null
             let sessionId: string | null = null
 
             try {
                 try {
-                    await this.syncLocalSelectorCacheToCloud()
+                    await this.syncLocalSelectorCacheToRemote()
                 } catch (error) {
                     if (this.config.debug) {
                         const message =
@@ -377,12 +391,12 @@ export class Opensteer {
                                 ? error.message
                                 : String(error)
                         console.warn(
-                            `[opensteer] cloud selector cache sync failed: ${message}`
+                            `[opensteer] remote selector cache sync failed: ${message}`
                         )
                     }
                 }
 
-                const session = await this.cloud.sessionClient.create({
+                const session = await this.remote.sessionClient.create({
                     name: this.namespace,
                     model: this.config.model,
                     launchContext:
@@ -397,7 +411,7 @@ export class Opensteer {
                     sessionId: session.sessionId,
                 })
 
-                const cdpConnection = await this.cloud.cdpClient.connect({
+                const cdpConnection = await this.remote.cdpClient.connect({
                     wsUrl: session.cdpWsUrl,
                     token: session.cdpToken,
                 })
@@ -409,8 +423,8 @@ export class Opensteer {
                 this.ownsBrowser = true
                 this.snapshotCache = null
 
-                this.cloud.actionClient = actionClient
-                this.cloud.sessionId = sessionId
+                this.remote.actionClient = actionClient
+                this.remote.sessionId = sessionId
                 return
             } catch (error) {
                 if (actionClient) {
@@ -420,7 +434,7 @@ export class Opensteer {
                     await browser.close().catch(() => undefined)
                 }
                 if (sessionId) {
-                    await this.cloud.sessionClient
+                    await this.remote.sessionClient
                         .close(sessionId)
                         .catch(() => undefined)
                 }
@@ -444,10 +458,14 @@ export class Opensteer {
     }
 
     static from(page: Page, config: OpensteerConfig = {}): Opensteer {
-        if (config.cloud?.enabled) {
-            throw cloudUnsupportedMethodError(
+        const resolvedConfig = resolveConfig(config)
+        const modeSelection = resolveModeSelection({
+            mode: resolvedConfig.mode,
+        })
+        if (modeSelection.mode === 'remote') {
+            throw remoteUnsupportedMethodError(
                 'Opensteer.from(page)',
-                'Opensteer.from(page) is not supported in cloud mode.'
+                'Opensteer.from(page) is not supported in remote mode.'
             )
         }
 
@@ -463,13 +481,13 @@ export class Opensteer {
     async close(): Promise<void> {
         this.snapshotCache = null
 
-        if (this.cloud) {
-            const actionClient = this.cloud.actionClient
-            const sessionId = this.cloud.sessionId
+        if (this.remote) {
+            const actionClient = this.remote.actionClient
+            const sessionId = this.remote.sessionId
             const browser = this.browser
 
-            this.cloud.actionClient = null
-            this.cloud.sessionId = null
+            this.remote.actionClient = null
+            this.remote.sessionId = null
 
             this.browser = null
             this.pageRef = null
@@ -483,7 +501,7 @@ export class Opensteer {
                 await browser.close().catch(() => undefined)
             }
             if (sessionId) {
-                await this.cloud.sessionClient
+                await this.remote.sessionClient
                     .close(sessionId)
                     .catch(() => undefined)
             }
@@ -500,20 +518,20 @@ export class Opensteer {
         this.ownsBrowser = false
     }
 
-    private async syncLocalSelectorCacheToCloud(): Promise<void> {
-        if (!this.cloud) return
+    private async syncLocalSelectorCacheToRemote(): Promise<void> {
+        if (!this.remote) return
 
         const entries = collectLocalSelectorCacheEntries(this.storage)
         if (!entries.length) return
 
-        await this.cloud.sessionClient.importSelectorCache({
+        await this.remote.sessionClient.importSelectorCache({
             entries,
         })
     }
 
     async goto(url: string, options?: GotoOptions): Promise<void> {
-        if (this.cloud) {
-            await this.invokeCloudActionAndResetCache('goto', { url, options })
+        if (this.remote) {
+            await this.invokeRemoteActionAndResetCache('goto', { url, options })
             return
         }
 
@@ -524,8 +542,8 @@ export class Opensteer {
     }
 
     async snapshot(options: SnapshotOptions = {}): Promise<string> {
-        if (this.cloud) {
-            return await this.invokeCloudActionAndResetCache<string>('snapshot', {
+        if (this.remote) {
+            return await this.invokeRemoteActionAndResetCache<string>('snapshot', {
                 options,
             })
         }
@@ -536,8 +554,8 @@ export class Opensteer {
     }
 
     async state(): Promise<StateResult> {
-        if (this.cloud) {
-            return await this.invokeCloudAction<StateResult>('state', {})
+        if (this.remote) {
+            return await this.invokeRemoteAction<StateResult>('state', {})
         }
 
         const html = await this.snapshot({ mode: 'action' })
@@ -550,8 +568,8 @@ export class Opensteer {
     }
 
     async screenshot(options: ScreenshotOptions = {}): Promise<Buffer> {
-        if (this.cloud) {
-            const b64 = await this.invokeCloudAction<string>(
+        if (this.remote) {
+            const b64 = await this.invokeRemoteAction<string>(
                 'screenshot',
                 options
             )
@@ -567,8 +585,8 @@ export class Opensteer {
     }
 
     async click(options: ClickOptions): Promise<ActionResult> {
-        if (this.cloud) {
-            return await this.invokeCloudActionAndResetCache<ActionResult>(
+        if (this.remote) {
+            return await this.invokeRemoteActionAndResetCache<ActionResult>(
                 'click',
                 options
             )
@@ -582,8 +600,8 @@ export class Opensteer {
     }
 
     async dblclick(options: ClickOptions): Promise<ActionResult> {
-        if (this.cloud) {
-            return await this.invokeCloudActionAndResetCache<ActionResult>(
+        if (this.remote) {
+            return await this.invokeRemoteActionAndResetCache<ActionResult>(
                 'dblclick',
                 options
             )
@@ -597,8 +615,8 @@ export class Opensteer {
     }
 
     async rightclick(options: ClickOptions): Promise<ActionResult> {
-        if (this.cloud) {
-            return await this.invokeCloudActionAndResetCache<ActionResult>(
+        if (this.remote) {
+            return await this.invokeRemoteActionAndResetCache<ActionResult>(
                 'rightclick',
                 options
             )
@@ -612,8 +630,8 @@ export class Opensteer {
     }
 
     async hover(options: HoverOptions): Promise<ActionResult> {
-        if (this.cloud) {
-            return await this.invokeCloudActionAndResetCache<ActionResult>(
+        if (this.remote) {
+            return await this.invokeRemoteActionAndResetCache<ActionResult>(
                 'hover',
                 options
             )
@@ -736,8 +754,8 @@ export class Opensteer {
     }
 
     async input(options: InputOptions): Promise<ActionResult> {
-        if (this.cloud) {
-            return await this.invokeCloudActionAndResetCache<ActionResult>(
+        if (this.remote) {
+            return await this.invokeRemoteActionAndResetCache<ActionResult>(
                 'input',
                 options
             )
@@ -864,8 +882,8 @@ export class Opensteer {
     }
 
     async select(options: SelectOptions): Promise<ActionResult> {
-        if (this.cloud) {
-            return await this.invokeCloudActionAndResetCache<ActionResult>(
+        if (this.remote) {
+            return await this.invokeRemoteActionAndResetCache<ActionResult>(
                 'select',
                 options
             )
@@ -999,8 +1017,8 @@ export class Opensteer {
     }
 
     async scroll(options: ScrollOptions = {}): Promise<ActionResult> {
-        if (this.cloud) {
-            return await this.invokeCloudActionAndResetCache<ActionResult>(
+        if (this.remote) {
+            return await this.invokeRemoteActionAndResetCache<ActionResult>(
                 'scroll',
                 options
             )
@@ -1126,16 +1144,16 @@ export class Opensteer {
     // --- Tab Management ---
 
     async tabs(): Promise<TabInfo[]> {
-        if (this.cloud) {
-            return await this.invokeCloudAction<TabInfo[]>('tabs', {})
+        if (this.remote) {
+            return await this.invokeRemoteAction<TabInfo[]>('tabs', {})
         }
 
         return listTabs(this.context, this.page)
     }
 
     async newTab(url?: string): Promise<TabInfo> {
-        if (this.cloud) {
-            return await this.invokeCloudActionAndResetCache<TabInfo>('newTab', {
+        if (this.remote) {
+            return await this.invokeRemoteActionAndResetCache<TabInfo>('newTab', {
                 url,
             })
         }
@@ -1147,8 +1165,8 @@ export class Opensteer {
     }
 
     async switchTab(index: number): Promise<void> {
-        if (this.cloud) {
-            await this.invokeCloudActionAndResetCache('switchTab', { index })
+        if (this.remote) {
+            await this.invokeRemoteActionAndResetCache('switchTab', { index })
             return
         }
 
@@ -1158,8 +1176,8 @@ export class Opensteer {
     }
 
     async closeTab(index?: number): Promise<void> {
-        if (this.cloud) {
-            await this.invokeCloudActionAndResetCache('closeTab', { index })
+        if (this.remote) {
+            await this.invokeRemoteActionAndResetCache('closeTab', { index })
             return
         }
 
@@ -1173,8 +1191,8 @@ export class Opensteer {
     // --- Cookie Management ---
 
     async getCookies(url?: string): Promise<import('playwright').Cookie[]> {
-        if (this.cloud) {
-            return await this.invokeCloudAction<import('playwright').Cookie[]>(
+        if (this.remote) {
+            return await this.invokeRemoteAction<import('playwright').Cookie[]>(
                 'getCookies',
                 { url }
             )
@@ -1184,8 +1202,8 @@ export class Opensteer {
     }
 
     async setCookie(cookie: CookieParam): Promise<void> {
-        if (this.cloud) {
-            await this.invokeCloudAction('setCookie', cookie)
+        if (this.remote) {
+            await this.invokeRemoteAction('setCookie', cookie)
             return
         }
 
@@ -1193,8 +1211,8 @@ export class Opensteer {
     }
 
     async clearCookies(): Promise<void> {
-        if (this.cloud) {
-            await this.invokeCloudAction('clearCookies', {})
+        if (this.remote) {
+            await this.invokeRemoteAction('clearCookies', {})
             return
         }
 
@@ -1202,10 +1220,10 @@ export class Opensteer {
     }
 
     async exportCookies(filePath: string, url?: string): Promise<void> {
-        if (this.cloud) {
-            throw cloudUnsupportedMethodError(
+        if (this.remote) {
+            throw remoteUnsupportedMethodError(
                 'exportCookies',
-                'exportCookies() is not supported in cloud mode because it depends on local filesystem paths.'
+                'exportCookies() is not supported in remote mode because it depends on local filesystem paths.'
             )
         }
 
@@ -1213,10 +1231,10 @@ export class Opensteer {
     }
 
     async importCookies(filePath: string): Promise<void> {
-        if (this.cloud) {
-            throw cloudUnsupportedMethodError(
+        if (this.remote) {
+            throw remoteUnsupportedMethodError(
                 'importCookies',
-                'importCookies() is not supported in cloud mode because it depends on local filesystem paths.'
+                'importCookies() is not supported in remote mode because it depends on local filesystem paths.'
             )
         }
 
@@ -1226,8 +1244,8 @@ export class Opensteer {
     // --- Keyboard Input ---
 
     async pressKey(key: string): Promise<void> {
-        if (this.cloud) {
-            await this.invokeCloudActionAndResetCache('pressKey', { key })
+        if (this.remote) {
+            await this.invokeRemoteActionAndResetCache('pressKey', { key })
             return
         }
 
@@ -1238,8 +1256,8 @@ export class Opensteer {
     }
 
     async type(text: string): Promise<void> {
-        if (this.cloud) {
-            await this.invokeCloudActionAndResetCache('type', { text })
+        if (this.remote) {
+            await this.invokeRemoteActionAndResetCache('type', { text })
             return
         }
 
@@ -1252,8 +1270,8 @@ export class Opensteer {
     // --- Element Info ---
 
     async getElementText(options: BaseActionOptions): Promise<string> {
-        if (this.cloud) {
-            return await this.invokeCloudAction<string>('getElementText', options)
+        if (this.remote) {
+            return await this.invokeRemoteAction<string>('getElementText', options)
         }
 
         return this.executeElementInfoAction(
@@ -1268,8 +1286,8 @@ export class Opensteer {
     }
 
     async getElementValue(options: BaseActionOptions): Promise<string> {
-        if (this.cloud) {
-            return await this.invokeCloudAction<string>(
+        if (this.remote) {
+            return await this.invokeRemoteAction<string>(
                 'getElementValue',
                 options
             )
@@ -1288,8 +1306,8 @@ export class Opensteer {
     async getElementAttributes(
         options: BaseActionOptions
     ): Promise<Record<string, string>> {
-        if (this.cloud) {
-            return await this.invokeCloudAction<Record<string, string>>(
+        if (this.remote) {
+            return await this.invokeRemoteAction<Record<string, string>>(
                 'getElementAttributes',
                 options
             )
@@ -1314,8 +1332,8 @@ export class Opensteer {
     async getElementBoundingBox(
         options: BaseActionOptions
     ): Promise<BoundingBox | null> {
-        if (this.cloud) {
-            return await this.invokeCloudAction<BoundingBox | null>(
+        if (this.remote) {
+            return await this.invokeRemoteAction<BoundingBox | null>(
                 'getElementBoundingBox',
                 options
             )
@@ -1332,16 +1350,16 @@ export class Opensteer {
     }
 
     async getHtml(selector?: string): Promise<string> {
-        if (this.cloud) {
-            return await this.invokeCloudAction<string>('getHtml', { selector })
+        if (this.remote) {
+            return await this.invokeRemoteAction<string>('getHtml', { selector })
         }
 
         return getPageHtml(this.page, selector)
     }
 
     async getTitle(): Promise<string> {
-        if (this.cloud) {
-            return await this.invokeCloudAction<string>('getTitle', {})
+        if (this.remote) {
+            return await this.invokeRemoteAction<string>('getTitle', {})
         }
 
         return getPageTitle(this.page)
@@ -1392,10 +1410,10 @@ export class Opensteer {
     // --- File Upload ---
 
     async uploadFile(options: FileUploadOptions): Promise<ActionResult> {
-        if (this.cloud) {
-            throw cloudUnsupportedMethodError(
+        if (this.remote) {
+            throw remoteUnsupportedMethodError(
                 'uploadFile',
-                'uploadFile() is not supported in cloud mode because file paths must be accessible on the remote server.'
+                'uploadFile() is not supported in remote mode because file paths must be accessible on the remote server.'
             )
         }
 
@@ -1526,8 +1544,8 @@ export class Opensteer {
         text: string,
         options?: { timeout?: number }
     ): Promise<void> {
-        if (this.cloud) {
-            await this.invokeCloudAction('waitForText', { text, options })
+        if (this.remote) {
+            await this.invokeRemoteAction('waitForText', { text, options })
             return
         }
 
@@ -1538,8 +1556,8 @@ export class Opensteer {
     }
 
     async extract<T = unknown>(options: ExtractOptions): Promise<T> {
-        if (this.cloud) {
-            return await this.invokeCloudAction<T>('extract', options)
+        if (this.remote) {
+            return await this.invokeRemoteAction<T>('extract', options)
         }
 
         const storageKey = this.resolveStorageKey(options.description)
@@ -1621,8 +1639,8 @@ export class Opensteer {
     async extractFromPlan<T = unknown>(
         options: ExtractFromPlanOptions
     ): Promise<ExtractionRunResult<T>> {
-        if (this.cloud) {
-            return await this.invokeCloudAction<ExtractionRunResult<T>>(
+        if (this.remote) {
+            return await this.invokeRemoteAction<ExtractionRunResult<T>>(
                 'extractFromPlan',
                 options
             )
@@ -1685,10 +1703,10 @@ export class Opensteer {
     }
 
     clearCache(): void {
-        if (this.cloud) {
+        if (this.remote) {
             this.snapshotCache = null
-            if (!this.cloud.actionClient) return
-            void this.invokeCloudAction('clearCache', {})
+            if (!this.remote.actionClient) return
+            void this.invokeRemoteAction('clearCache', {})
             return
         }
 

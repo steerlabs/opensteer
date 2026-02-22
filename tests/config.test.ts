@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
     loadConfigFile,
     resolveConfig,
+    resolveModeSelection,
     resolveNamespace,
 } from '../src/config.js'
 import type { OpensteerConfig } from '../src/types.js'
@@ -75,52 +76,177 @@ describe('config', () => {
         expect(resolved.model).toBe('gpt-5-mini')
     })
 
-    it('resolveConfig ignores OPENSTEER_API_KEY when cloud mode is not enabled', () => {
-        process.env.OPENSTEER_API_KEY = 'osk_env_123'
+    it('resolveModeSelection defaults to local when unset', () => {
+        const selection = resolveModeSelection({})
+        expect(selection).toEqual({
+            mode: 'local',
+            source: 'default',
+        })
+    })
+
+    it('resolveModeSelection uses OPENSTEER_MODE when mode is not set in config', () => {
+        process.env.OPENSTEER_MODE = 'remote'
+        const selection = resolveModeSelection({})
+        expect(selection).toEqual({
+            mode: 'remote',
+            source: 'env.OPENSTEER_MODE',
+        })
+    })
+
+    it('resolveModeSelection lets config.mode override OPENSTEER_MODE', () => {
+        process.env.OPENSTEER_MODE = 'local'
+        const selection = resolveModeSelection({
+            mode: 'remote',
+        })
+        expect(selection).toEqual({
+            mode: 'remote',
+            source: 'config.mode',
+        })
+    })
+
+    it('resolveModeSelection ignores invalid OPENSTEER_MODE when config.mode is set', () => {
+        process.env.OPENSTEER_MODE = 'edge'
+        const selection = resolveModeSelection({
+            mode: 'remote',
+        })
+        expect(selection).toEqual({
+            mode: 'remote',
+            source: 'config.mode',
+        })
+    })
+
+    it('resolveConfig sets remote mode from OPENSTEER_MODE and uses OPENSTEER_REMOTE_API_KEY', () => {
+        process.env.OPENSTEER_MODE = 'remote'
+        process.env.OPENSTEER_REMOTE_API_KEY = 'ork_env_123'
 
         const resolved = resolveConfig({})
-        expect(resolved.cloud).toBeUndefined()
-    })
-
-    it('resolveConfig uses OPENSTEER_API_KEY when cloud.key is missing', () => {
-        process.env.OPENSTEER_API_KEY = 'osk_env_123'
-
-        const resolved = resolveConfig({
-            cloud: {
-                enabled: true,
-            },
-        })
-
-        expect(resolved.cloud).toEqual({
-            enabled: true,
-            key: 'osk_env_123',
+        expect(resolved.remote).toEqual({
+            apiKey: 'ork_env_123',
         })
     })
 
-    it('resolveConfig keeps explicit cloud.key over OPENSTEER_API_KEY', () => {
-        process.env.OPENSTEER_API_KEY = 'osk_env_123'
-
-        const resolved = resolveConfig({
-            cloud: {
-                enabled: true,
-                key: 'osk_input_456',
-            },
-        })
-
-        expect(resolved.cloud?.key).toBe('osk_input_456')
+    it('throws when OPENSTEER_MODE has an invalid value', () => {
+        process.env.OPENSTEER_MODE = 'edge'
+        expect(() => resolveConfig({})).toThrow(
+            'Invalid OPENSTEER_MODE value "edge". Use "local" or "remote".'
+        )
     })
 
-    it('resolveConfig preserves explicit empty cloud.key over OPENSTEER_API_KEY', () => {
-        process.env.OPENSTEER_API_KEY = 'osk_env_123'
+    it('throws when mode has an invalid value in .opensteer/config.json', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-config-mode-'))
+        fs.mkdirSync(path.join(root, '.opensteer'), { recursive: true })
+        fs.writeFileSync(
+            path.join(root, '.opensteer', 'config.json'),
+            JSON.stringify({ mode: 'edge' }),
+            'utf8'
+        )
+
+        expect(() =>
+            resolveConfig({
+                storage: { rootDir: root },
+            })
+        ).toThrow('Invalid mode value "edge". Use "local" or "remote".')
+    })
+
+    it('throws when OPENSTEER_RUNTIME is set', () => {
+        process.env.OPENSTEER_RUNTIME = 'remote'
+        expect(() => resolveConfig({})).toThrow(
+            'OPENSTEER_RUNTIME is no longer supported. Use OPENSTEER_MODE instead.'
+        )
+    })
+
+    it('resolveConfig ignores OPENSTEER_REMOTE_API_KEY when remote mode is not enabled', () => {
+        process.env.OPENSTEER_REMOTE_API_KEY = 'ork_env_123'
+
+        const resolved = resolveConfig({})
+        expect(resolved.remote).toBeUndefined()
+    })
+
+    it('resolveConfig uses OPENSTEER_REMOTE_API_KEY when remote apiKey is missing', () => {
+        process.env.OPENSTEER_REMOTE_API_KEY = 'ork_env_123'
 
         const resolved = resolveConfig({
-            cloud: {
-                enabled: true,
-                key: '   ',
+            mode: 'remote',
+        })
+
+        expect(resolved.remote).toEqual({
+            apiKey: 'ork_env_123',
+        })
+    })
+
+    it('resolveConfig keeps explicit remote.apiKey over OPENSTEER_REMOTE_API_KEY', () => {
+        process.env.OPENSTEER_REMOTE_API_KEY = 'ork_env_123'
+
+        const resolved = resolveConfig({
+            mode: 'remote',
+            remote: {
+                apiKey: 'ork_input_456',
             },
         })
 
-        expect(resolved.cloud?.key).toBe('   ')
+        expect(
+            typeof resolved.remote === 'object'
+                ? resolved.remote?.apiKey
+                : null
+        ).toBe('ork_input_456')
+    })
+
+    it('resolveConfig preserves explicit empty remote.apiKey over OPENSTEER_REMOTE_API_KEY', () => {
+        process.env.OPENSTEER_REMOTE_API_KEY = 'ork_env_123'
+
+        const resolved = resolveConfig({
+            mode: 'remote',
+            remote: {
+                apiKey: '   ',
+            },
+        })
+
+        expect(
+            typeof resolved.remote === 'object'
+                ? resolved.remote?.apiKey
+                : null
+        ).toBe('   ')
+    })
+
+    it('throws when legacy boolean remote config is passed directly', () => {
+        const legacyConfig: OpensteerConfig = {
+            // @ts-expect-error - validates rejection of legacy boolean remote config.
+            remote: true,
+        }
+
+        expect(() =>
+            resolveConfig(legacyConfig)
+        ).toThrow(
+            'Boolean "remote" config is no longer supported in Opensteer constructor config. Use "mode: \\"remote\\"" with "remote" options.'
+        )
+    })
+
+    it('throws when legacy remote.key config is passed directly', () => {
+        const legacyConfig: OpensteerConfig = {
+            remote: {
+                // @ts-expect-error - validates rejection of legacy remote.key config.
+                key: 'ork_legacy_123',
+            },
+        }
+
+        expect(() =>
+            resolveConfig(legacyConfig)
+        ).toThrow(
+            'Legacy "remote.key" config is no longer supported in Opensteer constructor config. Use "remote.apiKey" instead.'
+        )
+    })
+
+    it('throws when top-level apiKey config is passed directly', () => {
+        const legacyConfig: OpensteerConfig = {
+            // @ts-expect-error - validates rejection of unsupported top-level apiKey config.
+            apiKey: 'ork_root_123',
+        }
+
+        expect(() =>
+            resolveConfig(legacyConfig)
+        ).toThrow(
+            'Top-level "apiKey" config is not supported in Opensteer constructor config. Use "remote.apiKey" instead.'
+        )
     })
 
     it('throws when legacy ai config is passed directly', () => {
@@ -157,6 +283,24 @@ describe('config', () => {
         process.env.OPENSTEER_AI_MODEL = 'gpt-5-mini'
         expect(() => resolveConfig({})).toThrow(
             'OPENSTEER_AI_MODEL is no longer supported. Use OPENSTEER_MODEL instead.'
+        )
+    })
+
+    it('throws when legacy mode config exists in .opensteer/config.json', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-config-legacy-'))
+        fs.mkdirSync(path.join(root, '.opensteer'), { recursive: true })
+        fs.writeFileSync(
+            path.join(root, '.opensteer', 'config.json'),
+            JSON.stringify({ remote: true }),
+            'utf8'
+        )
+
+        expect(() =>
+            resolveConfig({
+                storage: { rootDir: root },
+            })
+        ).toThrow(
+            'Boolean "remote" config is no longer supported in .opensteer/config.json. Use "mode: \\"remote\\"" with "remote" options.'
         )
     })
 

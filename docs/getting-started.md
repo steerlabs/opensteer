@@ -53,22 +53,41 @@ const ov = new Opensteer({
 
 Or set `OPENSTEER_MODEL=gpt-5.1` in the environment.
 
-## 6) Close
+## 6) Mode selection
+
+Opensteer defaults to local mode.
+
+Set mode explicitly with:
+
+```bash
+OPENSTEER_MODE=local
+# or
+OPENSTEER_MODE=remote
+```
+
+When mode is `remote`, `OPENSTEER_REMOTE_API_KEY` (or `remote.apiKey`) is required.
+Remote mode is fail-fast and does not automatically fall back to local mode.
+
+## 7) Close
 
 ```ts
 await ov.close()
 ```
 
-## Optional cloud mode
+## Optional remote force override
 
 ```ts
 const ov = new Opensteer({
-    cloud: {
-        enabled: true,
-        key: process.env.OPENSTEER_API_KEY,
+    mode: 'remote',
+    remote: {
+        apiKey: process.env.OPENSTEER_REMOTE_API_KEY,
+        baseUrl: process.env.OPENSTEER_REMOTE_BASE_URL,
     },
 })
 ```
 
-Cloud mode defaults to `https://cloud.opensteer.com` and can be overridden with
-`OPENSTEER_CLOUD_BASE_URL`.
+`mode: 'remote'` always forces remote mode, even when
+`OPENSTEER_MODE=local`.
+
+Remote base URL defaults to `https://remote.opensteer.com` and can be overridden
+with `OPENSTEER_REMOTE_BASE_URL`.
