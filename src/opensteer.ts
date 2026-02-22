@@ -655,10 +655,10 @@ export class Opensteer {
 
         const session = await this.pool.launch({
             ...options,
-            cdpUrl: options.cdpUrl ?? this.config.browser?.cdpUrl,
+            connectUrl: options.connectUrl ?? this.config.browser?.connectUrl,
             channel: options.channel ?? this.config.browser?.channel,
-            userDataDir:
-                options.userDataDir ?? this.config.browser?.userDataDir,
+            profileDir:
+                options.profileDir ?? this.config.browser?.profileDir,
         })
 
         this.browser = session.browser
