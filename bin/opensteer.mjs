@@ -343,6 +343,11 @@ Global Flags:
   --selector <css>          Target element by CSS selector
   --description <text>      Description for selector persistence
   --help                    Show this help
+
+Environment:
+  OPENSTEER_RUNTIME         Runtime mode: "local" (default) or "remote"
+  OPENSTEER_REMOTE_API_KEY  Required when remote runtime is selected
+  OPENSTEER_REMOTE_BASE_URL Override remote control-plane base URL
 `)
 }
 

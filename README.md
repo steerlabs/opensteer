@@ -129,11 +129,21 @@ const ov = new Opensteer({
 });
 ```
 
+## Mode Selection
+
+Opensteer defaults to local mode.
+
+- `OPENSTEER_MODE=local` runs local Playwright.
+- `OPENSTEER_MODE=remote` runs remote mode (requires `OPENSTEER_REMOTE_API_KEY`).
+- `mode: "remote"` in constructor config always forces remote mode.
+
+Remote mode is fail-fast: it does not automatically fall back to local mode.
+
 ## Docs
 
 - `docs/getting-started.md`
 - `docs/api-reference.md`
-- `docs/cloud-integration.md`
+- `docs/remote-integration.md`
 - `docs/html-cleaning.md`
 - `docs/selectors.md`
 - `docs/live-web-tests.md`

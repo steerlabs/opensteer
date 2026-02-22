@@ -1,6 +1,6 @@
 import type { ActionFailure } from '../action-failure.js'
 
-export type CloudActionMethod =
+export type RemoteActionMethod =
     | 'goto'
     | 'snapshot'
     | 'state'
@@ -35,28 +35,28 @@ export type CloudActionMethod =
     | 'importCookies'
     | 'screenshot'
 
-export type CloudErrorCode =
-    | 'CLOUD_AUTH_FAILED'
-    | 'CLOUD_SESSION_NOT_FOUND'
-    | 'CLOUD_SESSION_CLOSED'
-    | 'CLOUD_UNSUPPORTED_METHOD'
-    | 'CLOUD_INVALID_REQUEST'
-    | 'CLOUD_MODEL_NOT_ALLOWED'
-    | 'CLOUD_ACTION_FAILED'
-    | 'CLOUD_CAPACITY_EXHAUSTED'
-    | 'CLOUD_RUNTIME_UNAVAILABLE'
-    | 'CLOUD_RUNTIME_MISMATCH'
-    | 'CLOUD_SESSION_STALE'
-    | 'CLOUD_CONTROL_PLANE_ERROR'
-    | 'CLOUD_INTERNAL'
+export type RemoteErrorCode =
+    | 'REMOTE_AUTH_FAILED'
+    | 'REMOTE_SESSION_NOT_FOUND'
+    | 'REMOTE_SESSION_CLOSED'
+    | 'REMOTE_UNSUPPORTED_METHOD'
+    | 'REMOTE_INVALID_REQUEST'
+    | 'REMOTE_MODEL_NOT_ALLOWED'
+    | 'REMOTE_ACTION_FAILED'
+    | 'REMOTE_CAPACITY_EXHAUSTED'
+    | 'REMOTE_RUNTIME_UNAVAILABLE'
+    | 'REMOTE_RUNTIME_MISMATCH'
+    | 'REMOTE_SESSION_STALE'
+    | 'REMOTE_CONTROL_PLANE_ERROR'
+    | 'REMOTE_INTERNAL'
 
-export interface CloudSessionCreateRequest {
+export interface RemoteSessionCreateRequest {
     name?: string
     model?: string
     launchContext?: Record<string, unknown>
 }
 
-export interface CloudSessionCreateResponse {
+export interface RemoteSessionCreateResponse {
     sessionId: string
     actionWsUrl: string
     cdpWsUrl: string
@@ -65,7 +65,7 @@ export interface CloudSessionCreateResponse {
     expiresAt?: number
 }
 
-export interface CloudSelectorCacheImportEntry {
+export interface RemoteSelectorCacheImportEntry {
     namespace: string
     siteOrigin: string
     method: string
@@ -76,41 +76,41 @@ export interface CloudSelectorCacheImportEntry {
     updatedAt: number
 }
 
-export interface CloudSelectorCacheImportRequest {
-    entries: CloudSelectorCacheImportEntry[]
+export interface RemoteSelectorCacheImportRequest {
+    entries: RemoteSelectorCacheImportEntry[]
 }
 
-export interface CloudSelectorCacheImportResponse {
+export interface RemoteSelectorCacheImportResponse {
     imported: number
     inserted: number
     updated: number
     skipped: number
 }
 
-export interface CloudActionRequest {
+export interface RemoteActionRequest {
     id: number
-    method: CloudActionMethod
+    method: RemoteActionMethod
     args: Record<string, unknown>
     sessionId: string
     token: string
 }
 
-export interface CloudActionSuccess {
+export interface RemoteActionSuccess {
     id: number
     ok: true
     result: unknown
 }
 
-export interface CloudActionFailure {
+export interface RemoteActionFailure {
     id: number
     ok: false
     error: string
-    code: CloudErrorCode
-    details?: CloudActionFailureDetails
+    code: RemoteErrorCode
+    details?: RemoteActionFailureDetails
 }
 
-export type CloudActionResponse = CloudActionSuccess | CloudActionFailure
+export type RemoteActionResponse = RemoteActionSuccess | RemoteActionFailure
 
-export interface CloudActionFailureDetails {
+export interface RemoteActionFailureDetails {
     actionFailure?: ActionFailure
 }

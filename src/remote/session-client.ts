@@ -1,13 +1,13 @@
 import type {
-    CloudErrorCode,
-    CloudSelectorCacheImportRequest,
-    CloudSelectorCacheImportResponse,
-    CloudSessionCreateRequest,
-    CloudSessionCreateResponse,
+    RemoteErrorCode,
+    RemoteSelectorCacheImportRequest,
+    RemoteSelectorCacheImportResponse,
+    RemoteSessionCreateRequest,
+    RemoteSessionCreateResponse,
 } from './contracts.js'
-import { OpensteerCloudError } from './errors.js'
+import { OpensteerRemoteError } from './errors.js'
 
-interface CloudHttpErrorBody {
+interface RemoteHttpErrorBody {
     error?: string
     code?: string
     details?: Record<string, unknown>
@@ -15,7 +15,7 @@ interface CloudHttpErrorBody {
 
 const CACHE_IMPORT_BATCH_SIZE = 200
 
-export class CloudSessionClient {
+export class RemoteSessionClient {
     private readonly baseUrl: string
     private readonly key: string
 
@@ -25,8 +25,8 @@ export class CloudSessionClient {
     }
 
     async create(
-        request: CloudSessionCreateRequest
-    ): Promise<CloudSessionCreateResponse> {
+        request: RemoteSessionCreateRequest
+    ): Promise<RemoteSessionCreateResponse> {
         const response = await fetch(`${this.baseUrl}/sessions`, {
             method: 'POST',
             headers: {
@@ -40,7 +40,7 @@ export class CloudSessionClient {
             throw await parseHttpError(response)
         }
 
-        return (await response.json()) as CloudSessionCreateResponse
+        return (await response.json()) as RemoteSessionCreateResponse
     }
 
     async close(sessionId: string): Promise<void> {
@@ -61,8 +61,8 @@ export class CloudSessionClient {
     }
 
     async importSelectorCache(
-        request: CloudSelectorCacheImportRequest
-    ): Promise<CloudSelectorCacheImportResponse> {
+        request: RemoteSelectorCacheImportRequest
+    ): Promise<RemoteSelectorCacheImportResponse> {
         if (!request.entries.length) {
             return zeroImportResponse()
         }
@@ -86,8 +86,8 @@ export class CloudSessionClient {
     }
 
     private async importSelectorCacheBatch(
-        entries: CloudSelectorCacheImportRequest['entries']
-    ): Promise<CloudSelectorCacheImportResponse> {
+        entries: RemoteSelectorCacheImportRequest['entries']
+    ): Promise<RemoteSelectorCacheImportResponse> {
         const response = await fetch(`${this.baseUrl}/selector-cache/import`, {
             method: 'POST',
             headers: {
@@ -101,7 +101,7 @@ export class CloudSessionClient {
             throw await parseHttpError(response)
         }
 
-        return (await response.json()) as CloudSelectorCacheImportResponse
+        return (await response.json()) as RemoteSelectorCacheImportResponse
     }
 }
 
@@ -109,7 +109,7 @@ function normalizeBaseUrl(baseUrl: string): string {
     return baseUrl.replace(/\/+$/, '')
 }
 
-function zeroImportResponse(): CloudSelectorCacheImportResponse {
+function zeroImportResponse(): RemoteSelectorCacheImportResponse {
     return {
         imported: 0,
         inserted: 0,
@@ -119,9 +119,9 @@ function zeroImportResponse(): CloudSelectorCacheImportResponse {
 }
 
 function mergeImportResponse(
-    first: CloudSelectorCacheImportResponse,
-    second: CloudSelectorCacheImportResponse
-): CloudSelectorCacheImportResponse {
+    first: RemoteSelectorCacheImportResponse,
+    second: RemoteSelectorCacheImportResponse
+): RemoteSelectorCacheImportResponse {
     return {
         imported: first.imported + second.imported,
         inserted: first.inserted + second.inserted,
@@ -132,47 +132,47 @@ function mergeImportResponse(
 
 async function parseHttpError(
     response: Response
-): Promise<OpensteerCloudError> {
-    let body: CloudHttpErrorBody | null = null
+): Promise<OpensteerRemoteError> {
+    let body: RemoteHttpErrorBody | null = null
 
     try {
-        body = (await response.json()) as CloudHttpErrorBody
+        body = (await response.json()) as RemoteHttpErrorBody
     } catch {
         body = null
     }
 
     const code =
         typeof body?.code === 'string'
-            ? toCloudErrorCode(body.code)
-            : ('CLOUD_TRANSPORT_ERROR' as const)
+            ? toRemoteErrorCode(body.code)
+            : ('REMOTE_TRANSPORT_ERROR' as const)
     const message =
         typeof body?.error === 'string'
             ? body.error
-            : `Cloud request failed with status ${response.status}.`
+            : `Remote request failed with status ${response.status}.`
 
-    return new OpensteerCloudError(code, message, response.status, body?.details)
+    return new OpensteerRemoteError(code, message, response.status, body?.details)
 }
 
-function toCloudErrorCode(
+function toRemoteErrorCode(
     code: string
-): CloudErrorCode | 'CLOUD_TRANSPORT_ERROR' {
+): RemoteErrorCode | 'REMOTE_TRANSPORT_ERROR' {
     if (
-        code === 'CLOUD_AUTH_FAILED' ||
-        code === 'CLOUD_SESSION_NOT_FOUND' ||
-        code === 'CLOUD_SESSION_CLOSED' ||
-        code === 'CLOUD_UNSUPPORTED_METHOD' ||
-        code === 'CLOUD_INVALID_REQUEST' ||
-        code === 'CLOUD_MODEL_NOT_ALLOWED' ||
-        code === 'CLOUD_ACTION_FAILED' ||
-        code === 'CLOUD_INTERNAL' ||
-        code === 'CLOUD_CAPACITY_EXHAUSTED' ||
-        code === 'CLOUD_RUNTIME_UNAVAILABLE' ||
-        code === 'CLOUD_RUNTIME_MISMATCH' ||
-        code === 'CLOUD_SESSION_STALE' ||
-        code === 'CLOUD_CONTROL_PLANE_ERROR'
+        code === 'REMOTE_AUTH_FAILED' ||
+        code === 'REMOTE_SESSION_NOT_FOUND' ||
+        code === 'REMOTE_SESSION_CLOSED' ||
+        code === 'REMOTE_UNSUPPORTED_METHOD' ||
+        code === 'REMOTE_INVALID_REQUEST' ||
+        code === 'REMOTE_MODEL_NOT_ALLOWED' ||
+        code === 'REMOTE_ACTION_FAILED' ||
+        code === 'REMOTE_INTERNAL' ||
+        code === 'REMOTE_CAPACITY_EXHAUSTED' ||
+        code === 'REMOTE_RUNTIME_UNAVAILABLE' ||
+        code === 'REMOTE_RUNTIME_MISMATCH' ||
+        code === 'REMOTE_SESSION_STALE' ||
+        code === 'REMOTE_CONTROL_PLANE_ERROR'
     ) {
         return code
     }
 
-    return 'CLOUD_TRANSPORT_ERROR'
+    return 'REMOTE_TRANSPORT_ERROR'
 }
