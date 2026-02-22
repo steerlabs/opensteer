@@ -53,13 +53,28 @@ const ov = new Opensteer({
 
 Or set `OPENSTEER_MODEL=gpt-5.1` in the environment.
 
-## 6) Close
+## 6) Runtime selection
+
+Opensteer defaults to local runtime.
+
+Set runtime explicitly with:
+
+```bash
+OPENSTEER_RUNTIME=local
+# or
+OPENSTEER_RUNTIME=cloud
+```
+
+When runtime is `cloud`, `OPENSTEER_API_KEY` (or `cloud.key`) is required.
+Cloud mode is fail-fast and does not automatically fall back to local runtime.
+
+## 7) Close
 
 ```ts
 await ov.close()
 ```
 
-## Optional cloud mode
+## Optional cloud force override
 
 ```ts
 const ov = new Opensteer({
@@ -70,5 +85,8 @@ const ov = new Opensteer({
 })
 ```
 
-Cloud mode defaults to `https://cloud.opensteer.com` and can be overridden with
-`OPENSTEER_CLOUD_BASE_URL`.
+`cloud.enabled: true` always forces cloud mode, even when
+`OPENSTEER_RUNTIME=local`.
+
+Cloud base URL defaults to `https://cloud.opensteer.com` and can be overridden
+with `OPENSTEER_CLOUD_BASE_URL`.

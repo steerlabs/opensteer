@@ -4,6 +4,17 @@ Opensteer cloud mode uses one unversioned contract by default.
 
 ## Configuration
 
+Set cloud runtime universally with environment variables:
+
+```bash
+OPENSTEER_RUNTIME=cloud
+OPENSTEER_API_KEY=osk_your_key
+```
+
+Opensteer defaults to local runtime when `OPENSTEER_RUNTIME` is unset.
+
+You can also force cloud mode in constructor config:
+
 ```ts
 import { Opensteer } from 'opensteer'
 
@@ -18,6 +29,8 @@ const ov = new Opensteer({
 - Default cloud host: `https://cloud.opensteer.com`
 - Override host with `OPENSTEER_CLOUD_BASE_URL`
 - API key can be provided via `cloud.key` or `OPENSTEER_API_KEY`
+- `cloud.enabled: true` overrides `OPENSTEER_RUNTIME`
+- Cloud runtime is fail-fast and does not fall back to local runtime
 
 ## Control API Contract
 

@@ -8,6 +8,18 @@ export interface ResolvedOpensteerConfig extends OpensteerConfig {
     model: string
 }
 
+export type RuntimeMode = 'local' | 'cloud'
+
+export type RuntimeSelectionSource =
+    | 'config.cloud.enabled'
+    | 'env.OPENSTEER_RUNTIME'
+    | 'default'
+
+export interface RuntimeSelection {
+    mode: RuntimeMode
+    source: RuntimeSelectionSource
+}
+
 const DEFAULT_CONFIG: Required<
     Pick<OpensteerConfig, 'browser' | 'storage' | 'debug' | 'model'>
 > = {
@@ -99,10 +111,56 @@ function parseNumber(value: string | undefined): number | undefined {
     return parsed
 }
 
+function parseRuntimeMode(value: string | undefined): RuntimeMode | undefined {
+    if (value == null) return undefined
+
+    const normalized = value.trim().toLowerCase()
+    if (!normalized) return undefined
+
+    if (normalized === 'local' || normalized === 'cloud') {
+        return normalized
+    }
+
+    if (normalized === 'auto') {
+        throw new Error(
+            'OPENSTEER_RUNTIME="auto" is not supported. Use "local" or "cloud".'
+        )
+    }
+
+    throw new Error(
+        `Invalid OPENSTEER_RUNTIME value "${value}". Use "local" or "cloud".`
+    )
+}
+
 function resolveOpensteerApiKey(): string | undefined {
     const value = process.env.OPENSTEER_API_KEY?.trim()
     if (!value) return undefined
     return value
+}
+
+export function resolveRuntimeSelection(
+    config: Pick<OpensteerConfig, 'cloud'>
+): RuntimeSelection {
+    const envMode = parseRuntimeMode(process.env.OPENSTEER_RUNTIME)
+
+    if (config.cloud?.enabled === true) {
+        return {
+            mode: 'cloud',
+            source: 'config.cloud.enabled',
+        }
+    }
+
+    if (envMode) {
+        return {
+            mode: envMode,
+            source: 'env.OPENSTEER_RUNTIME',
+        }
+    }
+
+    return {
+        mode: 'local',
+        source: 'default',
+    }
 }
 
 export function resolveConfig(
@@ -145,10 +203,19 @@ export function resolveConfig(
         input.cloud || {},
         'key'
     )
+    const runtimeSelection = resolveRuntimeSelection(resolved)
 
-    if (envApiKey && resolved.cloud?.enabled && !inputHasCloudKey) {
+    if (runtimeSelection.mode === 'cloud') {
         resolved.cloud = {
-            ...resolved.cloud,
+            ...(resolved.cloud || {}),
+            enabled: true,
+        }
+    }
+
+    if (envApiKey && runtimeSelection.mode === 'cloud' && !inputHasCloudKey) {
+        resolved.cloud = {
+            ...(resolved.cloud || {}),
+            enabled: true,
             key: envApiKey,
         }
     }
