@@ -12,8 +12,8 @@ export interface BrowserSession {
     browser: Browser
     context: BrowserContext
     page: Page
-    /** True when connected to an external browser via CDP. close() disconnects without killing it. */
-    connectedViaCDP: boolean
+    /** True when connected to an external browser. close() disconnects without killing it. */
+    isRemote: boolean
 }
 
 export class BrowserPool {
@@ -30,22 +30,22 @@ export class BrowserPool {
             await this.close()
         }
 
-        const cdpUrl = options.cdpUrl ?? this.defaults.cdpUrl
+        const connectUrl = options.connectUrl ?? this.defaults.connectUrl
         const channel = options.channel ?? this.defaults.channel
-        const userDataDir = options.userDataDir ?? this.defaults.userDataDir
+        const profileDir = options.profileDir ?? this.defaults.profileDir
 
-        // ── CDP mode: connect to a running Chrome ──
-        if (cdpUrl) {
-            return this.connectOverCDP(cdpUrl, options.timeout)
+        // ── Connect mode: attach to a running browser ──
+        if (connectUrl) {
+            return this.connectToRunning(connectUrl, options.timeout)
         }
 
-        // ── Real Chrome mode: launch with user profile ──
-        if (channel || userDataDir) {
-            return this.launchRealBrowser(options, channel, userDataDir)
+        // ── Profile mode: launch with user profile ──
+        if (channel || profileDir) {
+            return this.launchWithProfile(options, channel, profileDir)
         }
 
-        // ── Default: fresh Chromium (existing behavior) ──
-        return this.launchFreshBrowser(options)
+        // ── Sandbox mode: fresh Chromium (existing behavior) ──
+        return this.launchSandbox(options)
     }
 
     async close(): Promise<void> {
@@ -62,14 +62,14 @@ export class BrowserPool {
         }
     }
 
-    private async connectOverCDP(cdpUrl: string, timeout?: number): Promise<BrowserSession> {
+    private async connectToRunning(connectUrl: string, timeout?: number): Promise<BrowserSession> {
         this.cdpProxy?.close()
         this.cdpProxy = null
 
         let browser: Browser | null = null
 
         try {
-            const { browserWsUrl, targets } = await discoverTargets(cdpUrl)
+            const { browserWsUrl, targets } = await discoverTargets(connectUrl)
 
             if (targets.length === 0) {
                 throw new Error(
@@ -89,7 +89,7 @@ export class BrowserPool {
             const contexts = browser.contexts()
             if (contexts.length === 0) {
                 throw new Error(
-                    'CDP connection succeeded but no browser contexts found. Is Chrome running with an open window?'
+                    'Connection succeeded but no browser contexts found. Is the browser running with an open window?'
                 )
             }
 
@@ -97,7 +97,7 @@ export class BrowserPool {
             const pages = context.pages()
             const page = pages.length > 0 ? pages[0] : await context.newPage()
 
-            return { browser, context, page, connectedViaCDP: true }
+            return { browser, context, page, isRemote: true }
         } catch (error) {
             if (browser) {
                 await browser.close().catch(() => undefined)
@@ -109,14 +109,14 @@ export class BrowserPool {
         }
     }
 
-    private async launchRealBrowser(
+    private async launchWithProfile(
         options: LaunchOptions,
         channel: string | undefined,
-        userDataDir: string | undefined
+        profileDir: string | undefined
     ): Promise<BrowserSession> {
         const args: string[] = []
-        if (userDataDir) {
-            args.push(`--user-data-dir=${expandHome(userDataDir)}`)
+        if (profileDir) {
+            args.push(`--user-data-dir=${expandHome(profileDir)}`)
         }
 
         const browser = await chromium.launch({
@@ -136,7 +136,7 @@ export class BrowserPool {
 
         this.browser = browser
 
-        // When userDataDir is set, Chrome creates a default context with the profile
+        // When profileDir is set, Chrome creates a default context with the profile
         const contexts = browser.contexts()
         let context: BrowserContext
         let page: Page
@@ -150,10 +150,10 @@ export class BrowserPool {
             page = await context.newPage()
         }
 
-        return { browser, context, page, connectedViaCDP: false }
+        return { browser, context, page, isRemote: false }
     }
 
-    private async launchFreshBrowser(
+    private async launchSandbox(
         options: LaunchOptions
     ): Promise<BrowserSession> {
         const browser = await chromium.launch({
@@ -170,6 +170,6 @@ export class BrowserPool {
 
         this.browser = browser
 
-        return { browser, context, page, connectedViaCDP: false }
+        return { browser, context, page, isRemote: false }
     }
 }
