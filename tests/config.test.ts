@@ -104,6 +104,17 @@ describe('config', () => {
         })
     })
 
+    it('resolveModeSelection ignores invalid OPENSTEER_MODE when config.mode is set', () => {
+        process.env.OPENSTEER_MODE = 'edge'
+        const selection = resolveModeSelection({
+            mode: 'remote',
+        })
+        expect(selection).toEqual({
+            mode: 'remote',
+            source: 'config.mode',
+        })
+    })
+
     it('resolveConfig sets remote mode from OPENSTEER_MODE and uses OPENSTEER_REMOTE_API_KEY', () => {
         process.env.OPENSTEER_MODE = 'remote'
         process.env.OPENSTEER_REMOTE_API_KEY = 'ork_env_123'
@@ -198,32 +209,41 @@ describe('config', () => {
     })
 
     it('throws when legacy boolean remote config is passed directly', () => {
+        const legacyConfig: OpensteerConfig = {
+            // @ts-expect-error - validates rejection of legacy boolean remote config.
+            remote: true,
+        }
+
         expect(() =>
-            resolveConfig({
-                remote: true as never,
-            })
+            resolveConfig(legacyConfig)
         ).toThrow(
             'Boolean "remote" config is no longer supported in Opensteer constructor config. Use "mode: \\"remote\\"" with "remote" options.'
         )
     })
 
     it('throws when legacy remote.key config is passed directly', () => {
+        const legacyConfig: OpensteerConfig = {
+            remote: {
+                // @ts-expect-error - validates rejection of legacy remote.key config.
+                key: 'ork_legacy_123',
+            },
+        }
+
         expect(() =>
-            resolveConfig({
-                remote: {
-                    key: 'ork_legacy_123',
-                } as never,
-            })
+            resolveConfig(legacyConfig)
         ).toThrow(
             'Legacy "remote.key" config is no longer supported in Opensteer constructor config. Use "remote.apiKey" instead.'
         )
     })
 
     it('throws when top-level apiKey config is passed directly', () => {
+        const legacyConfig: OpensteerConfig = {
+            // @ts-expect-error - validates rejection of unsupported top-level apiKey config.
+            apiKey: 'ork_root_123',
+        }
+
         expect(() =>
-            resolveConfig({
-                apiKey: 'ork_root_123',
-            } as never)
+            resolveConfig(legacyConfig)
         ).toThrow(
             'Top-level "apiKey" config is not supported in Opensteer constructor config. Use "remote.apiKey" instead.'
         )
