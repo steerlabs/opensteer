@@ -84,6 +84,8 @@ export interface LaunchOptions {
     channel?: string
     /** Browser profile directory. Preserves cookies, extensions, and sessions. */
     profileDir?: string
+    /** Connection timeout in milliseconds. */
+    timeout?: number
 }
 
 export interface OpensteerBrowserConfig {
