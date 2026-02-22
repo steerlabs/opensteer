@@ -5,7 +5,6 @@ import {
     resolveConfig,
     resolveNamespace,
     resolveRuntimeSelection,
-    type RuntimeSelection,
 } from './config.js'
 import { waitForVisualStability } from './navigation.js'
 import type {
@@ -176,7 +175,6 @@ const CLOUD_INTERACTION_METHODS = new Set<CloudActionMethod>([
 
 export class Opensteer {
     private readonly config: OpensteerConfig
-    private readonly runtimeSelection: RuntimeSelection
     private readonly aiResolve: AiResolveCallback
     private readonly aiExtract: AiExtractCallback
     private readonly namespace: string
@@ -189,7 +187,6 @@ export class Opensteer {
     private contextRef: BrowserContext | null = null
     private ownsBrowser = false
     private snapshotCache: PreparedSnapshot | null = null
-    private runtimeSelectionLogged = false
 
     constructor(config: OpensteerConfig = {}) {
         const resolved = resolveConfig(config)
@@ -197,7 +194,6 @@ export class Opensteer {
         const model = resolved.model
 
         this.config = resolved
-        this.runtimeSelection = runtimeSelection
         this.aiResolve = this.createLazyResolveCallback(model)
         this.aiExtract = this.createLazyExtractCallback(model)
 
@@ -367,13 +363,6 @@ export class Opensteer {
             )
         }
 
-        if (!this.runtimeSelectionLogged && this.config.debug) {
-            console.info(
-                `[opensteer] runtime mode: ${this.runtimeSelection.mode} (source: ${this.runtimeSelection.source})`
-            )
-            this.runtimeSelectionLogged = true
-        }
-
         if (this.pageRef && this.ownsBrowser) {
             return
         }
@@ -460,7 +449,8 @@ export class Opensteer {
     }
 
     static from(page: Page, config: OpensteerConfig = {}): Opensteer {
-        const runtimeSelection = resolveRuntimeSelection(resolveConfig(config))
+        const resolvedConfig = resolveConfig(config)
+        const runtimeSelection = resolveRuntimeSelection(resolvedConfig)
         if (runtimeSelection.mode === 'cloud') {
             throw cloudUnsupportedMethodError(
                 'Opensteer.from(page)',
