@@ -53,20 +53,20 @@ const ov = new Opensteer({
 
 Or set `OPENSTEER_MODEL=gpt-5.1` in the environment.
 
-## 6) Runtime selection
+## 6) Mode selection
 
-Opensteer defaults to local runtime.
+Opensteer defaults to local mode.
 
-Set runtime explicitly with:
+Set mode explicitly with:
 
 ```bash
-OPENSTEER_RUNTIME=local
+OPENSTEER_MODE=local
 # or
-OPENSTEER_RUNTIME=cloud
+OPENSTEER_MODE=remote
 ```
 
-When runtime is `cloud`, `OPENSTEER_API_KEY` (or `cloud.key`) is required.
-Cloud mode is fail-fast and does not automatically fall back to local runtime.
+When mode is `remote`, `OPENSTEER_REMOTE_API_KEY` (or `remote.apiKey`) is required.
+Remote mode is fail-fast and does not automatically fall back to local mode.
 
 ## 7) Close
 
@@ -74,19 +74,20 @@ Cloud mode is fail-fast and does not automatically fall back to local runtime.
 await ov.close()
 ```
 
-## Optional cloud force override
+## Optional remote force override
 
 ```ts
 const ov = new Opensteer({
-    cloud: {
-        enabled: true,
-        key: process.env.OPENSTEER_API_KEY,
+    mode: 'remote',
+    remote: {
+        apiKey: process.env.OPENSTEER_REMOTE_API_KEY,
+        baseUrl: process.env.OPENSTEER_REMOTE_BASE_URL,
     },
 })
 ```
 
-`cloud.enabled: true` always forces cloud mode, even when
-`OPENSTEER_RUNTIME=local`.
+`mode: 'remote'` always forces remote mode, even when
+`OPENSTEER_MODE=local`.
 
-Cloud base URL defaults to `https://cloud.opensteer.com` and can be overridden
-with `OPENSTEER_CLOUD_BASE_URL`.
+Remote base URL defaults to `https://remote.opensteer.com` and can be overridden
+with `OPENSTEER_REMOTE_BASE_URL`.

@@ -1,11 +1,11 @@
 import WebSocket from 'ws'
 import type { RawData } from 'ws'
 import type {
-    CloudActionMethod,
-    CloudActionRequest,
-    CloudActionResponse,
+    RemoteActionMethod,
+    RemoteActionRequest,
+    RemoteActionResponse,
 } from './contracts.js'
-import { OpensteerCloudError } from './errors.js'
+import { OpensteerRemoteError } from './errors.js'
 
 interface ActionWsClientOptions {
     url: string
@@ -37,9 +37,9 @@ export class ActionWsClient {
 
         ws.on('error', (error: Error) => {
             this.rejectAll(
-                new OpensteerCloudError(
-                    'CLOUD_TRANSPORT_ERROR',
-                    `Cloud action websocket error: ${error.message}`
+                new OpensteerRemoteError(
+                    'REMOTE_TRANSPORT_ERROR',
+                    `Remote action websocket error: ${error.message}`
                 )
             )
         })
@@ -47,9 +47,9 @@ export class ActionWsClient {
         ws.on('close', () => {
             this.closed = true
             this.rejectAll(
-                new OpensteerCloudError(
-                    'CLOUD_SESSION_CLOSED',
-                    'Cloud action websocket closed.'
+                new OpensteerRemoteError(
+                    'REMOTE_SESSION_CLOSED',
+                    'Remote action websocket closed.'
                 )
             )
         })
@@ -63,8 +63,8 @@ export class ActionWsClient {
             ws.once('open', () => resolve())
             ws.once('error', (error: Error) => {
                 reject(
-                    new OpensteerCloudError(
-                        'CLOUD_TRANSPORT_ERROR',
+                    new OpensteerRemoteError(
+                        'REMOTE_TRANSPORT_ERROR',
                         `Failed to connect action websocket: ${error.message}`
                     )
                 )
@@ -75,20 +75,20 @@ export class ActionWsClient {
     }
 
     async request<T>(
-        method: CloudActionMethod,
+        method: RemoteActionMethod,
         args: Record<string, unknown>
     ): Promise<T> {
         if (this.closed || this.ws.readyState !== WebSocket.OPEN) {
-            throw new OpensteerCloudError(
-                'CLOUD_SESSION_CLOSED',
-                'Cloud action websocket is closed.'
+            throw new OpensteerRemoteError(
+                'REMOTE_SESSION_CLOSED',
+                'Remote action websocket is closed.'
             )
         }
 
         const id = this.nextRequestId
         this.nextRequestId += 1
 
-        const payload: CloudActionRequest = {
+        const payload: RemoteActionRequest = {
             id,
             method,
             args,
@@ -107,8 +107,8 @@ export class ActionWsClient {
             const message =
                 error instanceof Error
                     ? error.message
-                    : 'Failed to send cloud action request.'
-            throw new OpensteerCloudError('CLOUD_TRANSPORT_ERROR', message)
+                    : 'Failed to send remote action request.'
+            throw new OpensteerRemoteError('REMOTE_TRANSPORT_ERROR', message)
         }
 
         return await resultPromise
@@ -125,15 +125,15 @@ export class ActionWsClient {
     }
 
     private handleMessage(raw: RawData): void {
-        let parsed: CloudActionResponse
+        let parsed: RemoteActionResponse
 
         try {
-            parsed = JSON.parse(rawDataToUtf8(raw)) as CloudActionResponse
+            parsed = JSON.parse(rawDataToUtf8(raw)) as RemoteActionResponse
         } catch {
             this.rejectAll(
-                new OpensteerCloudError(
-                    'CLOUD_TRANSPORT_ERROR',
-                    'Invalid cloud action response payload.'
+                new OpensteerRemoteError(
+                    'REMOTE_TRANSPORT_ERROR',
+                    'Invalid remote action response payload.'
                 )
             )
             return
@@ -150,7 +150,7 @@ export class ActionWsClient {
         }
 
         pending.reject(
-            new OpensteerCloudError(
+            new OpensteerRemoteError(
                 parsed.code,
                 parsed.error,
                 undefined,

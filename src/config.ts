@@ -1,23 +1,24 @@
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import type { OpensteerConfig } from './types.js'
+import type {
+    OpensteerConfig,
+    OpensteerMode,
+    OpensteerRemoteOptions,
+} from './types.js'
 import { normalizeNamespace } from './storage/namespace.js'
 
 export interface ResolvedOpensteerConfig extends OpensteerConfig {
     model: string
 }
 
-export type RuntimeMode = 'local' | 'cloud'
+export type Mode = OpensteerMode
 
-export type RuntimeSelectionSource =
-    | 'config.cloud.enabled'
-    | 'env.OPENSTEER_RUNTIME'
-    | 'default'
+export type ModeSelectionSource = 'config.mode' | 'env.OPENSTEER_MODE' | 'default'
 
-export interface RuntimeSelection {
-    mode: RuntimeMode
-    source: RuntimeSelectionSource
+export interface ModeSelection {
+    mode: Mode
+    source: ModeSelectionSource
 }
 
 const DEFAULT_CONFIG: Required<
@@ -38,18 +39,55 @@ const DEFAULT_CONFIG: Required<
     debug: false,
 }
 
-function hasLegacyAiConfig(config: unknown): boolean {
+function hasOwn(config: unknown, key: string): boolean {
     if (!config || typeof config !== 'object') return false
-    return Object.prototype.hasOwnProperty.call(
-        config as Record<string, unknown>,
-        'ai'
-    )
+    return Object.prototype.hasOwnProperty.call(config, key)
+}
+
+function hasLegacyAiConfig(config: unknown): boolean {
+    return hasOwn(config, 'ai')
 }
 
 function assertNoLegacyAiConfig(source: string, config: unknown): void {
     if (hasLegacyAiConfig(config)) {
         throw new Error(
             `Legacy "ai" config is no longer supported in ${source}. Use top-level "model" instead.`
+        )
+    }
+}
+
+function assertNoLegacyModeConfig(source: string, config: unknown): void {
+    if (!config || typeof config !== 'object') return
+
+    const configRecord = config as Record<string, unknown>
+
+    if (hasOwn(configRecord, 'runtime')) {
+        throw new Error(
+            `Legacy "runtime" config is no longer supported in ${source}. Use top-level "mode" instead.`
+        )
+    }
+
+    if (hasOwn(configRecord, 'apiKey')) {
+        throw new Error(
+            `Top-level "apiKey" config is not supported in ${source}. Use "remote.apiKey" instead.`
+        )
+    }
+
+    const remoteValue = configRecord.remote
+    if (typeof remoteValue === 'boolean') {
+        throw new Error(
+            `Boolean "remote" config is no longer supported in ${source}. Use "mode: \\"remote\\"" with "remote" options.`
+        )
+    }
+
+    if (
+        remoteValue &&
+        typeof remoteValue === 'object' &&
+        !Array.isArray(remoteValue) &&
+        hasOwn(remoteValue, 'key')
+    ) {
+        throw new Error(
+            `Legacy "remote.key" config is no longer supported in ${source}. Use "remote.apiKey" instead.`
         )
     }
 }
@@ -111,49 +149,62 @@ function parseNumber(value: string | undefined): number | undefined {
     return parsed
 }
 
-function parseRuntimeMode(value: string | undefined): RuntimeMode | undefined {
+function parseMode(
+    value: unknown,
+    source: 'OPENSTEER_MODE' | 'mode'
+): Mode | undefined {
     if (value == null) return undefined
+    if (typeof value !== 'string') {
+        throw new Error(
+            `Invalid ${source} value "${String(value)}". Use "local" or "remote".`
+        )
+    }
 
     const normalized = value.trim().toLowerCase()
     if (!normalized) return undefined
 
-    if (normalized === 'local' || normalized === 'cloud') {
+    if (normalized === 'local' || normalized === 'remote') {
         return normalized
     }
 
-    if (normalized === 'auto') {
-        throw new Error(
-            'OPENSTEER_RUNTIME="auto" is not supported. Use "local" or "cloud".'
-        )
-    }
-
     throw new Error(
-        `Invalid OPENSTEER_RUNTIME value "${value}". Use "local" or "cloud".`
+        `Invalid ${source} value "${value}". Use "local" or "remote".`
     )
 }
 
-function resolveOpensteerApiKey(): string | undefined {
-    const value = process.env.OPENSTEER_API_KEY?.trim()
+function resolveOpensteerRemoteApiKey(): string | undefined {
+    const value = process.env.OPENSTEER_REMOTE_API_KEY?.trim()
     if (!value) return undefined
     return value
 }
 
-export function resolveRuntimeSelection(
-    config: Pick<OpensteerConfig, 'cloud'>
-): RuntimeSelection {
-    const envMode = parseRuntimeMode(process.env.OPENSTEER_RUNTIME)
+function normalizeRemoteOptions(
+    value: OpensteerConfig['remote']
+): OpensteerRemoteOptions | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return undefined
+    }
 
-    if (config.cloud?.enabled === true) {
+    return value as OpensteerRemoteOptions
+}
+
+export function resolveModeSelection(
+    config: Pick<OpensteerConfig, 'mode'>
+): ModeSelection {
+    const envMode = parseMode(process.env.OPENSTEER_MODE, 'OPENSTEER_MODE')
+    const configMode = parseMode(config.mode, 'mode')
+
+    if (configMode) {
         return {
-            mode: 'cloud',
-            source: 'config.cloud.enabled',
+            mode: configMode,
+            source: 'config.mode',
         }
     }
 
     if (envMode) {
         return {
             mode: envMode,
-            source: 'env.OPENSTEER_RUNTIME',
+            source: 'env.OPENSTEER_MODE',
         }
     }
 
@@ -171,8 +222,14 @@ export function resolveConfig(
             'OPENSTEER_AI_MODEL is no longer supported. Use OPENSTEER_MODEL instead.'
         )
     }
+    if (process.env.OPENSTEER_RUNTIME != null) {
+        throw new Error(
+            'OPENSTEER_RUNTIME is no longer supported. Use OPENSTEER_MODE instead.'
+        )
+    }
 
     assertNoLegacyAiConfig('Opensteer constructor config', input as unknown)
+    assertNoLegacyModeConfig('Opensteer constructor config', input as unknown)
 
     const rootDir =
         input.storage?.rootDir ??
@@ -180,6 +237,7 @@ export function resolveConfig(
         process.cwd()
     const fileConfig = loadConfigFile(rootDir)
     assertNoLegacyAiConfig('.opensteer/config.json', fileConfig as unknown)
+    assertNoLegacyModeConfig('.opensteer/config.json', fileConfig as unknown)
 
     const envConfig: Partial<OpensteerConfig> = {
         browser: {
@@ -198,25 +256,25 @@ export function resolveConfig(
     const mergedWithEnv = mergeDeep(mergedWithFile, envConfig)
     const resolved = mergeDeep(mergedWithEnv, input) as ResolvedOpensteerConfig
 
-    const envApiKey = resolveOpensteerApiKey()
-    const inputHasCloudKey = Object.prototype.hasOwnProperty.call(
-        input.cloud || {},
-        'key'
+    const envApiKey = resolveOpensteerRemoteApiKey()
+    const inputRemoteOptions = normalizeRemoteOptions(input.remote)
+    const inputHasRemoteApiKey = Boolean(
+        inputRemoteOptions &&
+            Object.prototype.hasOwnProperty.call(inputRemoteOptions, 'apiKey')
     )
-    const runtimeSelection = resolveRuntimeSelection(resolved)
+    const modeSelection = resolveModeSelection({
+        mode: resolved.mode,
+    })
 
-    if (runtimeSelection.mode === 'cloud') {
-        resolved.cloud = {
-            ...(resolved.cloud || {}),
-            enabled: true,
-        }
+    if (modeSelection.mode === 'remote') {
+        const resolvedRemote = normalizeRemoteOptions(resolved.remote)
+        resolved.remote = resolvedRemote ?? {}
     }
 
-    if (envApiKey && runtimeSelection.mode === 'cloud' && !inputHasCloudKey) {
-        resolved.cloud = {
-            ...(resolved.cloud || {}),
-            enabled: true,
-            key: envApiKey,
+    if (envApiKey && modeSelection.mode === 'remote' && !inputHasRemoteApiKey) {
+        resolved.remote = {
+            ...(normalizeRemoteOptions(resolved.remote) ?? {}),
+            apiKey: envApiKey,
         }
     }
 
