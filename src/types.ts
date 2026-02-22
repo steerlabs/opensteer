@@ -78,24 +78,24 @@ export interface LaunchOptions {
     executablePath?: string
     slowMo?: number
     context?: BrowserContextOptions
-    /** Connect to a running Chrome via CDP. Example: "http://localhost:9222" */
-    cdpUrl?: string
-    /** Use an installed browser: "chrome", "chrome-beta", "msedge" */
+    /** Connect to a running browser. Example: "http://localhost:9222" */
+    connectUrl?: string
+    /** Browser channel: "chrome", "chrome-beta", or "msedge" */
     channel?: string
-    /** Chrome user data directory. Preserves cookies, extensions, and sessions. */
-    userDataDir?: string
+    /** Browser profile directory. Preserves cookies, extensions, and sessions. */
+    profileDir?: string
 }
 
 export interface OpensteerBrowserConfig {
     headless?: boolean
     executablePath?: string
     slowMo?: number
-    /** Connect to a running Chrome via CDP. Example: "http://localhost:9222" */
-    cdpUrl?: string
-    /** Use an installed browser: "chrome", "chrome-beta", "msedge" */
+    /** Connect to a running browser. Example: "http://localhost:9222" */
+    connectUrl?: string
+    /** Browser channel: "chrome", "chrome-beta", or "msedge" */
     channel?: string
-    /** Chrome user data directory. Preserves cookies, extensions, and sessions. */
-    userDataDir?: string
+    /** Browser profile directory. Preserves cookies, extensions, and sessions. */
+    profileDir?: string
 }
 
 export interface OpensteerStorageConfig {

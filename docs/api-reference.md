@@ -150,6 +150,12 @@ interface OpensteerConfig {
         headless?: boolean
         executablePath?: string
         slowMo?: number
+        /** Connect to a running browser. Example: "http://localhost:9222" */
+        connectUrl?: string
+        /** Browser channel: "chrome", "chrome-beta", or "msedge" */
+        channel?: string
+        /** Browser profile directory. Preserves cookies, extensions, and sessions. */
+        profileDir?: string
     }
     storage?: {
         rootDir?: string
