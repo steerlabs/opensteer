@@ -6,6 +6,7 @@ import {
     loadConfigFile,
     resolveConfig,
     resolveNamespace,
+    resolveRuntimeSelection,
 } from '../src/config.js'
 import type { OpensteerConfig } from '../src/types.js'
 
@@ -73,6 +74,61 @@ describe('config', () => {
         process.env.OPENSTEER_MODEL = 'gpt-5-mini'
         const resolved = resolveConfig({})
         expect(resolved.model).toBe('gpt-5-mini')
+    })
+
+    it('resolveRuntimeSelection defaults to local when unset', () => {
+        const selection = resolveRuntimeSelection({})
+        expect(selection).toEqual({
+            mode: 'local',
+            source: 'default',
+        })
+    })
+
+    it('resolveRuntimeSelection uses OPENSTEER_RUNTIME when cloud is not forced', () => {
+        process.env.OPENSTEER_RUNTIME = 'cloud'
+        const selection = resolveRuntimeSelection({})
+        expect(selection).toEqual({
+            mode: 'cloud',
+            source: 'env.OPENSTEER_RUNTIME',
+        })
+    })
+
+    it('resolveRuntimeSelection lets cloud.enabled force cloud mode over OPENSTEER_RUNTIME', () => {
+        process.env.OPENSTEER_RUNTIME = 'local'
+        const selection = resolveRuntimeSelection({
+            cloud: {
+                enabled: true,
+            },
+        })
+        expect(selection).toEqual({
+            mode: 'cloud',
+            source: 'config.cloud.enabled',
+        })
+    })
+
+    it('resolveConfig sets cloud mode from OPENSTEER_RUNTIME and uses OPENSTEER_API_KEY', () => {
+        process.env.OPENSTEER_RUNTIME = 'cloud'
+        process.env.OPENSTEER_API_KEY = 'osk_env_123'
+
+        const resolved = resolveConfig({})
+        expect(resolved.cloud).toEqual({
+            enabled: true,
+            key: 'osk_env_123',
+        })
+    })
+
+    it('throws when OPENSTEER_RUNTIME is "auto"', () => {
+        process.env.OPENSTEER_RUNTIME = 'auto'
+        expect(() => resolveConfig({})).toThrow(
+            'OPENSTEER_RUNTIME="auto" is not supported. Use "local" or "cloud".'
+        )
+    })
+
+    it('throws when OPENSTEER_RUNTIME has an invalid value', () => {
+        process.env.OPENSTEER_RUNTIME = 'edge'
+        expect(() => resolveConfig({})).toThrow(
+            'Invalid OPENSTEER_RUNTIME value "edge". Use "local" or "cloud".'
+        )
     })
 
     it('resolveConfig ignores OPENSTEER_API_KEY when cloud mode is not enabled', () => {

@@ -10,6 +10,22 @@ afterEach(() => {
 })
 
 describe('cloud mode', () => {
+    it('requires a non-empty cloud API key when OPENSTEER_RUNTIME=cloud', () => {
+        process.env.OPENSTEER_RUNTIME = 'cloud'
+        delete process.env.OPENSTEER_API_KEY
+
+        expect(() => new Opensteer({})).toThrow(
+            'Cloud mode requires a non-empty API key via cloud.key or OPENSTEER_API_KEY.'
+        )
+    })
+
+    it('uses OPENSTEER_API_KEY when OPENSTEER_RUNTIME=cloud', () => {
+        process.env.OPENSTEER_RUNTIME = 'cloud'
+        process.env.OPENSTEER_API_KEY = 'osk_env_123'
+
+        expect(() => new Opensteer({})).not.toThrow()
+    })
+
     it('uses OPENSTEER_API_KEY when cloud.key is omitted', () => {
         process.env.OPENSTEER_API_KEY = 'osk_env_123'
 
@@ -63,6 +79,15 @@ describe('cloud mode', () => {
                 },
             })
         ).toThrow('Opensteer.from(page) is not supported in cloud mode.')
+    })
+
+    it('rejects Opensteer.from(page) when OPENSTEER_RUNTIME=cloud', () => {
+        process.env.OPENSTEER_RUNTIME = 'cloud'
+        process.env.OPENSTEER_API_KEY = 'osk_env_123'
+
+        expect(() => Opensteer.from({} as never, {})).toThrow(
+            'Opensteer.from(page) is not supported in cloud mode.'
+        )
     })
 
     it('throws explicit unsupported errors for path-based methods', async () => {

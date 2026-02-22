@@ -1,7 +1,12 @@
 import { createHash } from 'crypto'
 import type { Browser, BrowserContext, ElementHandle, Page } from 'playwright'
 import { BrowserPool } from './browser/pool.js'
-import { resolveConfig, resolveNamespace } from './config.js'
+import {
+    resolveConfig,
+    resolveNamespace,
+    resolveRuntimeSelection,
+    type RuntimeSelection,
+} from './config.js'
 import { waitForVisualStability } from './navigation.js'
 import type {
     ActionResult,
@@ -171,6 +176,7 @@ const CLOUD_INTERACTION_METHODS = new Set<CloudActionMethod>([
 
 export class Opensteer {
     private readonly config: OpensteerConfig
+    private readonly runtimeSelection: RuntimeSelection
     private readonly aiResolve: AiResolveCallback
     private readonly aiExtract: AiExtractCallback
     private readonly namespace: string
@@ -183,12 +189,15 @@ export class Opensteer {
     private contextRef: BrowserContext | null = null
     private ownsBrowser = false
     private snapshotCache: PreparedSnapshot | null = null
+    private runtimeSelectionLogged = false
 
     constructor(config: OpensteerConfig = {}) {
         const resolved = resolveConfig(config)
+        const runtimeSelection = resolveRuntimeSelection(resolved)
         const model = resolved.model
 
         this.config = resolved
+        this.runtimeSelection = runtimeSelection
         this.aiResolve = this.createLazyResolveCallback(model)
         this.aiExtract = this.createLazyExtractCallback(model)
 
@@ -197,8 +206,8 @@ export class Opensteer {
         this.storage = new LocalSelectorStorage(rootDir, this.namespace)
         this.pool = new BrowserPool(resolved.browser || {})
 
-        if (resolved.cloud?.enabled) {
-            const key = resolved.cloud.key?.trim()
+        if (runtimeSelection.mode === 'cloud') {
+            const key = resolved.cloud?.key?.trim()
             if (!key) {
                 throw new Error(
                     'Cloud mode requires a non-empty API key via cloud.key or OPENSTEER_API_KEY.'
@@ -358,6 +367,13 @@ export class Opensteer {
             )
         }
 
+        if (!this.runtimeSelectionLogged && this.config.debug) {
+            console.info(
+                `[opensteer] runtime mode: ${this.runtimeSelection.mode} (source: ${this.runtimeSelection.source})`
+            )
+            this.runtimeSelectionLogged = true
+        }
+
         if (this.pageRef && this.ownsBrowser) {
             return
         }
@@ -444,7 +460,8 @@ export class Opensteer {
     }
 
     static from(page: Page, config: OpensteerConfig = {}): Opensteer {
-        if (config.cloud?.enabled) {
+        const runtimeSelection = resolveRuntimeSelection(resolveConfig(config))
+        if (runtimeSelection.mode === 'cloud') {
             throw cloudUnsupportedMethodError(
                 'Opensteer.from(page)',
                 'Opensteer.from(page) is not supported in cloud mode.'

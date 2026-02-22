@@ -170,10 +170,17 @@ interface OpensteerConfig {
 ```
 
 `model` defaults to `gpt-5.1`. You can also set `OPENSTEER_MODEL`.
-When `cloud.enabled` is `true`, `cloud.key` falls back to `OPENSTEER_API_KEY`
-if omitted. If `cloud.key` is provided, it overrides the env fallback.
+Runtime defaults to local. You can set `OPENSTEER_RUNTIME=local|cloud`.
+If `OPENSTEER_RUNTIME=cloud`, cloud API key is required via `cloud.key` or
+`OPENSTEER_API_KEY`.
+If `cloud.enabled` is `true`, it always forces cloud mode (overriding
+`OPENSTEER_RUNTIME`).
+When cloud mode is selected and `cloud.key` is omitted, it falls back to
+`OPENSTEER_API_KEY`. If `cloud.key` is explicitly provided, it overrides the
+env fallback.
 Cloud base URL defaults to `https://cloud.opensteer.com` and can be overridden
 with `OPENSTEER_CLOUD_BASE_URL`.
+Cloud mode is fail-fast and does not automatically fall back to local runtime.
 
 In cloud mode, these methods are unsupported and throw
 `CLOUD_UNSUPPORTED_METHOD`:

@@ -129,6 +129,16 @@ const ov = new Opensteer({
 });
 ```
 
+## Runtime Selection
+
+Opensteer defaults to local runtime.
+
+- `OPENSTEER_RUNTIME=local` runs local Playwright.
+- `OPENSTEER_RUNTIME=cloud` runs cloud runtime (requires `OPENSTEER_API_KEY`).
+- `cloud.enabled: true` in constructor config always forces cloud mode.
+
+Cloud mode is fail-fast: it does not automatically fall back to local runtime.
+
 ## Docs
 
 - `docs/getting-started.md`

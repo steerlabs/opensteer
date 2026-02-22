@@ -343,6 +343,10 @@ Global Flags:
   --selector <css>          Target element by CSS selector
   --description <text>      Description for selector persistence
   --help                    Show this help
+
+Environment:
+  OPENSTEER_RUNTIME         Runtime mode: "local" (default) or "cloud"
+  OPENSTEER_API_KEY         Required when cloud runtime is selected
 `)
 }
 
