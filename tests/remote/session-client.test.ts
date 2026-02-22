@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { CloudSessionClient } from '../../src/cloud/session-client.js'
-import { OpensteerCloudError } from '../../src/cloud/errors.js'
+import { RemoteSessionClient } from '../../src/remote/session-client.js'
+import { OpensteerRemoteError } from '../../src/remote/errors.js'
 
 const ORIGINAL_FETCH = globalThis.fetch
 
-describe('CloudSessionClient#importSelectorCache', () => {
+describe('RemoteSessionClient#importSelectorCache', () => {
     afterEach(() => {
         globalThis.fetch = ORIGINAL_FETCH
     })
@@ -13,7 +13,7 @@ describe('CloudSessionClient#importSelectorCache', () => {
         const fetchMock = vi.fn()
         globalThis.fetch = fetchMock as unknown as typeof fetch
 
-        const client = new CloudSessionClient('http://localhost:8080', 'osk_key')
+        const client = new RemoteSessionClient('http://localhost:8080', 'ork_key')
         const result = await client.importSelectorCache({ entries: [] })
 
         expect(fetchMock).not.toHaveBeenCalled()
@@ -30,7 +30,7 @@ describe('CloudSessionClient#importSelectorCache', () => {
             .fn()
             .mockResolvedValue(new Response(null, { status: 404 })) as never
 
-        const client = new CloudSessionClient('http://localhost:8080', 'osk_key')
+        const client = new RemoteSessionClient('http://localhost:8080', 'ork_key')
         await expect(
             client.importSelectorCache({
                 entries: [
@@ -46,21 +46,21 @@ describe('CloudSessionClient#importSelectorCache', () => {
                 ],
             })
         ).rejects.toEqual(
-            expect.objectContaining<Partial<OpensteerCloudError>>({
-                code: 'CLOUD_TRANSPORT_ERROR',
+            expect.objectContaining<Partial<OpensteerRemoteError>>({
+                code: 'REMOTE_TRANSPORT_ERROR',
                 status: 404,
             })
         )
     })
 
-    it('throws on backend errors with recognized cloud codes', async () => {
+    it('throws on backend errors with recognized remote codes', async () => {
         globalThis.fetch = vi
             .fn()
             .mockResolvedValue(
                 new Response(
                     JSON.stringify({
                         error: 'bad request',
-                        code: 'CLOUD_INVALID_REQUEST',
+                        code: 'REMOTE_INVALID_REQUEST',
                     }),
                     {
                         status: 400,
@@ -69,7 +69,7 @@ describe('CloudSessionClient#importSelectorCache', () => {
                 )
             ) as never
 
-        const client = new CloudSessionClient('http://localhost:8080', 'osk_key')
+        const client = new RemoteSessionClient('http://localhost:8080', 'ork_key')
 
         await expect(
             client.importSelectorCache({
@@ -86,8 +86,8 @@ describe('CloudSessionClient#importSelectorCache', () => {
                 ],
             })
         ).rejects.toEqual(
-            expect.objectContaining<Partial<OpensteerCloudError>>({
-                code: 'CLOUD_INVALID_REQUEST',
+            expect.objectContaining<Partial<OpensteerRemoteError>>({
+                code: 'REMOTE_INVALID_REQUEST',
                 status: 400,
             })
         )

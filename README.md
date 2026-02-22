@@ -129,21 +129,21 @@ const ov = new Opensteer({
 });
 ```
 
-## Runtime Selection
+## Mode Selection
 
-Opensteer defaults to local runtime.
+Opensteer defaults to local mode.
 
-- `OPENSTEER_RUNTIME=local` runs local Playwright.
-- `OPENSTEER_RUNTIME=cloud` runs cloud runtime (requires `OPENSTEER_API_KEY`).
-- `cloud.enabled: true` in constructor config always forces cloud mode.
+- `OPENSTEER_MODE=local` runs local Playwright.
+- `OPENSTEER_MODE=remote` runs remote mode (requires `OPENSTEER_REMOTE_API_KEY`).
+- `mode: "remote"` in constructor config always forces remote mode.
 
-Cloud mode is fail-fast: it does not automatically fall back to local runtime.
+Remote mode is fail-fast: it does not automatically fall back to local mode.
 
 ## Docs
 
 - `docs/getting-started.md`
 - `docs/api-reference.md`
-- `docs/cloud-integration.md`
+- `docs/remote-integration.md`
 - `docs/html-cleaning.md`
 - `docs/selectors.md`
 - `docs/live-web-tests.md`

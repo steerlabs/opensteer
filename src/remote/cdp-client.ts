@@ -4,21 +4,21 @@ import {
     type BrowserContext,
     type Page,
 } from 'playwright'
-import { OpensteerCloudError } from './errors.js'
+import { OpensteerRemoteError } from './errors.js'
 
-export interface CloudCdpConnectArgs {
+export interface RemoteCdpConnectArgs {
     wsUrl: string
     token: string
 }
 
-export interface CloudCdpConnection {
+export interface RemoteCdpConnection {
     browser: Browser
     context: BrowserContext
     page: Page
 }
 
-export class CloudCdpClient {
-    async connect(args: CloudCdpConnectArgs): Promise<CloudCdpConnection> {
+export class RemoteCdpClient {
+    async connect(args: RemoteCdpConnectArgs): Promise<RemoteCdpConnection> {
         const endpoint = withTokenQuery(args.wsUrl, args.token)
 
         let browser: Browser
@@ -28,16 +28,16 @@ export class CloudCdpClient {
             const message =
                 error instanceof Error
                     ? error.message
-                    : 'Failed to connect to cloud CDP endpoint.'
-            throw new OpensteerCloudError('CLOUD_TRANSPORT_ERROR', message)
+                    : 'Failed to connect to remote CDP endpoint.'
+            throw new OpensteerRemoteError('REMOTE_TRANSPORT_ERROR', message)
         }
 
         const context = browser.contexts()[0]
         if (!context) {
             await browser.close()
-            throw new OpensteerCloudError(
-                'CLOUD_INTERNAL',
-                'Cloud browser returned no context.'
+            throw new OpensteerRemoteError(
+                'REMOTE_INTERNAL',
+                'Remote browser returned no context.'
             )
         }
 
