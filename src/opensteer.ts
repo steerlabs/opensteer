@@ -1580,6 +1580,7 @@ export class Opensteer {
     ): Promise<void> {
         await this.page
             .getByText(text)
+            .first()
             .waitFor({ timeout: options?.timeout ?? 30000 })
     }
 
