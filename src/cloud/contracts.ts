@@ -43,6 +43,11 @@ export type CloudErrorCode =
     | 'CLOUD_INVALID_REQUEST'
     | 'CLOUD_MODEL_NOT_ALLOWED'
     | 'CLOUD_ACTION_FAILED'
+    | 'CLOUD_CAPACITY_EXHAUSTED'
+    | 'CLOUD_RUNTIME_UNAVAILABLE'
+    | 'CLOUD_RUNTIME_MISMATCH'
+    | 'CLOUD_SESSION_STALE'
+    | 'CLOUD_CONTROL_PLANE_ERROR'
     | 'CLOUD_INTERNAL'
 
 export interface CloudSessionCreateRequest {
@@ -57,6 +62,7 @@ export interface CloudSessionCreateResponse {
     cdpWsUrl: string
     actionToken: string
     cdpToken: string
+    expiresAt?: number
 }
 
 export interface CloudSelectorCacheImportEntry {

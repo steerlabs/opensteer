@@ -25,7 +25,7 @@ export function cloudUnsupportedMethodError(
 ): OpensteerCloudError {
     return new OpensteerCloudError(
         'CLOUD_UNSUPPORTED_METHOD',
-        message || `${method} is not supported in cloud mode v1.`
+        message || `${method} is not supported in cloud mode.`
     )
 }
 

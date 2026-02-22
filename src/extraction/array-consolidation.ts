@@ -4,6 +4,12 @@ import {
     VOLATILE_LAZY_CLASS_TOKENS,
 } from '../element-path/match-policy.js'
 import type { ElementPath, MatchClause, PathNode } from '../element-path/types.js'
+import { stableStringify } from '../utils/stable-stringify.js'
+import {
+    encodeDataPath,
+    joinDataPath,
+    parseDataPath,
+} from './data-path.js'
 
 export interface PersistablePathField {
     key: string
@@ -98,18 +104,6 @@ interface PerIndexDescriptor {
     itemRoot: ElementPath
     fields: ConsolidatedArrayField[]
 }
-
-interface DataPathPropertyToken {
-    kind: 'prop'
-    key: string
-}
-
-interface DataPathIndexToken {
-    kind: 'index'
-    index: number
-}
-
-type DataPathToken = DataPathPropertyToken | DataPathIndexToken
 
 const STRUCTURAL_ATTR_KEYS = new Set([
     'class',
@@ -1426,92 +1420,6 @@ function pickModeNumber(
 
     if (best == null || bestCount < minCount) return undefined
     return best
-}
-
-function parseDataPath(path: string): DataPathToken[] | null {
-    const input = String(path || '').trim()
-    if (!input) return []
-    if (input.includes('..')) return null
-    if (input.startsWith('.') || input.endsWith('.')) return null
-
-    const tokens: DataPathToken[] = []
-    let cursor = 0
-
-    while (cursor < input.length) {
-        const char = input[cursor]
-        if (char === '.') {
-            cursor += 1
-            continue
-        }
-
-        if (char === '[') {
-            const close = input.indexOf(']', cursor + 1)
-            if (close === -1) return null
-            const rawIndex = input.slice(cursor + 1, close).trim()
-            if (!/^\d+$/.test(rawIndex)) return null
-            tokens.push({
-                kind: 'index',
-                index: Number.parseInt(rawIndex, 10),
-            })
-            cursor = close + 1
-            continue
-        }
-
-        let end = cursor
-        while (end < input.length && input[end] !== '.' && input[end] !== '[') {
-            end += 1
-        }
-
-        const key = input.slice(cursor, end).trim()
-        if (!key) return null
-        tokens.push({ kind: 'prop', key })
-        cursor = end
-    }
-
-    return tokens
-}
-
-function encodeDataPath(tokens: DataPathToken[]): string {
-    let out = ''
-    for (const token of tokens) {
-        if (token.kind === 'prop') {
-            out = out ? `${out}.${token.key}` : token.key
-            continue
-        }
-        out += `[${token.index}]`
-    }
-    return out
-}
-
-function joinDataPath(base: string, key: string): string {
-    const normalizedBase = String(base || '').trim()
-    const normalizedKey = String(key || '').trim()
-    if (!normalizedBase) return normalizedKey
-    if (!normalizedKey) return normalizedBase
-    return `${normalizedBase}.${normalizedKey}`
-}
-
-function stableStringify(value: unknown): string {
-    if (Array.isArray(value)) {
-        return `[${value.map((item) => stableStringify(item)).join(',')}]`
-    }
-
-    if (value && typeof value === 'object') {
-        const entries = Object.entries(value as Record<string, unknown>).sort(
-            ([left], [right]) => left.localeCompare(right)
-        )
-
-        const serialized = entries
-            .map(
-                ([key, current]) =>
-                    `${JSON.stringify(key)}:${stableStringify(current)}`
-            )
-            .join(',')
-
-        return `{${serialized}}`
-    }
-
-    return JSON.stringify(value)
 }
 
 function clonePathContext(

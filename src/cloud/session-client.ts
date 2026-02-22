@@ -27,7 +27,7 @@ export class CloudSessionClient {
     async create(
         request: CloudSessionCreateRequest
     ): Promise<CloudSessionCreateResponse> {
-        const response = await fetch(`${this.baseUrl}/v1/sessions`, {
+        const response = await fetch(`${this.baseUrl}/sessions`, {
             method: 'POST',
             headers: {
                 'content-type': 'application/json',
@@ -44,14 +44,14 @@ export class CloudSessionClient {
     }
 
     async close(sessionId: string): Promise<void> {
-        const response = await fetch(`${this.baseUrl}/v1/sessions/${sessionId}`, {
+        const response = await fetch(`${this.baseUrl}/sessions/${sessionId}`, {
             method: 'DELETE',
             headers: {
                 'x-api-key': this.key,
             },
         })
 
-        if (response.status === 404 || response.status === 204) {
+        if (response.status === 204) {
             return
         }
 
@@ -88,7 +88,7 @@ export class CloudSessionClient {
     private async importSelectorCacheBatch(
         entries: CloudSelectorCacheImportRequest['entries']
     ): Promise<CloudSelectorCacheImportResponse> {
-        const response = await fetch(`${this.baseUrl}/v1/selector-cache/import`, {
+        const response = await fetch(`${this.baseUrl}/selector-cache/import`, {
             method: 'POST',
             headers: {
                 'content-type': 'application/json',
@@ -96,11 +96,6 @@ export class CloudSessionClient {
             },
             body: JSON.stringify({ entries }),
         })
-
-        // Older backend versions may not implement this endpoint yet.
-        if (response.status === 404) {
-            return zeroImportResponse()
-        }
 
         if (!response.ok) {
             throw await parseHttpError(response)
@@ -169,7 +164,12 @@ function toCloudErrorCode(
         code === 'CLOUD_INVALID_REQUEST' ||
         code === 'CLOUD_MODEL_NOT_ALLOWED' ||
         code === 'CLOUD_ACTION_FAILED' ||
-        code === 'CLOUD_INTERNAL'
+        code === 'CLOUD_INTERNAL' ||
+        code === 'CLOUD_CAPACITY_EXHAUSTED' ||
+        code === 'CLOUD_RUNTIME_UNAVAILABLE' ||
+        code === 'CLOUD_RUNTIME_MISMATCH' ||
+        code === 'CLOUD_SESSION_STALE' ||
+        code === 'CLOUD_CONTROL_PLANE_ERROR'
     ) {
         return code
     }
