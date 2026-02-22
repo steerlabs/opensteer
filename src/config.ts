@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import type { OpensteerConfig } from './types.js'
+import { normalizeNamespace } from './storage/namespace.js'
 
 export interface ResolvedOpensteerConfig extends OpensteerConfig {
     model: string
@@ -159,17 +160,19 @@ export function resolveNamespace(
     config: OpensteerConfig,
     rootDir: string
 ): string {
-    if (config.name && config.name.trim()) return config.name.trim()
+    if (config.name && config.name.trim()) {
+        return normalizeNamespace(config.name)
+    }
 
     const caller = getCallerFilePath()
-    if (!caller) return 'default'
+    if (!caller) return normalizeNamespace('default')
 
     const relative = path.relative(rootDir, caller)
     const cleaned = relative
         .replace(/\\/g, '/')
         .replace(/\.(ts|tsx|js|mjs|cjs)$/, '')
 
-    return cleaned || 'default'
+    return normalizeNamespace(cleaned || 'default')
 }
 
 function getCallerFilePath(): string | null {

@@ -54,7 +54,7 @@ describe('cloud mode', () => {
         )
     })
 
-    it('rejects Opensteer.from(page) in cloud mode v1', () => {
+    it('rejects Opensteer.from(page) in cloud mode', () => {
         expect(() =>
             Opensteer.from({} as never, {
                 cloud: {
@@ -62,7 +62,7 @@ describe('cloud mode', () => {
                     key: 'osk_test_123',
                 },
             })
-        ).toThrow('Opensteer.from(page) is not supported in cloud mode v1.')
+        ).toThrow('Opensteer.from(page) is not supported in cloud mode.')
     })
 
     it('throws explicit unsupported errors for path-based methods', async () => {
@@ -79,13 +79,13 @@ describe('cloud mode', () => {
                 paths: ['/tmp/file.pdf'],
             })
         ).rejects.toThrow(
-            'uploadFile() is not supported in cloud mode v1 because file paths must be accessible on the remote server.'
+            'uploadFile() is not supported in cloud mode because file paths must be accessible on the remote server.'
         )
 
         await expect(
             ov.exportCookies('/tmp/cookies.json')
         ).rejects.toThrow(
-            'exportCookies() is not supported in cloud mode v1 because it depends on local filesystem paths.'
+            'exportCookies() is not supported in cloud mode because it depends on local filesystem paths.'
         )
     })
 

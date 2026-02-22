@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { createEmptyRegistry, type SelectorRegistry } from './registry.js'
+import { normalizeNamespace, resolveNamespaceDir } from './namespace.js'
 
 export interface SelectorFile<T = unknown> {
     id: string
@@ -21,7 +22,7 @@ export class LocalSelectorStorage {
 
     constructor(rootDir: string, namespace: string) {
         this.rootDir = rootDir
-        this.namespace = namespace
+        this.namespace = normalizeNamespace(namespace)
     }
 
     getRootDir(): string {
@@ -42,7 +43,7 @@ export class LocalSelectorStorage {
     }
 
     getNamespaceDir(): string {
-        return path.join(this.getOpensteerDir(), 'selectors', this.namespace)
+        return resolveNamespaceDir(this.rootDir, this.namespace)
     }
 
     getRegistryPath(): string {
