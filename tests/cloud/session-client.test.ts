@@ -25,35 +25,35 @@ describe('CloudSessionClient#importSelectorCache', () => {
         })
     })
 
-    it('treats 404 import endpoint as backward-compatible no-op', async () => {
+    it('throws on 404 import endpoint responses', async () => {
         globalThis.fetch = vi
             .fn()
             .mockResolvedValue(new Response(null, { status: 404 })) as never
 
         const client = new CloudSessionClient('http://localhost:8080', 'osk_key')
-        const result = await client.importSelectorCache({
-            entries: [
-                {
-                    namespace: 'default',
-                    siteOrigin: 'https://example.com',
-                    method: 'click',
-                    descriptionHash: 'abcdef0123456789',
-                    path: { context: [], nodes: [] },
-                    createdAt: 100,
-                    updatedAt: 100,
-                },
-            ],
-        })
-
-        expect(result).toEqual({
-            imported: 0,
-            inserted: 0,
-            updated: 0,
-            skipped: 0,
-        })
+        await expect(
+            client.importSelectorCache({
+                entries: [
+                    {
+                        namespace: 'default',
+                        siteOrigin: 'https://example.com',
+                        method: 'click',
+                        descriptionHash: 'abcdef0123456789',
+                        path: { context: [], nodes: [] },
+                        createdAt: 100,
+                        updatedAt: 100,
+                    },
+                ],
+            })
+        ).rejects.toEqual(
+            expect.objectContaining<Partial<OpensteerCloudError>>({
+                code: 'CLOUD_TRANSPORT_ERROR',
+                status: 404,
+            })
+        )
     })
 
-    it('throws on non-404 backend errors', async () => {
+    it('throws on backend errors with recognized cloud codes', async () => {
         globalThis.fetch = vi
             .fn()
             .mockResolvedValue(

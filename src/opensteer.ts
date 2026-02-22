@@ -101,16 +101,21 @@ import {
     type PersistedExtractObjectNode,
     type PersistedExtractPayload,
 } from './extraction/array-consolidation.js'
+import { inflateDataPathObject } from './extraction/data-path.js'
 import type { CloudActionMethod } from './cloud/contracts.js'
 import { ActionWsClient } from './cloud/action-ws-client.js'
-import { CloudCdpClient } from './cloud/cdp-client.js'
 import {
     cloudNotLaunchedError,
     OpensteerCloudError,
     cloudUnsupportedMethodError,
 } from './cloud/errors.js'
-import { CloudSessionClient } from './cloud/session-client.js'
 import { collectLocalSelectorCacheEntries } from './cloud/local-cache-sync.js'
+import {
+    createCloudRuntimeState,
+    readCloudActionDescription,
+    type CloudRuntimeState,
+} from './cloud/runtime.js'
+import { stableStringify } from './utils/stable-stringify.js'
 
 interface PathResolutionResult {
     path: ElementPath | null
@@ -153,14 +158,6 @@ interface MergedArrayVariantRow {
     value: unknown
 }
 
-interface CloudRuntimeState {
-    readonly sessionClient: CloudSessionClient
-    readonly cdpClient: CloudCdpClient
-    actionClient: ActionWsClient | null
-    sessionId: string | null
-}
-
-const DEFAULT_CLOUD_BASE_URL = 'https://cloud.oversteer.ai'
 const CLOUD_INTERACTION_METHODS = new Set<CloudActionMethod>([
     'click',
     'dblclick',
@@ -208,14 +205,7 @@ export class Opensteer {
                 )
             }
 
-            const baseUrl = resolveCloudBaseUrl()
-            this.cloud = {
-                sessionClient: new CloudSessionClient(baseUrl, key),
-                cdpClient: new CloudCdpClient(),
-                actionClient: null,
-                sessionId: null,
-            }
-            this.bindCloudActionMethods()
+            this.cloud = createCloudRuntimeState(key)
         } else {
             this.cloud = null
         }
@@ -263,228 +253,13 @@ export class Opensteer {
         return extract
     }
 
-    private bindCloudActionMethods(): void {
-        const instance = this as unknown as {
-            goto: Opensteer['goto']
-            snapshot: Opensteer['snapshot']
-            state: Opensteer['state']
-            click: Opensteer['click']
-            dblclick: Opensteer['dblclick']
-            rightclick: Opensteer['rightclick']
-            hover: Opensteer['hover']
-            input: Opensteer['input']
-            select: Opensteer['select']
-            scroll: Opensteer['scroll']
-            tabs: Opensteer['tabs']
-            newTab: Opensteer['newTab']
-            switchTab: Opensteer['switchTab']
-            closeTab: Opensteer['closeTab']
-            getCookies: Opensteer['getCookies']
-            setCookie: Opensteer['setCookie']
-            clearCookies: Opensteer['clearCookies']
-            exportCookies: Opensteer['exportCookies']
-            importCookies: Opensteer['importCookies']
-            pressKey: Opensteer['pressKey']
-            type: Opensteer['type']
-            getElementText: Opensteer['getElementText']
-            getElementValue: Opensteer['getElementValue']
-            getElementAttributes: Opensteer['getElementAttributes']
-            getElementBoundingBox: Opensteer['getElementBoundingBox']
-            getHtml: Opensteer['getHtml']
-            getTitle: Opensteer['getTitle']
-            screenshot: Opensteer['screenshot']
-            uploadFile: Opensteer['uploadFile']
-            waitForText: Opensteer['waitForText']
-            extract: Opensteer['extract']
-            extractFromPlan: Opensteer['extractFromPlan']
-            clearCache: Opensteer['clearCache']
-        }
-
-        instance.goto = async (url, options) => {
-            await this.invokeCloudAction('goto', { url, options })
-            this.snapshotCache = null
-        }
-
-        instance.snapshot = async (options = {}) => {
-            const html = await this.invokeCloudAction<string>('snapshot', {
-                options,
-            })
-            this.snapshotCache = null
-            return html
-        }
-
-        instance.state = async () => {
-            return await this.invokeCloudAction<StateResult>('state', {})
-        }
-
-        instance.click = async (options) => {
-            this.snapshotCache = null
-            return await this.invokeCloudAction<ActionResult>('click', options)
-        }
-
-        instance.dblclick = async (options) => {
-            this.snapshotCache = null
-            return await this.invokeCloudAction<ActionResult>(
-                'dblclick',
-                options
-            )
-        }
-
-        instance.rightclick = async (options) => {
-            this.snapshotCache = null
-            return await this.invokeCloudAction<ActionResult>(
-                'rightclick',
-                options
-            )
-        }
-
-        instance.hover = async (options) => {
-            this.snapshotCache = null
-            return await this.invokeCloudAction<ActionResult>('hover', options)
-        }
-
-        instance.input = async (options) => {
-            this.snapshotCache = null
-            return await this.invokeCloudAction<ActionResult>('input', options)
-        }
-
-        instance.select = async (options) => {
-            this.snapshotCache = null
-            return await this.invokeCloudAction<ActionResult>('select', options)
-        }
-
-        instance.scroll = async (options = {}) => {
-            this.snapshotCache = null
-            return await this.invokeCloudAction<ActionResult>('scroll', options)
-        }
-
-        instance.tabs = async () => {
-            return await this.invokeCloudAction<TabInfo[]>('tabs', {})
-        }
-
-        instance.newTab = async (url) => {
-            this.snapshotCache = null
-            return await this.invokeCloudAction<TabInfo>('newTab', { url })
-        }
-
-        instance.switchTab = async (index) => {
-            await this.invokeCloudAction('switchTab', { index })
-            this.snapshotCache = null
-        }
-
-        instance.closeTab = async (index) => {
-            await this.invokeCloudAction('closeTab', { index })
-            this.snapshotCache = null
-        }
-
-        instance.getCookies = async (url) => {
-            return await this.invokeCloudAction<import('playwright').Cookie[]>(
-                'getCookies',
-                { url }
-            )
-        }
-
-        instance.setCookie = async (cookie) => {
-            await this.invokeCloudAction('setCookie', cookie)
-        }
-
-        instance.clearCookies = async () => {
-            await this.invokeCloudAction('clearCookies', {})
-        }
-
-        instance.exportCookies = async () => {
-            throw cloudUnsupportedMethodError(
-                'exportCookies',
-                'exportCookies() is not supported in cloud mode v1 because it depends on local filesystem paths.'
-            )
-        }
-
-        instance.importCookies = async () => {
-            throw cloudUnsupportedMethodError(
-                'importCookies',
-                'importCookies() is not supported in cloud mode v1 because it depends on local filesystem paths.'
-            )
-        }
-
-        instance.pressKey = async (key) => {
-            await this.invokeCloudAction('pressKey', { key })
-            this.snapshotCache = null
-        }
-
-        instance.type = async (text) => {
-            await this.invokeCloudAction('type', { text })
-            this.snapshotCache = null
-        }
-
-        instance.getElementText = async (options) => {
-            return await this.invokeCloudAction<string>(
-                'getElementText',
-                options
-            )
-        }
-
-        instance.getElementValue = async (options) => {
-            return await this.invokeCloudAction<string>(
-                'getElementValue',
-                options
-            )
-        }
-
-        instance.getElementAttributes = async (options) => {
-            return await this.invokeCloudAction<Record<string, string>>(
-                'getElementAttributes',
-                options
-            )
-        }
-
-        instance.getElementBoundingBox = async (options) => {
-            return await this.invokeCloudAction<BoundingBox | null>(
-                'getElementBoundingBox',
-                options
-            )
-        }
-
-        instance.getHtml = async (selector) => {
-            return await this.invokeCloudAction<string>('getHtml', { selector })
-        }
-
-        instance.getTitle = async () => {
-            return await this.invokeCloudAction<string>('getTitle', {})
-        }
-
-        instance.screenshot = async (options = {}) => {
-            const b64 = await this.invokeCloudAction<string>('screenshot', options)
-            return Buffer.from(b64, 'base64')
-        }
-
-        instance.uploadFile = async () => {
-            throw cloudUnsupportedMethodError(
-                'uploadFile',
-                'uploadFile() is not supported in cloud mode v1 because file paths must be accessible on the remote server.'
-            )
-        }
-
-        instance.waitForText = async (text, options) => {
-            await this.invokeCloudAction('waitForText', { text, options })
-        }
-
-        instance.extract = (async (options: ExtractOptions) => {
-            return await this.invokeCloudAction<unknown>('extract', options)
-        }) as Opensteer['extract']
-
-        instance.extractFromPlan = (async (options: ExtractFromPlanOptions) => {
-            return await this.invokeCloudAction<ExtractionRunResult>(
-                'extractFromPlan',
-                options as never
-            )
-        }) as Opensteer['extractFromPlan']
-
-        instance.clearCache = () => {
-            this.snapshotCache = null
-
-            if (!this.cloud?.actionClient) return
-            void this.invokeCloudAction('clearCache', {})
-        }
+    private async invokeCloudActionAndResetCache<T>(
+        method: CloudActionMethod,
+        args: unknown
+    ): Promise<T> {
+        const result = await this.invokeCloudAction<T>(method, args)
+        this.snapshotCache = null
+        return result
     }
 
     private async invokeCloudAction<T>(
@@ -672,7 +447,7 @@ export class Opensteer {
         if (config.cloud?.enabled) {
             throw cloudUnsupportedMethodError(
                 'Opensteer.from(page)',
-                'Opensteer.from(page) is not supported in cloud mode v1.'
+                'Opensteer.from(page) is not supported in cloud mode.'
             )
         }
 
@@ -737,6 +512,11 @@ export class Opensteer {
     }
 
     async goto(url: string, options?: GotoOptions): Promise<void> {
+        if (this.cloud) {
+            await this.invokeCloudActionAndResetCache('goto', { url, options })
+            return
+        }
+
         const { waitUntil = 'domcontentloaded', ...rest } = options ?? {}
         await this.page.goto(url, { waitUntil, timeout: rest.timeout })
         await waitForVisualStability(this.page, rest)
@@ -744,12 +524,22 @@ export class Opensteer {
     }
 
     async snapshot(options: SnapshotOptions = {}): Promise<string> {
+        if (this.cloud) {
+            return await this.invokeCloudActionAndResetCache<string>('snapshot', {
+                options,
+            })
+        }
+
         const prepared = await prepareSnapshot(this.page, options)
         this.snapshotCache = prepared
         return prepared.cleanedHtml
     }
 
     async state(): Promise<StateResult> {
+        if (this.cloud) {
+            return await this.invokeCloudAction<StateResult>('state', {})
+        }
+
         const html = await this.snapshot({ mode: 'action' })
 
         return {
@@ -760,6 +550,14 @@ export class Opensteer {
     }
 
     async screenshot(options: ScreenshotOptions = {}): Promise<Buffer> {
+        if (this.cloud) {
+            const b64 = await this.invokeCloudAction<string>(
+                'screenshot',
+                options
+            )
+            return Buffer.from(b64, 'base64')
+        }
+
         return this.page.screenshot({
             type: options.type ?? 'png',
             fullPage: options.fullPage,
@@ -769,6 +567,13 @@ export class Opensteer {
     }
 
     async click(options: ClickOptions): Promise<ActionResult> {
+        if (this.cloud) {
+            return await this.invokeCloudActionAndResetCache<ActionResult>(
+                'click',
+                options
+            )
+        }
+
         return this.executeClickVariant('click', {
             ...options,
             button: options.button ?? 'left',
@@ -777,6 +582,13 @@ export class Opensteer {
     }
 
     async dblclick(options: ClickOptions): Promise<ActionResult> {
+        if (this.cloud) {
+            return await this.invokeCloudActionAndResetCache<ActionResult>(
+                'dblclick',
+                options
+            )
+        }
+
         return this.executeClickVariant('dblclick', {
             ...options,
             button: options.button ?? 'left',
@@ -785,6 +597,13 @@ export class Opensteer {
     }
 
     async rightclick(options: ClickOptions): Promise<ActionResult> {
+        if (this.cloud) {
+            return await this.invokeCloudActionAndResetCache<ActionResult>(
+                'rightclick',
+                options
+            )
+        }
+
         return this.executeClickVariant('rightclick', {
             ...options,
             button: 'right',
@@ -793,6 +612,13 @@ export class Opensteer {
     }
 
     async hover(options: HoverOptions): Promise<ActionResult> {
+        if (this.cloud) {
+            return await this.invokeCloudActionAndResetCache<ActionResult>(
+                'hover',
+                options
+            )
+        }
+
         const storageKey = this.resolveStorageKey(options.description)
         const resolution = await this.resolvePath('hover', options)
 
@@ -910,6 +736,13 @@ export class Opensteer {
     }
 
     async input(options: InputOptions): Promise<ActionResult> {
+        if (this.cloud) {
+            return await this.invokeCloudActionAndResetCache<ActionResult>(
+                'input',
+                options
+            )
+        }
+
         const storageKey = this.resolveStorageKey(options.description)
         const resolution = await this.resolvePath('input', options)
 
@@ -1031,6 +864,13 @@ export class Opensteer {
     }
 
     async select(options: SelectOptions): Promise<ActionResult> {
+        if (this.cloud) {
+            return await this.invokeCloudActionAndResetCache<ActionResult>(
+                'select',
+                options
+            )
+        }
+
         const storageKey = this.resolveStorageKey(options.description)
         const resolution = await this.resolvePath('select', options)
 
@@ -1159,6 +999,13 @@ export class Opensteer {
     }
 
     async scroll(options: ScrollOptions = {}): Promise<ActionResult> {
+        if (this.cloud) {
+            return await this.invokeCloudActionAndResetCache<ActionResult>(
+                'scroll',
+                options
+            )
+        }
+
         const storageKey = this.resolveStorageKey(options.description)
         const resolution = await this.resolvePath('scroll', options, true)
 
@@ -1279,10 +1126,20 @@ export class Opensteer {
     // --- Tab Management ---
 
     async tabs(): Promise<TabInfo[]> {
+        if (this.cloud) {
+            return await this.invokeCloudAction<TabInfo[]>('tabs', {})
+        }
+
         return listTabs(this.context, this.page)
     }
 
     async newTab(url?: string): Promise<TabInfo> {
+        if (this.cloud) {
+            return await this.invokeCloudActionAndResetCache<TabInfo>('newTab', {
+                url,
+            })
+        }
+
         const { page, info } = await createTab(this.context, url)
         this.pageRef = page
         this.snapshotCache = null
@@ -1290,12 +1147,22 @@ export class Opensteer {
     }
 
     async switchTab(index: number): Promise<void> {
+        if (this.cloud) {
+            await this.invokeCloudActionAndResetCache('switchTab', { index })
+            return
+        }
+
         const page = await switchTab(this.context, index)
         this.pageRef = page
         this.snapshotCache = null
     }
 
     async closeTab(index?: number): Promise<void> {
+        if (this.cloud) {
+            await this.invokeCloudActionAndResetCache('closeTab', { index })
+            return
+        }
+
         const newPage = await closeTab(this.context, this.page, index)
         if (newPage) {
             this.pageRef = newPage
@@ -1306,28 +1173,64 @@ export class Opensteer {
     // --- Cookie Management ---
 
     async getCookies(url?: string): Promise<import('playwright').Cookie[]> {
+        if (this.cloud) {
+            return await this.invokeCloudAction<import('playwright').Cookie[]>(
+                'getCookies',
+                { url }
+            )
+        }
+
         return getCookies(this.context, url)
     }
 
     async setCookie(cookie: CookieParam): Promise<void> {
+        if (this.cloud) {
+            await this.invokeCloudAction('setCookie', cookie)
+            return
+        }
+
         return setCookie(this.context, cookie)
     }
 
     async clearCookies(): Promise<void> {
+        if (this.cloud) {
+            await this.invokeCloudAction('clearCookies', {})
+            return
+        }
+
         return clearCookies(this.context)
     }
 
     async exportCookies(filePath: string, url?: string): Promise<void> {
+        if (this.cloud) {
+            throw cloudUnsupportedMethodError(
+                'exportCookies',
+                'exportCookies() is not supported in cloud mode because it depends on local filesystem paths.'
+            )
+        }
+
         return exportCookies(this.context, filePath, url)
     }
 
     async importCookies(filePath: string): Promise<void> {
+        if (this.cloud) {
+            throw cloudUnsupportedMethodError(
+                'importCookies',
+                'importCookies() is not supported in cloud mode because it depends on local filesystem paths.'
+            )
+        }
+
         return importCookies(this.context, filePath)
     }
 
     // --- Keyboard Input ---
 
     async pressKey(key: string): Promise<void> {
+        if (this.cloud) {
+            await this.invokeCloudActionAndResetCache('pressKey', { key })
+            return
+        }
+
         await this.runWithPostActionWait('pressKey', undefined, async () => {
             await pressKey(this.page, key)
         })
@@ -1335,6 +1238,11 @@ export class Opensteer {
     }
 
     async type(text: string): Promise<void> {
+        if (this.cloud) {
+            await this.invokeCloudActionAndResetCache('type', { text })
+            return
+        }
+
         await this.runWithPostActionWait('type', undefined, async () => {
             await typeText(this.page, text)
         })
@@ -1344,6 +1252,10 @@ export class Opensteer {
     // --- Element Info ---
 
     async getElementText(options: BaseActionOptions): Promise<string> {
+        if (this.cloud) {
+            return await this.invokeCloudAction<string>('getElementText', options)
+        }
+
         return this.executeElementInfoAction(
             'getElementText',
             options,
@@ -1356,6 +1268,13 @@ export class Opensteer {
     }
 
     async getElementValue(options: BaseActionOptions): Promise<string> {
+        if (this.cloud) {
+            return await this.invokeCloudAction<string>(
+                'getElementValue',
+                options
+            )
+        }
+
         return this.executeElementInfoAction(
             'getElementValue',
             options,
@@ -1369,6 +1288,13 @@ export class Opensteer {
     async getElementAttributes(
         options: BaseActionOptions
     ): Promise<Record<string, string>> {
+        if (this.cloud) {
+            return await this.invokeCloudAction<Record<string, string>>(
+                'getElementAttributes',
+                options
+            )
+        }
+
         return this.executeElementInfoAction(
             'getElementAttributes',
             options,
@@ -1388,6 +1314,13 @@ export class Opensteer {
     async getElementBoundingBox(
         options: BaseActionOptions
     ): Promise<BoundingBox | null> {
+        if (this.cloud) {
+            return await this.invokeCloudAction<BoundingBox | null>(
+                'getElementBoundingBox',
+                options
+            )
+        }
+
         return this.executeElementInfoAction(
             'getElementBoundingBox',
             options,
@@ -1399,10 +1332,18 @@ export class Opensteer {
     }
 
     async getHtml(selector?: string): Promise<string> {
+        if (this.cloud) {
+            return await this.invokeCloudAction<string>('getHtml', { selector })
+        }
+
         return getPageHtml(this.page, selector)
     }
 
     async getTitle(): Promise<string> {
+        if (this.cloud) {
+            return await this.invokeCloudAction<string>('getTitle', {})
+        }
+
         return getPageTitle(this.page)
     }
 
@@ -1451,6 +1392,13 @@ export class Opensteer {
     // --- File Upload ---
 
     async uploadFile(options: FileUploadOptions): Promise<ActionResult> {
+        if (this.cloud) {
+            throw cloudUnsupportedMethodError(
+                'uploadFile',
+                'uploadFile() is not supported in cloud mode because file paths must be accessible on the remote server.'
+            )
+        }
+
         const storageKey = this.resolveStorageKey(options.description)
         const resolution = await this.resolvePath('uploadFile', options)
 
@@ -1578,6 +1526,11 @@ export class Opensteer {
         text: string,
         options?: { timeout?: number }
     ): Promise<void> {
+        if (this.cloud) {
+            await this.invokeCloudAction('waitForText', { text, options })
+            return
+        }
+
         await this.page
             .getByText(text)
             .first()
@@ -1585,6 +1538,10 @@ export class Opensteer {
     }
 
     async extract<T = unknown>(options: ExtractOptions): Promise<T> {
+        if (this.cloud) {
+            return await this.invokeCloudAction<T>('extract', options)
+        }
+
         const storageKey = this.resolveStorageKey(options.description)
         const schemaHash = options.schema
             ? computeSchemaHash(options.schema)
@@ -1658,12 +1615,19 @@ export class Opensteer {
             )
         }
 
-        return inflateExtractResult(data) as T
+        return inflateDataPathObject(data) as T
     }
 
     async extractFromPlan<T = unknown>(
         options: ExtractFromPlanOptions
     ): Promise<ExtractionRunResult<T>> {
+        if (this.cloud) {
+            return await this.invokeCloudAction<ExtractionRunResult<T>>(
+                'extractFromPlan',
+                options
+            )
+        }
+
         const storageKey = this.resolveStorageKey(options.description)
         const schemaHash = computeSchemaHash(options.schema)
 
@@ -1703,7 +1667,7 @@ export class Opensteer {
             pathFile: storageKey
                 ? this.storage.getSelectorFileName(storageKey)
                 : null,
-            data: inflateExtractResult(data) as T,
+            data: inflateDataPathObject(data) as T,
             paths: buildPathMap(toPathFields(resolvedFields)),
         }
     }
@@ -1721,6 +1685,13 @@ export class Opensteer {
     }
 
     clearCache(): void {
+        if (this.cloud) {
+            this.snapshotCache = null
+            if (!this.cloud.actionClient) return
+            void this.invokeCloudAction('clearCache', {})
+            return
+        }
+
         this.storage.clearNamespace()
         this.snapshotCache = null
     }
@@ -2404,7 +2375,7 @@ export class Opensteer {
 
             const value = isPrimitiveArrayItem
                 ? (flat.value ?? null)
-                : inflateExtractResult(flat)
+                : inflateDataPathObject(flat)
 
             return {
                 identity: row.meta.key,
@@ -2770,12 +2741,6 @@ export class Opensteer {
     }
 }
 
-function resolveCloudBaseUrl(): string {
-    const value = process.env.OPENSTEER_CLOUD_BASE_URL?.trim()
-    if (!value) return DEFAULT_CLOUD_BASE_URL
-    return value.replace(/\/+$/, '')
-}
-
 function formatActionFailureMessage(
     action: string,
     description: string | undefined,
@@ -2784,16 +2749,6 @@ function formatActionFailureMessage(
     const label = description ? `"${description}"` : 'unnamed target'
     return `${action} action failed for ${label}: ${cause}`
 }
-
-function readCloudActionDescription(
-    payload: Record<string, unknown>
-): string | undefined {
-    const description = payload.description
-    if (typeof description !== 'string') return undefined
-    const normalized = description.trim()
-    return normalized.length ? normalized : undefined
-}
-
 function cloneContextHops(
     context: ElementPath['context'] | undefined
 ): ElementPath['context'] {
@@ -2846,26 +2801,6 @@ function computeSchemaHash(schema: unknown): string {
     return createHash('sha256').update(stable).digest('hex')
 }
 
-function stableStringify(value: unknown): string {
-    if (Array.isArray(value)) {
-        return `[${value.map((item) => stableStringify(item)).join(',')}]`
-    }
-
-    if (value && typeof value === 'object') {
-        const entries = Object.entries(value as Record<string, unknown>).sort(
-            ([a], [b]) => a.localeCompare(b)
-        )
-        const serializedEntries = entries
-            .map(
-                ([key, val]) => `${JSON.stringify(key)}:${stableStringify(val)}`
-            )
-            .join(',')
-        return `{${serializedEntries}}`
-    }
-
-    return JSON.stringify(value)
-}
-
 function buildPathMap(fields: FieldSelector[]): Record<string, ElementPath> {
     const out: Record<string, ElementPath> = {}
 
@@ -2882,154 +2817,6 @@ function toPathFields(fields: PersistableExtractField[]): FieldSelector[] {
         path: field.path,
         attribute: field.attribute,
     }))
-}
-
-interface DataPathPropertyToken {
-    kind: 'prop'
-    key: string
-}
-
-interface DataPathIndexToken {
-    kind: 'index'
-    index: number
-}
-
-type DataPathToken = DataPathPropertyToken | DataPathIndexToken
-
-function inflateExtractResult(flat: Record<string, unknown>): unknown {
-    let root: unknown = {}
-    let initialized = false
-
-    for (const [path, value] of Object.entries(flat || {})) {
-        const tokens = parseDataPath(path)
-        if (!tokens || !tokens.length) continue
-
-        if (!initialized) {
-            root = tokens[0]?.kind === 'index' ? [] : {}
-            initialized = true
-        }
-
-        if (tokens[0]?.kind === 'index' && !Array.isArray(root)) continue
-        if (tokens[0]?.kind === 'prop' && Array.isArray(root)) continue
-
-        assignPathValue(root, tokens, value)
-    }
-
-    return initialized ? root : {}
-}
-
-function assignPathValue(
-    root: unknown,
-    tokens: DataPathToken[],
-    value: unknown
-): void {
-    if (!tokens.length) return
-    let current: unknown = root
-
-    for (let i = 0; i < tokens.length; i++) {
-        const token = tokens[i]
-        const next = tokens[i + 1]
-        const isLast = i === tokens.length - 1
-
-        if (token.kind === 'prop') {
-            if (
-                !current ||
-                typeof current !== 'object' ||
-                Array.isArray(current)
-            ) {
-                return
-            }
-
-            const objectRef = current as Record<string, unknown>
-            if (isLast) {
-                objectRef[token.key] = value
-                return
-            }
-
-            if (next?.kind === 'index') {
-                if (!Array.isArray(objectRef[token.key])) {
-                    objectRef[token.key] = []
-                }
-            } else {
-                const nextValue = objectRef[token.key]
-                if (
-                    !nextValue ||
-                    typeof nextValue !== 'object' ||
-                    Array.isArray(nextValue)
-                ) {
-                    objectRef[token.key] = {}
-                }
-            }
-
-            current = objectRef[token.key]
-            continue
-        }
-
-        if (!Array.isArray(current)) return
-        if (isLast) {
-            current[token.index] = value
-            return
-        }
-
-        if (next?.kind === 'index') {
-            if (!Array.isArray(current[token.index])) {
-                current[token.index] = []
-            }
-        } else {
-            const nextValue = current[token.index]
-            if (
-                !nextValue ||
-                typeof nextValue !== 'object' ||
-                Array.isArray(nextValue)
-            ) {
-                current[token.index] = {}
-            }
-        }
-
-        current = current[token.index]
-    }
-}
-
-function parseDataPath(path: string): DataPathToken[] | null {
-    const input = String(path || '').trim()
-    if (!input) return []
-    if (input.includes('..')) return null
-    if (input.startsWith('.') || input.endsWith('.')) return null
-
-    const tokens: DataPathToken[] = []
-    let cursor = 0
-
-    while (cursor < input.length) {
-        const char = input[cursor]
-        if (char === '.') {
-            cursor++
-            continue
-        }
-
-        if (char === '[') {
-            const close = input.indexOf(']', cursor + 1)
-            if (close === -1) return null
-            const rawIndex = input.slice(cursor + 1, close).trim()
-            if (!/^\d+$/.test(rawIndex)) return null
-            tokens.push({
-                kind: 'index',
-                index: Number.parseInt(rawIndex, 10),
-            })
-            cursor = close + 1
-            continue
-        }
-
-        let end = cursor
-        while (end < input.length && input[end] !== '.' && input[end] !== '[') {
-            end++
-        }
-        const key = input.slice(cursor, end).trim()
-        if (!key) return null
-        tokens.push({ kind: 'prop', key })
-        cursor = end
-    }
-
-    return tokens
 }
 
 function normalizePersistedExtractPayload(
