@@ -49,7 +49,7 @@ async function handleRequest(
                 })
                 launchPromise = instance.launch({
                     headless: headless ?? false,
-                    timeout: 30_000,
+                    timeout: cdpUrl ? 120_000 : 30_000,
                 })
                 try {
                     await launchPromise
