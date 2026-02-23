@@ -176,7 +176,7 @@ describe('element-path/resolver', () => {
 
         const path = await buildPathFromSnapshotSelector(
             page,
-            '#frame-host + ov-iframe-root #inside-frame'
+            '#frame-host + os-iframe-root #inside-frame'
         )
 
         const resolved = await resolveElementPath(page, path)
@@ -208,7 +208,7 @@ describe('element-path/resolver', () => {
 
         const path = await buildPathFromSnapshotSelector(
             page,
-            '#frame-host + ov-iframe-root #inside-frame'
+            '#frame-host + os-iframe-root #inside-frame'
         )
 
         const withoutContext: ElementPath = {
@@ -321,7 +321,7 @@ describe('element-path/resolver', () => {
 
         const framePath = await buildPathFromSnapshotSelector(
             page,
-            '#frame-host + ov-iframe-root #inside-frame'
+            '#frame-host + os-iframe-root #inside-frame'
         )
         const nonFrameHost = await buildElementPathFromSelector(
             page,

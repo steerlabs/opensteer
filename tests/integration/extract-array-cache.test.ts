@@ -26,7 +26,7 @@ describe('integration/extract-array-cache', () => {
 
     beforeEach(async () => {
         ;({ context, page } = await createTestPage())
-        storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-array-cache-'))
+        storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-array-cache-'))
     })
 
     afterEach(async () => {
@@ -62,14 +62,14 @@ describe('integration/extract-array-cache', () => {
             ],
         }
 
-        const ov = Opensteer.from(page, {
+        const opensteer = Opensteer.from(page, {
             name: 'extract-array-cache',
             storage: {
                 rootDir: storageRoot,
             },
         })
 
-        const seeded = await ov.extractFromPlan({
+        const seeded = await opensteer.extractFromPlan({
             description,
             schema,
             plan: {
@@ -152,7 +152,7 @@ describe('integration/extract-array-cache', () => {
             list.appendChild(li)
         })
 
-        const replayed = await ov.extract<{
+        const replayed = await opensteer.extract<{
             products: Array<{
                 title: string | null
                 price: string | null
@@ -229,7 +229,7 @@ describe('integration/extract-array-cache', () => {
             ],
         }
 
-        const ov = Opensteer.from(page, {
+        const opensteer = Opensteer.from(page, {
             name: 'extract-array-cache-list-attrs',
             storage: {
                 rootDir: storageRoot,
@@ -251,7 +251,7 @@ describe('integration/extract-array-cache', () => {
             ),
         ]
 
-        const seeded = await ov.extractFromPlan<ListAttributeProductsResult>({
+        const seeded = await opensteer.extractFromPlan<ListAttributeProductsResult>({
             description,
             schema,
             plan: {
@@ -290,7 +290,7 @@ describe('integration/extract-array-cache', () => {
             ),
         ]
 
-        const replayed = await ov.extract<ListAttributeProductsResult>({
+        const replayed = await opensteer.extract<ListAttributeProductsResult>({
             description,
             schema,
         })

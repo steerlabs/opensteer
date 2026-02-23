@@ -46,10 +46,10 @@ describe('integration/action-diagnostics', () => {
         )
 
         page.setDefaultTimeout(1200)
-        const ov = Opensteer.from(page, { name: 'action-diagnostics-blocked' })
+        const opensteer = Opensteer.from(page, { name: 'action-diagnostics-blocked' })
 
         try {
-            await ov.click({ selector: '#target', description: 'blocked target' })
+            await opensteer.click({ selector: '#target', description: 'blocked target' })
             throw new Error('Expected click to fail.')
         } catch (err) {
             expect(err).toBeInstanceOf(OpensteerActionError)
@@ -68,8 +68,8 @@ describe('integration/action-diagnostics', () => {
       `
         )
 
-        const ov = Opensteer.from(page, { name: 'action-diagnostics-stale' })
-        const html = await ov.snapshot({ mode: 'full', withCounters: true })
+        const opensteer = Opensteer.from(page, { name: 'action-diagnostics-stale' })
+        const html = await opensteer.snapshot({ mode: 'full', withCounters: true })
         const $ = cheerio.load(html)
         const counter = Number.parseInt($('#save').attr('c') || '', 10)
         expect(Number.isFinite(counter)).toBe(true)
@@ -88,7 +88,7 @@ describe('integration/action-diagnostics', () => {
         })
 
         try {
-            await ov.click({ element: counter, button: 'left', clickCount: 1 })
+            await opensteer.click({ element: counter, button: 'left', clickCount: 1 })
             throw new Error('Expected click to fail.')
         } catch (err) {
             expect(err).toBeInstanceOf(OpensteerActionError)

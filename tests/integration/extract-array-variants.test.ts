@@ -15,7 +15,7 @@ describe('integration/extract-array-variants', () => {
 
     beforeEach(async () => {
         ;({ context, page } = await createTestPage())
-        storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-array-variants-'))
+        storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-array-variants-'))
     })
 
     afterEach(async () => {
@@ -47,12 +47,12 @@ describe('integration/extract-array-variants', () => {
             products: [{ title: '', price: '' }],
         }
 
-        const ov = Opensteer.from(page, {
+        const opensteer = Opensteer.from(page, {
             name: 'extract-array-variants-sale-regular',
             storage: { rootDir: storageRoot },
         })
 
-        await ov.extractFromPlan({
+        await opensteer.extractFromPlan({
             description,
             schema,
             plan: {
@@ -69,7 +69,7 @@ describe('integration/extract-array-variants', () => {
             },
         })
 
-        const replayed = await ov.extract<{
+        const replayed = await opensteer.extract<{
             products: Array<{ title: string | null; price: string | null }>
         }>({
             description,
@@ -112,12 +112,12 @@ describe('integration/extract-array-variants', () => {
             products: [{ title: '', price: '' }],
         }
 
-        const ov = Opensteer.from(page, {
+        const opensteer = Opensteer.from(page, {
             name: 'extract-array-variants-mixed-roots',
             storage: { rootDir: storageRoot },
         })
 
-        await ov.extractFromPlan({
+        await opensteer.extractFromPlan({
             description,
             schema,
             plan: {
@@ -150,7 +150,7 @@ describe('integration/extract-array-variants', () => {
             },
         })
 
-        const replayed = await ov.extract<{
+        const replayed = await opensteer.extract<{
             products: Array<{ title: string | null; price: string | null }>
         }>({
             description,
@@ -187,12 +187,12 @@ describe('integration/extract-array-variants', () => {
             products: [{ title: '', price: '' }],
         }
 
-        const ov = Opensteer.from(page, {
+        const opensteer = Opensteer.from(page, {
             name: 'extract-array-variants-order',
             storage: { rootDir: storageRoot },
         })
 
-        await ov.extractFromPlan({
+        await opensteer.extractFromPlan({
             description,
             schema,
             plan: {
@@ -207,7 +207,7 @@ describe('integration/extract-array-variants', () => {
             },
         })
 
-        const replayed = await ov.extract<{
+        const replayed = await opensteer.extract<{
             products: Array<{ title: string | null; price: string | null }>
         }>({ description, schema })
 
@@ -240,12 +240,12 @@ describe('integration/extract-array-variants', () => {
         }
 
         const namespace = 'extract-array-variants-overlap'
-        const ov = Opensteer.from(page, {
+        const opensteer = Opensteer.from(page, {
             name: namespace,
             storage: { rootDir: storageRoot },
         })
 
-        await ov.extractFromPlan({
+        await opensteer.extractFromPlan({
             description,
             schema,
             plan: {
@@ -280,7 +280,7 @@ describe('integration/extract-array-variants', () => {
         }
         fs.writeFileSync(selectorPath, JSON.stringify(stored, null, 2), 'utf8')
 
-        const replayed = await ov.extract<{
+        const replayed = await opensteer.extract<{
             products: Array<{ title: string | null; price: string | null }>
         }>({ description, schema })
 
@@ -310,12 +310,12 @@ describe('integration/extract-array-variants', () => {
             products: [{ title: '', price: '', pageUrl: '' }],
         }
 
-        const ov = Opensteer.from(page, {
+        const opensteer = Opensteer.from(page, {
             name: 'extract-array-variants-current-url',
             storage: { rootDir: storageRoot },
         })
 
-        await ov.extractFromPlan({
+        await opensteer.extractFromPlan({
             description,
             schema,
             plan: {
@@ -332,7 +332,7 @@ describe('integration/extract-array-variants', () => {
             },
         })
 
-        const replayed = await ov.extract<{
+        const replayed = await opensteer.extract<{
             products: Array<{
                 title: string | null
                 price: string | null

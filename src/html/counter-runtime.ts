@@ -1,13 +1,13 @@
 import type { ElementHandle, Frame, Page } from 'playwright'
 import type { SerializedNodeMeta } from './serializer.js'
-import { OV_NODE_ID_ATTR } from './serializer.js'
+import { OS_NODE_ID_ATTR } from './serializer.js'
 import { normalizeExtractedValue } from '../extract-value-normalization.js'
 import {
-    OV_COUNTER_NEXT_KEY,
-    OV_COUNTER_OWNER_KEY,
-    OV_COUNTER_VALUE_KEY,
-    OV_FRAME_TOKEN_KEY,
-    OV_INSTANCE_TOKEN_KEY,
+    OS_COUNTER_NEXT_KEY,
+    OS_COUNTER_OWNER_KEY,
+    OS_COUNTER_VALUE_KEY,
+    OS_FRAME_TOKEN_KEY,
+    OS_INSTANCE_TOKEN_KEY,
 } from './runtime-keys.js'
 
 export interface CounterBinding {
@@ -210,10 +210,10 @@ export async function ensureLiveCounters(
             },
             {
                 entries,
-                nodeAttr: OV_NODE_ID_ATTR,
-                instanceTokenKey: OV_INSTANCE_TOKEN_KEY,
-                counterOwnerKey: OV_COUNTER_OWNER_KEY,
-                counterValueKey: OV_COUNTER_VALUE_KEY,
+                nodeAttr: OS_NODE_ID_ATTR,
+                instanceTokenKey: OS_INSTANCE_TOKEN_KEY,
+                counterOwnerKey: OS_COUNTER_OWNER_KEY,
+                counterValueKey: OS_COUNTER_VALUE_KEY,
                 startCounter: nextCounter,
             }
         )
@@ -313,10 +313,10 @@ export async function resolveCounterElement(
             nodeId: binding.nodeId,
             instanceToken: binding.instanceToken,
             counter,
-            nodeAttr: OV_NODE_ID_ATTR,
-            instanceTokenKey: OV_INSTANCE_TOKEN_KEY,
-            counterOwnerKey: OV_COUNTER_OWNER_KEY,
-            counterValueKey: OV_COUNTER_VALUE_KEY,
+            nodeAttr: OS_NODE_ID_ATTR,
+            instanceTokenKey: OS_INSTANCE_TOKEN_KEY,
+            counterOwnerKey: OS_COUNTER_OWNER_KEY,
+            counterValueKey: OS_COUNTER_VALUE_KEY,
         }
     )
 
@@ -352,7 +352,7 @@ export async function resolveCounterElement(
         },
         {
             nodeId: binding.nodeId,
-            nodeAttr: OV_NODE_ID_ATTR,
+            nodeAttr: OS_NODE_ID_ATTR,
         }
     )
 
@@ -494,10 +494,10 @@ export async function resolveCountersBatch(
             },
             {
                 entries,
-                nodeAttr: OV_NODE_ID_ATTR,
-                instanceTokenKey: OV_INSTANCE_TOKEN_KEY,
-                counterOwnerKey: OV_COUNTER_OWNER_KEY,
-                counterValueKey: OV_COUNTER_VALUE_KEY,
+                nodeAttr: OS_NODE_ID_ATTR,
+                instanceTokenKey: OS_INSTANCE_TOKEN_KEY,
+                counterOwnerKey: OS_COUNTER_OWNER_KEY,
+                counterValueKey: OS_COUNTER_VALUE_KEY,
             }
         )
 
@@ -536,7 +536,7 @@ async function readFrameToken(frame: Frame): Promise<string | null> {
             const win = window as unknown as Record<string, unknown>
             const value = win[frameTokenKey]
             return typeof value === 'string' ? value : null
-        }, OV_FRAME_TOKEN_KEY)
+        }, OS_FRAME_TOKEN_KEY)
     } catch {
         return null
     }
@@ -548,7 +548,7 @@ async function readGlobalNextCounter(page: Page): Promise<number> {
         .evaluate((counterNextKey) => {
             const win = window as unknown as Record<string, unknown>
             return Number(win[counterNextKey] || 0)
-        }, OV_COUNTER_NEXT_KEY)
+        }, OS_COUNTER_NEXT_KEY)
         .catch(() => 0)
 
     if (Number.isFinite(current) && current > 0) {
@@ -596,9 +596,9 @@ async function readGlobalNextCounter(page: Page): Promise<number> {
                     return localMax
                 },
                 {
-                    nodeAttr: OV_NODE_ID_ATTR,
-                    counterOwnerKey: OV_COUNTER_OWNER_KEY,
-                    counterValueKey: OV_COUNTER_VALUE_KEY,
+                    nodeAttr: OS_NODE_ID_ATTR,
+                    counterOwnerKey: OS_COUNTER_OWNER_KEY,
+                    counterValueKey: OS_COUNTER_VALUE_KEY,
                 }
             )
             if (frameMax > max) {
@@ -626,7 +626,7 @@ async function writeGlobalNextCounter(
                 win[counterNextKey] = nextCounter
             },
             {
-                counterNextKey: OV_COUNTER_NEXT_KEY,
+                counterNextKey: OS_COUNTER_NEXT_KEY,
                 nextCounter,
             }
         )

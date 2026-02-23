@@ -6,7 +6,7 @@ import { LocalSelectorStorage } from '../../src/storage/local.js'
 
 describe('LocalSelectorStorage', () => {
     it('builds deterministic paths and sanitizes file names', () => {
-        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-storage-paths-'))
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-storage-paths-'))
         const storage = new LocalSelectorStorage(root, 'demo-suite')
 
         expect(storage.getSelectorFileName('my selector:id')).toBe(
@@ -18,7 +18,7 @@ describe('LocalSelectorStorage', () => {
     })
 
     it('normalizes namespace hierarchy and blocks traversal escapes', () => {
-        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-storage-ns-'))
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-storage-ns-'))
 
         const nested = new LocalSelectorStorage(root, 'suite-a/run-1')
         expect(nested.getNamespace()).toBe('suite-a/run-1')
@@ -35,7 +35,7 @@ describe('LocalSelectorStorage', () => {
 
     it('writes and reads selectors', () => {
         const root = fs.mkdtempSync(
-            path.join(os.tmpdir(), 'ov-storage-selector-')
+            path.join(os.tmpdir(), 'opensteer-storage-selector-')
         )
         const storage = new LocalSelectorStorage(root, 'demo-suite')
 
@@ -74,7 +74,7 @@ describe('LocalSelectorStorage', () => {
 
     it('loads/saves registry and recovers from malformed files', () => {
         const root = fs.mkdtempSync(
-            path.join(os.tmpdir(), 'ov-storage-registry-')
+            path.join(os.tmpdir(), 'opensteer-storage-registry-')
         )
         const storage = new LocalSelectorStorage(root, 'demo-suite')
 
@@ -98,7 +98,7 @@ describe('LocalSelectorStorage', () => {
     })
 
     it('clears all selector files in the namespace', () => {
-        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-storage-clear-'))
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-storage-clear-'))
         const storage = new LocalSelectorStorage(root, 'demo-suite')
 
         storage.writeSelector({

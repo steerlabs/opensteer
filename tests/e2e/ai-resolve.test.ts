@@ -22,7 +22,7 @@ describe('e2e/ai-resolve', () => {
 
     beforeEach(async () => {
         ;({ context, page } = await createTestPage())
-        rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-ai-e2e-'))
+        rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-ai-e2e-'))
     })
 
     afterEach(async () => {
@@ -38,26 +38,26 @@ describe('e2e/ai-resolve', () => {
         async () => {
             await gotoRoute(page, '/forms')
 
-            const ov = Opensteer.from(page, {
+            const opensteer = Opensteer.from(page, {
                 name: 'ai-e2e',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 
             // Fill in form fields with selectors (cached normally)
-            await ov.input({
+            await opensteer.input({
                 selector: '#full-name',
                 text: 'Ada Lovelace',
                 description: 'The full name text input',
             })
-            await ov.input({
+            await opensteer.input({
                 selector: '#email-input',
                 text: 'ada@example.com',
                 description: 'The email address input field',
             })
 
             // AI resolve: no selector, no element, only description
-            const result = await ov.click({
+            const result = await opensteer.click({
                 description: 'The submit profile button',
             })
 
@@ -85,7 +85,7 @@ describe('e2e/ai-resolve', () => {
             )
             expect(previewName).toContain('Ada Lovelace')
 
-            await ov.close()
+            await opensteer.close()
         },
         { timeout: 60_000 }
     )
@@ -96,51 +96,51 @@ describe('e2e/ai-resolve', () => {
             await gotoRoute(page, '/forms')
 
             // First run: populate the cache
-            const ov1 = Opensteer.from(page, {
+            const opensteer1 = Opensteer.from(page, {
                 name: 'ai-e2e-replay',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 
-            await ov1.input({
+            await opensteer1.input({
                 selector: '#full-name',
                 text: 'Alan Turing',
                 description: 'The full name text input',
             })
-            await ov1.input({
+            await opensteer1.input({
                 selector: '#email-input',
                 text: 'alan@example.com',
                 description: 'The email address input field',
             })
 
-            const firstResult = await ov1.click({
+            const firstResult = await opensteer1.click({
                 description: 'The submit profile button',
             })
             expect(firstResult.persisted).toBe(true)
-            await ov1.close()
+            await opensteer1.close()
 
             // Reload the page for a fresh second run
             await gotoRoute(page, '/forms')
 
             // Second run: reuse the same rootDir, descriptors should be cached
-            const ov2 = Opensteer.from(page, {
+            const opensteer2 = Opensteer.from(page, {
                 name: 'ai-e2e-replay',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
             })
-            const snapshotSpy = vi.spyOn(ov2, 'snapshot')
+            const snapshotSpy = vi.spyOn(opensteer2, 'snapshot')
 
             // Fill form fields again
-            await ov2.input({
+            await opensteer2.input({
                 text: 'Alan Turing',
                 description: 'The full name text input',
             })
-            await ov2.input({
+            await opensteer2.input({
                 text: 'alan@example.com',
                 description: 'The email address input field',
             })
 
-            const secondResult = await ov2.click({
+            const secondResult = await opensteer2.click({
                 description: 'The submit profile button',
             })
 
@@ -156,7 +156,7 @@ describe('e2e/ai-resolve', () => {
             )
             expect(previewName).toContain('Alan Turing')
 
-            await ov2.close()
+            await opensteer2.close()
         },
         { timeout: 60_000 }
     )
@@ -166,13 +166,13 @@ describe('e2e/ai-resolve', () => {
         async () => {
             await gotoRoute(page, '/data')
 
-            const ov = Opensteer.from(page, {
+            const opensteer = Opensteer.from(page, {
                 name: 'ai-e2e-extract',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 
-            const data = await ov.extract<{ region: string }>({
+            const data = await opensteer.extract<{ region: string }>({
                 description: 'Extract the first region card name',
                 schema: { region: 'string' },
             })
@@ -194,7 +194,7 @@ describe('e2e/ai-resolve', () => {
             )
             expect(descriptions).toContain('Extract the first region card name')
 
-            await ov.close()
+            await opensteer.close()
         },
         { timeout: 60_000 }
     )

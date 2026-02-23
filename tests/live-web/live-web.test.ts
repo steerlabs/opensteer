@@ -44,7 +44,7 @@ describeLiveWeb('live-web/validation', () => {
 
     beforeEach(async () => {
         ;({ context, page } = await createTestPage())
-        rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-live-web-'))
+        rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-live-web-'))
     })
 
     afterEach(async () => {
@@ -65,10 +65,10 @@ describeLiveWeb('live-web/validation', () => {
         testCase(
             `${scenario.id}: ${scenario.title}`,
             async () => {
-                let ov: Opensteer | null = null
+                let opensteer: Opensteer | null = null
 
                 try {
-                    ov = Opensteer.from(page, {
+                    opensteer = Opensteer.from(page, {
                         name: `live-web-${scenario.id}`,
                         model: liveWebConfig.model,
                         storage: {
@@ -76,7 +76,7 @@ describeLiveWeb('live-web/validation', () => {
                         },
                     })
 
-                    const result = await scenario.run({ page, ov })
+                    const result = await scenario.run({ page, opensteer })
                     const failedChecks = result.checks.filter(
                         (check) => !check.ok
                     )
@@ -117,8 +117,8 @@ describeLiveWeb('live-web/validation', () => {
                         }
                     }
                 } finally {
-                    if (ov) {
-                        await ov.close()
+                    if (opensteer) {
+                        await opensteer.close()
                     }
                 }
             },
