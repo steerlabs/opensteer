@@ -78,7 +78,7 @@ describe('e2e/ai-extract-products', () => {
 
     beforeEach(async () => {
         ;({ context, page } = await createTestPage())
-        rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-ai-products-e2e-'))
+        rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-ai-products-e2e-'))
     })
 
     afterEach(async () => {
@@ -94,7 +94,7 @@ describe('e2e/ai-extract-products', () => {
         async () => {
             await gotoRoute(page, '/products')
 
-            const ov = Opensteer.from(page, {
+            const opensteer = Opensteer.from(page, {
                 name: 'ai-products-standard',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
@@ -102,7 +102,7 @@ describe('e2e/ai-extract-products', () => {
 
             const description =
                 'Extract every product from the Standard Product Rail. Return name, url, and price for each product.'
-            const data = await ov.extract<{ products: ProductWithPrice[] }>({
+            const data = await opensteer.extract<{ products: ProductWithPrice[] }>({
                 description,
                 schema: {
                     products: [{ name: 'string', url: 'string', price: 'string' }],
@@ -118,7 +118,7 @@ describe('e2e/ai-extract-products', () => {
                 description
             )
 
-            await ov.close()
+            await opensteer.close()
         },
         { timeout: 120_000 }
     )
@@ -129,7 +129,7 @@ describe('e2e/ai-extract-products', () => {
             await gotoRoute(page, '/products-contexts')
             await page.waitForSelector('#products-iframe', { state: 'visible' })
 
-            const ov = Opensteer.from(page, {
+            const opensteer = Opensteer.from(page, {
                 name: 'ai-products-iframe',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
@@ -137,7 +137,7 @@ describe('e2e/ai-extract-products', () => {
 
             const description =
                 'Extract every product from the Iframe Product Shelf inside the iframe. Return name and url for each product.'
-            const data = await ov.extract<{ products: ProductLink[] }>({
+            const data = await opensteer.extract<{ products: ProductLink[] }>({
                 description,
                 schema: {
                     products: [{ name: 'string', url: 'string' }],
@@ -153,7 +153,7 @@ describe('e2e/ai-extract-products', () => {
                 description
             )
 
-            await ov.close()
+            await opensteer.close()
         },
         { timeout: 120_000 }
     )
@@ -166,7 +166,7 @@ describe('e2e/ai-extract-products', () => {
                 state: 'visible',
             })
 
-            const ov = Opensteer.from(page, {
+            const opensteer = Opensteer.from(page, {
                 name: 'ai-products-shadow',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
@@ -174,7 +174,7 @@ describe('e2e/ai-extract-products', () => {
 
             const description =
                 'Extract every product from the Shadow Product Shelf in the open shadow root. Return name and url for each product.'
-            const data = await ov.extract<{ products: ProductLink[] }>({
+            const data = await opensteer.extract<{ products: ProductLink[] }>({
                 description,
                 schema: {
                     products: [{ name: 'string', url: 'string' }],
@@ -190,7 +190,7 @@ describe('e2e/ai-extract-products', () => {
                 description
             )
 
-            await ov.close()
+            await opensteer.close()
         },
         { timeout: 120_000 }
     )

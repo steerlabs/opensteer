@@ -117,7 +117,7 @@ describe('integration/snapshot-modes', () => {
 
             expect(bindingKeys).toEqual(sortedCounters)
             expect(indexKeys).toEqual(sortedCounters)
-            expect(snapshot.cleanedHtml).not.toContain('data-ov-node-id')
+            expect(snapshot.cleanedHtml).not.toContain('data-os-node-id')
         }
     })
 })

@@ -59,13 +59,13 @@ describe('integration/data-extraction', () => {
     })
 
     it('extracts string values through Opensteer schema selectors', async () => {
-        const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-int-data-'))
-        const ov = Opensteer.from(page, {
+        const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-int-data-'))
+        const opensteer = Opensteer.from(page, {
             name: 'integration-data',
             storage: { rootDir },
         })
 
-        const data = await ov.extract<{
+        const data = await opensteer.extract<{
             region: string
             revenue: string
             health: string
@@ -90,9 +90,9 @@ describe('integration/data-extraction', () => {
     })
 
     it('resolves CURRENT_URL from schema source and replays from cache', async () => {
-        const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-int-data-'))
+        const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-int-data-'))
 
-        const ov = Opensteer.from(page, {
+        const opensteer = Opensteer.from(page, {
             name: 'integration-data-current-url',
             storage: { rootDir },
         })
@@ -102,11 +102,11 @@ describe('integration/data-extraction', () => {
             pageUrl: { source: 'current_url' as const },
         }
 
-        const first = await ov.extract<{ pageUrl: string }>({
+        const first = await opensteer.extract<{ pageUrl: string }>({
             description,
             schema,
         })
-        const second = await ov.extract<{ pageUrl: string }>({
+        const second = await opensteer.extract<{ pageUrl: string }>({
             description,
         })
 

@@ -7,7 +7,7 @@ import { LocalSelectorStorage } from '../../src/storage/local.js'
 
 describe('collectLocalSelectorCacheEntries', () => {
     it('collects valid entries and normalizes method and origin', () => {
-        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-remote-sync-'))
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-remote-sync-'))
         const storage = new LocalSelectorStorage(root, 'remote-suite')
 
         storage.writeSelector({
@@ -57,7 +57,7 @@ describe('collectLocalSelectorCacheEntries', () => {
 
     it('skips invalid entries and keeps newest duplicate', () => {
         const root = fs.mkdtempSync(
-            path.join(os.tmpdir(), 'ov-remote-sync-dedupe-')
+            path.join(os.tmpdir(), 'opensteer-remote-sync-dedupe-')
         )
         const storage = new LocalSelectorStorage(root, 'remote-suite')
 

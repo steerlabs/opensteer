@@ -18,7 +18,7 @@ describe('integration/extract-context-cache', () => {
     beforeEach(async () => {
         ;({ context, page } = await createTestPage())
         storageRoot = fs.mkdtempSync(
-            path.join(os.tmpdir(), 'ov-context-cache-')
+            path.join(os.tmpdir(), 'opensteer-context-cache-')
         )
     })
 
@@ -44,15 +44,15 @@ describe('integration/extract-context-cache', () => {
         const schema = { title: 'string' }
         const titleCounter = await getCounterBySnapshotSelector(
             page,
-            '#frame-host + ov-iframe-root #headline'
+            '#frame-host + os-iframe-root #headline'
         )
 
-        const ov = Opensteer.from(page, {
+        const opensteer = Opensteer.from(page, {
             name: 'extract-context-iframe-scalar',
             storage: { rootDir: storageRoot },
         })
 
-        const seeded = await ov.extractFromPlan<{ title: string }>({
+        const seeded = await opensteer.extractFromPlan<{ title: string }>({
             description,
             schema,
             plan: {
@@ -80,13 +80,13 @@ describe('integration/extract-context-cache', () => {
             if (title) title.textContent = 'Frame Beta'
         })
 
-        const replayed = await ov.extract<{ title: string }>({
+        const replayed = await opensteer.extract<{ title: string }>({
             description,
             schema,
         })
 
         expect(replayed).toEqual({ title: 'Frame Beta' })
-        await ov.close()
+        await opensteer.close()
     })
 
     it('replays cached scalar extraction inside shadow roots', async () => {
@@ -102,15 +102,15 @@ describe('integration/extract-context-cache', () => {
         const schema = { title: 'string' }
         const titleCounter = await getCounterBySnapshotSelector(
             page,
-            '#shadow-host ov-shadow-root #shadow-title'
+            '#shadow-host os-shadow-root #shadow-title'
         )
 
-        const ov = Opensteer.from(page, {
+        const opensteer = Opensteer.from(page, {
             name: 'extract-context-shadow-scalar',
             storage: { rootDir: storageRoot },
         })
 
-        const seeded = await ov.extractFromPlan<{ title: string }>({
+        const seeded = await opensteer.extractFromPlan<{ title: string }>({
             description,
             schema,
             plan: {
@@ -138,13 +138,13 @@ describe('integration/extract-context-cache', () => {
             if (title) title.textContent = 'Shadow Beta'
         })
 
-        const replayed = await ov.extract<{ title: string }>({
+        const replayed = await opensteer.extract<{ title: string }>({
             description,
             schema,
         })
 
         expect(replayed).toEqual({ title: 'Shadow Beta' })
-        await ov.close()
+        await opensteer.close()
     })
 
     it('replays cached array extraction inside iframes', async () => {
@@ -173,27 +173,27 @@ describe('integration/extract-context-cache', () => {
 
         const firstTitle = await getCounterBySnapshotSelector(
             page,
-            '#frame-host + ov-iframe-root #products > li:nth-child(1) .title'
+            '#frame-host + os-iframe-root #products > li:nth-child(1) .title'
         )
         const firstPrice = await getCounterBySnapshotSelector(
             page,
-            '#frame-host + ov-iframe-root #products > li:nth-child(1) .price'
+            '#frame-host + os-iframe-root #products > li:nth-child(1) .price'
         )
         const secondTitle = await getCounterBySnapshotSelector(
             page,
-            '#frame-host + ov-iframe-root #products > li:nth-child(2) .title'
+            '#frame-host + os-iframe-root #products > li:nth-child(2) .title'
         )
         const secondPrice = await getCounterBySnapshotSelector(
             page,
-            '#frame-host + ov-iframe-root #products > li:nth-child(2) .price'
+            '#frame-host + os-iframe-root #products > li:nth-child(2) .price'
         )
 
-        const ov = Opensteer.from(page, {
+        const opensteer = Opensteer.from(page, {
             name: 'extract-context-iframe-array',
             storage: { rootDir: storageRoot },
         })
 
-        const seeded = await ov.extractFromPlan<{
+        const seeded = await opensteer.extractFromPlan<{
             products: Array<{ title: string; price: string }>
         }>({
             description,
@@ -239,7 +239,7 @@ describe('integration/extract-context-cache', () => {
             list.appendChild(li)
         })
 
-        const replayed = await ov.extract<{
+        const replayed = await opensteer.extract<{
             products: Array<{ title: string | null; price: string | null }>
         }>({
             description,
@@ -254,7 +254,7 @@ describe('integration/extract-context-cache', () => {
             ],
         })
 
-        await ov.close()
+        await opensteer.close()
     })
 
     it('replays cached array extraction inside shadow roots', async () => {
@@ -283,27 +283,27 @@ describe('integration/extract-context-cache', () => {
 
         const firstTitle = await getCounterBySnapshotSelector(
             page,
-            '#shadow-host ov-shadow-root #products > li:nth-child(1) .title'
+            '#shadow-host os-shadow-root #products > li:nth-child(1) .title'
         )
         const firstPrice = await getCounterBySnapshotSelector(
             page,
-            '#shadow-host ov-shadow-root #products > li:nth-child(1) .price'
+            '#shadow-host os-shadow-root #products > li:nth-child(1) .price'
         )
         const secondTitle = await getCounterBySnapshotSelector(
             page,
-            '#shadow-host ov-shadow-root #products > li:nth-child(2) .title'
+            '#shadow-host os-shadow-root #products > li:nth-child(2) .title'
         )
         const secondPrice = await getCounterBySnapshotSelector(
             page,
-            '#shadow-host ov-shadow-root #products > li:nth-child(2) .price'
+            '#shadow-host os-shadow-root #products > li:nth-child(2) .price'
         )
 
-        const ov = Opensteer.from(page, {
+        const opensteer = Opensteer.from(page, {
             name: 'extract-context-shadow-array',
             storage: { rootDir: storageRoot },
         })
 
-        const seeded = await ov.extractFromPlan<{
+        const seeded = await opensteer.extractFromPlan<{
             products: Array<{ title: string; price: string }>
         }>({
             description,
@@ -344,7 +344,7 @@ describe('integration/extract-context-cache', () => {
             list.appendChild(li)
         })
 
-        const replayed = await ov.extract<{
+        const replayed = await opensteer.extract<{
             products: Array<{ title: string | null; price: string | null }>
         }>({
             description,
@@ -359,7 +359,7 @@ describe('integration/extract-context-cache', () => {
             ],
         })
 
-        await ov.close()
+        await opensteer.close()
     })
 })
 

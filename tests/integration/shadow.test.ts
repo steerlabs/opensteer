@@ -31,10 +31,10 @@ describe('integration/shadow', () => {
             withCounters: true,
         })
 
-        expect(snapshot.cleanedHtml).toContain('ov-shadow-root')
+        expect(snapshot.cleanedHtml).toContain('os-shadow-root')
 
         const $$ = cheerio.load(snapshot.cleanedHtml)
-        const shadowButtonCounter = $$('ov-shadow-root button')
+        const shadowButtonCounter = $$('os-shadow-root button')
             .first()
             .attr('c')
 

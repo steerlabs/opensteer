@@ -7,11 +7,11 @@ import {
     OPENSTEER_SCROLLABLE_ATTR,
 } from './interactivity.js'
 import {
-    OV_BOUNDARY_ATTR,
-    OV_IFRAME_BOUNDARY_TAG,
-    OV_NODE_ID_ATTR,
-    OV_SHADOW_BOUNDARY_TAG,
-    OV_UNAVAILABLE_ATTR,
+    OS_BOUNDARY_ATTR,
+    OS_IFRAME_BOUNDARY_TAG,
+    OS_NODE_ID_ATTR,
+    OS_SHADOW_BOUNDARY_TAG,
+    OS_UNAVAILABLE_ATTR,
 } from './serializer.js'
 
 const STRIP_TAGS = new Set([
@@ -23,7 +23,7 @@ const STRIP_TAGS = new Set([
     'template',
 ])
 const ROOT_TAGS = new Set(['html', 'body'])
-const BOUNDARY_TAGS = new Set([OV_IFRAME_BOUNDARY_TAG, OV_SHADOW_BOUNDARY_TAG])
+const BOUNDARY_TAGS = new Set([OS_IFRAME_BOUNDARY_TAG, OS_SHADOW_BOUNDARY_TAG])
 
 const TEXT_ATTR_MAX = 150
 const URL_ATTR_MAX = 500
@@ -486,9 +486,9 @@ export function cleanForExtraction(html: string): string {
 
         // Save values we may need to restore before wiping
         const cValue = el.attr('c')
-        const ovNodeId = el.attr(OV_NODE_ID_ATTR)
-        const ovBoundary = el.attr(OV_BOUNDARY_ATTR)
-        const ovUnavailable = el.attr(OV_UNAVAILABLE_ATTR)
+        const opensteerNodeId = el.attr(OS_NODE_ID_ATTR)
+        const opensteerBoundary = el.attr(OS_BOUNDARY_ATTR)
+        const opensteerUnavailable = el.attr(OS_UNAVAILABLE_ATTR)
         const srcValue = el.attr('src')
         const srcsetValue = el.attr('srcset')
         const altValue = el.attr('alt')
@@ -504,9 +504,15 @@ export function cleanForExtraction(html: string): string {
 
         // Restore internal pipeline attrs
         if (cValue !== undefined) el.attr('c', cValue)
-        if (ovNodeId !== undefined) el.attr(OV_NODE_ID_ATTR, ovNodeId)
-        if (ovBoundary !== undefined) el.attr(OV_BOUNDARY_ATTR, ovBoundary)
-        if (ovUnavailable !== undefined) el.attr(OV_UNAVAILABLE_ATTR, ovUnavailable)
+        if (opensteerNodeId !== undefined) {
+            el.attr(OS_NODE_ID_ATTR, opensteerNodeId)
+        }
+        if (opensteerBoundary !== undefined) {
+            el.attr(OS_BOUNDARY_ATTR, opensteerBoundary)
+        }
+        if (opensteerUnavailable !== undefined) {
+            el.attr(OS_UNAVAILABLE_ATTR, opensteerUnavailable)
+        }
 
         // Restore content attrs per tag
         if (tag === 'img') {
@@ -596,9 +602,9 @@ export function cleanForClickable(html: string): string {
         const clickable = isClickable($, el, context)
         const baseKeep = new Set<string>([
             'c',
-            OV_NODE_ID_ATTR,
-            OV_BOUNDARY_ATTR,
-            OV_UNAVAILABLE_ATTR,
+            OS_NODE_ID_ATTR,
+            OS_BOUNDARY_ATTR,
+            OS_UNAVAILABLE_ATTR,
         ])
 
         if (clickable) {
@@ -651,9 +657,9 @@ export function cleanForScrollable(html: string): string {
         const keep = new Set<string>([
             'c',
             OPENSTEER_SCROLLABLE_ATTR,
-            OV_NODE_ID_ATTR,
-            OV_BOUNDARY_ATTR,
-            OV_UNAVAILABLE_ATTR,
+            OS_NODE_ID_ATTR,
+            OS_BOUNDARY_ATTR,
+            OS_UNAVAILABLE_ATTR,
         ])
         stripToAttrs(el, keep)
     })
@@ -765,9 +771,9 @@ export function cleanForAction(html: string): string {
 
         const keep = new Set<string>([
             'c',
-            OV_NODE_ID_ATTR,
-            OV_BOUNDARY_ATTR,
-            OV_UNAVAILABLE_ATTR,
+            OS_NODE_ID_ATTR,
+            OS_BOUNDARY_ATTR,
+            OS_UNAVAILABLE_ATTR,
         ])
 
         if (clickable) {

@@ -40,8 +40,8 @@ describe('post-action wait', () => {
       `
         )
 
-        const ov = Opensteer.from(page, { name: 'post-action-dom' })
-        await ov.click({ selector: '#trigger' })
+        const opensteer = Opensteer.from(page, { name: 'post-action-dom' })
+        await opensteer.click({ selector: '#trigger' })
 
         expect((await page.textContent('#status'))?.trim()).toBe('done')
     })
@@ -78,8 +78,8 @@ describe('post-action wait', () => {
       `
         )
 
-        const ov = Opensteer.from(page, { name: 'post-action-network' })
-        await ov.click({ selector: '#trigger' })
+        const opensteer = Opensteer.from(page, { name: 'post-action-network' })
+        await opensteer.click({ selector: '#trigger' })
 
         expect((await page.textContent('#status'))?.trim()).toBe('network:ok')
         await page.unroute('https://opensteer.local/post-action')
@@ -105,8 +105,8 @@ describe('post-action wait', () => {
       `
         )
 
-        const ov = Opensteer.from(page, { name: 'post-action-skip' })
-        await ov.click({ selector: '#trigger', wait: false })
+        const opensteer = Opensteer.from(page, { name: 'post-action-skip' })
+        await opensteer.click({ selector: '#trigger', wait: false })
 
         expect((await page.textContent('#status'))?.trim()).toBe('idle')
         await page.waitForFunction(() => {

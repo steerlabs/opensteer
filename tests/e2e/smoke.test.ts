@@ -26,17 +26,17 @@ describe('e2e/smoke', () => {
     })
 
     it('runs the full Opensteer lifecycle end-to-end', async () => {
-        const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-e2e-smoke-'))
+        const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-e2e-smoke-'))
 
-        const ov = Opensteer.from(page, {
+        const opensteer = Opensteer.from(page, {
             name: 'e2e-smoke',
             storage: { rootDir },
         })
 
-        const initialSnapshot = await ov.snapshot({ mode: 'action' })
+        const initialSnapshot = await opensteer.snapshot({ mode: 'action' })
         expect(initialSnapshot).toContain('Submit profile')
 
-        const fullSnapshot = await ov.snapshot({
+        const fullSnapshot = await opensteer.snapshot({
             mode: 'full',
             withCounters: true,
         })
@@ -47,40 +47,40 @@ describe('e2e/smoke', () => {
         )
         expect(Number.isFinite(fullNameCounter)).toBe(true)
 
-        const inputByCounter = await ov.input({
+        const inputByCounter = await opensteer.input({
             element: fullNameCounter,
             text: 'Grace Hopper',
             description: 'The full name text input',
         })
         expect(inputByCounter.persisted).toBe(true)
 
-        const inputBySelector = await ov.input({
+        const inputBySelector = await opensteer.input({
             selector: '#email-input',
             text: 'grace@example.com',
             description: 'The email address input field',
         })
         expect(inputBySelector.persisted).toBe(true)
 
-        const selectPlan = await ov.select({
+        const selectPlan = await opensteer.select({
             selector: '#plan-select',
             value: 'pro',
             description: 'The plan selection dropdown',
         })
         expect(selectPlan.persisted).toBe(true)
 
-        const clickSubmit = await ov.click({
+        const clickSubmit = await opensteer.click({
             selector: '#submit-btn',
             description: 'The submit profile button',
         })
         expect(clickSubmit.persisted).toBe(true)
 
-        const reusedInput = await ov.input({
+        const reusedInput = await opensteer.input({
             text: 'Grace Brewster',
             description: 'The full name text input',
         })
         expect(reusedInput.persisted).toBe(false)
 
-        const extracted = await ov.extract<{ name: string; email: string }>({
+        const extracted = await opensteer.extract<{ name: string; email: string }>({
             description: 'Preview section with name and email',
             schema: {
                 name: { type: 'string', selector: '#preview-name' },
@@ -93,7 +93,7 @@ describe('e2e/smoke', () => {
             email: 'grace@example.com',
         })
 
-        const state = await ov.state()
+        const state = await opensteer.state()
         expect(state.url).toContain('/forms')
         expect(state.html).toContain('Submit profile')
 
@@ -126,6 +126,6 @@ describe('e2e/smoke', () => {
             .filter((f) => f.endsWith('.json') && f !== 'index.json')
         expect(jsonFiles.length).toBe(5)
 
-        await ov.close()
+        await opensteer.close()
     })
 })

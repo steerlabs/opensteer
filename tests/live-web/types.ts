@@ -55,7 +55,7 @@ export interface ScenarioResult {
 
 export interface ScenarioContext {
     page: Page
-    ov: Opensteer
+    opensteer: Opensteer
 }
 
 export interface LiveWebScenario {

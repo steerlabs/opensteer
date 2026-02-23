@@ -24,6 +24,6 @@ Counter semantics:
 - Every counter action/extraction is validated against the current snapshot
   binding and live node identity.
 - Counter resolution is strict: exact match or explicit stale error.
-- Boundary wrappers like `ov-iframe-root` and `ov-shadow-root` may be
+- Boundary wrappers like `os-iframe-root` and `os-shadow-root` may be
   unnumbered.
 - Inaccessible iframes and closed shadow roots are not counter-addressable.

@@ -21,7 +21,7 @@ describe('e2e/script-actions', () => {
 
     beforeEach(async () => {
         ;({ context, page } = await createTestPage())
-        rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-script-e2e-'))
+        rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-script-e2e-'))
     })
 
     afterEach(async () => {
@@ -37,28 +37,28 @@ describe('e2e/script-actions', () => {
         async () => {
             await gotoRoute(page, '/forms')
 
-            const ov = Opensteer.from(page, {
+            const opensteer = Opensteer.from(page, {
                 name: 'script-form',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 
-            await ov.input({
+            await opensteer.input({
                 description: 'The full name text input',
                 text: 'Grace Hopper',
             })
 
-            await ov.input({
+            await opensteer.input({
                 description: 'The email address input field',
                 text: 'grace@example.com',
             })
 
-            await ov.select({
+            await opensteer.select({
                 description: 'The plan selection dropdown',
                 value: 'pro',
             })
 
-            await ov.click({
+            await opensteer.click({
                 description: 'The submit profile button',
             })
 
@@ -72,7 +72,7 @@ describe('e2e/script-actions', () => {
             expect(await page.inputValue('#plan-select')).toBe('pro')
 
             // Extract via AI
-            const data = await ov.extract<{ name: string; email: string }>({
+            const data = await opensteer.extract<{ name: string; email: string }>({
                 description:
                     'The preview section showing submitted name and email',
                 schema: { name: 'string', email: 'string' },
@@ -105,7 +105,7 @@ describe('e2e/script-actions', () => {
                 ])
             )
 
-            await ov.close()
+            await opensteer.close()
         },
         { timeout: 120_000 }
     )
@@ -115,20 +115,20 @@ describe('e2e/script-actions', () => {
         async () => {
             await gotoRoute(page, '/navigation')
 
-            const ov = Opensteer.from(page, {
+            const opensteer = Opensteer.from(page, {
                 name: 'script-nav',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 
             // Switch to Alerts tab
-            await ov.click({
+            await opensteer.click({
                 description: 'The Alerts tab button',
             })
             expect(await page.textContent('#tab-panel')).toContain('Alert feed')
 
             // Expand accordion
-            await ov.click({
+            await opensteer.click({
                 description:
                     'The accordion trigger for incident response playbook',
             })
@@ -140,7 +140,7 @@ describe('e2e/script-actions', () => {
             )
 
             // Paginate forward
-            await ov.click({
+            await opensteer.click({
                 description: 'The Next pagination button',
             })
             expect(
@@ -150,15 +150,15 @@ describe('e2e/script-actions', () => {
             // Cross-page: navigate to forms and fill via AI
             await gotoRoute(page, '/forms')
 
-            await ov.input({
+            await opensteer.input({
                 description: 'The full name text input',
                 text: 'Alan Turing',
             })
-            await ov.input({
+            await opensteer.input({
                 description: 'The email address input field',
                 text: 'alan@example.com',
             })
-            await ov.click({
+            await opensteer.click({
                 description: 'The submit profile button',
             })
 
@@ -169,7 +169,7 @@ describe('e2e/script-actions', () => {
                 'alan@example.com'
             )
 
-            await ov.close()
+            await opensteer.close()
         },
         { timeout: 120_000 }
     )
@@ -179,14 +179,14 @@ describe('e2e/script-actions', () => {
         async () => {
             await gotoRoute(page, '/overlays')
 
-            const ov = Opensteer.from(page, {
+            const opensteer = Opensteer.from(page, {
                 name: 'script-dynamic',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 
             // Dismiss cookie banner
-            await ov.click({
+            await opensteer.click({
                 description: 'The Accept button on the cookie banner',
             })
             await page.waitForSelector('#cookie-banner', {
@@ -194,13 +194,13 @@ describe('e2e/script-actions', () => {
             })
 
             // Open modal
-            await ov.click({
+            await opensteer.click({
                 description: 'The Open modal button',
             })
             await page.waitForSelector('#portal-modal', { state: 'visible' })
 
             // Confirm modal
-            await ov.click({
+            await opensteer.click({
                 description: 'The Confirm button inside the modal dialog',
             })
             await page.waitForSelector('#portal-modal', {
@@ -208,7 +208,7 @@ describe('e2e/script-actions', () => {
             })
 
             // Toggle dropdown menu
-            await ov.click({
+            await opensteer.click({
                 description: 'The Toggle menu button',
             })
             await page.waitForSelector('#dropdown-menu', { state: 'visible' })
@@ -226,12 +226,12 @@ describe('e2e/script-actions', () => {
             })
 
             // Trigger animated reveal
-            await ov.click({
+            await opensteer.click({
                 description: 'The Reveal Panel button',
             })
 
             // Queue delayed update and wait for async content
-            await ov.click({
+            await opensteer.click({
                 description: 'The Queue delayed update button',
             })
             await page.waitForSelector('#delayed-message', {
@@ -243,7 +243,7 @@ describe('e2e/script-actions', () => {
             expect(timeline).toContain('Retry scheduled')
             expect(timeline).toContain('Worker resumed')
 
-            await ov.close()
+            await opensteer.close()
         },
         { timeout: 120_000 }
     )

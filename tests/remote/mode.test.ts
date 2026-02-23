@@ -77,7 +77,7 @@ describe('remote mode', () => {
     })
 
     it('throws explicit unsupported errors for path-based methods', async () => {
-        const ov = new Opensteer({
+        const opensteer = new Opensteer({
             mode: 'remote',
             remote: {
                 apiKey: 'ork_test_123',
@@ -85,7 +85,7 @@ describe('remote mode', () => {
         })
 
         await expect(
-            ov.uploadFile({
+            opensteer.uploadFile({
                 description: 'resume upload',
                 paths: ['/tmp/file.pdf'],
             })
@@ -94,14 +94,14 @@ describe('remote mode', () => {
         )
 
         await expect(
-            ov.exportCookies('/tmp/cookies.json')
+            opensteer.exportCookies('/tmp/cookies.json')
         ).rejects.toThrow(
             'exportCookies() is not supported in remote mode because it depends on local filesystem paths.'
         )
     })
 
     it('requires launch before remote action calls', async () => {
-        const ov = new Opensteer({
+        const opensteer = new Opensteer({
             mode: 'remote',
             remote: {
                 apiKey: 'ork_test_123',
@@ -109,21 +109,21 @@ describe('remote mode', () => {
         })
 
         await expect(
-            ov.click({
+            opensteer.click({
                 description: 'login button',
             })
         ).rejects.toThrow('Remote session is not connected. Call launch() first.')
     })
 
     it('maps remote action failures with details into OpensteerActionError', async () => {
-        const ov = new Opensteer({
+        const opensteer = new Opensteer({
             mode: 'remote',
             remote: {
                 apiKey: 'ork_test_123',
             },
         })
 
-        const access = ov as unknown as {
+        const access = opensteer as unknown as {
             remote: {
                 actionClient: {
                     request: (
@@ -157,7 +157,7 @@ describe('remote mode', () => {
         }
 
         try {
-            await ov.click({ description: 'login button' })
+            await opensteer.click({ description: 'login button' })
             throw new Error('Expected remote click to fail.')
         } catch (err) {
             expect(err).toBeInstanceOf(OpensteerActionError)

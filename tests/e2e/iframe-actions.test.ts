@@ -18,7 +18,7 @@ describe('e2e/iframe-actions', () => {
 
     beforeEach(async () => {
         ;({ context, page } = await createTestPage())
-        rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-iframe-e2e-'))
+        rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-iframe-e2e-'))
     })
 
     afterEach(async () => {
@@ -38,19 +38,19 @@ describe('e2e/iframe-actions', () => {
                 state: 'visible',
             })
 
-            const ov = Opensteer.from(page, {
+            const opensteer = Opensteer.from(page, {
                 name: 'iframe-named',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 
-            await ov.input({
+            await opensteer.input({
                 description:
                     'The text input inside the Named Support Frame iframe',
                 text: 'hello from named',
             })
 
-            await ov.click({
+            await opensteer.click({
                 description:
                     'The Save value button inside the Named Support Frame iframe',
             })
@@ -64,7 +64,7 @@ describe('e2e/iframe-actions', () => {
                 'Saved: hello from named'
             )
 
-            await ov.close()
+            await opensteer.close()
         },
         { timeout: 120_000 }
     )
@@ -78,18 +78,18 @@ describe('e2e/iframe-actions', () => {
                 state: 'visible',
             })
 
-            const ov = Opensteer.from(page, {
+            const opensteer = Opensteer.from(page, {
                 name: 'iframe-anon',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 
-            await ov.input({
+            await opensteer.input({
                 description: 'The text input inside the Anonymous Frame iframe',
                 text: 'hello from anonymous',
             })
 
-            await ov.click({
+            await opensteer.click({
                 description:
                     'The Save value button inside the Anonymous Frame iframe',
             })
@@ -105,7 +105,7 @@ describe('e2e/iframe-actions', () => {
                 (await anonymousFrame.textContent('#iframe-output'))?.trim()
             ).toBe('Saved: hello from anonymous')
 
-            await ov.close()
+            await opensteer.close()
         },
         { timeout: 120_000 }
     )
@@ -119,13 +119,13 @@ describe('e2e/iframe-actions', () => {
                 state: 'visible',
             })
 
-            const ov = Opensteer.from(page, {
+            const opensteer = Opensteer.from(page, {
                 name: 'iframe-extract',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 
-            const data = await ov.extract<{ title: string }>({
+            const data = await opensteer.extract<{ title: string }>({
                 description:
                     'The frame title heading inside the Named Support Frame iframe',
                 schema: { title: 'string' },
@@ -149,7 +149,7 @@ describe('e2e/iframe-actions', () => {
                 'The frame title heading inside the Named Support Frame iframe'
             )
 
-            await ov.close()
+            await opensteer.close()
         },
         { timeout: 120_000 }
     )

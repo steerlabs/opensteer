@@ -14,7 +14,7 @@ describe('integration/action-cache-replay', () => {
 
     beforeEach(async () => {
         ;({ context, page } = await createTestPage())
-        rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-int-action-cache-'))
+        rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-int-action-cache-'))
     })
 
     afterEach(async () => {

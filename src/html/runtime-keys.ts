@@ -15,8 +15,8 @@ export const ENSURE_NAME_SHIM_SCRIPT = `
 })()
 `
 
-export const OV_FRAME_TOKEN_KEY = '__opensteerFrameToken'
-export const OV_INSTANCE_TOKEN_KEY = '__opensteerInstanceToken'
-export const OV_COUNTER_OWNER_KEY = '__opensteerCounterOwner'
-export const OV_COUNTER_VALUE_KEY = '__opensteerCounterValue'
-export const OV_COUNTER_NEXT_KEY = '__opensteerCounterNext'
+export const OS_FRAME_TOKEN_KEY = '__opensteerFrameToken'
+export const OS_INSTANCE_TOKEN_KEY = '__opensteerInstanceToken'
+export const OS_COUNTER_OWNER_KEY = '__opensteerCounterOwner'
+export const OS_COUNTER_VALUE_KEY = '__opensteerCounterValue'
+export const OS_COUNTER_NEXT_KEY = '__opensteerCounterNext'

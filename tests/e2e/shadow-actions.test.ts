@@ -18,7 +18,7 @@ describe('e2e/shadow-actions', () => {
 
     beforeEach(async () => {
         ;({ context, page } = await createTestPage())
-        rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-shadow-e2e-'))
+        rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-shadow-e2e-'))
     })
 
     afterEach(async () => {
@@ -34,13 +34,13 @@ describe('e2e/shadow-actions', () => {
         async () => {
             await gotoRoute(page, '/shadow')
 
-            const ov = Opensteer.from(page, {
+            const opensteer = Opensteer.from(page, {
                 name: 'shadow-basic',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 
-            await ov.click({
+            await opensteer.click({
                 description: 'The Shadow Action button',
             })
 
@@ -48,7 +48,7 @@ describe('e2e/shadow-actions', () => {
                 (await page.textContent('#shadow-click-output'))?.trim()
             ).toBe('clicked:shadow-button-host')
 
-            await ov.input({
+            await opensteer.input({
                 description:
                     'The search input with placeholder Type inside shadow',
                 text: 'dashboards',
@@ -58,7 +58,7 @@ describe('e2e/shadow-actions', () => {
                 (await page.textContent('#shadow-input-output'))?.trim()
             ).toBe('dashboards')
 
-            await ov.close()
+            await opensteer.close()
         },
         { timeout: 120_000 }
     )
@@ -68,13 +68,13 @@ describe('e2e/shadow-actions', () => {
         async () => {
             await gotoRoute(page, '/shadow')
 
-            const ov = Opensteer.from(page, {
+            const opensteer = Opensteer.from(page, {
                 name: 'shadow-disambiguate',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 
-            await ov.click({
+            await opensteer.click({
                 description: 'The Open button on the Billing Console card',
             })
 
@@ -82,7 +82,7 @@ describe('e2e/shadow-actions', () => {
                 (await page.textContent('#shadow-card-output'))?.trim()
             ).toBe('card-2:Billing Console')
 
-            await ov.close()
+            await opensteer.close()
         },
         { timeout: 120_000 }
     )
@@ -92,13 +92,13 @@ describe('e2e/shadow-actions', () => {
         async () => {
             await gotoRoute(page, '/shadow')
 
-            const ov = Opensteer.from(page, {
+            const opensteer = Opensteer.from(page, {
                 name: 'shadow-extract',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 
-            const data = await ov.extract<{ title: string; status: string }>({
+            const data = await opensteer.extract<{ title: string; status: string }>({
                 description:
                     'The title and status of the Ops Dashboard shadow card',
                 schema: { title: 'string', status: 'string' },
@@ -123,7 +123,7 @@ describe('e2e/shadow-actions', () => {
                 'The title and status of the Ops Dashboard shadow card'
             )
 
-            await ov.close()
+            await opensteer.close()
         },
         { timeout: 120_000 }
     )

@@ -1,21 +1,21 @@
 import { Opensteer } from '../../src/index.js'
 
 async function run() {
-    const ov = new Opensteer({ name: 'basic-usage' })
-    await ov.launch({ headless: false })
+    const opensteer = new Opensteer({ name: 'basic-usage' })
+    await opensteer.launch({ headless: false })
 
     try {
-        await ov.goto('https://example.com')
+        await opensteer.goto('https://example.com')
 
-        const html = await ov.snapshot()
+        const html = await opensteer.snapshot()
         console.log(html.slice(0, 500))
 
-        await ov.click({
+        await opensteer.click({
             element: 5,
             description: 'Click a prominent call-to-action',
         })
     } finally {
-        await ov.close()
+        await opensteer.close()
     }
 }
 
