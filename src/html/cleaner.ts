@@ -486,9 +486,9 @@ export function cleanForExtraction(html: string): string {
 
         // Save values we may need to restore before wiping
         const cValue = el.attr('c')
-        const opensteerNodeId = el.attr(OS_NODE_ID_ATTR)
-        const opensteerBoundary = el.attr(OS_BOUNDARY_ATTR)
-        const opensteerUnavailable = el.attr(OS_UNAVAILABLE_ATTR)
+        const osNodeId = el.attr(OS_NODE_ID_ATTR)
+        const osBoundary = el.attr(OS_BOUNDARY_ATTR)
+        const osUnavailable = el.attr(OS_UNAVAILABLE_ATTR)
         const srcValue = el.attr('src')
         const srcsetValue = el.attr('srcset')
         const altValue = el.attr('alt')
@@ -504,14 +504,14 @@ export function cleanForExtraction(html: string): string {
 
         // Restore internal pipeline attrs
         if (cValue !== undefined) el.attr('c', cValue)
-        if (opensteerNodeId !== undefined) {
-            el.attr(OS_NODE_ID_ATTR, opensteerNodeId)
+        if (osNodeId !== undefined) {
+            el.attr(OS_NODE_ID_ATTR, osNodeId)
         }
-        if (opensteerBoundary !== undefined) {
-            el.attr(OS_BOUNDARY_ATTR, opensteerBoundary)
+        if (osBoundary !== undefined) {
+            el.attr(OS_BOUNDARY_ATTR, osBoundary)
         }
-        if (opensteerUnavailable !== undefined) {
-            el.attr(OS_UNAVAILABLE_ATTR, opensteerUnavailable)
+        if (osUnavailable !== undefined) {
+            el.attr(OS_UNAVAILABLE_ATTR, osUnavailable)
         }
 
         // Restore content attrs per tag
