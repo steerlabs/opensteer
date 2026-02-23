@@ -20,7 +20,7 @@ import { Opensteer } from 'opensteer'
 const opensteer = new Opensteer({ name: 'my-scraper' })
 await opensteer.launch({ headless: false })
 
-await opensteer.page.goto('https://example.com')
+await opensteer.goto('https://example.com')
 ```
 
 ## 3) Explore with snapshots
@@ -65,7 +65,7 @@ OPENSTEER_MODE=local
 OPENSTEER_MODE=remote
 ```
 
-When mode is `remote`, `OPENSTEER_REMOTE_API_KEY` (or `remote.apiKey`) is required.
+When mode is `remote`, `OPENSTEER_API_KEY` (or `remote.apiKey`) is required.
 Remote mode is fail-fast and does not automatically fall back to local mode.
 
 ## 7) Close
@@ -80,8 +80,8 @@ await opensteer.close()
 const opensteer = new Opensteer({
     mode: 'remote',
     remote: {
-        apiKey: process.env.OPENSTEER_REMOTE_API_KEY,
-        baseUrl: process.env.OPENSTEER_REMOTE_BASE_URL,
+        apiKey: process.env.OPENSTEER_API_KEY,
+        baseUrl: process.env.OPENSTEER_BASE_URL,
     },
 })
 ```
@@ -90,4 +90,4 @@ const opensteer = new Opensteer({
 `OPENSTEER_MODE=local`.
 
 Remote base URL defaults to `https://remote.opensteer.com` and can be overridden
-with `OPENSTEER_REMOTE_BASE_URL`.
+with `OPENSTEER_BASE_URL`.

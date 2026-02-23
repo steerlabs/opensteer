@@ -12,36 +12,36 @@ afterEach(() => {
 describe('remote mode', () => {
     it('requires a non-empty remote API key when OPENSTEER_MODE=remote', () => {
         process.env.OPENSTEER_MODE = 'remote'
-        delete process.env.OPENSTEER_REMOTE_API_KEY
+        delete process.env.OPENSTEER_API_KEY
 
         expect(() => new Opensteer({})).toThrow(
-            'Remote mode requires a non-empty API key via remote.apiKey or OPENSTEER_REMOTE_API_KEY.'
+            'Remote mode requires a non-empty API key via remote.apiKey or OPENSTEER_API_KEY.'
         )
     })
 
-    it('uses OPENSTEER_REMOTE_API_KEY when OPENSTEER_MODE=remote', () => {
+    it('uses OPENSTEER_API_KEY when OPENSTEER_MODE=remote', () => {
         process.env.OPENSTEER_MODE = 'remote'
-        process.env.OPENSTEER_REMOTE_API_KEY = 'ork_env_123'
+        process.env.OPENSTEER_API_KEY = 'ork_env_123'
 
         expect(() => new Opensteer({})).not.toThrow()
     })
 
-    it('uses OPENSTEER_REMOTE_API_KEY when remote apiKey is omitted', () => {
-        process.env.OPENSTEER_REMOTE_API_KEY = 'ork_env_123'
+    it('uses OPENSTEER_API_KEY when remote apiKey is omitted', () => {
+        process.env.OPENSTEER_API_KEY = 'ork_env_123'
 
         expect(() => new Opensteer({ mode: 'remote' })).not.toThrow()
     })
 
     it('requires a non-empty remote API key when mode is remote', () => {
-        delete process.env.OPENSTEER_REMOTE_API_KEY
+        delete process.env.OPENSTEER_API_KEY
 
         expect(() => new Opensteer({ mode: 'remote' })).toThrow(
-            'Remote mode requires a non-empty API key via remote.apiKey or OPENSTEER_REMOTE_API_KEY.'
+            'Remote mode requires a non-empty API key via remote.apiKey or OPENSTEER_API_KEY.'
         )
     })
 
-    it('treats explicit empty remote.apiKey as an override of OPENSTEER_REMOTE_API_KEY', () => {
-        process.env.OPENSTEER_REMOTE_API_KEY = 'ork_env_123'
+    it('treats explicit empty remote.apiKey as an override of OPENSTEER_API_KEY', () => {
+        process.env.OPENSTEER_API_KEY = 'ork_env_123'
 
         expect(
             () =>
@@ -52,7 +52,7 @@ describe('remote mode', () => {
                     },
                 })
         ).toThrow(
-            'Remote mode requires a non-empty API key via remote.apiKey or OPENSTEER_REMOTE_API_KEY.'
+            'Remote mode requires a non-empty API key via remote.apiKey or OPENSTEER_API_KEY.'
         )
     })
 
@@ -69,7 +69,7 @@ describe('remote mode', () => {
 
     it('rejects Opensteer.from(page) when OPENSTEER_MODE=remote', () => {
         process.env.OPENSTEER_MODE = 'remote'
-        process.env.OPENSTEER_REMOTE_API_KEY = 'ork_env_123'
+        process.env.OPENSTEER_API_KEY = 'ork_env_123'
 
         expect(() => Opensteer.from({} as never, {})).toThrow(
             'Opensteer.from(page) is not supported in remote mode.'

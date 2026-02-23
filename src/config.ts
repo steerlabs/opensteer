@@ -172,8 +172,8 @@ function parseMode(
     )
 }
 
-function resolveOpensteerRemoteApiKey(): string | undefined {
-    const value = process.env.OPENSTEER_REMOTE_API_KEY?.trim()
+function resolveOpensteerApiKey(): string | undefined {
+    const value = process.env.OPENSTEER_API_KEY?.trim()
     if (!value) return undefined
     return value
 }
@@ -256,7 +256,7 @@ export function resolveConfig(
     const mergedWithEnv = mergeDeep(mergedWithFile, envConfig)
     const resolved = mergeDeep(mergedWithEnv, input) as ResolvedOpensteerConfig
 
-    const envApiKey = resolveOpensteerRemoteApiKey()
+    const envApiKey = resolveOpensteerApiKey()
     const inputRemoteOptions = normalizeRemoteOptions(input.remote)
     const inputHasRemoteApiKey = Boolean(
         inputRemoteOptions &&
