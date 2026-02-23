@@ -212,7 +212,7 @@ export class Opensteer {
             const apiKey = remoteConfig?.apiKey?.trim()
             if (!apiKey) {
                 throw new Error(
-                    'Remote mode requires a non-empty API key via remote.apiKey or OPENSTEER_REMOTE_API_KEY.'
+                    'Remote mode requires a non-empty API key via remote.apiKey or OPENSTEER_API_KEY.'
                 )
             }
 

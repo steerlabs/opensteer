@@ -1,6 +1,26 @@
+# Dependencies
 node_modules/
+.pnpm-store/
+
+# Build artifacts
 dist/
-.env
-.DS_Store
+coverage/
+*.tsbuildinfo
 *.tgz
-.opensteer/selectors/
+*.log
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Local framework/runtime state
+.opensteer/
+
+# Local agent/editor state
+.claude/
+.vscode/
+.idea/
+
+# OS files
+.DS_Store

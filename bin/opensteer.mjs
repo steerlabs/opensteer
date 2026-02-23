@@ -180,10 +180,10 @@ function isServerRunning() {
 function cleanStaleFiles() {
     try {
         unlinkSync(SOCKET_PATH)
-    } catch {}
+    } catch { }
     try {
         unlinkSync(PID_PATH)
-    } catch {}
+    } catch { }
 }
 
 function startServer() {
@@ -345,9 +345,9 @@ Global Flags:
   --help                    Show this help
 
 Environment:
-  OPENSTEER_RUNTIME         Runtime mode: "local" (default) or "remote"
-  OPENSTEER_REMOTE_API_KEY  Required when remote runtime is selected
-  OPENSTEER_REMOTE_BASE_URL Override remote control-plane base URL
+  OPENSTEER_MODE            Runtime mode: "local" (default) or "remote"
+  OPENSTEER_API_KEY         Required when remote mode is selected
+  OPENSTEER_BASE_URL        Override remote control-plane base URL
 `)
 }
 
