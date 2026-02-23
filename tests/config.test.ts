@@ -115,9 +115,9 @@ describe('config', () => {
         })
     })
 
-    it('resolveConfig sets remote mode from OPENSTEER_MODE and uses OPENSTEER_REMOTE_API_KEY', () => {
+    it('resolveConfig sets remote mode from OPENSTEER_MODE and uses OPENSTEER_API_KEY', () => {
         process.env.OPENSTEER_MODE = 'remote'
-        process.env.OPENSTEER_REMOTE_API_KEY = 'ork_env_123'
+        process.env.OPENSTEER_API_KEY = 'ork_env_123'
 
         const resolved = resolveConfig({})
         expect(resolved.remote).toEqual({
@@ -155,15 +155,15 @@ describe('config', () => {
         )
     })
 
-    it('resolveConfig ignores OPENSTEER_REMOTE_API_KEY when remote mode is not enabled', () => {
-        process.env.OPENSTEER_REMOTE_API_KEY = 'ork_env_123'
+    it('resolveConfig ignores OPENSTEER_API_KEY when remote mode is not enabled', () => {
+        process.env.OPENSTEER_API_KEY = 'ork_env_123'
 
         const resolved = resolveConfig({})
         expect(resolved.remote).toBeUndefined()
     })
 
-    it('resolveConfig uses OPENSTEER_REMOTE_API_KEY when remote apiKey is missing', () => {
-        process.env.OPENSTEER_REMOTE_API_KEY = 'ork_env_123'
+    it('resolveConfig uses OPENSTEER_API_KEY when remote apiKey is missing', () => {
+        process.env.OPENSTEER_API_KEY = 'ork_env_123'
 
         const resolved = resolveConfig({
             mode: 'remote',
@@ -174,8 +174,8 @@ describe('config', () => {
         })
     })
 
-    it('resolveConfig keeps explicit remote.apiKey over OPENSTEER_REMOTE_API_KEY', () => {
-        process.env.OPENSTEER_REMOTE_API_KEY = 'ork_env_123'
+    it('resolveConfig keeps explicit remote.apiKey over OPENSTEER_API_KEY', () => {
+        process.env.OPENSTEER_API_KEY = 'ork_env_123'
 
         const resolved = resolveConfig({
             mode: 'remote',
@@ -191,8 +191,8 @@ describe('config', () => {
         ).toBe('ork_input_456')
     })
 
-    it('resolveConfig preserves explicit empty remote.apiKey over OPENSTEER_REMOTE_API_KEY', () => {
-        process.env.OPENSTEER_REMOTE_API_KEY = 'ork_env_123'
+    it('resolveConfig preserves explicit empty remote.apiKey over OPENSTEER_API_KEY', () => {
+        process.env.OPENSTEER_API_KEY = 'ork_env_123'
 
         const resolved = resolveConfig({
             mode: 'remote',

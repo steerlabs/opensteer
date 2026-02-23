@@ -8,7 +8,7 @@ Set remote mode universally with environment variables:
 
 ```bash
 OPENSTEER_MODE=remote
-OPENSTEER_REMOTE_API_KEY=ork_your_key
+OPENSTEER_API_KEY=ork_your_key
 ```
 
 Opensteer defaults to local mode when `OPENSTEER_MODE` is unset.
@@ -21,15 +21,15 @@ import { Opensteer } from 'opensteer'
 const opensteer = new Opensteer({
     mode: 'remote',
     remote: {
-        apiKey: process.env.OPENSTEER_REMOTE_API_KEY,
-        baseUrl: process.env.OPENSTEER_REMOTE_BASE_URL,
+        apiKey: process.env.OPENSTEER_API_KEY,
+        baseUrl: process.env.OPENSTEER_BASE_URL,
     },
 })
 ```
 
 - Default remote host: `https://remote.opensteer.com`
-- Override host with `OPENSTEER_REMOTE_BASE_URL`
-- API key can be provided via `remote.apiKey` or `OPENSTEER_REMOTE_API_KEY`
+- Override host with `OPENSTEER_BASE_URL`
+- API key can be provided via `remote.apiKey` or `OPENSTEER_API_KEY`
 - `mode` in constructor config overrides `OPENSTEER_MODE`
 - Remote mode is fail-fast and does not fall back to local mode
 

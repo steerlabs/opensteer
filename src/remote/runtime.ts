@@ -24,7 +24,7 @@ export function createRemoteRuntimeState(
 }
 
 export function resolveRemoteBaseUrl(): string {
-    const value = process.env.OPENSTEER_REMOTE_BASE_URL?.trim()
+    const value = process.env.OPENSTEER_BASE_URL?.trim()
     if (!value) return DEFAULT_REMOTE_BASE_URL
     return value.replace(/\/+$/, '')
 }

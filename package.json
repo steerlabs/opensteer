@@ -38,7 +38,11 @@
         "typecheck": "tsc -p tsconfig.json --noEmit"
     },
     "dependencies": {
+        "@ai-sdk/anthropic": "^3.0.46",
+        "@ai-sdk/google": "^3.0.30",
+        "@ai-sdk/groq": "^3.0.24",
         "@ai-sdk/openai": "^3.0.26",
+        "@ai-sdk/xai": "^3.0.57",
         "ai": "^6.0.77",
         "cheerio": "^1.0.0-rc.12",
         "dotenv": "^17.2.4",
