@@ -7,7 +7,7 @@
 - Breaking: `OPENSTEER_RUNTIME` is no longer supported; use `OPENSTEER_MODE`.
 - Breaking: mode selection now uses `mode: 'local' | 'remote'` and remote credentials use `remote.apiKey`.
 - Opensteer now enables built-in LLM resolve/extract by default with model `gpt-5.1`.
-- Remote mode now falls back to `OPENSTEER_REMOTE_API_KEY` when `remote.apiKey` is omitted.
+- Remote mode now falls back to `OPENSTEER_API_KEY` when `remote.apiKey` is omitted.
 - Mutating actions now include smart best-effort post-action wait with per-action
   profiles and optional per-call overrides via `wait`.
 - Added structured interaction diagnostics via `OpensteerActionError` for

@@ -2,11 +2,14 @@
 
 Lean browser automation SDK for coding agents and script replay.
 
-`opensteer` wraps only operations that need descriptor resolution (`snapshot`,
-`click`, `dblclick`, `rightclick`, `hover`, `input`, `select`, `scroll`,
-`extract`, `extractFromPlan`, `state`).
+`opensteer` provides descriptor-aware actions (`click`, `dblclick`,
+`rightclick`, `hover`, `input`, `select`, `scroll`, `extract`,
+`extractFromPlan`, `uploadFile`), observation (`snapshot`, `state`,
+`screenshot`), navigation (`goto`), and convenience methods for tabs, cookies,
+keyboard, element info, and wait.
 
-Everything else is raw Playwright via `opensteer.page` and `opensteer.context`.
+For anything not covered, use raw Playwright via `opensteer.page` and
+`opensteer.context`.
 
 ## Install
 
@@ -25,7 +28,7 @@ import { Opensteer } from "opensteer";
 const opensteer = new Opensteer({ name: "my-scraper" }); // defaults to model: 'gpt-5.1'
 await opensteer.launch({ headless: false });
 
-await opensteer.page.goto("https://example.com");
+await opensteer.goto("https://example.com");
 const html = await opensteer.snapshot();
 
 await opensteer.click({ description: "login-button" });
@@ -134,7 +137,7 @@ const opensteer = new Opensteer({
 Opensteer defaults to local mode.
 
 - `OPENSTEER_MODE=local` runs local Playwright.
-- `OPENSTEER_MODE=remote` runs remote mode (requires `OPENSTEER_REMOTE_API_KEY`).
+- `OPENSTEER_MODE=remote` runs remote mode (requires `OPENSTEER_API_KEY`).
 - `mode: "remote"` in constructor config always forces remote mode.
 
 Remote mode is fail-fast: it does not automatically fall back to local mode.
