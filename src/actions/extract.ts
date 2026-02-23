@@ -325,7 +325,7 @@ async function readArrayRowMetadata(
                     : ''
 
             if (!key) {
-                key = `ov-row-${next}`
+                key = `opensteer-row-${next}`
                 next += 1
                 Object.defineProperty(element, payload.rowKeyProperty, {
                     value: key,

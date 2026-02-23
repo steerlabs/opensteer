@@ -3,15 +3,15 @@ import type { Opensteer } from '../opensteer.js'
 import type { ExtractSchema, SnapshotMode } from '../types.js'
 
 type CommandHandler = (
-    ov: Opensteer,
+    opensteer: Opensteer,
     args: Record<string, unknown>
 ) => Promise<unknown>
 
 const commands: Record<string, CommandHandler> = {
-    async navigate(ov, args) {
+    async navigate(opensteer, args) {
         const url = args.url as string
         if (!url) throw new Error('Missing required argument: url')
-        await ov.goto(url, {
+        await opensteer.goto(url, {
             timeout: args.timeout as number | undefined,
             settleMs: args.settleMs as number | undefined,
             waitUntil: args.waitUntil as
@@ -21,38 +21,38 @@ const commands: Record<string, CommandHandler> = {
                 | 'networkidle'
                 | undefined,
         })
-        return { url: ov.page.url() }
+        return { url: opensteer.page.url() }
     },
 
-    async back(ov) {
-        await ov.page.goBack()
-        return { url: ov.page.url() }
+    async back(opensteer) {
+        await opensteer.page.goBack()
+        return { url: opensteer.page.url() }
     },
 
-    async forward(ov) {
-        await ov.page.goForward()
-        return { url: ov.page.url() }
+    async forward(opensteer) {
+        await opensteer.page.goForward()
+        return { url: opensteer.page.url() }
     },
 
-    async reload(ov) {
-        await ov.page.reload()
-        return { url: ov.page.url() }
+    async reload(opensteer) {
+        await opensteer.page.reload()
+        return { url: opensteer.page.url() }
     },
 
-    async snapshot(ov, args) {
+    async snapshot(opensteer, args) {
         const mode = (args.mode as SnapshotMode) || 'action'
-        const html = await ov.snapshot({ mode })
+        const html = await opensteer.snapshot({ mode })
         return { html }
     },
 
-    async state(ov) {
-        return await ov.state()
+    async state(opensteer) {
+        return await opensteer.state()
     },
 
-    async screenshot(ov, args) {
+    async screenshot(opensteer, args) {
         const file = (args.file as string) || 'screenshot.png'
         const type = file.endsWith('.jpg') || file.endsWith('.jpeg') ? 'jpeg' : 'png'
-        const buffer = await ov.screenshot({
+        const buffer = await opensteer.screenshot({
             fullPage: args.fullPage as boolean | undefined,
             type,
         })
@@ -60,8 +60,8 @@ const commands: Record<string, CommandHandler> = {
         return { file }
     },
 
-    async click(ov, args) {
-        return await ov.click({
+    async click(opensteer, args) {
+        return await opensteer.click({
             element: args.element as number | undefined,
             selector: args.selector as string | undefined,
             description: args.description as string | undefined,
@@ -70,34 +70,34 @@ const commands: Record<string, CommandHandler> = {
         })
     },
 
-    async dblclick(ov, args) {
-        return await ov.dblclick({
+    async dblclick(opensteer, args) {
+        return await opensteer.dblclick({
             element: args.element as number | undefined,
             selector: args.selector as string | undefined,
             description: args.description as string | undefined,
         })
     },
 
-    async rightclick(ov, args) {
-        return await ov.rightclick({
+    async rightclick(opensteer, args) {
+        return await opensteer.rightclick({
             element: args.element as number | undefined,
             selector: args.selector as string | undefined,
             description: args.description as string | undefined,
         })
     },
 
-    async hover(ov, args) {
-        return await ov.hover({
+    async hover(opensteer, args) {
+        return await opensteer.hover({
             element: args.element as number | undefined,
             selector: args.selector as string | undefined,
             description: args.description as string | undefined,
         })
     },
 
-    async input(ov, args) {
+    async input(opensteer, args) {
         const text = args.text as string
         if (text == null) throw new Error('Missing required argument: text')
-        return await ov.input({
+        return await opensteer.input({
             element: args.element as number | undefined,
             selector: args.selector as string | undefined,
             description: args.description as string | undefined,
@@ -107,8 +107,8 @@ const commands: Record<string, CommandHandler> = {
         })
     },
 
-    async select(ov, args) {
-        return await ov.select({
+    async select(opensteer, args) {
+        return await opensteer.select({
             element: args.element as number | undefined,
             selector: args.selector as string | undefined,
             description: args.description as string | undefined,
@@ -118,8 +118,8 @@ const commands: Record<string, CommandHandler> = {
         })
     },
 
-    async scroll(ov, args) {
-        return await ov.scroll({
+    async scroll(opensteer, args) {
+        return await opensteer.scroll({
             element: args.element as number | undefined,
             selector: args.selector as string | undefined,
             description: args.description as string | undefined,
@@ -133,22 +133,22 @@ const commands: Record<string, CommandHandler> = {
         })
     },
 
-    async press(ov, args) {
+    async press(opensteer, args) {
         const key = args.key as string
         if (!key) throw new Error('Missing required argument: key')
-        await ov.pressKey(key)
+        await opensteer.pressKey(key)
         return { key }
     },
 
-    async type(ov, args) {
+    async type(opensteer, args) {
         const text = args.text as string
         if (text == null) throw new Error('Missing required argument: text')
-        await ov.type(text)
+        await opensteer.type(text)
         return { text }
     },
 
-    async 'get-text'(ov, args) {
-        const text = await ov.getElementText({
+    async 'get-text'(opensteer, args) {
+        const text = await opensteer.getElementText({
             element: args.element as number | undefined,
             selector: args.selector as string | undefined,
             description: args.description as string | undefined,
@@ -156,8 +156,8 @@ const commands: Record<string, CommandHandler> = {
         return { text }
     },
 
-    async 'get-value'(ov, args) {
-        const value = await ov.getElementValue({
+    async 'get-value'(opensteer, args) {
+        const value = await opensteer.getElementValue({
             element: args.element as number | undefined,
             selector: args.selector as string | undefined,
             description: args.description as string | undefined,
@@ -165,8 +165,8 @@ const commands: Record<string, CommandHandler> = {
         return { value }
     },
 
-    async 'get-attrs'(ov, args) {
-        const attributes = await ov.getElementAttributes({
+    async 'get-attrs'(opensteer, args) {
+        const attributes = await opensteer.getElementAttributes({
             element: args.element as number | undefined,
             selector: args.selector as string | undefined,
             description: args.description as string | undefined,
@@ -174,39 +174,39 @@ const commands: Record<string, CommandHandler> = {
         return { attributes }
     },
 
-    async 'get-html'(ov, args) {
-        const html = await ov.getHtml(args.selector as string | undefined)
+    async 'get-html'(opensteer, args) {
+        const html = await opensteer.getHtml(args.selector as string | undefined)
         return { html }
     },
 
-    async tabs(ov) {
-        const tabs = await ov.tabs()
+    async tabs(opensteer) {
+        const tabs = await opensteer.tabs()
         return { tabs }
     },
 
-    async 'tab-new'(ov, args) {
-        return await ov.newTab(args.url as string | undefined)
+    async 'tab-new'(opensteer, args) {
+        return await opensteer.newTab(args.url as string | undefined)
     },
 
-    async 'tab-switch'(ov, args) {
+    async 'tab-switch'(opensteer, args) {
         const index = args.index as number
         if (index == null) throw new Error('Missing required argument: index')
-        await ov.switchTab(index)
+        await opensteer.switchTab(index)
         return { index }
     },
 
-    async 'tab-close'(ov, args) {
-        await ov.closeTab(args.index as number | undefined)
+    async 'tab-close'(opensteer, args) {
+        await opensteer.closeTab(args.index as number | undefined)
         return {}
     },
 
-    async cookies(ov, args) {
-        const cookies = await ov.getCookies(args.url as string | undefined)
+    async cookies(opensteer, args) {
+        const cookies = await opensteer.getCookies(args.url as string | undefined)
         return { cookies }
     },
 
-    async 'cookie-set'(ov, args) {
-        await ov.setCookie({
+    async 'cookie-set'(opensteer, args) {
+        await opensteer.setCookie({
             name: args.name as string,
             value: args.value as string,
             url: args.url as string | undefined,
@@ -220,54 +220,54 @@ const commands: Record<string, CommandHandler> = {
         return {}
     },
 
-    async 'cookies-clear'(ov) {
-        await ov.clearCookies()
+    async 'cookies-clear'(opensteer) {
+        await opensteer.clearCookies()
         return {}
     },
 
-    async 'cookies-export'(ov, args) {
+    async 'cookies-export'(opensteer, args) {
         const file = args.file as string
         if (!file) throw new Error('Missing required argument: file')
-        await ov.exportCookies(file, args.url as string | undefined)
+        await opensteer.exportCookies(file, args.url as string | undefined)
         return { file }
     },
 
-    async 'cookies-import'(ov, args) {
+    async 'cookies-import'(opensteer, args) {
         const file = args.file as string
         if (!file) throw new Error('Missing required argument: file')
-        await ov.importCookies(file)
+        await opensteer.importCookies(file)
         return { file }
     },
 
-    async eval(ov, args) {
+    async eval(opensteer, args) {
         const expression = args.expression as string
         if (!expression)
             throw new Error('Missing required argument: expression')
-        const result = await ov.page.evaluate(expression)
+        const result = await opensteer.page.evaluate(expression)
         return { result }
     },
 
-    async 'wait-for'(ov, args) {
+    async 'wait-for'(opensteer, args) {
         const text = args.text as string
         if (!text) throw new Error('Missing required argument: text')
-        await ov.waitForText(text, {
+        await opensteer.waitForText(text, {
             timeout: args.timeout as number | undefined,
         })
         return { text }
     },
 
-    async 'wait-selector'(ov, args) {
+    async 'wait-selector'(opensteer, args) {
         const selector = args.selector as string
         if (!selector) throw new Error('Missing required argument: selector')
-        await ov.page.waitForSelector(selector, {
+        await opensteer.page.waitForSelector(selector, {
             timeout: (args.timeout as number) ?? 30000,
         })
         return { selector }
     },
 
-    async extract(ov, args) {
+    async extract(opensteer, args) {
         const schema = args.schema as ExtractSchema | undefined
-        const data = await ov.extract({
+        const data = await opensteer.extract({
             schema,
             description: args.description as string | undefined,
             prompt: args.prompt as string | undefined,

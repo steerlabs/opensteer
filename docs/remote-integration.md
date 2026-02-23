@@ -18,7 +18,7 @@ You can also force remote mode in constructor config:
 ```ts
 import { Opensteer } from 'opensteer'
 
-const ov = new Opensteer({
+const opensteer = new Opensteer({
     mode: 'remote',
     remote: {
         apiKey: process.env.OPENSTEER_REMOTE_API_KEY,

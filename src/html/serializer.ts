@@ -7,13 +7,13 @@ import {
     STABLE_PRIMARY_ATTR_KEYS,
 } from '../element-path/match-policy.js'
 import type { ContextHop, ElementPath } from '../element-path/types.js'
-import { ENSURE_NAME_SHIM_SCRIPT, OV_FRAME_TOKEN_KEY, OV_INSTANCE_TOKEN_KEY } from './runtime-keys.js'
+import { ENSURE_NAME_SHIM_SCRIPT, OS_FRAME_TOKEN_KEY, OS_INSTANCE_TOKEN_KEY } from './runtime-keys.js'
 
-export const OV_NODE_ID_ATTR = 'data-ov-node-id'
-export const OV_BOUNDARY_ATTR = 'data-ov-boundary'
-export const OV_UNAVAILABLE_ATTR = 'data-ov-unavailable'
-export const OV_IFRAME_BOUNDARY_TAG = 'ov-iframe-root'
-export const OV_SHADOW_BOUNDARY_TAG = 'ov-shadow-root'
+export const OS_NODE_ID_ATTR = 'data-os-node-id'
+export const OS_BOUNDARY_ATTR = 'data-os-boundary'
+export const OS_UNAVAILABLE_ATTR = 'data-os-unavailable'
+export const OS_IFRAME_BOUNDARY_TAG = 'os-iframe-root'
+export const OS_SHADOW_BOUNDARY_TAG = 'os-shadow-root'
 
 export interface SerializeOptions {
     detectOverlays?: boolean
@@ -156,9 +156,9 @@ async function serializeFrameRecursive(
                 nextToken(): string {
                     const fromCrypto = globalThis.crypto?.randomUUID?.()
                     if (typeof fromCrypto === 'string' && fromCrypto.length) {
-                        return `ov_${fromCrypto}`
+                        return `os_${fromCrypto}`
                     }
-                    return `ov_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+                    return `os_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
                 },
 
                 escapeHtml(value: string): string {
@@ -200,7 +200,7 @@ async function serializeFrameRecursive(
                     if (key === 'c') return false
                     if (/^on[a-z]/i.test(key)) return false
                     if (ATTRIBUTE_DENY_KEYS.has(key)) return false
-                    if (key.startsWith('data-ov-')) return false
+                    if (key.startsWith('data-os-')) return false
                     if (key.startsWith('data-opensteer-')) return false
                     if (
                         helpers.isMediaTag(tag) &&
@@ -496,11 +496,11 @@ async function serializeFrameRecursive(
         },
         {
             frameKey,
-            nodeAttr: OV_NODE_ID_ATTR,
-            shadowTag: OV_SHADOW_BOUNDARY_TAG,
-            boundaryAttr: OV_BOUNDARY_ATTR,
-            frameTokenKey: OV_FRAME_TOKEN_KEY,
-            instanceTokenKey: OV_INSTANCE_TOKEN_KEY,
+            nodeAttr: OS_NODE_ID_ATTR,
+            shadowTag: OS_SHADOW_BOUNDARY_TAG,
+            boundaryAttr: OS_BOUNDARY_ATTR,
+            frameTokenKey: OS_FRAME_TOKEN_KEY,
+            instanceTokenKey: OS_INSTANCE_TOKEN_KEY,
             matchAttributePriority: [...MATCH_ATTRIBUTE_PRIORITY],
             stablePrimaryAttrKeys: [...STABLE_PRIMARY_ATTR_KEYS],
             deferredMatchAttrKeys: [...DEFERRED_MATCH_ATTR_KEYS],
@@ -532,7 +532,7 @@ async function serializeFrameRecursive(
         let hostNodeId: string | null = null
         try {
             const frameEl = await child.frameElement()
-            hostNodeId = await frameEl.getAttribute(OV_NODE_ID_ATTR)
+            hostNodeId = await frameEl.getAttribute(OS_NODE_ID_ATTR)
             await frameEl.dispose()
         } catch {
             hostNodeId = null
@@ -551,7 +551,7 @@ async function serializeFrameRecursive(
             },
         ]
 
-        const hostEl = $(`[${OV_NODE_ID_ATTR}="${hostNodeId}"]`).first()
+        const hostEl = $(`[${OS_NODE_ID_ATTR}="${hostNodeId}"]`).first()
         if (!hostEl.length) continue
 
         try {
@@ -562,7 +562,7 @@ async function serializeFrameRecursive(
             )
 
             hostEl.after(
-                `<${OV_IFRAME_BOUNDARY_TAG} ${OV_BOUNDARY_ATTR}="iframe">${childResult.html}</${OV_IFRAME_BOUNDARY_TAG}>`
+                `<${OS_IFRAME_BOUNDARY_TAG} ${OS_BOUNDARY_ATTR}="iframe">${childResult.html}</${OS_IFRAME_BOUNDARY_TAG}>`
             )
 
             for (const [nodeId, path] of childResult.nodePaths.entries()) {
@@ -573,7 +573,7 @@ async function serializeFrameRecursive(
             }
         } catch {
             hostEl.after(
-                `<${OV_IFRAME_BOUNDARY_TAG} ${OV_BOUNDARY_ATTR}="iframe" ${OV_UNAVAILABLE_ATTR}="ERR_PATH_IFRAME_UNAVAILABLE"></${OV_IFRAME_BOUNDARY_TAG}>`
+                `<${OS_IFRAME_BOUNDARY_TAG} ${OS_BOUNDARY_ATTR}="iframe" ${OS_UNAVAILABLE_ATTR}="ERR_PATH_IFRAME_UNAVAILABLE"></${OS_IFRAME_BOUNDARY_TAG}>`
             )
         }
     }

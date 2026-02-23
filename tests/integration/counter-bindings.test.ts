@@ -32,9 +32,9 @@ describe('integration/counter-bindings', () => {
             `
         )
 
-        const ov = Opensteer.from(page)
+        const opensteer = Opensteer.from(page)
 
-        const first = await ov.snapshot({ mode: 'full', withCounters: true })
+        const first = await opensteer.snapshot({ mode: 'full', withCounters: true })
         const first$ = cheerio.load(first)
         const firstCounter = Number.parseInt(
             first$('#save').attr('c') || '',
@@ -49,7 +49,7 @@ describe('integration/counter-bindings', () => {
             document.body.appendChild(badge)
         })
 
-        const second = await ov.snapshot({ mode: 'full', withCounters: true })
+        const second = await opensteer.snapshot({ mode: 'full', withCounters: true })
         const second$ = cheerio.load(second)
         const secondCounter = Number.parseInt(
             second$('#save').attr('c') || '',
@@ -68,9 +68,9 @@ describe('integration/counter-bindings', () => {
             `
         )
 
-        const ov = Opensteer.from(page)
+        const opensteer = Opensteer.from(page)
 
-        const first = await ov.snapshot({ mode: 'full', withCounters: true })
+        const first = await opensteer.snapshot({ mode: 'full', withCounters: true })
         const first$ = cheerio.load(first)
         const staleCounter = Number.parseInt(
             first$('#save').attr('c') || '',
@@ -94,10 +94,10 @@ describe('integration/counter-bindings', () => {
         })
 
         await expect(
-            ov.click({ element: staleCounter, button: 'left', clickCount: 1 })
+            opensteer.click({ element: staleCounter, button: 'left', clickCount: 1 })
         ).rejects.toThrow(/snapshot\(\) again/i)
 
-        const second = await ov.snapshot({ mode: 'full', withCounters: true })
+        const second = await opensteer.snapshot({ mode: 'full', withCounters: true })
         const second$ = cheerio.load(second)
         const freshCounter = Number.parseInt(
             second$('#save').attr('c') || '',
@@ -106,7 +106,7 @@ describe('integration/counter-bindings', () => {
         expect(Number.isFinite(freshCounter)).toBe(true)
         expect(freshCounter).not.toBe(staleCounter)
 
-        await ov.click({ element: freshCounter, button: 'left', clickCount: 1 })
+        await opensteer.click({ element: freshCounter, button: 'left', clickCount: 1 })
         expect((await page.textContent('#status'))?.trim()).toBe('clicked')
     })
 
@@ -114,8 +114,8 @@ describe('integration/counter-bindings', () => {
         await setFixture(
             page,
             `
-            <button id="a" data-ov-node-id="collision">A</button>
-            <button id="b" data-ov-node-id="collision">B</button>
+            <button id="a" data-os-node-id="collision">A</button>
+            <button id="b" data-os-node-id="collision">B</button>
             `
         )
 
@@ -170,16 +170,16 @@ describe('integration/counter-bindings', () => {
             .locator('#inside-input')
             .waitFor({ state: 'visible' })
 
-        const ov = Opensteer.from(page)
-        const html = await ov.snapshot({ mode: 'full', withCounters: true })
+        const opensteer = Opensteer.from(page)
+        const html = await opensteer.snapshot({ mode: 'full', withCounters: true })
         const $$ = cheerio.load(html)
         const counter = Number.parseInt(
-            $$('#frame-host + ov-iframe-root #inside-input').attr('c') || '',
+            $$('#frame-host + os-iframe-root #inside-input').attr('c') || '',
             10
         )
         expect(Number.isFinite(counter)).toBe(true)
 
-        await ov.input({ element: counter, text: 'from-counter' })
+        await opensteer.input({ element: counter, text: 'from-counter' })
 
         const childFrame = page
             .frames()
@@ -206,16 +206,16 @@ describe('integration/counter-bindings', () => {
             `
         )
 
-        const ov = Opensteer.from(page)
-        const html = await ov.snapshot({ mode: 'full', withCounters: true })
+        const opensteer = Opensteer.from(page)
+        const html = await opensteer.snapshot({ mode: 'full', withCounters: true })
         const $$ = cheerio.load(html)
         const counter = Number.parseInt(
-            $$('#host ov-shadow-root #inside-btn').attr('c') || '',
+            $$('#host os-shadow-root #inside-btn').attr('c') || '',
             10
         )
         expect(Number.isFinite(counter)).toBe(true)
 
-        await ov.click({ element: counter, button: 'left', clickCount: 1 })
+        await opensteer.click({ element: counter, button: 'left', clickCount: 1 })
         expect((await page.textContent('#status'))?.trim()).toBe('clicked')
     })
 
@@ -236,8 +236,8 @@ describe('integration/counter-bindings', () => {
             .locator('#inside')
             .waitFor({ state: 'visible' })
 
-        const ov = Opensteer.from(page)
-        const html = await ov.snapshot({
+        const opensteer = Opensteer.from(page)
+        const html = await opensteer.snapshot({
             mode: 'full',
             withCounters: true,
         })
@@ -245,14 +245,14 @@ describe('integration/counter-bindings', () => {
 
         const titleCounter = Number.parseInt($$('#title').attr('c') || '', 10)
         const insideCounter = Number.parseInt(
-            $$('#frame-host + ov-iframe-root #inside').attr('c') || '',
+            $$('#frame-host + os-iframe-root #inside').attr('c') || '',
             10
         )
 
         expect(Number.isFinite(titleCounter)).toBe(true)
         expect(Number.isFinite(insideCounter)).toBe(true)
 
-        const data = await ov.extract<{
+        const data = await opensteer.extract<{
             title: string | null
             titleBySelector: string | null
             inside: string | null
@@ -289,7 +289,7 @@ describe('integration/counter-bindings', () => {
         })
 
         await expect(
-            ov.extract({
+            opensteer.extract({
                 schema: {
                     inside: { element: insideCounter },
                 },
@@ -311,8 +311,8 @@ describe('integration/counter-bindings', () => {
             `
         )
 
-        const ov = Opensteer.from(page)
-        const html = await ov.snapshot({ mode: 'full', withCounters: true })
+        const opensteer = Opensteer.from(page)
+        const html = await opensteer.snapshot({ mode: 'full', withCounters: true })
         const $$ = cheerio.load(html)
 
         const linkCounter = Number.parseInt($$('#doc-link').attr('c') || '', 10)
@@ -349,7 +349,7 @@ describe('integration/counter-bindings', () => {
         expect(Number.isFinite(inputCounter)).toBe(true)
         expect(Number.isFinite(detailsCounter)).toBe(true)
 
-        const data = await ov.extract<{
+        const data = await opensteer.extract<{
             name: string | null
             url: string | null
             imageText: string | null
@@ -413,8 +413,8 @@ describe('integration/counter-bindings', () => {
             `
         )
 
-        const ov = Opensteer.from(page)
-        const html = await ov.snapshot({ mode: 'full', withCounters: true })
+        const opensteer = Opensteer.from(page)
+        const html = await opensteer.snapshot({ mode: 'full', withCounters: true })
         const $$ = cheerio.load(html)
         const targetCounter = Number.parseInt($$('#target').attr('c') || '', 10)
         expect(Number.isFinite(targetCounter)).toBe(true)
@@ -429,13 +429,13 @@ describe('integration/counter-bindings', () => {
                 return
             }
 
-            const nodeId = target.getAttribute('data-ov-node-id')
+            const nodeId = target.getAttribute('data-os-node-id')
             if (!nodeId) return
-            duplicate.setAttribute('data-ov-node-id', nodeId)
+            duplicate.setAttribute('data-os-node-id', nodeId)
         })
 
         await expect(
-            ov.click({ element: targetCounter, button: 'left', clickCount: 1 })
+            opensteer.click({ element: targetCounter, button: 'left', clickCount: 1 })
         ).rejects.toThrow(/ambiguous|snapshot\(\) again/i)
     })
 
@@ -455,11 +455,11 @@ describe('integration/counter-bindings', () => {
             .locator('#inside-input')
             .waitFor({ state: 'visible' })
 
-        const ov = Opensteer.from(page)
-        const html = await ov.snapshot({ mode: 'full', withCounters: true })
+        const opensteer = Opensteer.from(page)
+        const html = await opensteer.snapshot({ mode: 'full', withCounters: true })
         const $$ = cheerio.load(html)
         const counter = Number.parseInt(
-            $$('#frame-host + ov-iframe-root #inside-input').attr('c') || '',
+            $$('#frame-host + os-iframe-root #inside-input').attr('c') || '',
             10
         )
         expect(Number.isFinite(counter)).toBe(true)
@@ -469,7 +469,7 @@ describe('integration/counter-bindings', () => {
         })
 
         await expect(
-            ov.input({ element: counter, text: 'should-fail' })
+            opensteer.input({ element: counter, text: 'should-fail' })
         ).rejects.toThrow(/frame.*unavailable|snapshot\(\) again/i)
     })
 
@@ -482,8 +482,8 @@ describe('integration/counter-bindings', () => {
             `
         )
 
-        const ov = Opensteer.from(page)
-        const html = await ov.snapshot({ mode: 'full', withCounters: true })
+        const opensteer = Opensteer.from(page)
+        const html = await opensteer.snapshot({ mode: 'full', withCounters: true })
         const $$ = cheerio.load(html)
 
         const counterA = Number.parseInt($$('#a').attr('c') || '', 10)
@@ -506,9 +506,9 @@ describe('integration/counter-bindings', () => {
             `
         )
 
-        const ov = Opensteer.from(page)
+        const opensteer = Opensteer.from(page)
 
-        const first = await ov.snapshot({ mode: 'full', withCounters: true })
+        const first = await opensteer.snapshot({ mode: 'full', withCounters: true })
         const first$ = cheerio.load(first)
         const firstCounter = Number.parseInt(
             first$('#stable').attr('c') || '',
@@ -520,7 +520,7 @@ describe('integration/counter-bindings', () => {
             document.querySelector('#stable')?.setAttribute('c', '999999')
         })
 
-        const second = await ov.snapshot({ mode: 'full', withCounters: true })
+        const second = await opensteer.snapshot({ mode: 'full', withCounters: true })
         const second$ = cheerio.load(second)
         const secondCounter = Number.parseInt(
             second$('#stable').attr('c') || '',
@@ -540,8 +540,8 @@ describe('integration/counter-bindings', () => {
             `
         )
 
-        const ov = Opensteer.from(page)
-        await ov.snapshot({ mode: 'full', withCounters: true })
+        const opensteer = Opensteer.from(page)
+        await opensteer.snapshot({ mode: 'full', withCounters: true })
 
         await page.evaluate(() => {
             const a = document.querySelector('#a') as
@@ -561,7 +561,7 @@ describe('integration/counter-bindings', () => {
         })
 
         await expect(
-            ov.snapshot({ mode: 'full', withCounters: true })
+            opensteer.snapshot({ mode: 'full', withCounters: true })
         ).rejects.toThrow(/multiple nodes|snapshot\(\) again|ambiguous/i)
     })
 
@@ -587,17 +587,17 @@ describe('integration/counter-bindings', () => {
             `
         )
 
-        const ov = Opensteer.from(page)
-        const html = await ov.snapshot({ mode: 'full', withCounters: true })
+        const opensteer = Opensteer.from(page)
+        const html = await opensteer.snapshot({ mode: 'full', withCounters: true })
         const $$ = cheerio.load(html)
         const counter = Number.parseInt($$('#replace-btn').attr('c') || '', 10)
         expect(Number.isFinite(counter)).toBe(true)
 
-        await ov.click({ element: counter, button: 'left', clickCount: 1 })
+        await opensteer.click({ element: counter, button: 'left', clickCount: 1 })
         expect((await page.textContent('#status'))?.trim()).toBe('replaced')
 
         await expect(
-            ov.click({ element: counter, button: 'left', clickCount: 1 })
+            opensteer.click({ element: counter, button: 'left', clickCount: 1 })
         ).rejects.toThrow(/snapshot\(\) again/i)
     })
 
@@ -616,11 +616,11 @@ describe('integration/counter-bindings', () => {
             `
         )
 
-        const ov = Opensteer.from(page)
-        const html = await ov.snapshot({ mode: 'full', withCounters: true })
+        const opensteer = Opensteer.from(page)
+        const html = await opensteer.snapshot({ mode: 'full', withCounters: true })
         const $$ = cheerio.load(html)
 
         expect(html).not.toContain('closed-btn')
-        expect($$('#closed-host ov-shadow-root').length).toBe(0)
+        expect($$('#closed-host os-shadow-root').length).toBe(0)
     })
 })
