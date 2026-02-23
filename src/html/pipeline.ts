@@ -4,7 +4,7 @@ import type { Page } from 'playwright'
 import type { Element } from 'domhandler'
 import {
     serializePageHTML,
-    OV_NODE_ID_ATTR,
+    OS_NODE_ID_ATTR,
     type SerializedNodeMeta,
 } from './serializer.js'
 import { markInteractiveElements } from './interactivity.js'
@@ -66,7 +66,7 @@ async function assignCounters(
     const orderedNodeIds: string[] = []
     $('*').each(function () {
         const el = $(this as Element)
-        const nodeId = el.attr(OV_NODE_ID_ATTR)
+        const nodeId = el.attr(OS_NODE_ID_ATTR)
         if (!nodeId) return
         orderedNodeIds.push(nodeId)
     })
@@ -79,7 +79,7 @@ async function assignCounters(
 
     $('*').each(function () {
         const el = $(this as Element)
-        const nodeId = el.attr(OV_NODE_ID_ATTR)
+        const nodeId = el.attr(OS_NODE_ID_ATTR)
         if (!nodeId) return
 
         const path = nodePaths.get(nodeId)
@@ -100,7 +100,7 @@ async function assignCounters(
         }
 
         el.attr('c', String(counter))
-        el.removeAttr(OV_NODE_ID_ATTR)
+        el.removeAttr(OS_NODE_ID_ATTR)
 
         if (path) {
             counterIndex.set(counter, cloneElementPath(path))
@@ -115,7 +115,7 @@ async function assignCounters(
         }
     })
 
-    $(`[${OV_NODE_ID_ATTR}]`).removeAttr(OV_NODE_ID_ATTR)
+    $(`[${OS_NODE_ID_ATTR}]`).removeAttr(OS_NODE_ID_ATTR)
 
     return {
         html: $.html(),
@@ -125,9 +125,9 @@ async function assignCounters(
 }
 
 function stripNodeIds(html: string): string {
-    if (!html.includes(OV_NODE_ID_ATTR)) return html
+    if (!html.includes(OS_NODE_ID_ATTR)) return html
     const $ = cheerio.load(html, { xmlMode: false })
-    $(`[${OV_NODE_ID_ATTR}]`).removeAttr(OV_NODE_ID_ATTR)
+    $(`[${OS_NODE_ID_ATTR}]`).removeAttr(OS_NODE_ID_ATTR)
     return $.html()
 }
 

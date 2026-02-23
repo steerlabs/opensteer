@@ -1,10 +1,10 @@
 import { useEffect } from 'react'
 
 function defineShadowProductFixtures(): void {
-    if (customElements.get('ov-shadow-product-shelf')) return
+    if (customElements.get('opensteer-shadow-product-shelf')) return
 
     customElements.define(
-        'ov-shadow-product-shelf',
+        'opensteer-shadow-product-shelf',
         class extends HTMLElement {
             connectedCallback(): void {
                 if (this.shadowRoot) return
@@ -62,7 +62,7 @@ export function ProductContextsPage(): JSX.Element {
 
                 <article className="card space-y-3">
                     <h2 className="card-title">Shadow Product Shelf</h2>
-                    <ov-shadow-product-shelf id="shadow-product-host" />
+                    <opensteer-shadow-product-shelf id="shadow-product-host" />
                 </article>
             </section>
         </main>

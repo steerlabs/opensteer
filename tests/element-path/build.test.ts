@@ -62,7 +62,7 @@ describe('element-path/build', () => {
         await setFixture(
             page,
             `
-            <ov-shadow-host id="shadow-host"></ov-shadow-host>
+            <opensteer-shadow-host id="shadow-host"></opensteer-shadow-host>
             <script>
               class OvShadowHost extends HTMLElement {
                 connectedCallback() {
@@ -71,7 +71,7 @@ describe('element-path/build', () => {
                   root.innerHTML = '<button id="inside-shadow">Inside</button>'
                 }
               }
-              customElements.define('ov-shadow-host', OvShadowHost)
+              customElements.define('opensteer-shadow-host', OvShadowHost)
             </script>
             `
         )

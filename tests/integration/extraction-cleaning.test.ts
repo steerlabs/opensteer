@@ -276,13 +276,13 @@ describe('integration/extraction-cleaning', () => {
             expect(snapshot.cleanedHtml).not.toContain('<!--')
         })
 
-        it('does not contain data-ov-node-id attributes', async () => {
+        it('does not contain data-os-node-id attributes', async () => {
             await gotoRoute(page, '/data')
             const snapshot = await prepareSnapshot(page, {
                 mode: 'extraction',
             })
 
-            expect(snapshot.cleanedHtml).not.toContain('data-ov-node-id')
+            expect(snapshot.cleanedHtml).not.toContain('data-os-node-id')
         })
 
         it('extraction is smaller than full mode on same page', async () => {

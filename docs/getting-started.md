@@ -17,20 +17,20 @@ default `gpt-5.1` model.
 ```ts
 import { Opensteer } from 'opensteer'
 
-const ov = new Opensteer({ name: 'my-scraper' })
-await ov.launch({ headless: false })
+const opensteer = new Opensteer({ name: 'my-scraper' })
+await opensteer.launch({ headless: false })
 
-await ov.page.goto('https://example.com')
+await opensteer.page.goto('https://example.com')
 ```
 
 ## 3) Explore with snapshots
 
 ```ts
-const html = await ov.snapshot() // contains c="..." counters
+const html = await opensteer.snapshot() // contains c="..." counters
 console.log(html)
 
-await ov.click({ description: 'login-btn', element: 3 })
-await ov.input({ description: 'email', element: 7, text: 'user@example.com' })
+await opensteer.click({ description: 'login-btn', element: 3 })
+await opensteer.input({ description: 'email', element: 7, text: 'user@example.com' })
 ```
 
 ## 4) Replay deterministically
@@ -38,14 +38,14 @@ await ov.input({ description: 'email', element: 7, text: 'user@example.com' })
 On later runs, omit `element` and reuse persisted descriptions:
 
 ```ts
-await ov.click({ description: 'login-btn' })
-await ov.input({ description: 'email', text: 'user@example.com' })
+await opensteer.click({ description: 'login-btn' })
+await opensteer.input({ description: 'email', text: 'user@example.com' })
 ```
 
 ## 5) Optional model override
 
 ```ts
-const ov = new Opensteer({
+const opensteer = new Opensteer({
     name: 'my-scraper',
     model: 'gpt-5.1',
 })
@@ -71,13 +71,13 @@ Remote mode is fail-fast and does not automatically fall back to local mode.
 ## 7) Close
 
 ```ts
-await ov.close()
+await opensteer.close()
 ```
 
 ## Optional remote force override
 
 ```ts
-const ov = new Opensteer({
+const opensteer = new Opensteer({
     mode: 'remote',
     remote: {
         apiKey: process.env.OPENSTEER_REMOTE_API_KEY,

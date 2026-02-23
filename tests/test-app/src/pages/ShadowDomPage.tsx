@@ -1,9 +1,9 @@
 import { useEffect } from 'react'
 
 function defineShadowFixtures(): void {
-    if (!customElements.get('ov-shadow-button')) {
+    if (!customElements.get('opensteer-shadow-button')) {
         customElements.define(
-            'ov-shadow-button',
+            'opensteer-shadow-button',
             class extends HTMLElement {
                 connectedCallback(): void {
                     if (this.shadowRoot) return
@@ -30,9 +30,9 @@ function defineShadowFixtures(): void {
         )
     }
 
-    if (!customElements.get('ov-shadow-input')) {
+    if (!customElements.get('opensteer-shadow-input')) {
         customElements.define(
-            'ov-shadow-input',
+            'opensteer-shadow-input',
             class extends HTMLElement {
                 connectedCallback(): void {
                     if (this.shadowRoot) return
@@ -58,9 +58,9 @@ function defineShadowFixtures(): void {
         )
     }
 
-    if (!customElements.get('ov-shadow-card')) {
+    if (!customElements.get('opensteer-shadow-card')) {
         customElements.define(
-            'ov-shadow-card',
+            'opensteer-shadow-card',
             class extends HTMLElement {
                 connectedCallback(): void {
                     if (this.shadowRoot) return
@@ -112,7 +112,7 @@ export function ShadowDomPage(): JSX.Element {
             <section className="grid gap-5 lg:grid-cols-2">
                 <article className="card space-y-3">
                     <h2 className="card-title">Interactive Shadow Controls</h2>
-                    <ov-shadow-button id="shadow-button-host" />
+                    <opensteer-shadow-button id="shadow-button-host" />
                     <p
                         id="shadow-click-output"
                         className="text-sm text-slate-600"
@@ -120,7 +120,7 @@ export function ShadowDomPage(): JSX.Element {
                         idle
                     </p>
 
-                    <ov-shadow-input id="shadow-input-host" />
+                    <opensteer-shadow-input id="shadow-input-host" />
                     <p
                         id="shadow-input-output"
                         className="text-sm text-slate-600"
@@ -131,12 +131,12 @@ export function ShadowDomPage(): JSX.Element {
 
                 <article className="card space-y-3">
                     <h2 className="card-title">Duplicated Shadow Cards</h2>
-                    <ov-shadow-card
+                    <opensteer-shadow-card
                         id="card-1"
                         data-title="Ops Dashboard"
                         data-status="Healthy"
                     />
-                    <ov-shadow-card
+                    <opensteer-shadow-card
                         id="card-2"
                         data-title="Billing Console"
                         data-status="Warning"

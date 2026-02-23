@@ -6,7 +6,7 @@ Lean browser automation SDK for coding agents and script replay.
 `click`, `dblclick`, `rightclick`, `hover`, `input`, `select`, `scroll`,
 `extract`, `extractFromPlan`, `state`).
 
-Everything else is raw Playwright via `ov.page` and `ov.context`.
+Everything else is raw Playwright via `opensteer.page` and `opensteer.context`.
 
 ## Install
 
@@ -22,23 +22,23 @@ pnpm add opensteer playwright
 ```ts
 import { Opensteer } from "opensteer";
 
-const ov = new Opensteer({ name: "my-scraper" }); // defaults to model: 'gpt-5.1'
-await ov.launch({ headless: false });
+const opensteer = new Opensteer({ name: "my-scraper" }); // defaults to model: 'gpt-5.1'
+await opensteer.launch({ headless: false });
 
-await ov.page.goto("https://example.com");
-const html = await ov.snapshot();
+await opensteer.page.goto("https://example.com");
+const html = await opensteer.snapshot();
 
-await ov.click({ description: "login-button" });
-await ov.input({ description: "email", text: "user@example.com" });
-await ov.page.keyboard.press("Enter");
+await opensteer.click({ description: "login-button" });
+await opensteer.input({ description: "email", text: "user@example.com" });
+await opensteer.page.keyboard.press("Enter");
 
-await ov.close();
+await opensteer.close();
 ```
 
 ## Core Model
 
-- `ov.page`: raw Playwright `Page`
-- `ov.context`: raw Playwright `BrowserContext`
+- `opensteer.page`: raw Playwright `Page`
+- `opensteer.context`: raw Playwright `BrowserContext`
 - Opensteer methods: descriptor-aware operations that can persist selectors
 - Selector storage: `.opensteer/selectors/<namespace>`
 
@@ -63,9 +63,9 @@ before the method resolves.
 You can disable or tune this per call:
 
 ```ts
-await ov.click({ description: "Save button", wait: false });
+await opensteer.click({ description: "Save button", wait: false });
 
-await ov.click({
+await opensteer.click({
   description: "Save button",
   wait: { timeout: 9000, settleMs: 900, includeNetwork: true, networkQuietMs: 400 },
 });
@@ -89,7 +89,7 @@ The error includes structured failure metadata for agent/tooling decisions:
 import { Opensteer, OpensteerActionError } from "opensteer";
 
 try {
-  await ov.click({ description: "Save button" });
+  await opensteer.click({ description: "Save button" });
 } catch (err) {
   if (err instanceof OpensteerActionError) {
     console.error(err.failure.code); // e.g. BLOCKED_BY_INTERCEPTOR
@@ -103,11 +103,11 @@ try {
 ## Snapshot Modes
 
 ```ts
-await ov.snapshot(); // action mode (default)
-await ov.snapshot({ mode: "extraction" });
-await ov.snapshot({ mode: "clickable" });
-await ov.snapshot({ mode: "scrollable" });
-await ov.snapshot({ mode: "full" });
+await opensteer.snapshot(); // action mode (default)
+await opensteer.snapshot({ mode: "extraction" });
+await opensteer.snapshot({ mode: "clickable" });
+await opensteer.snapshot({ mode: "scrollable" });
+await opensteer.snapshot({ mode: "full" });
 ```
 
 ## Two Usage Patterns
@@ -123,7 +123,7 @@ Opensteer uses built-in LLM resolve/extract by default. You can override the
 default model with top-level `model` or `OPENSTEER_MODEL`.
 
 ```ts
-const ov = new Opensteer({
+const opensteer = new Opensteer({
   name: "run-mode",
   model: "gpt-5-mini",
 });

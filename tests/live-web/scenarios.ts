@@ -94,7 +94,7 @@ const wikipediaSearchScenario: LiveWebScenario = {
     id: 'wikipedia-search',
     title: 'Resolve search input and submit action on Wikipedia',
     websiteUrl: 'https://en.wikipedia.org/wiki/Main_Page',
-    run: async ({ page, ov }: ScenarioContext): Promise<ScenarioResult> => {
+    run: async ({ page, opensteer }: ScenarioContext): Promise<ScenarioResult> => {
         const traces: ScenarioStepTrace[] = []
 
         await page.goto('https://en.wikipedia.org/wiki/Main_Page', {
@@ -112,7 +112,7 @@ const wikipediaSearchScenario: LiveWebScenario = {
             outcome: { url: beforeUrl },
         })
 
-        const inputResult = await ov.input({
+        const inputResult = await opensteer.input({
             description:
                 'The main Wikipedia search input with id searchInput at the top of the page',
             text: 'Ada Lovelace',
@@ -125,7 +125,7 @@ const wikipediaSearchScenario: LiveWebScenario = {
             outcome: inputResult,
         })
 
-        const clickResult = await ov.click({
+        const clickResult = await opensteer.click({
             description:
                 'The Search button next to the main Wikipedia search input',
         })
@@ -185,7 +185,7 @@ const githubDocsNavigationScenario: LiveWebScenario = {
     id: 'github-docs-navigation',
     title: 'Resolve docs navigation link on GitHub Docs',
     websiteUrl: 'https://docs.github.com/en',
-    run: async ({ page, ov }: ScenarioContext): Promise<ScenarioResult> => {
+    run: async ({ page, opensteer }: ScenarioContext): Promise<ScenarioResult> => {
         const traces: ScenarioStepTrace[] = []
 
         await page.goto('https://docs.github.com/en', {
@@ -205,7 +205,7 @@ const githubDocsNavigationScenario: LiveWebScenario = {
             outcome: { url: beforeUrl },
         })
 
-        const clickResult = await ov.click({
+        const clickResult = await opensteer.click({
             description:
                 'The Get started link in the primary GitHub Docs navigation menu',
         })
@@ -266,7 +266,7 @@ const jsFiddleIframeScenario: LiveWebScenario = {
     id: 'jsfiddle-iframe-toggle',
     title: 'Resolve and click control inside JSFiddle result iframe',
     websiteUrl: 'https://jsfiddle.net/boilerplate/jquery',
-    run: async ({ page, ov }: ScenarioContext): Promise<ScenarioResult> => {
+    run: async ({ page, opensteer }: ScenarioContext): Promise<ScenarioResult> => {
         const traces: ScenarioStepTrace[] = []
 
         await page.goto('https://jsfiddle.net/boilerplate/jquery', {
@@ -287,7 +287,7 @@ const jsFiddleIframeScenario: LiveWebScenario = {
             outcome: { url: beforeUrl, frameUrl: frame.url() },
         })
 
-        const clickResult = await ov.click({
+        const clickResult = await opensteer.click({
             description:
                 'The Change color button inside the result preview iframe',
         })
@@ -344,7 +344,7 @@ const shoelaceSwitchScenario: LiveWebScenario = {
     id: 'shoelace-shadow-switch',
     title: 'Resolve shadow host toggle on Shoelace switch docs',
     websiteUrl: 'https://shoelace.style/components/switch',
-    run: async ({ page, ov }: ScenarioContext): Promise<ScenarioResult> => {
+    run: async ({ page, opensteer }: ScenarioContext): Promise<ScenarioResult> => {
         const traces: ScenarioStepTrace[] = []
 
         await page.goto('https://shoelace.style/components/switch', {
@@ -363,7 +363,7 @@ const shoelaceSwitchScenario: LiveWebScenario = {
             outcome: { url: beforeUrl },
         })
 
-        const clickResult = await ov.click({
+        const clickResult = await opensteer.click({
             description:
                 'The Switch toggle labeled Switch on the Shoelace Switch page',
         })
@@ -415,7 +415,7 @@ const shoelaceDetailsScenario: LiveWebScenario = {
     id: 'shoelace-shadow-accordion',
     title: 'Resolve shadow-backed accordion disambiguation on Shoelace details docs',
     websiteUrl: 'https://shoelace.style/components/details',
-    run: async ({ page, ov }: ScenarioContext): Promise<ScenarioResult> => {
+    run: async ({ page, opensteer }: ScenarioContext): Promise<ScenarioResult> => {
         const traces: ScenarioStepTrace[] = []
 
         await page.goto('https://shoelace.style/components/details', {
@@ -439,7 +439,7 @@ const shoelaceDetailsScenario: LiveWebScenario = {
             outcome: { url: beforeUrl },
         })
 
-        const clickResult = await ov.click({
+        const clickResult = await opensteer.click({
             description:
                 'The Second details accordion header in the group with First, Second, and Third',
         })
@@ -494,7 +494,7 @@ const hackerNewsExtractScenario: LiveWebScenario = {
     id: 'hacker-news-live-extract',
     title: 'Extract first live headline on Hacker News',
     websiteUrl: 'https://news.ycombinator.com/',
-    run: async ({ page, ov }: ScenarioContext): Promise<ScenarioResult> => {
+    run: async ({ page, opensteer }: ScenarioContext): Promise<ScenarioResult> => {
         const traces: ScenarioStepTrace[] = []
 
         await page.goto('https://news.ycombinator.com/', {
@@ -515,7 +515,7 @@ const hackerNewsExtractScenario: LiveWebScenario = {
             outcome: { url: beforeUrl },
         })
 
-        const extracted = await ov.extract<{ title: string }>({
+        const extracted = await opensteer.extract<{ title: string }>({
             description:
                 'Extract the title text of the first story item in the Hacker News list',
             schema: {

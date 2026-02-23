@@ -102,7 +102,7 @@ const MATCH_ATTRIBUTE_PRIORITY_INDEX = new Map<string, number>(
     MATCH_ATTRIBUTE_PRIORITY.map((key, index) => [key, index])
 )
 
-const INTERNAL_ATTR_PREFIXES = ['data-ov-', 'data-opensteer-']
+const INTERNAL_ATTR_PREFIXES = ['data-os-', 'data-opensteer-']
 
 export interface AttributeFilterOptions {
     tag?: string

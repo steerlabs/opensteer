@@ -19,7 +19,7 @@ afterEach(() => {
 describe('config', () => {
     it('loadConfigFile returns empty object when file is missing or malformed', () => {
         const root = fs.mkdtempSync(
-            path.join(os.tmpdir(), 'ov-config-missing-')
+            path.join(os.tmpdir(), 'opensteer-config-missing-')
         )
         expect(loadConfigFile(root)).toEqual({})
 
@@ -31,7 +31,7 @@ describe('config', () => {
     })
 
     it('resolveConfig merges defaults, file config, env config, then explicit input', () => {
-        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-config-merge-'))
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-config-merge-'))
         fs.mkdirSync(path.join(root, '.opensteer'), { recursive: true })
         fs.writeFileSync(
             path.join(root, '.opensteer', 'config.json'),
@@ -133,7 +133,7 @@ describe('config', () => {
     })
 
     it('throws when mode has an invalid value in .opensteer/config.json', () => {
-        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-config-mode-'))
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-config-mode-'))
         fs.mkdirSync(path.join(root, '.opensteer'), { recursive: true })
         fs.writeFileSync(
             path.join(root, '.opensteer', 'config.json'),
@@ -262,7 +262,7 @@ describe('config', () => {
     })
 
     it('throws when legacy ai config exists in .opensteer/config.json', () => {
-        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-config-ai-'))
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-config-ai-'))
         fs.mkdirSync(path.join(root, '.opensteer'), { recursive: true })
         fs.writeFileSync(
             path.join(root, '.opensteer', 'config.json'),
@@ -287,7 +287,7 @@ describe('config', () => {
     })
 
     it('throws when legacy mode config exists in .opensteer/config.json', () => {
-        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-config-legacy-'))
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-config-legacy-'))
         fs.mkdirSync(path.join(root, '.opensteer'), { recursive: true })
         fs.writeFileSync(
             path.join(root, '.opensteer', 'config.json'),

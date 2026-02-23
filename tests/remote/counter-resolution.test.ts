@@ -44,11 +44,11 @@ const SAMPLE_PATH: ElementPath = {
 
 describe('counter resolution fallback', () => {
     it('uses a stable path when AI returns a counter', async () => {
-        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ov-counter-ai-'))
-        const ov = new Opensteer({
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-counter-ai-'))
+        const opensteer = new Opensteer({
             storage: { rootDir: root },
         })
-        const access = ov as unknown as OpensteerPrivateAccess
+        const access = opensteer as unknown as OpensteerPrivateAccess
 
         vi.spyOn(access, 'resolvePathWithAi').mockResolvedValue({
             counter: 42,
@@ -72,12 +72,12 @@ describe('counter resolution fallback', () => {
 
     it('uses a stable path when element option is provided', async () => {
         const root = fs.mkdtempSync(
-            path.join(os.tmpdir(), 'ov-counter-element-')
+            path.join(os.tmpdir(), 'opensteer-counter-element-')
         )
-        const ov = new Opensteer({
+        const opensteer = new Opensteer({
             storage: { rootDir: root },
         })
-        const access = ov as unknown as OpensteerPrivateAccess
+        const access = opensteer as unknown as OpensteerPrivateAccess
 
         vi.spyOn(access, 'tryBuildPathFromCounter').mockResolvedValue(
             SAMPLE_PATH

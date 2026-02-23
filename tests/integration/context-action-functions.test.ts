@@ -32,19 +32,19 @@ describe('integration/context-action-functions', () => {
 
         const inputPath = await buildPathFromSnapshotSelector(
             page,
-            '#frame-host + ov-iframe-root #frame-input'
+            '#frame-host + os-iframe-root #frame-input'
         )
         const selectPath = await buildPathFromSnapshotSelector(
             page,
-            '#frame-host + ov-iframe-root #frame-select'
+            '#frame-host + os-iframe-root #frame-select'
         )
         const hoverPath = await buildPathFromSnapshotSelector(
             page,
-            '#frame-host + ov-iframe-root #frame-hover'
+            '#frame-host + os-iframe-root #frame-hover'
         )
         const clickPath = await buildPathFromSnapshotSelector(
             page,
-            '#frame-host + ov-iframe-root #frame-button'
+            '#frame-host + os-iframe-root #frame-button'
         )
 
         expect(
@@ -85,19 +85,19 @@ describe('integration/context-action-functions', () => {
 
         const inputPath = await buildPathFromSnapshotSelector(
             page,
-            '#shadow-host ov-shadow-root #shadow-input'
+            '#shadow-host os-shadow-root #shadow-input'
         )
         const selectPath = await buildPathFromSnapshotSelector(
             page,
-            '#shadow-host ov-shadow-root #shadow-select'
+            '#shadow-host os-shadow-root #shadow-select'
         )
         const hoverPath = await buildPathFromSnapshotSelector(
             page,
-            '#shadow-host ov-shadow-root #shadow-hover'
+            '#shadow-host os-shadow-root #shadow-hover'
         )
         const clickPath = await buildPathFromSnapshotSelector(
             page,
-            '#shadow-host ov-shadow-root #shadow-button'
+            '#shadow-host os-shadow-root #shadow-button'
         )
 
         expect(

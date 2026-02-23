@@ -31,11 +31,11 @@ describe('integration/iframe', () => {
     it('resolves strict paths in the named iframe', async () => {
         const inputPath = await buildPathFromSnapshotSelector(
             page,
-            '#named-iframe + ov-iframe-root #iframe-input'
+            '#named-iframe + os-iframe-root #iframe-input'
         )
         const submitPath = await buildPathFromSnapshotSelector(
             page,
-            '#named-iframe + ov-iframe-root #iframe-submit-btn'
+            '#named-iframe + os-iframe-root #iframe-submit-btn'
         )
 
         expect(
@@ -61,11 +61,11 @@ describe('integration/iframe', () => {
     it('resolves strict paths in the anonymous iframe', async () => {
         const inputPath = await buildPathFromSnapshotSelector(
             page,
-            '#anonymous-iframe + ov-iframe-root #iframe-input'
+            '#anonymous-iframe + os-iframe-root #iframe-input'
         )
         const submitPath = await buildPathFromSnapshotSelector(
             page,
-            '#anonymous-iframe + ov-iframe-root #iframe-submit-btn'
+            '#anonymous-iframe + os-iframe-root #iframe-submit-btn'
         )
 
         expect(
@@ -96,7 +96,7 @@ describe('integration/iframe', () => {
     it('does not cross-frame fallback when iframe context is removed', async () => {
         const inputPath = await buildPathFromSnapshotSelector(
             page,
-            '#named-iframe + ov-iframe-root #iframe-input'
+            '#named-iframe + os-iframe-root #iframe-input'
         )
         const noContextPath: ElementPath = {
             ...inputPath,

@@ -2,20 +2,20 @@ import { Opensteer } from "../../src/index.js";
 import "dotenv/config";
 
 async function run() {
-  const ov = new Opensteer({
+  const opensteer = new Opensteer({
     name: "product-extraction",
     model: "gpt-5.1",
   });
 
-  await ov.launch({ headless: false });
+  await opensteer.launch({ headless: false });
 
   try {
-    await ov.goto(
+    await opensteer.goto(
       "https://kbdfans.com/search?type=product%2Cquery&options%5Bprefix%5D=last&q=tactile+switches",
     );
 
     console.log("Starting extraction...");
-    const data = await ov.extract({
+    const data = await opensteer.extract({
       description:
         "Extract the main product cards with title, price, image url, and url",
       schema: {
@@ -32,7 +32,7 @@ async function run() {
 
     console.log(data);
   } finally {
-    await ov.close();
+    await opensteer.close();
   }
 }
 
