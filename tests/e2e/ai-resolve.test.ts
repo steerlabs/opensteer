@@ -96,51 +96,51 @@ describe('e2e/ai-resolve', () => {
             await gotoRoute(page, '/forms')
 
             // First run: populate the cache
-            const opensteer1 = Opensteer.from(page, {
+            const firstRunOpensteer = Opensteer.from(page, {
                 name: 'ai-e2e-replay',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
             })
 
-            await opensteer1.input({
+            await firstRunOpensteer.input({
                 selector: '#full-name',
                 text: 'Alan Turing',
                 description: 'The full name text input',
             })
-            await opensteer1.input({
+            await firstRunOpensteer.input({
                 selector: '#email-input',
                 text: 'alan@example.com',
                 description: 'The email address input field',
             })
 
-            const firstResult = await opensteer1.click({
+            const firstResult = await firstRunOpensteer.click({
                 description: 'The submit profile button',
             })
             expect(firstResult.persisted).toBe(true)
-            await opensteer1.close()
+            await firstRunOpensteer.close()
 
             // Reload the page for a fresh second run
             await gotoRoute(page, '/forms')
 
             // Second run: reuse the same rootDir, descriptors should be cached
-            const opensteer2 = Opensteer.from(page, {
+            const secondRunOpensteer = Opensteer.from(page, {
                 name: 'ai-e2e-replay',
                 model: 'gpt-5-mini',
                 storage: { rootDir },
             })
-            const snapshotSpy = vi.spyOn(opensteer2, 'snapshot')
+            const snapshotSpy = vi.spyOn(secondRunOpensteer, 'snapshot')
 
             // Fill form fields again
-            await opensteer2.input({
+            await secondRunOpensteer.input({
                 text: 'Alan Turing',
                 description: 'The full name text input',
             })
-            await opensteer2.input({
+            await secondRunOpensteer.input({
                 text: 'alan@example.com',
                 description: 'The email address input field',
             })
 
-            const secondResult = await opensteer2.click({
+            const secondResult = await secondRunOpensteer.click({
                 description: 'The submit profile button',
             })
 
@@ -156,7 +156,7 @@ describe('e2e/ai-resolve', () => {
             )
             expect(previewName).toContain('Alan Turing')
 
-            await opensteer2.close()
+            await secondRunOpensteer.close()
         },
         { timeout: 60_000 }
     )
