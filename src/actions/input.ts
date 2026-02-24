@@ -30,7 +30,7 @@ export async function performInput(
             await resolved.element.type(options.text)
         }
         if (options.pressEnter) {
-            await resolved.element.press('Enter')
+            await resolved.element.press('Enter', { noWaitAfter: true })
         }
         return {
             ok: true,

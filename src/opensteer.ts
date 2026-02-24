@@ -791,7 +791,7 @@ export class Opensteer {
                         await handle.type(options.text)
                     }
                     if (options.pressEnter) {
-                        await handle.press('Enter')
+                        await handle.press('Enter', { noWaitAfter: true })
                     }
                 })
             } catch (err) {

@@ -105,6 +105,45 @@ describe('integration/visual-stability', () => {
         expect(elapsed).toBeGreaterThanOrEqual(70)
     })
 
+    it('ignores long-running offscreen finite animations', async () => {
+        await setFixture(
+            page,
+            `
+        <p id="status">idle</p>
+        <div id="offscreen-target"></div>
+        <script>
+          const status = document.querySelector('#status');
+          const target = document.querySelector('#offscreen-target');
+
+          if (target instanceof HTMLElement) {
+            target.style.position = 'absolute';
+            target.style.top = '5000px';
+            target.style.width = '24px';
+            target.style.height = '24px';
+            target.animate(
+              [{ transform: 'translateX(0px)' }, { transform: 'translateX(10px)' }],
+              { duration: 5000, fill: 'forwards' }
+            );
+          }
+
+          window.setTimeout(() => {
+            if (status) status.textContent = 'updated';
+          }, 80);
+        </script>
+      `
+        )
+
+        const startedAt = Date.now()
+        await waitForVisualStabilityAcrossFrames(page, {
+            timeout: 2000,
+            settleMs: 120,
+        })
+        const elapsed = Date.now() - startedAt
+
+        expect((await page.textContent('#status'))?.trim()).toBe('updated')
+        expect(elapsed).toBeLessThan(900)
+    })
+
     it('returns on timeout without throwing when DOM never settles', async () => {
         await setFixture(
             page,
