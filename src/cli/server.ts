@@ -61,7 +61,6 @@ function beginShutdown() {
         process.exit(0)
     })
 
-    // Failsafe in case open sockets prevent close callback.
     setTimeout(() => {
         process.exit(0)
     }, 250).unref()
@@ -81,9 +80,7 @@ function enqueueRequest(request: CliRequest, socket: Socket) {
 
     requestQueue = requestQueue
         .then(() => handleRequest(request, socket))
-        .catch(() => {
-            // Keep queue alive for later requests.
-        })
+        .catch(() => {})
 }
 
 async function handleRequest(
