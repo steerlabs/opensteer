@@ -1,22 +1,22 @@
 #!/usr/bin/env node
 
-import { connect } from 'net'
 import { spawn } from 'child_process'
-import { existsSync, readFileSync, unlinkSync, mkdirSync } from 'fs'
-import { join, dirname } from 'path'
-import { homedir } from 'os'
+import { existsSync, readFileSync, readdirSync, unlinkSync } from 'fs'
+import { connect } from 'net'
+import { tmpdir } from 'os'
+import { basename, dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-
-const RUNTIME_DIR = join(homedir(), '.opensteer')
-const SOCKET_PATH = join(RUNTIME_DIR, 'opensteer.sock')
-const PID_PATH = join(RUNTIME_DIR, 'opensteer.pid')
 const SERVER_SCRIPT = join(__dirname, '..', 'dist', 'cli', 'server.js')
 
 const CONNECT_TIMEOUT = 15000
 const POLL_INTERVAL = 100
 const RESPONSE_TIMEOUT = 120000
+const RUNTIME_PREFIX = 'opensteer-'
+const SOCKET_SUFFIX = '.sock'
+const PID_SUFFIX = '.pid'
+const CLOSE_ALL_REQUEST = { id: 1, command: 'close', args: {} }
 
 function parseArgs(argv) {
     const args = argv.slice(2)
@@ -56,10 +56,51 @@ function parseValue(str) {
     return str
 }
 
+function sanitizeNamespace(value) {
+    const trimmed = String(value || '').trim()
+    if (!trimmed || trimmed === '.' || trimmed === '..') {
+        return 'default'
+    }
+
+    const replaced = trimmed.replace(/[^a-zA-Z0-9_-]+/g, '_')
+    const collapsed = replaced.replace(/_+/g, '_')
+    const bounded = collapsed.replace(/^_+|_+$/g, '')
+
+    return bounded || 'default'
+}
+
+function resolveNamespace(flags) {
+    if (flags.name !== undefined && String(flags.name).trim().length > 0) {
+        return sanitizeNamespace(String(flags.name))
+    }
+
+    if (
+        typeof process.env.OPENSTEER_NAME === 'string' &&
+        process.env.OPENSTEER_NAME.trim().length > 0
+    ) {
+        return sanitizeNamespace(process.env.OPENSTEER_NAME)
+    }
+
+    const cwdBase = basename(process.cwd())
+    if (cwdBase && cwdBase !== '.' && cwdBase !== '/') {
+        return sanitizeNamespace(cwdBase)
+    }
+
+    return 'default'
+}
+
+function getSocketPath(namespace) {
+    return join(tmpdir(), `${RUNTIME_PREFIX}${namespace}${SOCKET_SUFFIX}`)
+}
+
+function getPidPath(namespace) {
+    return join(tmpdir(), `${RUNTIME_PREFIX}${namespace}${PID_SUFFIX}`)
+}
+
 function buildRequest(command, flags, positional) {
     const id = 1
     const globalFlags = {}
-    for (const key of ['name', 'headless', 'json', 'connect-url', 'channel', 'profile-dir']) {
+    for (const key of ['headless', 'json', 'connect-url', 'channel', 'profile-dir']) {
         if (key in flags) {
             globalFlags[key] = flags[key]
             delete flags[key]
@@ -165,38 +206,66 @@ function buildRequest(command, flags, positional) {
     return { id, command, args }
 }
 
-function isServerRunning() {
-    if (!existsSync(PID_PATH)) return false
+function readPid(pidPath) {
+    if (!existsSync(pidPath)) {
+        return null
+    }
+
+    const parsed = Number.parseInt(readFileSync(pidPath, 'utf-8').trim(), 10)
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+        return null
+    }
+
+    return parsed
+}
+
+function isPidAlive(pid) {
     try {
-        const pid = parseInt(readFileSync(PID_PATH, 'utf-8').trim(), 10)
         process.kill(pid, 0)
         return true
     } catch {
-        cleanStaleFiles()
         return false
     }
 }
 
-function cleanStaleFiles() {
+function cleanStaleFiles(namespace) {
     try {
-        unlinkSync(SOCKET_PATH)
+        unlinkSync(getSocketPath(namespace))
     } catch { }
     try {
-        unlinkSync(PID_PATH)
+        unlinkSync(getPidPath(namespace))
     } catch { }
 }
 
-function startServer() {
-    mkdirSync(RUNTIME_DIR, { recursive: true })
+function isServerRunning(namespace) {
+    const pidPath = getPidPath(namespace)
+    const pid = readPid(pidPath)
+    if (!pid) {
+        cleanStaleFiles(namespace)
+        return false
+    }
 
+    if (!isPidAlive(pid)) {
+        cleanStaleFiles(namespace)
+        return false
+    }
+
+    return existsSync(getSocketPath(namespace))
+}
+
+function startServer(namespace) {
     const child = spawn('node', [SERVER_SCRIPT], {
         detached: true,
         stdio: ['ignore', 'ignore', 'ignore'],
+        env: {
+            ...process.env,
+            OPENSTEER_NAME: namespace,
+        },
     })
     child.unref()
 }
 
-function waitForSocket(timeout) {
+function waitForSocket(socketPath, timeout) {
     return new Promise((resolve, reject) => {
         const start = Date.now()
 
@@ -206,7 +275,7 @@ function waitForSocket(timeout) {
                 return
             }
 
-            if (existsSync(SOCKET_PATH)) {
+            if (existsSync(socketPath)) {
                 resolve()
                 return
             }
@@ -218,9 +287,9 @@ function waitForSocket(timeout) {
     })
 }
 
-function sendCommand(request) {
+function sendCommand(socketPath, request) {
     return new Promise((resolve, reject) => {
-        const socket = connect(SOCKET_PATH)
+        const socket = connect(socketPath)
         let buffer = ''
         let settled = false
 
@@ -270,6 +339,71 @@ function sendCommand(request) {
     })
 }
 
+function listSessions() {
+    const sessions = []
+    const entries = readdirSync(tmpdir())
+
+    for (const entry of entries) {
+        if (!entry.startsWith(RUNTIME_PREFIX) || !entry.endsWith(PID_SUFFIX)) {
+            continue
+        }
+
+        const name = entry.slice(
+            RUNTIME_PREFIX.length,
+            entry.length - PID_SUFFIX.length
+        )
+        if (!name) {
+            continue
+        }
+
+        const pid = readPid(join(tmpdir(), entry))
+        if (!pid || !isPidAlive(pid)) {
+            cleanStaleFiles(name)
+            continue
+        }
+
+        sessions.push({ name, pid })
+    }
+
+    sessions.sort((a, b) => a.name.localeCompare(b.name))
+    return sessions
+}
+
+async function closeAllSessions() {
+    const sessions = listSessions()
+    const closed = []
+    const failures = []
+
+    for (const session of sessions) {
+        const socketPath = getSocketPath(session.name)
+        if (!existsSync(socketPath)) {
+            cleanStaleFiles(session.name)
+            continue
+        }
+
+        try {
+            const response = await sendCommand(socketPath, CLOSE_ALL_REQUEST)
+            if (response && response.ok === true) {
+                closed.push(session)
+            } else {
+                failures.push(
+                    `${session.name}: ${response?.error || 'unknown close error'}`
+                )
+            }
+        } catch (err) {
+            failures.push(
+                `${session.name}: ${err instanceof Error ? err.message : String(err)}`
+            )
+        }
+    }
+
+    if (failures.length > 0) {
+        throw new Error(`Failed to close sessions: ${failures.join('; ')}`)
+    }
+
+    return closed
+}
+
 function output(data) {
     process.stdout.write(JSON.stringify(data) + '\n')
 }
@@ -289,6 +423,10 @@ Navigation:
   forward                   Go forward
   reload                    Reload page
   close                     Close browser and server
+  close --all               Close all active namespace-scoped servers
+
+Sessions:
+  sessions                  List active namespace-scoped sessions
 
 Observation:
   snapshot [--mode action]  Get page snapshot
@@ -334,7 +472,7 @@ Utility:
   extract <schema-json>     Extract structured data
 
 Global Flags:
-  --name <namespace>        Storage namespace (default: "cli")
+  --name <namespace>        Session namespace (default: CWD basename or OPENSTEER_NAME)
   --headless                Launch browser in headless mode
   --connect-url <url>       Connect to a running browser (e.g. http://localhost:9222)
   --channel <browser>       Use installed browser (chrome, chrome-beta, msedge)
@@ -345,6 +483,7 @@ Global Flags:
   --help                    Show this help
 
 Environment:
+  OPENSTEER_NAME            Default session namespace when --name is omitted
   OPENSTEER_MODE            Runtime mode: "local" (default) or "remote"
   OPENSTEER_API_KEY         Required when remote mode is selected
   OPENSTEER_BASE_URL        Override remote control-plane base URL
@@ -353,24 +492,44 @@ Environment:
 
 async function main() {
     const { command, flags, positional } = parseArgs(process.argv)
+    const namespace = resolveNamespace(flags)
+    const socketPath = getSocketPath(namespace)
+
+    if (command === 'sessions') {
+        output({ ok: true, sessions: listSessions() })
+        return
+    }
+
+    if (command === 'close' && flags.all === true) {
+        try {
+            const closed = await closeAllSessions()
+            output({ ok: true, closed })
+        } catch (err) {
+            error(err instanceof Error ? err.message : 'Failed to close sessions')
+        }
+        return
+    }
+
+    delete flags.name
+    delete flags.all
     const request = buildRequest(command, flags, positional)
 
-    if (!isServerRunning()) {
+    if (!isServerRunning(namespace)) {
         if (!existsSync(SERVER_SCRIPT)) {
             error(
                 `Server script not found: ${SERVER_SCRIPT}. Run the build script first.`
             )
         }
-        startServer()
+        startServer(namespace)
         try {
-            await waitForSocket(CONNECT_TIMEOUT)
+            await waitForSocket(socketPath, CONNECT_TIMEOUT)
         } catch {
             error('Failed to start server. Check that the build is complete.')
         }
     }
 
     try {
-        const response = await sendCommand(request)
+        const response = await sendCommand(socketPath, request)
 
         if (response.ok) {
             output({ ok: true, ...response.result })
@@ -381,7 +540,7 @@ async function main() {
             process.exit(1)
         }
     } catch (err) {
-        error(err.message || 'Connection failed')
+        error(err instanceof Error ? err.message : 'Connection failed')
     }
 }
 
