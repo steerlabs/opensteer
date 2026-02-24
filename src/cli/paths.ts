@@ -1,14 +1,18 @@
 import { tmpdir } from 'os'
 import { join } from 'path'
 
-function prefix(namespace: string): string {
-    return `opensteer-${namespace}`
+function prefix(session: string): string {
+    return `opensteer-${session}`
 }
 
-export function getSocketPath(namespace: string): string {
-    return join(tmpdir(), `${prefix(namespace)}.sock`)
+export function getSocketPath(session: string): string {
+    return join(tmpdir(), `${prefix(session)}.sock`)
 }
 
-export function getPidPath(namespace: string): string {
-    return join(tmpdir(), `${prefix(namespace)}.pid`)
+export function getPidPath(session: string): string {
+    return join(tmpdir(), `${prefix(session)}.pid`)
+}
+
+export function getLockPath(session: string): string {
+    return join(tmpdir(), `${prefix(session)}.lock`)
 }

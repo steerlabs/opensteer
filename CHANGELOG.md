@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Breaking: CLI runtime routing now uses `--session`/`OPENSTEER_SESSION` instead
+  of `--name`/cwd/active-session fallback.
+- Breaking: non-interactive CLI calls now require explicit runtime identity via
+  `--session`, `OPENSTEER_SESSION`, or `OPENSTEER_CLIENT_ID`.
+- Added `OPENSTEER_CLIENT_ID` support for stable client-scoped default session
+  binding.
+- CLI `--name` is now selector-cache namespace only and no longer controls
+  daemon/browser routing.
+- Added per-session daemon startup locking + stale-lock recovery and ping-based
+  health checks to remove startup races across concurrent commands.
+- Added strict in-daemon request serialization for session commands, while
+  keeping `ping` out of the queue for reliable liveness checks.
 - Breaking: removed legacy `ai` config from `OpensteerConfig`; use top-level `model` instead.
 - Breaking: `OPENSTEER_AI_MODEL` is no longer supported; use `OPENSTEER_MODEL`.
 - Breaking: `OPENSTEER_RUNTIME` is no longer supported; use `OPENSTEER_MODE`.
