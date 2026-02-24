@@ -8,8 +8,14 @@ import { getCommandHandler } from './commands.js'
 let instance: Opensteer | null = null
 let launchPromise: Promise<void> | null = null
 
-const socketPath = getSocketPath()
-const pidPath = getPidPath()
+const namespace = process.env.OPENSTEER_NAME?.trim()
+if (!namespace) {
+    process.stderr.write('Missing OPENSTEER_NAME environment variable.\n')
+    process.exit(1)
+}
+
+const socketPath = getSocketPath(namespace)
+const pidPath = getPidPath(namespace)
 
 function cleanup() {
     try { unlinkSync(socketPath) } catch { /* file may not exist */ }
@@ -32,14 +38,13 @@ async function handleRequest(
         try {
             const url = args.url as string | undefined
             const headless = args.headless as boolean | undefined
-            const name = args.name as string | undefined
             const connectUrl = args['connect-url'] as string | undefined
             const channel = args.channel as string | undefined
             const profileDir = args['profile-dir'] as string | undefined
 
             if (!instance) {
                 instance = new Opensteer({
-                    name: name ?? 'cli',
+                    name: namespace,
                     browser: {
                         headless: headless ?? false,
                         connectUrl,
@@ -70,7 +75,11 @@ async function handleRequest(
             sendResponse(socket, {
                 id,
                 ok: true,
-                result: { url: instance.page.url() },
+                result: {
+                    url: instance.page.url(),
+                    sessionId: instance.getRemoteSessionId() ?? undefined,
+                    name: namespace,
+                },
             })
         } catch (err) {
             sendResponse(socket, {
@@ -88,7 +97,11 @@ async function handleRequest(
                 await instance.close()
                 instance = null
             }
-            sendResponse(socket, { id, ok: true, result: {} })
+            sendResponse(socket, {
+                id,
+                ok: true,
+                result: { sessionClosed: true },
+            })
         } catch (err) {
             sendResponse(socket, {
                 id,

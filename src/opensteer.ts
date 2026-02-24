@@ -365,6 +365,10 @@ export class Opensteer {
         return this.contextRef
     }
 
+    getRemoteSessionId(): string | null {
+        return this.remote?.sessionId ?? null
+    }
+
     async launch(options: LaunchOptions = {}): Promise<void> {
         if (this.pageRef && !this.ownsBrowser) {
             throw new Error(
