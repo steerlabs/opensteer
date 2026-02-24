@@ -65,7 +65,7 @@ const ACTION_WAIT_PROFILES: Record<PostActionKind, ResolvedActionWaitProfile> = 
 }
 
 const NETWORK_POLL_MS = 50
-const IGNORED_RESOURCE_TYPES = new Set(['websocket', 'eventsource'])
+const TRACKED_RESOURCE_TYPES = new Set(['document', 'fetch', 'xhr'])
 
 const NOOP_SESSION: PostActionWaitSession = {
     async wait() {},
@@ -91,21 +91,24 @@ export function createPostActionWaitSession(
             settled = true
 
             const deadline = Date.now() + profile.timeout
-            const networkWait = tracker
-                ? tracker.waitForQuiet({
-                      deadline,
-                      quietMs: profile.networkQuietMs,
-                  })
-                : Promise.resolve()
 
             try {
-                await Promise.all([
-                    waitForVisualStabilityAcrossFrames(page, {
-                        timeout: profile.timeout,
-                        settleMs: profile.settleMs,
-                    }),
-                    networkWait,
-                ])
+                await waitForVisualStabilityAcrossFrames(page, {
+                    timeout: profile.timeout,
+                    settleMs: profile.settleMs,
+                })
+            } catch {
+            } finally {
+                tracker?.freezeCollection()
+            }
+
+            try {
+                if (tracker) {
+                    await tracker.waitForQuiet({
+                        deadline,
+                        quietMs: profile.networkQuietMs,
+                    })
+                }
             } catch {
             } finally {
                 tracker?.stop()
@@ -167,6 +170,7 @@ function normalizeMs(value: number | undefined, fallback: number): number {
 class ScopedNetworkTracker {
     private readonly pending = new Set<Request>()
     private started = false
+    private collecting = false
     private idleSince = Date.now()
 
     constructor(private readonly page: Page) {}
@@ -174,15 +178,22 @@ class ScopedNetworkTracker {
     start(): void {
         if (this.started) return
         this.started = true
+        this.collecting = true
 
         this.page.on('request', this.handleRequestStarted)
         this.page.on('requestfinished', this.handleRequestFinished)
         this.page.on('requestfailed', this.handleRequestFinished)
     }
 
+    freezeCollection(): void {
+        if (!this.started) return
+        this.collecting = false
+    }
+
     stop(): void {
         if (!this.started) return
         this.started = false
+        this.collecting = false
 
         this.page.off('request', this.handleRequestStarted)
         this.page.off('requestfinished', this.handleRequestFinished)
@@ -219,10 +230,10 @@ class ScopedNetworkTracker {
     }
 
     private readonly handleRequestStarted = (request: Request): void => {
-        if (!this.started) return
+        if (!this.started || !this.collecting) return
 
         const resourceType = request.resourceType()
-        if (IGNORED_RESOURCE_TYPES.has(resourceType)) return
+        if (!TRACKED_RESOURCE_TYPES.has(resourceType)) return
 
         this.pending.add(request)
         this.idleSince = 0

@@ -71,22 +71,54 @@ function buildStabilityScript(timeout: number, settleMs: number): string {
         }
     }
 
+    function isElementVisiblyIntersectingViewport(element) {
+        if (!(element instanceof Element)) return false;
+
+        var rect = element.getBoundingClientRect();
+        var inViewport =
+            rect.width > 0 &&
+            rect.height > 0 &&
+            rect.bottom > 0 &&
+            rect.right > 0 &&
+            rect.top < window.innerHeight &&
+            rect.left < window.innerWidth;
+
+        if (!inViewport) return false;
+
+        var style = window.getComputedStyle(element);
+        if (style.visibility === 'hidden' || style.display === 'none') {
+            return false;
+        }
+        if (Number(style.opacity) === 0) {
+            return false;
+        }
+
+        return true;
+    }
+
     function checkViewportImages(root) {
         var images = root.querySelectorAll('img');
         for (var i = 0; i < images.length; i++) {
             var img = images[i];
-            var rect = img.getBoundingClientRect();
-            var inViewport =
-                rect.bottom > 0 &&
-                rect.right > 0 &&
-                rect.top < window.innerHeight &&
-                rect.left < window.innerWidth;
-            if (inViewport && !img.complete) return false;
+            if (!isElementVisiblyIntersectingViewport(img)) continue;
+            if (!img.complete) return false;
         }
         return true;
     }
 
-    function hasRunningFiniteAnimations() {
+    function getAnimationTarget(effect) {
+        if (!effect) return null;
+        var target = effect.target;
+        if (target instanceof Element) return target;
+
+        if (target && target.element instanceof Element) {
+            return target.element;
+        }
+
+        return null;
+    }
+
+    function hasRunningVisibleFiniteAnimations() {
         if (typeof document.getAnimations !== 'function') return false;
         var animations = document.getAnimations();
 
@@ -100,6 +132,9 @@ function buildStabilityScript(timeout: number, settleMs: number): string {
                 ? timing.endTime
                 : Number.POSITIVE_INFINITY;
             if (Number.isFinite(endTime) && endTime > 0) {
+                var target = getAnimationTarget(effect);
+                if (!target) continue;
+                if (!isElementVisiblyIntersectingViewport(target)) continue;
                 return true;
             }
         }
@@ -110,7 +145,7 @@ function buildStabilityScript(timeout: number, settleMs: number): string {
     function isVisuallyReady() {
         if (!fontsReady) return false;
         if (!checkViewportImages(document)) return false;
-        if (hasRunningFiniteAnimations()) return false;
+        if (hasRunningVisibleFiniteAnimations()) return false;
         return true;
     }
 

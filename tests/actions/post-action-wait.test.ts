@@ -85,6 +85,87 @@ describe('post-action wait', () => {
         await page.unroute('https://opensteer.local/post-action')
     })
 
+    it('settles quickly after navigation when the destination keeps polling', async () => {
+        const homeUrl = 'https://opensteer.local/home'
+        const searchUrlPattern = /^https:\/\/opensteer\.local\/search\?q=.*/
+        const analyticsUrlPattern = /^https:\/\/opensteer\.local\/analytics\?i=\d+/
+        let analyticsHits = 0
+
+        await page.route(homeUrl, async (route) => {
+            await route.fulfill({
+                status: 200,
+                contentType: 'text/html',
+                body: `
+            <form action="https://opensteer.local/search" method="get">
+              <input id="search-box" name="q" />
+            </form>
+          `,
+            })
+        })
+
+        await page.route(searchUrlPattern, async (route) => {
+            await route.fulfill({
+                status: 200,
+                contentType: 'text/html',
+                body: `
+            <p id="status">loading</p>
+            <p id="result"></p>
+            <script>
+              const query = new URLSearchParams(location.search).get('q') || '';
+              window.setTimeout(() => {
+                const status = document.querySelector('#status');
+                const result = document.querySelector('#result');
+                if (status) status.textContent = 'ready';
+                if (result) result.textContent = 'results:' + query;
+              }, 180);
+
+              let count = 0;
+              window.__polling = window.setInterval(() => {
+                count += 1;
+                fetch('https://opensteer.local/analytics?i=' + count).catch(() => {});
+                if (count >= 50) window.clearInterval(window.__polling);
+              }, 100);
+            </script>
+          `,
+            })
+        })
+
+        await page.route(analyticsUrlPattern, async (route) => {
+            analyticsHits += 1
+            await new Promise<void>((resolve) => {
+                setTimeout(resolve, 30)
+            })
+
+            await route.fulfill({
+                status: 204,
+                contentType: 'text/plain',
+                body: '',
+            })
+        })
+
+        await page.goto(homeUrl, { waitUntil: 'domcontentloaded' })
+        const opensteer = Opensteer.from(page, { name: 'post-action-nav-polling' })
+
+        const startedAt = Date.now()
+        await opensteer.input({
+            selector: '#search-box',
+            text: 'airpods',
+            pressEnter: true,
+            description: 'Search input',
+        })
+        const elapsed = Date.now() - startedAt
+
+        expect(page.url()).toContain('/search?q=airpods')
+        expect((await page.textContent('#status'))?.trim()).toBe('ready')
+        expect((await page.textContent('#result'))?.trim()).toBe('results:airpods')
+        expect(analyticsHits).toBeGreaterThan(2)
+        expect(elapsed).toBeLessThan(4500)
+
+        await page.unroute(homeUrl)
+        await page.unroute(searchUrlPattern)
+        await page.unroute(analyticsUrlPattern)
+    })
+
     it('skips post-action wait when wait is false', async () => {
         await setFixture(
             page,
