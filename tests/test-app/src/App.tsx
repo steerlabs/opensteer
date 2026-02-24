@@ -14,6 +14,7 @@ import { ShadowDomPage } from './pages/ShadowDomPage'
 import { ProductCatalogPage } from './pages/ProductCatalogPage'
 import { ProductContextsPage } from './pages/ProductContextsPage'
 import { IframeProductsPage } from './pages/IframeProductsPage'
+import { ComplexLoadingPage } from './pages/ComplexLoadingPage'
 
 const links = [
     { to: '/', label: 'Index' },
@@ -27,6 +28,7 @@ const links = [
     { to: '/shadow', label: 'Shadow' },
     { to: '/products', label: 'Products' },
     { to: '/products-contexts', label: 'Product Contexts' },
+    { to: '/complex-loading', label: 'Complex Loading' },
     { to: '/scroll', label: 'Scroll' },
     { to: '/navigation', label: 'Navigation' },
 ]
@@ -80,6 +82,14 @@ export function App(): JSX.Element {
                     <Route
                         path="/products-contexts"
                         element={<ProductContextsPage />}
+                    />
+                    <Route
+                        path="/complex-loading"
+                        element={<ComplexLoadingPage />}
+                    />
+                    <Route
+                        path="/complex-loading/results"
+                        element={<ComplexLoadingPage />}
                     />
                     <Route path="/scroll" element={<ScrollPage />} />
                     <Route path="/navigation" element={<NavigationPage />} />
