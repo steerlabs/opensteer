@@ -499,7 +499,6 @@ async function isServerHealthy(session) {
         return true
     }
 
-    // If there is no pid and ping fails, the socket file is stale.
     if (!pid) {
         cleanStaleFiles(session, { removeSocket: true, removePid: false })
     }
@@ -599,8 +598,6 @@ async function ensureServer(session) {
 
         const existingPid = readPid(getPidPath(session))
         if (existingPid && isPidAlive(existingPid)) {
-            // A daemon process already owns this session. It may still be
-            // starting up or shutting down; avoid spawning a competing daemon.
             await sleep(POLL_INTERVAL)
             continue
         }
