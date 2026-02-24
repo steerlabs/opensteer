@@ -18,10 +18,24 @@ const SOCKET_SUFFIX = '.sock'
 const PID_SUFFIX = '.pid'
 const CLOSE_ALL_REQUEST = { id: 1, command: 'close', args: {} }
 
+function getVersion() {
+    try {
+        const pkgPath = join(__dirname, '..', 'package.json')
+        return JSON.parse(readFileSync(pkgPath, 'utf-8')).version
+    } catch {
+        return 'unknown'
+    }
+}
+
 function parseArgs(argv) {
     const args = argv.slice(2)
     if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
         printHelp()
+        process.exit(0)
+    }
+
+    if (args[0] === '--version' || args[0] === '-v') {
+        console.log(getVersion())
         process.exit(0)
     }
 
@@ -427,6 +441,7 @@ Navigation:
 
 Sessions:
   sessions                  List active namespace-scoped sessions
+  status                    Show resolved namespace and session state
 
 Observation:
   snapshot [--mode action]  Get page snapshot
@@ -481,6 +496,7 @@ Global Flags:
   --selector <css>          Target element by CSS selector
   --description <text>      Description for selector persistence
   --help                    Show this help
+  --version, -v             Show version
 
 Environment:
   OPENSTEER_NAME            Default session namespace when --name is omitted
@@ -492,11 +508,29 @@ Environment:
 
 async function main() {
     const { command, flags, positional } = parseArgs(process.argv)
+    const hasExplicitName = flags.name !== undefined || !!process.env.OPENSTEER_NAME?.trim()
+    const namespaceSource = flags.name !== undefined
+        ? 'flag'
+        : process.env.OPENSTEER_NAME?.trim()
+            ? 'env'
+            : 'cwd'
     const namespace = resolveNamespace(flags)
     const socketPath = getSocketPath(namespace)
 
     if (command === 'sessions') {
         output({ ok: true, sessions: listSessions() })
+        return
+    }
+
+    if (command === 'status') {
+        output({
+            ok: true,
+            namespace,
+            namespaceSource,
+            serverRunning: isServerRunning(namespace),
+            socketPath,
+            sessions: listSessions(),
+        })
         return
     }
 
@@ -514,7 +548,45 @@ async function main() {
     delete flags.all
     const request = buildRequest(command, flags, positional)
 
+    const commandsRequiringSession = new Set([
+        'open', 'navigate', 'close', 'back', 'forward', 'reload',
+    ])
+    const needsServerStart = commandsRequiringSession.has(command)
+
     if (!isServerRunning(namespace)) {
+        if (!needsServerStart && !hasExplicitName) {
+            const sessions = listSessions()
+            if (sessions.length === 1) {
+                const solo = sessions[0]
+                const soloSocket = getSocketPath(solo.name)
+                try {
+                    const response = await sendCommand(soloSocket, request)
+                    if (response.ok) {
+                        output({ ok: true, ...response.result })
+                    } else {
+                        process.stderr.write(
+                            JSON.stringify({ ok: false, error: response.error }) + '\n'
+                        )
+                        process.exit(1)
+                    }
+                } catch (err) {
+                    error(err instanceof Error ? err.message : 'Connection failed')
+                }
+                return
+            }
+
+            if (sessions.length > 1) {
+                const names = sessions.map(s => s.name).join(', ')
+                error(
+                    `No server running for namespace '${namespace}' and multiple sessions are active (${names}). Use --name to specify which session.`
+                )
+            }
+
+            error(
+                `No server running for namespace '${namespace}'. Call 'opensteer open' first, or use --name to target an existing session.`
+            )
+        }
+
         if (!existsSync(SERVER_SCRIPT)) {
             error(
                 `Server script not found: ${SERVER_SCRIPT}. Run the build script first.`

@@ -125,7 +125,7 @@ async function handleRequest(
         sendResponse(socket, {
             id,
             ok: false,
-            error: "No browser session. Call 'opensteer open' first.",
+            error: `No browser session in namespace '${namespace}'. Call 'opensteer open --name ${namespace}' first, or use 'opensteer sessions' to list active sessions.`,
         })
         return
     }
