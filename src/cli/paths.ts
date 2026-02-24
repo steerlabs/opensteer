@@ -1,17 +1,14 @@
+import { tmpdir } from 'os'
 import { join } from 'path'
-import { homedir } from 'os'
-import { mkdirSync } from 'fs'
 
-function getRuntimeDir(): string {
-    const dir = join(homedir(), '.opensteer')
-    mkdirSync(dir, { recursive: true })
-    return dir
+function prefix(namespace: string): string {
+    return `opensteer-${namespace}`
 }
 
-export function getSocketPath(): string {
-    return join(getRuntimeDir(), 'opensteer.sock')
+export function getSocketPath(namespace: string): string {
+    return join(tmpdir(), `${prefix(namespace)}.sock`)
 }
 
-export function getPidPath(): string {
-    return join(getRuntimeDir(), 'opensteer.pid')
+export function getPidPath(namespace: string): string {
+    return join(tmpdir(), `${prefix(namespace)}.pid`)
 }
