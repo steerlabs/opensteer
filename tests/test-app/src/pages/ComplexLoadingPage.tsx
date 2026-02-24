@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 
 const PLACEHOLDER_IMAGE =
@@ -24,7 +24,7 @@ const frameSrcDoc = `<!doctype html>
 
 export function ComplexLoadingPage(): JSX.Element {
     const location = useLocation()
-    const query = useMemo(() => readQuery(location.search), [location.search])
+    const query = readQuery(location.search)
     const isResultsRoute = location.pathname === '/complex-loading/results'
     const shouldLoadResults = isResultsRoute && query.length > 0
 

@@ -9,8 +9,7 @@ const describeExternalWaitSmoke = runExternalWaitSmoke ? describe : describe.ski
 interface ExternalWaitScenario {
     id: string
     url: string
-    selector: string
-    selectorCandidates?: string[]
+    selectors: string[]
     query: string
     expectedUrlContains: string
     maxElapsedMs?: number
@@ -24,8 +23,7 @@ const scenarios: ExternalWaitScenario[] = [
     {
         id: 'amazon',
         url: 'https://www.amazon.com',
-        selector: '#twotabsearchtextbox',
-        selectorCandidates: [
+        selectors: [
             '#twotabsearchtextbox',
             'input[aria-label="Search Amazon"]',
             'input.nav-input',
@@ -43,14 +41,14 @@ const scenarios: ExternalWaitScenario[] = [
     {
         id: 'wikipedia',
         url: 'https://en.wikipedia.org/wiki/Main_Page',
-        selector: '#searchInput',
+        selectors: ['#searchInput'],
         query: 'airpods',
         expectedUrlContains: '/wiki/AirPods',
     },
     {
         id: 'ebay',
         url: 'https://www.ebay.com',
-        selector: '#gh-ac',
+        selectors: ['#gh-ac'],
         query: 'airpods',
         expectedUrlContains: '/sch/i.html?_nkw=airpods',
         allowedChallengeUrlContains: ['/splashui/challenge'],
@@ -58,21 +56,21 @@ const scenarios: ExternalWaitScenario[] = [
     {
         id: 'target',
         url: 'https://www.target.com',
-        selector: '#search',
+        selectors: ['#search'],
         query: 'airpods',
         expectedUrlContains: '/s?searchTerm=airpods',
     },
     {
         id: 'walmart',
         url: 'https://www.walmart.com',
-        selector: 'input[name="q"]',
+        selectors: ['input[name="q"]'],
         query: 'airpods',
         expectedUrlContains: '/search?q=airpods',
     },
     {
         id: 'flexport',
         url: 'https://www.flexport.com',
-        selector: 'input[aria-label="Search"]',
+        selectors: ['input[aria-label="Search"]'],
         query: 'airpods',
         expectedUrlContains: '/search/?q=airpods',
         maxElapsedMs: 7000,
@@ -107,27 +105,21 @@ describeExternalWaitSmoke('integration/external-wait-smoke', () => {
                 await page.goto(scenario.url, { waitUntil: 'domcontentloaded' })
 
                 for (const action of scenario.preActions ?? []) {
-                    const locator = page.locator(action.clickSelector).first()
-                    const canClick = await locator
-                        .isVisible({ timeout: 10000 })
-                        .catch(() => false)
-                    if (canClick) {
-                        await locator.click().catch(() => undefined)
-                    }
+                    await clickIfVisible(page, action.clickSelector)
                 }
 
                 const activeSelector = await waitForAnyVisibleSelector(
                     page,
-                    scenario.selectorCandidates ?? [scenario.selector],
+                    scenario.selectors,
                     25000
                 )
 
                 if (!activeSelector) {
                     const currentUrl = page.url()
-                    const challengeMatched =
-                        scenario.allowedChallengeUrlContains?.some((fragment) =>
-                            currentUrl.includes(fragment)
-                        ) ?? false
+                    const challengeMatched = isAllowedChallengeUrl(
+                        currentUrl,
+                        scenario.allowedChallengeUrlContains
+                    )
 
                     if (challengeMatched || (await hasChallengeMarkers(page))) {
                         return
@@ -151,10 +143,10 @@ describeExternalWaitSmoke('integration/external-wait-smoke', () => {
                 const elapsed = Date.now() - startedAt
 
                 const currentUrl = page.url()
-                const challengeMatched =
-                    scenario.allowedChallengeUrlContains?.some((fragment) =>
-                        currentUrl.includes(fragment)
-                    ) ?? false
+                const challengeMatched = isAllowedChallengeUrl(
+                    currentUrl,
+                    scenario.allowedChallengeUrlContains
+                )
 
                 if (!challengeMatched) {
                     expect(currentUrl).toContain(scenario.expectedUrlContains)
@@ -165,6 +157,29 @@ describeExternalWaitSmoke('integration/external-wait-smoke', () => {
         )
     }
 })
+
+function isAllowedChallengeUrl(
+    currentUrl: string,
+    allowedFragments: string[] | undefined
+): boolean {
+    if (!allowedFragments || allowedFragments.length === 0) {
+        return false
+    }
+
+    return allowedFragments.some((fragment) => currentUrl.includes(fragment))
+}
+
+async function clickIfVisible(page: Page, selector: string): Promise<void> {
+    const locator = page.locator(selector).first()
+    try {
+        if (!(await locator.isVisible({ timeout: 10000 }))) {
+            return
+        }
+        await locator.click()
+    } catch {
+        return
+    }
+}
 
 async function waitForAnyVisibleSelector(
     page: Page,
@@ -178,8 +193,13 @@ async function waitForAnyVisibleSelector(
             const locator = page.locator(selector).first()
             if ((await locator.count()) === 0) continue
 
-            if (await locator.isVisible().catch(() => false)) {
+            try {
+                if (!(await locator.isVisible())) {
+                    continue
+                }
                 return selector
+            } catch {
+                continue
             }
         }
 
@@ -190,10 +210,14 @@ async function waitForAnyVisibleSelector(
 }
 
 async function hasChallengeMarkers(page: Page): Promise<boolean> {
-    const bodyText = await page
-        .textContent('body')
-        .catch(() => '')
-        .then((value) => (value ?? '').toLowerCase())
+    let bodyText = ''
+    try {
+        bodyText = (await page.textContent('body')) ?? ''
+    } catch {
+        return false
+    }
+
+    bodyText = bodyText.toLowerCase()
 
     if (!bodyText) return false
     return (
