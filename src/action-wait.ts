@@ -305,9 +305,8 @@ class AdaptiveNetworkTracker {
     }
 
     private resolveAllowedPending(now: number): number {
-        const elapsed = now - this.startedAt
         const relaxed =
-            Number.isFinite(elapsed) && elapsed >= NETWORK_RELAX_AFTER_MS
+            now - this.startedAt >= NETWORK_RELAX_AFTER_MS
                 ? RELAXED_ALLOWED_PENDING
                 : 0
 
