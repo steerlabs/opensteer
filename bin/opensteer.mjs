@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
+import { createHash } from 'crypto'
 import { spawn } from 'child_process'
-import { existsSync, readFileSync, readdirSync, unlinkSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'fs'
 import { connect } from 'net'
 import { tmpdir } from 'os'
 import { basename, dirname, join } from 'path'
@@ -83,24 +84,51 @@ function sanitizeNamespace(value) {
     return bounded || 'default'
 }
 
+function getActiveNamespacePath() {
+    const hash = createHash('md5').update(process.cwd()).digest('hex').slice(0, 16)
+    return join(tmpdir(), `${RUNTIME_PREFIX}active-${hash}`)
+}
+
+function readActiveNamespace() {
+    try {
+        const filePath = getActiveNamespacePath()
+        if (!existsSync(filePath)) return null
+        const ns = readFileSync(filePath, 'utf-8').trim()
+        return ns || null
+    } catch {
+        return null
+    }
+}
+
+function writeActiveNamespace(namespace) {
+    try {
+        writeFileSync(getActiveNamespacePath(), namespace)
+    } catch { /* best-effort */ }
+}
+
 function resolveNamespace(flags) {
     if (flags.name !== undefined && String(flags.name).trim().length > 0) {
-        return sanitizeNamespace(String(flags.name))
+        return { namespace: sanitizeNamespace(String(flags.name)), source: 'flag' }
     }
 
     if (
         typeof process.env.OPENSTEER_NAME === 'string' &&
         process.env.OPENSTEER_NAME.trim().length > 0
     ) {
-        return sanitizeNamespace(process.env.OPENSTEER_NAME)
+        return { namespace: sanitizeNamespace(process.env.OPENSTEER_NAME), source: 'env' }
+    }
+
+    const active = readActiveNamespace()
+    if (active && isServerRunning(active)) {
+        return { namespace: active, source: 'active' }
     }
 
     const cwdBase = basename(process.cwd())
     if (cwdBase && cwdBase !== '.' && cwdBase !== '/') {
-        return sanitizeNamespace(cwdBase)
+        return { namespace: sanitizeNamespace(cwdBase), source: 'cwd' }
     }
 
-    return 'default'
+    return { namespace: 'default', source: 'default' }
 }
 
 function getSocketPath(namespace) {
@@ -508,13 +536,7 @@ Environment:
 
 async function main() {
     const { command, flags, positional } = parseArgs(process.argv)
-    const hasExplicitName = flags.name !== undefined || !!process.env.OPENSTEER_NAME?.trim()
-    const namespaceSource = flags.name !== undefined
-        ? 'flag'
-        : process.env.OPENSTEER_NAME?.trim()
-            ? 'env'
-            : 'cwd'
-    const namespace = resolveNamespace(flags)
+    const { namespace, source: namespaceSource } = resolveNamespace(flags)
     const socketPath = getSocketPath(namespace)
 
     if (command === 'sessions') {
@@ -548,45 +570,12 @@ async function main() {
     delete flags.all
     const request = buildRequest(command, flags, positional)
 
-    const commandsRequiringSession = new Set([
-        'open', 'navigate', 'close', 'back', 'forward', 'reload',
-    ])
-    const needsServerStart = commandsRequiringSession.has(command)
-
     if (!isServerRunning(namespace)) {
-        if (!needsServerStart && !hasExplicitName) {
-            const sessions = listSessions()
-            if (sessions.length === 1) {
-                const solo = sessions[0]
-                const soloSocket = getSocketPath(solo.name)
-                try {
-                    const response = await sendCommand(soloSocket, request)
-                    if (response.ok) {
-                        output({ ok: true, ...response.result })
-                    } else {
-                        process.stderr.write(
-                            JSON.stringify({ ok: false, error: response.error }) + '\n'
-                        )
-                        process.exit(1)
-                    }
-                } catch (err) {
-                    error(err instanceof Error ? err.message : 'Connection failed')
-                }
-                return
-            }
-
-            if (sessions.length > 1) {
-                const names = sessions.map(s => s.name).join(', ')
-                error(
-                    `No server running for namespace '${namespace}' and multiple sessions are active (${names}). Use --name to specify which session.`
-                )
-            }
-
+        if (command !== 'open') {
             error(
-                `No server running for namespace '${namespace}'. Call 'opensteer open' first, or use --name to target an existing session.`
+                `No server running for namespace '${namespace}' (resolved from ${namespaceSource}). Run 'opensteer open' first or use 'opensteer sessions' to see active sessions.`
             )
         }
-
         if (!existsSync(SERVER_SCRIPT)) {
             error(
                 `Server script not found: ${SERVER_SCRIPT}. Run the build script first.`
@@ -604,6 +593,9 @@ async function main() {
         const response = await sendCommand(socketPath, request)
 
         if (response.ok) {
+            if (command === 'open') {
+                writeActiveNamespace(namespace)
+            }
             output({ ok: true, ...response.result })
         } else {
             process.stderr.write(

@@ -8,6 +8,19 @@ import { getCommandHandler } from './commands.js'
 let instance: Opensteer | null = null
 let launchPromise: Promise<void> | null = null
 
+function invalidateInstance() {
+    if (!instance) return
+    instance.close().catch(() => {})
+    instance = null
+}
+
+function attachLifecycleListeners(inst: Opensteer) {
+    try {
+        inst.page.on('close', invalidateInstance)
+        inst.context.on('close', invalidateInstance)
+    } catch { /* page/context may not be ready yet */ }
+}
+
 const namespace = process.env.OPENSTEER_NAME?.trim()
 if (!namespace) {
     process.stderr.write('Missing OPENSTEER_NAME environment variable.\n')
@@ -42,6 +55,16 @@ async function handleRequest(
             const channel = args.channel as string | undefined
             const profileDir = args['profile-dir'] as string | undefined
 
+            if (instance && !launchPromise) {
+                try {
+                    if (instance.page.isClosed()) {
+                        invalidateInstance()
+                    }
+                } catch {
+                    invalidateInstance()
+                }
+            }
+
             if (!instance) {
                 instance = new Opensteer({
                     name: namespace,
@@ -58,6 +81,7 @@ async function handleRequest(
                 })
                 try {
                     await launchPromise
+                    attachLifecycleListeners(instance)
                 } catch (err) {
                     instance = null
                     throw err
