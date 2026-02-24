@@ -1,10 +1,19 @@
 #!/usr/bin/env node
 
+import { createHash } from 'crypto'
 import { spawn } from 'child_process'
-import { existsSync, readFileSync, readdirSync, unlinkSync } from 'fs'
+import {
+    closeSync,
+    existsSync,
+    openSync,
+    readFileSync,
+    readdirSync,
+    unlinkSync,
+    writeFileSync,
+} from 'fs'
 import { connect } from 'net'
 import { tmpdir } from 'os'
-import { basename, dirname, join } from 'path'
+import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -13,15 +22,35 @@ const SERVER_SCRIPT = join(__dirname, '..', 'dist', 'cli', 'server.js')
 const CONNECT_TIMEOUT = 15000
 const POLL_INTERVAL = 100
 const RESPONSE_TIMEOUT = 120000
+const HEALTH_TIMEOUT = 1500
 const RUNTIME_PREFIX = 'opensteer-'
 const SOCKET_SUFFIX = '.sock'
 const PID_SUFFIX = '.pid'
+const LOCK_SUFFIX = '.lock'
+const CLIENT_BINDING_PREFIX = `${RUNTIME_PREFIX}client-`
+const CLIENT_BINDING_SUFFIX = '.session'
 const CLOSE_ALL_REQUEST = { id: 1, command: 'close', args: {} }
+const PING_REQUEST = { id: 1, command: 'ping', args: {} }
+const SESSION_ID_PATTERN = /^[a-zA-Z0-9_-]+$/
+
+function getVersion() {
+    try {
+        const pkgPath = join(__dirname, '..', 'package.json')
+        return JSON.parse(readFileSync(pkgPath, 'utf-8')).version
+    } catch {
+        return 'unknown'
+    }
+}
 
 function parseArgs(argv) {
     const args = argv.slice(2)
     if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
         printHelp()
+        process.exit(0)
+    }
+
+    if (args[0] === '--version' || args[0] === '-v') {
+        console.log(getVersion())
         process.exit(0)
     }
 
@@ -69,32 +98,162 @@ function sanitizeNamespace(value) {
     return bounded || 'default'
 }
 
-function resolveNamespace(flags) {
-    if (flags.name !== undefined && String(flags.name).trim().length > 0) {
-        return sanitizeNamespace(String(flags.name))
+function isValidSessionId(value) {
+    return SESSION_ID_PATTERN.test(value)
+}
+
+function validateSessionId(rawValue, label) {
+    const value = String(rawValue ?? '').trim()
+    if (!value) {
+        throw new Error(`${label} cannot be empty.`)
+    }
+    if (!isValidSessionId(value)) {
+        throw new Error(
+            `${label} "${value}" is invalid. Use only letters, numbers, underscores, and hyphens.`
+        )
+    }
+    return value
+}
+
+function resolveName(flags, session) {
+    if (flags.name !== undefined) {
+        if (flags.name === true) {
+            throw new Error('--name requires a namespace value.')
+        }
+        const raw = String(flags.name).trim()
+        if (raw.length > 0) {
+            return { name: sanitizeNamespace(raw), source: 'flag' }
+        }
     }
 
     if (
         typeof process.env.OPENSTEER_NAME === 'string' &&
         process.env.OPENSTEER_NAME.trim().length > 0
     ) {
-        return sanitizeNamespace(process.env.OPENSTEER_NAME)
+        return {
+            name: sanitizeNamespace(process.env.OPENSTEER_NAME),
+            source: 'env',
+        }
     }
 
-    const cwdBase = basename(process.cwd())
-    if (cwdBase && cwdBase !== '.' && cwdBase !== '/') {
-        return sanitizeNamespace(cwdBase)
+    return { name: sanitizeNamespace(session), source: 'session' }
+}
+
+function hashKey(value) {
+    return createHash('sha256').update(value).digest('hex')
+}
+
+function getClientBindingPath(clientKey) {
+    return join(
+        tmpdir(),
+        `${CLIENT_BINDING_PREFIX}${hashKey(clientKey).slice(0, 24)}${CLIENT_BINDING_SUFFIX}`
+    )
+}
+
+function readClientBinding(clientKey) {
+    const bindingPath = getClientBindingPath(clientKey)
+    if (!existsSync(bindingPath)) {
+        return null
     }
 
-    return 'default'
+    try {
+        const rawSession = readFileSync(bindingPath, 'utf-8').trim()
+        if (!rawSession) {
+            unlinkSync(bindingPath)
+            return null
+        }
+        if (!isValidSessionId(rawSession)) {
+            unlinkSync(bindingPath)
+            return null
+        }
+        return rawSession
+    } catch {
+        return null
+    }
 }
 
-function getSocketPath(namespace) {
-    return join(tmpdir(), `${RUNTIME_PREFIX}${namespace}${SOCKET_SUFFIX}`)
+function writeClientBinding(clientKey, session) {
+    try {
+        writeFileSync(getClientBindingPath(clientKey), session)
+    } catch { /* best-effort */ }
 }
 
-function getPidPath(namespace) {
-    return join(tmpdir(), `${RUNTIME_PREFIX}${namespace}${PID_SUFFIX}`)
+function createDefaultSessionId(prefix, clientKey) {
+    return `${prefix}-${hashKey(clientKey).slice(0, 12)}`
+}
+
+function isInteractiveTerminal() {
+    return Boolean(process.stdin.isTTY && process.stdout.isTTY)
+}
+
+function resolveSession(flags) {
+    if (flags.session !== undefined) {
+        if (flags.session === true) {
+            throw new Error('--session requires a session id value.')
+        }
+
+        return {
+            session: validateSessionId(flags.session, 'Session id'),
+            source: 'flag',
+        }
+    }
+
+    if (
+        typeof process.env.OPENSTEER_SESSION === 'string' &&
+        process.env.OPENSTEER_SESSION.trim().length > 0
+    ) {
+        return {
+            session: validateSessionId(
+                process.env.OPENSTEER_SESSION,
+                'OPENSTEER_SESSION'
+            ),
+            source: 'env',
+        }
+    }
+
+    if (
+        typeof process.env.OPENSTEER_CLIENT_ID === 'string' &&
+        process.env.OPENSTEER_CLIENT_ID.trim().length > 0
+    ) {
+        const clientId = process.env.OPENSTEER_CLIENT_ID.trim()
+        const clientKey = `client:${process.cwd()}:${clientId}`
+        const bound = readClientBinding(clientKey)
+        if (bound) {
+            return { session: bound, source: 'client_binding' }
+        }
+
+        const created = createDefaultSessionId('client', clientKey)
+        writeClientBinding(clientKey, created)
+        return { session: created, source: 'client_binding' }
+    }
+
+    if (isInteractiveTerminal()) {
+        const ttyKey = `tty:${process.cwd()}:${process.ppid}`
+        const bound = readClientBinding(ttyKey)
+        if (bound) {
+            return { session: bound, source: 'tty_default' }
+        }
+
+        const created = createDefaultSessionId('tty', ttyKey)
+        writeClientBinding(ttyKey, created)
+        return { session: created, source: 'tty_default' }
+    }
+
+    throw new Error(
+        'No session resolved for this non-interactive command. Set OPENSTEER_SESSION or OPENSTEER_CLIENT_ID, or pass --session <id>.'
+    )
+}
+
+function getSocketPath(session) {
+    return join(tmpdir(), `${RUNTIME_PREFIX}${session}${SOCKET_SUFFIX}`)
+}
+
+function getPidPath(session) {
+    return join(tmpdir(), `${RUNTIME_PREFIX}${session}${PID_SUFFIX}`)
+}
+
+function getLockPath(session) {
+    return join(tmpdir(), `${RUNTIME_PREFIX}${session}${LOCK_SUFFIX}`)
 }
 
 function buildRequest(command, flags, positional) {
@@ -228,66 +387,36 @@ function isPidAlive(pid) {
     }
 }
 
-function cleanStaleFiles(namespace) {
-    try {
-        unlinkSync(getSocketPath(namespace))
-    } catch { }
-    try {
-        unlinkSync(getPidPath(namespace))
-    } catch { }
-}
+function cleanStaleFiles(session, options = {}) {
+    const removeSocket = options.removeSocket !== false
+    const removePid = options.removePid !== false
 
-function isServerRunning(namespace) {
-    const pidPath = getPidPath(namespace)
-    const pid = readPid(pidPath)
-    if (!pid) {
-        cleanStaleFiles(namespace)
-        return false
+    if (removeSocket) {
+        try {
+            unlinkSync(getSocketPath(session))
+        } catch { }
     }
 
-    if (!isPidAlive(pid)) {
-        cleanStaleFiles(namespace)
-        return false
+    if (removePid) {
+        try {
+            unlinkSync(getPidPath(session))
+        } catch { }
     }
-
-    return existsSync(getSocketPath(namespace))
 }
 
-function startServer(namespace) {
+function startServer(session) {
     const child = spawn('node', [SERVER_SCRIPT], {
         detached: true,
         stdio: ['ignore', 'ignore', 'ignore'],
         env: {
             ...process.env,
-            OPENSTEER_NAME: namespace,
+            OPENSTEER_SESSION: session,
         },
     })
     child.unref()
 }
 
-function waitForSocket(socketPath, timeout) {
-    return new Promise((resolve, reject) => {
-        const start = Date.now()
-
-        function poll() {
-            if (Date.now() - start > timeout) {
-                reject(new Error('Timed out waiting for server to start'))
-                return
-            }
-
-            if (existsSync(socketPath)) {
-                resolve()
-                return
-            }
-
-            setTimeout(poll, POLL_INTERVAL)
-        }
-
-        poll()
-    })
-}
-
-function sendCommand(socketPath, request) {
+function sendCommand(socketPath, request, timeoutMs = RESPONSE_TIMEOUT) {
     return new Promise((resolve, reject) => {
         const socket = connect(socketPath)
         let buffer = ''
@@ -299,7 +428,7 @@ function sendCommand(socketPath, request) {
                 socket.destroy()
                 reject(new Error('Response timeout'))
             }
-        }, RESPONSE_TIMEOUT)
+        }, timeoutMs)
 
         socket.on('connect', () => {
             socket.write(JSON.stringify(request) + '\n')
@@ -337,6 +466,166 @@ function sendCommand(socketPath, request) {
             }
         })
     })
+}
+
+async function pingServer(session) {
+    const socketPath = getSocketPath(session)
+    if (!existsSync(socketPath)) return false
+
+    try {
+        const response = await sendCommand(socketPath, PING_REQUEST, HEALTH_TIMEOUT)
+        return Boolean(response?.ok && response?.result?.pong)
+    } catch {
+        return false
+    }
+}
+
+async function isServerHealthy(session) {
+    const pid = readPid(getPidPath(session))
+    const pidAlive = pid ? isPidAlive(pid) : false
+    const socketExists = existsSync(getSocketPath(session))
+
+    if (pid && !pidAlive) {
+        cleanStaleFiles(session)
+        return false
+    }
+
+    if (!socketExists) {
+        return false
+    }
+
+    const healthy = await pingServer(session)
+    if (healthy) {
+        return true
+    }
+
+    if (!pid) {
+        cleanStaleFiles(session, { removeSocket: true, removePid: false })
+    }
+
+    return false
+}
+
+function acquireStartLock(session) {
+    const lockPath = getLockPath(session)
+
+    try {
+        const fd = openSync(lockPath, 'wx')
+        writeFileSync(
+            fd,
+            JSON.stringify({
+                pid: process.pid,
+                createdAt: Date.now(),
+            })
+        )
+        closeSync(fd)
+        return true
+    } catch {
+        return false
+    }
+}
+
+function releaseStartLock(session) {
+    try {
+        unlinkSync(getLockPath(session))
+    } catch { /* best-effort */ }
+}
+
+function recoverStaleStartLock(session) {
+    const lockPath = getLockPath(session)
+    if (!existsSync(lockPath)) {
+        return false
+    }
+
+    try {
+        const raw = readFileSync(lockPath, 'utf-8')
+        const parsed = JSON.parse(raw)
+        const pid =
+            parsed && Number.isInteger(parsed.pid) && parsed.pid > 0
+                ? parsed.pid
+                : null
+
+        if (!pid || !isPidAlive(pid)) {
+            unlinkSync(lockPath)
+            return true
+        }
+
+        return false
+    } catch {
+        try {
+            unlinkSync(lockPath)
+            return true
+        } catch {
+            return false
+        }
+    }
+}
+
+async function sleep(ms) {
+    await new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitForServerReady(session, timeout) {
+    const start = Date.now()
+
+    while (Date.now() - start <= timeout) {
+        if (await isServerHealthy(session)) {
+            return
+        }
+        await sleep(POLL_INTERVAL)
+    }
+
+    throw new Error(`Timed out waiting for server '${session}' to become healthy.`)
+}
+
+async function ensureServer(session) {
+    if (await isServerHealthy(session)) {
+        return
+    }
+
+    if (!existsSync(SERVER_SCRIPT)) {
+        throw new Error(
+            `Server script not found: ${SERVER_SCRIPT}. Run the build script first.`
+        )
+    }
+
+    const deadline = Date.now() + CONNECT_TIMEOUT
+
+    while (Date.now() < deadline) {
+        if (await isServerHealthy(session)) {
+            return
+        }
+
+        const existingPid = readPid(getPidPath(session))
+        if (existingPid && isPidAlive(existingPid)) {
+            await sleep(POLL_INTERVAL)
+            continue
+        }
+
+        recoverStaleStartLock(session)
+
+        if (acquireStartLock(session)) {
+            try {
+                if (!(await isServerHealthy(session))) {
+                    startServer(session)
+                }
+
+                await waitForServerReady(
+                    session,
+                    Math.max(500, deadline - Date.now())
+                )
+                return
+            } finally {
+                releaseStartLock(session)
+            }
+        }
+
+        await sleep(POLL_INTERVAL)
+    }
+
+    throw new Error(
+        `Failed to start server for session '${session}'. Check that the build is complete.`
+    )
 }
 
 function listSessions() {
@@ -423,10 +712,11 @@ Navigation:
   forward                   Go forward
   reload                    Reload page
   close                     Close browser and server
-  close --all               Close all active namespace-scoped servers
+  close --all               Close all active session-scoped servers
 
 Sessions:
-  sessions                  List active namespace-scoped sessions
+  sessions                  List active session-scoped daemons
+  status                    Show resolved session/name and session state
 
 Observation:
   snapshot [--mode action]  Get page snapshot
@@ -472,7 +762,8 @@ Utility:
   extract <schema-json>     Extract structured data
 
 Global Flags:
-  --name <namespace>        Session namespace (default: CWD basename or OPENSTEER_NAME)
+  --session <id>            Runtime session id for daemon/browser routing
+  --name <namespace>        Selector namespace for cache storage on 'open'
   --headless                Launch browser in headless mode
   --connect-url <url>       Connect to a running browser (e.g. http://localhost:9222)
   --channel <browser>       Use installed browser (chrome, chrome-beta, msedge)
@@ -481,9 +772,12 @@ Global Flags:
   --selector <css>          Target element by CSS selector
   --description <text>      Description for selector persistence
   --help                    Show this help
+  --version, -v             Show version
 
 Environment:
-  OPENSTEER_NAME            Default session namespace when --name is omitted
+  OPENSTEER_SESSION         Runtime session id (equivalent to --session)
+  OPENSTEER_CLIENT_ID       Stable client identity for default session binding
+  OPENSTEER_NAME            Default selector namespace for 'open' when --name is omitted
   OPENSTEER_MODE            Runtime mode: "local" (default) or "remote"
   OPENSTEER_API_KEY         Required when remote mode is selected
   OPENSTEER_BASE_URL        Override remote control-plane base URL
@@ -492,8 +786,6 @@ Environment:
 
 async function main() {
     const { command, flags, positional } = parseArgs(process.argv)
-    const namespace = resolveNamespace(flags)
-    const socketPath = getSocketPath(namespace)
 
     if (command === 'sessions') {
         output({ ok: true, sessions: listSessions() })
@@ -510,21 +802,59 @@ async function main() {
         return
     }
 
-    delete flags.name
-    delete flags.all
-    const request = buildRequest(command, flags, positional)
+    let resolvedSession
+    let resolvedName
+    try {
+        resolvedSession = resolveSession(flags)
+        resolvedName = resolveName(flags, resolvedSession.session)
+    } catch (err) {
+        error(err instanceof Error ? err.message : 'Failed to resolve session')
+    }
 
-    if (!isServerRunning(namespace)) {
-        if (!existsSync(SERVER_SCRIPT)) {
+    const session = resolvedSession.session
+    const sessionSource = resolvedSession.source
+    const name = resolvedName.name
+    const nameSource = resolvedName.source
+    const socketPath = getSocketPath(session)
+
+    if (command === 'status') {
+        output({
+            ok: true,
+            resolvedSession: session,
+            sessionSource,
+            resolvedName: name,
+            nameSource,
+            serverRunning: await isServerHealthy(session),
+            socketPath,
+            sessions: listSessions(),
+        })
+        return
+    }
+
+    delete flags.name
+    delete flags.session
+    delete flags.all
+
+    const request = buildRequest(command, flags, positional)
+    if (command === 'open') {
+        request.args.name = name
+    }
+
+    if (!(await isServerHealthy(session))) {
+        if (command !== 'open') {
             error(
-                `Server script not found: ${SERVER_SCRIPT}. Run the build script first.`
+                `No server running for session '${session}' (resolved from ${sessionSource}). Run 'opensteer open' first or use 'opensteer sessions' to see active sessions.`
             )
         }
-        startServer(namespace)
+
         try {
-            await waitForSocket(socketPath, CONNECT_TIMEOUT)
-        } catch {
-            error('Failed to start server. Check that the build is complete.')
+            await ensureServer(session)
+        } catch (err) {
+            error(
+                err instanceof Error
+                    ? err.message
+                    : 'Failed to start server. Check that the build is complete.'
+            )
         }
     }
 

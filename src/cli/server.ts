@@ -7,19 +7,63 @@ import { getCommandHandler } from './commands.js'
 
 let instance: Opensteer | null = null
 let launchPromise: Promise<void> | null = null
+let selectorNamespace: string | null = null
+let requestQueue: Promise<void> = Promise.resolve()
+let shuttingDown = false
 
-const namespace = process.env.OPENSTEER_NAME?.trim()
-if (!namespace) {
-    process.stderr.write('Missing OPENSTEER_NAME environment variable.\n')
-    process.exit(1)
+function sanitizeNamespace(value: string): string {
+    const trimmed = String(value || '').trim()
+    if (!trimmed || trimmed === '.' || trimmed === '..') {
+        return 'default'
+    }
+
+    const replaced = trimmed.replace(/[^a-zA-Z0-9_-]+/g, '_')
+    const collapsed = replaced.replace(/_+/g, '_')
+    const bounded = collapsed.replace(/^_+|_+$/g, '')
+
+    return bounded || 'default'
 }
 
-const socketPath = getSocketPath(namespace)
-const pidPath = getPidPath(namespace)
+function invalidateInstance() {
+    if (!instance) return
+    instance.close().catch(() => {})
+    instance = null
+}
+
+function attachLifecycleListeners(inst: Opensteer) {
+    try {
+        inst.page.on('close', invalidateInstance)
+        inst.context.on('close', invalidateInstance)
+    } catch { /* page/context may not be ready yet */ }
+}
+
+const sessionEnv = process.env.OPENSTEER_SESSION?.trim()
+if (!sessionEnv) {
+    process.stderr.write('Missing OPENSTEER_SESSION environment variable.\n')
+    process.exit(1)
+}
+const session = sessionEnv
+
+const socketPath = getSocketPath(session)
+const pidPath = getPidPath(session)
 
 function cleanup() {
     try { unlinkSync(socketPath) } catch { /* file may not exist */ }
     try { unlinkSync(pidPath) } catch { /* file may not exist */ }
+}
+
+function beginShutdown() {
+    if (shuttingDown) return
+    shuttingDown = true
+    cleanup()
+
+    server.close(() => {
+        process.exit(0)
+    })
+
+    setTimeout(() => {
+        process.exit(0)
+    }, 250).unref()
 }
 
 function sendResponse(socket: Socket, response: CliResponse) {
@@ -28,11 +72,40 @@ function sendResponse(socket: Socket, response: CliResponse) {
     } catch { /* socket may already be closed */ }
 }
 
+function enqueueRequest(request: CliRequest, socket: Socket) {
+    if (request.command === 'ping') {
+        void handleRequest(request, socket)
+        return
+    }
+
+    requestQueue = requestQueue
+        .then(() => handleRequest(request, socket))
+        .catch(() => {})
+}
+
 async function handleRequest(
     request: CliRequest,
     socket: Socket
 ): Promise<void> {
     const { id, command, args } = request
+
+    if (command === 'ping' && shuttingDown) {
+        sendResponse(socket, {
+            id,
+            ok: false,
+            error: `Session '${session}' is shutting down.`,
+        })
+        return
+    }
+
+    if (shuttingDown) {
+        sendResponse(socket, {
+            id,
+            ok: false,
+            error: `Session '${session}' is shutting down. Retry your command.`,
+        })
+        return
+    }
 
     if (command === 'open') {
         try {
@@ -41,10 +114,42 @@ async function handleRequest(
             const connectUrl = args['connect-url'] as string | undefined
             const channel = args.channel as string | undefined
             const profileDir = args['profile-dir'] as string | undefined
+            const requestedName =
+                typeof args.name === 'string' && args.name.trim().length > 0
+                    ? sanitizeNamespace(args.name)
+                    : null
+
+            if (
+                selectorNamespace &&
+                requestedName &&
+                requestedName !== selectorNamespace
+            ) {
+                sendResponse(socket, {
+                    id,
+                    ok: false,
+                    error: `Session '${session}' is already bound to selector namespace '${selectorNamespace}'. Requested '${requestedName}' does not match. Use the same --name for this session or start a different --session.`,
+                })
+                return
+            }
+
+            if (!selectorNamespace) {
+                selectorNamespace = requestedName ?? session
+            }
+            const activeNamespace = selectorNamespace ?? session
+
+            if (instance && !launchPromise) {
+                try {
+                    if (instance.page.isClosed()) {
+                        invalidateInstance()
+                    }
+                } catch {
+                    invalidateInstance()
+                }
+            }
 
             if (!instance) {
                 instance = new Opensteer({
-                    name: namespace,
+                    name: activeNamespace,
                     browser: {
                         headless: headless ?? false,
                         connectUrl,
@@ -58,6 +163,7 @@ async function handleRequest(
                 })
                 try {
                     await launchPromise
+                    attachLifecycleListeners(instance)
                 } catch (err) {
                     instance = null
                     throw err
@@ -77,8 +183,9 @@ async function handleRequest(
                 ok: true,
                 result: {
                     url: instance.page.url(),
-                    sessionId: instance.getRemoteSessionId() ?? undefined,
-                    name: namespace,
+                    session,
+                    name: activeNamespace,
+                    remoteSessionId: instance.getRemoteSessionId() ?? undefined,
                 },
             })
         } catch (err) {
@@ -109,10 +216,7 @@ async function handleRequest(
                 error: err instanceof Error ? err.message : String(err),
             })
         }
-        setTimeout(() => {
-            cleanup()
-            process.exit(0)
-        }, 100)
+        beginShutdown()
         return
     }
 
@@ -125,7 +229,7 @@ async function handleRequest(
         sendResponse(socket, {
             id,
             ok: false,
-            error: "No browser session. Call 'opensteer open' first.",
+            error: `No browser session in session '${session}'. Call 'opensteer open --session ${session}' first, or use 'opensteer sessions' to list active sessions.`,
         })
         return
     }
@@ -168,7 +272,7 @@ const server = createServer((socket: Socket) => {
             if (!line.trim()) continue
             try {
                 const request = JSON.parse(line) as CliRequest
-                handleRequest(request, socket)
+                enqueueRequest(request, socket)
             } catch {
                 sendResponse(socket, {
                     id: 0,
@@ -197,13 +301,20 @@ server.on('error', (err) => {
 })
 
 async function shutdown() {
+    if (shuttingDown) return
+    shuttingDown = true
     if (instance) {
         try { await instance.close() } catch { /* best-effort cleanup on shutdown */ }
         instance = null
     }
-    server.close()
     cleanup()
-    process.exit(0)
+    server.close(() => {
+        process.exit(0)
+    })
+
+    setTimeout(() => {
+        process.exit(0)
+    }, 250).unref()
 }
 
 process.on('SIGTERM', shutdown)
