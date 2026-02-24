@@ -52,6 +52,54 @@ describe('performInput', () => {
         expect((await page.textContent('#enter-count'))?.trim()).toBe('1')
     })
 
+    it('does not block on navigation completion when pressEnter is enabled', async () => {
+        const destination = 'https://opensteer.local/hanging-navigation'
+        const destinationPattern =
+            /^https:\/\/opensteer\.local\/hanging-navigation(?:\?.*)?$/
+
+        await page.route(destinationPattern, async (route) => {
+            await new Promise<void>((resolve) => {
+                setTimeout(resolve, 1800)
+            })
+
+            await route.fulfill({
+                status: 200,
+                contentType: 'text/html',
+                body: '<!doctype html><html><body><h1>done</h1></body></html>',
+            })
+        })
+
+        await setFixture(
+            page,
+            `
+        <form action="${destination}" method="get">
+          <input id="message" name="q" value="" />
+        </form>
+      `
+        )
+
+        const navigationRequest = page.waitForRequest(
+            (request) =>
+                request.url().startsWith(destination) &&
+                request.method() === 'GET',
+            { timeout: 2000 }
+        )
+
+        const path = await buildElementPathFromSelector(page, '#message')
+        const startedAt = Date.now()
+        const result = await performInput(page, path!, {
+            text: 'airpods',
+            pressEnter: true,
+        })
+        const elapsed = Date.now() - startedAt
+
+        expect(result.ok).toBe(true)
+        expect(elapsed).toBeLessThan(900)
+        await navigationRequest
+        await page.goto('about:blank', { waitUntil: 'domcontentloaded' })
+        await page.unroute(destinationPattern)
+    })
+
     it('types without clearing when clear is false', async () => {
         await setFixture(page, '<input id="name" value="Ada" />')
 
