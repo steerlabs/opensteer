@@ -20,6 +20,31 @@ npm install opensteer playwright
 pnpm add opensteer playwright
 ```
 
+## CLI Session Routing
+
+OpenSteer CLI now separates runtime routing from selector caching:
+
+- Runtime routing: `--session` or `OPENSTEER_SESSION`
+- Selector cache namespace: `--name` or `OPENSTEER_NAME` (used on `open`)
+
+If neither `--session` nor `OPENSTEER_SESSION` is set:
+
+- In an interactive terminal, OpenSteer creates/reuses a terminal-scoped default session.
+- In non-interactive environments (agents/CI), it fails fast unless you set
+  `OPENSTEER_SESSION` or `OPENSTEER_CLIENT_ID`.
+
+Example:
+
+```bash
+export OPENSTEER_SESSION=agent-a
+opensteer open https://example.com --name product-scraper
+opensteer snapshot
+opensteer click 3
+opensteer status
+```
+
+`opensteer status` reports `resolvedSession`, `sessionSource`, `resolvedName`, and `nameSource`.
+
 ## Quickstart
 
 ```ts
