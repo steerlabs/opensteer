@@ -383,11 +383,11 @@ async function closeAllSessions() {
 
         try {
             const response = await sendCommand(socketPath, CLOSE_ALL_REQUEST)
-            if (response && response.ok === true) {
+            if (response.ok === true) {
                 closed.push(session)
             } else {
                 failures.push(
-                    `${session.name}: ${response?.error || 'unknown close error'}`
+                    `${session.name}: ${response.error || 'unknown close error'}`
                 )
             }
         } catch (err) {
