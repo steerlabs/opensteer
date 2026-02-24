@@ -2,6 +2,7 @@ import type { Frame, Page } from 'playwright'
 
 const DEFAULT_TIMEOUT = 30000
 const DEFAULT_SETTLE_MS = 750
+const FRAME_EVALUATE_GRACE_MS = 200
 
 interface VisualStabilityOptions {
     timeout?: number
@@ -12,12 +13,13 @@ interface VisualStabilityOptions {
 function buildStabilityScript(timeout: number, settleMs: number): string {
     return `new Promise(function(resolve) {
     var deadline = Date.now() + ${timeout};
-    var timer = null;
     var resolved = false;
+    var timer = null;
     var observers = [];
     var observedShadowRoots = [];
     var fonts = document.fonts;
     var fontsReady = !fonts || fonts.status === 'loaded';
+    var lastRelevantMutationAt = Date.now();
 
     function clearObservers() {
         for (var i = 0; i < observers.length; i++) {
@@ -35,9 +37,87 @@ function buildStabilityScript(timeout: number, settleMs: number): string {
         resolve();
     }
 
+    function isElementVisiblyIntersectingViewport(element) {
+        if (!(element instanceof Element)) return false;
+
+        var rect = element.getBoundingClientRect();
+        var inViewport =
+            rect.width > 0 &&
+            rect.height > 0 &&
+            rect.bottom > 0 &&
+            rect.right > 0 &&
+            rect.top < window.innerHeight &&
+            rect.left < window.innerWidth;
+
+        if (!inViewport) return false;
+
+        var style = window.getComputedStyle(element);
+        if (style.visibility === 'hidden' || style.display === 'none') {
+            return false;
+        }
+        if (Number(style.opacity) === 0) {
+            return false;
+        }
+
+        return true;
+    }
+
+    function resolveRelevantElement(node) {
+        if (!node) return null;
+        if (node instanceof Element) return node;
+        if (typeof ShadowRoot !== 'undefined' && node instanceof ShadowRoot) {
+            return node.host instanceof Element ? node.host : null;
+        }
+        var parentElement = node.parentElement;
+        return parentElement instanceof Element ? parentElement : null;
+    }
+
+    function isNodeVisiblyRelevant(node) {
+        var element = resolveRelevantElement(node);
+        if (!element) return false;
+        return isElementVisiblyIntersectingViewport(element);
+    }
+
+    function hasRelevantMutation(records) {
+        for (var i = 0; i < records.length; i++) {
+            var record = records[i];
+            if (isNodeVisiblyRelevant(record.target)) return true;
+
+            var addedNodes = record.addedNodes;
+            for (var j = 0; j < addedNodes.length; j++) {
+                if (isNodeVisiblyRelevant(addedNodes[j])) return true;
+            }
+
+            var removedNodes = record.removedNodes;
+            for (var k = 0; k < removedNodes.length; k++) {
+                if (isNodeVisiblyRelevant(removedNodes[k])) return true;
+            }
+        }
+
+        return false;
+    }
+
+    function scheduleCheck() {
+        if (resolved) return;
+        if (timer) clearTimeout(timer);
+
+        var remaining = deadline - Date.now();
+        if (remaining <= 0) {
+            done();
+            return;
+        }
+
+        var checkDelay = Math.min(120, Math.max(16, ${settleMs}));
+        timer = setTimeout(checkNow, checkDelay);
+    }
+
     function observeMutations(target) {
         if (!target) return;
-        var observer = new MutationObserver(function() { settle(); });
+        var observer = new MutationObserver(function(records) {
+            if (!hasRelevantMutation(records)) return;
+            lastRelevantMutationAt = Date.now();
+            scheduleCheck();
+        });
         observer.observe(target, {
             childList: true,
             subtree: true,
@@ -69,31 +149,6 @@ function buildStabilityScript(timeout: number, settleMs: number): string {
             observedShadowRoots.push(shadowRoot);
             observeMutations(shadowRoot);
         }
-    }
-
-    function isElementVisiblyIntersectingViewport(element) {
-        if (!(element instanceof Element)) return false;
-
-        var rect = element.getBoundingClientRect();
-        var inViewport =
-            rect.width > 0 &&
-            rect.height > 0 &&
-            rect.bottom > 0 &&
-            rect.right > 0 &&
-            rect.top < window.innerHeight &&
-            rect.left < window.innerWidth;
-
-        if (!inViewport) return false;
-
-        var style = window.getComputedStyle(element);
-        if (style.visibility === 'hidden' || style.display === 'none') {
-            return false;
-        }
-        if (Number(style.opacity) === 0) {
-            return false;
-        }
-
-        return true;
     }
 
     function checkViewportImages(root) {
@@ -149,17 +204,25 @@ function buildStabilityScript(timeout: number, settleMs: number): string {
         return true;
     }
 
-    function settle() {
-        if (Date.now() > deadline) { done(); return; }
-        if (timer) clearTimeout(timer);
+    function checkNow() {
+        if (Date.now() >= deadline) {
+            done();
+            return;
+        }
+
         observeOpenShadowRoots();
-        timer = setTimeout(function() {
-            if (isVisuallyReady()) {
-                done();
-            } else {
-                settle();
-            }
-        }, ${settleMs});
+
+        if (!isVisuallyReady()) {
+            scheduleCheck();
+            return;
+        }
+
+        if (Date.now() - lastRelevantMutationAt >= ${settleMs}) {
+            done();
+            return;
+        }
+
+        scheduleCheck();
     }
 
     observeMutations(document.documentElement);
@@ -168,13 +231,16 @@ function buildStabilityScript(timeout: number, settleMs: number): string {
     if (fonts && fonts.ready && typeof fonts.ready.then === 'function') {
         fonts.ready.then(function() {
             fontsReady = true;
-            settle();
+            scheduleCheck();
+        }, function() {
+            fontsReady = true;
+            scheduleCheck();
         });
     }
 
     var safetyTimer = setTimeout(done, ${timeout});
 
-    settle();
+    scheduleCheck();
 })`
 }
 
@@ -203,7 +269,9 @@ export async function waitForVisualStabilityAcrossFrames(
         const remaining = Math.max(0, deadline - Date.now())
         if (remaining === 0) return
 
-        const frames = page.frames()
+        const frames = await collectVisibleFrames(page)
+        if (!frames.length) return
+
         await Promise.all(
             frames.map(async (frame) => {
                 try {
@@ -218,7 +286,7 @@ export async function waitForVisualStabilityAcrossFrames(
             })
         )
 
-        const currentFrames = page.frames()
+        const currentFrames = await collectVisibleFrames(page)
         if (sameFrames(frames, currentFrames)) {
             return
         }
@@ -233,7 +301,40 @@ async function waitForFrameVisualStability(
     const settleMs = options.settleMs ?? DEFAULT_SETTLE_MS
     if (timeout <= 0) return
 
-    await frame.evaluate(buildStabilityScript(timeout, settleMs))
+    await evaluateFrameStabilityWithGuard(
+        frame,
+        buildStabilityScript(timeout, settleMs),
+        timeout
+    )
+}
+
+type FrameStabilityResult =
+    | { kind: 'resolved' }
+    | { kind: 'rejected'; error: unknown }
+    | { kind: 'timeout' }
+
+async function evaluateFrameStabilityWithGuard(
+    frame: Frame,
+    script: string,
+    timeout: number
+): Promise<void> {
+    const evaluationPromise = frame.evaluate(script)
+    const settledPromise = evaluationPromise.then(
+        () => ({ kind: 'resolved' } as const),
+        (error: unknown) => ({ kind: 'rejected', error } as const)
+    )
+    const timeoutPromise: Promise<FrameStabilityResult> = sleep(
+        timeout + FRAME_EVALUATE_GRACE_MS
+    ).then(() => ({ kind: 'timeout' } as const))
+
+    const result: FrameStabilityResult = await Promise.race([
+        settledPromise,
+        timeoutPromise,
+    ])
+
+    if (result.kind === 'rejected') {
+        throw result.error
+    }
 }
 
 function sameFrames(before: Frame[], after: Frame[]): boolean {
@@ -245,6 +346,59 @@ function sameFrames(before: Frame[], after: Frame[]): boolean {
     return true
 }
 
+async function collectVisibleFrames(page: Page): Promise<Frame[]> {
+    const visibleFrames: Frame[] = []
+
+    for (const frame of page.frames()) {
+        if (frame === page.mainFrame()) {
+            visibleFrames.push(frame)
+            continue
+        }
+
+        try {
+            const frameElement = await frame.frameElement()
+            try {
+                const isVisible = await frameElement.evaluate((node) => {
+                    if (!(node instanceof HTMLElement)) return false
+
+                    const rect = node.getBoundingClientRect()
+                    if (rect.width <= 0 || rect.height <= 0) return false
+                    if (
+                        rect.bottom <= 0 ||
+                        rect.right <= 0 ||
+                        rect.top >= window.innerHeight ||
+                        rect.left >= window.innerWidth
+                    ) {
+                        return false
+                    }
+
+                    const style = window.getComputedStyle(node)
+                    if (
+                        style.display === 'none' ||
+                        style.visibility === 'hidden' ||
+                        Number(style.opacity) === 0
+                    ) {
+                        return false
+                    }
+
+                    return true
+                })
+
+                if (isVisible) {
+                    visibleFrames.push(frame)
+                }
+            } finally {
+                await frameElement.dispose()
+            }
+        } catch (error) {
+            if (isIgnorableFrameError(error)) continue
+            visibleFrames.push(frame)
+        }
+    }
+
+    return visibleFrames
+}
+
 function isIgnorableFrameError(error: unknown): boolean {
     if (!(error instanceof Error)) return false
     const message = error.message
@@ -253,4 +407,10 @@ function isIgnorableFrameError(error: unknown): boolean {
         message.includes('Execution context was destroyed') ||
         message.includes('Target page, context or browser has been closed')
     )
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+        setTimeout(resolve, ms)
+    })
 }
