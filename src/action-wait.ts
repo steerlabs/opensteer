@@ -65,7 +65,26 @@ const ACTION_WAIT_PROFILES: Record<PostActionKind, ResolvedActionWaitProfile> = 
 }
 
 const NETWORK_POLL_MS = 50
-const IGNORED_RESOURCE_TYPES = new Set(['websocket', 'eventsource'])
+const NETWORK_RELAX_AFTER_MS = 1800
+const RELAXED_ALLOWED_PENDING = 2
+const HEAVY_VISUAL_REQUEST_WINDOW_MS = 5000
+const TRACKED_RESOURCE_TYPES = new Set([
+    'document',
+    'fetch',
+    'xhr',
+    'stylesheet',
+    'image',
+    'font',
+    'media',
+])
+const HEAVY_RESOURCE_TYPES = new Set(['document', 'fetch', 'xhr'])
+const HEAVY_VISUAL_RESOURCE_TYPES = new Set([
+    'stylesheet',
+    'image',
+    'font',
+    'media',
+])
+const IGNORED_RESOURCE_TYPES = new Set(['websocket', 'eventsource', 'manifest'])
 
 const NOOP_SESSION: PostActionWaitSession = {
     async wait() {},
@@ -80,7 +99,7 @@ export function createPostActionWaitSession(
     const profile = resolveActionWaitProfile(action, override)
     if (!profile.enabled) return NOOP_SESSION
 
-    const tracker = profile.includeNetwork ? new ScopedNetworkTracker(page) : null
+    const tracker = profile.includeNetwork ? new AdaptiveNetworkTracker(page) : null
     tracker?.start()
 
     let settled = false
@@ -91,21 +110,30 @@ export function createPostActionWaitSession(
             settled = true
 
             const deadline = Date.now() + profile.timeout
-            const networkWait = tracker
-                ? tracker.waitForQuiet({
-                      deadline,
-                      quietMs: profile.networkQuietMs,
-                  })
-                : Promise.resolve()
+            const visualTimeout = profile.includeNetwork
+                ? Math.min(
+                      profile.timeout,
+                      resolveNetworkBackedVisualTimeout(profile.settleMs)
+                  )
+                : profile.timeout
 
             try {
-                await Promise.all([
-                    waitForVisualStabilityAcrossFrames(page, {
-                        timeout: profile.timeout,
-                        settleMs: profile.settleMs,
-                    }),
-                    networkWait,
-                ])
+                await waitForVisualStabilityAcrossFrames(page, {
+                    timeout: visualTimeout,
+                    settleMs: profile.settleMs,
+                })
+            } catch {
+            } finally {
+                tracker?.freezeCollection()
+            }
+
+            try {
+                if (tracker) {
+                    await tracker.waitForQuiet({
+                        deadline,
+                        quietMs: profile.networkQuietMs,
+                    })
+                }
             } catch {
             } finally {
                 tracker?.stop()
@@ -164,9 +192,21 @@ function normalizeMs(value: number | undefined, fallback: number): number {
     return Math.max(0, Math.floor(value))
 }
 
-class ScopedNetworkTracker {
-    private readonly pending = new Set<Request>()
+function resolveNetworkBackedVisualTimeout(settleMs: number): number {
+    const derived = settleMs * 3 + 300
+    return Math.max(1200, Math.min(2500, derived))
+}
+
+interface TrackedRequest {
+    resourceType: string
+    startedAt: number
+}
+
+class AdaptiveNetworkTracker {
+    private readonly pending = new Map<Request, TrackedRequest>()
     private started = false
+    private collecting = false
+    private startedAt = 0
     private idleSince = Date.now()
 
     constructor(private readonly page: Page) {}
@@ -174,21 +214,31 @@ class ScopedNetworkTracker {
     start(): void {
         if (this.started) return
         this.started = true
+        this.collecting = true
+        this.startedAt = Date.now()
+        this.idleSince = this.startedAt
 
         this.page.on('request', this.handleRequestStarted)
         this.page.on('requestfinished', this.handleRequestFinished)
         this.page.on('requestfailed', this.handleRequestFinished)
     }
 
+    freezeCollection(): void {
+        if (!this.started) return
+        this.collecting = false
+    }
+
     stop(): void {
         if (!this.started) return
         this.started = false
+        this.collecting = false
 
         this.page.off('request', this.handleRequestStarted)
         this.page.off('requestfinished', this.handleRequestFinished)
         this.page.off('requestfailed', this.handleRequestFinished)
 
         this.pending.clear()
+        this.startedAt = 0
         this.idleSince = Date.now()
     }
 
@@ -200,12 +250,15 @@ class ScopedNetworkTracker {
         if (quietMs === 0) return
 
         while (Date.now() < options.deadline) {
-            if (this.pending.size === 0) {
+            const now = Date.now()
+            const allowedPending = this.resolveAllowedPending(now)
+
+            if (this.pending.size <= allowedPending) {
                 if (this.idleSince === 0) {
-                    this.idleSince = Date.now()
+                    this.idleSince = now
                 }
 
-                const idleFor = Date.now() - this.idleSince
+                const idleFor = now - this.idleSince
                 if (idleFor >= quietMs) {
                     return
                 }
@@ -213,18 +266,18 @@ class ScopedNetworkTracker {
                 this.idleSince = 0
             }
 
-            const remaining = Math.max(1, options.deadline - Date.now())
+            const remaining = Math.max(1, options.deadline - now)
             await sleep(Math.min(NETWORK_POLL_MS, remaining))
         }
     }
 
     private readonly handleRequestStarted = (request: Request): void => {
-        if (!this.started) return
+        if (!this.started || !this.collecting) return
 
-        const resourceType = request.resourceType()
-        if (IGNORED_RESOURCE_TYPES.has(resourceType)) return
+        const trackedRequest = this.classifyRequest(request)
+        if (!trackedRequest) return
 
-        this.pending.add(request)
+        this.pending.set(request, trackedRequest)
         this.idleSince = 0
     }
 
@@ -235,6 +288,47 @@ class ScopedNetworkTracker {
         if (this.pending.size === 0) {
             this.idleSince = Date.now()
         }
+    }
+
+    private classifyRequest(request: Request): TrackedRequest | null {
+        const resourceType = request.resourceType().toLowerCase()
+        if (IGNORED_RESOURCE_TYPES.has(resourceType)) return null
+        if (!TRACKED_RESOURCE_TYPES.has(resourceType)) return null
+
+        const frame = request.frame()
+        if (!frame || frame !== this.page.mainFrame()) return null
+
+        return {
+            resourceType,
+            startedAt: Date.now(),
+        }
+    }
+
+    private resolveAllowedPending(now: number): number {
+        const relaxed =
+            now - this.startedAt >= NETWORK_RELAX_AFTER_MS
+                ? RELAXED_ALLOWED_PENDING
+                : 0
+
+        if (this.hasHeavyPending(now)) return 0
+        return relaxed
+    }
+
+    private hasHeavyPending(now: number): boolean {
+        for (const trackedRequest of this.pending.values()) {
+            if (HEAVY_RESOURCE_TYPES.has(trackedRequest.resourceType)) {
+                return true
+            }
+
+            if (
+                HEAVY_VISUAL_RESOURCE_TYPES.has(trackedRequest.resourceType) &&
+                now - trackedRequest.startedAt < HEAVY_VISUAL_REQUEST_WINDOW_MS
+            ) {
+                return true
+            }
+        }
+
+        return false
     }
 }
 
