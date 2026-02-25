@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import type {
+    OpensteerAuthScheme,
     OpensteerConfig,
     OpensteerMode,
     OpensteerRemoteOptions,
@@ -172,10 +173,40 @@ function parseMode(
     )
 }
 
+function parseAuthScheme(
+    value: unknown,
+    source: 'OPENSTEER_AUTH_SCHEME' | 'remote.authScheme'
+): OpensteerAuthScheme | undefined {
+    if (value == null) return undefined
+    if (typeof value !== 'string') {
+        throw new Error(
+            `Invalid ${source} value "${String(value)}". Use "api-key" or "bearer".`
+        )
+    }
+
+    const normalized = value.trim().toLowerCase()
+    if (!normalized) return undefined
+
+    if (normalized === 'api-key' || normalized === 'bearer') {
+        return normalized
+    }
+
+    throw new Error(
+        `Invalid ${source} value "${value}". Use "api-key" or "bearer".`
+    )
+}
+
 function resolveOpensteerApiKey(): string | undefined {
     const value = process.env.OPENSTEER_API_KEY?.trim()
     if (!value) return undefined
     return value
+}
+
+function resolveOpensteerAuthScheme(): OpensteerAuthScheme | undefined {
+    return parseAuthScheme(
+        process.env.OPENSTEER_AUTH_SCHEME,
+        'OPENSTEER_AUTH_SCHEME'
+    )
 }
 
 function normalizeRemoteOptions(
@@ -257,7 +288,12 @@ export function resolveConfig(
     const resolved = mergeDeep(mergedWithEnv, input) as ResolvedOpensteerConfig
 
     const envApiKey = resolveOpensteerApiKey()
+    const envAuthScheme = resolveOpensteerAuthScheme()
     const inputRemoteOptions = normalizeRemoteOptions(input.remote)
+    const inputAuthScheme = parseAuthScheme(
+        inputRemoteOptions?.authScheme,
+        'remote.authScheme'
+    )
     const inputHasRemoteApiKey = Boolean(
         inputRemoteOptions &&
             Object.prototype.hasOwnProperty.call(inputRemoteOptions, 'apiKey')
@@ -267,8 +303,16 @@ export function resolveConfig(
     })
 
     if (modeSelection.mode === 'remote') {
-        const resolvedRemote = normalizeRemoteOptions(resolved.remote)
-        resolved.remote = resolvedRemote ?? {}
+        const resolvedRemote = normalizeRemoteOptions(resolved.remote) ?? {}
+        const authScheme =
+            inputAuthScheme ??
+            envAuthScheme ??
+            parseAuthScheme(resolvedRemote.authScheme, 'remote.authScheme') ??
+            'api-key'
+        resolved.remote = {
+            ...resolvedRemote,
+            authScheme,
+        }
     }
 
     if (envApiKey && modeSelection.mode === 'remote' && !inputHasRemoteApiKey) {
