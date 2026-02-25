@@ -48,12 +48,36 @@ export type RemoteErrorCode =
     | 'REMOTE_RUNTIME_MISMATCH'
     | 'REMOTE_SESSION_STALE'
     | 'REMOTE_CONTROL_PLANE_ERROR'
+    | 'REMOTE_CONTRACT_MISMATCH'
     | 'REMOTE_INTERNAL'
 
+export const remoteSessionContractVersion = 'v3' as const
+export type RemoteSessionContractVersion = typeof remoteSessionContractVersion
+
+export type RemoteSessionSourceType =
+    | 'agent-thread'
+    | 'agent-run'
+    | 'local-remote'
+    | 'manual'
+
 export interface RemoteSessionCreateRequest {
+    remoteSessionContractVersion: RemoteSessionContractVersion
+    sourceType: 'local-remote'
+    clientSessionHint: string
+    localRunId: string
     name?: string
     model?: string
     launchContext?: Record<string, unknown>
+}
+
+export interface RemoteCloudSessionSummary {
+    sessionId: string
+    workspaceId: string
+    state: string
+    createdAt: number
+    sourceType: RemoteSessionSourceType
+    sourceRef?: string
+    label?: string
 }
 
 export interface RemoteSessionCreateResponse {
@@ -63,6 +87,8 @@ export interface RemoteSessionCreateResponse {
     actionToken: string
     cdpToken: string
     expiresAt?: number
+    cloudSessionUrl: string
+    cloudSession: RemoteCloudSessionSummary
 }
 
 export interface RemoteSelectorCacheImportEntry {

@@ -601,6 +601,8 @@ Exported for advanced integration:
 | `OPENSTEER_MODEL` | Default model for LLM resolve/extract (default: `gpt-5.1`) |
 | `OPENSTEER_API_KEY` | API key for remote mode |
 | `OPENSTEER_BASE_URL` | Remote control-plane base URL (default: `https://remote.opensteer.com`) |
+| `OPENSTEER_APP_URL` | Cloud app base URL for deep links (default: `https://opensteer.com`) |
+| `OPENSTEER_REMOTE_ANNOUNCE` | Remote launch announcement policy: `always`, `off`, `tty` (default: `always`) |
 | `OPENSTEER_HEADLESS` | `true` or `false` |
 | `OPENSTEER_BROWSER_PATH` | Custom browser executable path |
 | `OPENSTEER_SLOW_MO` | Slow-motion delay in milliseconds |

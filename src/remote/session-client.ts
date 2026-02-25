@@ -47,7 +47,18 @@ export class RemoteSessionClient {
             throw await parseHttpError(response)
         }
 
-        return (await response.json()) as RemoteSessionCreateResponse
+        let body: unknown
+        try {
+            body = await response.json()
+        } catch {
+            throw new OpensteerRemoteError(
+                'REMOTE_CONTRACT_MISMATCH',
+                'Invalid remote session create response: expected a JSON object.',
+                response.status
+            )
+        }
+
+        return parseCreateResponse(body, response.status)
     }
 
     async close(sessionId: string): Promise<void> {
@@ -128,6 +139,182 @@ function normalizeBaseUrl(baseUrl: string): string {
     return baseUrl.replace(/\/+$/, '')
 }
 
+function parseCreateResponse(
+    body: unknown,
+    status: number
+): RemoteSessionCreateResponse {
+    const root = requireObject(
+        body,
+        'Invalid remote session create response: expected a JSON object.',
+        status
+    )
+    const sessionId = requireString(root, 'sessionId', status)
+    const actionWsUrl = requireString(root, 'actionWsUrl', status)
+    const cdpWsUrl = requireString(root, 'cdpWsUrl', status)
+    const actionToken = requireString(root, 'actionToken', status)
+    const cdpToken = requireString(root, 'cdpToken', status)
+    const cloudSessionUrl = requireString(root, 'cloudSessionUrl', status)
+    const cloudSessionRoot = requireObject(
+        root.cloudSession,
+        'Invalid remote session create response: cloudSession must be an object.',
+        status
+    )
+
+    const cloudSession = {
+        sessionId: requireString(cloudSessionRoot, 'sessionId', status, 'cloudSession'),
+        workspaceId: requireString(
+            cloudSessionRoot,
+            'workspaceId',
+            status,
+            'cloudSession'
+        ),
+        state: requireString(cloudSessionRoot, 'state', status, 'cloudSession'),
+        createdAt: requireNumber(cloudSessionRoot, 'createdAt', status, 'cloudSession'),
+        sourceType: requireSourceType(cloudSessionRoot, 'sourceType', status, 'cloudSession'),
+        sourceRef: optionalString(cloudSessionRoot, 'sourceRef', status, 'cloudSession'),
+        label: optionalString(cloudSessionRoot, 'label', status, 'cloudSession'),
+    }
+
+    const expiresAt = optionalNumber(root, 'expiresAt', status)
+    return {
+        sessionId,
+        actionWsUrl,
+        cdpWsUrl,
+        actionToken,
+        cdpToken,
+        expiresAt,
+        cloudSessionUrl,
+        cloudSession,
+    }
+}
+
+function requireObject(
+    value: unknown,
+    message: string,
+    status?: number
+): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new OpensteerRemoteError('REMOTE_CONTRACT_MISMATCH', message, status)
+    }
+    return value as Record<string, unknown>
+}
+
+function requireString(
+    source: Record<string, unknown>,
+    field: string,
+    status: number,
+    parent?: string
+): string {
+    const value = source[field]
+    if (typeof value !== 'string' || !value.trim()) {
+        throw new OpensteerRemoteError(
+            'REMOTE_CONTRACT_MISMATCH',
+            `Invalid remote session create response: ${formatFieldPath(
+                field,
+                parent
+            )} must be a non-empty string.`,
+            status
+        )
+    }
+    return value
+}
+
+function requireNumber(
+    source: Record<string, unknown>,
+    field: string,
+    status: number,
+    parent?: string
+): number {
+    const value = source[field]
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+        throw new OpensteerRemoteError(
+            'REMOTE_CONTRACT_MISMATCH',
+            `Invalid remote session create response: ${formatFieldPath(
+                field,
+                parent
+            )} must be a finite number.`,
+            status
+        )
+    }
+    return value
+}
+
+function optionalString(
+    source: Record<string, unknown>,
+    field: string,
+    status: number,
+    parent?: string
+): string | undefined {
+    const value = source[field]
+    if (value == null) {
+        return undefined
+    }
+    if (typeof value !== 'string') {
+        throw new OpensteerRemoteError(
+            'REMOTE_CONTRACT_MISMATCH',
+            `Invalid remote session create response: ${formatFieldPath(
+                field,
+                parent
+            )} must be a string when present.`,
+            status
+        )
+    }
+    return value
+}
+
+function optionalNumber(
+    source: Record<string, unknown>,
+    field: string,
+    status: number,
+    parent?: string
+): number | undefined {
+    const value = source[field]
+    if (value == null) {
+        return undefined
+    }
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+        throw new OpensteerRemoteError(
+            'REMOTE_CONTRACT_MISMATCH',
+            `Invalid remote session create response: ${formatFieldPath(
+                field,
+                parent
+            )} must be a finite number when present.`,
+            status
+        )
+    }
+    return value
+}
+
+function requireSourceType(
+    source: Record<string, unknown>,
+    field: string,
+    status: number,
+    parent?: string
+): 'agent-thread' | 'agent-run' | 'local-remote' | 'manual' {
+    const value = source[field]
+    if (
+        value === 'agent-thread' ||
+        value === 'agent-run' ||
+        value === 'local-remote' ||
+        value === 'manual'
+    ) {
+        return value
+    }
+
+    throw new OpensteerRemoteError(
+        'REMOTE_CONTRACT_MISMATCH',
+        `Invalid remote session create response: ${formatFieldPath(
+            field,
+            parent
+        )} must be one of "agent-thread", "agent-run", "local-remote", or "manual".`,
+        status
+    )
+}
+
+function formatFieldPath(field: string, parent?: string): string {
+    return parent ? `"${parent}.${field}"` : `"${field}"`
+}
+
 function zeroImportResponse(): RemoteSelectorCacheImportResponse {
     return {
         imported: 0,
@@ -188,6 +375,7 @@ function toRemoteErrorCode(
         code === 'REMOTE_RUNTIME_UNAVAILABLE' ||
         code === 'REMOTE_RUNTIME_MISMATCH' ||
         code === 'REMOTE_SESSION_STALE' ||
+        code === 'REMOTE_CONTRACT_MISMATCH' ||
         code === 'REMOTE_CONTROL_PLANE_ERROR'
     ) {
         return code
