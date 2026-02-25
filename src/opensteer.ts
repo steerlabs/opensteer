@@ -482,7 +482,7 @@ export class Opensteer {
                     buildCloudSessionUrl(
                         this.remote.appUrl,
                         session.cloudSession.sessionId
-                    ) || session.cloudSessionUrl
+                    )
                 this.announceRemoteSession({
                     sessionId: session.sessionId,
                     workspaceId: session.cloudSession.workspaceId,

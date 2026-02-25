@@ -123,6 +123,7 @@ describe('config', () => {
         expect(resolved.remote).toEqual({
             apiKey: 'ork_env_123',
             authScheme: 'api-key',
+            announce: 'always',
         })
     })
 
@@ -137,6 +138,7 @@ describe('config', () => {
         expect(resolved.remote).toEqual({
             apiKey: 'ork_test_123',
             authScheme: 'api-key',
+            announce: 'always',
         })
     })
 
@@ -153,6 +155,7 @@ describe('config', () => {
         expect(resolved.remote).toEqual({
             apiKey: 'ork_test_123',
             authScheme: 'bearer',
+            announce: 'always',
         })
     })
 
@@ -170,6 +173,42 @@ describe('config', () => {
         expect(resolved.remote).toEqual({
             apiKey: 'ork_test_123',
             authScheme: 'bearer',
+            announce: 'always',
+        })
+    })
+
+    it('resolveConfig uses OPENSTEER_REMOTE_ANNOUNCE when remote.announce is not set', () => {
+        process.env.OPENSTEER_REMOTE_ANNOUNCE = 'tty'
+
+        const resolved = resolveConfig({
+            mode: 'remote',
+            remote: {
+                apiKey: 'ork_test_123',
+            },
+        })
+
+        expect(resolved.remote).toEqual({
+            apiKey: 'ork_test_123',
+            authScheme: 'api-key',
+            announce: 'tty',
+        })
+    })
+
+    it('resolveConfig keeps explicit remote.announce over OPENSTEER_REMOTE_ANNOUNCE', () => {
+        process.env.OPENSTEER_REMOTE_ANNOUNCE = 'off'
+
+        const resolved = resolveConfig({
+            mode: 'remote',
+            remote: {
+                apiKey: 'ork_test_123',
+                announce: 'always',
+            },
+        })
+
+        expect(resolved.remote).toEqual({
+            apiKey: 'ork_test_123',
+            authScheme: 'api-key',
+            announce: 'always',
         })
     })
 
@@ -184,6 +223,13 @@ describe('config', () => {
         process.env.OPENSTEER_AUTH_SCHEME = 'token'
         expect(() => resolveConfig({})).toThrow(
             'Invalid OPENSTEER_AUTH_SCHEME value "token". Use "api-key" or "bearer".'
+        )
+    })
+
+    it('throws when OPENSTEER_REMOTE_ANNOUNCE has an invalid value', () => {
+        process.env.OPENSTEER_REMOTE_ANNOUNCE = 'sometimes'
+        expect(() => resolveConfig({ mode: 'remote' })).toThrow(
+            'Invalid OPENSTEER_REMOTE_ANNOUNCE value "sometimes". Use "always", "off", or "tty".'
         )
     })
 
@@ -227,6 +273,7 @@ describe('config', () => {
         expect(resolved.remote).toEqual({
             apiKey: 'ork_env_123',
             authScheme: 'api-key',
+            announce: 'always',
         })
     })
 
