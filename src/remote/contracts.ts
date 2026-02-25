@@ -57,12 +57,12 @@ export type RemoteSessionContractVersion = typeof remoteSessionContractVersion
 export type RemoteSessionSourceType =
     | 'agent-thread'
     | 'agent-run'
-    | 'local-remote'
+    | 'local-cloud'
     | 'manual'
 
 export interface RemoteSessionCreateRequest {
     remoteSessionContractVersion: RemoteSessionContractVersion
-    sourceType: 'local-remote'
+    sourceType: 'local-cloud'
     clientSessionHint: string
     localRunId: string
     name?: string

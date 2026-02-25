@@ -6,7 +6,7 @@ import { remoteSessionContractVersion } from '../../src/remote/contracts.js'
 const ORIGINAL_FETCH = globalThis.fetch
 const CREATE_REQUEST = {
     remoteSessionContractVersion,
-    sourceType: 'local-remote' as const,
+    sourceType: 'local-cloud' as const,
     clientSessionHint: 'default',
     localRunId: 'default-run-1234',
 }
@@ -23,7 +23,7 @@ const CREATE_RESPONSE = {
         workspaceId: 'ws_123',
         state: 'active',
         createdAt: 1735707600000,
-        sourceType: 'local-remote' as const,
+        sourceType: 'local-cloud' as const,
     },
 }
 
