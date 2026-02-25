@@ -781,6 +781,8 @@ Environment:
   OPENSTEER_MODE            Runtime mode: "local" (default) or "remote"
   OPENSTEER_API_KEY         Required when remote mode is selected
   OPENSTEER_BASE_URL        Override remote control-plane base URL
+  OPENSTEER_APP_URL         Cloud app base URL for emitting browser session links (default: https://opensteer.com)
+  OPENSTEER_REMOTE_ANNOUNCE Remote session announcement policy: always (default), off, tty
 `)
 }
 
