@@ -1,7 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { config as dotenvConfig } from 'dotenv'
+import { parse as parseDotenv } from 'dotenv'
 import type {
     OpensteerAuthScheme,
     OpensteerCloudAnnouncePolicy,
@@ -44,6 +44,8 @@ const DEFAULT_CONFIG: Required<
     debug: false,
 }
 
+type EnvMap = Record<string, string | undefined>
+
 function dotenvFileOrder(nodeEnv: string | undefined): string[] {
     const normalized = nodeEnv?.trim() || ''
     const files: string[] = []
@@ -62,23 +64,41 @@ function dotenvFileOrder(nodeEnv: string | undefined): string[] {
     return files
 }
 
-function loadDotenv(rootDir: string): void {
-    if (parseBool(process.env.OPENSTEER_DISABLE_DOTENV_AUTOLOAD) === true) {
-        return
+function loadDotenvValues(rootDir: string, baseEnv: EnvMap): EnvMap {
+    const values: EnvMap = {}
+    if (parseBool(baseEnv.OPENSTEER_DISABLE_DOTENV_AUTOLOAD) === true) {
+        return values
     }
 
     const baseDir = path.resolve(rootDir)
-    const nodeEnv = process.env.NODE_ENV?.trim() || ''
+    const nodeEnv = baseEnv.NODE_ENV?.trim() || ''
 
     for (const filename of dotenvFileOrder(nodeEnv)) {
         const filePath = path.join(baseDir, filename)
         if (!fs.existsSync(filePath)) continue
 
-        dotenvConfig({
-            path: filePath,
-            override: false,
-            quiet: true,
-        })
+        try {
+            const raw = fs.readFileSync(filePath, 'utf8')
+            const parsed = parseDotenv(raw)
+            for (const [key, value] of Object.entries(parsed)) {
+                if (values[key] === undefined) {
+                    values[key] = value
+                }
+            }
+        } catch {
+            continue
+        }
+    }
+
+    return values
+}
+
+function resolveEnv(rootDir: string): EnvMap {
+    const baseEnv = process.env as EnvMap
+    const dotenvValues = loadDotenvValues(rootDir, baseEnv)
+    return {
+        ...dotenvValues,
+        ...baseEnv,
     }
 }
 
@@ -255,17 +275,14 @@ function parseCloudAnnounce(
     )
 }
 
-function resolveOpensteerApiKey(): string | undefined {
-    const value = process.env.OPENSTEER_API_KEY?.trim()
+function resolveOpensteerApiKey(env: EnvMap): string | undefined {
+    const value = env.OPENSTEER_API_KEY?.trim()
     if (!value) return undefined
     return value
 }
 
-function resolveOpensteerAuthScheme(): OpensteerAuthScheme | undefined {
-    return parseAuthScheme(
-        process.env.OPENSTEER_AUTH_SCHEME,
-        'OPENSTEER_AUTH_SCHEME'
-    )
+function resolveOpensteerAuthScheme(env: EnvMap): OpensteerAuthScheme | undefined {
+    return parseAuthScheme(env.OPENSTEER_AUTH_SCHEME, 'OPENSTEER_AUTH_SCHEME')
 }
 
 function normalizeCloudOptions(
@@ -292,7 +309,8 @@ function parseCloudEnabled(
 }
 
 export function resolveCloudSelection(
-    config: Pick<OpensteerConfig, 'cloud'>
+    config: Pick<OpensteerConfig, 'cloud'>,
+    env: EnvMap = process.env as EnvMap
 ): CloudSelection {
     const configCloud = parseCloudEnabled(config.cloud, 'cloud')
 
@@ -303,10 +321,7 @@ export function resolveCloudSelection(
         }
     }
 
-    const envMode = parseRuntimeMode(
-        process.env.OPENSTEER_MODE,
-        'OPENSTEER_MODE'
-    )
+    const envMode = parseRuntimeMode(env.OPENSTEER_MODE, 'OPENSTEER_MODE')
     if (envMode) {
         return {
             cloud: envMode === 'cloud',
@@ -323,51 +338,62 @@ export function resolveCloudSelection(
 export function resolveConfig(
     input: OpensteerConfig = {}
 ): ResolvedOpensteerConfig {
-    const rootDir =
-        input.storage?.rootDir ??
-        DEFAULT_CONFIG.storage.rootDir ??
-        process.cwd()
-    loadDotenv(rootDir)
+    const initialRootDir =
+        input.storage?.rootDir ?? process.cwd()
+    const runtimeDefaults = mergeDeep(DEFAULT_CONFIG, {
+        storage: {
+            rootDir: initialRootDir,
+        },
+    })
 
-    if (process.env.OPENSTEER_AI_MODEL) {
+    assertNoLegacyAiConfig('Opensteer constructor config', input)
+    assertNoLegacyRuntimeConfig('Opensteer constructor config', input)
+
+    const fileConfig = loadConfigFile(initialRootDir)
+    assertNoLegacyAiConfig('.opensteer/config.json', fileConfig)
+    assertNoLegacyRuntimeConfig('.opensteer/config.json', fileConfig)
+    const fileRootDir =
+        typeof fileConfig.storage?.rootDir === 'string'
+            ? fileConfig.storage.rootDir
+            : undefined
+    const envRootDir =
+        input.storage?.rootDir ??
+        fileRootDir ??
+        initialRootDir
+    const env = resolveEnv(envRootDir)
+
+    if (env.OPENSTEER_AI_MODEL) {
         throw new Error(
             'OPENSTEER_AI_MODEL is no longer supported. Use OPENSTEER_MODEL instead.'
         )
     }
-    if (process.env.OPENSTEER_RUNTIME != null) {
+    if (env.OPENSTEER_RUNTIME != null) {
         throw new Error(
             'OPENSTEER_RUNTIME is no longer supported. Use OPENSTEER_MODE instead.'
         )
     }
 
-    assertNoLegacyAiConfig('Opensteer constructor config', input)
-    assertNoLegacyRuntimeConfig('Opensteer constructor config', input)
-
-    const fileConfig = loadConfigFile(rootDir)
-    assertNoLegacyAiConfig('.opensteer/config.json', fileConfig)
-    assertNoLegacyRuntimeConfig('.opensteer/config.json', fileConfig)
-
     const envConfig: Partial<OpensteerConfig> = {
         browser: {
-            headless: parseBool(process.env.OPENSTEER_HEADLESS),
-            executablePath: process.env.OPENSTEER_BROWSER_PATH || undefined,
-            slowMo: parseNumber(process.env.OPENSTEER_SLOW_MO),
-            connectUrl: process.env.OPENSTEER_CONNECT_URL || undefined,
-            channel: process.env.OPENSTEER_CHANNEL || undefined,
-            profileDir: process.env.OPENSTEER_PROFILE_DIR || undefined,
+            headless: parseBool(env.OPENSTEER_HEADLESS),
+            executablePath: env.OPENSTEER_BROWSER_PATH || undefined,
+            slowMo: parseNumber(env.OPENSTEER_SLOW_MO),
+            connectUrl: env.OPENSTEER_CONNECT_URL || undefined,
+            channel: env.OPENSTEER_CHANNEL || undefined,
+            profileDir: env.OPENSTEER_PROFILE_DIR || undefined,
         },
-        model: process.env.OPENSTEER_MODEL || undefined,
-        debug: parseBool(process.env.OPENSTEER_DEBUG),
+        model: env.OPENSTEER_MODEL || undefined,
+        debug: parseBool(env.OPENSTEER_DEBUG),
     }
 
-    const mergedWithFile = mergeDeep(DEFAULT_CONFIG, fileConfig)
+    const mergedWithFile = mergeDeep(runtimeDefaults, fileConfig)
     const mergedWithEnv = mergeDeep(mergedWithFile, envConfig)
     const resolved = mergeDeep(mergedWithEnv, input) as ResolvedOpensteerConfig
 
-    const envApiKey = resolveOpensteerApiKey()
-    const envAuthScheme = resolveOpensteerAuthScheme()
+    const envApiKey = resolveOpensteerApiKey(env)
+    const envAuthScheme = resolveOpensteerAuthScheme(env)
     const envCloudAnnounce = parseCloudAnnounce(
-        process.env.OPENSTEER_REMOTE_ANNOUNCE,
+        env.OPENSTEER_REMOTE_ANNOUNCE,
         'OPENSTEER_REMOTE_ANNOUNCE'
     )
     const inputCloudOptions = normalizeCloudOptions(input.cloud)
@@ -385,7 +411,7 @@ export function resolveConfig(
     )
     const cloudSelection = resolveCloudSelection({
         cloud: resolved.cloud,
-    })
+    }, env)
 
     if (cloudSelection.cloud) {
         const resolvedCloud = normalizeCloudOptions(resolved.cloud) ?? {}
