@@ -84,8 +84,8 @@ describe('config', () => {
         })
     })
 
-    it('resolveCloudSelection maps OPENSTEER_MODE=remote to cloud mode', () => {
-        process.env.OPENSTEER_MODE = 'remote'
+    it('resolveCloudSelection maps OPENSTEER_MODE=cloud to cloud mode', () => {
+        process.env.OPENSTEER_MODE = 'cloud'
         const selection = resolveCloudSelection({})
         expect(selection).toEqual({
             cloud: true,
@@ -114,7 +114,7 @@ describe('config', () => {
     })
 
     it('resolveCloudSelection supports explicit cloud disable overrides', () => {
-        process.env.OPENSTEER_MODE = 'remote'
+        process.env.OPENSTEER_MODE = 'cloud'
         const selection = resolveCloudSelection({
             cloud: false,
         })
@@ -136,7 +136,7 @@ describe('config', () => {
     })
 
     it('resolveConfig sets cloud config from OPENSTEER_MODE and OPENSTEER_API_KEY', () => {
-        process.env.OPENSTEER_MODE = 'remote'
+        process.env.OPENSTEER_MODE = 'cloud'
         process.env.OPENSTEER_API_KEY = 'ork_env_123'
 
         const resolved = resolveConfig({})
@@ -230,7 +230,7 @@ describe('config', () => {
     it('throws when OPENSTEER_MODE has an invalid value', () => {
         process.env.OPENSTEER_MODE = 'edge'
         expect(() => resolveConfig({})).toThrow(
-            'Invalid OPENSTEER_MODE value "edge". Use "local" or "remote".'
+            'Invalid OPENSTEER_MODE value "edge". Use "local" or "cloud".'
         )
     })
 
@@ -329,7 +329,7 @@ describe('config', () => {
     it('throws when legacy mode config is passed directly', () => {
         const legacyConfig: OpensteerConfig = {
             // @ts-expect-error - validates rejection of unsupported legacy mode config.
-            mode: 'remote',
+            mode: 'local',
         }
 
         expect(() =>

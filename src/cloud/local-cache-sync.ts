@@ -1,17 +1,17 @@
 import fs from 'fs'
 import path from 'path'
-import type { RemoteSelectorCacheImportEntry } from './contracts.js'
+import type { CloudSelectorCacheImportEntry } from './contracts.js'
 import type { SelectorFile } from '../storage/local.js'
 import type { LocalSelectorStorage } from '../storage/local.js'
 
 export function collectLocalSelectorCacheEntries(
     storage: LocalSelectorStorage
-): RemoteSelectorCacheImportEntry[] {
+): CloudSelectorCacheImportEntry[] {
     const namespace = storage.getNamespace()
     const namespaceDir = storage.getNamespaceDir()
     if (!fs.existsSync(namespaceDir)) return []
 
-    const entries: RemoteSelectorCacheImportEntry[] = []
+    const entries: CloudSelectorCacheImportEntry[] = []
     const fileNames = fs.readdirSync(namespaceDir)
 
     for (const fileName of fileNames) {
@@ -135,9 +135,9 @@ function normalizeSchemaHash(value: string | undefined): string | undefined {
 }
 
 function dedupeNewest(
-    entries: RemoteSelectorCacheImportEntry[]
-): RemoteSelectorCacheImportEntry[] {
-    const byKey = new Map<string, RemoteSelectorCacheImportEntry>()
+    entries: CloudSelectorCacheImportEntry[]
+): CloudSelectorCacheImportEntry[] {
+    const byKey = new Map<string, CloudSelectorCacheImportEntry>()
     for (const entry of entries) {
         const key = [
             entry.namespace,
