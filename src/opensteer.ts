@@ -1,4 +1,4 @@
-import { createHash } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import type { Browser, BrowserContext, ElementHandle, Page } from 'playwright'
 import { BrowserPool } from './browser/pool.js'
 import {
@@ -106,7 +106,10 @@ import {
     type PersistedExtractPayload,
 } from './extraction/array-consolidation.js'
 import { inflateDataPathObject } from './extraction/data-path.js'
-import type { RemoteActionMethod } from './remote/contracts.js'
+import {
+    remoteSessionContractVersion as REMOTE_SESSION_CONTRACT_VERSION,
+    type RemoteActionMethod,
+} from './remote/contracts.js'
 import { ActionWsClient } from './remote/action-ws-client.js'
 import {
     remoteNotLaunchedError,
@@ -219,7 +222,8 @@ export class Opensteer {
             this.remote = createRemoteRuntimeState(
                 apiKey,
                 remoteConfig?.baseUrl,
-                remoteConfig?.authScheme
+                remoteConfig?.authScheme,
+                remoteConfig?.appUrl
             )
         } else {
             this.remote = null
@@ -370,6 +374,43 @@ export class Opensteer {
         return this.remote?.sessionId ?? null
     }
 
+    getCloudSessionUrl(): string | null {
+        return this.remote?.cloudSessionUrl ?? null
+    }
+
+    private announceRemoteSession(args: {
+        sessionId: string
+        workspaceId: string
+        cloudSessionUrl: string | null
+    }): void {
+        if (!this.shouldAnnounceRemoteSession()) {
+            return
+        }
+
+        const fields = [
+            `sessionId=${args.sessionId}`,
+            `workspaceId=${args.workspaceId}`,
+        ]
+        if (args.cloudSessionUrl) {
+            fields.push(`url=${args.cloudSessionUrl}`)
+        }
+
+        process.stderr.write(`[opensteer] remote session ready ${fields.join(' ')}\n`)
+    }
+
+    private shouldAnnounceRemoteSession(): boolean {
+        const announce = this.config.remote?.announce ?? 'always'
+        if (announce === 'off') {
+            return false
+        }
+
+        if (announce === 'tty') {
+            return Boolean(process.stderr.isTTY)
+        }
+
+        return true
+    }
+
     async launch(options: LaunchOptions = {}): Promise<void> {
         if (this.pageRef && !this.ownsBrowser) {
             throw new Error(
@@ -385,6 +426,7 @@ export class Opensteer {
             let actionClient: ActionWsClient | null = null
             let browser: Browser | null = null
             let sessionId: string | null = null
+            let localRunId: string | null = null
 
             try {
                 try {
@@ -401,7 +443,13 @@ export class Opensteer {
                     }
                 }
 
+                localRunId = this.remote.localRunId || buildLocalRunId(this.namespace)
+                this.remote.localRunId = localRunId
                 const session = await this.remote.sessionClient.create({
+                    remoteSessionContractVersion: REMOTE_SESSION_CONTRACT_VERSION,
+                    sourceType: 'local-remote',
+                    clientSessionHint: this.namespace,
+                    localRunId,
                     name: this.namespace,
                     model: this.config.model,
                     launchContext:
@@ -430,6 +478,16 @@ export class Opensteer {
 
                 this.remote.actionClient = actionClient
                 this.remote.sessionId = sessionId
+                this.remote.cloudSessionUrl =
+                    buildCloudSessionUrl(
+                        this.remote.appUrl,
+                        session.cloudSession.sessionId
+                    ) || session.cloudSessionUrl
+                this.announceRemoteSession({
+                    sessionId: session.sessionId,
+                    workspaceId: session.cloudSession.workspaceId,
+                    cloudSessionUrl: this.remote.cloudSessionUrl,
+                })
                 return
             } catch (error) {
                 if (actionClient) {
@@ -443,6 +501,7 @@ export class Opensteer {
                         .close(sessionId)
                         .catch(() => undefined)
                 }
+                this.remote.cloudSessionUrl = null
                 throw error
             }
         }
@@ -493,6 +552,8 @@ export class Opensteer {
 
             this.remote.actionClient = null
             this.remote.sessionId = null
+            this.remote.localRunId = null
+            this.remote.cloudSessionUrl = null
 
             this.browser = null
             this.pageRef = null
@@ -3102,4 +3163,20 @@ function getScrollDelta(options: ScrollOptions): { x: number; y: number } {
         default:
             return { x: 0, y: absoluteAmount }
     }
+}
+
+function buildLocalRunId(namespace: string): string {
+    const normalized = namespace.trim() || 'default'
+    return `${normalized}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`
+}
+
+function buildCloudSessionUrl(
+    appUrl: string | null,
+    sessionId: string
+): string | null {
+    if (!appUrl) {
+        return null
+    }
+
+    return `${appUrl}/browser/${encodeURIComponent(sessionId)}`
 }

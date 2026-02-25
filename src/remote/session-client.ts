@@ -188,6 +188,7 @@ function toRemoteErrorCode(
         code === 'REMOTE_RUNTIME_UNAVAILABLE' ||
         code === 'REMOTE_RUNTIME_MISMATCH' ||
         code === 'REMOTE_SESSION_STALE' ||
+        code === 'REMOTE_CONTRACT_MISMATCH' ||
         code === 'REMOTE_CONTROL_PLANE_ERROR'
     ) {
         return code
