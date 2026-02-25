@@ -2,13 +2,13 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { describe, expect, it } from 'vitest'
-import { collectLocalSelectorCacheEntries } from '../../src/remote/local-cache-sync.js'
+import { collectLocalSelectorCacheEntries } from '../../src/cloud/local-cache-sync.js'
 import { LocalSelectorStorage } from '../../src/storage/local.js'
 
 describe('collectLocalSelectorCacheEntries', () => {
     it('collects valid entries and normalizes method and origin', () => {
-        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-remote-sync-'))
-        const storage = new LocalSelectorStorage(root, 'remote-suite')
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-cloud-sync-'))
+        const storage = new LocalSelectorStorage(root, 'cloud-suite')
 
         storage.writeSelector({
             id: 'abcdef0123456789',
@@ -40,7 +40,7 @@ describe('collectLocalSelectorCacheEntries', () => {
         expect(entries).toEqual(
             expect.arrayContaining([
                 expect.objectContaining({
-                    namespace: 'remote-suite',
+                    namespace: 'cloud-suite',
                     descriptionHash: 'abcdef0123456789',
                     method: 'getElementText',
                     siteOrigin: 'https://shop.example.com',
@@ -57,9 +57,9 @@ describe('collectLocalSelectorCacheEntries', () => {
 
     it('skips invalid entries and keeps newest duplicate', () => {
         const root = fs.mkdtempSync(
-            path.join(os.tmpdir(), 'opensteer-remote-sync-dedupe-')
+            path.join(os.tmpdir(), 'opensteer-cloud-sync-dedupe-')
         )
-        const storage = new LocalSelectorStorage(root, 'remote-suite')
+        const storage = new LocalSelectorStorage(root, 'cloud-suite')
 
         storage.writeSelector({
             id: 'fedcba9876543210',

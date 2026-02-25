@@ -778,11 +778,11 @@ Environment:
   OPENSTEER_SESSION         Runtime session id (equivalent to --session)
   OPENSTEER_CLIENT_ID       Stable client identity for default session binding
   OPENSTEER_NAME            Default selector namespace for 'open' when --name is omitted
-  OPENSTEER_MODE            Runtime mode: "local" (default) or "remote"
-  OPENSTEER_API_KEY         Required when remote mode is selected
-  OPENSTEER_BASE_URL        Override remote control-plane base URL
+  OPENSTEER_MODE            Runtime routing: "local" (default) or "cloud"
+  OPENSTEER_API_KEY         Required when cloud mode is selected
+  OPENSTEER_BASE_URL        Override cloud control-plane base URL
   OPENSTEER_APP_URL         Cloud app base URL for emitting browser session links (default: https://opensteer.com)
-  OPENSTEER_REMOTE_ANNOUNCE Remote session announcement policy: always (default), off, tty
+  OPENSTEER_REMOTE_ANNOUNCE Cloud session announcement policy: always (default), off, tty
 `)
 }
 

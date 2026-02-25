@@ -37,22 +37,22 @@ interface CdpExceptionDetails {
     }
 }
 
-interface CdpRemoteObject {
+interface CdpRuntimeObject {
     objectId?: string
     value?: unknown
 }
 
 interface CdpResolveNodeResult {
-    object?: CdpRemoteObject
+    object?: CdpRuntimeObject
 }
 
 interface CdpRuntimeEvaluateResult {
-    result: CdpRemoteObject
+    result: CdpRuntimeObject
     exceptionDetails?: CdpExceptionDetails
 }
 
 interface CdpRuntimeCallFunctionResult {
-    result: CdpRemoteObject
+    result: CdpRuntimeObject
     exceptionDetails?: CdpExceptionDetails
 }
 

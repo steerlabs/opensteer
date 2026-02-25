@@ -62,11 +62,11 @@ Set mode explicitly with:
 ```bash
 OPENSTEER_MODE=local
 # or
-OPENSTEER_MODE=remote
+OPENSTEER_MODE=cloud
 ```
 
-When mode is `remote`, `OPENSTEER_API_KEY` (or `remote.apiKey`) is required.
-Remote mode is fail-fast and does not automatically fall back to local mode.
+When `OPENSTEER_MODE=cloud`, `OPENSTEER_API_KEY` (or `cloud.apiKey`) is required.
+Cloud mode is fail-fast and does not automatically fall back to local mode.
 
 ## 7) Close
 
@@ -74,20 +74,19 @@ Remote mode is fail-fast and does not automatically fall back to local mode.
 await opensteer.close()
 ```
 
-## Optional remote force override
+## Optional cloud force override
 
 ```ts
 const opensteer = new Opensteer({
-    mode: 'remote',
-    remote: {
+    cloud: {
         apiKey: process.env.OPENSTEER_API_KEY,
         baseUrl: process.env.OPENSTEER_BASE_URL,
     },
 })
 ```
 
-`mode: 'remote'` always forces remote mode, even when
+`cloud: true` always forces cloud mode, even when
 `OPENSTEER_MODE=local`.
 
-Remote base URL defaults to `https://remote.opensteer.com` and can be overridden
+Cloud base URL defaults to `https://remote.opensteer.com` and can be overridden
 with `OPENSTEER_BASE_URL`.

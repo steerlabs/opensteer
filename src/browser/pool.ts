@@ -13,7 +13,7 @@ export interface BrowserSession {
     context: BrowserContext
     page: Page
     /** True when connected to an external browser. close() disconnects without killing it. */
-    isRemote: boolean
+    isExternal: boolean
 }
 
 export class BrowserPool {
@@ -97,7 +97,7 @@ export class BrowserPool {
             const pages = context.pages()
             const page = pages.length > 0 ? pages[0] : await context.newPage()
 
-            return { browser, context, page, isRemote: true }
+            return { browser, context, page, isExternal: true }
         } catch (error) {
             if (browser) {
                 await browser.close().catch(() => undefined)
@@ -150,7 +150,7 @@ export class BrowserPool {
             page = await context.newPage()
         }
 
-        return { browser, context, page, isRemote: false }
+        return { browser, context, page, isExternal: false }
     }
 
     private async launchSandbox(
@@ -170,6 +170,6 @@ export class BrowserPool {
 
         this.browser = browser
 
-        return { browser, context, page, isRemote: false }
-    }
+        return { browser, context, page, isExternal: false }
+}
 }

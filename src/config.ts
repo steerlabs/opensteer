@@ -3,10 +3,9 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import type {
     OpensteerAuthScheme,
+    OpensteerCloudAnnouncePolicy,
+    OpensteerCloudOptions,
     OpensteerConfig,
-    OpensteerMode,
-    OpensteerRemoteAnnouncePolicy,
-    OpensteerRemoteOptions,
 } from './types.js'
 import { normalizeNamespace } from './storage/namespace.js'
 
@@ -14,13 +13,16 @@ export interface ResolvedOpensteerConfig extends OpensteerConfig {
     model: string
 }
 
-export type Mode = OpensteerMode
+type RuntimeMode = 'local' | 'cloud'
 
-export type ModeSelectionSource = 'config.mode' | 'env.OPENSTEER_MODE' | 'default'
+export type CloudSelectionSource =
+    | 'config.cloud'
+    | 'env.OPENSTEER_MODE'
+    | 'default'
 
-export interface ModeSelection {
-    mode: Mode
-    source: ModeSelectionSource
+export interface CloudSelection {
+    cloud: boolean
+    source: CloudSelectionSource
 }
 
 const DEFAULT_CONFIG: Required<
@@ -58,38 +60,32 @@ function assertNoLegacyAiConfig(source: string, config: unknown): void {
     }
 }
 
-function assertNoLegacyModeConfig(source: string, config: unknown): void {
+function assertNoLegacyRuntimeConfig(source: string, config: unknown): void {
     if (!config || typeof config !== 'object') return
 
     const configRecord = config as Record<string, unknown>
 
     if (hasOwn(configRecord, 'runtime')) {
         throw new Error(
-            `Legacy "runtime" config is no longer supported in ${source}. Use top-level "mode" instead.`
+            `Legacy "runtime" config is no longer supported in ${source}. Use top-level "cloud" instead.`
+        )
+    }
+
+    if (hasOwn(configRecord, 'mode')) {
+        throw new Error(
+            `Top-level "mode" config is no longer supported in ${source}. Use "cloud: true" to enable cloud mode.`
+        )
+    }
+
+    if (hasOwn(configRecord, 'remote')) {
+        throw new Error(
+            `Top-level "remote" config is no longer supported in ${source}. Use "cloud" options instead.`
         )
     }
 
     if (hasOwn(configRecord, 'apiKey')) {
         throw new Error(
-            `Top-level "apiKey" config is not supported in ${source}. Use "remote.apiKey" instead.`
-        )
-    }
-
-    const remoteValue = configRecord.remote
-    if (typeof remoteValue === 'boolean') {
-        throw new Error(
-            `Boolean "remote" config is no longer supported in ${source}. Use "mode: \\"remote\\"" with "remote" options.`
-        )
-    }
-
-    if (
-        remoteValue &&
-        typeof remoteValue === 'object' &&
-        !Array.isArray(remoteValue) &&
-        hasOwn(remoteValue, 'key')
-    ) {
-        throw new Error(
-            `Legacy "remote.key" config is no longer supported in ${source}. Use "remote.apiKey" instead.`
+            `Top-level "apiKey" config is not supported in ${source}. Use "cloud.apiKey" instead.`
         )
     }
 }
@@ -151,32 +147,32 @@ function parseNumber(value: string | undefined): number | undefined {
     return parsed
 }
 
-function parseMode(
+function parseRuntimeMode(
     value: unknown,
-    source: 'OPENSTEER_MODE' | 'mode'
-): Mode | undefined {
+    source: 'OPENSTEER_MODE'
+): RuntimeMode | undefined {
     if (value == null) return undefined
     if (typeof value !== 'string') {
         throw new Error(
-            `Invalid ${source} value "${String(value)}". Use "local" or "remote".`
+            `Invalid ${source} value "${String(value)}". Use "local" or "cloud".`
         )
     }
 
     const normalized = value.trim().toLowerCase()
     if (!normalized) return undefined
 
-    if (normalized === 'local' || normalized === 'remote') {
+    if (normalized === 'local' || normalized === 'cloud') {
         return normalized
     }
 
     throw new Error(
-        `Invalid ${source} value "${value}". Use "local" or "remote".`
+        `Invalid ${source} value "${value}". Use "local" or "cloud".`
     )
 }
 
 function parseAuthScheme(
     value: unknown,
-    source: 'OPENSTEER_AUTH_SCHEME' | 'remote.authScheme'
+    source: 'OPENSTEER_AUTH_SCHEME' | 'cloud.authScheme'
 ): OpensteerAuthScheme | undefined {
     if (value == null) return undefined
     if (typeof value !== 'string') {
@@ -197,10 +193,10 @@ function parseAuthScheme(
     )
 }
 
-function parseRemoteAnnounce(
+function parseCloudAnnounce(
     value: unknown,
-    source: 'OPENSTEER_REMOTE_ANNOUNCE' | 'remote.announce'
-): OpensteerRemoteAnnouncePolicy | undefined {
+    source: 'OPENSTEER_REMOTE_ANNOUNCE' | 'cloud.announce'
+): OpensteerCloudAnnouncePolicy | undefined {
     if (value == null) return undefined
     if (typeof value !== 'string') {
         throw new Error(
@@ -233,38 +229,54 @@ function resolveOpensteerAuthScheme(): OpensteerAuthScheme | undefined {
     )
 }
 
-function normalizeRemoteOptions(
-    value: OpensteerConfig['remote']
-): OpensteerRemoteOptions | undefined {
+function normalizeCloudOptions(
+    value: OpensteerConfig['cloud']
+): OpensteerCloudOptions | undefined {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
         return undefined
     }
 
-    return value as OpensteerRemoteOptions
+    return value as OpensteerCloudOptions
 }
 
-export function resolveModeSelection(
-    config: Pick<OpensteerConfig, 'mode'>
-): ModeSelection {
-    const configMode = parseMode(config.mode, 'mode')
+function parseCloudEnabled(
+    value: OpensteerConfig['cloud'],
+    source: 'cloud'
+): boolean | undefined {
+    if (value == null) return undefined
+    if (typeof value === 'boolean') return value
+    if (typeof value === 'object' && !Array.isArray(value)) return true
 
-    if (configMode) {
+    throw new Error(
+        `Invalid ${source} value "${String(value)}". Use true, false, or a cloud options object.`
+    )
+}
+
+export function resolveCloudSelection(
+    config: Pick<OpensteerConfig, 'cloud'>
+): CloudSelection {
+    const configCloud = parseCloudEnabled(config.cloud, 'cloud')
+
+    if (configCloud !== undefined) {
         return {
-            mode: configMode,
-            source: 'config.mode',
+            cloud: configCloud,
+            source: 'config.cloud',
         }
     }
 
-    const envMode = parseMode(process.env.OPENSTEER_MODE, 'OPENSTEER_MODE')
+    const envMode = parseRuntimeMode(
+        process.env.OPENSTEER_MODE,
+        'OPENSTEER_MODE'
+    )
     if (envMode) {
         return {
-            mode: envMode,
+            cloud: envMode === 'cloud',
             source: 'env.OPENSTEER_MODE',
         }
     }
 
     return {
-        mode: 'local',
+        cloud: false,
         source: 'default',
     }
 }
@@ -284,7 +296,7 @@ export function resolveConfig(
     }
 
     assertNoLegacyAiConfig('Opensteer constructor config', input)
-    assertNoLegacyModeConfig('Opensteer constructor config', input)
+    assertNoLegacyRuntimeConfig('Opensteer constructor config', input)
 
     const rootDir =
         input.storage?.rootDir ??
@@ -292,7 +304,7 @@ export function resolveConfig(
         process.cwd()
     const fileConfig = loadConfigFile(rootDir)
     assertNoLegacyAiConfig('.opensteer/config.json', fileConfig)
-    assertNoLegacyModeConfig('.opensteer/config.json', fileConfig)
+    assertNoLegacyRuntimeConfig('.opensteer/config.json', fileConfig)
 
     const envConfig: Partial<OpensteerConfig> = {
         browser: {
@@ -313,49 +325,49 @@ export function resolveConfig(
 
     const envApiKey = resolveOpensteerApiKey()
     const envAuthScheme = resolveOpensteerAuthScheme()
-    const envRemoteAnnounce = parseRemoteAnnounce(
+    const envCloudAnnounce = parseCloudAnnounce(
         process.env.OPENSTEER_REMOTE_ANNOUNCE,
         'OPENSTEER_REMOTE_ANNOUNCE'
     )
-    const inputRemoteOptions = normalizeRemoteOptions(input.remote)
+    const inputCloudOptions = normalizeCloudOptions(input.cloud)
     const inputAuthScheme = parseAuthScheme(
-        inputRemoteOptions?.authScheme,
-        'remote.authScheme'
+        inputCloudOptions?.authScheme,
+        'cloud.authScheme'
     )
-    const inputRemoteAnnounce = parseRemoteAnnounce(
-        inputRemoteOptions?.announce,
-        'remote.announce'
+    const inputCloudAnnounce = parseCloudAnnounce(
+        inputCloudOptions?.announce,
+        'cloud.announce'
     )
-    const inputHasRemoteApiKey = Boolean(
-        inputRemoteOptions &&
-            Object.prototype.hasOwnProperty.call(inputRemoteOptions, 'apiKey')
+    const inputHasCloudApiKey = Boolean(
+        inputCloudOptions &&
+            Object.prototype.hasOwnProperty.call(inputCloudOptions, 'apiKey')
     )
-    const modeSelection = resolveModeSelection({
-        mode: resolved.mode,
+    const cloudSelection = resolveCloudSelection({
+        cloud: resolved.cloud,
     })
 
-    if (modeSelection.mode === 'remote') {
-        const resolvedRemote = normalizeRemoteOptions(resolved.remote) ?? {}
+    if (cloudSelection.cloud) {
+        const resolvedCloud = normalizeCloudOptions(resolved.cloud) ?? {}
         const authScheme =
             inputAuthScheme ??
             envAuthScheme ??
-            parseAuthScheme(resolvedRemote.authScheme, 'remote.authScheme') ??
+            parseAuthScheme(resolvedCloud.authScheme, 'cloud.authScheme') ??
             'api-key'
         const announce =
-            inputRemoteAnnounce ??
-            envRemoteAnnounce ??
-            parseRemoteAnnounce(resolvedRemote.announce, 'remote.announce') ??
+            inputCloudAnnounce ??
+            envCloudAnnounce ??
+            parseCloudAnnounce(resolvedCloud.announce, 'cloud.announce') ??
             'always'
-        resolved.remote = {
-            ...resolvedRemote,
+        resolved.cloud = {
+            ...resolvedCloud,
             authScheme,
             announce,
         }
     }
 
-    if (envApiKey && modeSelection.mode === 'remote' && !inputHasRemoteApiKey) {
-        resolved.remote = {
-            ...(normalizeRemoteOptions(resolved.remote) ?? {}),
+    if (envApiKey && cloudSelection.cloud && !inputHasCloudApiKey) {
+        resolved.cloud = {
+            ...(normalizeCloudOptions(resolved.cloud) ?? {}),
             apiKey: envApiKey,
         }
     }
