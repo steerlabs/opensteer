@@ -329,6 +329,10 @@ Cloud defaults to disabled. Override with `OPENSTEER_MODE=local|cloud`.
 When cloud mode is selected, an API key is required via `cloud.apiKey` or
 `OPENSTEER_API_KEY`. Cloud base URL defaults to `https://remote.opensteer.com`
 and can be overridden with `OPENSTEER_BASE_URL`.
+Opensteer auto-loads `.env` files from `storage.rootDir` (default
+`process.cwd()`) in this order: `.env.<NODE_ENV>.local`, `.env.local` (skipped
+when `NODE_ENV=test`), `.env.<NODE_ENV>`, `.env`. Existing `process.env` values
+always take precedence.
 
 Cloud mode is fail-fast and does not automatically fall back to local mode.
 If `cloud` is provided in constructor config, it always overrides `OPENSTEER_MODE`.
@@ -615,6 +619,7 @@ Exported for advanced integration:
 | `OPENSTEER_CHANNEL` | Browser channel: `chrome`, `chrome-beta`, or `msedge` |
 | `OPENSTEER_PROFILE_DIR` | Browser profile directory |
 | `OPENSTEER_DEBUG` | Enable debug logging |
+| `OPENSTEER_DISABLE_DOTENV_AUTOLOAD` | Disable automatic `.env` loading (`true`/`1`) |
 
 ### Supported AI Models
 

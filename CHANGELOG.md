@@ -21,6 +21,8 @@
 - Breaking: `OPENSTEER_MODE` now uses `local` or `cloud`; `remote` is no longer a supported value.
 - Opensteer now enables built-in LLM resolve/extract by default with model `gpt-5.1`.
 - Cloud mode now falls back to `OPENSTEER_API_KEY` when `cloud.apiKey` is omitted.
+- Added automatic `.env` loading from `storage.rootDir` (default `process.cwd()`) so constructor config can consume env vars without requiring `import 'dotenv/config'`.
+- `.env` autoload follows common precedence (`.env.<NODE_ENV>.local`, `.env.local`, `.env.<NODE_ENV>`, `.env`) with `.env.local` skipped in `test`, does not overwrite existing env values, and can be disabled via `OPENSTEER_DISABLE_DOTENV_AUTOLOAD`.
 - Mutating actions now include smart best-effort post-action wait with per-action
   profiles and optional per-call overrides via `wait`.
 - Added structured interaction diagnostics via `OpensteerActionError` for

@@ -12,6 +12,12 @@ pnpm add opensteer playwright
 Set `OPENAI_API_KEY` before using description-based resolve/extract with the
 default `gpt-5.1` model.
 
+Opensteer auto-loads `.env` files from your `storage.rootDir` (default:
+`process.cwd()`) with this order: `.env.<NODE_ENV>.local`, `.env.local`
+(skipped when `NODE_ENV=test`), `.env.<NODE_ENV>`, `.env`.
+Existing `process.env` values are never overwritten. Set
+`OPENSTEER_DISABLE_DOTENV_AUTOLOAD=true` to disable this behavior.
+
 ## 2) Launch and navigate
 
 ```ts

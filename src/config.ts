@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { config as dotenvConfig } from 'dotenv'
 import type {
     OpensteerAuthScheme,
     OpensteerCloudAnnouncePolicy,
@@ -41,6 +42,44 @@ const DEFAULT_CONFIG: Required<
     },
     model: 'gpt-5.1',
     debug: false,
+}
+
+function dotenvFileOrder(nodeEnv: string | undefined): string[] {
+    const normalized = nodeEnv?.trim() || ''
+    const files: string[] = []
+
+    if (normalized) {
+        files.push(`.env.${normalized}.local`)
+    }
+    if (normalized !== 'test') {
+        files.push('.env.local')
+    }
+    if (normalized) {
+        files.push(`.env.${normalized}`)
+    }
+    files.push('.env')
+
+    return files
+}
+
+function loadDotenv(rootDir: string): void {
+    if (parseBool(process.env.OPENSTEER_DISABLE_DOTENV_AUTOLOAD) === true) {
+        return
+    }
+
+    const baseDir = path.resolve(rootDir)
+    const nodeEnv = process.env.NODE_ENV?.trim() || ''
+
+    for (const filename of dotenvFileOrder(nodeEnv)) {
+        const filePath = path.join(baseDir, filename)
+        if (!fs.existsSync(filePath)) continue
+
+        dotenvConfig({
+            path: filePath,
+            override: false,
+            quiet: true,
+        })
+    }
 }
 
 function hasOwn(config: unknown, key: string): boolean {
@@ -284,6 +323,12 @@ export function resolveCloudSelection(
 export function resolveConfig(
     input: OpensteerConfig = {}
 ): ResolvedOpensteerConfig {
+    const rootDir =
+        input.storage?.rootDir ??
+        DEFAULT_CONFIG.storage.rootDir ??
+        process.cwd()
+    loadDotenv(rootDir)
+
     if (process.env.OPENSTEER_AI_MODEL) {
         throw new Error(
             'OPENSTEER_AI_MODEL is no longer supported. Use OPENSTEER_MODEL instead.'
@@ -298,10 +343,6 @@ export function resolveConfig(
     assertNoLegacyAiConfig('Opensteer constructor config', input)
     assertNoLegacyRuntimeConfig('Opensteer constructor config', input)
 
-    const rootDir =
-        input.storage?.rootDir ??
-        DEFAULT_CONFIG.storage.rootDir ??
-        process.cwd()
     const fileConfig = loadConfigFile(rootDir)
     assertNoLegacyAiConfig('.opensteer/config.json', fileConfig)
     assertNoLegacyRuntimeConfig('.opensteer/config.json', fileConfig)
