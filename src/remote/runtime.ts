@@ -1,6 +1,7 @@
 import { ActionWsClient } from './action-ws-client.js'
 import { RemoteCdpClient } from './cdp-client.js'
 import { RemoteSessionClient } from './session-client.js'
+import type { OpensteerAuthScheme } from '../types.js'
 
 export interface RemoteRuntimeState {
     readonly sessionClient: RemoteSessionClient
@@ -13,10 +14,11 @@ export const DEFAULT_REMOTE_BASE_URL = 'https://remote.opensteer.com'
 
 export function createRemoteRuntimeState(
     key: string,
-    baseUrl = resolveRemoteBaseUrl()
+    baseUrl = resolveRemoteBaseUrl(),
+    authScheme: OpensteerAuthScheme = 'api-key'
 ): RemoteRuntimeState {
     return {
-        sessionClient: new RemoteSessionClient(baseUrl, key),
+        sessionClient: new RemoteSessionClient(baseUrl, key, authScheme),
         cdpClient: new RemoteCdpClient(),
         actionClient: null,
         sessionId: null,

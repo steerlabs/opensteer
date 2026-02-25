@@ -122,6 +122,54 @@ describe('config', () => {
         const resolved = resolveConfig({})
         expect(resolved.remote).toEqual({
             apiKey: 'ork_env_123',
+            authScheme: 'api-key',
+        })
+    })
+
+    it('resolveConfig defaults remote authScheme to api-key when mode is remote', () => {
+        const resolved = resolveConfig({
+            mode: 'remote',
+            remote: {
+                apiKey: 'ork_test_123',
+            },
+        })
+
+        expect(resolved.remote).toEqual({
+            apiKey: 'ork_test_123',
+            authScheme: 'api-key',
+        })
+    })
+
+    it('resolveConfig uses OPENSTEER_AUTH_SCHEME when remote authScheme is not set', () => {
+        process.env.OPENSTEER_AUTH_SCHEME = 'bearer'
+
+        const resolved = resolveConfig({
+            mode: 'remote',
+            remote: {
+                apiKey: 'ork_test_123',
+            },
+        })
+
+        expect(resolved.remote).toEqual({
+            apiKey: 'ork_test_123',
+            authScheme: 'bearer',
+        })
+    })
+
+    it('resolveConfig keeps explicit remote.authScheme over OPENSTEER_AUTH_SCHEME', () => {
+        process.env.OPENSTEER_AUTH_SCHEME = 'api-key'
+
+        const resolved = resolveConfig({
+            mode: 'remote',
+            remote: {
+                apiKey: 'ork_test_123',
+                authScheme: 'bearer',
+            },
+        })
+
+        expect(resolved.remote).toEqual({
+            apiKey: 'ork_test_123',
+            authScheme: 'bearer',
         })
     })
 
@@ -129,6 +177,13 @@ describe('config', () => {
         process.env.OPENSTEER_MODE = 'edge'
         expect(() => resolveConfig({})).toThrow(
             'Invalid OPENSTEER_MODE value "edge". Use "local" or "remote".'
+        )
+    })
+
+    it('throws when OPENSTEER_AUTH_SCHEME has an invalid value', () => {
+        process.env.OPENSTEER_AUTH_SCHEME = 'token'
+        expect(() => resolveConfig({})).toThrow(
+            'Invalid OPENSTEER_AUTH_SCHEME value "token". Use "api-key" or "bearer".'
         )
     })
 
@@ -171,6 +226,7 @@ describe('config', () => {
 
         expect(resolved.remote).toEqual({
             apiKey: 'ork_env_123',
+            authScheme: 'api-key',
         })
     })
 

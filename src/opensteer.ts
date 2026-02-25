@@ -218,7 +218,8 @@ export class Opensteer {
 
             this.remote = createRemoteRuntimeState(
                 apiKey,
-                remoteConfig?.baseUrl
+                remoteConfig?.baseUrl,
+                remoteConfig?.authScheme
             )
         } else {
             this.remote = null

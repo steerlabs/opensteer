@@ -93,3 +93,62 @@ describe('RemoteSessionClient#importSelectorCache', () => {
         )
     })
 })
+
+describe('RemoteSessionClient auth scheme', () => {
+    afterEach(() => {
+        globalThis.fetch = ORIGINAL_FETCH
+    })
+
+    it('uses x-api-key by default', async () => {
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValue(
+                new Response(
+                    JSON.stringify({
+                        sessionId: 'sess_123',
+                        actionWsUrl: 'wss://action.example.com',
+                        cdpWsUrl: 'wss://cdp.example.com',
+                        actionToken: 'act_123',
+                        cdpToken: 'cdp_123',
+                    }),
+                    {
+                        status: 201,
+                        headers: { 'content-type': 'application/json' },
+                    }
+                )
+            )
+        globalThis.fetch = fetchMock as unknown as typeof fetch
+
+        const client = new RemoteSessionClient('http://localhost:8080', 'ork_key')
+        await client.create({})
+
+        const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+        expect(init.headers).toEqual(
+            expect.objectContaining({
+                'content-type': 'application/json',
+                'x-api-key': 'ork_key',
+            })
+        )
+    })
+
+    it('uses Authorization bearer header when authScheme is bearer', async () => {
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValue(new Response(null, { status: 204 }))
+        globalThis.fetch = fetchMock as unknown as typeof fetch
+
+        const client = new RemoteSessionClient(
+            'http://localhost:8080',
+            'sandbox_token',
+            'bearer'
+        )
+        await client.close('sess_123')
+
+        const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+        expect(init.headers).toEqual(
+            expect.objectContaining({
+                authorization: 'Bearer sandbox_token',
+            })
+        )
+    })
+})
