@@ -76,7 +76,7 @@ Call log:
         expect(failure.details?.blocker?.id).toBe('modal')
     })
 
-    it('normalizes remote-provided action failures', () => {
+    it('normalizes cloud-provided action failures', () => {
         const failure = normalizeActionFailure({
             code: 'NOT_VISIBLE',
             message: 'Target hidden',

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { Opensteer } from '../../src/opensteer.js'
 import { OpensteerActionError } from '../../src/actions/errors.js'
-import { OpensteerRemoteError } from '../../src/remote/errors.js'
+import { OpensteerCloudError } from '../../src/cloud/errors.js'
 
 const ORIGINAL_ENV = { ...process.env }
 
@@ -9,77 +9,74 @@ afterEach(() => {
     process.env = { ...ORIGINAL_ENV }
 })
 
-describe('remote mode', () => {
-    it('requires a non-empty remote API key when OPENSTEER_MODE=remote', () => {
-        process.env.OPENSTEER_MODE = 'remote'
+describe('cloud mode', () => {
+    it('requires a non-empty cloud API key when OPENSTEER_MODE=cloud', () => {
+        process.env.OPENSTEER_MODE = 'cloud'
         delete process.env.OPENSTEER_API_KEY
 
         expect(() => new Opensteer({})).toThrow(
-            'Remote mode requires a non-empty API key via remote.apiKey or OPENSTEER_API_KEY.'
+            'Cloud mode requires a non-empty API key via cloud.apiKey or OPENSTEER_API_KEY.'
         )
     })
 
-    it('uses OPENSTEER_API_KEY when OPENSTEER_MODE=remote', () => {
-        process.env.OPENSTEER_MODE = 'remote'
+    it('uses OPENSTEER_API_KEY when OPENSTEER_MODE=cloud', () => {
+        process.env.OPENSTEER_MODE = 'cloud'
         process.env.OPENSTEER_API_KEY = 'ork_env_123'
 
         expect(() => new Opensteer({})).not.toThrow()
     })
 
-    it('uses OPENSTEER_API_KEY when remote apiKey is omitted', () => {
+    it('uses OPENSTEER_API_KEY when cloud apiKey is omitted', () => {
         process.env.OPENSTEER_API_KEY = 'ork_env_123'
 
-        expect(() => new Opensteer({ mode: 'remote' })).not.toThrow()
+        expect(() => new Opensteer({ cloud: true })).not.toThrow()
     })
 
-    it('requires a non-empty remote API key when mode is remote', () => {
+    it('requires a non-empty cloud API key when cloud mode is enabled', () => {
         delete process.env.OPENSTEER_API_KEY
 
-        expect(() => new Opensteer({ mode: 'remote' })).toThrow(
-            'Remote mode requires a non-empty API key via remote.apiKey or OPENSTEER_API_KEY.'
+        expect(() => new Opensteer({ cloud: true })).toThrow(
+            'Cloud mode requires a non-empty API key via cloud.apiKey or OPENSTEER_API_KEY.'
         )
     })
 
-    it('treats explicit empty remote.apiKey as an override of OPENSTEER_API_KEY', () => {
+    it('treats explicit empty cloud.apiKey as an override of OPENSTEER_API_KEY', () => {
         process.env.OPENSTEER_API_KEY = 'ork_env_123'
 
         expect(
             () =>
                 new Opensteer({
-                    mode: 'remote',
-                    remote: {
+                    cloud: {
                         apiKey: '   ',
                     },
                 })
         ).toThrow(
-            'Remote mode requires a non-empty API key via remote.apiKey or OPENSTEER_API_KEY.'
+            'Cloud mode requires a non-empty API key via cloud.apiKey or OPENSTEER_API_KEY.'
         )
     })
 
-    it('rejects Opensteer.from(page) in remote mode', () => {
+    it('rejects Opensteer.from(page) in cloud mode', () => {
         expect(() =>
             Opensteer.from({} as never, {
-                mode: 'remote',
-                remote: {
+                cloud: {
                     apiKey: 'ork_test_123',
                 },
             })
-        ).toThrow('Opensteer.from(page) is not supported in remote mode.')
+        ).toThrow('Opensteer.from(page) is not supported in cloud mode.')
     })
 
-    it('rejects Opensteer.from(page) when OPENSTEER_MODE=remote', () => {
-        process.env.OPENSTEER_MODE = 'remote'
+    it('rejects Opensteer.from(page) when OPENSTEER_MODE=cloud', () => {
+        process.env.OPENSTEER_MODE = 'cloud'
         process.env.OPENSTEER_API_KEY = 'ork_env_123'
 
         expect(() => Opensteer.from({} as never, {})).toThrow(
-            'Opensteer.from(page) is not supported in remote mode.'
+            'Opensteer.from(page) is not supported in cloud mode.'
         )
     })
 
     it('throws explicit unsupported errors for path-based methods', async () => {
         const opensteer = new Opensteer({
-            mode: 'remote',
-            remote: {
+            cloud: {
                 apiKey: 'ork_test_123',
             },
         })
@@ -90,20 +87,19 @@ describe('remote mode', () => {
                 paths: ['/tmp/file.pdf'],
             })
         ).rejects.toThrow(
-            'uploadFile() is not supported in remote mode because file paths must be accessible on the remote server.'
+            'uploadFile() is not supported in cloud mode because file paths must be accessible on the cloud runtime.'
         )
 
         await expect(
             opensteer.exportCookies('/tmp/cookies.json')
         ).rejects.toThrow(
-            'exportCookies() is not supported in remote mode because it depends on local filesystem paths.'
+            'exportCookies() is not supported in cloud mode because it depends on local filesystem paths.'
         )
     })
 
-    it('requires launch before remote action calls', async () => {
+    it('requires launch before cloud action calls', async () => {
         const opensteer = new Opensteer({
-            mode: 'remote',
-            remote: {
+            cloud: {
                 apiKey: 'ork_test_123',
             },
         })
@@ -112,19 +108,18 @@ describe('remote mode', () => {
             opensteer.click({
                 description: 'login button',
             })
-        ).rejects.toThrow('Remote session is not connected. Call launch() first.')
+        ).rejects.toThrow('Cloud session is not connected. Call launch() first.')
     })
 
-    it('maps remote action failures with details into OpensteerActionError', async () => {
+    it('maps cloud action failures with details into OpensteerActionError', async () => {
         const opensteer = new Opensteer({
-            mode: 'remote',
-            remote: {
+            cloud: {
                 apiKey: 'ork_test_123',
             },
         })
 
         const access = opensteer as unknown as {
-            remote: {
+            cloud: {
                 actionClient: {
                     request: (
                         method: string,
@@ -135,14 +130,14 @@ describe('remote mode', () => {
             } | null
         }
 
-        if (!access.remote) throw new Error('Expected remote state to exist.')
+        if (!access.cloud) throw new Error('Expected cloud runtime state to exist.')
 
-        access.remote.sessionId = 'sess_test_123'
-        access.remote.actionClient = {
+        access.cloud.sessionId = 'sess_test_123'
+        access.cloud.actionClient = {
             request: async () => {
-                throw new OpensteerRemoteError(
-                    'REMOTE_ACTION_FAILED',
-                    'remote click failed',
+                throw new OpensteerCloudError(
+                    'CLOUD_ACTION_FAILED',
+                    'cloud click failed',
                     undefined,
                     {
                         actionFailure: {
@@ -158,7 +153,7 @@ describe('remote mode', () => {
 
         try {
             await opensteer.click({ description: 'login button' })
-            throw new Error('Expected remote click to fail.')
+            throw new Error('Expected cloud click to fail.')
         } catch (err) {
             expect(err).toBeInstanceOf(OpensteerActionError)
             const actionError = err as OpensteerActionError

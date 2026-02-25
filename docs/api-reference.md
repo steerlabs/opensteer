@@ -12,8 +12,8 @@ const opensteer = new Opensteer(config?: OpensteerConfig)
 
 #### `launch(options?: LaunchOptions): Promise<void>`
 
-Launch a new browser (local or remote). In local mode, starts a Playwright
-Chromium instance. In remote mode, creates a session and connects via CDP.
+Launch a new browser (local or cloud). In local mode, starts a Playwright
+Chromium instance. In cloud mode, creates a session and connects via CDP.
 
 ```ts
 await opensteer.launch({ headless: true })
@@ -22,7 +22,7 @@ await opensteer.launch({ headless: true })
 #### `static from(page: Page, config?: OpensteerConfig): Opensteer`
 
 Wrap an existing Playwright `Page` without launching a new browser. The caller
-retains ownership of the browser lifecycle. Not supported in remote mode.
+retains ownership of the browser lifecycle. Not supported in cloud mode.
 
 ```ts
 const opensteer = Opensteer.from(page, { name: 'my-scraper' })
@@ -30,8 +30,8 @@ const opensteer = Opensteer.from(page, { name: 'my-scraper' })
 
 #### `close(): Promise<void>`
 
-Close the browser and release all resources. In remote mode, also closes the
-remote session and action WebSocket.
+Close the browser and release all resources. In cloud mode, also closes the
+cloud session and action WebSocket.
 
 ### Raw Playwright
 
@@ -155,7 +155,7 @@ await opensteer.scroll({ description: 'results-list', direction: 'down' })
 
 #### `uploadFile(options: FileUploadOptions): Promise<ActionResult>`
 
-Set files on a file input element. Not supported in remote mode.
+Set files on a file input element. Not supported in cloud mode.
 
 ```ts
 await opensteer.uploadFile({ element: 4, paths: ['/path/to/file.pdf'] })
@@ -195,11 +195,11 @@ Clear all cookies in the browser context.
 
 #### `exportCookies(filePath: string, url?: string): Promise<void>`
 
-Export cookies to a JSON file. Not supported in remote mode.
+Export cookies to a JSON file. Not supported in cloud mode.
 
 #### `importCookies(filePath: string): Promise<void>`
 
-Import cookies from a JSON file. Not supported in remote mode.
+Import cookies from a JSON file. Not supported in cloud mode.
 
 ### Keyboard
 
@@ -301,8 +301,13 @@ interface OpensteerConfig {
     name?: string
     browser?: OpensteerBrowserConfig
     storage?: { rootDir?: string }
-    mode?: 'local' | 'remote'
-    remote?: { apiKey?: string; baseUrl?: string }
+    cloud?: boolean | {
+        apiKey?: string
+        baseUrl?: string
+        appUrl?: string
+        authScheme?: 'api-key' | 'bearer'
+        announce?: 'always' | 'off' | 'tty'
+    }
     model?: string
     debug?: boolean
 }
@@ -319,14 +324,14 @@ interface OpensteerBrowserConfig {
 
 `model` defaults to `gpt-5.1`. Override with `OPENSTEER_MODEL`.
 
-Mode defaults to `local`. Override with `OPENSTEER_MODE=local|remote`.
+Cloud defaults to disabled. Override with `OPENSTEER_MODE=local|cloud`.
 
-When remote mode is selected, an API key is required via `remote.apiKey` or
-`OPENSTEER_API_KEY`. Remote base URL defaults to `https://remote.opensteer.com`
+When cloud mode is selected, an API key is required via `cloud.apiKey` or
+`OPENSTEER_API_KEY`. Cloud base URL defaults to `https://remote.opensteer.com`
 and can be overridden with `OPENSTEER_BASE_URL`.
 
-Remote mode is fail-fast and does not automatically fall back to local mode.
-If `mode` is provided in constructor config, it always overrides `OPENSTEER_MODE`.
+Cloud mode is fail-fast and does not automatically fall back to local mode.
+If `cloud` is provided in constructor config, it always overrides `OPENSTEER_MODE`.
 
 ### LaunchOptions
 
@@ -576,9 +581,9 @@ interface ActionFailureBlocker {
 | `scrollable` | Scrollable containers only |
 | `full` | Broad HTML with scripts/styles/noise removed |
 
-### Remote Mode Limitations
+### Cloud Mode Limitations
 
-These methods throw `REMOTE_UNSUPPORTED_METHOD` in remote mode:
+These methods throw `CLOUD_UNSUPPORTED_METHOD` in cloud mode:
 
 - `Opensteer.from(page)`
 - `uploadFile()`
@@ -597,12 +602,12 @@ Exported for advanced integration:
 
 | Variable | Description |
 |----------|-------------|
-| `OPENSTEER_MODE` | `local` (default) or `remote` |
+| `OPENSTEER_MODE` | `local` (default) or `cloud` |
 | `OPENSTEER_MODEL` | Default model for LLM resolve/extract (default: `gpt-5.1`) |
-| `OPENSTEER_API_KEY` | API key for remote mode |
-| `OPENSTEER_BASE_URL` | Remote control-plane base URL (default: `https://remote.opensteer.com`) |
+| `OPENSTEER_API_KEY` | API key for cloud mode |
+| `OPENSTEER_BASE_URL` | Cloud control-plane base URL (default: `https://remote.opensteer.com`) |
 | `OPENSTEER_APP_URL` | Cloud app base URL for deep links (default: `https://opensteer.com`) |
-| `OPENSTEER_REMOTE_ANNOUNCE` | Remote launch announcement policy: `always`, `off`, `tty` (default: `always`) |
+| `OPENSTEER_REMOTE_ANNOUNCE` | Cloud launch announcement policy: `always`, `off`, `tty` (default: `always`) |
 | `OPENSTEER_HEADLESS` | `true` or `false` |
 | `OPENSTEER_BROWSER_PATH` | Custom browser executable path |
 | `OPENSTEER_SLOW_MO` | Slow-motion delay in milliseconds |

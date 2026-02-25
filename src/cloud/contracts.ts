@@ -1,6 +1,6 @@
 import type { ActionFailure } from '../action-failure.js'
 
-export type RemoteActionMethod =
+export type CloudActionMethod =
     | 'goto'
     | 'snapshot'
     | 'state'
@@ -35,34 +35,34 @@ export type RemoteActionMethod =
     | 'importCookies'
     | 'screenshot'
 
-export type RemoteErrorCode =
-    | 'REMOTE_AUTH_FAILED'
-    | 'REMOTE_SESSION_NOT_FOUND'
-    | 'REMOTE_SESSION_CLOSED'
-    | 'REMOTE_UNSUPPORTED_METHOD'
-    | 'REMOTE_INVALID_REQUEST'
-    | 'REMOTE_MODEL_NOT_ALLOWED'
-    | 'REMOTE_ACTION_FAILED'
-    | 'REMOTE_CAPACITY_EXHAUSTED'
-    | 'REMOTE_RUNTIME_UNAVAILABLE'
-    | 'REMOTE_RUNTIME_MISMATCH'
-    | 'REMOTE_SESSION_STALE'
-    | 'REMOTE_CONTROL_PLANE_ERROR'
-    | 'REMOTE_CONTRACT_MISMATCH'
-    | 'REMOTE_INTERNAL'
+export type CloudErrorCode =
+    | 'CLOUD_AUTH_FAILED'
+    | 'CLOUD_SESSION_NOT_FOUND'
+    | 'CLOUD_SESSION_CLOSED'
+    | 'CLOUD_UNSUPPORTED_METHOD'
+    | 'CLOUD_INVALID_REQUEST'
+    | 'CLOUD_MODEL_NOT_ALLOWED'
+    | 'CLOUD_ACTION_FAILED'
+    | 'CLOUD_CAPACITY_EXHAUSTED'
+    | 'CLOUD_RUNTIME_UNAVAILABLE'
+    | 'CLOUD_RUNTIME_MISMATCH'
+    | 'CLOUD_SESSION_STALE'
+    | 'CLOUD_CONTROL_PLANE_ERROR'
+    | 'CLOUD_CONTRACT_MISMATCH'
+    | 'CLOUD_INTERNAL'
 
-export const remoteSessionContractVersion = 'v3' as const
-export type RemoteSessionContractVersion = typeof remoteSessionContractVersion
+export const cloudSessionContractVersion = 'v3' as const
+export type CloudSessionContractVersion = typeof cloudSessionContractVersion
 
-export type RemoteSessionSourceType =
+export type CloudSessionSourceType =
     | 'agent-thread'
     | 'agent-run'
-    | 'local-remote'
+    | 'local-cloud'
     | 'manual'
 
-export interface RemoteSessionCreateRequest {
-    remoteSessionContractVersion: RemoteSessionContractVersion
-    sourceType: 'local-remote'
+export interface CloudSessionCreateRequest {
+    cloudSessionContractVersion: CloudSessionContractVersion
+    sourceType: 'local-cloud'
     clientSessionHint: string
     localRunId: string
     name?: string
@@ -70,17 +70,17 @@ export interface RemoteSessionCreateRequest {
     launchContext?: Record<string, unknown>
 }
 
-export interface RemoteCloudSessionSummary {
+export interface CloudSessionSummary {
     sessionId: string
     workspaceId: string
     state: string
     createdAt: number
-    sourceType: RemoteSessionSourceType
+    sourceType: CloudSessionSourceType
     sourceRef?: string
     label?: string
 }
 
-export interface RemoteSessionCreateResponse {
+export interface CloudSessionCreateResponse {
     sessionId: string
     actionWsUrl: string
     cdpWsUrl: string
@@ -88,10 +88,10 @@ export interface RemoteSessionCreateResponse {
     cdpToken: string
     expiresAt?: number
     cloudSessionUrl: string
-    cloudSession: RemoteCloudSessionSummary
+    cloudSession: CloudSessionSummary
 }
 
-export interface RemoteSelectorCacheImportEntry {
+export interface CloudSelectorCacheImportEntry {
     namespace: string
     siteOrigin: string
     method: string
@@ -102,41 +102,41 @@ export interface RemoteSelectorCacheImportEntry {
     updatedAt: number
 }
 
-export interface RemoteSelectorCacheImportRequest {
-    entries: RemoteSelectorCacheImportEntry[]
+export interface CloudSelectorCacheImportRequest {
+    entries: CloudSelectorCacheImportEntry[]
 }
 
-export interface RemoteSelectorCacheImportResponse {
+export interface CloudSelectorCacheImportResponse {
     imported: number
     inserted: number
     updated: number
     skipped: number
 }
 
-export interface RemoteActionRequest {
+export interface CloudActionRequest {
     id: number
-    method: RemoteActionMethod
+    method: CloudActionMethod
     args: Record<string, unknown>
     sessionId: string
     token: string
 }
 
-export interface RemoteActionSuccess {
+export interface CloudActionSuccess {
     id: number
     ok: true
     result: unknown
 }
 
-export interface RemoteActionFailure {
+export interface CloudActionFailure {
     id: number
     ok: false
     error: string
-    code: RemoteErrorCode
-    details?: RemoteActionFailureDetails
+    code: CloudErrorCode
+    details?: CloudActionFailureDetails
 }
 
-export type RemoteActionResponse = RemoteActionSuccess | RemoteActionFailure
+export type CloudActionResponse = CloudActionSuccess | CloudActionFailure
 
-export interface RemoteActionFailureDetails {
+export interface CloudActionFailureDetails {
     actionFailure?: ActionFailure
 }

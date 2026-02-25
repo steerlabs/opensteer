@@ -185,7 +185,7 @@ async function handleRequest(
                     url: instance.page.url(),
                     session,
                     name: activeNamespace,
-                    remoteSessionId: instance.getRemoteSessionId() ?? undefined,
+                    cloudSessionId: instance.getCloudSessionId() ?? undefined,
                     cloudSessionUrl: instance.getCloudSessionUrl() ?? undefined,
                 },
             })

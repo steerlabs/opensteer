@@ -1,28 +1,27 @@
-# Remote Integration
+# Cloud Integration
 
-Opensteer remote mode uses a strict v3 contract. No fallback route versions are used.
+Opensteer cloud mode uses a strict v3 contract. No fallback route versions are used.
 
 ## Configuration
 
-Set remote mode universally with environment variables:
+Enable cloud mode with environment variables:
 
 ```bash
-OPENSTEER_MODE=remote
+OPENSTEER_MODE=cloud
 OPENSTEER_API_KEY=ork_your_key
 OPENSTEER_APP_URL=https://opensteer.com
 OPENSTEER_REMOTE_ANNOUNCE=always
 ```
 
-Opensteer defaults to local mode when `OPENSTEER_MODE` is unset.
+Opensteer defaults to local mode when `OPENSTEER_MODE` is unset and `cloud` is not configured.
 
-You can also force remote mode in constructor config:
+You can also force cloud mode in constructor config:
 
 ```ts
 import { Opensteer } from 'opensteer'
 
 const opensteer = new Opensteer({
-    mode: 'remote',
-    remote: {
+    cloud: {
         apiKey: process.env.OPENSTEER_API_KEY,
         baseUrl: process.env.OPENSTEER_BASE_URL,
         appUrl: process.env.OPENSTEER_APP_URL,
@@ -30,16 +29,16 @@ const opensteer = new Opensteer({
 })
 ```
 
-- Default remote host: `https://remote.opensteer.com`
+- Default cloud host: `https://remote.opensteer.com`
 - Override host with `OPENSTEER_BASE_URL`
-- API key can be provided via `remote.apiKey` or `OPENSTEER_API_KEY`
+- API key can be provided via `cloud.apiKey` or `OPENSTEER_API_KEY`
 - Default cloud app URL: `https://opensteer.com`
-- Override cloud app URL with `remote.appUrl` or `OPENSTEER_APP_URL`
-- Default remote announcement policy: `always`
-- Override remote announcement with `remote.announce` or `OPENSTEER_REMOTE_ANNOUNCE`
+- Override cloud app URL with `cloud.appUrl` or `OPENSTEER_APP_URL`
+- Default cloud announcement policy: `always`
+- Override cloud announcement with `cloud.announce` or `OPENSTEER_REMOTE_ANNOUNCE`
   - Supported values: `always`, `off`, `tty`
-- `mode` in constructor config overrides `OPENSTEER_MODE`
-- Remote mode is fail-fast and does not fall back to local mode
+- `cloud` in constructor config overrides `OPENSTEER_MODE`
+- Cloud mode is fail-fast and does not fall back to local mode
 
 ## Control API Contract
 
@@ -50,8 +49,8 @@ const opensteer = new Opensteer({
 
 `POST /sessions` now requires:
 
-- `remoteSessionContractVersion: "v3"`
-- `sourceType: "local-remote"`
+- `cloudSessionContractVersion: "v3"`
+- `sourceType: "local-cloud"`
 - `clientSessionHint: string`
 - `localRunId: string`
 
@@ -71,6 +70,5 @@ The response includes `cloudSession` metadata and `cloudSessionUrl` for deep lin
 
 ## Notes
 
-- `Opensteer.from(page)` is unsupported in remote mode.
-- `uploadFile`, `exportCookies`, and `importCookies` are unsupported in remote
-  mode because they depend on local filesystem paths.
+- `Opensteer.from(page)` is unsupported in cloud mode.
+- `uploadFile`, `exportCookies`, and `importCookies` are unsupported in cloud mode because they depend on local filesystem paths.
