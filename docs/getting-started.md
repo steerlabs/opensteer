@@ -62,10 +62,10 @@ Set mode explicitly with:
 ```bash
 OPENSTEER_MODE=local
 # or
-OPENSTEER_MODE=remote
+OPENSTEER_MODE=cloud
 ```
 
-When mode is `remote`, `OPENSTEER_API_KEY` (or `cloud.apiKey`) is required.
+When `OPENSTEER_MODE=cloud`, `OPENSTEER_API_KEY` (or `cloud.apiKey`) is required.
 Cloud mode is fail-fast and does not automatically fall back to local mode.
 
 ## 7) Close

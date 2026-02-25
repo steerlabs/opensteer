@@ -31,7 +31,7 @@ const opensteer = Opensteer.from(page, { name: 'my-scraper' })
 #### `close(): Promise<void>`
 
 Close the browser and release all resources. In cloud mode, also closes the
-remote session and action WebSocket.
+cloud session and action WebSocket.
 
 ### Raw Playwright
 
@@ -324,7 +324,7 @@ interface OpensteerBrowserConfig {
 
 `model` defaults to `gpt-5.1`. Override with `OPENSTEER_MODEL`.
 
-Cloud defaults to disabled. Override with `OPENSTEER_MODE=local|remote`.
+Cloud defaults to disabled. Override with `OPENSTEER_MODE=local|cloud`.
 
 When cloud mode is selected, an API key is required via `cloud.apiKey` or
 `OPENSTEER_API_KEY`. Cloud base URL defaults to `https://remote.opensteer.com`
@@ -583,7 +583,7 @@ interface ActionFailureBlocker {
 
 ### Cloud Mode Limitations
 
-These methods throw `REMOTE_UNSUPPORTED_METHOD` in cloud mode:
+These methods throw `CLOUD_UNSUPPORTED_METHOD` in cloud mode:
 
 - `Opensteer.from(page)`
 - `uploadFile()`
@@ -602,12 +602,12 @@ Exported for advanced integration:
 
 | Variable | Description |
 |----------|-------------|
-| `OPENSTEER_MODE` | `local` (default) or `remote` |
+| `OPENSTEER_MODE` | `local` (default) or `cloud` |
 | `OPENSTEER_MODEL` | Default model for LLM resolve/extract (default: `gpt-5.1`) |
 | `OPENSTEER_API_KEY` | API key for cloud mode |
 | `OPENSTEER_BASE_URL` | Cloud control-plane base URL (default: `https://remote.opensteer.com`) |
 | `OPENSTEER_APP_URL` | Cloud app base URL for deep links (default: `https://opensteer.com`) |
-| `OPENSTEER_REMOTE_ANNOUNCE` | Remote launch announcement policy: `always`, `off`, `tty` (default: `always`) |
+| `OPENSTEER_REMOTE_ANNOUNCE` | Cloud launch announcement policy: `always`, `off`, `tty` (default: `always`) |
 | `OPENSTEER_HEADLESS` | `true` or `false` |
 | `OPENSTEER_BROWSER_PATH` | Custom browser executable path |
 | `OPENSTEER_SLOW_MO` | Slow-motion delay in milliseconds |

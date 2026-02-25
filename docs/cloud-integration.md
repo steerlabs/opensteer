@@ -7,7 +7,7 @@ Opensteer cloud mode uses a strict v3 contract. No fallback route versions are u
 Enable cloud mode with environment variables:
 
 ```bash
-OPENSTEER_MODE=remote
+OPENSTEER_MODE=cloud
 OPENSTEER_API_KEY=ork_your_key
 OPENSTEER_APP_URL=https://opensteer.com
 OPENSTEER_REMOTE_ANNOUNCE=always
@@ -49,7 +49,7 @@ const opensteer = new Opensteer({
 
 `POST /sessions` now requires:
 
-- `remoteSessionContractVersion: "v3"`
+- `cloudSessionContractVersion: "v3"`
 - `sourceType: "local-cloud"`
 - `clientSessionHint: string`
 - `localRunId: string`

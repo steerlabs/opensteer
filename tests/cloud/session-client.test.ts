@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { RemoteSessionClient } from '../../src/remote/session-client.js'
-import { OpensteerRemoteError } from '../../src/remote/errors.js'
-import { remoteSessionContractVersion } from '../../src/remote/contracts.js'
+import { CloudSessionClient } from '../../src/cloud/session-client.js'
+import { OpensteerCloudError } from '../../src/cloud/errors.js'
+import { cloudSessionContractVersion } from '../../src/cloud/contracts.js'
 
 const ORIGINAL_FETCH = globalThis.fetch
 const CREATE_REQUEST = {
-    remoteSessionContractVersion,
+    cloudSessionContractVersion,
     sourceType: 'local-cloud' as const,
     clientSessionHint: 'default',
     localRunId: 'default-run-1234',
@@ -27,7 +27,7 @@ const CREATE_RESPONSE = {
     },
 }
 
-describe('RemoteSessionClient#importSelectorCache', () => {
+describe('CloudSessionClient#importSelectorCache', () => {
     afterEach(() => {
         globalThis.fetch = ORIGINAL_FETCH
     })
@@ -36,7 +36,7 @@ describe('RemoteSessionClient#importSelectorCache', () => {
         const fetchMock = vi.fn()
         globalThis.fetch = fetchMock as unknown as typeof fetch
 
-        const client = new RemoteSessionClient('http://localhost:8080', 'ork_key')
+        const client = new CloudSessionClient('http://localhost:8080', 'ork_key')
         const result = await client.importSelectorCache({ entries: [] })
 
         expect(fetchMock).not.toHaveBeenCalled()
@@ -53,7 +53,7 @@ describe('RemoteSessionClient#importSelectorCache', () => {
             .fn()
             .mockResolvedValue(new Response(null, { status: 404 })) as never
 
-        const client = new RemoteSessionClient('http://localhost:8080', 'ork_key')
+        const client = new CloudSessionClient('http://localhost:8080', 'ork_key')
         await expect(
             client.importSelectorCache({
                 entries: [
@@ -69,21 +69,21 @@ describe('RemoteSessionClient#importSelectorCache', () => {
                 ],
             })
         ).rejects.toEqual(
-            expect.objectContaining<Partial<OpensteerRemoteError>>({
-                code: 'REMOTE_TRANSPORT_ERROR',
+            expect.objectContaining<Partial<OpensteerCloudError>>({
+                code: 'CLOUD_TRANSPORT_ERROR',
                 status: 404,
             })
         )
     })
 
-    it('throws on backend errors with recognized remote codes', async () => {
+    it('throws on backend errors with recognized cloud codes', async () => {
         globalThis.fetch = vi
             .fn()
             .mockResolvedValue(
                 new Response(
                     JSON.stringify({
                         error: 'bad request',
-                        code: 'REMOTE_INVALID_REQUEST',
+                        code: 'CLOUD_INVALID_REQUEST',
                     }),
                     {
                         status: 400,
@@ -92,7 +92,7 @@ describe('RemoteSessionClient#importSelectorCache', () => {
                 )
             ) as never
 
-        const client = new RemoteSessionClient('http://localhost:8080', 'ork_key')
+        const client = new CloudSessionClient('http://localhost:8080', 'ork_key')
 
         await expect(
             client.importSelectorCache({
@@ -109,15 +109,15 @@ describe('RemoteSessionClient#importSelectorCache', () => {
                 ],
             })
         ).rejects.toEqual(
-            expect.objectContaining<Partial<OpensteerRemoteError>>({
-                code: 'REMOTE_INVALID_REQUEST',
+            expect.objectContaining<Partial<OpensteerCloudError>>({
+                code: 'CLOUD_INVALID_REQUEST',
                 status: 400,
             })
         )
     })
 })
 
-describe('RemoteSessionClient auth scheme', () => {
+describe('CloudSessionClient auth scheme', () => {
     afterEach(() => {
         globalThis.fetch = ORIGINAL_FETCH
     })
@@ -136,7 +136,7 @@ describe('RemoteSessionClient auth scheme', () => {
             )
         globalThis.fetch = fetchMock as unknown as typeof fetch
 
-        const client = new RemoteSessionClient('http://localhost:8080', 'ork_key')
+        const client = new CloudSessionClient('http://localhost:8080', 'ork_key')
         await client.create(CREATE_REQUEST)
 
         const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
@@ -148,7 +148,7 @@ describe('RemoteSessionClient auth scheme', () => {
         )
     })
 
-    it('throws REMOTE_CONTRACT_MISMATCH when create response payload is malformed', async () => {
+    it('throws CLOUD_CONTRACT_MISMATCH when create response payload is malformed', async () => {
         const fetchMock = vi
             .fn()
             .mockResolvedValue(
@@ -165,16 +165,16 @@ describe('RemoteSessionClient auth scheme', () => {
             )
         globalThis.fetch = fetchMock as unknown as typeof fetch
 
-        const client = new RemoteSessionClient('http://localhost:8080', 'ork_key')
+        const client = new CloudSessionClient('http://localhost:8080', 'ork_key')
         await expect(client.create(CREATE_REQUEST)).rejects.toEqual(
-            expect.objectContaining<Partial<OpensteerRemoteError>>({
-                code: 'REMOTE_CONTRACT_MISMATCH',
+            expect.objectContaining<Partial<OpensteerCloudError>>({
+                code: 'CLOUD_CONTRACT_MISMATCH',
                 status: 201,
             })
         )
     })
 
-    it('throws REMOTE_CONTRACT_MISMATCH when create response is not valid JSON', async () => {
+    it('throws CLOUD_CONTRACT_MISMATCH when create response is not valid JSON', async () => {
         const fetchMock = vi
             .fn()
             .mockResolvedValue(
@@ -185,10 +185,10 @@ describe('RemoteSessionClient auth scheme', () => {
             )
         globalThis.fetch = fetchMock as unknown as typeof fetch
 
-        const client = new RemoteSessionClient('http://localhost:8080', 'ork_key')
+        const client = new CloudSessionClient('http://localhost:8080', 'ork_key')
         await expect(client.create(CREATE_REQUEST)).rejects.toEqual(
-            expect.objectContaining<Partial<OpensteerRemoteError>>({
-                code: 'REMOTE_CONTRACT_MISMATCH',
+            expect.objectContaining<Partial<OpensteerCloudError>>({
+                code: 'CLOUD_CONTRACT_MISMATCH',
                 status: 201,
             })
         )
@@ -200,7 +200,7 @@ describe('RemoteSessionClient auth scheme', () => {
             .mockResolvedValue(new Response(null, { status: 204 }))
         globalThis.fetch = fetchMock as unknown as typeof fetch
 
-        const client = new RemoteSessionClient(
+        const client = new CloudSessionClient(
             'http://localhost:8080',
             'sandbox_token',
             'bearer'

@@ -13,7 +13,7 @@ export interface ResolvedOpensteerConfig extends OpensteerConfig {
     model: string
 }
 
-type RuntimeMode = 'local' | 'remote'
+type RuntimeMode = 'local' | 'cloud'
 
 export type CloudSelectionSource =
     | 'config.cloud'
@@ -154,19 +154,19 @@ function parseRuntimeMode(
     if (value == null) return undefined
     if (typeof value !== 'string') {
         throw new Error(
-            `Invalid ${source} value "${String(value)}". Use "local" or "remote".`
+            `Invalid ${source} value "${String(value)}". Use "local" or "cloud".`
         )
     }
 
     const normalized = value.trim().toLowerCase()
     if (!normalized) return undefined
 
-    if (normalized === 'local' || normalized === 'remote') {
+    if (normalized === 'local' || normalized === 'cloud') {
         return normalized
     }
 
     throw new Error(
-        `Invalid ${source} value "${value}". Use "local" or "remote".`
+        `Invalid ${source} value "${value}". Use "local" or "cloud".`
     )
 }
 
@@ -270,7 +270,7 @@ export function resolveCloudSelection(
     )
     if (envMode) {
         return {
-            cloud: envMode === 'remote',
+            cloud: envMode === 'cloud',
             source: 'env.OPENSTEER_MODE',
         }
     }

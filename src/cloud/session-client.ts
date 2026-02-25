@@ -1,14 +1,14 @@
 import type {
-    RemoteErrorCode,
-    RemoteSelectorCacheImportRequest,
-    RemoteSelectorCacheImportResponse,
-    RemoteSessionCreateRequest,
-    RemoteSessionCreateResponse,
+    CloudErrorCode,
+    CloudSelectorCacheImportRequest,
+    CloudSelectorCacheImportResponse,
+    CloudSessionCreateRequest,
+    CloudSessionCreateResponse,
 } from './contracts.js'
-import { OpensteerRemoteError } from './errors.js'
+import { OpensteerCloudError } from './errors.js'
 import type { OpensteerAuthScheme } from '../types.js'
 
-interface RemoteHttpErrorBody {
+interface CloudHttpErrorBody {
     error?: string
     code?: string
     details?: Record<string, unknown>
@@ -16,7 +16,7 @@ interface RemoteHttpErrorBody {
 
 const CACHE_IMPORT_BATCH_SIZE = 200
 
-export class RemoteSessionClient {
+export class CloudSessionClient {
     private readonly baseUrl: string
     private readonly key: string
     private readonly authScheme: OpensteerAuthScheme
@@ -32,8 +32,8 @@ export class RemoteSessionClient {
     }
 
     async create(
-        request: RemoteSessionCreateRequest
-    ): Promise<RemoteSessionCreateResponse> {
+        request: CloudSessionCreateRequest
+    ): Promise<CloudSessionCreateResponse> {
         const response = await fetch(`${this.baseUrl}/sessions`, {
             method: 'POST',
             headers: {
@@ -51,9 +51,9 @@ export class RemoteSessionClient {
         try {
             body = await response.json()
         } catch {
-            throw new OpensteerRemoteError(
-                'REMOTE_CONTRACT_MISMATCH',
-                'Invalid remote session create response: expected a JSON object.',
+            throw new OpensteerCloudError(
+                'CLOUD_CONTRACT_MISMATCH',
+                'Invalid cloud session create response: expected a JSON object.',
                 response.status
             )
         }
@@ -79,8 +79,8 @@ export class RemoteSessionClient {
     }
 
     async importSelectorCache(
-        request: RemoteSelectorCacheImportRequest
-    ): Promise<RemoteSelectorCacheImportResponse> {
+        request: CloudSelectorCacheImportRequest
+    ): Promise<CloudSelectorCacheImportResponse> {
         if (!request.entries.length) {
             return zeroImportResponse()
         }
@@ -104,8 +104,8 @@ export class RemoteSessionClient {
     }
 
     private async importSelectorCacheBatch(
-        entries: RemoteSelectorCacheImportRequest['entries']
-    ): Promise<RemoteSelectorCacheImportResponse> {
+        entries: CloudSelectorCacheImportRequest['entries']
+    ): Promise<CloudSelectorCacheImportResponse> {
         const response = await fetch(`${this.baseUrl}/selector-cache/import`, {
             method: 'POST',
             headers: {
@@ -119,7 +119,7 @@ export class RemoteSessionClient {
             throw await parseHttpError(response)
         }
 
-        return (await response.json()) as RemoteSelectorCacheImportResponse
+        return (await response.json()) as CloudSelectorCacheImportResponse
     }
 
     private authHeaders(): Record<string, string> {
@@ -142,10 +142,10 @@ function normalizeBaseUrl(baseUrl: string): string {
 function parseCreateResponse(
     body: unknown,
     status: number
-): RemoteSessionCreateResponse {
+): CloudSessionCreateResponse {
     const root = requireObject(
         body,
-        'Invalid remote session create response: expected a JSON object.',
+        'Invalid cloud session create response: expected a JSON object.',
         status
     )
     const sessionId = requireString(root, 'sessionId', status)
@@ -156,7 +156,7 @@ function parseCreateResponse(
     const cloudSessionUrl = requireString(root, 'cloudSessionUrl', status)
     const cloudSessionRoot = requireObject(
         root.cloudSession,
-        'Invalid remote session create response: cloudSession must be an object.',
+        'Invalid cloud session create response: cloudSession must be an object.',
         status
     )
 
@@ -194,7 +194,7 @@ function requireObject(
     status?: number
 ): Record<string, unknown> {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
-        throw new OpensteerRemoteError('REMOTE_CONTRACT_MISMATCH', message, status)
+        throw new OpensteerCloudError('CLOUD_CONTRACT_MISMATCH', message, status)
     }
     return value as Record<string, unknown>
 }
@@ -207,9 +207,9 @@ function requireString(
 ): string {
     const value = source[field]
     if (typeof value !== 'string' || !value.trim()) {
-        throw new OpensteerRemoteError(
-            'REMOTE_CONTRACT_MISMATCH',
-            `Invalid remote session create response: ${formatFieldPath(
+        throw new OpensteerCloudError(
+            'CLOUD_CONTRACT_MISMATCH',
+            `Invalid cloud session create response: ${formatFieldPath(
                 field,
                 parent
             )} must be a non-empty string.`,
@@ -227,9 +227,9 @@ function requireNumber(
 ): number {
     const value = source[field]
     if (typeof value !== 'number' || !Number.isFinite(value)) {
-        throw new OpensteerRemoteError(
-            'REMOTE_CONTRACT_MISMATCH',
-            `Invalid remote session create response: ${formatFieldPath(
+        throw new OpensteerCloudError(
+            'CLOUD_CONTRACT_MISMATCH',
+            `Invalid cloud session create response: ${formatFieldPath(
                 field,
                 parent
             )} must be a finite number.`,
@@ -250,9 +250,9 @@ function optionalString(
         return undefined
     }
     if (typeof value !== 'string') {
-        throw new OpensteerRemoteError(
-            'REMOTE_CONTRACT_MISMATCH',
-            `Invalid remote session create response: ${formatFieldPath(
+        throw new OpensteerCloudError(
+            'CLOUD_CONTRACT_MISMATCH',
+            `Invalid cloud session create response: ${formatFieldPath(
                 field,
                 parent
             )} must be a string when present.`,
@@ -273,9 +273,9 @@ function optionalNumber(
         return undefined
     }
     if (typeof value !== 'number' || !Number.isFinite(value)) {
-        throw new OpensteerRemoteError(
-            'REMOTE_CONTRACT_MISMATCH',
-            `Invalid remote session create response: ${formatFieldPath(
+        throw new OpensteerCloudError(
+            'CLOUD_CONTRACT_MISMATCH',
+            `Invalid cloud session create response: ${formatFieldPath(
                 field,
                 parent
             )} must be a finite number when present.`,
@@ -301,9 +301,9 @@ function requireSourceType(
         return value
     }
 
-    throw new OpensteerRemoteError(
-        'REMOTE_CONTRACT_MISMATCH',
-        `Invalid remote session create response: ${formatFieldPath(
+    throw new OpensteerCloudError(
+        'CLOUD_CONTRACT_MISMATCH',
+        `Invalid cloud session create response: ${formatFieldPath(
             field,
             parent
         )} must be one of "agent-thread", "agent-run", "local-cloud", or "manual".`,
@@ -315,7 +315,7 @@ function formatFieldPath(field: string, parent?: string): string {
     return parent ? `"${parent}.${field}"` : `"${field}"`
 }
 
-function zeroImportResponse(): RemoteSelectorCacheImportResponse {
+function zeroImportResponse(): CloudSelectorCacheImportResponse {
     return {
         imported: 0,
         inserted: 0,
@@ -325,9 +325,9 @@ function zeroImportResponse(): RemoteSelectorCacheImportResponse {
 }
 
 function mergeImportResponse(
-    first: RemoteSelectorCacheImportResponse,
-    second: RemoteSelectorCacheImportResponse
-): RemoteSelectorCacheImportResponse {
+    first: CloudSelectorCacheImportResponse,
+    second: CloudSelectorCacheImportResponse
+): CloudSelectorCacheImportResponse {
     return {
         imported: first.imported + second.imported,
         inserted: first.inserted + second.inserted,
@@ -338,48 +338,48 @@ function mergeImportResponse(
 
 async function parseHttpError(
     response: Response
-): Promise<OpensteerRemoteError> {
-    let body: RemoteHttpErrorBody | null = null
+): Promise<OpensteerCloudError> {
+    let body: CloudHttpErrorBody | null = null
 
     try {
-        body = (await response.json()) as RemoteHttpErrorBody
+        body = (await response.json()) as CloudHttpErrorBody
     } catch {
         body = null
     }
 
     const code =
         typeof body?.code === 'string'
-            ? toRemoteErrorCode(body.code)
-            : ('REMOTE_TRANSPORT_ERROR' as const)
+            ? toCloudErrorCode(body.code)
+            : ('CLOUD_TRANSPORT_ERROR' as const)
     const message =
         typeof body?.error === 'string'
             ? body.error
-            : `Remote request failed with status ${response.status}.`
+            : `Cloud request failed with status ${response.status}.`
 
-    return new OpensteerRemoteError(code, message, response.status, body?.details)
+    return new OpensteerCloudError(code, message, response.status, body?.details)
 }
 
-function toRemoteErrorCode(
+function toCloudErrorCode(
     code: string
-): RemoteErrorCode | 'REMOTE_TRANSPORT_ERROR' {
+): CloudErrorCode | 'CLOUD_TRANSPORT_ERROR' {
     if (
-        code === 'REMOTE_AUTH_FAILED' ||
-        code === 'REMOTE_SESSION_NOT_FOUND' ||
-        code === 'REMOTE_SESSION_CLOSED' ||
-        code === 'REMOTE_UNSUPPORTED_METHOD' ||
-        code === 'REMOTE_INVALID_REQUEST' ||
-        code === 'REMOTE_MODEL_NOT_ALLOWED' ||
-        code === 'REMOTE_ACTION_FAILED' ||
-        code === 'REMOTE_INTERNAL' ||
-        code === 'REMOTE_CAPACITY_EXHAUSTED' ||
-        code === 'REMOTE_RUNTIME_UNAVAILABLE' ||
-        code === 'REMOTE_RUNTIME_MISMATCH' ||
-        code === 'REMOTE_SESSION_STALE' ||
-        code === 'REMOTE_CONTRACT_MISMATCH' ||
-        code === 'REMOTE_CONTROL_PLANE_ERROR'
+        code === 'CLOUD_AUTH_FAILED' ||
+        code === 'CLOUD_SESSION_NOT_FOUND' ||
+        code === 'CLOUD_SESSION_CLOSED' ||
+        code === 'CLOUD_UNSUPPORTED_METHOD' ||
+        code === 'CLOUD_INVALID_REQUEST' ||
+        code === 'CLOUD_MODEL_NOT_ALLOWED' ||
+        code === 'CLOUD_ACTION_FAILED' ||
+        code === 'CLOUD_INTERNAL' ||
+        code === 'CLOUD_CAPACITY_EXHAUSTED' ||
+        code === 'CLOUD_RUNTIME_UNAVAILABLE' ||
+        code === 'CLOUD_RUNTIME_MISMATCH' ||
+        code === 'CLOUD_SESSION_STALE' ||
+        code === 'CLOUD_CONTRACT_MISMATCH' ||
+        code === 'CLOUD_CONTROL_PLANE_ERROR'
     ) {
         return code
     }
 
-    return 'REMOTE_TRANSPORT_ERROR'
+    return 'CLOUD_TRANSPORT_ERROR'
 }

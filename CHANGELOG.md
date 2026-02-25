@@ -18,6 +18,7 @@
 - Breaking: `OPENSTEER_AI_MODEL` is no longer supported; use `OPENSTEER_MODEL`.
 - Breaking: `OPENSTEER_RUNTIME` is no longer supported; use `OPENSTEER_MODE`.
 - Breaking: constructor runtime selection now uses `cloud` (`cloud: true` or `cloud` options object); legacy `mode`/`remote` config is removed.
+- Breaking: `OPENSTEER_MODE` now uses `local` or `cloud`; `remote` is no longer a supported value.
 - Opensteer now enables built-in LLM resolve/extract by default with model `gpt-5.1`.
 - Cloud mode now falls back to `OPENSTEER_API_KEY` when `cloud.apiKey` is omitted.
 - Mutating actions now include smart best-effort post-action wait with per-action
@@ -31,7 +32,7 @@
 - Added DOM actionability probe + Playwright call-log classification to report
   reasons like `BLOCKED_BY_INTERCEPTOR`, `NOT_VISIBLE`, `NOT_EDITABLE`, and
   timeout/stale-target cases more accurately.
-- Remote action failures now accept optional structured failure details and map
+- Cloud action failures now accept optional structured failure details and map
   them to `OpensteerActionError` when available.
 
 ## 0.1.0
