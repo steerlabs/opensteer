@@ -135,6 +135,213 @@ describe('config', () => {
         })
     })
 
+    it('resolveConfig auto-loads OPENSTEER cloud env from .env in storage.rootDir', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-config-dotenv-'))
+        fs.writeFileSync(
+            path.join(root, '.env'),
+            ['OPENSTEER_MODE=cloud', 'OPENSTEER_API_KEY=ork_env_file_123'].join(
+                '\n'
+            ),
+            'utf8'
+        )
+
+        const resolved = resolveConfig({
+            storage: { rootDir: root },
+        })
+
+        expect(resolved.cloud).toEqual({
+            apiKey: 'ork_env_file_123',
+            authScheme: 'api-key',
+            announce: 'always',
+        })
+    })
+
+    it('resolveConfig keeps existing process env values over .env values', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-config-dotenv-'))
+        fs.writeFileSync(
+            path.join(root, '.env'),
+            ['OPENSTEER_MODE=cloud', 'OPENSTEER_API_KEY=ork_env_file_123'].join(
+                '\n'
+            ),
+            'utf8'
+        )
+        process.env.OPENSTEER_API_KEY = 'ork_process_456'
+
+        const resolved = resolveConfig({
+            storage: { rootDir: root },
+        })
+
+        expect(
+            typeof resolved.cloud === 'object'
+                ? resolved.cloud?.apiKey
+                : null
+        ).toBe('ork_process_456')
+    })
+
+    it('resolveConfig uses dotenv precedence from most-specific to least-specific', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-config-dotenv-'))
+        fs.writeFileSync(path.join(root, '.env'), 'OPENSTEER_API_KEY=ork_env', 'utf8')
+        fs.writeFileSync(
+            path.join(root, '.env.development'),
+            'OPENSTEER_API_KEY=ork_env_mode',
+            'utf8'
+        )
+        fs.writeFileSync(
+            path.join(root, '.env.local'),
+            'OPENSTEER_API_KEY=ork_local',
+            'utf8'
+        )
+        fs.writeFileSync(
+            path.join(root, '.env.development.local'),
+            'OPENSTEER_API_KEY=ork_mode_local',
+            'utf8'
+        )
+        process.env.NODE_ENV = 'development'
+
+        const resolved = resolveConfig({
+            storage: { rootDir: root },
+            cloud: true,
+        })
+
+        expect(
+            typeof resolved.cloud === 'object'
+                ? resolved.cloud?.apiKey
+                : null
+        ).toBe('ork_mode_local')
+    })
+
+    it('resolveConfig does not load .env.local when NODE_ENV=test', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-config-dotenv-'))
+        fs.writeFileSync(
+            path.join(root, '.env.local'),
+            ['OPENSTEER_MODE=cloud', 'OPENSTEER_API_KEY=ork_local_only'].join('\n'),
+            'utf8'
+        )
+        process.env.NODE_ENV = 'test'
+
+        const resolved = resolveConfig({
+            storage: { rootDir: root },
+        })
+
+        expect(resolved.cloud).toBeUndefined()
+    })
+
+    it('resolveConfig can disable dotenv auto-load explicitly', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-config-dotenv-'))
+        fs.writeFileSync(
+            path.join(root, '.env'),
+            ['OPENSTEER_MODE=cloud', 'OPENSTEER_API_KEY=ork_env_file_123'].join(
+                '\n'
+            ),
+            'utf8'
+        )
+        process.env.OPENSTEER_DISABLE_DOTENV_AUTOLOAD = 'true'
+
+        const resolved = resolveConfig({
+            storage: { rootDir: root },
+        })
+
+        expect(resolved.cloud).toBeUndefined()
+    })
+
+    it('resolveConfig keeps dotenv values scoped to each storage.rootDir', () => {
+        const rootA = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-config-dotenv-a-'))
+        const rootB = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-config-dotenv-b-'))
+
+        fs.writeFileSync(
+            path.join(rootA, '.env'),
+            ['OPENSTEER_MODE=cloud', 'OPENSTEER_API_KEY=ork_env_a'].join('\n'),
+            'utf8'
+        )
+        fs.writeFileSync(
+            path.join(rootB, '.env'),
+            ['OPENSTEER_MODE=cloud', 'OPENSTEER_API_KEY=ork_env_b'].join('\n'),
+            'utf8'
+        )
+
+        const first = resolveConfig({
+            storage: { rootDir: rootA },
+        })
+        const second = resolveConfig({
+            storage: { rootDir: rootB },
+        })
+
+        expect(
+            typeof first.cloud === 'object'
+                ? first.cloud?.apiKey
+                : null
+        ).toBe('ork_env_a')
+        expect(
+            typeof second.cloud === 'object'
+                ? second.cloud?.apiKey
+                : null
+        ).toBe('ork_env_b')
+    })
+
+    it('resolveConfig does not mutate process.env when loading dotenv files', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-config-dotenv-'))
+        fs.writeFileSync(
+            path.join(root, '.env'),
+            ['OPENSTEER_MODE=cloud', 'OPENSTEER_API_KEY=ork_env_file_123'].join(
+                '\n'
+            ),
+            'utf8'
+        )
+        delete process.env.OPENSTEER_MODE
+        delete process.env.OPENSTEER_API_KEY
+
+        resolveConfig({
+            storage: { rootDir: root },
+        })
+
+        expect(process.env.OPENSTEER_MODE).toBeUndefined()
+        expect(process.env.OPENSTEER_API_KEY).toBeUndefined()
+    })
+
+    it('resolveConfig loads dotenv from storage.rootDir set in .opensteer/config.json', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-config-dotenv-'))
+        const effectiveRoot = fs.mkdtempSync(
+            path.join(os.tmpdir(), 'opensteer-config-dotenv-effective-')
+        )
+        fs.mkdirSync(path.join(root, '.opensteer'), { recursive: true })
+        fs.writeFileSync(
+            path.join(root, '.opensteer', 'config.json'),
+            JSON.stringify(
+                {
+                    storage: {
+                        rootDir: effectiveRoot,
+                    },
+                },
+                null,
+                2
+            ),
+            'utf8'
+        )
+        fs.writeFileSync(
+            path.join(effectiveRoot, '.env'),
+            ['OPENSTEER_MODE=cloud', 'OPENSTEER_API_KEY=ork_effective_123'].join(
+                '\n'
+            ),
+            'utf8'
+        )
+
+        const originalCwd = process.cwd()
+        let resolved: ReturnType<typeof resolveConfig>
+        try {
+            process.chdir(root)
+            resolved = resolveConfig({})
+        } finally {
+            process.chdir(originalCwd)
+        }
+
+        expect(resolved.storage?.rootDir).toBe(effectiveRoot)
+        expect(
+            typeof resolved.cloud === 'object'
+                ? resolved.cloud?.apiKey
+                : null
+        ).toBe('ork_effective_123')
+    })
+
     it('resolveConfig sets cloud config from OPENSTEER_MODE and OPENSTEER_API_KEY', () => {
         process.env.OPENSTEER_MODE = 'cloud'
         process.env.OPENSTEER_API_KEY = 'ork_env_123'

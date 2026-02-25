@@ -13,6 +13,12 @@ OPENSTEER_APP_URL=https://opensteer.com
 OPENSTEER_REMOTE_ANNOUNCE=always
 ```
 
+These values can be placed in `.env` files. Opensteer auto-loads
+`.env.<NODE_ENV>.local`, `.env.local` (skipped when `NODE_ENV=test`),
+`.env.<NODE_ENV>`, then `.env` from your `storage.rootDir` (default:
+`process.cwd()`). Existing `process.env` values are not overwritten. Set
+`OPENSTEER_DISABLE_DOTENV_AUTOLOAD=true` to disable auto-loading.
+
 Opensteer defaults to local mode when `OPENSTEER_MODE` is unset and `cloud` is not configured.
 
 You can also force cloud mode in constructor config:
