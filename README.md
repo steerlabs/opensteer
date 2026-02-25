@@ -164,6 +164,11 @@ Opensteer defaults to local mode.
 - `OPENSTEER_MODE=local` runs local Playwright.
 - `OPENSTEER_MODE=cloud` enables cloud mode (requires `OPENSTEER_API_KEY`).
 - `cloud: true` in constructor config always enables cloud mode.
+- Opensteer auto-loads `.env` files from your `storage.rootDir` (default:
+  `process.cwd()`) using this order: `.env.<NODE_ENV>.local`, `.env.local`
+  (skipped when `NODE_ENV=test`), `.env.<NODE_ENV>`, `.env`.
+- Existing `process.env` values are never overwritten by `.env` values.
+- Set `OPENSTEER_DISABLE_DOTENV_AUTOLOAD=true` to disable auto-loading.
 
 Cloud mode is fail-fast: it does not automatically fall back to local mode.
 
