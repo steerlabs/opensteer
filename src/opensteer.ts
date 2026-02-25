@@ -3,7 +3,7 @@ import type { Browser, BrowserContext, ElementHandle, Page } from 'playwright'
 import { BrowserPool } from './browser/pool.js'
 import {
     resolveConfig,
-    resolveModeSelection,
+    resolveCloudSelection,
     resolveNamespace,
 } from './config.js'
 import { waitForVisualStability } from './navigation.js'
@@ -193,8 +193,8 @@ export class Opensteer {
 
     constructor(config: OpensteerConfig = {}) {
         const resolved = resolveConfig(config)
-        const modeSelection = resolveModeSelection({
-            mode: resolved.mode,
+        const cloudSelection = resolveCloudSelection({
+            cloud: resolved.cloud,
         })
         const model = resolved.model
 
@@ -207,23 +207,23 @@ export class Opensteer {
         this.storage = new LocalSelectorStorage(rootDir, this.namespace)
         this.pool = new BrowserPool(resolved.browser || {})
 
-        if (modeSelection.mode === 'remote') {
-            const remoteConfig =
-                resolved.remote && typeof resolved.remote === 'object'
-                    ? resolved.remote
+        if (cloudSelection.cloud) {
+            const cloudConfig =
+                resolved.cloud && typeof resolved.cloud === 'object'
+                    ? resolved.cloud
                     : undefined
-            const apiKey = remoteConfig?.apiKey?.trim()
+            const apiKey = cloudConfig?.apiKey?.trim()
             if (!apiKey) {
                 throw new Error(
-                    'Remote mode requires a non-empty API key via remote.apiKey or OPENSTEER_API_KEY.'
+                    'Cloud mode requires a non-empty API key via cloud.apiKey or OPENSTEER_API_KEY.'
                 )
             }
 
             this.remote = createRemoteRuntimeState(
                 apiKey,
-                remoteConfig?.baseUrl,
-                remoteConfig?.authScheme,
-                remoteConfig?.appUrl
+                cloudConfig?.baseUrl,
+                cloudConfig?.authScheme,
+                cloudConfig?.appUrl
             )
         } else {
             this.remote = null
@@ -395,11 +395,15 @@ export class Opensteer {
             fields.push(`url=${args.cloudSessionUrl}`)
         }
 
-        process.stderr.write(`[opensteer] remote session ready ${fields.join(' ')}\n`)
+        process.stderr.write(`[opensteer] cloud session ready ${fields.join(' ')}\n`)
     }
 
     private shouldAnnounceRemoteSession(): boolean {
-        const announce = this.config.remote?.announce ?? 'always'
+        const cloudConfig =
+            this.config.cloud && typeof this.config.cloud === 'object'
+                ? this.config.cloud
+                : null
+        const announce = cloudConfig?.announce ?? 'always'
         if (announce === 'off') {
             return false
         }
@@ -438,7 +442,7 @@ export class Opensteer {
                                 ? error.message
                                 : String(error)
                         console.warn(
-                            `[opensteer] remote selector cache sync failed: ${message}`
+                            `[opensteer] cloud selector cache sync failed: ${message}`
                         )
                     }
                 }
@@ -447,7 +451,7 @@ export class Opensteer {
                 this.remote.localRunId = localRunId
                 const session = await this.remote.sessionClient.create({
                     remoteSessionContractVersion: REMOTE_SESSION_CONTRACT_VERSION,
-                    sourceType: 'local-remote',
+                    sourceType: 'local-cloud',
                     clientSessionHint: this.namespace,
                     localRunId,
                     name: this.namespace,
@@ -523,13 +527,13 @@ export class Opensteer {
 
     static from(page: Page, config: OpensteerConfig = {}): Opensteer {
         const resolvedConfig = resolveConfig(config)
-        const modeSelection = resolveModeSelection({
-            mode: resolvedConfig.mode,
+        const cloudSelection = resolveCloudSelection({
+            cloud: resolvedConfig.cloud,
         })
-        if (modeSelection.mode === 'remote') {
+        if (cloudSelection.cloud) {
             throw remoteUnsupportedMethodError(
                 'Opensteer.from(page)',
-                'Opensteer.from(page) is not supported in remote mode.'
+                'Opensteer.from(page) is not supported in cloud mode.'
             )
         }
 
@@ -1289,7 +1293,7 @@ export class Opensteer {
         if (this.remote) {
             throw remoteUnsupportedMethodError(
                 'exportCookies',
-                'exportCookies() is not supported in remote mode because it depends on local filesystem paths.'
+                'exportCookies() is not supported in cloud mode because it depends on local filesystem paths.'
             )
         }
 
@@ -1300,7 +1304,7 @@ export class Opensteer {
         if (this.remote) {
             throw remoteUnsupportedMethodError(
                 'importCookies',
-                'importCookies() is not supported in remote mode because it depends on local filesystem paths.'
+                'importCookies() is not supported in cloud mode because it depends on local filesystem paths.'
             )
         }
 
@@ -1479,7 +1483,7 @@ export class Opensteer {
         if (this.remote) {
             throw remoteUnsupportedMethodError(
                 'uploadFile',
-                'uploadFile() is not supported in remote mode because file paths must be accessible on the remote server.'
+                'uploadFile() is not supported in cloud mode because file paths must be accessible on the cloud runtime.'
             )
         }
 

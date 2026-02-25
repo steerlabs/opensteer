@@ -290,12 +290,12 @@ function requireSourceType(
     field: string,
     status: number,
     parent?: string
-): 'agent-thread' | 'agent-run' | 'local-remote' | 'manual' {
+): 'agent-thread' | 'agent-run' | 'local-cloud' | 'manual' {
     const value = source[field]
     if (
         value === 'agent-thread' ||
         value === 'agent-run' ||
-        value === 'local-remote' ||
+        value === 'local-cloud' ||
         value === 'manual'
     ) {
         return value
@@ -306,7 +306,7 @@ function requireSourceType(
         `Invalid remote session create response: ${formatFieldPath(
             field,
             parent
-        )} must be one of "agent-thread", "agent-run", "local-remote", or "manual".`,
+        )} must be one of "agent-thread", "agent-run", "local-cloud", or "manual".`,
         status
     )
 }

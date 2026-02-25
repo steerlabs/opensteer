@@ -25,13 +25,13 @@ export function remoteUnsupportedMethodError(
 ): OpensteerRemoteError {
     return new OpensteerRemoteError(
         'REMOTE_UNSUPPORTED_METHOD',
-        message || `${method} is not supported in remote mode.`
+        message || `${method} is not supported in cloud mode.`
     )
 }
 
 export function remoteNotLaunchedError(): OpensteerRemoteError {
     return new OpensteerRemoteError(
         'REMOTE_SESSION_NOT_FOUND',
-        'Remote session is not connected. Call launch() first.'
+        'Cloud session is not connected. Call launch() first.'
     )
 }

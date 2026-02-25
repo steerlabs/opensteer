@@ -104,24 +104,24 @@ export interface OpensteerStorageConfig {
     rootDir?: string
 }
 
-export type OpensteerMode = 'local' | 'remote'
 export type OpensteerAuthScheme = 'api-key' | 'bearer'
-export type OpensteerRemoteAnnouncePolicy = 'always' | 'off' | 'tty'
+export type OpensteerCloudAnnouncePolicy = 'always' | 'off' | 'tty'
 
-export interface OpensteerRemoteOptions {
+export interface OpensteerCloudOptions {
     apiKey?: string
     baseUrl?: string
     appUrl?: string
     authScheme?: OpensteerAuthScheme
-    announce?: OpensteerRemoteAnnouncePolicy
+    announce?: OpensteerCloudAnnouncePolicy
 }
+
+export type OpensteerCloudConfig = boolean | OpensteerCloudOptions
 
 export interface OpensteerConfig {
     name?: string
     browser?: OpensteerBrowserConfig
     storage?: OpensteerStorageConfig
-    mode?: OpensteerMode
-    remote?: OpensteerRemoteOptions
+    cloud?: OpensteerCloudConfig
     model?: string
     debug?: boolean
 }

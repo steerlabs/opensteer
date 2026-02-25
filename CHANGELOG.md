@@ -17,9 +17,9 @@
 - Breaking: removed legacy `ai` config from `OpensteerConfig`; use top-level `model` instead.
 - Breaking: `OPENSTEER_AI_MODEL` is no longer supported; use `OPENSTEER_MODEL`.
 - Breaking: `OPENSTEER_RUNTIME` is no longer supported; use `OPENSTEER_MODE`.
-- Breaking: mode selection now uses `mode: 'local' | 'remote'` and remote credentials use `remote.apiKey`.
+- Breaking: constructor runtime selection now uses `cloud` (`cloud: true` or `cloud` options object); legacy `mode`/`remote` config is removed.
 - Opensteer now enables built-in LLM resolve/extract by default with model `gpt-5.1`.
-- Remote mode now falls back to `OPENSTEER_API_KEY` when `remote.apiKey` is omitted.
+- Cloud mode now falls back to `OPENSTEER_API_KEY` when `cloud.apiKey` is omitted.
 - Mutating actions now include smart best-effort post-action wait with per-action
   profiles and optional per-call overrides via `wait`.
 - Added structured interaction diagnostics via `OpensteerActionError` for
