@@ -1,5 +1,8 @@
 import type { Page, Request } from 'playwright'
-import { waitForVisualStabilityAcrossFrames } from './navigation.js'
+import {
+    isStealthWaitUnavailableError,
+    waitForVisualStabilityAcrossFrames,
+} from './navigation.js'
 import type { ActionWaitOptions } from './types.js'
 
 export type PostActionKind =
@@ -118,23 +121,28 @@ export function createPostActionWaitSession(
                 : profile.timeout
 
             try {
-                await waitForVisualStabilityAcrossFrames(page, {
-                    timeout: visualTimeout,
-                    settleMs: profile.settleMs,
-                })
-            } catch {
-            } finally {
-                tracker?.freezeCollection()
-            }
-
-            try {
-                if (tracker) {
-                    await tracker.waitForQuiet({
-                        deadline,
-                        quietMs: profile.networkQuietMs,
+                try {
+                    await waitForVisualStabilityAcrossFrames(page, {
+                        timeout: visualTimeout,
+                        settleMs: profile.settleMs,
                     })
+                } catch (error) {
+                    if (isStealthWaitUnavailableError(error)) {
+                        throw error
+                    }
+                } finally {
+                    tracker?.freezeCollection()
                 }
-            } catch {
+
+                if (tracker) {
+                    try {
+                        await tracker.waitForQuiet({
+                            deadline,
+                            quietMs: profile.networkQuietMs,
+                        })
+                    } catch {
+                    }
+                }
             } finally {
                 tracker?.stop()
             }

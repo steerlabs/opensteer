@@ -1,6 +1,7 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BrowserContext, Page } from 'playwright'
 import { Opensteer } from '../../src/opensteer.js'
+import { StealthWaitUnavailableError } from '../../src/navigation.js'
 import { closeTestBrowser, createTestPage } from '../helpers/browser.js'
 import { setFixture } from '../helpers/fixture.js'
 
@@ -284,6 +285,28 @@ describe('post-action wait', () => {
         expect(elapsed).toBeGreaterThanOrEqual(1000)
         expect(elapsed).toBeLessThan(2500)
         await page.unroute('https://opensteer.local/slow-request')
+    })
+
+    it('fails fast when stealth visual wait is unavailable', async () => {
+        await setFixture(page, '<button id="trigger">Trigger update</button>')
+
+        const opensteer = Opensteer.from(page, { name: 'post-action-stealth-unavailable' })
+        const context = page.context()
+        const cdpSpy = vi
+            .spyOn(context, 'newCDPSession')
+            .mockRejectedValue(
+                new Error('CDP sessions are only supported in Chromium')
+            )
+
+        try {
+            await expect(
+                opensteer.click({
+                    selector: '#trigger',
+                })
+            ).rejects.toBeInstanceOf(StealthWaitUnavailableError)
+        } finally {
+            cdpSpy.mockRestore()
+        }
     })
 
     it('skips post-action wait when wait is false', async () => {
