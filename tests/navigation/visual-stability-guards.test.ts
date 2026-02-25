@@ -1,21 +1,83 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { Frame, Page } from 'playwright'
-import { waitForVisualStabilityAcrossFrames } from '../../src/navigation.js'
+import type { BrowserContext, CDPSession, Page } from 'playwright'
+import {
+    StealthWaitUnavailableError,
+    waitForVisualStabilityAcrossFrames,
+} from '../../src/navigation.js'
 
-function createPageWithFrames(frames: Frame[]): Page {
-    const main = frames[0]
-    return {
-        frames: () => frames,
-        mainFrame: () => main,
+interface FakeCdpOptions {
+    evaluate?: () => Promise<unknown>
+}
+
+function createFakePage(options: FakeCdpOptions = {}): {
+    page: Page
+    send: ReturnType<typeof vi.fn>
+} {
+    const send = vi.fn(async (method: string) => {
+        if (method === 'Page.enable') return {}
+        if (method === 'Runtime.enable') return {}
+        if (method === 'DOM.enable') return {}
+
+        if (method === 'Page.getFrameTree') {
+            return {
+                frameTree: {
+                    frame: {
+                        id: 'main-frame',
+                    },
+                },
+            }
+        }
+
+        if (method === 'Page.createIsolatedWorld') {
+            return {
+                executionContextId: 1,
+            }
+        }
+
+        if (method === 'Runtime.evaluate') {
+            if (options.evaluate) {
+                await options.evaluate()
+            }
+
+            return {
+                result: {
+                    value: true,
+                },
+            }
+        }
+
+        throw new Error(`Unhandled CDP method in test: ${method}`)
+    })
+
+    const session = {
+        send,
+        detach: vi.fn(async () => {}),
+    } as unknown as CDPSession
+
+    const context = {
+        browser: () => ({
+            browserType: () => ({
+                name: () => 'chromium',
+            }),
+        }),
+        newCDPSession: vi.fn(async () => session),
+    } as unknown as BrowserContext
+
+    const page = {
+        context: () => context,
     } as unknown as Page
+
+    return {
+        page,
+        send,
+    }
 }
 
 describe('navigation/waitForVisualStabilityAcrossFrames guards', () => {
-    it('returns within timeout when a frame evaluate call never settles', async () => {
-        const frame = {
-            evaluate: vi.fn(() => new Promise(() => {})),
-        } as unknown as Frame
-        const page = createPageWithFrames([frame])
+    it('returns within timeout when isolated-world evaluate never settles', async () => {
+        const { page, send } = createFakePage({
+            evaluate: () => new Promise(() => {}),
+        })
 
         const startedAt = Date.now()
         await waitForVisualStabilityAcrossFrames(page, {
@@ -26,14 +88,17 @@ describe('navigation/waitForVisualStabilityAcrossFrames guards', () => {
 
         expect(elapsed).toBeGreaterThanOrEqual(180)
         expect(elapsed).toBeLessThan(1400)
-        expect(frame.evaluate).toHaveBeenCalledTimes(1)
+        expect(
+            send.mock.calls.filter(
+                (call: unknown[]) => call[0] === 'Runtime.evaluate'
+            ).length
+        ).toBe(1)
     })
 
-    it('resolves quickly when frame evaluate settles immediately', async () => {
-        const frame = {
-            evaluate: vi.fn(async () => undefined),
-        } as unknown as Frame
-        const page = createPageWithFrames([frame])
+    it('resolves quickly when isolated-world evaluate settles immediately', async () => {
+        const { page, send } = createFakePage({
+            evaluate: async () => undefined,
+        })
 
         const startedAt = Date.now()
         await waitForVisualStabilityAcrossFrames(page, {
@@ -43,22 +108,53 @@ describe('navigation/waitForVisualStabilityAcrossFrames guards', () => {
         const elapsed = Date.now() - startedAt
 
         expect(elapsed).toBeLessThan(250)
-        expect(frame.evaluate).toHaveBeenCalledTimes(1)
+        expect(
+            send.mock.calls.filter(
+                (call: unknown[]) => call[0] === 'Runtime.evaluate'
+            ).length
+        ).toBe(1)
     })
 
-    it('ignores detached-frame errors', async () => {
-        const frame = {
-            evaluate: vi.fn(async () => {
-                throw new Error('Frame was detached')
-            }),
-        } as unknown as Frame
-        const page = createPageWithFrames([frame])
+    it('ignores detached-context errors', async () => {
+        const { page, send } = createFakePage({
+            evaluate: async () => {
+                throw new Error('Execution context was destroyed')
+            },
+        })
 
         await waitForVisualStabilityAcrossFrames(page, {
             timeout: 500,
             settleMs: 40,
         })
 
-        expect(frame.evaluate).toHaveBeenCalledTimes(1)
+        expect(
+            send.mock.calls.filter(
+                (call: unknown[]) => call[0] === 'Runtime.evaluate'
+            ).length
+        ).toBe(1)
+    })
+
+    it('fails fast when Chromium CDP is unavailable', async () => {
+        const context = {
+            browser: () => ({
+                browserType: () => ({
+                    name: () => 'webkit',
+                }),
+            }),
+            newCDPSession: vi.fn(async () => {
+                throw new Error('CDP sessions are only supported in Chromium')
+            }),
+        } as unknown as BrowserContext
+
+        const page = {
+            context: () => context,
+        } as unknown as Page
+
+        await expect(
+            waitForVisualStabilityAcrossFrames(page, {
+                timeout: 500,
+                settleMs: 40,
+            })
+        ).rejects.toBeInstanceOf(StealthWaitUnavailableError)
     })
 })
