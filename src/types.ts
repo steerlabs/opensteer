@@ -105,10 +105,12 @@ export interface OpensteerStorageConfig {
 }
 
 export type OpensteerMode = 'local' | 'remote'
+export type OpensteerAuthScheme = 'api-key' | 'bearer'
 
 export interface OpensteerRemoteOptions {
     apiKey?: string
     baseUrl?: string
+    authScheme?: OpensteerAuthScheme
 }
 
 export interface OpensteerConfig {

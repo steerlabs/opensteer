@@ -6,6 +6,7 @@ import type {
     RemoteSessionCreateResponse,
 } from './contracts.js'
 import { OpensteerRemoteError } from './errors.js'
+import type { OpensteerAuthScheme } from '../types.js'
 
 interface RemoteHttpErrorBody {
     error?: string
@@ -18,10 +19,16 @@ const CACHE_IMPORT_BATCH_SIZE = 200
 export class RemoteSessionClient {
     private readonly baseUrl: string
     private readonly key: string
+    private readonly authScheme: OpensteerAuthScheme
 
-    constructor(baseUrl: string, key: string) {
+    constructor(
+        baseUrl: string,
+        key: string,
+        authScheme: OpensteerAuthScheme = 'api-key'
+    ) {
         this.baseUrl = normalizeBaseUrl(baseUrl)
         this.key = key
+        this.authScheme = authScheme
     }
 
     async create(
@@ -31,7 +38,7 @@ export class RemoteSessionClient {
             method: 'POST',
             headers: {
                 'content-type': 'application/json',
-                'x-api-key': this.key,
+                ...this.authHeaders(),
             },
             body: JSON.stringify(request),
         })
@@ -47,7 +54,7 @@ export class RemoteSessionClient {
         const response = await fetch(`${this.baseUrl}/sessions/${sessionId}`, {
             method: 'DELETE',
             headers: {
-                'x-api-key': this.key,
+                ...this.authHeaders(),
             },
         })
 
@@ -92,7 +99,7 @@ export class RemoteSessionClient {
             method: 'POST',
             headers: {
                 'content-type': 'application/json',
-                'x-api-key': this.key,
+                ...this.authHeaders(),
             },
             body: JSON.stringify({ entries }),
         })
@@ -102,6 +109,18 @@ export class RemoteSessionClient {
         }
 
         return (await response.json()) as RemoteSelectorCacheImportResponse
+    }
+
+    private authHeaders(): Record<string, string> {
+        if (this.authScheme === 'bearer') {
+            return {
+                authorization: `Bearer ${this.key}`,
+            }
+        }
+
+        return {
+            'x-api-key': this.key,
+        }
     }
 }
 
