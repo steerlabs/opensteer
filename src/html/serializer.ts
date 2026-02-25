@@ -28,9 +28,10 @@ export interface SerializedPageHTML {
 interface BrowserFrameSnapshot {
     html: string
     frameToken: string
+    nodeTable: SerializedPathNode[]
     entries: Array<{
         nodeId: string
-        path: BrowserSerializedElementPath
+        path: BrowserPackedSerializedElementPath
         instanceToken: string
     }>
 }
@@ -55,6 +56,11 @@ interface BrowserSerializedElementPath {
     nodes: SerializedDomPath
 }
 
+interface BrowserPackedSerializedElementPath {
+    context: Array<{ kind: 'shadow'; host: number[] }>
+    nodes: number[]
+}
+
 export interface SerializedNodeMeta {
     frameToken: string
     instanceToken: string
@@ -64,6 +70,96 @@ interface FrameSerializeResult {
     html: string
     nodePaths: Map<string, ElementPath>
     nodeMeta: Map<string, SerializedNodeMeta>
+}
+
+function decodeSerializedNodeTableEntry(
+    nodeTable: SerializedPathNode[],
+    rawIndex: unknown,
+    label: string
+): SerializedPathNode {
+    if (
+        typeof rawIndex !== 'number' ||
+        !Number.isInteger(rawIndex) ||
+        rawIndex < 0 ||
+        rawIndex >= nodeTable.length
+    ) {
+        throw new Error(
+            `Invalid serialized path node index at "${label}": expected a valid table index.`
+        )
+    }
+
+    const node = nodeTable[rawIndex]
+    if (!node || typeof node !== 'object') {
+        throw new Error(
+            `Invalid serialized path node at "${label}": table entry is missing.`
+        )
+    }
+
+    return node
+}
+
+function decodeSerializedDomPath(
+    nodeTable: SerializedPathNode[],
+    rawPath: unknown,
+    label: string
+): SerializedDomPath {
+    if (!Array.isArray(rawPath)) {
+        throw new Error(
+            `Invalid serialized path at "${label}": expected an array of node indexes.`
+        )
+    }
+
+    return rawPath.map((value, index) =>
+        decodeSerializedNodeTableEntry(nodeTable, value, `${label}[${index}]`)
+    )
+}
+
+function decodeSerializedElementPath(
+    nodeTable: SerializedPathNode[],
+    rawPath: BrowserPackedSerializedElementPath | null | undefined,
+    label: string
+): BrowserSerializedElementPath {
+    if (!rawPath || typeof rawPath !== 'object') {
+        throw new Error(
+            `Invalid serialized element path at "${label}": expected an object.`
+        )
+    }
+
+    if (
+        rawPath.context !== undefined &&
+        !Array.isArray(rawPath.context)
+    ) {
+        throw new Error(
+            `Invalid serialized context at "${label}.context": expected an array.`
+        )
+    }
+
+    const contextRaw = Array.isArray(rawPath.context) ? rawPath.context : []
+    const context = contextRaw.map((hop, hopIndex) => {
+        if (!hop || typeof hop !== 'object' || hop.kind !== 'shadow') {
+            throw new Error(
+                `Invalid serialized context hop at "${label}.context[${hopIndex}]": expected a shadow hop.`
+            )
+        }
+
+        return {
+            kind: 'shadow' as const,
+            host: decodeSerializedDomPath(
+                nodeTable,
+                hop.host,
+                `${label}.context[${hopIndex}].host`
+            ),
+        }
+    })
+
+    return {
+        context,
+        nodes: decodeSerializedDomPath(
+            nodeTable,
+            rawPath.nodes,
+            `${label}.nodes`
+        ),
+    }
 }
 
 export async function serializePageHTML(
@@ -146,9 +242,11 @@ async function serializeFrameRecursive(
             )
 
             let counter = 1
+            const nodeTable: SerializedPathNode[] = []
+            const nodeTableIndexByKey = new Map<string, number>()
             const entries: Array<{
                 nodeId: string
-                path: BrowserSerializedElementPath
+                path: BrowserPackedSerializedElementPath
                 instanceToken: string
             }> = []
 
@@ -414,6 +512,57 @@ async function serializeFrameRecursive(
                     }
                 },
 
+                buildPathNodeKey(node: SerializedPathNode): string {
+                    const attrs = Object.entries(node.attrs || {}).sort(
+                        ([a], [b]) => a.localeCompare(b)
+                    )
+                    const match = (node.match || []).map((clause) =>
+                        clause.kind === 'attr'
+                            ? [
+                                  'attr',
+                                  clause.key,
+                                  clause.op || 'exact',
+                                  clause.value ?? null,
+                              ]
+                            : ['position', clause.axis]
+                    )
+
+                    return JSON.stringify([
+                        node.tag,
+                        node.position.nthChild,
+                        node.position.nthOfType,
+                        attrs,
+                        match,
+                    ])
+                },
+
+                internPathNode(node: SerializedPathNode): number {
+                    const key = helpers.buildPathNodeKey(node)
+                    const existing = nodeTableIndexByKey.get(key)
+                    if (existing != null) return existing
+
+                    const index = nodeTable.length
+                    nodeTable.push(node)
+                    nodeTableIndexByKey.set(key, index)
+                    return index
+                },
+
+                packDomPath(path: SerializedDomPath): number[] {
+                    return path.map((node) => helpers.internPathNode(node))
+                },
+
+                packElementPath(
+                    path: BrowserSerializedElementPath
+                ): BrowserPackedSerializedElementPath {
+                    return {
+                        context: (path.context || []).map((hop) => ({
+                            kind: 'shadow',
+                            host: helpers.packDomPath(hop.host),
+                        })),
+                        nodes: helpers.packDomPath(path.nodes),
+                    }
+                },
+
                 ensureNodeId(el: Element): string {
                     const next = `${frameKey}_${counter++}`
                     el.setAttribute(nodeAttr, next)
@@ -446,9 +595,12 @@ async function serializeFrameRecursive(
                 serializeElement(el: Element): string {
                     const nodeId = helpers.ensureNodeId(el)
                     const instanceToken = helpers.setInstanceToken(el)
+                    const packedPath = helpers.packElementPath(
+                        helpers.buildElementPath(el)
+                    )
                     entries.push({
                         nodeId,
-                        path: helpers.buildElementPath(el),
+                        path: packedPath,
                         instanceToken,
                     })
 
@@ -485,12 +637,13 @@ async function serializeFrameRecursive(
 
             const root = document.documentElement
             if (!root) {
-                return { html: '', frameToken, entries }
+                return { html: '', frameToken, nodeTable, entries }
             }
 
             return {
                 html: helpers.serializeElement(root),
                 frameToken,
+                nodeTable,
                 entries,
             }
         },
@@ -509,13 +662,19 @@ async function serializeFrameRecursive(
 
     const nodePaths = new Map<string, ElementPath>()
     const nodeMeta = new Map<string, SerializedNodeMeta>()
-    for (const entry of frameSnapshot.entries) {
+    for (const [index, entry] of frameSnapshot.entries.entries()) {
+        const path = decodeSerializedElementPath(
+            frameSnapshot.nodeTable,
+            entry.path,
+            `entries[${index}].path`
+        )
+
         nodePaths.set(entry.nodeId, {
             context: [
                 ...baseContext,
-                ...(entry.path.context || []),
+                ...(path.context || []),
             ] as ContextHop[],
-            nodes: entry.path.nodes,
+            nodes: path.nodes,
         })
         nodeMeta.set(entry.nodeId, {
             frameToken: frameSnapshot.frameToken,
