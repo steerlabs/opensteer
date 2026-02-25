@@ -1,8 +1,31 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RemoteSessionClient } from '../../src/remote/session-client.js'
 import { OpensteerRemoteError } from '../../src/remote/errors.js'
+import { remoteSessionContractVersion } from '../../src/remote/contracts.js'
 
 const ORIGINAL_FETCH = globalThis.fetch
+const CREATE_REQUEST = {
+    remoteSessionContractVersion,
+    sourceType: 'local-remote' as const,
+    clientSessionHint: 'default',
+    localRunId: 'default-run-1234',
+}
+
+const CREATE_RESPONSE = {
+    sessionId: 'sess_123',
+    actionWsUrl: 'wss://action.example.com',
+    cdpWsUrl: 'wss://cdp.example.com',
+    actionToken: 'act_123',
+    cdpToken: 'cdp_123',
+    cloudSessionUrl: 'https://opensteer.com/browser/cloud_123',
+    cloudSession: {
+        sessionId: 'cloud_123',
+        workspaceId: 'ws_123',
+        state: 'active',
+        createdAt: 1735707600000,
+        sourceType: 'local-remote' as const,
+    },
+}
 
 describe('RemoteSessionClient#importSelectorCache', () => {
     afterEach(() => {
@@ -104,12 +127,35 @@ describe('RemoteSessionClient auth scheme', () => {
             .fn()
             .mockResolvedValue(
                 new Response(
+                    JSON.stringify(CREATE_RESPONSE),
+                    {
+                        status: 201,
+                        headers: { 'content-type': 'application/json' },
+                    }
+                )
+            )
+        globalThis.fetch = fetchMock as unknown as typeof fetch
+
+        const client = new RemoteSessionClient('http://localhost:8080', 'ork_key')
+        await client.create(CREATE_REQUEST)
+
+        const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+        expect(init.headers).toEqual(
+            expect.objectContaining({
+                'content-type': 'application/json',
+                'x-api-key': 'ork_key',
+            })
+        )
+    })
+
+    it('throws REMOTE_CONTRACT_MISMATCH when create response payload is malformed', async () => {
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValue(
+                new Response(
                     JSON.stringify({
-                        sessionId: 'sess_123',
-                        actionWsUrl: 'wss://action.example.com',
-                        cdpWsUrl: 'wss://cdp.example.com',
-                        actionToken: 'act_123',
-                        cdpToken: 'cdp_123',
+                        ...CREATE_RESPONSE,
+                        cloudSession: null,
                     }),
                     {
                         status: 201,
@@ -120,13 +166,30 @@ describe('RemoteSessionClient auth scheme', () => {
         globalThis.fetch = fetchMock as unknown as typeof fetch
 
         const client = new RemoteSessionClient('http://localhost:8080', 'ork_key')
-        await client.create({})
+        await expect(client.create(CREATE_REQUEST)).rejects.toEqual(
+            expect.objectContaining<Partial<OpensteerRemoteError>>({
+                code: 'REMOTE_CONTRACT_MISMATCH',
+                status: 201,
+            })
+        )
+    })
 
-        const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-        expect(init.headers).toEqual(
-            expect.objectContaining({
-                'content-type': 'application/json',
-                'x-api-key': 'ork_key',
+    it('throws REMOTE_CONTRACT_MISMATCH when create response is not valid JSON', async () => {
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValue(
+                new Response('not-json', {
+                    status: 201,
+                    headers: { 'content-type': 'application/json' },
+                })
+            )
+        globalThis.fetch = fetchMock as unknown as typeof fetch
+
+        const client = new RemoteSessionClient('http://localhost:8080', 'ork_key')
+        await expect(client.create(CREATE_REQUEST)).rejects.toEqual(
+            expect.objectContaining<Partial<OpensteerRemoteError>>({
+                code: 'REMOTE_CONTRACT_MISMATCH',
+                status: 201,
             })
         )
     })

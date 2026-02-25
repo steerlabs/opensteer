@@ -73,7 +73,7 @@ export interface RemoteSessionCreateRequest {
 export interface RemoteCloudSessionSummary {
     sessionId: string
     workspaceId: string
-    state: RemoteSessionStatus
+    state: string
     createdAt: number
     sourceType: RemoteSessionSourceType
     sourceRef?: string
