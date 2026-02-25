@@ -5,6 +5,7 @@ import type {
     OpensteerAuthScheme,
     OpensteerConfig,
     OpensteerMode,
+    OpensteerRemoteAnnouncePolicy,
     OpensteerRemoteOptions,
 } from './types.js'
 import { normalizeNamespace } from './storage/namespace.js'
@@ -196,6 +197,29 @@ function parseAuthScheme(
     )
 }
 
+function parseRemoteAnnounce(
+    value: unknown,
+    source: 'OPENSTEER_REMOTE_ANNOUNCE' | 'remote.announce'
+): OpensteerRemoteAnnouncePolicy | undefined {
+    if (value == null) return undefined
+    if (typeof value !== 'string') {
+        throw new Error(
+            `Invalid ${source} value "${String(value)}". Use "always", "off", or "tty".`
+        )
+    }
+
+    const normalized = value.trim().toLowerCase()
+    if (!normalized) return undefined
+
+    if (normalized === 'always' || normalized === 'off' || normalized === 'tty') {
+        return normalized
+    }
+
+    throw new Error(
+        `Invalid ${source} value "${value}". Use "always", "off", or "tty".`
+    )
+}
+
 function resolveOpensteerApiKey(): string | undefined {
     const value = process.env.OPENSTEER_API_KEY?.trim()
     if (!value) return undefined
@@ -289,10 +313,18 @@ export function resolveConfig(
 
     const envApiKey = resolveOpensteerApiKey()
     const envAuthScheme = resolveOpensteerAuthScheme()
+    const envRemoteAnnounce = parseRemoteAnnounce(
+        process.env.OPENSTEER_REMOTE_ANNOUNCE,
+        'OPENSTEER_REMOTE_ANNOUNCE'
+    )
     const inputRemoteOptions = normalizeRemoteOptions(input.remote)
     const inputAuthScheme = parseAuthScheme(
         inputRemoteOptions?.authScheme,
         'remote.authScheme'
+    )
+    const inputRemoteAnnounce = parseRemoteAnnounce(
+        inputRemoteOptions?.announce,
+        'remote.announce'
     )
     const inputHasRemoteApiKey = Boolean(
         inputRemoteOptions &&
@@ -309,9 +341,15 @@ export function resolveConfig(
             envAuthScheme ??
             parseAuthScheme(resolvedRemote.authScheme, 'remote.authScheme') ??
             'api-key'
+        const announce =
+            inputRemoteAnnounce ??
+            envRemoteAnnounce ??
+            parseRemoteAnnounce(resolvedRemote.announce, 'remote.announce') ??
+            'always'
         resolved.remote = {
             ...resolvedRemote,
             authScheme,
+            announce,
         }
     }
 

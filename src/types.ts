@@ -106,11 +106,14 @@ export interface OpensteerStorageConfig {
 
 export type OpensteerMode = 'local' | 'remote'
 export type OpensteerAuthScheme = 'api-key' | 'bearer'
+export type OpensteerRemoteAnnouncePolicy = 'always' | 'off' | 'tty'
 
 export interface OpensteerRemoteOptions {
     apiKey?: string
     baseUrl?: string
+    appUrl?: string
     authScheme?: OpensteerAuthScheme
+    announce?: OpensteerRemoteAnnouncePolicy
 }
 
 export interface OpensteerConfig {
