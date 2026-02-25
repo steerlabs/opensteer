@@ -1,5 +1,4 @@
 import { Opensteer } from "../../src/index.js";
-import "dotenv/config";
 
 async function run() {
   const opensteer = new Opensteer({
