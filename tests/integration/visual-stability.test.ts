@@ -144,6 +144,69 @@ describe('integration/visual-stability', () => {
         expect(elapsed).toBeLessThan(900)
     })
 
+    it('does not trigger main-world API hooks while waiting', async () => {
+        await setFixture(
+            page,
+            `
+        <p id="status">idle</p>
+        <script>
+          window.__stealthDetections = { mutationObserver: 0, computedStyle: 0, boundingRect: 0 };
+
+          const OriginalMutationObserver = window.MutationObserver;
+          function PatchedMutationObserver(...args) {
+            window.__stealthDetections.mutationObserver += 1;
+            return new OriginalMutationObserver(...args);
+          }
+          PatchedMutationObserver.prototype = OriginalMutationObserver.prototype;
+          window.MutationObserver = PatchedMutationObserver;
+
+          const originalGetComputedStyle = window.getComputedStyle;
+          window.getComputedStyle = new Proxy(originalGetComputedStyle, {
+            apply(target, thisArg, args) {
+              window.__stealthDetections.computedStyle += 1;
+              return Reflect.apply(target, thisArg, args);
+            },
+          });
+
+          const originalBoundingRect = Element.prototype.getBoundingClientRect;
+          Element.prototype.getBoundingClientRect = function(...args) {
+            window.__stealthDetections.boundingRect += 1;
+            return originalBoundingRect.apply(this, args);
+          };
+
+          const status = document.querySelector('#status');
+          window.setTimeout(() => {
+            if (status) status.textContent = 'updated';
+          }, 80);
+        </script>
+      `
+        )
+
+        await waitForVisualStabilityAcrossFrames(page, {
+            timeout: 2000,
+            settleMs: 120,
+        })
+
+        expect((await page.textContent('#status'))?.trim()).toBe('updated')
+        const detections = await page.evaluate(() => {
+            return (
+                window as Window & {
+                    __stealthDetections?: {
+                        mutationObserver: number
+                        computedStyle: number
+                        boundingRect: number
+                    }
+                }
+            ).__stealthDetections
+        })
+
+        expect(detections).toEqual({
+            mutationObserver: 0,
+            computedStyle: 0,
+            boundingRect: 0,
+        })
+    })
+
     it('returns on timeout without throwing when DOM never settles', async () => {
         await setFixture(
             page,
