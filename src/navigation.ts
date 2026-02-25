@@ -1,15 +1,111 @@
-import type { Frame, Page } from 'playwright'
+import type { CDPSession, Page } from 'playwright'
 
 const DEFAULT_TIMEOUT = 30000
 const DEFAULT_SETTLE_MS = 750
 const FRAME_EVALUATE_GRACE_MS = 200
+const STEALTH_WORLD_NAME = '__opensteer_wait__'
 
 interface VisualStabilityOptions {
     timeout?: number
     settleMs?: number
 }
 
-// String expression to avoid esbuild's __name() transform inside frame/page.evaluate.
+interface CdpFrameTreeNode {
+    frame: {
+        id: string
+    }
+    childFrames?: CdpFrameTreeNode[]
+}
+
+interface CdpGetFrameTreeResult {
+    frameTree: CdpFrameTreeNode
+}
+
+interface CdpCreateIsolatedWorldResult {
+    executionContextId: number
+}
+
+interface CdpGetFrameOwnerResult {
+    backendNodeId?: number
+    nodeId?: number
+}
+
+interface CdpExceptionDetails {
+    text?: string
+    exception?: {
+        description?: string
+    }
+}
+
+interface CdpRemoteObject {
+    objectId?: string
+    value?: unknown
+}
+
+interface CdpResolveNodeResult {
+    object?: CdpRemoteObject
+}
+
+interface CdpRuntimeEvaluateResult {
+    result: CdpRemoteObject
+    exceptionDetails?: CdpExceptionDetails
+}
+
+interface CdpRuntimeCallFunctionResult {
+    result: CdpRemoteObject
+    exceptionDetails?: CdpExceptionDetails
+}
+
+interface FrameRecord {
+    frameId: string
+    parentFrameId: string | null
+}
+
+type FrameStabilityResult =
+    | { kind: 'resolved' }
+    | { kind: 'rejected'; error: unknown }
+    | { kind: 'timeout' }
+
+export class StealthWaitUnavailableError extends Error {
+    constructor(cause?: unknown) {
+        super('Stealth visual wait requires Chromium CDP support.', { cause })
+        this.name = 'StealthWaitUnavailableError'
+    }
+}
+
+export function isStealthWaitUnavailableError(
+    error: unknown
+): error is StealthWaitUnavailableError {
+    return error instanceof StealthWaitUnavailableError
+}
+
+const FRAME_OWNER_VISIBILITY_FUNCTION = `function() {
+    if (!(this instanceof HTMLElement)) return false;
+
+    var rect = this.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    if (
+        rect.bottom <= 0 ||
+        rect.right <= 0 ||
+        rect.top >= window.innerHeight ||
+        rect.left >= window.innerWidth
+    ) {
+        return false;
+    }
+
+    var style = window.getComputedStyle(this);
+    if (
+        style.display === 'none' ||
+        style.visibility === 'hidden' ||
+        Number(style.opacity) === 0
+    ) {
+        return false;
+    }
+
+    return true;
+}`
+
+// String expression to avoid esbuild's __name() transform inside evaluate calls.
 function buildStabilityScript(timeout: number, settleMs: number): string {
     return `new Promise(function(resolve) {
     var deadline = Date.now() + ${timeout};
@@ -244,17 +340,244 @@ function buildStabilityScript(timeout: number, settleMs: number): string {
 })`
 }
 
+class StealthCdpRuntime {
+    private readonly contextsByFrame = new Map<string, number>()
+    private disposed = false
+
+    private constructor(private readonly session: CDPSession) {}
+
+    static async create(page: Page): Promise<StealthCdpRuntime> {
+        let session: CDPSession
+        try {
+            session = await page.context().newCDPSession(page)
+        } catch (error) {
+            throw new StealthWaitUnavailableError(error)
+        }
+
+        const runtime = new StealthCdpRuntime(session)
+
+        try {
+            await runtime.initialize()
+            return runtime
+        } catch (error) {
+            await runtime.dispose()
+            throw new StealthWaitUnavailableError(error)
+        }
+    }
+
+    async dispose(): Promise<void> {
+        if (this.disposed) return
+        this.disposed = true
+        this.contextsByFrame.clear()
+        await this.session.detach().catch(() => undefined)
+    }
+
+    async waitForMainFrameVisualStability(options: VisualStabilityOptions): Promise<void> {
+        const timeout = options.timeout ?? DEFAULT_TIMEOUT
+        const settleMs = options.settleMs ?? DEFAULT_SETTLE_MS
+        if (timeout <= 0) return
+
+        const frameRecords = await this.getFrameRecords()
+        const mainFrame = frameRecords[0]
+        if (!mainFrame) return
+
+        await this.waitForFrameVisualStability(mainFrame.frameId, timeout, settleMs)
+    }
+
+    async collectVisibleFrameIds(): Promise<string[]> {
+        const frameRecords = await this.getFrameRecords()
+        if (frameRecords.length === 0) return []
+
+        const visibleFrameIds: string[] = []
+
+        for (const frameRecord of frameRecords) {
+            if (!frameRecord.parentFrameId) {
+                visibleFrameIds.push(frameRecord.frameId)
+                continue
+            }
+
+            try {
+                const parentContextId = await this.ensureFrameContextId(
+                    frameRecord.parentFrameId
+                )
+                const visible = await this.isFrameOwnerVisible(
+                    frameRecord.frameId,
+                    parentContextId
+                )
+                if (visible) {
+                    visibleFrameIds.push(frameRecord.frameId)
+                }
+            } catch (error) {
+                if (isIgnorableFrameError(error)) continue
+                throw error
+            }
+        }
+
+        return visibleFrameIds
+    }
+
+    async waitForFrameVisualStability(
+        frameId: string,
+        timeout: number,
+        settleMs: number
+    ): Promise<void> {
+        if (timeout <= 0) return
+
+        const script = buildStabilityScript(timeout, settleMs)
+        let contextId = await this.ensureFrameContextId(frameId)
+
+        try {
+            await this.evaluateWithGuard(contextId, script, timeout)
+        } catch (error) {
+            if (!isMissingExecutionContextError(error)) {
+                throw error
+            }
+
+            this.contextsByFrame.delete(frameId)
+            contextId = await this.ensureFrameContextId(frameId)
+            await this.evaluateWithGuard(contextId, script, timeout)
+        }
+    }
+
+    private async initialize(): Promise<void> {
+        await this.session.send('Page.enable')
+        await this.session.send('Runtime.enable')
+        await this.session.send('DOM.enable')
+    }
+
+    private async getFrameRecords(): Promise<FrameRecord[]> {
+        const treeResult =
+            (await this.session.send('Page.getFrameTree')) as CdpGetFrameTreeResult
+
+        const records: FrameRecord[] = []
+        walkFrameTree(treeResult.frameTree, null, records)
+        return records
+    }
+
+    private async ensureFrameContextId(frameId: string): Promise<number> {
+        const cached = this.contextsByFrame.get(frameId)
+        if (cached != null) {
+            return cached
+        }
+
+        const world = (await this.session.send('Page.createIsolatedWorld', {
+            frameId,
+            worldName: STEALTH_WORLD_NAME,
+        })) as CdpCreateIsolatedWorldResult
+
+        this.contextsByFrame.set(frameId, world.executionContextId)
+        return world.executionContextId
+    }
+
+    private async evaluateWithGuard(
+        contextId: number,
+        script: string,
+        timeout: number
+    ): Promise<void> {
+        const evaluationPromise = this.evaluateScript(contextId, script)
+        const settledPromise = evaluationPromise.then(
+            () => ({ kind: 'resolved' } as const),
+            (error: unknown) => ({ kind: 'rejected', error } as const)
+        )
+        const timeoutPromise: Promise<FrameStabilityResult> = sleep(
+            timeout + FRAME_EVALUATE_GRACE_MS
+        ).then(() => ({ kind: 'timeout' } as const))
+
+        const result: FrameStabilityResult = await Promise.race([
+            settledPromise,
+            timeoutPromise,
+        ])
+
+        if (result.kind === 'rejected') {
+            throw result.error
+        }
+    }
+
+    private async evaluateScript(
+        contextId: number,
+        expression: string
+    ): Promise<void> {
+        const result = (await this.session.send('Runtime.evaluate', {
+            contextId,
+            expression,
+            awaitPromise: true,
+            returnByValue: true,
+        })) as CdpRuntimeEvaluateResult
+
+        if (result.exceptionDetails) {
+            throw new Error(formatCdpException(result.exceptionDetails))
+        }
+    }
+
+    private async isFrameOwnerVisible(
+        frameId: string,
+        parentContextId: number
+    ): Promise<boolean> {
+        const owner = (await this.session.send('DOM.getFrameOwner', {
+            frameId,
+        })) as CdpGetFrameOwnerResult
+
+        const resolveParams: {
+            executionContextId: number
+            backendNodeId?: number
+            nodeId?: number
+        } = {
+            executionContextId: parentContextId,
+        }
+
+        if (typeof owner.backendNodeId === 'number') {
+            resolveParams.backendNodeId = owner.backendNodeId
+        } else if (typeof owner.nodeId === 'number') {
+            resolveParams.nodeId = owner.nodeId
+        } else {
+            return false
+        }
+
+        const resolved = (await this.session.send(
+            'DOM.resolveNode',
+            resolveParams
+        )) as CdpResolveNodeResult
+
+        const objectId = resolved.object?.objectId
+        if (!objectId) return false
+
+        try {
+            const callResult = (await this.session.send('Runtime.callFunctionOn', {
+                objectId,
+                functionDeclaration: FRAME_OWNER_VISIBILITY_FUNCTION,
+                returnByValue: true,
+            })) as CdpRuntimeCallFunctionResult
+
+            if (callResult.exceptionDetails) {
+                throw new Error(formatCdpException(callResult.exceptionDetails))
+            }
+
+            return callResult.result.value === true
+        } finally {
+            await this.releaseObject(objectId)
+        }
+    }
+
+    private async releaseObject(objectId: string): Promise<void> {
+        await this.session
+            .send('Runtime.releaseObject', {
+                objectId,
+            })
+            .catch(() => undefined)
+    }
+}
+
 export async function waitForVisualStability(
     page: Page,
     options: VisualStabilityOptions = {}
 ): Promise<void> {
-    const timeout = options.timeout ?? DEFAULT_TIMEOUT
-    const settleMs = options.settleMs ?? DEFAULT_SETTLE_MS
+    const runtime = await StealthCdpRuntime.create(page)
 
-    await waitForFrameVisualStability(page.mainFrame(), {
-        timeout,
-        settleMs,
-    })
+    try {
+        await runtime.waitForMainFrameVisualStability(options)
+    } finally {
+        await runtime.dispose()
+    }
 }
 
 export async function waitForVisualStabilityAcrossFrames(
@@ -263,149 +586,100 @@ export async function waitForVisualStabilityAcrossFrames(
 ): Promise<void> {
     const timeout = options.timeout ?? DEFAULT_TIMEOUT
     const settleMs = options.settleMs ?? DEFAULT_SETTLE_MS
-    const deadline = Date.now() + timeout
-
-    while (true) {
-        const remaining = Math.max(0, deadline - Date.now())
-        if (remaining === 0) return
-
-        const frames = await collectVisibleFrames(page)
-        if (!frames.length) return
-
-        await Promise.all(
-            frames.map(async (frame) => {
-                try {
-                    await waitForFrameVisualStability(frame, {
-                        timeout: remaining,
-                        settleMs,
-                    })
-                } catch (error) {
-                    if (isIgnorableFrameError(error)) return
-                    throw error
-                }
-            })
-        )
-
-        const currentFrames = await collectVisibleFrames(page)
-        if (sameFrames(frames, currentFrames)) {
-            return
-        }
-    }
-}
-
-async function waitForFrameVisualStability(
-    frame: Frame,
-    options: VisualStabilityOptions
-): Promise<void> {
-    const timeout = options.timeout ?? DEFAULT_TIMEOUT
-    const settleMs = options.settleMs ?? DEFAULT_SETTLE_MS
     if (timeout <= 0) return
 
-    await evaluateFrameStabilityWithGuard(
-        frame,
-        buildStabilityScript(timeout, settleMs),
-        timeout
-    )
-}
+    const deadline = Date.now() + timeout
+    const runtime = await StealthCdpRuntime.create(page)
 
-type FrameStabilityResult =
-    | { kind: 'resolved' }
-    | { kind: 'rejected'; error: unknown }
-    | { kind: 'timeout' }
+    try {
+        while (true) {
+            const remaining = Math.max(0, deadline - Date.now())
+            if (remaining === 0) return
 
-async function evaluateFrameStabilityWithGuard(
-    frame: Frame,
-    script: string,
-    timeout: number
-): Promise<void> {
-    const evaluationPromise = frame.evaluate(script)
-    const settledPromise = evaluationPromise.then(
-        () => ({ kind: 'resolved' } as const),
-        (error: unknown) => ({ kind: 'rejected', error } as const)
-    )
-    const timeoutPromise: Promise<FrameStabilityResult> = sleep(
-        timeout + FRAME_EVALUATE_GRACE_MS
-    ).then(() => ({ kind: 'timeout' } as const))
+            const frameIds = await runtime.collectVisibleFrameIds()
+            if (frameIds.length === 0) return
 
-    const result: FrameStabilityResult = await Promise.race([
-        settledPromise,
-        timeoutPromise,
-    ])
+            await Promise.all(
+                frameIds.map(async (frameId) => {
+                    try {
+                        await runtime.waitForFrameVisualStability(
+                            frameId,
+                            remaining,
+                            settleMs
+                        )
+                    } catch (error) {
+                        if (isIgnorableFrameError(error)) return
+                        throw error
+                    }
+                })
+            )
 
-    if (result.kind === 'rejected') {
-        throw result.error
+            const currentFrameIds = await runtime.collectVisibleFrameIds()
+            if (sameFrameIds(frameIds, currentFrameIds)) {
+                return
+            }
+        }
+    } finally {
+        await runtime.dispose()
     }
 }
 
-function sameFrames(before: Frame[], after: Frame[]): boolean {
+function walkFrameTree(
+    node: CdpFrameTreeNode,
+    parentFrameId: string | null,
+    records: FrameRecord[]
+): void {
+    const frameId = node.frame?.id
+    if (!frameId) return
+
+    records.push({
+        frameId,
+        parentFrameId,
+    })
+
+    for (const child of node.childFrames ?? []) {
+        walkFrameTree(child, frameId, records)
+    }
+}
+
+function sameFrameIds(before: string[], after: string[]): boolean {
     if (before.length !== after.length) return false
 
-    for (const frame of before) {
-        if (!after.includes(frame)) return false
+    for (const frameId of before) {
+        if (!after.includes(frameId)) return false
     }
+
     return true
 }
 
-async function collectVisibleFrames(page: Page): Promise<Frame[]> {
-    const visibleFrames: Frame[] = []
+function formatCdpException(details: CdpExceptionDetails): string {
+    return (
+        details.exception?.description ||
+        details.text ||
+        'CDP runtime evaluation failed.'
+    )
+}
 
-    for (const frame of page.frames()) {
-        if (frame === page.mainFrame()) {
-            visibleFrames.push(frame)
-            continue
-        }
-
-        try {
-            const frameElement = await frame.frameElement()
-            try {
-                const isVisible = await frameElement.evaluate((node) => {
-                    if (!(node instanceof HTMLElement)) return false
-
-                    const rect = node.getBoundingClientRect()
-                    if (rect.width <= 0 || rect.height <= 0) return false
-                    if (
-                        rect.bottom <= 0 ||
-                        rect.right <= 0 ||
-                        rect.top >= window.innerHeight ||
-                        rect.left >= window.innerWidth
-                    ) {
-                        return false
-                    }
-
-                    const style = window.getComputedStyle(node)
-                    if (
-                        style.display === 'none' ||
-                        style.visibility === 'hidden' ||
-                        Number(style.opacity) === 0
-                    ) {
-                        return false
-                    }
-
-                    return true
-                })
-
-                if (isVisible) {
-                    visibleFrames.push(frame)
-                }
-            } finally {
-                await frameElement.dispose()
-            }
-        } catch (error) {
-            if (isIgnorableFrameError(error)) continue
-            visibleFrames.push(frame)
-        }
-    }
-
-    return visibleFrames
+function isMissingExecutionContextError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false
+    const message = error.message
+    return (
+        message.includes('Cannot find context with specified id') ||
+        message.includes('Cannot find execution context')
+    )
 }
 
 function isIgnorableFrameError(error: unknown): boolean {
     if (!(error instanceof Error)) return false
     const message = error.message
+
     return (
         message.includes('Frame was detached') ||
         message.includes('Execution context was destroyed') ||
-        message.includes('Target page, context or browser has been closed')
+        message.includes('Target page, context or browser has been closed') ||
+        message.includes('Cannot find context with specified id') ||
+        message.includes('Cannot find execution context') ||
+        message.includes('No frame for given id found')
     )
 }
 
