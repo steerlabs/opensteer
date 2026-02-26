@@ -781,7 +781,6 @@ Environment:
   OPENSTEER_MODE            Runtime routing: "local" (default) or "cloud"
   OPENSTEER_API_KEY         Required when cloud mode is selected
   OPENSTEER_BASE_URL        Override cloud control-plane base URL
-  OPENSTEER_APP_URL         Cloud app base URL for emitting browser session links (default: https://opensteer.com)
   OPENSTEER_REMOTE_ANNOUNCE Cloud session announcement policy: always (default), off, tty
 `)
 }

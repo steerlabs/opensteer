@@ -6,7 +6,7 @@ import type { OpensteerAuthScheme } from '../types.js'
 export interface CloudRuntimeState {
     readonly sessionClient: CloudSessionClient
     readonly cdpClient: CloudCdpClient
-    readonly appUrl: string | null
+    readonly baseUrl: string
     actionClient: ActionWsClient | null
     sessionId: string | null
     localRunId: string | null
@@ -14,18 +14,21 @@ export interface CloudRuntimeState {
 }
 
 export const DEFAULT_CLOUD_BASE_URL = 'https://remote.opensteer.com'
-export const DEFAULT_CLOUD_APP_URL = 'https://opensteer.com'
 
 export function createCloudRuntimeState(
     key: string,
     baseUrl = resolveCloudBaseUrl(),
-    authScheme: OpensteerAuthScheme = 'api-key',
-    appUrl = resolveCloudAppUrl()
+    authScheme: OpensteerAuthScheme = 'api-key'
 ): CloudRuntimeState {
+    const normalizedBaseUrl = normalizeCloudBaseUrl(baseUrl)
     return {
-        sessionClient: new CloudSessionClient(baseUrl, key, authScheme),
+        sessionClient: new CloudSessionClient(
+            normalizedBaseUrl,
+            key,
+            authScheme
+        ),
         cdpClient: new CloudCdpClient(),
-        appUrl: normalizeCloudAppUrl(appUrl),
+        baseUrl: normalizedBaseUrl,
         actionClient: null,
         sessionId: null,
         localRunId: null,
@@ -36,17 +39,10 @@ export function createCloudRuntimeState(
 export function resolveCloudBaseUrl(): string {
     const value = process.env.OPENSTEER_BASE_URL?.trim()
     if (!value) return DEFAULT_CLOUD_BASE_URL
-    return value.replace(/\/+$/, '')
+    return normalizeCloudBaseUrl(value)
 }
 
-export function resolveCloudAppUrl(): string | null {
-    const value = process.env.OPENSTEER_APP_URL?.trim()
-    if (!value) return DEFAULT_CLOUD_APP_URL
-    return normalizeCloudAppUrl(value)
-}
-
-function normalizeCloudAppUrl(value: string | null): string | null {
-    if (!value) return null
+function normalizeCloudBaseUrl(value: string): string {
     return value.replace(/\/+$/, '')
 }
 

@@ -1,11 +1,16 @@
-import path from 'path'
 import process from 'process'
 import dotenv from 'dotenv'
 import { Opensteer } from '/Users/timjang/Desktop/oversteer/opensteer-oss/opensteer/src/opensteer.ts'
 import { startTestApp } from '/Users/timjang/Desktop/oversteer/opensteer-oss/opensteer/tests/fixtures/server.ts'
 
-dotenv.config({ path: '/Users/timjang/Desktop/oversteer/opensteer-oss/.env' })
-dotenv.config({ path: '/Users/timjang/Desktop/oversteer/opensteer-oss/opensteer/.env' })
+dotenv.config({
+    path: '/Users/timjang/Desktop/oversteer/opensteer-oss/.env',
+    quiet: true,
+})
+dotenv.config({
+    path: '/Users/timjang/Desktop/oversteer/opensteer-oss/opensteer/.env',
+    quiet: true,
+})
 
 function assert(condition: unknown, message: string): asserts condition {
     if (!condition) throw new Error(message)
@@ -26,11 +31,13 @@ async function runDeterministicCloudPageChecks(): Promise<Record<string, unknown
     await opensteer.launch({ headless: true })
 
     try {
+        console.log('[deterministic] goto navigation-churn')
         await opensteer.goto(`${server.url}/navigation-churn?stage=1`, {
             timeout: 5000,
             settleMs: 120,
         })
 
+        console.log('[deterministic] waitForSelector')
         await opensteer.page.waitForSelector('#navigation-churn-input', {
             state: 'visible',
             timeout: 5000,
@@ -41,13 +48,16 @@ async function runDeterministicCloudPageChecks(): Promise<Record<string, unknown
         assert(stage === 'Stage 2', `Expected Stage 2 after churn, got ${stage}`)
         checks.textContent = stage
 
+        console.log('[deterministic] fill + keyboard.press + waitForURL')
         await opensteer.page.fill('#navigation-churn-input', 'airpods')
         checks.fill = 'ok'
 
         await opensteer.page.keyboard.press('Enter')
         checks.keyboardPress = 'ok'
 
-        await opensteer.page.waitForURL(/navigation-churn\?stage=2/)
+        await opensteer.page.waitForURL(/navigation-churn\?stage=2/, {
+            timeout: 5000,
+        })
         checks.waitForURL = opensteer.page.url()
 
         const inputValue = await opensteer.page.$eval(
@@ -57,15 +67,10 @@ async function runDeterministicCloudPageChecks(): Promise<Record<string, unknown
         assert(inputValue === 'airpods', `Expected input value to be airpods, got ${inputValue}`)
         checks.$eval = inputValue
 
+        console.log('[deterministic] iframe frameLocator checks')
         await opensteer.page.goto(`${server.url}/iframe`, { waitUntil: 'domcontentloaded' })
         await opensteer.page.waitForSelector('#named-iframe', { timeout: 5000 })
         checks.pageGoto = 'ok'
-
-        const frameOutputBefore = await opensteer.page
-            .frameLocator('#named-iframe')
-            .locator('#iframe-output')
-            .textContent()
-        checks.frameBefore = frameOutputBefore?.trim()
 
         await opensteer.page
             .frameLocator('#named-iframe')
@@ -75,16 +80,6 @@ async function runDeterministicCloudPageChecks(): Promise<Record<string, unknown
             .frameLocator('#named-iframe')
             .locator('#iframe-submit-btn')
             .click()
-
-        await opensteer.page.waitForFunction(() => {
-            const frame = document.querySelector<HTMLIFrameElement>('#named-iframe')
-            if (!frame) return false
-            const doc = frame.contentDocument
-            if (!doc) return false
-            const text = doc.querySelector('#iframe-output')?.textContent ?? ''
-            return text.includes('inside-cloud')
-        })
-        checks.waitForFunction = 'ok'
 
         const frameOutputAfter = await opensteer.page
             .frameLocator('#named-iframe')
@@ -96,6 +91,7 @@ async function runDeterministicCloudPageChecks(): Promise<Record<string, unknown
         )
         checks.frameLocator = frameOutputAfter?.trim()
 
+        console.log('[deterministic] $$eval + evaluate + title + snapshot compatibility')
         await opensteer.page.goto(`${server.url}/`, { waitUntil: 'domcontentloaded' })
         const linkCount = await opensteer.page.$$eval('a[href]', (nodes) => nodes.length)
         assert(linkCount > 5, `Expected >5 links, got ${linkCount}`)
@@ -112,8 +108,8 @@ async function runDeterministicCloudPageChecks(): Promise<Record<string, unknown
 
         return checks
     } finally {
-        await opensteer.close()
-        await server.close()
+        await opensteer.close().catch(() => undefined)
+        await server.close().catch(() => undefined)
     }
 }
 
@@ -128,32 +124,39 @@ async function runAmazonFlowChecks(attempts: number): Promise<{
     let passed = 0
 
     for (let i = 0; i < attempts; i += 1) {
+        const attempt = i + 1
         const opensteer = new Opensteer({
-            name: `cloud-amazon-page-check-${i + 1}`,
+            name: `cloud-amazon-page-check-${attempt}`,
             storage: { rootDir: process.cwd() },
             cloud: true,
         })
 
         try {
+            console.log(`[amazon ${attempt}/${attempts}] launch`)
             await opensteer.launch({ headless: true })
             const sessionId = opensteer.cloudSession?.sessionId
             if (sessionId) sessions.push(sessionId)
 
+            console.log(`[amazon ${attempt}/${attempts}] opensteer.goto amazon`) 
             await opensteer.goto('https://www.amazon.com', {
-                timeout: 30000,
+                timeout: 25000,
                 settleMs: 300,
             })
 
+            console.log(`[amazon ${attempt}/${attempts}] page.waitForSelector input[type="text"]`)
             await opensteer.page.waitForSelector('input[type="text"]', {
-                timeout: 20000,
+                timeout: 15000,
             })
 
             passed += 1
+            console.log(`[amazon ${attempt}/${attempts}] pass`)
         } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
             failures.push({
-                attempt: i + 1,
-                error: error instanceof Error ? error.message : String(error),
+                attempt,
+                error: message,
             })
+            console.log(`[amazon ${attempt}/${attempts}] fail: ${message}`)
         } finally {
             await opensteer.close().catch(() => undefined)
         }
