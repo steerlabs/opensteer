@@ -1,98 +1,107 @@
 # Getting Started
 
-## 1) Install
+## 1) Requirements
+
+- Node.js `>=20`
+- Playwright-compatible runtime environment
+- API key for your model provider if you use LLM resolve/extract
+
+## 2) Install
 
 ```bash
 # npm
-npm install opensteer playwright
+npm install opensteer
 # pnpm
-pnpm add opensteer playwright
+pnpm add opensteer
 ```
 
-Set `OPENAI_API_KEY` before using description-based resolve/extract with the
-default `gpt-5.1` model.
+If browser binaries are not present, run:
 
-Opensteer auto-loads `.env` files from your `storage.rootDir` (default:
-`process.cwd()`) with this order: `.env.<NODE_ENV>.local`, `.env.local`
-(skipped when `NODE_ENV=test`), `.env.<NODE_ENV>`, `.env`.
-Existing `process.env` values are never overwritten. Set
-`OPENSTEER_DISABLE_DOTENV_AUTOLOAD=true` to disable this behavior.
+```bash
+npx playwright install chromium
+```
 
-## 2) Launch and navigate
+## 3) Create an instance and launch
 
 ```ts
 import { Opensteer } from 'opensteer'
 
 const opensteer = new Opensteer({ name: 'my-scraper' })
 await opensteer.launch({ headless: false })
-
-await opensteer.goto('https://example.com')
 ```
 
-## 3) Explore with snapshots
+## 4) Navigate and explore
 
 ```ts
-const html = await opensteer.snapshot() // contains c="..." counters
+await opensteer.goto('https://example.com')
+
+const html = await opensteer.snapshot() // includes c="..." counters
 console.log(html)
 
-await opensteer.click({ description: 'login-btn', element: 3 })
-await opensteer.input({ description: 'email', element: 7, text: 'user@example.com' })
-```
-
-## 4) Replay deterministically
-
-On later runs, omit `element` and reuse persisted descriptions:
-
-```ts
-await opensteer.click({ description: 'login-btn' })
-await opensteer.input({ description: 'email', text: 'user@example.com' })
-```
-
-## 5) Optional model override
-
-```ts
-const opensteer = new Opensteer({
-    name: 'my-scraper',
-    model: 'gpt-5.1',
+await opensteer.click({ description: 'login button', element: 3 })
+await opensteer.input({
+  description: 'email input',
+  element: 7,
+  text: 'user@example.com',
 })
 ```
 
-Or set `OPENSTEER_MODEL=gpt-5.1` in the environment.
+## 5) Replay deterministically
 
-## 6) Mode selection
+After selectors are persisted for a `description`, you can often omit `element`:
 
-Opensteer defaults to local mode.
-
-Set mode explicitly with:
-
-```bash
-OPENSTEER_MODE=local
-# or
-OPENSTEER_MODE=cloud
+```ts
+await opensteer.click({ description: 'login button' })
+await opensteer.input({
+  description: 'email input',
+  text: 'user@example.com',
+})
 ```
 
-When `OPENSTEER_MODE=cloud`, `OPENSTEER_API_KEY` (or `cloud.apiKey`) is required.
+## 6) Configure model and mode (optional)
+
+Opensteer defaults to:
+
+- `model: 'gpt-5.1'`
+- local mode (`OPENSTEER_MODE=local`)
+
+Set a model:
+
+```bash
+OPENSTEER_MODEL=gpt-5-mini
+```
+
+Enable cloud mode:
+
+```bash
+OPENSTEER_MODE=cloud
+OPENSTEER_API_KEY=ork_your_key
+```
+
+Additional cloud options:
+
+- `OPENSTEER_BASE_URL` to override `https://remote.opensteer.com`
+- `OPENSTEER_AUTH_SCHEME` as `api-key` (default) or `bearer`
+- `OPENSTEER_REMOTE_ANNOUNCE` as `always`, `off`, or `tty`
+
+In code, `cloud: true` or a `cloud` options object overrides `OPENSTEER_MODE`.
 Cloud mode is fail-fast and does not automatically fall back to local mode.
 
-## 7) Close
+## 7) Dotenv autoload behavior
+
+Opensteer loads `.env` files from `storage.rootDir` (default `process.cwd()`)
+in this order:
+
+1. `.env.<NODE_ENV>.local`
+2. `.env.local` (skipped when `NODE_ENV=test`)
+3. `.env.<NODE_ENV>`
+4. `.env`
+
+Existing `process.env` values are never overwritten. Set
+`OPENSTEER_DISABLE_DOTENV_AUTOLOAD=true` to disable.
+
+## 8) Close resources
 
 ```ts
 await opensteer.close()
 ```
-
-## Optional cloud force override
-
-```ts
-const opensteer = new Opensteer({
-    cloud: {
-        apiKey: process.env.OPENSTEER_API_KEY,
-        baseUrl: process.env.OPENSTEER_BASE_URL,
-    },
-})
-```
-
-`cloud: true` always forces cloud mode, even when
-`OPENSTEER_MODE=local`.
-
-Cloud base URL defaults to `https://remote.opensteer.com` and can be overridden
-with `OPENSTEER_BASE_URL`.

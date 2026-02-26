@@ -36,6 +36,11 @@
   timeout/stale-target cases more accurately.
 - Cloud action failures now accept optional structured failure details and map
   them to `OpensteerActionError` when available.
+- Docs: refreshed README and getting-started guidance to match current SDK/CLI
+  behavior and env vars.
+- Docs: added CLI reference and docs index.
+- OSS community docs: expanded `CONTRIBUTING.md` and added `SECURITY.md` +
+  `SUPPORT.md`.
 
 ## 0.1.0
 

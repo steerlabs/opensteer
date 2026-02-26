@@ -1,186 +1,115 @@
 # Opensteer
 
-Lean browser automation SDK for coding agents and script replay.
+Open-source browser automation SDK for coding agents and deterministic replay.
 
-`opensteer` provides descriptor-aware actions (`click`, `dblclick`,
-`rightclick`, `hover`, `input`, `select`, `scroll`, `extract`,
-`extractFromPlan`, `uploadFile`), observation (`snapshot`, `state`,
-`screenshot`), navigation (`goto`), and convenience methods for tabs, cookies,
-keyboard, element info, and wait.
+Opensteer combines descriptor-aware actions, resilient selector persistence,
+clean HTML snapshots, and first-class local or cloud runtime support.
 
-For anything not covered, use raw Playwright via `opensteer.page` and
-`opensteer.context`.
+## Requirements
+
+- Node.js `>=20`
+- A browser environment supported by Playwright
+- API key for your selected model provider if you use LLM resolve/extract
 
 ## Install
 
 ```bash
 # npm
-npm install opensteer playwright
+npm install opensteer
 # pnpm
-pnpm add opensteer playwright
+pnpm add opensteer
 ```
 
-## CLI Session Routing
-
-OpenSteer CLI now separates runtime routing from selector caching:
-
-- Runtime routing: `--session` or `OPENSTEER_SESSION`
-- Selector cache namespace: `--name` or `OPENSTEER_NAME` (used on `open`)
-
-If neither `--session` nor `OPENSTEER_SESSION` is set:
-
-- In an interactive terminal, OpenSteer creates/reuses a terminal-scoped default session.
-- In non-interactive environments (agents/CI), it fails fast unless you set
-  `OPENSTEER_SESSION` or `OPENSTEER_CLIENT_ID`.
-
-Example:
+If your environment skips Playwright browser downloads, run:
 
 ```bash
-export OPENSTEER_SESSION=agent-a
-opensteer open https://example.com --name product-scraper
-opensteer snapshot
-opensteer click 3
-opensteer status
+npx playwright install chromium
 ```
 
-`opensteer status` reports `resolvedSession`, `sessionSource`, `resolvedName`, and `nameSource`.
-
-## Quickstart
+## Quickstart (SDK)
 
 ```ts
 import { Opensteer } from "opensteer";
 
-const opensteer = new Opensteer({ name: "my-scraper" }); // defaults to model: 'gpt-5.1'
+const opensteer = new Opensteer({ name: "my-scraper" });
 await opensteer.launch({ headless: false });
 
-await opensteer.goto("https://example.com");
-const html = await opensteer.snapshot();
-
-await opensteer.click({ description: "login-button" });
-await opensteer.input({ description: "email", text: "user@example.com" });
-await opensteer.page.keyboard.press("Enter");
-
-await opensteer.close();
-```
-
-## Core Model
-
-- `opensteer.page`: raw Playwright `Page`
-- `opensteer.context`: raw Playwright `BrowserContext`
-- Opensteer methods: descriptor-aware operations that can persist selectors
-- Selector storage: `.opensteer/selectors/<namespace>`
-
-## Resolution Chain
-
-For actions like `click`/`input`/`hover`/`select`/`scroll`:
-
-1. Use persisted path for `description` (if present)
-2. Use `element` counter from snapshot
-3. Use explicit CSS `selector`
-4. Use built-in LLM resolution (`description` required)
-5. Throw
-
-When steps 2-4 resolve and `description` is provided, the path is persisted.
-
-## Smart Post-Action Wait
-
-Mutating actions (`click`, `input`, `select`, `scroll`, etc.) include a
-best-effort post-action wait so delayed visual updates are usually settled
-before the method resolves.
-
-You can disable or tune this per call:
-
-```ts
-await opensteer.click({ description: "Save button", wait: false });
-
-await opensteer.click({
-  description: "Save button",
-  wait: { timeout: 9000, settleMs: 900, includeNetwork: true, networkQuietMs: 400 },
-});
-```
-
-## Action Failure Diagnostics
-
-Descriptor-aware interaction methods (`click`, `dblclick`, `rightclick`,
-`hover`, `input`, `select`, `scroll`, `uploadFile`) throw
-`OpensteerActionError` when an interaction cannot be completed.
-
-The error includes structured failure metadata for agent/tooling decisions:
-
-- `error.failure.code` (`ActionFailureCode`)
-- `error.failure.message`
-- `error.failure.retryable`
-- `error.failure.classificationSource`
-- `error.failure.details` (for blocker and observation details when available)
-
-```ts
-import { Opensteer, OpensteerActionError } from "opensteer";
-
 try {
-  await opensteer.click({ description: "Save button" });
-} catch (err) {
-  if (err instanceof OpensteerActionError) {
-    console.error(err.failure.code); // e.g. BLOCKED_BY_INTERCEPTOR
-    console.error(err.failure.message);
-    console.error(err.failure.classificationSource);
-  }
-  throw err;
+  await opensteer.goto("https://example.com");
+  const html = await opensteer.snapshot();
+  console.log(html.slice(0, 500));
+
+  await opensteer.click({ description: "main call to action", element: 3 });
+} finally {
+  await opensteer.close();
 }
 ```
 
-## Snapshot Modes
+## Quickstart (CLI)
 
-```ts
-await opensteer.snapshot(); // action mode (default)
-await opensteer.snapshot({ mode: "extraction" });
-await opensteer.snapshot({ mode: "clickable" });
-await opensteer.snapshot({ mode: "scrollable" });
-await opensteer.snapshot({ mode: "full" });
+Opensteer CLI separates runtime routing from selector namespace routing.
+
+- Runtime routing: `--session` or `OPENSTEER_SESSION`
+- Selector namespace: `--name` or `OPENSTEER_NAME` (used by `open`)
+
+```bash
+opensteer open https://example.com --session agent-a --name product-scraper
+opensteer snapshot --session agent-a
+opensteer click 3 --session agent-a
+opensteer status --session agent-a
+opensteer close --session agent-a
 ```
 
-## Two Usage Patterns
+In non-interactive environments, set `OPENSTEER_SESSION` or
+`OPENSTEER_CLIENT_ID` explicitly.
 
-### Explore (coding agent, no API key required)
+## Resolution and Replay Model
 
-Use `snapshot()` + `element` counters while exploring in real time, then persist
-stable descriptions for replay.
+For descriptor-aware actions (`click`, `input`, `hover`, `select`, `scroll`):
 
-### Run (script replay / built-in LLM)
+1. Reuse persisted path for `description`
+2. Use `element` counter from snapshot
+3. Use explicit CSS `selector`
+4. Use built-in LLM resolution (`description` required)
+5. Throw actionable error
 
-Opensteer uses built-in LLM resolve/extract by default. You can override the
-default model with top-level `model` or `OPENSTEER_MODEL`.
+When steps 2-4 succeed and `description` is present, Opensteer persists the
+path for deterministic replay in `.opensteer/selectors/<namespace>`.
 
-```ts
-const opensteer = new Opensteer({
-  name: "run-mode",
-  model: "gpt-5-mini",
-});
-```
-
-## Mode Selection
+## Cloud Mode
 
 Opensteer defaults to local mode.
 
-- `OPENSTEER_MODE=local` runs local Playwright.
-- `OPENSTEER_MODE=cloud` enables cloud mode (requires `OPENSTEER_API_KEY`).
-- `cloud: true` in constructor config always enables cloud mode.
-- Opensteer auto-loads `.env` files from your `storage.rootDir` (default:
-  `process.cwd()`) using this order: `.env.<NODE_ENV>.local`, `.env.local`
-  (skipped when `NODE_ENV=test`), `.env.<NODE_ENV>`, `.env`.
-- Existing `process.env` values are never overwritten by `.env` values.
-- Set `OPENSTEER_DISABLE_DOTENV_AUTOLOAD=true` to disable auto-loading.
+- `OPENSTEER_MODE=local|cloud`
+- `OPENSTEER_API_KEY` or `cloud.apiKey` required in cloud mode
+- `OPENSTEER_BASE_URL` or `cloud.baseUrl` to override the default cloud host
+- `OPENSTEER_AUTH_SCHEME` or `cloud.authScheme` for auth header mode
+  (`api-key` or `bearer`)
+- `cloud: true` or a `cloud` options object overrides `OPENSTEER_MODE`
 
-Cloud mode is fail-fast: it does not automatically fall back to local mode.
+`.env` files are auto-loaded from `storage.rootDir` (default `process.cwd()`)
+in this order: `.env.<NODE_ENV>.local`, `.env.local` (except in test),
+`.env.<NODE_ENV>`, `.env`. Existing `process.env` values are not overwritten.
+Set `OPENSTEER_DISABLE_DOTENV_AUTOLOAD=true` to disable.
 
 ## Docs
 
-- `docs/getting-started.md`
-- `docs/api-reference.md`
-- `docs/cloud-integration.md`
-- `docs/html-cleaning.md`
-- `docs/selectors.md`
-- `docs/live-web-tests.md`
+- [Getting Started](docs/getting-started.md)
+- [API Reference](docs/api-reference.md)
+- [CLI Reference](docs/cli-reference.md)
+- [Cloud Integration](docs/cloud-integration.md)
+- [Selectors and Storage](docs/selectors.md)
+- [HTML Cleaning and Snapshot Modes](docs/html-cleaning.md)
+- [Live Web Validation Suite](docs/live-web-tests.md)
+
+## Community
+
+- [Contributing Guide](CONTRIBUTING.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Security Policy](SECURITY.md)
+- [Support](SUPPORT.md)
+- [Changelog](CHANGELOG.md)
 
 ## License
 
-MIT
+[MIT](LICENSE)
