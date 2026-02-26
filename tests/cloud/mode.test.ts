@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { type Page } from 'playwright'
 import { Opensteer } from '../../src/opensteer.js'
 import { OpensteerActionError } from '../../src/actions/errors.js'
 import { OpensteerCloudError } from '../../src/cloud/errors.js'
@@ -260,11 +261,11 @@ describe('cloud mode', () => {
         const internalPage = {
             url: () => 'chrome://new-tab-page/',
             title: async () => 'New Tab',
-        }
+        } as unknown as Page
         const targetPage = {
             url: () => 'https://www.amazon.com/',
             title: async () => 'Amazon.com. Spend less. Smile more.',
-        }
+        } as unknown as Page
         const context = {
             pages: () => [internalPage, targetPage],
         }
@@ -342,9 +343,9 @@ describe('cloud mode', () => {
         } as unknown as ActionWsClient)
 
         await opensteer.launch()
-        expect(opensteer.page).toBe(internalPage as never)
+        expect(opensteer.page).toBe(internalPage)
 
         await opensteer.goto('https://www.amazon.com')
-        expect(opensteer.page).toBe(targetPage as never)
+        expect(opensteer.page).toBe(targetPage)
     })
 })

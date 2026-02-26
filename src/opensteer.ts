@@ -358,14 +358,11 @@ export class Opensteer {
         } catch {
             return
         }
-        if (!Array.isArray(tabs) || tabs.length === 0) {
+        if (!tabs.length) {
             return
         }
 
-        const contexts =
-            typeof this.browser.contexts === 'function'
-                ? this.browser.contexts()
-                : []
+        const contexts = this.browser.contexts()
         if (!contexts.length) return
 
         const pages: Array<{
@@ -380,7 +377,7 @@ export class Opensteer {
                 pages.push({
                     context,
                     page,
-                    url: safePageUrl(page),
+                    url: page.url(),
                     title,
                 })
             }
@@ -1315,10 +1312,12 @@ export class Opensteer {
 
     async newTab(url?: string): Promise<TabInfo> {
         if (this.cloud) {
-            const result =
-                await this.invokeCloudActionAndResetCache<TabInfo>('newTab', {
-                url,
-            })
+            const result = await this.invokeCloudActionAndResetCache<TabInfo>(
+                'newTab',
+                {
+                    url,
+                }
+            )
             await this.syncCloudPageRef({ expectedUrl: result.url }).catch(
                 () => undefined
             )
@@ -3265,14 +3264,6 @@ function getScrollDelta(options: ScrollOptions): { x: number; y: number } {
         case 'down':
         default:
             return { x: 0, y: absoluteAmount }
-    }
-}
-
-function safePageUrl(page: Page): string {
-    try {
-        return page.url()
-    } catch {
-        return ''
     }
 }
 

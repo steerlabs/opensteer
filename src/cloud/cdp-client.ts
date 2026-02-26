@@ -57,42 +57,23 @@ function selectPreferredContextPage(
     browser: Browser,
     contexts: BrowserContext[]
 ): CloudCdpConnection | null {
-    const candidates: Array<CloudCdpConnection> = []
-    const fallbackCandidates: Array<CloudCdpConnection> = []
+    let aboutBlankCandidate: CloudCdpConnection | null = null
 
     for (const context of contexts) {
         for (const page of context.pages()) {
-            const url = safePageUrl(page)
-            const candidate = { browser, context, page }
+            const url = page.url()
 
             if (!isInternalOrEmptyUrl(url)) {
-                candidates.push(candidate)
-                continue
+                return { browser, context, page }
             }
 
-            if (url === 'about:blank') {
-                fallbackCandidates.push(candidate)
+            if (!aboutBlankCandidate && url === 'about:blank') {
+                aboutBlankCandidate = { browser, context, page }
             }
         }
     }
 
-    if (candidates.length > 0) {
-        return candidates[0]
-    }
-
-    if (fallbackCandidates.length > 0) {
-        return fallbackCandidates[0]
-    }
-
-    return null
-}
-
-function safePageUrl(page: Page): string {
-    try {
-        return page.url()
-    } catch {
-        return ''
-    }
+    return aboutBlankCandidate
 }
 
 function isInternalOrEmptyUrl(url: string): boolean {
