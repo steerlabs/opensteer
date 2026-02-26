@@ -349,6 +349,97 @@ export class Opensteer {
         })
     }
 
+    private async syncCloudPageRef(args?: { expectedUrl?: string }): Promise<void> {
+        if (!this.cloud || !this.browser) return
+
+        let tabs: TabInfo[]
+        try {
+            tabs = await this.invokeCloudAction<TabInfo[]>('tabs', {})
+        } catch {
+            return
+        }
+        if (!Array.isArray(tabs) || tabs.length === 0) {
+            return
+        }
+
+        const contexts =
+            typeof this.browser.contexts === 'function'
+                ? this.browser.contexts()
+                : []
+        if (!contexts.length) return
+
+        const pages: Array<{
+            context: BrowserContext
+            page: Page
+            url: string
+            title: string
+        }> = []
+        for (const context of contexts) {
+            for (const page of context.pages()) {
+                const title = await page.title().catch(() => '')
+                pages.push({
+                    context,
+                    page,
+                    url: safePageUrl(page),
+                    title,
+                })
+            }
+        }
+        if (!pages.length) return
+
+        const activeTab = tabs.find((tab) => tab.active) ?? null
+        const expectedUrl = args?.expectedUrl?.trim() || null
+
+        const exactActiveMatch = activeTab
+            ? pages.find(
+                  ({ url, title }) =>
+                      url === activeTab.url && title === activeTab.title
+              )
+            : undefined
+        if (exactActiveMatch) {
+            this.contextRef = exactActiveMatch.context
+            this.pageRef = exactActiveMatch.page
+            return
+        }
+
+        const activeUrlMatch = activeTab
+            ? pages.find(({ url }) => url === activeTab.url)
+            : undefined
+        if (activeUrlMatch) {
+            this.contextRef = activeUrlMatch.context
+            this.pageRef = activeUrlMatch.page
+            return
+        }
+
+        const expectedUrlMatch = expectedUrl
+            ? pages.find(({ url }) => url === expectedUrl)
+            : undefined
+        if (expectedUrlMatch) {
+            this.contextRef = expectedUrlMatch.context
+            this.pageRef = expectedUrlMatch.page
+            return
+        }
+
+        const firstNonInternal = pages.find(
+            ({ url }) => !isInternalOrBlankPageUrl(url)
+        )
+        if (firstNonInternal) {
+            this.contextRef = firstNonInternal.context
+            this.pageRef = firstNonInternal.page
+            return
+        }
+
+        const firstAboutBlank = pages.find(({ url }) => url === 'about:blank')
+        if (firstAboutBlank) {
+            this.contextRef = firstAboutBlank.context
+            this.pageRef = firstAboutBlank.page
+            return
+        }
+
+        this.contextRef = pages[0].context
+        this.pageRef = pages[0].page
+    }
+
     get page(): Page {
         if (!this.pageRef) {
             throw new Error(
@@ -482,6 +573,9 @@ export class Opensteer {
                 this.cloud.actionClient = actionClient
                 this.cloud.sessionId = sessionId
                 this.cloud.cloudSessionUrl = session.cloudSessionUrl
+
+                await this.syncCloudPageRef().catch(() => undefined)
+
                 this.announceCloudSession({
                     sessionId: session.sessionId,
                     workspaceId: session.cloudSession.workspaceId,
@@ -597,6 +691,9 @@ export class Opensteer {
     async goto(url: string, options?: GotoOptions): Promise<void> {
         if (this.cloud) {
             await this.invokeCloudActionAndResetCache('goto', { url, options })
+            await this.syncCloudPageRef({ expectedUrl: url }).catch(
+                () => undefined
+            )
             return
         }
 
@@ -1218,9 +1315,14 @@ export class Opensteer {
 
     async newTab(url?: string): Promise<TabInfo> {
         if (this.cloud) {
-            return await this.invokeCloudActionAndResetCache<TabInfo>('newTab', {
+            const result =
+                await this.invokeCloudActionAndResetCache<TabInfo>('newTab', {
                 url,
             })
+            await this.syncCloudPageRef({ expectedUrl: result.url }).catch(
+                () => undefined
+            )
+            return result
         }
 
         const { page, info } = await createTab(this.context, url)
@@ -1232,6 +1334,7 @@ export class Opensteer {
     async switchTab(index: number): Promise<void> {
         if (this.cloud) {
             await this.invokeCloudActionAndResetCache('switchTab', { index })
+            await this.syncCloudPageRef().catch(() => undefined)
             return
         }
 
@@ -1243,6 +1346,7 @@ export class Opensteer {
     async closeTab(index?: number): Promise<void> {
         if (this.cloud) {
             await this.invokeCloudActionAndResetCache('closeTab', { index })
+            await this.syncCloudPageRef().catch(() => undefined)
             return
         }
 
@@ -3162,6 +3266,24 @@ function getScrollDelta(options: ScrollOptions): { x: number; y: number } {
         default:
             return { x: 0, y: absoluteAmount }
     }
+}
+
+function safePageUrl(page: Page): string {
+    try {
+        return page.url()
+    } catch {
+        return ''
+    }
+}
+
+function isInternalOrBlankPageUrl(url: string): boolean {
+    if (!url) return true
+    if (url === 'about:blank') return true
+    return (
+        url.startsWith('chrome://') ||
+        url.startsWith('devtools://') ||
+        url.startsWith('edge://')
+    )
 }
 
 function buildLocalRunId(namespace: string): string {

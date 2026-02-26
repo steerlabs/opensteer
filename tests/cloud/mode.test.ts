@@ -229,4 +229,122 @@ describe('cloud mode', () => {
             expect(actionError.failure.message).toBe('Blocked by overlay.')
         }
     })
+
+    it('re-syncs cloud page reference after cloud goto', async () => {
+        const opensteer = new Opensteer({
+            cloud: {
+                apiKey: 'ork_test_123',
+            },
+        })
+
+        const access = opensteer as unknown as {
+            cloud: {
+                sessionClient: {
+                    create: (
+                        args: Record<string, unknown>
+                    ) => Promise<Record<string, unknown>>
+                }
+                cdpClient: {
+                    connect: (
+                        args: Record<string, unknown>
+                    ) => Promise<{
+                        browser: unknown
+                        context: unknown
+                        page: unknown
+                    }>
+                }
+            } | null
+        }
+        if (!access.cloud) throw new Error('Expected cloud runtime state to exist.')
+
+        const internalPage = {
+            url: () => 'chrome://new-tab-page/',
+            title: async () => 'New Tab',
+        }
+        const targetPage = {
+            url: () => 'https://www.amazon.com/',
+            title: async () => 'Amazon.com. Spend less. Smile more.',
+        }
+        const context = {
+            pages: () => [internalPage, targetPage],
+        }
+        const browser = {
+            contexts: () => [context],
+            close: async () => undefined,
+        }
+
+        vi.spyOn(access.cloud.sessionClient, 'create').mockResolvedValue({
+            sessionId: 'sess_123',
+            actionWsUrl: 'wss://action.example.com',
+            cdpWsUrl: 'wss://cdp.example.com',
+            actionToken: 'act_123',
+            cdpToken: 'cdp_123',
+            cloudSessionUrl: 'https://app.opensteer.com/browser/cloud_123',
+            cloudSession: {
+                sessionId: 'cloud_123',
+                workspaceId: 'ws_123',
+                state: 'active',
+                createdAt: 1735707600000,
+                sourceType: 'local-cloud' as const,
+            },
+        })
+        vi.spyOn(access.cloud.cdpClient, 'connect').mockResolvedValue({
+            browser,
+            context,
+            page: internalPage,
+        })
+
+        let navigated = false
+        const request = vi.fn(async (method: string) => {
+            if (method === 'goto') {
+                navigated = true
+                return null
+            }
+            if (method === 'tabs') {
+                if (!navigated) {
+                    return [
+                        {
+                            index: 0,
+                            url: 'chrome://new-tab-page/',
+                            title: 'New Tab',
+                            active: true,
+                        },
+                        {
+                            index: 1,
+                            url: 'about:blank',
+                            title: '',
+                            active: false,
+                        },
+                    ]
+                }
+
+                return [
+                    {
+                        index: 0,
+                        url: 'chrome://new-tab-page/',
+                        title: 'New Tab',
+                        active: false,
+                    },
+                    {
+                        index: 1,
+                        url: 'https://www.amazon.com/',
+                        title: 'Amazon.com. Spend less. Smile more.',
+                        active: true,
+                    },
+                ]
+            }
+            return null
+        })
+
+        vi.spyOn(ActionWsClient, 'connect').mockResolvedValue({
+            close: async () => undefined,
+            request,
+        } as unknown as ActionWsClient)
+
+        await opensteer.launch()
+        expect(opensteer.page).toBe(internalPage as never)
+
+        await opensteer.goto('https://www.amazon.com')
+        expect(opensteer.page).toBe(targetPage as never)
+    })
 })
