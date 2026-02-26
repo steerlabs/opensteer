@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { BrowserContext, CDPSession, Page } from 'playwright'
 import {
     StealthWaitUnavailableError,
+    waitForVisualStability,
     waitForVisualStabilityAcrossFrames,
 } from '../../src/navigation.js'
 
@@ -73,6 +74,54 @@ function createFakePage(options: FakeCdpOptions = {}): {
     }
 }
 
+function runtimeEvaluateCallCount(send: ReturnType<typeof vi.fn>): number {
+    return send.mock.calls.filter(
+        (call: unknown[]) => call[0] === 'Runtime.evaluate'
+    ).length
+}
+
+describe('navigation/waitForVisualStability guards', () => {
+    it('retries transient execution-context destruction and resolves', async () => {
+        let attempts = 0
+        const { page, send } = createFakePage({
+            evaluate: async () => {
+                attempts += 1
+                if (attempts === 1) {
+                    throw new Error('Execution context was destroyed')
+                }
+            },
+        })
+
+        await waitForVisualStability(page, {
+            timeout: 1000,
+            settleMs: 40,
+        })
+
+        expect(runtimeEvaluateCallCount(send)).toBe(2)
+    })
+
+    it('returns within timeout when transient context churn persists', async () => {
+        const { page, send } = createFakePage({
+            evaluate: async () => {
+                throw new Error('Execution context was destroyed')
+            },
+        })
+
+        const startedAt = Date.now()
+        await waitForVisualStability(page, {
+            timeout: 220,
+            settleMs: 40,
+        })
+        const elapsed = Date.now() - startedAt
+        const evaluateCalls = runtimeEvaluateCallCount(send)
+
+        expect(elapsed).toBeGreaterThanOrEqual(180)
+        expect(elapsed).toBeLessThan(1400)
+        expect(evaluateCalls).toBeGreaterThan(1)
+        expect(evaluateCalls).toBeLessThan(20)
+    })
+})
+
 describe('navigation/waitForVisualStabilityAcrossFrames guards', () => {
     it('returns within timeout when isolated-world evaluate never settles', async () => {
         const { page, send } = createFakePage({
@@ -88,11 +137,7 @@ describe('navigation/waitForVisualStabilityAcrossFrames guards', () => {
 
         expect(elapsed).toBeGreaterThanOrEqual(180)
         expect(elapsed).toBeLessThan(1400)
-        expect(
-            send.mock.calls.filter(
-                (call: unknown[]) => call[0] === 'Runtime.evaluate'
-            ).length
-        ).toBe(1)
+        expect(runtimeEvaluateCallCount(send)).toBe(1)
     })
 
     it('resolves quickly when isolated-world evaluate settles immediately', async () => {
@@ -108,11 +153,7 @@ describe('navigation/waitForVisualStabilityAcrossFrames guards', () => {
         const elapsed = Date.now() - startedAt
 
         expect(elapsed).toBeLessThan(250)
-        expect(
-            send.mock.calls.filter(
-                (call: unknown[]) => call[0] === 'Runtime.evaluate'
-            ).length
-        ).toBe(1)
+        expect(runtimeEvaluateCallCount(send)).toBe(1)
     })
 
     it('ignores detached-context errors', async () => {
@@ -127,11 +168,7 @@ describe('navigation/waitForVisualStabilityAcrossFrames guards', () => {
             settleMs: 40,
         })
 
-        expect(
-            send.mock.calls.filter(
-                (call: unknown[]) => call[0] === 'Runtime.evaluate'
-            ).length
-        ).toBe(1)
+        expect(runtimeEvaluateCallCount(send)).toBe(1)
     })
 
     it('fails fast when Chromium CDP is unavailable', async () => {

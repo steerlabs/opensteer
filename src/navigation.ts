@@ -3,6 +3,7 @@ import type { CDPSession, Page } from 'playwright'
 const DEFAULT_TIMEOUT = 30000
 const DEFAULT_SETTLE_MS = 750
 const FRAME_EVALUATE_GRACE_MS = 200
+const TRANSIENT_CONTEXT_RETRY_DELAY_MS = 25
 const STEALTH_WORLD_NAME = '__opensteer_wait__'
 
 interface VisualStabilityOptions {
@@ -381,7 +382,12 @@ class StealthCdpRuntime {
         const mainFrame = frameRecords[0]
         if (!mainFrame) return
 
-        await this.waitForFrameVisualStability(mainFrame.frameId, timeout, settleMs)
+        await this.waitForFrameVisualStability(
+            mainFrame.frameId,
+            timeout,
+            settleMs,
+            true
+        )
     }
 
     async collectVisibleFrameIds(): Promise<string[]> {
@@ -419,23 +425,56 @@ class StealthCdpRuntime {
     async waitForFrameVisualStability(
         frameId: string,
         timeout: number,
-        settleMs: number
+        settleMs: number,
+        retryTransientContextErrors = true
     ): Promise<void> {
         if (timeout <= 0) return
 
         const script = buildStabilityScript(timeout, settleMs)
-        let contextId = await this.ensureFrameContextId(frameId)
 
-        try {
-            await this.evaluateWithGuard(contextId, script, timeout)
-        } catch (error) {
-            if (!isMissingExecutionContextError(error)) {
-                throw error
+        if (!retryTransientContextErrors) {
+            let contextId = await this.ensureFrameContextId(frameId)
+
+            try {
+                await this.evaluateWithGuard(contextId, script, timeout)
+            } catch (error) {
+                if (!isMissingExecutionContextError(error)) {
+                    throw error
+                }
+
+                this.contextsByFrame.delete(frameId)
+                contextId = await this.ensureFrameContextId(frameId)
+                await this.evaluateWithGuard(contextId, script, timeout)
             }
 
-            this.contextsByFrame.delete(frameId)
-            contextId = await this.ensureFrameContextId(frameId)
-            await this.evaluateWithGuard(contextId, script, timeout)
+            return
+        }
+
+        const deadline = Date.now() + timeout
+
+        while (true) {
+            const remaining = Math.max(0, deadline - Date.now())
+            if (remaining === 0) {
+                return
+            }
+
+            const contextId = await this.ensureFrameContextId(frameId)
+            try {
+                await this.evaluateWithGuard(contextId, script, remaining)
+                return
+            } catch (error) {
+                if (!isTransientExecutionContextError(error)) {
+                    throw error
+                }
+
+                this.contextsByFrame.delete(frameId)
+
+                const retryDelay = Math.min(
+                    TRANSIENT_CONTEXT_RETRY_DELAY_MS,
+                    Math.max(0, deadline - Date.now())
+                )
+                await sleep(retryDelay)
+            }
         }
     }
 
@@ -605,7 +644,8 @@ export async function waitForVisualStabilityAcrossFrames(
                         await runtime.waitForFrameVisualStability(
                             frameId,
                             remaining,
-                            settleMs
+                            settleMs,
+                            false
                         )
                     } catch (error) {
                         if (isIgnorableFrameError(error)) return
@@ -660,6 +700,16 @@ function formatCdpException(details: CdpExceptionDetails): string {
     )
 }
 
+function isTransientExecutionContextError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false
+    const message = error.message
+    return (
+        message.includes('Execution context was destroyed') ||
+        message.includes('Cannot find context with specified id') ||
+        message.includes('Cannot find execution context')
+    )
+}
+
 function isMissingExecutionContextError(error: unknown): boolean {
     if (!(error instanceof Error)) return false
     const message = error.message
@@ -675,10 +725,8 @@ function isIgnorableFrameError(error: unknown): boolean {
 
     return (
         message.includes('Frame was detached') ||
-        message.includes('Execution context was destroyed') ||
         message.includes('Target page, context or browser has been closed') ||
-        message.includes('Cannot find context with specified id') ||
-        message.includes('Cannot find execution context') ||
+        isTransientExecutionContextError(error) ||
         message.includes('No frame for given id found')
     )
 }
