@@ -156,6 +156,30 @@ describe('config', () => {
         })
     })
 
+    it('resolveConfig auto-loads OPENSTEER_BASE_URL from .env', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-config-dotenv-'))
+        fs.writeFileSync(
+            path.join(root, '.env'),
+            [
+                'OPENSTEER_MODE=cloud',
+                'OPENSTEER_API_KEY=ork_env_file_123',
+                'OPENSTEER_BASE_URL=https://remote.env.example',
+            ].join('\n'),
+            'utf8'
+        )
+
+        const resolved = resolveConfig({
+            storage: { rootDir: root },
+        })
+
+        expect(resolved.cloud).toEqual({
+            apiKey: 'ork_env_file_123',
+            baseUrl: 'https://remote.env.example',
+            authScheme: 'api-key',
+            announce: 'always',
+        })
+    })
+
     it('resolveConfig keeps existing process env values over .env values', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-config-dotenv-'))
         fs.writeFileSync(
@@ -176,6 +200,24 @@ describe('config', () => {
                 ? resolved.cloud?.apiKey
                 : null
         ).toBe('ork_process_456')
+    })
+
+    it('resolveConfig keeps explicit cloud baseUrl over env values', () => {
+        process.env.OPENSTEER_BASE_URL = 'https://remote.env.example'
+
+        const resolved = resolveConfig({
+            cloud: {
+                apiKey: 'ork_input_123',
+                baseUrl: 'https://remote.input.example',
+            },
+        })
+
+        expect(resolved.cloud).toEqual({
+            apiKey: 'ork_input_123',
+            baseUrl: 'https://remote.input.example',
+            authScheme: 'api-key',
+            announce: 'always',
+        })
     })
 
     it('resolveConfig uses dotenv precedence from most-specific to least-specific', () => {
