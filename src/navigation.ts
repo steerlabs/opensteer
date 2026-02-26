@@ -61,10 +61,6 @@ interface FrameRecord {
     parentFrameId: string | null
 }
 
-interface FrameVisualStabilityOptions {
-    retryTransientContextErrors?: boolean
-}
-
 type FrameStabilityResult =
     | { kind: 'resolved' }
     | { kind: 'rejected'; error: unknown }
@@ -385,9 +381,12 @@ class StealthCdpRuntime {
         const mainFrame = frameRecords[0]
         if (!mainFrame) return
 
-        await this.waitForFrameVisualStability(mainFrame.frameId, timeout, settleMs, {
-            retryTransientContextErrors: true,
-        })
+        await this.waitForFrameVisualStability(
+            mainFrame.frameId,
+            timeout,
+            settleMs,
+            true
+        )
     }
 
     async collectVisibleFrameIds(): Promise<string[]> {
@@ -426,13 +425,11 @@ class StealthCdpRuntime {
         frameId: string,
         timeout: number,
         settleMs: number,
-        options: FrameVisualStabilityOptions = {}
+        retryTransientContextErrors = true
     ): Promise<void> {
         if (timeout <= 0) return
 
         const script = buildStabilityScript(timeout, settleMs)
-        const retryTransientContextErrors =
-            options.retryTransientContextErrors ?? true
 
         if (!retryTransientContextErrors) {
             let contextId = await this.ensureFrameContextId(frameId)
@@ -440,7 +437,7 @@ class StealthCdpRuntime {
             try {
                 await this.evaluateWithGuard(contextId, script, timeout)
             } catch (error) {
-                if (!isMissingExecutionContextReferenceError(error)) {
+                if (!isMissingExecutionContextError(error)) {
                     throw error
                 }
 
@@ -641,9 +638,7 @@ export async function waitForVisualStabilityAcrossFrames(
                             frameId,
                             remaining,
                             settleMs,
-                            {
-                                retryTransientContextErrors: false,
-                            }
+                            false
                         )
                     } catch (error) {
                         if (isIgnorableFrameError(error)) return
@@ -708,7 +703,7 @@ function isTransientExecutionContextError(error: unknown): boolean {
     )
 }
 
-function isMissingExecutionContextReferenceError(error: unknown): boolean {
+function isMissingExecutionContextError(error: unknown): boolean {
     if (!(error instanceof Error)) return false
     const message = error.message
     return (
