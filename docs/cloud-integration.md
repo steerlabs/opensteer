@@ -9,6 +9,7 @@ Enable cloud mode with environment variables:
 ```bash
 OPENSTEER_MODE=cloud
 OPENSTEER_API_KEY=ork_your_key
+OPENSTEER_AUTH_SCHEME=api-key
 OPENSTEER_REMOTE_ANNOUNCE=always
 ```
 
@@ -29,6 +30,7 @@ const opensteer = new Opensteer({
     cloud: {
         apiKey: process.env.OPENSTEER_API_KEY,
         baseUrl: process.env.OPENSTEER_BASE_URL,
+        authScheme: 'api-key', // or 'bearer'
     },
 })
 ```
@@ -36,6 +38,8 @@ const opensteer = new Opensteer({
 - Default cloud host: `https://remote.opensteer.com`
 - Override host with `OPENSTEER_BASE_URL`
 - API key can be provided via `cloud.apiKey` or `OPENSTEER_API_KEY`
+- Auth scheme can be configured via `cloud.authScheme` or `OPENSTEER_AUTH_SCHEME`
+  - Supported values: `api-key` (default), `bearer`
 - Default cloud announcement policy: `always`
 - Override cloud announcement with `cloud.announce` or `OPENSTEER_REMOTE_ANNOUNCE`
   - Supported values: `always`, `off`, `tty`
@@ -57,6 +61,11 @@ const opensteer = new Opensteer({
 - `localRunId: string`
 
 The response includes `cloudSession` metadata and `cloudSessionUrl` for deep links.
+
+You can read these values at runtime with:
+
+- `opensteer.getCloudSessionId()`
+- `opensteer.getCloudSessionUrl()`
 
 ## WebSocket Contract
 

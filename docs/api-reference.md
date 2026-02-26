@@ -40,6 +40,16 @@ cloud session and action WebSocket.
 
 These throw if accessed before `launch()` or `Opensteer.from()`.
 
+### Cloud Session Helpers
+
+#### `getCloudSessionId(): string | null`
+
+Returns the active cloud session id after `launch()` in cloud mode.
+
+#### `getCloudSessionUrl(): string | null`
+
+Returns the cloud session URL for deep-linking after `launch()` in cloud mode.
+
 ### Navigation
 
 #### `goto(url: string, options?: GotoOptions): Promise<void>`
@@ -609,6 +619,7 @@ Exported for advanced integration:
 | `OPENSTEER_MODEL` | Default model for LLM resolve/extract (default: `gpt-5.1`) |
 | `OPENSTEER_API_KEY` | API key for cloud mode |
 | `OPENSTEER_BASE_URL` | Cloud control-plane base URL (default: `https://remote.opensteer.com`) |
+| `OPENSTEER_AUTH_SCHEME` | Cloud auth scheme: `api-key` (default) or `bearer` |
 | `OPENSTEER_REMOTE_ANNOUNCE` | Cloud launch announcement policy: `always`, `off`, `tty` (default: `always`) |
 | `OPENSTEER_HEADLESS` | `true` or `false` |
 | `OPENSTEER_BROWSER_PATH` | Custom browser executable path |
