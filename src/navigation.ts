@@ -473,9 +473,7 @@ class StealthCdpRuntime {
                     TRANSIENT_CONTEXT_RETRY_DELAY_MS,
                     Math.max(0, deadline - Date.now())
                 )
-                if (retryDelay > 0) {
-                    await sleep(retryDelay)
-                }
+                await sleep(retryDelay)
             }
         }
     }
