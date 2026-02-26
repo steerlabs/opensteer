@@ -222,8 +222,7 @@ export class Opensteer {
             this.cloud = createCloudRuntimeState(
                 apiKey,
                 cloudConfig?.baseUrl,
-                cloudConfig?.authScheme,
-                cloudConfig?.appUrl
+                cloudConfig?.authScheme
             )
         } else {
             this.cloud = null
@@ -484,7 +483,7 @@ export class Opensteer {
                 this.cloud.sessionId = sessionId
                 this.cloud.cloudSessionUrl =
                     buildCloudSessionUrl(
-                        this.cloud.appUrl,
+                        this.cloud.baseUrl,
                         session.cloudSession.sessionId
                     )
                 this.announceCloudSession({
@@ -3175,12 +3174,8 @@ function buildLocalRunId(namespace: string): string {
 }
 
 function buildCloudSessionUrl(
-    appUrl: string | null,
+    baseUrl: string,
     sessionId: string
-): string | null {
-    if (!appUrl) {
-        return null
-    }
-
-    return `${appUrl}/browser/${encodeURIComponent(sessionId)}`
+): string {
+    return `${baseUrl}/browser/${encodeURIComponent(sessionId)}`
 }
