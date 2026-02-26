@@ -40,19 +40,8 @@ export class OpensteerCuaAgentHandler {
     async execute(
         options: OpensteerAgentExecuteOptions
     ): Promise<OpensteerAgentResult> {
-        const instruction = options.instruction.trim()
-        if (!instruction) {
-            throw new OpensteerAgentExecutionError(
-                'Agent execute instruction cannot be empty.'
-            )
-        }
-
-        const maxSteps =
-            typeof options.maxSteps === 'number' &&
-            Number.isFinite(options.maxSteps) &&
-            options.maxSteps > 0
-                ? Math.floor(options.maxSteps)
-                : 20
+        const instruction = options.instruction
+        const maxSteps = options.maxSteps ?? 20
 
         await this.initializeClient()
 
