@@ -32,7 +32,8 @@ export class CloudCdpClient {
             throw new OpensteerCloudError('CLOUD_TRANSPORT_ERROR', message)
         }
 
-        const context = browser.contexts()[0]
+        const contexts = browser.contexts()
+        const context = contexts[0]
         if (!context) {
             await browser.close()
             throw new OpensteerCloudError(
@@ -41,10 +42,56 @@ export class CloudCdpClient {
             )
         }
 
+        const preferred = selectPreferredContextPage(browser, contexts)
+        if (preferred) {
+            return preferred
+        }
+
         const page = context.pages()[0] || (await context.newPage())
 
         return { browser, context, page }
     }
+}
+
+function selectPreferredContextPage(
+    browser: Browser,
+    contexts: BrowserContext[]
+): CloudCdpConnection | null {
+    let aboutBlankCandidate: CloudCdpConnection | null = null
+
+    for (const context of contexts) {
+        for (const page of context.pages()) {
+            const url = safePageUrl(page)
+
+            if (!isInternalOrEmptyUrl(url)) {
+                return { browser, context, page }
+            }
+
+            if (!aboutBlankCandidate && url === 'about:blank') {
+                aboutBlankCandidate = { browser, context, page }
+            }
+        }
+    }
+
+    return aboutBlankCandidate
+}
+
+function safePageUrl(page: Page): string {
+    try {
+        return page.url()
+    } catch {
+        return ''
+    }
+}
+
+function isInternalOrEmptyUrl(url: string): boolean {
+    if (!url) return true
+    if (url === 'about:blank') return true
+    return (
+        url.startsWith('chrome://') ||
+        url.startsWith('devtools://') ||
+        url.startsWith('edge://')
+    )
 }
 
 function withTokenQuery(wsUrl: string, token: string): string {
