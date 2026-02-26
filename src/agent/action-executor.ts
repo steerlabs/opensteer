@@ -71,6 +71,10 @@ export async function executeAgentAction(
         case 'scroll': {
             const x = numberOr(action.scrollX, action.scroll_x, 0)
             const y = numberOr(action.scrollY, action.scroll_y, 0)
+            const point = maybePoint(action)
+            if (point) {
+                await page.mouse.move(point.x, point.y)
+            }
             await page.mouse.wheel(x, y)
             return
         }
@@ -167,6 +171,19 @@ function normalizeActionType(value: unknown): string {
 }
 
 function toPoint(action: OpensteerAgentAction): { x: number; y: number } {
+    const point = maybePoint(action)
+    if (point) {
+        return point
+    }
+
+    throw new OpensteerAgentActionError(
+        `Action "${String(action.type)}" requires numeric x and y coordinates.`
+    )
+}
+
+function maybePoint(
+    action: OpensteerAgentAction
+): { x: number; y: number } | null {
     const coordinate = Array.isArray(action.coordinate)
         ? action.coordinate
         : Array.isArray(action.coordinates)
@@ -177,9 +194,7 @@ function toPoint(action: OpensteerAgentAction): { x: number; y: number } {
     const y = numberOr(action.y, coordinate?.[1])
 
     if (!Number.isFinite(x) || !Number.isFinite(y)) {
-        throw new OpensteerAgentActionError(
-            `Action "${String(action.type)}" requires numeric x and y coordinates.`
-        )
+        return null
     }
 
     return {
@@ -192,13 +207,12 @@ async function maybeFocusPoint(
     page: Page,
     action: OpensteerAgentAction
 ): Promise<void> {
-    const x = action.x
-    const y = action.y
-    if (typeof x !== 'number' || typeof y !== 'number') {
+    const point = maybePoint(action)
+    if (!point) {
         return
     }
 
-    await page.mouse.click(x, y, {
+    await page.mouse.click(point.x, point.y, {
         button: normalizeMouseButton(action.button, 'left'),
         clickCount: 1,
     })
