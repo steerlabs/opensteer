@@ -1,12 +1,14 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Opensteer } from '../../src/opensteer.js'
 import { OpensteerActionError } from '../../src/actions/errors.js'
 import { OpensteerCloudError } from '../../src/cloud/errors.js'
+import { ActionWsClient } from '../../src/cloud/action-ws-client.js'
 
 const ORIGINAL_ENV = { ...process.env }
 
 afterEach(() => {
     process.env = { ...ORIGINAL_ENV }
+    vi.restoreAllMocks()
 })
 
 describe('cloud mode', () => {
@@ -109,6 +111,72 @@ describe('cloud mode', () => {
                 description: 'login button',
             })
         ).rejects.toThrow('Cloud session is not connected. Call launch() first.')
+    })
+
+    it('uses cloudSessionUrl from the cloud session payload', async () => {
+        const opensteer = new Opensteer({
+            cloud: {
+                apiKey: 'ork_test_123',
+                baseUrl: 'https://internal.example/api',
+            },
+        })
+
+        const access = opensteer as unknown as {
+            cloud: {
+                sessionClient: {
+                    create: (
+                        args: Record<string, unknown>
+                    ) => Promise<Record<string, unknown>>
+                }
+                cdpClient: {
+                    connect: (
+                        args: Record<string, unknown>
+                    ) => Promise<{
+                        browser: unknown
+                        context: unknown
+                        page: unknown
+                    }>
+                }
+            } | null
+        }
+
+        if (!access.cloud) throw new Error('Expected cloud runtime state to exist.')
+
+        const sessionResponse = {
+            sessionId: 'sess_123',
+            actionWsUrl: 'wss://action.example.com',
+            cdpWsUrl: 'wss://cdp.example.com',
+            actionToken: 'act_123',
+            cdpToken: 'cdp_123',
+            cloudSessionUrl: 'https://app.opensteer.com/browser/cloud_123',
+            cloudSession: {
+                sessionId: 'cloud_123',
+                workspaceId: 'ws_123',
+                state: 'active',
+                createdAt: 1735707600000,
+                sourceType: 'local-cloud' as const,
+            },
+        }
+
+        vi.spyOn(access.cloud.sessionClient, 'create').mockResolvedValue(
+            sessionResponse
+        )
+        vi.spyOn(access.cloud.cdpClient, 'connect').mockResolvedValue({
+            browser: { close: async () => undefined },
+            context: {},
+            page: {},
+        })
+        vi.spyOn(ActionWsClient, 'connect').mockResolvedValue({
+            close: async () => undefined,
+            request: async () => undefined,
+        } as unknown as ActionWsClient)
+
+        await opensteer.launch()
+
+        expect(opensteer.getCloudSessionUrl()).toBe(sessionResponse.cloudSessionUrl)
+        expect(opensteer.getCloudSessionUrl()).not.toBe(
+            'https://internal.example/api/browser/cloud_123'
+        )
     })
 
     it('maps cloud action failures with details into OpensteerActionError', async () => {

@@ -9,7 +9,6 @@ Enable cloud mode with environment variables:
 ```bash
 OPENSTEER_MODE=cloud
 OPENSTEER_API_KEY=ork_your_key
-OPENSTEER_APP_URL=https://opensteer.com
 OPENSTEER_REMOTE_ANNOUNCE=always
 ```
 
@@ -30,7 +29,6 @@ const opensteer = new Opensteer({
     cloud: {
         apiKey: process.env.OPENSTEER_API_KEY,
         baseUrl: process.env.OPENSTEER_BASE_URL,
-        appUrl: process.env.OPENSTEER_APP_URL,
     },
 })
 ```
@@ -38,8 +36,6 @@ const opensteer = new Opensteer({
 - Default cloud host: `https://remote.opensteer.com`
 - Override host with `OPENSTEER_BASE_URL`
 - API key can be provided via `cloud.apiKey` or `OPENSTEER_API_KEY`
-- Default cloud app URL: `https://opensteer.com`
-- Override cloud app URL with `cloud.appUrl` or `OPENSTEER_APP_URL`
 - Default cloud announcement policy: `always`
 - Override cloud announcement with `cloud.announce` or `OPENSTEER_REMOTE_ANNOUNCE`
   - Supported values: `always`, `off`, `tty`

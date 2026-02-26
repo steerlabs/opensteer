@@ -281,6 +281,12 @@ function resolveOpensteerApiKey(env: EnvMap): string | undefined {
     return value
 }
 
+function resolveOpensteerBaseUrl(env: EnvMap): string | undefined {
+    const value = env.OPENSTEER_BASE_URL?.trim()
+    if (!value) return undefined
+    return value
+}
+
 function resolveOpensteerAuthScheme(env: EnvMap): OpensteerAuthScheme | undefined {
     return parseAuthScheme(env.OPENSTEER_AUTH_SCHEME, 'OPENSTEER_AUTH_SCHEME')
 }
@@ -391,6 +397,7 @@ export function resolveConfig(
     const resolved = mergeDeep(mergedWithEnv, input) as ResolvedOpensteerConfig
 
     const envApiKey = resolveOpensteerApiKey(env)
+    const envBaseUrl = resolveOpensteerBaseUrl(env)
     const envAuthScheme = resolveOpensteerAuthScheme(env)
     const envCloudAnnounce = parseCloudAnnounce(
         env.OPENSTEER_REMOTE_ANNOUNCE,
@@ -408,6 +415,10 @@ export function resolveConfig(
     const inputHasCloudApiKey = Boolean(
         inputCloudOptions &&
             Object.prototype.hasOwnProperty.call(inputCloudOptions, 'apiKey')
+    )
+    const inputHasCloudBaseUrl = Boolean(
+        inputCloudOptions &&
+            Object.prototype.hasOwnProperty.call(inputCloudOptions, 'baseUrl')
     )
     const cloudSelection = resolveCloudSelection({
         cloud: resolved.cloud,
@@ -436,6 +447,12 @@ export function resolveConfig(
         resolved.cloud = {
             ...(normalizeCloudOptions(resolved.cloud) ?? {}),
             apiKey: envApiKey,
+        }
+    }
+    if (envBaseUrl && cloudSelection.cloud && !inputHasCloudBaseUrl) {
+        resolved.cloud = {
+            ...(normalizeCloudOptions(resolved.cloud) ?? {}),
+            baseUrl: envBaseUrl,
         }
     }
 

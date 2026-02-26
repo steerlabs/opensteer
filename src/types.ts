@@ -110,7 +110,6 @@ export type OpensteerCloudAnnouncePolicy = 'always' | 'off' | 'tty'
 export interface OpensteerCloudOptions {
     apiKey?: string
     baseUrl?: string
-    appUrl?: string
     authScheme?: OpensteerAuthScheme
     announce?: OpensteerCloudAnnouncePolicy
 }

@@ -222,8 +222,7 @@ export class Opensteer {
             this.cloud = createCloudRuntimeState(
                 apiKey,
                 cloudConfig?.baseUrl,
-                cloudConfig?.authScheme,
-                cloudConfig?.appUrl
+                cloudConfig?.authScheme
             )
         } else {
             this.cloud = null
@@ -482,11 +481,7 @@ export class Opensteer {
 
                 this.cloud.actionClient = actionClient
                 this.cloud.sessionId = sessionId
-                this.cloud.cloudSessionUrl =
-                    buildCloudSessionUrl(
-                        this.cloud.appUrl,
-                        session.cloudSession.sessionId
-                    )
+                this.cloud.cloudSessionUrl = session.cloudSessionUrl
                 this.announceCloudSession({
                     sessionId: session.sessionId,
                     workspaceId: session.cloudSession.workspaceId,
@@ -3172,15 +3167,4 @@ function getScrollDelta(options: ScrollOptions): { x: number; y: number } {
 function buildLocalRunId(namespace: string): string {
     const normalized = namespace.trim() || 'default'
     return `${normalized}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`
-}
-
-function buildCloudSessionUrl(
-    appUrl: string | null,
-    sessionId: string
-): string | null {
-    if (!appUrl) {
-        return null
-    }
-
-    return `${appUrl}/browser/${encodeURIComponent(sessionId)}`
 }
