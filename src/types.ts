@@ -269,3 +269,69 @@ export interface BoundingBox {
     width: number
     height: number
 }
+
+export type OpensteerAgentMode = 'cua'
+
+export type OpensteerAgentProvider = 'openai' | 'anthropic' | 'google'
+
+export interface OpensteerAgentModelConfig {
+    modelName: string
+    apiKey?: string
+    baseUrl?: string
+    organization?: string
+    thinkingBudget?: number
+    environment?: string
+}
+
+export interface OpensteerAgentConfig {
+    mode: OpensteerAgentMode
+    model?: string | OpensteerAgentModelConfig
+    systemPrompt?: string
+    waitBetweenActionsMs?: number
+}
+
+export interface OpensteerAgentExecuteOptions {
+    instruction: string
+    maxSteps?: number
+    highlightCursor?: boolean
+}
+
+export interface OpensteerAgentUsage {
+    inputTokens: number
+    outputTokens: number
+    reasoningTokens?: number
+    inferenceTimeMs: number
+}
+
+export interface OpensteerAgentAction {
+    type: string
+    reasoning?: string
+    button?: string
+    clickCount?: number
+    x?: number
+    y?: number
+    text?: string
+    keys?: string[]
+    scrollX?: number
+    scrollY?: number
+    timeMs?: number
+    url?: string
+    path?: Array<{ x: number; y: number }>
+    [key: string]: unknown
+}
+
+export interface OpensteerAgentResult {
+    success: boolean
+    completed: boolean
+    message: string
+    actions: OpensteerAgentAction[]
+    usage?: OpensteerAgentUsage
+    provider: OpensteerAgentProvider
+    model: string
+}
+
+export interface OpensteerAgentInstance {
+    execute(
+        instructionOrOptions: string | OpensteerAgentExecuteOptions
+    ): Promise<OpensteerAgentResult>
+}

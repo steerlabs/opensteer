@@ -50,6 +50,45 @@ Returns the active cloud session id after `launch()` in cloud mode.
 
 Returns the cloud session URL for deep-linking after `launch()` in cloud mode.
 
+### Agent
+
+#### `agent(config: OpensteerAgentConfig): OpensteerAgentInstance`
+
+Create a Computer Use Agent (CUA) instance with Stagehand-style ergonomics.
+
+```ts
+const agent = opensteer.agent({
+    mode: 'cua',
+    model: 'openai/computer-use-preview',
+})
+
+const result = await agent.execute({
+    instruction: 'Open docs and summarize the first section',
+    maxSteps: 20,
+    highlightCursor: true,
+})
+```
+
+- V1 supports `mode: 'cua'` only.
+- Supported providers: `openai`, `anthropic`, `google`.
+- `model` supports either:
+  - `"provider/model"` string
+  - `{ modelName: "provider/model", apiKey?, baseUrl?, organization?, thinkingBudget?, environment? }`
+
+#### `agent.execute(instructionOrOptions): Promise<OpensteerAgentResult>`
+
+`instructionOrOptions` can be:
+
+- `string` instruction
+- `{ instruction: string, maxSteps?: number, highlightCursor?: boolean }`
+
+Returns:
+
+- `success`, `completed`, `message`
+- executed `actions`
+- token/inference `usage`
+- resolved `provider` and `model`
+
 ### Navigation
 
 #### `goto(url: string, options?: GotoOptions): Promise<void>`
@@ -332,6 +371,8 @@ interface OpensteerBrowserConfig {
 ```
 
 `model` defaults to `gpt-5.1`. Override with `OPENSTEER_MODEL`.
+For CUA agents, use `provider/model` strings (for example
+`openai/computer-use-preview`).
 
 Cloud defaults to disabled. Override with `OPENSTEER_MODE=local|cloud`.
 
