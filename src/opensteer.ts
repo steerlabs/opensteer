@@ -11,6 +11,10 @@ import type {
     ActionResult,
     AiExtractCallback,
     AiResolveCallback,
+    OpensteerAgentConfig,
+    OpensteerAgentExecuteOptions,
+    OpensteerAgentInstance,
+    OpensteerAgentResult,
     BaseActionOptions,
     BoundingBox,
     ClickOptions,
@@ -123,6 +127,10 @@ import {
     type CloudRuntimeState,
 } from './cloud/runtime.js'
 import { stableStringify } from './utils/stable-stringify.js'
+import { createCuaClient, resolveAgentConfig } from './agent/provider.js'
+import { OpensteerCuaAgentHandler } from './agent/handler.js'
+import { normalizeExecuteOptions } from './agent/client.js'
+import { OpensteerAgentBusyError } from './agent/errors.js'
 
 interface PathResolutionResult {
     path: ElementPath | null
@@ -190,6 +198,7 @@ export class Opensteer {
     private contextRef: BrowserContext | null = null
     private ownsBrowser = false
     private snapshotCache: PreparedSnapshot | null = null
+    private agentExecutionInFlight = false
 
     constructor(config: OpensteerConfig = {}) {
         const resolved = resolveConfig(config)
@@ -1898,6 +1907,43 @@ export class Opensteer {
 
         this.storage.clearNamespace()
         this.snapshotCache = null
+    }
+
+    agent(config: OpensteerAgentConfig): OpensteerAgentInstance {
+        const resolvedAgentConfig = resolveAgentConfig({
+            agentConfig: config,
+            fallbackModel: this.config.model,
+        })
+
+        return {
+            execute: async (
+                instructionOrOptions: string | OpensteerAgentExecuteOptions
+            ): Promise<OpensteerAgentResult> => {
+                if (this.agentExecutionInFlight) {
+                    throw new OpensteerAgentBusyError()
+                }
+
+                this.agentExecutionInFlight = true
+                try {
+                    const options = normalizeExecuteOptions(instructionOrOptions)
+                    const handler = new OpensteerCuaAgentHandler({
+                        page: this.page,
+                        config: resolvedAgentConfig,
+                        client: createCuaClient(resolvedAgentConfig),
+                        debug: Boolean(this.config.debug),
+                        onMutatingAction: () => {
+                            this.snapshotCache = null
+                        },
+                    })
+
+                    const result = await handler.execute(options)
+                    this.snapshotCache = null
+                    return result
+                } finally {
+                    this.agentExecutionInFlight = false
+                }
+            },
+        }
     }
 
     private async runWithPostActionWait<T>(
