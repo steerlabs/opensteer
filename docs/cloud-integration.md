@@ -83,3 +83,5 @@ You can read these values at runtime with:
 
 - `Opensteer.from(page)` is unsupported in cloud mode.
 - `uploadFile`, `exportCookies`, and `importCookies` are unsupported in cloud mode because they depend on local filesystem paths.
+- `opensteer.agent({ mode: 'cua' })` is supported in cloud mode after `launch()`.
+  CUA actions execute against the active cloud CDP page.
