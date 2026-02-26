@@ -73,7 +73,27 @@ describe('agent/action-executor', () => {
             scrollY: 500,
         })
 
+        expect(page.mouse.move).not.toHaveBeenCalled()
         expect(page.mouse.wheel).toHaveBeenCalledWith(0, 500)
+    })
+
+    it('moves to scroll coordinates before scrolling', async () => {
+        const page = createMockPage()
+
+        await executeAgentAction(page as never, {
+            type: 'scroll',
+            x: 120,
+            y: 240,
+            scrollX: -100,
+            scrollY: 300,
+        })
+
+        expect(page.mouse.move).toHaveBeenCalledWith(120, 240)
+        expect(page.mouse.wheel).toHaveBeenCalledWith(-100, 300)
+
+        const [moveCallOrder] = page.mouse.move.mock.invocationCallOrder
+        const [wheelCallOrder] = page.mouse.wheel.mock.invocationCallOrder
+        expect(moveCallOrder).toBeLessThan(wheelCallOrder)
     })
 
     it('treats key array combos as a single chord', async () => {
