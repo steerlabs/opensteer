@@ -2,7 +2,7 @@
 
 We are committed to providing a welcoming and respectful community for everyone.
 
-## Our Standards
+## Expected Behavior
 
 - Be kind and respectful.
 - Assume good intent.
@@ -15,6 +15,7 @@ We are committed to providing a welcoming and respectful community for everyone.
 
 ## Enforcement
 
-Report issues to tim@opensteer.dev.
+Report concerns to `tim@opensteer.dev`.
+All reports are reviewed and handled in good faith.
 
-This Code of Conduct is adapted from the Contributor Covenant.
+This code is adapted from [Contributor Covenant v2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).

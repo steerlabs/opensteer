@@ -781,6 +781,7 @@ Environment:
   OPENSTEER_MODE            Runtime routing: "local" (default) or "cloud"
   OPENSTEER_API_KEY         Required when cloud mode is selected
   OPENSTEER_BASE_URL        Override cloud control-plane base URL
+  OPENSTEER_AUTH_SCHEME     Cloud auth scheme: api-key (default) or bearer
   OPENSTEER_REMOTE_ANNOUNCE Cloud session announcement policy: always (default), off, tty
 `)
 }
