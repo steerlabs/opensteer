@@ -24,3 +24,6 @@ coverage/
 
 # OS files
 .DS_Store
+
+# Test runtime artifacts
+tests/.test-app-url

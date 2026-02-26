@@ -9,7 +9,7 @@ import type { ResolvedCuaModelConfig } from '../model.js'
 import type { OpensteerAgentAction } from '../../types.js'
 import { maybeNormalizeCoordinates } from '../coords.js'
 import { mapKeyToPlaywright } from '../key-mapping.js'
-import { OpensteerAgentApiError } from '../errors.js'
+import { OpensteerAgentActionError, OpensteerAgentApiError } from '../errors.js'
 
 type GoogleHistoryItem = {
     role: 'user' | 'model'
@@ -71,8 +71,10 @@ export class GoogleCuaClient extends CuaClient {
                 string,
                 unknown
             >
-            totalInputTokens += toNumber(usageMetadata.promptTokenCount)
-            totalOutputTokens += toNumber(usageMetadata.candidatesTokenCount)
+            totalInputTokens += toFiniteNumberOrZero(usageMetadata.promptTokenCount)
+            totalOutputTokens += toFiniteNumberOrZero(
+                usageMetadata.candidatesTokenCount
+            )
 
             const candidate = Array.isArray(response.candidates)
                 ? response.candidates[0]
@@ -89,6 +91,7 @@ export class GoogleCuaClient extends CuaClient {
                 content && Array.isArray(content.parts)
                     ? (content.parts as Array<Record<string, unknown>>)
                     : []
+            const finishReason = extractFinishReason(candidate)
 
             if (content) {
                 this.history.push({
@@ -115,7 +118,10 @@ export class GoogleCuaClient extends CuaClient {
             }
 
             if (!functionCalls.length) {
-                completed = true
+                completed = isSuccessfulGoogleFinishReason(finishReason)
+                if (!completed && !finalMessage) {
+                    finalMessage = `Google CUA stopped with finish reason: ${finishReason || 'unknown'}.`
+                }
             } else {
                 const functionResponses: Array<Record<string, unknown>> = []
 
@@ -124,11 +130,6 @@ export class GoogleCuaClient extends CuaClient {
                         functionCall,
                         this.viewport
                     )
-
-                    if (!mappedActions.length) {
-                        continue
-                    }
-
                     actions.push(...mappedActions)
 
                     let executionError: string | undefined
@@ -186,14 +187,13 @@ export class GoogleCuaClient extends CuaClient {
                     })
                 }
 
-                const finishReason =
-                    candidate && typeof candidate === 'object'
-                        ? normalizeString(candidate.finishReason)
-                        : undefined
+                if (finishReason && finishReason !== 'STOP') {
+                    throw new OpensteerAgentActionError(
+                        `Google CUA returned function calls with terminal finish reason "${finishReason}".`
+                    )
+                }
 
-                completed =
-                    functionCalls.length === 0 ||
-                    (typeof finishReason === 'string' && finishReason !== 'STOP')
+                completed = false
             }
 
             step += 1
@@ -252,11 +252,15 @@ function mapGoogleFunctionCallToActions(
             ? (functionCall.args as Record<string, unknown>)
             : {}
 
-    if (!name) return []
+    if (!name) {
+        throw new OpensteerAgentActionError(
+            'Google CUA function call is missing a "name" value.'
+        )
+    }
 
     switch (name) {
         case 'click_at': {
-            const coordinates = normalizeCoordinates(args, viewport)
+            const coordinates = normalizeCoordinates(args, viewport, name)
             return [
                 {
                     type: 'click',
@@ -268,13 +272,17 @@ function mapGoogleFunctionCallToActions(
         }
 
         case 'type_text_at': {
-            const coordinates = normalizeCoordinates(args, viewport)
+            const coordinates = normalizeCoordinates(args, viewport, name)
             const clearBeforeTyping =
                 typeof args.clear_before_typing === 'boolean'
                     ? args.clear_before_typing
                     : true
             const pressEnter =
                 typeof args.press_enter === 'boolean' ? args.press_enter : false
+            const text = normalizeRequiredString(
+                args.text,
+                'Google action "type_text_at" requires a non-empty "text" value.'
+            )
 
             const actions: OpensteerAgentAction[] = [
                 {
@@ -298,7 +306,7 @@ function mapGoogleFunctionCallToActions(
 
             actions.push({
                 type: 'type',
-                text: normalizeString(args.text) || '',
+                text,
                 x: coordinates.x,
                 y: coordinates.y,
             })
@@ -314,12 +322,20 @@ function mapGoogleFunctionCallToActions(
         }
 
         case 'key_combination': {
-            const keysRaw = normalizeString(args.keys) || ''
+            const keysRaw = normalizeRequiredString(
+                args.keys,
+                'Google action "key_combination" requires a non-empty "keys" value.'
+            )
             const keys = keysRaw
                 .split('+')
                 .map((part) => part.trim())
                 .filter(Boolean)
                 .map((part) => mapKeyToPlaywright(part))
+            if (!keys.length) {
+                throw new OpensteerAgentActionError(
+                    'Google action "key_combination" did not produce any key tokens.'
+                )
+            }
 
             return [
                 {
@@ -330,7 +346,10 @@ function mapGoogleFunctionCallToActions(
         }
 
         case 'scroll_document': {
-            const direction = normalizeString(args.direction) || 'down'
+            const direction = normalizeVerticalDirection(
+                args.direction,
+                'scroll_document'
+            )
             return [
                 {
                     type: 'keypress',
@@ -340,12 +359,13 @@ function mapGoogleFunctionCallToActions(
         }
 
         case 'scroll_at': {
-            const coordinates = normalizeCoordinates(args, viewport)
-            const direction = normalizeString(args.direction) || 'down'
-            const magnitude =
-                typeof args.magnitude === 'number' && Number.isFinite(args.magnitude)
-                    ? Math.max(1, args.magnitude)
-                    : 800
+            const coordinates = normalizeCoordinates(args, viewport, name)
+            const direction = normalizeScrollDirection(args.direction, 'scroll_at')
+            const magnitude = parsePositiveNumber(
+                args.magnitude,
+                'scroll_at',
+                'magnitude'
+            )
 
             let scrollX = 0
             let scrollY = 0
@@ -366,7 +386,7 @@ function mapGoogleFunctionCallToActions(
         }
 
         case 'hover_at': {
-            const coordinates = normalizeCoordinates(args, viewport)
+            const coordinates = normalizeCoordinates(args, viewport, name)
             return [
                 {
                     type: 'move',
@@ -377,16 +397,28 @@ function mapGoogleFunctionCallToActions(
         }
 
         case 'drag_and_drop': {
+            const startX = parseRequiredNumber(args.x, 'drag_and_drop', 'x')
+            const startY = parseRequiredNumber(args.y, 'drag_and_drop', 'y')
+            const endX = parseRequiredNumber(
+                args.destination_x,
+                'drag_and_drop',
+                'destination_x'
+            )
+            const endY = parseRequiredNumber(
+                args.destination_y,
+                'drag_and_drop',
+                'destination_y'
+            )
             const start = maybeNormalizeCoordinates(
                 'google',
-                toNumber(args.x),
-                toNumber(args.y),
+                startX,
+                startY,
                 viewport
             )
             const end = maybeNormalizeCoordinates(
                 'google',
-                toNumber(args.destination_x),
-                toNumber(args.destination_y),
+                endX,
+                endY,
                 viewport
             )
             return [
@@ -401,7 +433,10 @@ function mapGoogleFunctionCallToActions(
             return [
                 {
                     type: 'goto',
-                    url: normalizeString(args.url) || '',
+                    url: normalizeRequiredString(
+                        args.url,
+                        'Google action "navigate" requires a non-empty "url" value.'
+                    ),
                 },
             ]
 
@@ -415,29 +450,68 @@ function mapGoogleFunctionCallToActions(
             return [{ type: 'wait', timeMs: 5000 }]
 
         case 'search':
-            return [{ type: 'goto', url: 'https://www.google.com' }]
+            return [
+                {
+                    type: 'goto',
+                    url: buildGoogleSearchUrl(args),
+                },
+            ]
 
         case 'open_web_browser':
             return [{ type: 'open_web_browser' }]
 
         default:
-            return []
+            throw new OpensteerAgentActionError(
+                `Unsupported Google CUA function call "${name}".`
+            )
     }
 }
 
 function normalizeCoordinates(
     args: Record<string, unknown>,
-    viewport: { width: number; height: number }
+    viewport: { width: number; height: number },
+    actionName: string
 ): { x: number; y: number } {
+    const x = parseRequiredNumber(args.x, actionName, 'x')
+    const y = parseRequiredNumber(args.y, actionName, 'y')
+
     return maybeNormalizeCoordinates(
         'google',
-        toNumber(args.x),
-        toNumber(args.y),
+        x,
+        y,
         viewport
     )
 }
 
-function toNumber(value: unknown): number {
+function parseRequiredNumber(
+    value: unknown,
+    actionName: string,
+    field: string
+): number {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return value
+    }
+
+    throw new OpensteerAgentActionError(
+        `Google action "${actionName}" requires numeric "${field}" coordinates.`
+    )
+}
+
+function parsePositiveNumber(
+    value: unknown,
+    actionName: string,
+    field: string
+): number {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+        return value
+    }
+
+    throw new OpensteerAgentActionError(
+        `Google action "${actionName}" requires a positive numeric "${field}" value.`
+    )
+}
+
+function toFiniteNumberOrZero(value: unknown): number {
     return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
@@ -445,6 +519,68 @@ function normalizeString(value: unknown): string | undefined {
     if (typeof value !== 'string') return undefined
     const normalized = value.trim()
     return normalized.length ? normalized : undefined
+}
+
+function normalizeRequiredString(value: unknown, errorMessage: string): string {
+    const normalized = normalizeString(value)
+    if (!normalized) {
+        throw new OpensteerAgentActionError(errorMessage)
+    }
+
+    return normalized
+}
+
+function normalizeScrollDirection(
+    value: unknown,
+    actionName: string
+): 'up' | 'down' | 'left' | 'right' {
+    const direction = normalizeString(value)
+    if (
+        direction === 'up' ||
+        direction === 'down' ||
+        direction === 'left' ||
+        direction === 'right'
+    ) {
+        return direction
+    }
+
+    throw new OpensteerAgentActionError(
+        `Google action "${actionName}" requires "direction" to be one of: up, down, left, right.`
+    )
+}
+
+function normalizeVerticalDirection(
+    value: unknown,
+    actionName: string
+): 'up' | 'down' {
+    const direction = normalizeString(value)
+    if (direction === 'up' || direction === 'down') {
+        return direction
+    }
+
+    throw new OpensteerAgentActionError(
+        `Google action "${actionName}" requires "direction" to be "up" or "down".`
+    )
+}
+
+function buildGoogleSearchUrl(args: Record<string, unknown>): string {
+    const query = normalizeRequiredString(
+        args.query ?? args.text,
+        'Google action "search" requires a non-empty "query" value.'
+    )
+    return `https://www.google.com/search?q=${encodeURIComponent(query)}`
+}
+
+function extractFinishReason(candidate: unknown): string | undefined {
+    if (!candidate || typeof candidate !== 'object') {
+        return undefined
+    }
+
+    return normalizeString((candidate as Record<string, unknown>).finishReason)
+}
+
+function isSuccessfulGoogleFinishReason(finishReason: string | undefined): boolean {
+    return !finishReason || finishReason === 'STOP'
 }
 
 function resolveGoogleEnvironment(value: unknown): Environment {

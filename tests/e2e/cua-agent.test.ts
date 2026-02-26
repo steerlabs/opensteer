@@ -11,8 +11,8 @@ const RUN_CUA_E2E = process.env.RUN_CUA_E2E === '1'
 const DEFAULT_CUA_MODEL = 'openai/computer-use-preview'
 const CUA_E2E_MODEL = (process.env.CUA_E2E_MODEL || DEFAULT_CUA_MODEL).trim()
 
-if (RUN_CUA_E2E && !process.env.OPENAI_API_KEY?.trim()) {
-    throw new Error('RUN_CUA_E2E=1 requires OPENAI_API_KEY to be set.')
+if (RUN_CUA_E2E) {
+    ensureProviderApiKeyForModel(CUA_E2E_MODEL, process.env)
 }
 
 const describeCuaE2E = RUN_CUA_E2E ? describe : describe.skip
@@ -121,3 +121,54 @@ Finish immediately after the preview is correct.`,
         { timeout: 240_000 }
     )
 })
+
+function ensureProviderApiKeyForModel(model: string, env: NodeJS.ProcessEnv): void {
+    const provider = resolveCuaProvider(model)
+
+    if (provider === 'openai') {
+        if (!env.OPENAI_API_KEY?.trim()) {
+            throw new Error(
+                `RUN_CUA_E2E=1 with CUA_E2E_MODEL="${model}" requires OPENAI_API_KEY.`
+            )
+        }
+        return
+    }
+
+    if (provider === 'anthropic') {
+        if (!env.ANTHROPIC_API_KEY?.trim()) {
+            throw new Error(
+                `RUN_CUA_E2E=1 with CUA_E2E_MODEL="${model}" requires ANTHROPIC_API_KEY.`
+            )
+        }
+        return
+    }
+
+    const hasGoogleApiKey = Boolean(
+        env.GOOGLE_GENERATIVE_AI_API_KEY?.trim() ||
+            env.GEMINI_API_KEY?.trim() ||
+            env.GOOGLE_API_KEY?.trim()
+    )
+    if (!hasGoogleApiKey) {
+        throw new Error(
+            `RUN_CUA_E2E=1 with CUA_E2E_MODEL="${model}" requires GOOGLE_GENERATIVE_AI_API_KEY, GEMINI_API_KEY, or GOOGLE_API_KEY.`
+        )
+    }
+}
+
+function resolveCuaProvider(model: string): 'openai' | 'anthropic' | 'google' {
+    const [providerRaw, providerModel] = model.split('/', 2)
+    const provider = providerRaw?.trim().toLowerCase()
+    if (!provider || !providerModel?.trim()) {
+        throw new Error(
+            `CUA_E2E_MODEL must use "provider/model" format. Received "${model}".`
+        )
+    }
+
+    if (provider === 'openai' || provider === 'anthropic' || provider === 'google') {
+        return provider
+    }
+
+    throw new Error(
+        `Unsupported CUA_E2E_MODEL provider "${provider}" in "${model}". Supported providers: openai, anthropic, google.`
+    )
+}

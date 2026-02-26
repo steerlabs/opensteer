@@ -4,6 +4,7 @@ import type {
     OpensteerAgentResult,
     OpensteerAgentUsage,
 } from '../types.js'
+import { OpensteerAgentExecutionError } from './errors.js'
 
 export interface CuaClientExecutionInput {
     instruction: string
@@ -71,9 +72,63 @@ export function normalizeExecuteOptions(
 ): OpensteerAgentExecuteOptions {
     if (typeof instructionOrOptions === 'string') {
         return {
-            instruction: instructionOrOptions,
+            instruction: normalizeInstruction(instructionOrOptions),
         }
     }
 
-    return instructionOrOptions
+    if (
+        !instructionOrOptions ||
+        typeof instructionOrOptions !== 'object' ||
+        Array.isArray(instructionOrOptions)
+    ) {
+        throw new OpensteerAgentExecutionError(
+            'agent.execute(...) expects either a string instruction or an options object.'
+        )
+    }
+
+    const normalized: OpensteerAgentExecuteOptions = {
+        instruction: normalizeInstruction(instructionOrOptions.instruction),
+    }
+
+    if (instructionOrOptions.maxSteps !== undefined) {
+        normalized.maxSteps = normalizeMaxSteps(instructionOrOptions.maxSteps)
+    }
+
+    if (instructionOrOptions.highlightCursor !== undefined) {
+        if (typeof instructionOrOptions.highlightCursor !== 'boolean') {
+            throw new OpensteerAgentExecutionError(
+                'agent.execute(...) "highlightCursor" must be a boolean when provided.'
+            )
+        }
+        normalized.highlightCursor = instructionOrOptions.highlightCursor
+    }
+
+    return normalized
+}
+
+function normalizeInstruction(instruction: unknown): string {
+    if (typeof instruction !== 'string') {
+        throw new OpensteerAgentExecutionError(
+            'agent.execute(...) requires a non-empty "instruction" string.'
+        )
+    }
+
+    const normalized = instruction.trim()
+    if (!normalized) {
+        throw new OpensteerAgentExecutionError(
+            'agent.execute(...) requires a non-empty "instruction" string.'
+        )
+    }
+
+    return normalized
+}
+
+function normalizeMaxSteps(maxSteps: unknown): number {
+    if (typeof maxSteps !== 'number' || !Number.isInteger(maxSteps) || maxSteps <= 0) {
+        throw new OpensteerAgentExecutionError(
+            'agent.execute(...) "maxSteps" must be a positive integer when provided.'
+        )
+    }
+
+    return maxSteps
 }

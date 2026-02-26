@@ -6,7 +6,7 @@ import type {
 import { CuaClient, type CuaClientExecutionInput, type CuaClientExecutionResult } from '../client.js'
 import type { ResolvedCuaModelConfig } from '../model.js'
 import type { OpensteerAgentAction } from '../../types.js'
-import { OpensteerAgentApiError } from '../errors.js'
+import { OpensteerAgentActionError, OpensteerAgentApiError } from '../errors.js'
 
 type ConversationMessage = {
     role: 'user' | 'assistant'
@@ -240,47 +240,45 @@ function convertAnthropicAction(
     const type = normalizeString(input.action) || 'unknown'
 
     if (type === 'left_click') {
+        const coordinates = resolveCoordinates(input, type)
         return {
             type: 'click',
-            x: numberFromCoordinate(input.coordinate, input.x, 0),
-            y: numberFromCoordinate(input.coordinate, input.y, 1),
+            x: coordinates.x,
+            y: coordinates.y,
             button: 'left',
         }
     }
 
     if (type === 'double_click' || type === 'doubleClick') {
+        const coordinates = resolveCoordinates(input, type)
         return {
             type: 'double_click',
-            x: numberFromCoordinate(input.coordinate, input.x, 0),
-            y: numberFromCoordinate(input.coordinate, input.y, 1),
+            x: coordinates.x,
+            y: coordinates.y,
         }
     }
 
     if (type === 'drag' || type === 'left_click_drag') {
-        const start = arrayNumber(input.start_coordinate)
-        const end = arrayNumber(input.coordinate)
+        const start = resolveCoordinateArray(
+            input.start_coordinate,
+            type,
+            'start_coordinate'
+        )
+        const end = resolveCoordinates(input, type)
         return {
             type: 'drag',
-            path: [
-                {
-                    x: Number.isFinite(start[0]) ? start[0] : 0,
-                    y: Number.isFinite(start[1]) ? start[1] : 0,
-                },
-                {
-                    x: Number.isFinite(end[0]) ? end[0] : 0,
-                    y: Number.isFinite(end[1]) ? end[1] : 0,
-                },
-            ],
+            path: [start, end],
         }
     }
 
     if (type === 'scroll') {
-        const direction = normalizeString(input.scroll_direction) || 'down'
-        const amount =
-            typeof input.scroll_amount === 'number' &&
-            Number.isFinite(input.scroll_amount)
-                ? input.scroll_amount
-                : 5
+        const coordinates = resolveCoordinates(input, type)
+        const direction = normalizeScrollDirection(input.scroll_direction, type)
+        const amount = resolvePositiveNumber(
+            input.scroll_amount,
+            type,
+            'scroll_amount'
+        )
         const magnitude = Math.max(1, amount) * 100
 
         let scrollX = 0
@@ -293,15 +291,18 @@ function convertAnthropicAction(
 
         return {
             type: 'scroll',
-            x: numberFromCoordinate(input.coordinate, input.x, 0),
-            y: numberFromCoordinate(input.coordinate, input.y, 1),
+            x: coordinates.x,
+            y: coordinates.y,
             scrollX,
             scrollY,
         }
     }
 
     if (type === 'keypress' || type === 'key') {
-        const keyText = normalizeString(input.text) || 'Enter'
+        const keyText = normalizeRequiredString(
+            input.text,
+            `Anthropic action "${type}" requires a non-empty text value.`
+        )
         return {
             type: 'keypress',
             keys: [keyText],
@@ -309,28 +310,34 @@ function convertAnthropicAction(
     }
 
     if (type === 'move') {
+        const coordinates = resolveCoordinates(input, type)
         return {
             type: 'move',
-            x: numberFromCoordinate(input.coordinate, input.x, 0),
-            y: numberFromCoordinate(input.coordinate, input.y, 1),
+            x: coordinates.x,
+            y: coordinates.y,
         }
     }
 
     if (type === 'click') {
+        const coordinates = resolveCoordinates(input, type)
         return {
             type: 'click',
-            x: numberFromCoordinate(input.coordinate, input.x, 0),
-            y: numberFromCoordinate(input.coordinate, input.y, 1),
-            button: normalizeString(input.button) || 'left',
+            x: coordinates.x,
+            y: coordinates.y,
+            button: normalizeMouseButton(input.button),
         }
     }
 
     if (type === 'type') {
+        const coordinates = resolveCoordinates(input, type)
         return {
             type: 'type',
-            text: normalizeString(input.text) || '',
-            x: numberFromCoordinate(input.coordinate, input.x, 0),
-            y: numberFromCoordinate(input.coordinate, input.y, 1),
+            text: normalizeRequiredString(
+                input.text,
+                `Anthropic action "${type}" requires a non-empty text value.`
+            ),
+            x: coordinates.x,
+            y: coordinates.y,
         }
     }
 
@@ -362,6 +369,15 @@ function normalizeString(value: unknown): string | undefined {
     return normalized.length ? normalized : undefined
 }
 
+function normalizeRequiredString(value: unknown, errorMessage: string): string {
+    const normalized = normalizeString(value)
+    if (!normalized) {
+        throw new OpensteerAgentActionError(errorMessage)
+    }
+
+    return normalized
+}
+
 function toNumber(value: unknown): number {
     return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
@@ -374,16 +390,95 @@ function arrayNumber(value: unknown): [number, number] {
     ]
 }
 
-function numberFromCoordinate(
-    coordinate: unknown,
-    fallback: unknown,
-    index: 0 | 1
+function resolveCoordinates(
+    input: Record<string, unknown>,
+    actionType: string
+): { x: number; y: number } {
+    const [xFromCoordinate, yFromCoordinate] = arrayNumber(input.coordinate)
+    const xFromFallback = toFiniteNumber(input.x)
+    const yFromFallback = toFiniteNumber(input.y)
+
+    const x = Number.isFinite(xFromCoordinate) ? xFromCoordinate : xFromFallback
+    const y = Number.isFinite(yFromCoordinate) ? yFromCoordinate : yFromFallback
+    if (x == null || y == null) {
+        throw new OpensteerAgentActionError(
+            `Anthropic action "${actionType}" requires numeric x/y coordinates.`
+        )
+    }
+
+    return { x, y }
+}
+
+function resolveCoordinateArray(
+    value: unknown,
+    actionType: string,
+    field: string
+): { x: number; y: number } {
+    const [x, y] = arrayNumber(value)
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        throw new OpensteerAgentActionError(
+            `Anthropic action "${actionType}" requires numeric "${field}" coordinates.`
+        )
+    }
+
+    return { x, y }
+}
+
+function resolvePositiveNumber(
+    value: unknown,
+    actionType: string,
+    field: string
 ): number {
-    const [x, y] = arrayNumber(coordinate)
-    if (index === 0 && Number.isFinite(x)) return x
-    if (index === 1 && Number.isFinite(y)) return y
-    if (typeof fallback === 'number' && Number.isFinite(fallback)) return fallback
-    return 0
+    const number = toFiniteNumber(value)
+    if (number == null || number <= 0) {
+        throw new OpensteerAgentActionError(
+            `Anthropic action "${actionType}" requires a positive numeric "${field}" value.`
+        )
+    }
+
+    return number
+}
+
+function normalizeScrollDirection(
+    value: unknown,
+    actionType: string
+): 'up' | 'down' | 'left' | 'right' {
+    const direction = normalizeString(value)
+    if (
+        direction === 'up' ||
+        direction === 'down' ||
+        direction === 'left' ||
+        direction === 'right'
+    ) {
+        return direction
+    }
+
+    throw new OpensteerAgentActionError(
+        `Anthropic action "${actionType}" requires "scroll_direction" to be one of: up, down, left, right.`
+    )
+}
+
+function normalizeMouseButton(value: unknown): 'left' | 'right' | 'middle' {
+    const button = normalizeRequiredString(
+        value,
+        'Anthropic action "click" requires a non-empty "button" value.'
+    ).toLowerCase()
+
+    if (button === 'left' || button === 'right' || button === 'middle') {
+        return button
+    }
+
+    throw new OpensteerAgentActionError(
+        `Anthropic action "click" has unsupported button "${button}".`
+    )
+}
+
+function toFiniteNumber(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return value
+    }
+
+    return null
 }
 
 function mapAnthropicApiError(error: unknown): OpensteerAgentApiError {
