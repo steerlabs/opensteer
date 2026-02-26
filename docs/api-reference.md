@@ -54,7 +54,7 @@ Returns the cloud session URL for deep-linking after `launch()` in cloud mode.
 
 #### `agent(config: OpensteerAgentConfig): OpensteerAgentInstance`
 
-Create a Computer Use Agent (CUA) instance with Stagehand-style ergonomics.
+Create a Computer Use Agent (CUA) instance with ergonomic defaults.
 
 ```ts
 const agent = opensteer.agent({
