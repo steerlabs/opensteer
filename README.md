@@ -45,6 +45,33 @@ try {
 }
 ```
 
+## CUA Agent (Stagehand-Style)
+
+```ts
+import { Opensteer } from "opensteer";
+
+const opensteer = new Opensteer({
+  model: "openai/computer-use-preview",
+});
+
+await opensteer.launch();
+
+const agent = opensteer.agent({
+  mode: "cua",
+});
+
+const result = await agent.execute({
+  instruction: "Go to Hacker News and open the top story.",
+  maxSteps: 20,
+  highlightCursor: true,
+});
+
+console.log(result.message);
+await opensteer.close();
+```
+
+Supported CUA providers in V1: `openai`, `anthropic`, `google`.
+
 ## Quickstart (CLI)
 
 Opensteer CLI separates runtime routing from selector namespace routing.

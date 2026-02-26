@@ -105,3 +105,27 @@ Existing `process.env` values are never overwritten. Set
 ```ts
 await opensteer.close()
 ```
+
+## 9) Use CUA Agent
+
+```ts
+const opensteer = new Opensteer({
+  model: 'openai/computer-use-preview',
+})
+await opensteer.launch()
+
+const agent = opensteer.agent({
+  mode: 'cua',
+})
+
+const result = await agent.execute({
+  instruction: 'Go to docs and summarize the first section',
+  maxSteps: 20,
+  highlightCursor: true,
+})
+
+console.log(result.message)
+await opensteer.close()
+```
+
+V1 CUA providers: `openai`, `anthropic`, `google`.

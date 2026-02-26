@@ -1,4 +1,8 @@
 const PROVIDER_MAP: Record<string, { pkg: string; providerFn: string }> = {
+    'openai/': { pkg: '@ai-sdk/openai', providerFn: 'openai' },
+    'anthropic/': { pkg: '@ai-sdk/anthropic', providerFn: 'anthropic' },
+    'google/': { pkg: '@ai-sdk/google', providerFn: 'google' },
+    'xai/': { pkg: '@ai-sdk/xai', providerFn: 'xai' },
     'gpt-': { pkg: '@ai-sdk/openai', providerFn: 'openai' },
     'o1-': { pkg: '@ai-sdk/openai', providerFn: 'openai' },
     'o3-': { pkg: '@ai-sdk/openai', providerFn: 'openai' },
@@ -21,6 +25,24 @@ function resolveProviderInfo(modelStr: string): {
     return { pkg: '@ai-sdk/openai', providerFn: 'openai' }
 }
 
+function stripProviderPrefix(modelStr: string): string {
+    const slash = modelStr.indexOf('/')
+    if (slash <= 0) return modelStr
+
+    const provider = modelStr.slice(0, slash).toLowerCase()
+    if (
+        provider === 'openai' ||
+        provider === 'anthropic' ||
+        provider === 'google' ||
+        provider === 'xai' ||
+        provider === 'groq'
+    ) {
+        return modelStr.slice(slash + 1)
+    }
+
+    return modelStr
+}
+
 export async function getModelProvider(modelStr: string) {
     const { pkg, providerFn } = resolveProviderInfo(modelStr)
 
@@ -40,9 +62,7 @@ export async function getModelProvider(modelStr: string) {
         )
     }
 
-    const modelId = modelStr.startsWith('groq/')
-        ? modelStr.slice('groq/'.length)
-        : modelStr
+    const modelId = stripProviderPrefix(modelStr)
 
     return (provider as (id: string) => unknown)(modelId)
 }
