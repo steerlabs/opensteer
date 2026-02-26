@@ -10,6 +10,7 @@ import { IframePage } from './pages/IframePage'
 import { IframeContentPage } from './pages/IframeContent'
 import { ScrollPage } from './pages/ScrollPage'
 import { NavigationPage } from './pages/NavigationPage'
+import { NavigationChurnPage } from './pages/NavigationChurnPage'
 import { ShadowDomPage } from './pages/ShadowDomPage'
 import { ProductCatalogPage } from './pages/ProductCatalogPage'
 import { ProductContextsPage } from './pages/ProductContextsPage'
@@ -31,6 +32,7 @@ const links = [
     { to: '/complex-loading', label: 'Complex Loading' },
     { to: '/scroll', label: 'Scroll' },
     { to: '/navigation', label: 'Navigation' },
+    { to: '/navigation-churn', label: 'Nav Churn' },
 ]
 
 export function App(): JSX.Element {
@@ -93,6 +95,10 @@ export function App(): JSX.Element {
                     />
                     <Route path="/scroll" element={<ScrollPage />} />
                     <Route path="/navigation" element={<NavigationPage />} />
+                    <Route
+                        path="/navigation-churn"
+                        element={<NavigationChurnPage />}
+                    />
                 </Routes>
             </div>
         </BrowserRouter>
