@@ -3,6 +3,7 @@ import type { CDPSession, Page } from 'playwright'
 const DEFAULT_TIMEOUT = 30000
 const DEFAULT_SETTLE_MS = 750
 const FRAME_EVALUATE_GRACE_MS = 200
+const TRANSIENT_CONTEXT_RETRY_DELAY_MS = 25
 const STEALTH_WORLD_NAME = '__opensteer_wait__'
 
 interface VisualStabilityOptions {
@@ -467,6 +468,14 @@ class StealthCdpRuntime {
                 }
 
                 this.contextsByFrame.delete(frameId)
+
+                const retryDelay = Math.min(
+                    TRANSIENT_CONTEXT_RETRY_DELAY_MS,
+                    Math.max(0, deadline - Date.now())
+                )
+                if (retryDelay > 0) {
+                    await sleep(retryDelay)
+                }
             }
         }
     }

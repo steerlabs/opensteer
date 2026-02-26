@@ -113,10 +113,12 @@ describe('navigation/waitForVisualStability guards', () => {
             settleMs: 40,
         })
         const elapsed = Date.now() - startedAt
+        const evaluateCalls = runtimeEvaluateCallCount(send)
 
         expect(elapsed).toBeGreaterThanOrEqual(180)
         expect(elapsed).toBeLessThan(1400)
-        expect(runtimeEvaluateCallCount(send)).toBeGreaterThan(1)
+        expect(evaluateCalls).toBeGreaterThan(1)
+        expect(evaluateCalls).toBeLessThan(20)
     })
 })
 
