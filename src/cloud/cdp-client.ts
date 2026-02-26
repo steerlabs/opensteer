@@ -61,7 +61,7 @@ function selectPreferredContextPage(
 
     for (const context of contexts) {
         for (const page of context.pages()) {
-            const url = page.url()
+            const url = safePageUrl(page)
 
             if (!isInternalOrEmptyUrl(url)) {
                 return { browser, context, page }
@@ -74,6 +74,14 @@ function selectPreferredContextPage(
     }
 
     return aboutBlankCandidate
+}
+
+function safePageUrl(page: Page): string {
+    try {
+        return page.url()
+    } catch {
+        return ''
+    }
 }
 
 function isInternalOrEmptyUrl(url: string): boolean {
