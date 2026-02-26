@@ -45,7 +45,7 @@ try {
 }
 ```
 
-## CUA Agent (Stagehand-Style)
+## CUA Agent
 
 ```ts
 import { Opensteer } from "opensteer";
