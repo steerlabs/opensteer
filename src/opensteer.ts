@@ -365,48 +365,66 @@ export class Opensteer {
         const contexts = this.browser.contexts()
         if (!contexts.length) return
 
+        const syncContext =
+            this.contextRef && contexts.includes(this.contextRef)
+                ? this.contextRef
+                : contexts[0]
+        const syncContextPages = syncContext.pages()
+
+        const activeTab = tabs.find((tab) => tab.active) ?? null
+        if (
+            activeTab &&
+            activeTab.index >= 0 &&
+            activeTab.index < syncContextPages.length
+        ) {
+            this.contextRef = syncContext
+            this.pageRef = syncContextPages[activeTab.index]
+            return
+        }
+
+        const expectedUrl = args?.expectedUrl?.trim() || null
+        const expectedUrlInSyncContext = expectedUrl
+            ? syncContextPages.find((page) => page.url() === expectedUrl)
+            : undefined
+        if (expectedUrlInSyncContext) {
+            this.contextRef = syncContext
+            this.pageRef = expectedUrlInSyncContext
+            return
+        }
+
+        const firstNonInternalInSyncContext = syncContextPages.find(
+            (page) => !isInternalOrBlankPageUrl(page.url())
+        )
+        if (firstNonInternalInSyncContext) {
+            this.contextRef = syncContext
+            this.pageRef = firstNonInternalInSyncContext
+            return
+        }
+
+        const firstAboutBlankInSyncContext = syncContextPages.find(
+            (page) => page.url() === 'about:blank'
+        )
+        if (firstAboutBlankInSyncContext) {
+            this.contextRef = syncContext
+            this.pageRef = firstAboutBlankInSyncContext
+            return
+        }
+
         const pages: Array<{
             context: BrowserContext
             page: Page
             url: string
-            title: string
         }> = []
         for (const context of contexts) {
             for (const page of context.pages()) {
-                const title = await page.title().catch(() => '')
                 pages.push({
                     context,
                     page,
                     url: page.url(),
-                    title,
                 })
             }
         }
         if (!pages.length) return
-
-        const activeTab = tabs.find((tab) => tab.active) ?? null
-        const expectedUrl = args?.expectedUrl?.trim() || null
-
-        const exactActiveMatch = activeTab
-            ? pages.find(
-                  ({ url, title }) =>
-                      url === activeTab.url && title === activeTab.title
-              )
-            : undefined
-        if (exactActiveMatch) {
-            this.contextRef = exactActiveMatch.context
-            this.pageRef = exactActiveMatch.page
-            return
-        }
-
-        const activeUrlMatch = activeTab
-            ? pages.find(({ url }) => url === activeTab.url)
-            : undefined
-        if (activeUrlMatch) {
-            this.contextRef = activeUrlMatch.context
-            this.pageRef = activeUrlMatch.page
-            return
-        }
 
         const expectedUrlMatch = expectedUrl
             ? pages.find(({ url }) => url === expectedUrl)

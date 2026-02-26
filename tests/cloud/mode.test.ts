@@ -348,4 +348,107 @@ describe('cloud mode', () => {
         await opensteer.goto('https://www.amazon.com')
         expect(opensteer.page).toBe(targetPage)
     })
+
+    it('re-syncs cloud page reference by active tab index when urls and titles collide', async () => {
+        const opensteer = new Opensteer({
+            cloud: {
+                apiKey: 'ork_test_123',
+            },
+        })
+
+        const access = opensteer as unknown as {
+            cloud: {
+                sessionClient: {
+                    create: (
+                        args: Record<string, unknown>
+                    ) => Promise<Record<string, unknown>>
+                }
+                cdpClient: {
+                    connect: (
+                        args: Record<string, unknown>
+                    ) => Promise<{
+                        browser: unknown
+                        context: unknown
+                        page: unknown
+                    }>
+                }
+            } | null
+        }
+        if (!access.cloud) throw new Error('Expected cloud runtime state to exist.')
+
+        const firstBlankPage = {
+            url: () => 'about:blank',
+            title: async () => '',
+        } as unknown as Page
+        const secondBlankPage = {
+            url: () => 'about:blank',
+            title: async () => '',
+        } as unknown as Page
+        const context = {
+            pages: () => [firstBlankPage, secondBlankPage],
+        }
+        const browser = {
+            contexts: () => [context],
+            close: async () => undefined,
+        }
+
+        vi.spyOn(access.cloud.sessionClient, 'create').mockResolvedValue({
+            sessionId: 'sess_123',
+            actionWsUrl: 'wss://action.example.com',
+            cdpWsUrl: 'wss://cdp.example.com',
+            actionToken: 'act_123',
+            cdpToken: 'cdp_123',
+            cloudSessionUrl: 'https://app.opensteer.com/browser/cloud_123',
+            cloudSession: {
+                sessionId: 'cloud_123',
+                workspaceId: 'ws_123',
+                state: 'active',
+                createdAt: 1735707600000,
+                sourceType: 'local-cloud' as const,
+            },
+        })
+        vi.spyOn(access.cloud.cdpClient, 'connect').mockResolvedValue({
+            browser,
+            context,
+            page: firstBlankPage,
+        })
+
+        let switched = false
+        const request = vi.fn(async (method: string) => {
+            if (method === 'switchTab') {
+                switched = true
+                return null
+            }
+
+            if (method === 'tabs') {
+                return [
+                    {
+                        index: 0,
+                        url: 'about:blank',
+                        title: '',
+                        active: !switched,
+                    },
+                    {
+                        index: 1,
+                        url: 'about:blank',
+                        title: '',
+                        active: switched,
+                    },
+                ]
+            }
+
+            return null
+        })
+
+        vi.spyOn(ActionWsClient, 'connect').mockResolvedValue({
+            close: async () => undefined,
+            request,
+        } as unknown as ActionWsClient)
+
+        await opensteer.launch()
+        expect(opensteer.page).toBe(firstBlankPage)
+
+        await opensteer.switchTab(1)
+        expect(opensteer.page).toBe(secondBlankPage)
+    })
 })

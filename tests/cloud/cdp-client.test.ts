@@ -68,6 +68,38 @@ describe('CloudCdpClient', () => {
         expect(connection.page).toBe(blankPage)
     })
 
+    it('ignores pages whose URL cannot be read and continues selecting a usable page', async () => {
+        const unstablePage = {
+            url: vi.fn(() => {
+                throw new Error('Target closed')
+            }),
+        } as unknown as Page
+        const appPage = {
+            url: vi.fn(() => 'https://www.amazon.com/'),
+        } as unknown as Page
+
+        const context = {
+            pages: vi.fn(() => [unstablePage, appPage]),
+            newPage: vi.fn(),
+        } as unknown as BrowserContext
+
+        const browser = {
+            contexts: vi.fn(() => [context]),
+            close: vi.fn(),
+        } as unknown as Browser
+
+        vi.spyOn(chromium, 'connectOverCDP').mockResolvedValue(browser)
+
+        const client = new CloudCdpClient()
+        const connection = await client.connect({
+            wsUrl: 'wss://runtime.example/ws/cdp/sess_4',
+            token: 'cdp_test_token',
+        })
+
+        expect(connection.context).toBe(context)
+        expect(connection.page).toBe(appPage)
+    })
+
     it('throws CLOUD_INTERNAL when no context is available', async () => {
         const close = vi.fn(async () => undefined)
         const browser = {
