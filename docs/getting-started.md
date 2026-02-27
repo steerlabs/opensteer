@@ -80,7 +80,7 @@ OPENSTEER_API_KEY=ork_your_key
 
 Additional cloud options:
 
-- `OPENSTEER_BASE_URL` to override `https://remote.opensteer.com`
+- `OPENSTEER_BASE_URL` to override `https://api.opensteer.com`
 - `OPENSTEER_AUTH_SCHEME` as `api-key` (default) or `bearer`
 - `OPENSTEER_REMOTE_ANNOUNCE` as `always`, `off`, or `tty`
 
