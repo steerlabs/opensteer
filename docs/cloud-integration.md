@@ -35,7 +35,7 @@ const opensteer = new Opensteer({
 })
 ```
 
-- Default cloud host: `https://remote.opensteer.com`
+- Default cloud host: `https://api.opensteer.com`
 - Override host with `OPENSTEER_BASE_URL`
 - API key can be provided via `cloud.apiKey` or `OPENSTEER_API_KEY`
 - Auth scheme can be configured via `cloud.authScheme` or `OPENSTEER_AUTH_SCHEME`

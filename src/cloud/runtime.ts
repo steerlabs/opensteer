@@ -13,7 +13,7 @@ export interface CloudRuntimeState {
     cloudSessionUrl: string | null
 }
 
-export const DEFAULT_CLOUD_BASE_URL = 'https://remote.opensteer.com'
+export const DEFAULT_CLOUD_BASE_URL = 'https://api.opensteer.com'
 
 export function createCloudRuntimeState(
     key: string,
