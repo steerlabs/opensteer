@@ -45,6 +45,26 @@ describe('config', () => {
         warnSpy.mockRestore()
     })
 
+    it('resolveConfig lets explicit debug=false override OPENSTEER_DEBUG during startup loading', () => {
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+        const root = fs.mkdtempSync(
+            path.join(os.tmpdir(), 'opensteer-config-explicit-debug-')
+        )
+        const configDir = path.join(root, '.opensteer')
+        fs.mkdirSync(configDir, { recursive: true })
+        fs.writeFileSync(path.join(configDir, 'config.json'), '{oops', 'utf8')
+        process.env.OPENSTEER_DEBUG = '1'
+
+        const resolved = resolveConfig({
+            debug: false,
+            storage: { rootDir: root },
+        })
+
+        expect(resolved.debug).toBe(false)
+        expect(warnSpy).not.toHaveBeenCalled()
+        warnSpy.mockRestore()
+    })
+
     it('resolveConfig merges defaults, file config, env config, then explicit input', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-config-merge-'))
         fs.mkdirSync(path.join(root, '.opensteer'), { recursive: true })

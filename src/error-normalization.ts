@@ -97,11 +97,13 @@ function normalizeErrorInternal(
 }
 
 function compactErrorInfo(info: StructuredErrorInfo): StructuredErrorInfo {
+    const safeDetails = toJsonSafeRecord(info.details)
+
     return {
         message: info.message,
         ...(info.code ? { code: info.code } : {}),
         ...(info.name ? { name: info.name } : {}),
-        ...(info.details ? { details: info.details } : {}),
+        ...(safeDetails ? { details: safeDetails } : {}),
         ...(info.cause ? { cause: info.cause } : {}),
     }
 }
@@ -195,4 +197,107 @@ function toNonEmptyString(value: unknown): string | undefined {
     if (typeof value !== 'string') return undefined
     const normalized = value.trim()
     return normalized.length ? normalized : undefined
+}
+
+function toJsonSafeRecord(
+    value: Record<string, unknown> | undefined
+): Record<string, unknown> | undefined {
+    if (!value) return undefined
+    const sanitized = toJsonSafeValue(value, new WeakSet<object>())
+    if (!sanitized || typeof sanitized !== 'object' || Array.isArray(sanitized)) {
+        return undefined
+    }
+
+    const record = sanitized as Record<string, unknown>
+    return Object.keys(record).length > 0
+        ? record
+        : undefined
+}
+
+function toJsonSafeValue(
+    value: unknown,
+    seen: WeakSet<object>
+): unknown {
+    if (value === null) return null
+
+    if (
+        typeof value === 'string' ||
+        typeof value === 'boolean'
+    ) {
+        return value
+    }
+
+    if (typeof value === 'number') {
+        return Number.isFinite(value) ? value : null
+    }
+
+    if (typeof value === 'bigint') {
+        return value.toString()
+    }
+
+    if (
+        value === undefined ||
+        typeof value === 'function' ||
+        typeof value === 'symbol'
+    ) {
+        return undefined
+    }
+
+    if (value instanceof Date) {
+        return Number.isNaN(value.getTime()) ? null : value.toISOString()
+    }
+
+    if (Array.isArray(value)) {
+        if (seen.has(value)) return '[Circular]'
+        seen.add(value)
+        const output = value.map((item) => {
+            const next = toJsonSafeValue(item, seen)
+            return next === undefined ? null : next
+        })
+        seen.delete(value)
+        return output
+    }
+
+    if (value instanceof Set) {
+        if (seen.has(value)) return '[Circular]'
+        seen.add(value)
+        const output = Array.from(value, (item) => {
+            const next = toJsonSafeValue(item, seen)
+            return next === undefined ? null : next
+        })
+        seen.delete(value)
+        return output
+    }
+
+    if (value instanceof Map) {
+        if (seen.has(value)) return '[Circular]'
+        seen.add(value)
+        const output: Record<string, unknown> = {}
+        for (const [key, item] of value.entries()) {
+            const normalizedKey = String(key)
+            const next = toJsonSafeValue(item, seen)
+            if (next !== undefined) {
+                output[normalizedKey] = next
+            }
+        }
+        seen.delete(value)
+        return output
+    }
+
+    if (typeof value === 'object') {
+        const objectValue = value as Record<string, unknown>
+        if (seen.has(objectValue)) return '[Circular]'
+        seen.add(objectValue)
+        const output: Record<string, unknown> = {}
+        for (const [key, item] of Object.entries(objectValue)) {
+            const next = toJsonSafeValue(item, seen)
+            if (next !== undefined) {
+                output[key] = next
+            }
+        }
+        seen.delete(objectValue)
+        return output
+    }
+
+    return undefined
 }

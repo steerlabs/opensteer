@@ -376,7 +376,9 @@ export function resolveConfig(
 ): ResolvedOpensteerConfig {
     const processEnv = process.env as EnvMap
     const debugHint =
-        input.debug === true || parseBool(processEnv.OPENSTEER_DEBUG) === true
+        typeof input.debug === 'boolean'
+            ? input.debug
+            : parseBool(processEnv.OPENSTEER_DEBUG) === true
     const initialRootDir =
         input.storage?.rootDir ?? process.cwd()
     const runtimeDefaults = mergeDeep(DEFAULT_CONFIG, {
