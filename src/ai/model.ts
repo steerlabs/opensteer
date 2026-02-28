@@ -22,6 +22,17 @@ function resolveProviderInfo(modelStr: string): {
             return info
         }
     }
+
+    const slash = modelStr.indexOf('/')
+    if (slash > 0) {
+        const provider = modelStr.slice(0, slash).trim().toLowerCase()
+        if (provider) {
+            throw new Error(
+                `Unsupported model provider prefix "${provider}" in model "${modelStr}". Use one of: openai, anthropic, google, xai, groq.`
+            )
+        }
+    }
+
     return { pkg: '@ai-sdk/openai', providerFn: 'openai' }
 }
 

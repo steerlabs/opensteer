@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { parse as parseDotenv } from 'dotenv'
+import { extractErrorMessage } from './error-normalization.js'
 import type {
     OpensteerAuthScheme,
     OpensteerCloudAnnouncePolicy,
@@ -85,7 +86,14 @@ function loadDotenvValues(rootDir: string, baseEnv: EnvMap): EnvMap {
                     values[key] = value
                 }
             }
-        } catch {
+        } catch (error) {
+            const message = extractErrorMessage(
+                error,
+                'Unable to read or parse dotenv file.'
+            )
+            console.warn(
+                `[opensteer] failed to load dotenv file "${filePath}": ${message}`
+            )
             continue
         }
     }
@@ -156,7 +164,14 @@ export function loadConfigFile(rootDir: string): Partial<OpensteerConfig> {
     try {
         const raw = fs.readFileSync(configPath, 'utf8')
         return JSON.parse(raw) as Partial<OpensteerConfig>
-    } catch {
+    } catch (error) {
+        const message = extractErrorMessage(
+            error,
+            'Unable to read or parse config file.'
+        )
+        console.warn(
+            `[opensteer] failed to load config file "${configPath}": ${message}`
+        )
         return {}
     }
 }
