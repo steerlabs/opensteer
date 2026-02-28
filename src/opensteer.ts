@@ -2397,10 +2397,20 @@ export class Opensteer {
         const iframePrefix = collectIframeContextPrefix(indexedPath)
         if (!iframePrefix.length) return normalizedBuilt
 
+        const builtContext = cloneContextHops(normalizedBuilt.context)
+        const overlap = measureContextOverlap(iframePrefix, builtContext)
+        const missingPrefix = cloneContextHops(
+            iframePrefix.slice(0, iframePrefix.length - overlap)
+        )
+
+        if (!missingPrefix.length) {
+            return normalizedBuilt
+        }
+
         const merged: ElementPath = {
             context: [
-                ...cloneContextHops(iframePrefix),
-                ...cloneContextHops(normalizedBuilt.context),
+                ...missingPrefix,
+                ...builtContext,
             ],
             nodes: cloneElementPath(normalizedBuilt).nodes,
         }
@@ -3069,6 +3079,48 @@ function collectIframeContextPrefix(path: ElementPath): ElementPath['context'] {
 
     if (lastIframeIndex < 0) return []
     return cloneContextHops(context.slice(0, lastIframeIndex + 1))
+}
+
+function measureContextOverlap(
+    indexedPrefix: ElementPath['context'],
+    builtContext: ElementPath['context']
+): number {
+    const maxOverlap = Math.min(indexedPrefix.length, builtContext.length)
+    for (let size = maxOverlap; size > 0; size -= 1) {
+        if (matchesContextPrefix(indexedPrefix, builtContext, size, true)) {
+            return size
+        }
+    }
+
+    for (let size = maxOverlap; size > 0; size -= 1) {
+        if (matchesContextPrefix(indexedPrefix, builtContext, size, false)) {
+            return size
+        }
+    }
+
+    return 0
+}
+
+function matchesContextPrefix(
+    indexedPrefix: ElementPath['context'],
+    builtContext: ElementPath['context'],
+    size: number,
+    strictHost: boolean
+): boolean {
+    for (let idx = 0; idx < size; idx += 1) {
+        const left = indexedPrefix[indexedPrefix.length - size + idx]
+        const right = builtContext[idx]
+        if (!left || !right || left.kind !== right.kind) {
+            return false
+        }
+        if (
+            strictHost &&
+            JSON.stringify(left.host) !== JSON.stringify(right.host)
+        ) {
+            return false
+        }
+    }
+    return true
 }
 
 function normalizeSchemaValue(

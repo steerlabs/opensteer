@@ -39,7 +39,7 @@ describe('e2e/script-actions', () => {
 
             const opensteer = Opensteer.from(page, {
                 name: 'script-form',
-                model: 'gpt-5-mini',
+                model: 'gpt-5.1',
                 storage: { rootDir },
             })
 
@@ -117,7 +117,7 @@ describe('e2e/script-actions', () => {
 
             const opensteer = Opensteer.from(page, {
                 name: 'script-nav',
-                model: 'gpt-5-mini',
+                model: 'gpt-5.1',
                 storage: { rootDir },
             })
 
@@ -181,7 +181,7 @@ describe('e2e/script-actions', () => {
 
             const opensteer = Opensteer.from(page, {
                 name: 'script-dynamic',
-                model: 'gpt-5-mini',
+                model: 'gpt-5.1',
                 storage: { rootDir },
             })
 
