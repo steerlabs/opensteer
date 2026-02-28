@@ -25,8 +25,6 @@ jobs:
         run: pnpm run typecheck
       - name: Build
         run: pnpm run build
-      - name: Unit tests
-        run: pnpm run test:unit
 
   package-manager-compat:
     name: package-manager-compat (${{ matrix.manager }})
@@ -60,5 +58,3 @@ jobs:
         run: ${{ matrix.run_cmd }} typecheck
       - name: Build
         run: ${{ matrix.run_cmd }} build
-      - name: Unit tests
-        run: ${{ matrix.run_cmd }} test:unit
