@@ -20,10 +20,16 @@ export interface SelectorFile<T = unknown> {
 export class LocalSelectorStorage {
     private rootDir: string
     private namespace: string
+    private readonly debug: boolean
 
-    constructor(rootDir: string, namespace: string) {
+    constructor(
+        rootDir: string,
+        namespace: string,
+        options: { debug?: boolean } = {}
+    ) {
         this.rootDir = rootDir
         this.namespace = normalizeNamespace(namespace)
+        this.debug = options.debug === true
     }
 
     getRootDir(): string {
@@ -71,9 +77,11 @@ export class LocalSelectorStorage {
                 error,
                 'Unable to parse selector registry JSON.'
             )
-            console.warn(
-                `[opensteer] failed to read selector registry "${file}": ${message}`
-            )
+            if (this.debug) {
+                console.warn(
+                    `[opensteer] failed to read selector registry "${file}": ${message}`
+                )
+            }
             return createEmptyRegistry(this.namespace)
         }
     }
@@ -97,9 +105,11 @@ export class LocalSelectorStorage {
                 error,
                 'Unable to parse selector file JSON.'
             )
-            console.warn(
-                `[opensteer] failed to read selector file "${file}": ${message}`
-            )
+            if (this.debug) {
+                console.warn(
+                    `[opensteer] failed to read selector file "${file}": ${message}`
+                )
+            }
             return null
         }
     }
