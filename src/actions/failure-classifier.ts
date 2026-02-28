@@ -159,23 +159,9 @@ function classifyTypedError(error: unknown): ActionFailure | null {
                 classificationSource: 'typed_error',
             })
         }
-        if (error.code === 'ERR_COUNTER_FRAME_UNAVAILABLE') {
-            return buildFailure({
-                code: 'TARGET_UNAVAILABLE',
-                message: error.message,
-                classificationSource: 'typed_error',
-            })
-        }
         if (error.code === 'ERR_COUNTER_AMBIGUOUS') {
             return buildFailure({
                 code: 'TARGET_AMBIGUOUS',
-                message: error.message,
-                classificationSource: 'typed_error',
-            })
-        }
-        if (error.code === 'ERR_COUNTER_STALE_OR_NOT_FOUND') {
-            return buildFailure({
-                code: 'TARGET_STALE',
                 message: error.message,
                 classificationSource: 'typed_error',
             })

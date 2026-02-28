@@ -24,26 +24,10 @@ interface OpensteerPrivateAccess {
         action: string,
         description: string
     ): Promise<{ path?: ElementPath; counter?: number } | null>
-    tryBuildPathFromCounter(counter: number): Promise<ElementPath | null>
-}
-
-const SAMPLE_PATH: ElementPath = {
-    context: [],
-    nodes: [
-        {
-            tag: 'button',
-            attrs: { id: 'submit' },
-            position: {
-                nthChild: 1,
-                nthOfType: 1,
-            },
-            match: [{ kind: 'attr', key: 'id', op: 'exact' }],
-        },
-    ],
 }
 
 describe('counter resolution fallback', () => {
-    it('uses a stable path when AI returns a counter', async () => {
+    it('keeps counter targets when AI returns a counter', async () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-counter-ai-'))
         const opensteer = new Opensteer({
             storage: { rootDir: root },
@@ -53,9 +37,6 @@ describe('counter resolution fallback', () => {
         vi.spyOn(access, 'resolvePathWithAi').mockResolvedValue({
             counter: 42,
         })
-        vi.spyOn(access, 'tryBuildPathFromCounter').mockResolvedValue(
-            SAMPLE_PATH
-        )
 
         const result = await access.resolvePath('click', {
             description: 'submit button',
@@ -63,14 +44,14 @@ describe('counter resolution fallback', () => {
 
         expect(result).toEqual(
             expect.objectContaining({
-                path: SAMPLE_PATH,
-                counter: null,
+                path: null,
+                counter: 42,
                 source: 'ai',
             })
         )
     })
 
-    it('uses a stable path when element option is provided', async () => {
+    it('keeps counter targets when element option is provided', async () => {
         const root = fs.mkdtempSync(
             path.join(os.tmpdir(), 'opensteer-counter-element-')
         )
@@ -79,18 +60,14 @@ describe('counter resolution fallback', () => {
         })
         const access = opensteer as unknown as OpensteerPrivateAccess
 
-        vi.spyOn(access, 'tryBuildPathFromCounter').mockResolvedValue(
-            SAMPLE_PATH
-        )
-
         const result = await access.resolvePath('click', {
             element: 7,
         })
 
         expect(result).toEqual(
             expect.objectContaining({
-                path: SAMPLE_PATH,
-                counter: null,
+                path: null,
+                counter: 7,
                 source: 'element',
             })
         )

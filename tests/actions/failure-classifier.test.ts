@@ -22,17 +22,31 @@ describe('failure-classifier', () => {
         expect(failure.message).toContain('No matching element found')
     })
 
-    it('maps counter stale errors to TARGET_STALE', () => {
+    it('maps counter missing errors to TARGET_NOT_FOUND', () => {
         const failure = classifyActionFailure({
             action: 'click',
             error: new CounterResolutionError(
-                'ERR_COUNTER_STALE_OR_NOT_FOUND',
-                'Counter target is stale or missing. Run snapshot() again.'
+                'ERR_COUNTER_NOT_FOUND',
+                'Counter 42 was not found in the live DOM.'
             ),
             fallbackMessage: 'Click failed.',
         })
 
-        expect(failure.code).toBe('TARGET_STALE')
+        expect(failure.code).toBe('TARGET_NOT_FOUND')
+        expect(failure.classificationSource).toBe('typed_error')
+    })
+
+    it('maps counter ambiguous errors to TARGET_AMBIGUOUS', () => {
+        const failure = classifyActionFailure({
+            action: 'click',
+            error: new CounterResolutionError(
+                'ERR_COUNTER_AMBIGUOUS',
+                'Counter 42 matches multiple live elements.'
+            ),
+            fallbackMessage: 'Click failed.',
+        })
+
+        expect(failure.code).toBe('TARGET_AMBIGUOUS')
         expect(failure.classificationSource).toBe('typed_error')
     })
 

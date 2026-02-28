@@ -59,7 +59,7 @@ describe('integration/action-diagnostics', () => {
         }
     })
 
-    it('throws OpensteerActionError with TARGET_STALE for stale counters', async () => {
+    it('throws OpensteerActionError with TARGET_NOT_FOUND for missing counters', async () => {
         await setFixture(
             page,
             `
@@ -93,8 +93,8 @@ describe('integration/action-diagnostics', () => {
         } catch (err) {
             expect(err).toBeInstanceOf(OpensteerActionError)
             const actionError = err as OpensteerActionError
-            expect(actionError.failure.code).toBe('TARGET_STALE')
-            expect(actionError.message).toContain('snapshot() again')
+            expect(actionError.failure.code).toBe('TARGET_NOT_FOUND')
+            expect(actionError.message).toContain('not found')
         }
     })
 })

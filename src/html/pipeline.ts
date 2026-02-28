@@ -1,7 +1,6 @@
 import * as cheerio from 'cheerio'
-import { randomUUID } from 'crypto'
-import type { Page } from 'playwright'
-import type { Element } from 'domhandler'
+import type { Page, Frame } from 'playwright'
+import type { Element as DomHandlerElement } from 'domhandler'
 import {
     serializePageHTML,
     OS_NODE_ID_ATTR,
@@ -18,10 +17,9 @@ import {
 import { cloneElementPath } from '../element-path/build.js'
 import type { ElementPath } from '../element-path/types.js'
 import type { SnapshotMode, SnapshotOptions } from '../types.js'
-import { ensureLiveCounters, type CounterBinding } from './counter-runtime.js'
+import { OS_FRAME_TOKEN_KEY } from './runtime-keys.js'
 
 export interface PreparedSnapshot {
-    snapshotSessionId: string
     mode: SnapshotMode
     url: string | null
     rawHtml: string
@@ -29,7 +27,6 @@ export interface PreparedSnapshot {
     reducedHtml: string
     cleanedHtml: string
     counterIndex: Map<number, ElementPath> | null
-    counterBindings: Map<number, CounterBinding> | null
 }
 
 function applyCleaner(mode: SnapshotMode, html: string): string {
@@ -52,75 +49,155 @@ async function assignCounters(
     page: Page,
     html: string,
     nodePaths: Map<string, ElementPath>,
-    nodeMeta: Map<string, SerializedNodeMeta>,
-    snapshotSessionId: string
+    nodeMeta: Map<string, SerializedNodeMeta>
 ): Promise<{
     html: string
     counterIndex: Map<number, ElementPath>
-    counterBindings: Map<number, CounterBinding>
 }> {
     const $ = cheerio.load(html, { xmlMode: false })
     const counterIndex = new Map<number, ElementPath>()
-    const counterBindings = new Map<number, CounterBinding>()
 
-    const orderedNodeIds: string[] = []
-    $('*').each(function () {
-        const el = $(this as Element)
-        const nodeId = el.attr(OS_NODE_ID_ATTR)
-        if (!nodeId) return
-        orderedNodeIds.push(nodeId)
-    })
-
-    const countersByNodeId = await ensureLiveCounters(
-        page,
-        nodeMeta,
-        orderedNodeIds
-    )
+    let nextCounter = 1
+    const assignedByNodeId = new Map<string, number>()
 
     $('*').each(function () {
-        const el = $(this as Element)
+        const el = $(this as DomHandlerElement)
         const nodeId = el.attr(OS_NODE_ID_ATTR)
         if (!nodeId) return
+
+        const counter = nextCounter++
+        assignedByNodeId.set(nodeId, counter)
 
         const path = nodePaths.get(nodeId)
-        const meta = nodeMeta.get(nodeId)
-        const counter = countersByNodeId.get(nodeId)
-        if (counter == null || !Number.isFinite(counter)) {
-            throw new Error(
-                `Counter assignment failed for node ${nodeId}. Run snapshot() again.`
-            )
-        }
-        if (
-            counterBindings.has(counter) &&
-            counterBindings.get(counter)?.nodeId !== nodeId
-        ) {
-            throw new Error(
-                `Counter ${counter} was assigned to multiple nodes. Run snapshot() again.`
-            )
-        }
-
         el.attr('c', String(counter))
         el.removeAttr(OS_NODE_ID_ATTR)
 
         if (path) {
             counterIndex.set(counter, cloneElementPath(path))
         }
-        if (meta) {
-            counterBindings.set(counter, {
-                sessionId: snapshotSessionId,
-                frameToken: meta.frameToken,
-                nodeId,
-                instanceToken: meta.instanceToken,
-            })
-        }
     })
+
+    await syncLiveCounters(page, nodeMeta, assignedByNodeId)
 
     $(`[${OS_NODE_ID_ATTR}]`).removeAttr(OS_NODE_ID_ATTR)
 
     return {
         html: $.html(),
         counterIndex,
-        counterBindings,
+    }
+}
+
+async function syncLiveCounters(
+    page: Page,
+    nodeMeta: Map<string, SerializedNodeMeta>,
+    assignedByNodeId: Map<string, number>
+): Promise<void> {
+    await clearLiveCounters(page)
+    if (!assignedByNodeId.size) return
+
+    const groupedByFrame = new Map<string, Array<{ nodeId: string; counter: number }>>()
+    for (const [nodeId, counter] of assignedByNodeId.entries()) {
+        const meta = nodeMeta.get(nodeId)
+        if (!meta?.frameToken) continue
+
+        const list = groupedByFrame.get(meta.frameToken) || []
+        list.push({
+            nodeId,
+            counter,
+        })
+        groupedByFrame.set(meta.frameToken, list)
+    }
+
+    if (!groupedByFrame.size) return
+
+    const framesByToken = await mapFramesByToken(page)
+    for (const [frameToken, entries] of groupedByFrame.entries()) {
+        const frame = framesByToken.get(frameToken)
+        if (!frame) continue
+
+        try {
+            await frame.evaluate(
+                ({ entries, nodeAttr }) => {
+                    const index = new Map<string, Element[]>()
+
+                    const walk = (root: ParentNode): void => {
+                        const children = Array.from(root.children) as Element[]
+                        for (const child of children) {
+                            const nodeId = child.getAttribute(nodeAttr)
+                            if (nodeId) {
+                                const list = index.get(nodeId) || []
+                                list.push(child)
+                                index.set(nodeId, list)
+                            }
+
+                            walk(child)
+                            if (child.shadowRoot) {
+                                walk(child.shadowRoot)
+                            }
+                        }
+                    }
+
+                    walk(document)
+
+                    for (const entry of entries) {
+                        const matches = index.get(entry.nodeId) || []
+                        if (matches.length !== 1) continue
+                        matches[0].setAttribute('c', String(entry.counter))
+                    }
+                },
+                {
+                    entries,
+                    nodeAttr: OS_NODE_ID_ATTR,
+                }
+            )
+        } catch {
+            // Ignore inaccessible or transient frames.
+        }
+    }
+}
+
+async function clearLiveCounters(page: Page): Promise<void> {
+    for (const frame of page.frames()) {
+        try {
+            await frame.evaluate(() => {
+                const walk = (root: ParentNode): void => {
+                    const children = Array.from(root.children) as Element[]
+                    for (const child of children) {
+                        child.removeAttribute('c')
+                        walk(child)
+                        if (child.shadowRoot) {
+                            walk(child.shadowRoot)
+                        }
+                    }
+                }
+
+                walk(document)
+            })
+        } catch {
+            // Ignore inaccessible or transient frames.
+        }
+    }
+}
+
+async function mapFramesByToken(page: Page): Promise<Map<string, Frame>> {
+    const out = new Map<string, Frame>()
+    for (const frame of page.frames()) {
+        const token = await readFrameToken(frame)
+        if (!token) continue
+        out.set(token, frame)
+    }
+    return out
+}
+
+async function readFrameToken(frame: Frame): Promise<string | null> {
+    try {
+        return await frame.evaluate((frameTokenKey) => {
+            const win = window as unknown as Record<string, unknown>
+            const value = win[frameTokenKey]
+            return typeof value === 'string' ? value : null
+        }, OS_FRAME_TOKEN_KEY)
+    } catch {
+        return null
     }
 }
 
@@ -135,7 +212,6 @@ export async function prepareSnapshot(
     page: Page,
     options: SnapshotOptions = {}
 ): Promise<PreparedSnapshot> {
-    const snapshotSessionId = randomUUID()
     const mode = options.mode ?? 'action'
     const withCounters = options.withCounters ?? true
     const shouldMarkInteractive = options.markInteractive ?? true
@@ -152,19 +228,16 @@ export async function prepareSnapshot(
 
     let cleanedHtml = reducedHtml
     let counterIndex: Map<number, ElementPath> | null = null
-    let counterBindings: Map<number, CounterBinding> | null = null
 
     if (withCounters) {
         const counted = await assignCounters(
             page,
             reducedHtml,
             serialized.nodePaths,
-            serialized.nodeMeta,
-            snapshotSessionId
+            serialized.nodeMeta
         )
         cleanedHtml = counted.html
         counterIndex = counted.counterIndex
-        counterBindings = counted.counterBindings
     } else {
         cleanedHtml = stripNodeIds(cleanedHtml)
     }
@@ -178,7 +251,6 @@ export async function prepareSnapshot(
     }
 
     return {
-        snapshotSessionId,
         mode,
         url: page.url(),
         rawHtml,
@@ -186,6 +258,5 @@ export async function prepareSnapshot(
         reducedHtml,
         cleanedHtml,
         counterIndex,
-        counterBindings,
     }
 }
