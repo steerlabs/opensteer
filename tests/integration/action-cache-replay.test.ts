@@ -1,6 +1,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import * as cheerio from 'cheerio'
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { BrowserContext, Page } from 'playwright'
 import { Opensteer } from '../../src/opensteer.js'
@@ -136,5 +137,90 @@ describe('integration/action-cache-replay', () => {
             .locator('#inner-vertical')
             .evaluate((el) => (el as HTMLElement).scrollTop)
         expect(scrollTop).toBeGreaterThan(0)
+    })
+
+    it('replays cached iframe paths built from counters without duplicating iframe context', async () => {
+        await gotoRoute(page, '/iframe')
+        await page.waitForSelector('#named-iframe', { state: 'visible' })
+
+        const first = Opensteer.from(page, {
+            name: 'action-cache-replay-iframe',
+            storage: { rootDir },
+        })
+
+        const snapshot = await first.snapshot({ mode: 'full', withCounters: true })
+        const $$ = cheerio.load(snapshot)
+        const counter = Number.parseInt(
+            $$('#named-iframe + os-iframe-root #iframe-input').attr('c') || '',
+            10
+        )
+        expect(Number.isFinite(counter)).toBe(true)
+
+        const seeded = await first.input({
+            element: counter,
+            text: 'counter-seeded',
+            description: 'cached named iframe input',
+        })
+        expect(seeded.persisted).toBe(true)
+
+        await gotoRoute(page, '/iframe')
+        await page.waitForSelector('#named-iframe', { state: 'visible' })
+
+        const second = Opensteer.from(page, {
+            name: 'action-cache-replay-iframe',
+            storage: { rootDir },
+        })
+
+        const replayed = await second.input({
+            text: 'replayed',
+            description: 'cached named iframe input',
+        })
+        expect(replayed.persisted).toBe(false)
+
+        const frame = page.frame({ name: 'supportFrame' })
+        expect(frame).toBeTruthy()
+        expect(await frame!.inputValue('#iframe-input')).toBe('replayed')
+    })
+
+    it('replays cached shadow-root paths built from counters', async () => {
+        await gotoRoute(page, '/shadow')
+        await page.waitForSelector('#shadow-input-host', { state: 'visible' })
+
+        const first = Opensteer.from(page, {
+            name: 'action-cache-replay-shadow',
+            storage: { rootDir },
+        })
+
+        const snapshot = await first.snapshot({ mode: 'full', withCounters: true })
+        const $$ = cheerio.load(snapshot)
+        const counter = Number.parseInt(
+            $$('#shadow-input-host os-shadow-root #shadow-input').attr('c') || '',
+            10
+        )
+        expect(Number.isFinite(counter)).toBe(true)
+
+        const seeded = await first.input({
+            element: counter,
+            text: 'shadow-seeded',
+            description: 'cached shadow input',
+        })
+        expect(seeded.persisted).toBe(true)
+
+        await gotoRoute(page, '/shadow')
+        await page.waitForSelector('#shadow-input-host', { state: 'visible' })
+
+        const second = Opensteer.from(page, {
+            name: 'action-cache-replay-shadow',
+            storage: { rootDir },
+        })
+
+        const replayed = await second.input({
+            text: 'shadow-replayed',
+            description: 'cached shadow input',
+        })
+        expect(replayed.persisted).toBe(false)
+        expect((await page.textContent('#shadow-input-output'))?.trim()).toBe(
+            'shadow-replayed'
+        )
     })
 })
