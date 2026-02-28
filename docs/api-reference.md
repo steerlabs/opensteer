@@ -136,11 +136,12 @@ const jpeg = await opensteer.screenshot({ type: 'jpeg', quality: 80, fullPage: t
 All interaction methods resolve elements through the resolution chain:
 
 1. Persisted path for `description` (if previously stored)
-2. `element` counter from the most recent snapshot
-3. Explicit CSS `selector`
-4. Built-in LLM resolution (requires `description`)
+2. If persisted path fails with `TARGET_NOT_FOUND`, one-shot AI self-heal from `description`, then cache refresh + retry
+3. `element` counter from the most recent snapshot
+4. Explicit CSS `selector`
+5. Built-in LLM resolution (requires `description`)
 
-When steps 2--4 resolve and `description` is provided, the resolved path is
+When steps 2--5 resolve and `description` is provided, the resolved path is
 persisted for deterministic replay.
 
 Mutating actions apply a best-effort post-action wait by default. Use
@@ -262,6 +263,10 @@ Type text character-by-character into the currently focused element.
 
 ### Element Info
 
+Element info methods use the same descriptor resolution behavior for
+`description`, including one-shot cached-path self-healing on
+`TARGET_NOT_FOUND`.
+
 #### `getElementText(options: BaseActionOptions): Promise<string>`
 
 Get the text content of an element.
@@ -303,6 +308,9 @@ await opensteer.waitForText('Order confirmed', { timeout: 10000 })
 
 Extract structured data from the page using a schema with element references
 or LLM-driven extraction.
+When replaying cached extraction selectors, Opensteer will perform a one-shot
+AI re-plan and refresh cached paths if persisted selectors are unresolved and a
+`description` is provided.
 
 ```ts
 const data = await opensteer.extract({

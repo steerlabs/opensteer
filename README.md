@@ -100,12 +100,13 @@ In non-interactive environments, set `OPENSTEER_SESSION` or
 For descriptor-aware actions (`click`, `input`, `hover`, `select`, `scroll`):
 
 1. Reuse persisted path for `description`
-2. Use `element` counter from snapshot
-3. Use explicit CSS `selector`
-4. Use built-in LLM resolution (`description` required)
-5. Throw actionable error
+2. If persisted path fails with `TARGET_NOT_FOUND`, run one AI self-heal attempt, refresh cache, and retry once
+3. Use `element` counter from snapshot
+4. Use explicit CSS `selector`
+5. Use built-in LLM resolution (`description` required)
+6. Throw actionable error
 
-When steps 2-4 succeed and `description` is present, Opensteer persists the
+When steps 2-5 succeed and `description` is present, Opensteer persists the
 path for deterministic replay in `.opensteer/selectors/<namespace>`.
 
 ## Cloud Mode

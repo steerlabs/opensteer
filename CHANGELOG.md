@@ -34,6 +34,13 @@
 - Added DOM actionability probe + Playwright call-log classification to report
   reasons like `BLOCKED_BY_INTERCEPTOR`, `NOT_VISIBLE`, `NOT_EDITABLE`, and
   timeout/stale-target cases more accurately.
+- Added one-shot local selector self-healing for cached descriptor replay:
+  when cached paths fail with `TARGET_NOT_FOUND`, Opensteer retries once with
+  AI resolution from `description`, refreshes cache on success, and preserves
+  the original failure if healing does not succeed.
+- Added cached extraction replay self-healing: when persisted extraction paths
+  are unresolved and `description` is provided, Opensteer performs one AI
+  re-plan and refreshes persisted extraction paths.
 - Cloud action failures now accept optional structured failure details and map
   them to `OpensteerActionError` when available.
 - Docs: refreshed README and getting-started guidance to match current SDK/CLI

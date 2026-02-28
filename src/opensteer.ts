@@ -79,6 +79,7 @@ import {
 } from './actions/element-info.js'
 import { performFileUpload } from './actions/file-upload.js'
 import { OpensteerActionError } from './actions/errors.js'
+import type { ActionExecutionResult } from './actions/types.js'
 import {
     classifyActionFailure,
     defaultActionFailureMessage,
@@ -172,6 +173,10 @@ interface MergedArrayVariantRow {
     order: number
     coverage: number
     value: unknown
+}
+
+interface PersistedReplayDiagnostics {
+    unresolvedSelectors: boolean
 }
 
 const CLOUD_INTERACTION_METHODS = new Set<CloudActionMethod>([
@@ -905,18 +910,15 @@ export class Opensteer {
             )
         }
 
-        if (!resolution.path) {
-            throw new Error('Unable to resolve element path for hover action.')
-        }
-        const path = resolution.path
-
-        const result = await this.runWithPostActionWait(
-            'hover',
-            options.wait,
-            async () => {
-                const actionResult = await performHover(this.page, path, options)
-
-                if (!actionResult.ok) {
+        const { result, resolution: effectiveResolution } =
+            await this.executePathActionWithStoredSelfHeal({
+                resolution,
+                resolveAction: 'hover',
+                executeAction: 'hover',
+                description: options.description,
+                waitOverride: options.wait,
+                execute: (path) => performHover(this.page, path, options),
+                buildError: (actionResult) => {
                     const failure =
                         actionResult.failure ||
                         classifyActionFailure({
@@ -926,21 +928,18 @@ export class Opensteer {
                                 defaultActionFailureMessage('hover'),
                             fallbackMessage: defaultActionFailureMessage('hover'),
                         })
-                    throw this.buildActionError(
+                    return this.buildActionError(
                         'hover',
                         options.description,
                         failure,
                         actionResult.usedSelector || null
                     )
-                }
-
-                return actionResult
-            }
-        )
+                },
+            })
         this.snapshotCache = null
 
         const persisted =
-            resolution.shouldPersist &&
+            effectiveResolution.shouldPersist &&
             !!storageKey &&
             !!result.path &&
             this.persistPath(
@@ -1033,18 +1032,15 @@ export class Opensteer {
             )
         }
 
-        if (!resolution.path) {
-            throw new Error('Unable to resolve element path for input action.')
-        }
-        const path = resolution.path
-
-        const result = await this.runWithPostActionWait(
-            'input',
-            options.wait,
-            async () => {
-                const actionResult = await performInput(this.page, path, options)
-
-                if (!actionResult.ok) {
+        const { result, resolution: effectiveResolution } =
+            await this.executePathActionWithStoredSelfHeal({
+                resolution,
+                resolveAction: 'input',
+                executeAction: 'input',
+                description: options.description,
+                waitOverride: options.wait,
+                execute: (path) => performInput(this.page, path, options),
+                buildError: (actionResult) => {
                     const failure =
                         actionResult.failure ||
                         classifyActionFailure({
@@ -1054,21 +1050,18 @@ export class Opensteer {
                                 defaultActionFailureMessage('input'),
                             fallbackMessage: defaultActionFailureMessage('input'),
                         })
-                    throw this.buildActionError(
+                    return this.buildActionError(
                         'input',
                         options.description,
                         failure,
                         actionResult.usedSelector || null
                     )
-                }
-
-                return actionResult
-            }
-        )
+                },
+            })
         this.snapshotCache = null
 
         const persisted =
-            resolution.shouldPersist &&
+            effectiveResolution.shouldPersist &&
             !!storageKey &&
             !!result.path &&
             this.persistPath(
@@ -1168,18 +1161,15 @@ export class Opensteer {
             )
         }
 
-        if (!resolution.path) {
-            throw new Error('Unable to resolve element path for select action.')
-        }
-        const path = resolution.path
-
-        const result = await this.runWithPostActionWait(
-            'select',
-            options.wait,
-            async () => {
-                const actionResult = await performSelect(this.page, path, options)
-
-                if (!actionResult.ok) {
+        const { result, resolution: effectiveResolution } =
+            await this.executePathActionWithStoredSelfHeal({
+                resolution,
+                resolveAction: 'select',
+                executeAction: 'select',
+                description: options.description,
+                waitOverride: options.wait,
+                execute: (path) => performSelect(this.page, path, options),
+                buildError: (actionResult) => {
                     const failure =
                         actionResult.failure ||
                         classifyActionFailure({
@@ -1189,21 +1179,18 @@ export class Opensteer {
                                 defaultActionFailureMessage('select'),
                             fallbackMessage: defaultActionFailureMessage('select'),
                         })
-                    throw this.buildActionError(
+                    return this.buildActionError(
                         'select',
                         options.description,
                         failure,
                         actionResult.usedSelector || null
                     )
-                }
-
-                return actionResult
-            }
-        )
+                },
+            })
         this.snapshotCache = null
 
         const persisted =
-            resolution.shouldPersist &&
+            effectiveResolution.shouldPersist &&
             !!storageKey &&
             !!result.path &&
             this.persistPath(
@@ -1294,17 +1281,50 @@ export class Opensteer {
             )
         }
 
-        const result = await this.runWithPostActionWait(
-            'scroll',
-            options.wait,
-            async () => {
-                const actionResult = await performScroll(
-                    this.page,
-                    resolution.path,
-                    options
-                )
+        let result: ActionExecutionResult
+        let effectiveResolution = resolution
+        if (!resolution.path) {
+            result = await this.runWithPostActionWait(
+                'scroll',
+                options.wait,
+                async () => {
+                    const actionResult = await performScroll(
+                        this.page,
+                        null,
+                        options
+                    )
 
-                if (!actionResult.ok) {
+                    if (!actionResult.ok) {
+                        const failure =
+                            actionResult.failure ||
+                            classifyActionFailure({
+                                action: 'scroll',
+                                error:
+                                    actionResult.error ||
+                                    defaultActionFailureMessage('scroll'),
+                                fallbackMessage:
+                                    defaultActionFailureMessage('scroll'),
+                            })
+                        throw this.buildActionError(
+                            'scroll',
+                            options.description,
+                            failure,
+                            actionResult.usedSelector || null
+                        )
+                    }
+
+                    return actionResult
+                }
+            )
+        } else {
+            const execution = await this.executePathActionWithStoredSelfHeal({
+                resolution,
+                resolveAction: 'scroll',
+                executeAction: 'scroll',
+                description: options.description,
+                waitOverride: options.wait,
+                execute: (path) => performScroll(this.page, path, options),
+                buildError: (actionResult) => {
                     const failure =
                         actionResult.failure ||
                         classifyActionFailure({
@@ -1314,21 +1334,21 @@ export class Opensteer {
                                 defaultActionFailureMessage('scroll'),
                             fallbackMessage: defaultActionFailureMessage('scroll'),
                         })
-                    throw this.buildActionError(
+                    return this.buildActionError(
                         'scroll',
                         options.description,
                         failure,
                         actionResult.usedSelector || null
                     )
-                }
-
-                return actionResult
-            }
-        )
+                },
+            })
+            result = execution.result
+            effectiveResolution = execution.resolution
+        }
         this.snapshotCache = null
 
         const persisted =
-            resolution.shouldPersist &&
+            effectiveResolution.shouldPersist &&
             !!storageKey &&
             !!result.path &&
             this.persistPath(
@@ -1636,7 +1656,57 @@ export class Opensteer {
             throw new Error(`Unable to resolve element path for ${method}.`)
         }
 
-        return pathFn(resolution.path)
+        try {
+            return await pathFn(resolution.path)
+        } catch (error) {
+            const failure = classifyActionFailure({
+                action: method,
+                error,
+                fallbackMessage: `${method} failed.`,
+            })
+
+            if (
+                !this.shouldAttemptStoredSelfHeal(
+                    resolution,
+                    options.description,
+                    failure
+                )
+            ) {
+                throw error
+            }
+
+            const description = options.description?.trim()
+            if (!description) {
+                throw error
+            }
+
+            const healedResolution = await this.resolveSelfHealedPath(
+                method,
+                description
+            )
+            if (!healedResolution?.path) {
+                throw error
+            }
+
+            try {
+                const value = await pathFn(healedResolution.path)
+                if (storageKey && healedResolution.shouldPersist) {
+                    this.persistPath(
+                        storageKey,
+                        method,
+                        options.description,
+                        healedResolution.path
+                    )
+                }
+                return value
+            } catch (retryError) {
+                this.logDebugError(
+                    `stored selector self-heal retry failed for ${method}`,
+                    retryError
+                )
+                throw error
+            }
+        }
     }
 
     // --- File Upload ---
@@ -1712,22 +1782,16 @@ export class Opensteer {
             )
         }
 
-        if (!resolution.path) {
-            throw new Error('Unable to resolve element path for file upload.')
-        }
-        const path = resolution.path
-
-        const result = await this.runWithPostActionWait(
-            'uploadFile',
-            options.wait,
-            async () => {
-                const actionResult = await performFileUpload(
-                    this.page,
-                    path,
-                    options.paths
-                )
-
-                if (!actionResult.ok) {
+        const { result, resolution: effectiveResolution } =
+            await this.executePathActionWithStoredSelfHeal({
+                resolution,
+                resolveAction: 'uploadFile',
+                executeAction: 'uploadFile',
+                description: options.description,
+                waitOverride: options.wait,
+                execute: (path) =>
+                    performFileUpload(this.page, path, options.paths),
+                buildError: (actionResult) => {
                     const failure =
                         actionResult.failure ||
                         classifyActionFailure({
@@ -1738,21 +1802,18 @@ export class Opensteer {
                             fallbackMessage:
                                 defaultActionFailureMessage('uploadFile'),
                         })
-                    throw this.buildActionError(
+                    return this.buildActionError(
                         'uploadFile',
                         options.description,
                         failure,
                         actionResult.usedSelector || null
                     )
-                }
-
-                return actionResult
-            }
-        )
+                },
+            })
         this.snapshotCache = null
 
         const persisted =
-            resolution.shouldPersist &&
+            effectiveResolution.shouldPersist &&
             !!storageKey &&
             !!result.path &&
             this.persistPath(
@@ -1802,6 +1863,7 @@ export class Opensteer {
             : null
 
         const stored = storageKey ? this.storage.readSelector(storageKey) : null
+        let forceAiPlanning = false
         if (
             stored &&
             stored.method === 'extract' &&
@@ -1823,13 +1885,25 @@ export class Opensteer {
                     `Cached extraction selector is invalid for the current schema at "${selectorFile}". Delete the cached selector and rerun extraction. ${message}`
                 )
             }
-            const data = await this.extractPersistedPayload(payload)
-            return data as T
+            const replayDiagnostics: PersistedReplayDiagnostics = {
+                unresolvedSelectors: false,
+            }
+            const data = await this.extractPersistedPayload(
+                payload,
+                replayDiagnostics
+            )
+            if (
+                !replayDiagnostics.unresolvedSelectors ||
+                !options.description?.trim()
+            ) {
+                return data as T
+            }
+            forceAiPlanning = true
         }
 
         const fields: ExtractFieldTarget[] = []
 
-        if (!fields.length && options.schema) {
+        if (!fields.length && options.schema && !forceAiPlanning) {
             const schemaFields = await this.buildFieldTargetsFromSchema(
                 options.schema
             )
@@ -1842,9 +1916,11 @@ export class Opensteer {
                 planResult = await this.parseAiExtractPlan(options)
             } catch (error) {
                 const message = extractErrorMessage(error, 'Unknown error.')
-                const contextMessage = options.schema
-                    ? 'Schema extraction did not resolve deterministic field targets, so Opensteer attempted AI extraction planning.'
-                    : 'Opensteer attempted AI extraction planning.'
+                const contextMessage = forceAiPlanning
+                    ? 'Cached extraction selectors were unresolved, so Opensteer attempted AI extraction planning.'
+                    : options.schema
+                      ? 'Schema extraction did not resolve deterministic field targets, so Opensteer attempted AI extraction planning.'
+                      : 'Opensteer attempted AI extraction planning.'
                 throw new Error(`${contextMessage} ${message}`, {
                     cause: error,
                 })
@@ -1868,7 +1944,7 @@ export class Opensteer {
         if (
             storageKey &&
             schemaHash &&
-            (!stored || stored.schemaHash !== schemaHash)
+            (forceAiPlanning || !stored || stored.schemaHash !== schemaHash)
         ) {
             const persistedFields =
                 await this.resolveFieldTargetsToPersistableFields(fields)
@@ -2018,6 +2094,144 @@ export class Opensteer {
         }
     }
 
+    private shouldAttemptStoredSelfHeal(
+        resolution: Pick<PathResolutionResult, 'source'>,
+        description: string | undefined,
+        failure: ActionFailure | null | undefined
+    ): boolean {
+        if (resolution.source !== 'stored') return false
+        if (!description || !description.trim()) return false
+        return failure?.code === 'TARGET_NOT_FOUND'
+    }
+
+    private async resolveSelfHealedPath(
+        action: string,
+        description: string
+    ): Promise<PathResolutionResult | null> {
+        try {
+            const resolved = await this.resolvePathWithAi(action, description)
+            if (!resolved) return null
+
+            if (resolved.path) {
+                return {
+                    path: this.normalizePath(resolved.path),
+                    counter: null,
+                    shouldPersist: true,
+                    source: 'ai',
+                }
+            }
+
+            if (resolved.counter != null) {
+                const pathFromCounter = await this.tryBuildPathFromCounter(
+                    resolved.counter
+                )
+                if (!pathFromCounter) return null
+
+                return {
+                    path: pathFromCounter,
+                    counter: null,
+                    shouldPersist: true,
+                    source: 'ai',
+                }
+            }
+
+            return null
+        } catch (error) {
+            this.logDebugError(
+                `stored selector self-heal resolution failed for ${action}`,
+                error
+            )
+            return null
+        }
+    }
+
+    private async executePathActionWithStoredSelfHeal(args: {
+        resolution: PathResolutionResult
+        resolveAction: string
+        executeAction: PostActionKind
+        description?: string
+        waitOverride: BaseActionOptions['wait']
+        execute: (path: ElementPath) => Promise<ActionExecutionResult>
+        buildError: (result: ActionExecutionResult) => OpensteerActionError
+    }): Promise<{
+        result: ActionExecutionResult
+        resolution: PathResolutionResult
+    }> {
+        const initialPath = args.resolution.path
+        if (!initialPath) {
+            throw new Error(
+                `Unable to resolve element path for ${args.executeAction} action.`
+            )
+        }
+
+        const runAttempt = async (
+            path: ElementPath
+        ): Promise<ActionExecutionResult> => {
+            return this.runWithPostActionWait(
+                args.executeAction,
+                args.waitOverride,
+                async () => {
+                    const actionResult = await args.execute(path)
+                    if (!actionResult.ok) {
+                        throw args.buildError(actionResult)
+                    }
+                    return actionResult
+                }
+            )
+        }
+
+        try {
+            const result = await runAttempt(initialPath)
+            return {
+                result,
+                resolution: args.resolution,
+            }
+        } catch (error) {
+            const failure =
+                error instanceof OpensteerActionError
+                    ? error.failure
+                    : classifyActionFailure({
+                          action: args.executeAction,
+                          error,
+                          fallbackMessage: defaultActionFailureMessage(
+                              args.executeAction
+                          ),
+                      })
+
+            if (
+                !this.shouldAttemptStoredSelfHeal(
+                    args.resolution,
+                    args.description,
+                    failure
+                )
+            ) {
+                throw error
+            }
+
+            const healedResolution = await this.resolveSelfHealedPath(
+                args.resolveAction,
+                args.description!.trim()
+            )
+            if (!healedResolution?.path) {
+                throw error
+            }
+
+            try {
+                const healedResult = await runAttempt(healedResolution.path)
+                return {
+                    result: healedResult,
+                    resolution: healedResolution,
+                }
+            } catch (retryError) {
+                this.logDebugError(
+                    `stored selector self-heal retry failed for ${args.executeAction}`,
+                    retryError
+                )
+                throw error
+            }
+        }
+    }
+
     private async executeClickVariant(
         method: 'click' | 'dblclick' | 'rightclick',
         options: ClickOptions
@@ -2086,17 +2300,15 @@ export class Opensteer {
             )
         }
 
-        if (!resolution.path) {
-            throw new Error('Unable to resolve element path for click action.')
-        }
-        const path = resolution.path
-
-        const result = await this.runWithPostActionWait(
-            method,
-            options.wait,
-            async () => {
-                const actionResult = await performClick(this.page, path, options)
-                if (!actionResult.ok) {
+        const { result, resolution: effectiveResolution } =
+            await this.executePathActionWithStoredSelfHeal({
+                resolution,
+                resolveAction: 'click',
+                executeAction: method,
+                description: options.description,
+                waitOverride: options.wait,
+                execute: (path) => performClick(this.page, path, options),
+                buildError: (actionResult) => {
                     const failure =
                         actionResult.failure ||
                         classifyActionFailure({
@@ -2106,20 +2318,18 @@ export class Opensteer {
                                 defaultActionFailureMessage(method),
                             fallbackMessage: defaultActionFailureMessage(method),
                         })
-                    throw this.buildActionError(
+                    return this.buildActionError(
                         method,
                         options.description,
                         failure,
                         actionResult.usedSelector || null
                     )
-                }
-                return actionResult
-            }
-        )
+                },
+            })
         this.snapshotCache = null
 
         const persisted =
-            resolution.shouldPersist &&
+            effectiveResolution.shouldPersist &&
             !!storageKey &&
             !!result.path &&
             this.persistPath(
@@ -2552,26 +2762,39 @@ export class Opensteer {
     }
 
     private async extractPersistedPayload(
-        payload: PersistedExtractPayload
+        payload: PersistedExtractPayload,
+        diagnostics?: PersistedReplayDiagnostics
     ): Promise<Record<string, unknown>> {
-        return this.extractPersistedObjectNode(payload)
+        return this.extractPersistedObjectNode(payload, diagnostics)
     }
 
     private async extractPersistedObjectNode(
-        node: PersistedExtractObjectNode
+        node: PersistedExtractObjectNode,
+        diagnostics?: PersistedReplayDiagnostics
     ): Promise<Record<string, unknown>> {
         const result: Record<string, unknown> = {}
         const pageUrl = this.page.url()
 
         for (const [key, child] of Object.entries(node)) {
             if (isPersistedValueNode(child)) {
+                const pathDiagnostics = {
+                    unresolvedPathCount: 0,
+                }
                 const values = await extractWithPaths(this.page, [
                     {
                         key: 'value',
                         path: this.normalizePath(child.$path),
                         attribute: child.attribute,
                     },
-                ])
+                ], {
+                    diagnostics: pathDiagnostics,
+                })
+                if (
+                    diagnostics &&
+                    pathDiagnostics.unresolvedPathCount > 0
+                ) {
+                    diagnostics.unresolvedSelectors = true
+                }
                 result[key] = values.value ?? null
                 continue
             }
@@ -2582,14 +2805,18 @@ export class Opensteer {
             }
 
             if (!isPersistedArrayNode(child)) {
-                result[key] = await this.extractPersistedObjectNode(child)
+                result[key] = await this.extractPersistedObjectNode(
+                    child,
+                    diagnostics
+                )
                 continue
             }
 
             result[key] = await this.extractPersistedArrayVariants(
                 child,
                 key,
-                pageUrl
+                pageUrl,
+                diagnostics
             )
         }
 
@@ -2599,9 +2826,11 @@ export class Opensteer {
     private async extractPersistedArrayVariants(
         arrayNode: PersistedExtractArrayNode,
         fieldKey: string,
-        pageUrl: string
+        pageUrl: string,
+        diagnostics?: PersistedReplayDiagnostics
     ): Promise<unknown[]> {
         const rowsByIdentity = new Map<string, MergedArrayVariantRow>()
+        let totalRows = 0
 
         for (const variant of arrayNode.$array.variants) {
             const descriptors = collectArrayItemFieldDescriptors(variant.item)
@@ -2611,6 +2840,7 @@ export class Opensteer {
                 fieldKey,
                 pageUrl
             )
+            totalRows += extracted.length
 
             for (const row of extracted) {
                 const existing = rowsByIdentity.get(row.identity)
@@ -2618,6 +2848,14 @@ export class Opensteer {
                     rowsByIdentity.set(row.identity, row)
                 }
             }
+        }
+
+        if (
+            diagnostics &&
+            totalRows === 0 &&
+            arrayNode.$array.variants.length > 0
+        ) {
+            diagnostics.unresolvedSelectors = true
         }
 
         return [...rowsByIdentity.values()]

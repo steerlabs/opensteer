@@ -26,6 +26,10 @@ export interface ArrayExtractedRow {
     meta: ArrayRowMetadata
 }
 
+export interface ExtractPathDiagnostics {
+    unresolvedPathCount: number
+}
+
 async function readFieldValueFromHandle(
     element: ElementHandle<Element>,
     options: { attribute?: string }
@@ -46,7 +50,10 @@ async function readFieldValueFromHandle(
 
 export async function extractWithPaths(
     page: Page,
-    fields: FieldSelector[]
+    fields: FieldSelector[],
+    options: {
+        diagnostics?: ExtractPathDiagnostics
+    } = {}
 ): Promise<Record<string, unknown>> {
     const result: Record<string, unknown> = {}
 
@@ -55,6 +62,9 @@ export async function extractWithPaths(
         try {
             resolved = await resolveElementPath(page, field.path)
         } catch {
+            if (options.diagnostics) {
+                options.diagnostics.unresolvedPathCount += 1
+            }
             result[field.key] = null
             continue
         }

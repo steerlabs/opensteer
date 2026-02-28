@@ -60,6 +60,9 @@ await opensteer.input({
 })
 ```
 
+If a cached selector later fails with `TARGET_NOT_FOUND`, Opensteer performs a
+one-shot AI self-heal from `description`, refreshes the cache, and retries.
+
 ## 6) Configure model and mode (optional)
 
 Opensteer defaults to:

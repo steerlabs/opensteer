@@ -19,9 +19,12 @@ Each descriptor stores:
 During replay, Opensteer resolves in this order:
 
 1. Persisted path by `description`
-2. Snapshot `element` counter
-3. Explicit CSS `selector`
-4. Built-in LLM resolution
+2. If persisted path fails with `TARGET_NOT_FOUND`, one-shot AI self-heal from `description`, then cache refresh + retry
+3. Snapshot `element` counter
+4. Explicit CSS `selector`
+5. Built-in LLM resolution
 
-When resolution succeeds through steps 2-4 and `description` is present, the
+When resolution succeeds through steps 2-5 and `description` is present, the
 resolved path is persisted for future runs.
+
+This replay/self-heal flow applies to local runtime selector cache behavior.
