@@ -1,0 +1,36 @@
+name: Feature request
+description: Propose an improvement or new capability
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What developer problem are you trying to solve?
+      placeholder: Describe the pain point or limitation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What behavior or API should be added/changed?
+      placeholder: Describe the desired behavior and API shape.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds or alternative designs you considered.
+    validations:
+      required: false
+  - type: textarea
+    id: examples
+    attributes:
+      label: Example usage
+      description: Show a concrete example if possible.
+      render: ts
+    validations:
+      required: false

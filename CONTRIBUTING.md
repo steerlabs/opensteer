@@ -5,7 +5,8 @@ Thanks for helping improve Opensteer.
 ## Prerequisites
 
 - Node.js `>=20`
-- `pnpm` (via Corepack)
+- `pnpm` (canonical maintainer workflow via Corepack)
+- `npm` or `bun` are also supported for local development
 
 ## Local Setup
 
@@ -13,6 +14,18 @@ Thanks for helping improve Opensteer.
 corepack enable
 pnpm install --frozen-lockfile
 ```
+
+Alternative setups:
+
+```bash
+# npm
+npm install
+
+# bun
+bun install
+```
+
+`pnpm-lock.yaml` is the canonical lockfile used by CI/release workflows.
 
 ## Validation Commands
 
@@ -24,6 +37,20 @@ pnpm run build
 pnpm run test
 ```
 
+Alternative command prefixes:
+
+```bash
+# npm
+npm run typecheck
+npm run build
+npm run test
+
+# bun
+bun run typecheck
+bun run build
+bun run test
+```
+
 Useful focused suites:
 
 ```bash
@@ -33,6 +60,8 @@ pnpm run test:integration
 pnpm run test:e2e
 pnpm run test:ai
 ```
+
+You can swap `pnpm run` with `npm run` or `bun run` for the same script names.
 
 Live web suite is opt-in and requires explicit env setup:
 
