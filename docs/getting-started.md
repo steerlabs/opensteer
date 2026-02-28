@@ -13,6 +13,8 @@
 npm install opensteer
 # pnpm
 pnpm add opensteer
+# bun
+bun add opensteer
 ```
 
 If browser binaries are not present, run:
