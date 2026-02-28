@@ -77,7 +77,12 @@ async function assignCounters(
         }
     })
 
-    await syncLiveCounters(page, nodeMeta, assignedByNodeId)
+    try {
+        await syncLiveCounters(page, nodeMeta, assignedByNodeId)
+    } catch (error) {
+        await clearLiveCounters(page)
+        throw error
+    }
 
     $(`[${OS_NODE_ID_ATTR}]`).removeAttr(OS_NODE_ID_ATTR)
 
@@ -110,15 +115,38 @@ async function syncLiveCounters(
 
     if (!groupedByFrame.size) return
 
+    const failures: Array<{
+        nodeId: string
+        counter: number
+        frameToken: string
+        reason: 'frame_missing' | 'frame_unavailable' | 'match_count'
+        matches?: number
+    }> = []
+
     const framesByToken = await mapFramesByToken(page)
     for (const [frameToken, entries] of groupedByFrame.entries()) {
         const frame = framesByToken.get(frameToken)
-        if (!frame) continue
+        if (!frame) {
+            for (const entry of entries) {
+                failures.push({
+                    nodeId: entry.nodeId,
+                    counter: entry.counter,
+                    frameToken,
+                    reason: 'frame_missing',
+                })
+            }
+            continue
+        }
 
         try {
-            await frame.evaluate(
+            const unresolved = await frame.evaluate(
                 ({ entries, nodeAttr }) => {
                     const index = new Map<string, Element[]>()
+                    const unresolved: Array<{
+                        nodeId: string
+                        counter: number
+                        matches: number
+                    }> = []
 
                     const walk = (root: ParentNode): void => {
                         const children = Array.from(root.children) as Element[]
@@ -141,18 +169,62 @@ async function syncLiveCounters(
 
                     for (const entry of entries) {
                         const matches = index.get(entry.nodeId) || []
-                        if (matches.length !== 1) continue
+                        if (matches.length !== 1) {
+                            unresolved.push({
+                                nodeId: entry.nodeId,
+                                counter: entry.counter,
+                                matches: matches.length,
+                            })
+                            continue
+                        }
                         matches[0].setAttribute('c', String(entry.counter))
                     }
+
+                    return unresolved
                 },
                 {
                     entries,
                     nodeAttr: OS_NODE_ID_ATTR,
                 }
             )
+            for (const entry of unresolved) {
+                failures.push({
+                    nodeId: entry.nodeId,
+                    counter: entry.counter,
+                    frameToken,
+                    reason: 'match_count',
+                    matches: entry.matches,
+                })
+            }
         } catch {
-            // Ignore inaccessible or transient frames.
+            for (const entry of entries) {
+                failures.push({
+                    nodeId: entry.nodeId,
+                    counter: entry.counter,
+                    frameToken,
+                    reason: 'frame_unavailable',
+                })
+            }
         }
+    }
+
+    if (failures.length) {
+        const preview = failures.slice(0, 3).map((failure) => {
+            const base = `counter ${failure.counter} (nodeId "${failure.nodeId}") in frame "${failure.frameToken}"`
+            if (failure.reason === 'frame_missing') {
+                return `${base} could not be synchronized because the frame is missing.`
+            }
+            if (failure.reason === 'frame_unavailable') {
+                return `${base} could not be synchronized because frame evaluation failed.`
+            }
+            return `${base} expected exactly one live node but found ${failure.matches ?? 0}.`
+        })
+
+        const remaining =
+            failures.length > 3 ? ` (+${failures.length - 3} more)` : ''
+        throw new Error(
+            `Failed to synchronize snapshot counters with the live DOM: ${preview.join(' ')}${remaining}`
+        )
     }
 }
 

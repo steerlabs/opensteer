@@ -1,3 +1,7 @@
+import { createHash } from 'crypto'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
 import * as cheerio from 'cheerio'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BrowserContext, Page } from 'playwright'
@@ -265,6 +269,100 @@ describe('integration/counter-bindings', () => {
         expect(result.persisted).toBe(false)
         expect((await page.textContent('#status'))?.trim()).toBe('clicked')
         persistSpy.mockRestore()
+    })
+
+    it('fails extraction caching when a counter field cannot be converted to a path', async () => {
+        const storageRoot = fs.mkdtempSync(
+            path.join(os.tmpdir(), 'opensteer-counter-cache-')
+        )
+        const description = 'counter-backed extraction cache must stay complete'
+
+        try {
+            await setFixture(
+                page,
+                `
+                <h1 id="title">Main title</h1>
+                `
+            )
+
+            const opensteer = Opensteer.from(page, {
+                name: 'counter-cache-hard-fail',
+                storage: {
+                    rootDir: storageRoot,
+                },
+            })
+
+            const html = await opensteer.snapshot({ mode: 'full', withCounters: true })
+            const $$ = cheerio.load(html)
+            const counter = Number.parseInt($$('#title').attr('c') || '', 10)
+            expect(Number.isFinite(counter)).toBe(true)
+
+            const access = opensteer as unknown as {
+                buildPathFromElement: (
+                    counter: number
+                ) => Promise<ElementPath | null>
+            }
+            const pathSpy = vi
+                .spyOn(access, 'buildPathFromElement')
+                .mockResolvedValueOnce(null)
+
+            try {
+                await expect(
+                    opensteer.extractFromPlan<{ title: string }>({
+                        description,
+                        schema: { title: 'string' },
+                        plan: {
+                            fields: {
+                                title: {
+                                    element: counter,
+                                },
+                            },
+                        },
+                    })
+                ).rejects.toThrow(
+                    'Unable to persist extraction schema field "title"'
+                )
+            } finally {
+                pathSpy.mockRestore()
+            }
+
+            const storageKey = createHash('sha256')
+                .update(description)
+                .digest('hex')
+                .slice(0, 16)
+
+            expect(opensteer.getStorage().readSelector(storageKey)).toBeNull()
+        } finally {
+            fs.rmSync(storageRoot, { recursive: true, force: true })
+        }
+    })
+
+    it('fails snapshot when live counter sync cannot map serialized nodes', async () => {
+        await setFixture(
+            page,
+            `
+            <button id="save">Save</button>
+            `
+        )
+
+        const framesSpy = vi.spyOn(page, 'frames').mockReturnValue([])
+
+        try {
+            await expect(
+                prepareSnapshot(page, {
+                    mode: 'full',
+                    withCounters: true,
+                    markInteractive: true,
+                })
+            ).rejects.toThrow('Failed to synchronize snapshot counters with the live DOM')
+        } finally {
+            framesSpy.mockRestore()
+        }
+
+        const assignedCounterCount = await page.evaluate(
+            () => document.querySelectorAll('[c]').length
+        )
+        expect(assignedCounterCount).toBe(0)
     })
 
     it('extracts counter fields in batch and returns null when a bound node is replaced', async () => {

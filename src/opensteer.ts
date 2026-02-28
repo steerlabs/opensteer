@@ -3009,7 +3009,9 @@ export class Opensteer {
 
             const path = await this.buildPathFromElement(field.counter)
             if (!path) {
-                continue
+                throw new Error(
+                    `Unable to persist extraction schema field "${field.key}": counter ${field.counter} could not be converted into a stable element path.`
+                )
             }
 
             resolved.push({
