@@ -84,7 +84,7 @@ export function classifyActionFailure(
 
     return buildFailure({
         code: 'UNKNOWN',
-        message: ensureMessage(input.fallbackMessage, 'Action failed.'),
+        message: ensureMessage(message, input.fallbackMessage),
         classificationSource: 'unknown',
     })
 }
@@ -424,6 +424,15 @@ function extractErrorMessage(error: unknown, fallbackMessage: string): string {
     }
     if (typeof error === 'string' && error.trim()) {
         return error.trim()
+    }
+    if (error && typeof error === 'object' && !Array.isArray(error)) {
+        const record = error as Record<string, unknown>
+        if (typeof record.message === 'string' && record.message.trim()) {
+            return record.message.trim()
+        }
+        if (typeof record.error === 'string' && record.error.trim()) {
+            return record.error.trim()
+        }
     }
     return ensureMessage(fallbackMessage, 'Action failed.')
 }

@@ -4,6 +4,7 @@ import { Opensteer } from '../opensteer.js'
 import type { CliRequest, CliResponse } from './protocol.js'
 import { getSocketPath, getPidPath } from './paths.js'
 import { getCommandHandler } from './commands.js'
+import { normalizeError } from '../error-normalization.js'
 
 let instance: Opensteer | null = null
 let launchPromise: Promise<void> | null = null
@@ -80,7 +81,17 @@ function enqueueRequest(request: CliRequest, socket: Socket) {
 
     requestQueue = requestQueue
         .then(() => handleRequest(request, socket))
-        .catch(() => {})
+        .catch((error) => {
+            sendResponse(
+                socket,
+                buildErrorResponse(
+                    request.id,
+                    error,
+                    'Unexpected server error while handling request.',
+                    'CLI_INTERNAL_ERROR'
+                )
+            )
+        })
 }
 
 async function handleRequest(
@@ -94,6 +105,10 @@ async function handleRequest(
             id,
             ok: false,
             error: `Session '${session}' is shutting down.`,
+            errorInfo: {
+                message: `Session '${session}' is shutting down.`,
+                code: 'SESSION_SHUTTING_DOWN',
+            },
         })
         return
     }
@@ -103,6 +118,10 @@ async function handleRequest(
             id,
             ok: false,
             error: `Session '${session}' is shutting down. Retry your command.`,
+            errorInfo: {
+                message: `Session '${session}' is shutting down. Retry your command.`,
+                code: 'SESSION_SHUTTING_DOWN',
+            },
         })
         return
     }
@@ -128,6 +147,15 @@ async function handleRequest(
                     id,
                     ok: false,
                     error: `Session '${session}' is already bound to selector namespace '${selectorNamespace}'. Requested '${requestedName}' does not match. Use the same --name for this session or start a different --session.`,
+                    errorInfo: {
+                        message: `Session '${session}' is already bound to selector namespace '${selectorNamespace}'. Requested '${requestedName}' does not match. Use the same --name for this session or start a different --session.`,
+                        code: 'SESSION_NAMESPACE_MISMATCH',
+                        details: {
+                            session,
+                            activeNamespace: selectorNamespace,
+                            requestedNamespace: requestedName,
+                        },
+                    },
                 })
                 return
             }
@@ -190,11 +218,10 @@ async function handleRequest(
                 },
             })
         } catch (err) {
-            sendResponse(socket, {
-                id,
-                ok: false,
-                error: err instanceof Error ? err.message : String(err),
-            })
+            sendResponse(
+                socket,
+                buildErrorResponse(id, err, 'Failed to open browser session.')
+            )
         }
         return
     }
@@ -211,11 +238,10 @@ async function handleRequest(
                 result: { sessionClosed: true },
             })
         } catch (err) {
-            sendResponse(socket, {
-                id,
-                ok: false,
-                error: err instanceof Error ? err.message : String(err),
-            })
+            sendResponse(
+                socket,
+                buildErrorResponse(id, err, 'Failed to close browser session.')
+            )
         }
         beginShutdown()
         return
@@ -231,6 +257,13 @@ async function handleRequest(
             id,
             ok: false,
             error: `No browser session in session '${session}'. Call 'opensteer open --session ${session}' first, or use 'opensteer sessions' to list active sessions.`,
+            errorInfo: {
+                message: `No browser session in session '${session}'. Call 'opensteer open --session ${session}' first, or use 'opensteer sessions' to list active sessions.`,
+                code: 'SESSION_NOT_OPEN',
+                details: {
+                    session,
+                },
+            },
         })
         return
     }
@@ -241,6 +274,13 @@ async function handleRequest(
             id,
             ok: false,
             error: `Unknown command: ${command}`,
+            errorInfo: {
+                message: `Unknown command: ${command}`,
+                code: 'UNKNOWN_COMMAND',
+                details: {
+                    command,
+                },
+            },
         })
         return
     }
@@ -249,11 +289,12 @@ async function handleRequest(
         const result = await handler(instance, args)
         sendResponse(socket, { id, ok: true, result })
     } catch (err) {
-        sendResponse(socket, {
-            id,
-            ok: false,
-            error: err instanceof Error ? err.message : String(err),
-        })
+        sendResponse(
+            socket,
+            buildErrorResponse(id, err, `Command "${command}" failed.`, undefined, {
+                command,
+            })
+        )
     }
 }
 
@@ -279,6 +320,10 @@ const server = createServer((socket: Socket) => {
                     id: 0,
                     ok: false,
                     error: 'Invalid JSON request',
+                    errorInfo: {
+                        message: 'Invalid JSON request',
+                        code: 'INVALID_JSON_REQUEST',
+                    },
                 })
             }
         }
@@ -320,3 +365,35 @@ async function shutdown() {
 
 process.on('SIGTERM', shutdown)
 process.on('SIGINT', shutdown)
+
+function buildErrorResponse(
+    id: number,
+    error: unknown,
+    fallbackMessage: string,
+    fallbackCode?: string,
+    details?: Record<string, unknown>
+): CliResponse {
+    const normalized = normalizeError(error, fallbackMessage)
+    let mergedDetails: Record<string, unknown> | undefined
+    if (normalized.details || details) {
+        mergedDetails = {
+            ...(normalized.details || {}),
+            ...(details || {}),
+        }
+    }
+
+    return {
+        id,
+        ok: false,
+        error: normalized.message,
+        errorInfo: {
+            message: normalized.message,
+            ...(normalized.code || fallbackCode
+                ? { code: normalized.code || fallbackCode }
+                : {}),
+            ...(normalized.name ? { name: normalized.name } : {}),
+            ...(mergedDetails ? { details: mergedDetails } : {}),
+            ...(normalized.cause ? { cause: normalized.cause } : {}),
+        },
+    }
+}

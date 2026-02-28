@@ -14,6 +14,7 @@ import { prepareSnapshot } from '../../src/html/pipeline.js'
 import { performClick } from '../../src/actions/click.js'
 import { buildElementPathFromSelector } from '../../src/element-path/build.js'
 import { Opensteer } from '../../src/opensteer.js'
+import type { ExtractSchema } from '../../src/types.js'
 import { closeTestBrowser, createTestPage } from '../helpers/browser.js'
 import { gotoRoute } from '../helpers/integration.js'
 
@@ -112,5 +113,41 @@ describe('integration/data-extraction', () => {
 
         expect(first).toEqual({ pageUrl: page.url() })
         expect(second).toEqual({ pageUrl: page.url() })
+    })
+
+    it('rejects top-level array schemas with a root-cause error', async () => {
+        const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-int-data-'))
+        const opensteer = Opensteer.from(page, {
+            name: 'integration-data-array-root',
+            storage: { rootDir },
+        })
+
+        await expect(
+            opensteer.extract({
+                schema: [
+                    {
+                        title: { selector: '#card-a h3' },
+                    },
+                ] as unknown as ExtractSchema,
+            })
+        ).rejects.toThrow('top-level arrays are not supported')
+    })
+
+    it('rejects invalid explicit selectors instead of silently falling back', async () => {
+        const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-int-data-'))
+        const opensteer = Opensteer.from(page, {
+            name: 'integration-data-invalid-selector',
+            storage: { rootDir },
+        })
+
+        await expect(
+            opensteer.extract({
+                schema: {
+                    title: { selector: '#does-not-exist' },
+                },
+            })
+        ).rejects.toThrow(
+            'uses selector "#does-not-exist", but no matching element path could be built'
+        )
     })
 })

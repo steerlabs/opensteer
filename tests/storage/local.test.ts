@@ -1,7 +1,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { LocalSelectorStorage } from '../../src/storage/local.js'
 
 describe('LocalSelectorStorage', () => {
@@ -95,6 +95,32 @@ describe('LocalSelectorStorage', () => {
         fs.writeFileSync(storage.getRegistryPath(), '{bad json', 'utf8')
         const recovered = storage.loadRegistry()
         expect(recovered.selectors).toEqual({})
+    })
+
+    it('logs malformed storage files only when debug is enabled', () => {
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+        const quietRoot = fs.mkdtempSync(
+            path.join(os.tmpdir(), 'opensteer-storage-quiet-')
+        )
+        const quietStorage = new LocalSelectorStorage(quietRoot, 'demo-suite')
+        quietStorage.ensureDirs()
+        fs.writeFileSync(quietStorage.getRegistryPath(), '{bad json', 'utf8')
+        quietStorage.loadRegistry()
+        expect(warnSpy).not.toHaveBeenCalled()
+
+        const debugRoot = fs.mkdtempSync(
+            path.join(os.tmpdir(), 'opensteer-storage-debug-')
+        )
+        const debugStorage = new LocalSelectorStorage(debugRoot, 'demo-suite', {
+            debug: true,
+        })
+        debugStorage.ensureDirs()
+        fs.writeFileSync(debugStorage.getRegistryPath(), '{bad json', 'utf8')
+        debugStorage.loadRegistry()
+        expect(warnSpy).toHaveBeenCalledTimes(1)
+
+        warnSpy.mockRestore()
     })
 
     it('clears all selector files in the namespace', () => {

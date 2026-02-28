@@ -624,7 +624,7 @@ async function ensureServer(session) {
     }
 
     throw new Error(
-        `Failed to start server for session '${session}'. Check that the build is complete.`
+        `Failed to start server for session '${session}' within ${CONNECT_TIMEOUT}ms.`
     )
 }
 
@@ -700,6 +700,39 @@ function output(data) {
 function error(msg) {
     process.stderr.write(JSON.stringify({ ok: false, error: msg }) + '\n')
     process.exit(1)
+}
+
+function normalizeFailedResponse(response) {
+    const info = toObject(response?.errorInfo)
+
+    let message = 'Request failed.'
+    if (typeof info?.message === 'string' && info.message.trim()) {
+        message = info.message.trim()
+    } else if (typeof response?.error === 'string' && response.error.trim()) {
+        message = response.error.trim()
+    }
+
+    return {
+        ok: false,
+        error: message,
+        ...(info && typeof info.code === 'string' && info.code.trim()
+            ? { code: info.code.trim() }
+            : {}),
+        ...(toObject(info?.details)
+            ? { details: info.details }
+            : {}),
+        ...(info ? { errorInfo: info } : {}),
+    }
+}
+
+function formatTransportFailure(error, context) {
+    const message = error instanceof Error ? error.message : String(error)
+    return `${context}: ${message}`
+}
+
+function toObject(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+    return value
 }
 
 function printHelp() {
@@ -855,7 +888,7 @@ async function main() {
             error(
                 err instanceof Error
                     ? err.message
-                    : 'Failed to start server. Check that the build is complete.'
+                    : `Failed to start server for session '${session}'.`
             )
         }
     }
@@ -866,13 +899,16 @@ async function main() {
         if (response.ok) {
             output({ ok: true, ...response.result })
         } else {
-            process.stderr.write(
-                JSON.stringify({ ok: false, error: response.error }) + '\n'
-            )
+            process.stderr.write(JSON.stringify(normalizeFailedResponse(response)) + '\n')
             process.exit(1)
         }
     } catch (err) {
-        error(err instanceof Error ? err.message : 'Connection failed')
+        error(
+            formatTransportFailure(
+                err,
+                `Failed to run '${command}' for session '${session}'`
+            )
+        )
     }
 }
 

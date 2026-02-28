@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { createEmptyRegistry, type SelectorRegistry } from './registry.js'
 import { normalizeNamespace, resolveNamespaceDir } from './namespace.js'
+import { extractErrorMessage } from '../error-normalization.js'
 
 export interface SelectorFile<T = unknown> {
     id: string
@@ -19,10 +20,16 @@ export interface SelectorFile<T = unknown> {
 export class LocalSelectorStorage {
     private rootDir: string
     private namespace: string
+    private readonly debug: boolean
 
-    constructor(rootDir: string, namespace: string) {
+    constructor(
+        rootDir: string,
+        namespace: string,
+        options: { debug?: boolean } = {}
+    ) {
         this.rootDir = rootDir
         this.namespace = normalizeNamespace(namespace)
+        this.debug = options.debug === true
     }
 
     getRootDir(): string {
@@ -65,7 +72,16 @@ export class LocalSelectorStorage {
         try {
             const raw = fs.readFileSync(file, 'utf8')
             return JSON.parse(raw) as SelectorRegistry
-        } catch {
+        } catch (error) {
+            const message = extractErrorMessage(
+                error,
+                'Unable to parse selector registry JSON.'
+            )
+            if (this.debug) {
+                console.warn(
+                    `[opensteer] failed to read selector registry "${file}": ${message}`
+                )
+            }
             return createEmptyRegistry(this.namespace)
         }
     }
@@ -84,7 +100,16 @@ export class LocalSelectorStorage {
         try {
             const raw = fs.readFileSync(file, 'utf8')
             return JSON.parse(raw) as SelectorFile<T>
-        } catch {
+        } catch (error) {
+            const message = extractErrorMessage(
+                error,
+                'Unable to parse selector file JSON.'
+            )
+            if (this.debug) {
+                console.warn(
+                    `[opensteer] failed to read selector file "${file}": ${message}`
+                )
+            }
             return null
         }
     }
