@@ -1,6 +1,6 @@
 {
     "name": "opensteer",
-    "version": "0.4.13",
+    "version": "0.4.14",
     "packageManager": "pnpm@10.29.3",
     "description": "Open-source browser automation SDK with robust selectors and deterministic replay.",
     "license": "MIT",
