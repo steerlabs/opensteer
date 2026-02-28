@@ -18,7 +18,12 @@ clean HTML snapshots, and first-class local or cloud runtime support.
 npm install opensteer
 # pnpm
 pnpm add opensteer
+# bun
+bun add opensteer
 ```
+
+Repo maintenance defaults to `pnpm`, with compatibility checks for `npm` and
+`bun` in CI.
 
 If your environment skips Playwright browser downloads, run:
 

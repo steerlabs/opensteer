@@ -14,6 +14,8 @@ This suite validates description-driven LLM resolution and extraction against li
 RUN_LIVE_WEB=1 pnpm run test:live-web
 ```
 
+Use the same command with `npm run` or `bun run` if preferred.
+
 ## Environment variables
 
 - `RUN_LIVE_WEB`: Set to `1` to enable this suite.
@@ -54,6 +56,6 @@ pnpm run test:live-web
 
 ## Notes
 
-- This suite is intentionally manual/explicit and is not part of default `pnpm test`.
+- This suite is intentionally manual/explicit and is not part of the default `test` run.
 - Deterministic checks are the primary pass criteria.
 - In `advisory` mode, judge failures do not fail the test.
