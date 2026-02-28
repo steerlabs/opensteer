@@ -1,6 +1,10 @@
 # Dependencies
 node_modules/
 .pnpm-store/
+package-lock.json
+bun.lock
+tests/test-app/package-lock.json
+tests/test-app/bun.lock
 
 # Build artifacts
 dist/

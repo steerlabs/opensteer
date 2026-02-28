@@ -39,8 +39,8 @@ importers:
         specifier: ^17.2.4
         version: 17.2.4
       openai:
-        specifier: ^5.21.0
-        version: 5.23.2(ws@8.19.0)(zod@4.3.6)
+        specifier: ^6.25.0
+        version: 6.25.0(ws@8.19.0)(zod@4.3.6)
       playwright:
         specifier: ^1.50.0
         version: 1.58.2
@@ -1038,12 +1038,12 @@ packages:
     resolution: {integrity: sha512-rJgTQnkUnH1sFw8yT6VSU3zD3sWmu6sZhIseY8VX+GRu3P6F7Fu+JNDoXfklElbLJSnc3FUQHVe4cU5hj+BcUg==}
     engines: {node: '>=0.10.0'}
 
-  openai@5.23.2:
-    resolution: {integrity: sha512-MQBzmTulj+MM5O8SKEk/gL8a7s5mktS9zUtAkU257WjvobGc9nKcBuVwjyEEcb9SI8a8Y2G/mzn3vm9n1Jlleg==}
+  openai@6.25.0:
+    resolution: {integrity: sha512-mEh6VZ2ds2AGGokWARo18aPISI1OhlgdEIC1ewhkZr8pSIT31dec0ecr9Nhxx0JlybyOgoAT1sWeKtwPZzJyww==}
     hasBin: true
     peerDependencies:
       ws: ^8.18.0
-      zod: ^3.23.8
+      zod: ^3.25 || ^4.0
     peerDependenciesMeta:
       ws:
         optional: true
@@ -2231,7 +2231,7 @@ snapshots:
 
   object-assign@4.1.1: {}
 
-  openai@5.23.2(ws@8.19.0)(zod@4.3.6):
+  openai@6.25.0(ws@8.19.0)(zod@4.3.6):
     optionalDependencies:
       ws: 8.19.0
       zod: 4.3.6
