@@ -214,7 +214,9 @@ export class Opensteer {
 
         const rootDir = resolved.storage?.rootDir || process.cwd()
         this.namespace = resolveNamespace(resolved, rootDir)
-        this.storage = new LocalSelectorStorage(rootDir, this.namespace)
+        this.storage = new LocalSelectorStorage(rootDir, this.namespace, {
+            debug: Boolean(resolved.debug),
+        })
         this.pool = new BrowserPool(resolved.browser || {})
 
         if (cloudSelection.cloud) {
@@ -716,7 +718,9 @@ export class Opensteer {
     private async syncLocalSelectorCacheToCloud(): Promise<void> {
         if (!this.cloud) return
 
-        const entries = collectLocalSelectorCacheEntries(this.storage)
+        const entries = collectLocalSelectorCacheEntries(this.storage, {
+            debug: Boolean(this.config.debug),
+        })
         if (!entries.length) return
 
         await this.cloud.sessionClient.importSelectorCache({

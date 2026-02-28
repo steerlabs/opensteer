@@ -6,8 +6,10 @@ import type { LocalSelectorStorage } from '../storage/local.js'
 import { extractErrorMessage } from '../error-normalization.js'
 
 export function collectLocalSelectorCacheEntries(
-    storage: LocalSelectorStorage
+    storage: LocalSelectorStorage,
+    options: { debug?: boolean } = {}
 ): CloudSelectorCacheImportEntry[] {
+    const debug = options.debug === true
     const namespace = storage.getNamespace()
     const namespaceDir = storage.getNamespaceDir()
     if (!fs.existsSync(namespaceDir)) return []
@@ -19,7 +21,7 @@ export function collectLocalSelectorCacheEntries(
         if (fileName === 'index.json' || !fileName.endsWith('.json')) continue
 
         const filePath = path.join(namespaceDir, fileName)
-        const selector = readSelectorFile(filePath)
+        const selector = readSelectorFile(filePath, debug)
         if (!selector) continue
 
         const descriptionHash = normalizeDescriptionHash(selector.id)
@@ -56,7 +58,10 @@ export function collectLocalSelectorCacheEntries(
     return dedupeNewest(entries)
 }
 
-function readSelectorFile(filePath: string): SelectorFile<unknown> | null {
+function readSelectorFile(
+    filePath: string,
+    debug: boolean
+): SelectorFile<unknown> | null {
     try {
         const raw = fs.readFileSync(filePath, 'utf8')
         return JSON.parse(raw) as SelectorFile<unknown>
@@ -65,9 +70,11 @@ function readSelectorFile(filePath: string): SelectorFile<unknown> | null {
             error,
             'Unable to parse selector cache file JSON.'
         )
-        console.warn(
-            `[opensteer] failed to read local selector cache file "${filePath}": ${message}`
-        )
+        if (debug) {
+            console.warn(
+                `[opensteer] failed to read local selector cache file "${filePath}": ${message}`
+            )
+        }
         return null
     }
 }

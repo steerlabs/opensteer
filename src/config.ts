@@ -65,11 +65,16 @@ function dotenvFileOrder(nodeEnv: string | undefined): string[] {
     return files
 }
 
-function loadDotenvValues(rootDir: string, baseEnv: EnvMap): EnvMap {
+function loadDotenvValues(
+    rootDir: string,
+    baseEnv: EnvMap,
+    options: { debug?: boolean } = {}
+): EnvMap {
     const values: EnvMap = {}
     if (parseBool(baseEnv.OPENSTEER_DISABLE_DOTENV_AUTOLOAD) === true) {
         return values
     }
+    const debug = options.debug ?? (parseBool(baseEnv.OPENSTEER_DEBUG) === true)
 
     const baseDir = path.resolve(rootDir)
     const nodeEnv = baseEnv.NODE_ENV?.trim() || ''
@@ -91,9 +96,11 @@ function loadDotenvValues(rootDir: string, baseEnv: EnvMap): EnvMap {
                 error,
                 'Unable to read or parse dotenv file.'
             )
-            console.warn(
-                `[opensteer] failed to load dotenv file "${filePath}": ${message}`
-            )
+            if (debug) {
+                console.warn(
+                    `[opensteer] failed to load dotenv file "${filePath}": ${message}`
+                )
+            }
             continue
         }
     }
@@ -101,9 +108,12 @@ function loadDotenvValues(rootDir: string, baseEnv: EnvMap): EnvMap {
     return values
 }
 
-function resolveEnv(rootDir: string): EnvMap {
+function resolveEnv(
+    rootDir: string,
+    options: { debug?: boolean } = {}
+): EnvMap {
     const baseEnv = process.env as EnvMap
-    const dotenvValues = loadDotenvValues(rootDir, baseEnv)
+    const dotenvValues = loadDotenvValues(rootDir, baseEnv, options)
     return {
         ...dotenvValues,
         ...baseEnv,
@@ -157,7 +167,10 @@ function assertNoLegacyRuntimeConfig(source: string, config: unknown): void {
     }
 }
 
-export function loadConfigFile(rootDir: string): Partial<OpensteerConfig> {
+export function loadConfigFile(
+    rootDir: string,
+    options: { debug?: boolean } = {}
+): Partial<OpensteerConfig> {
     const configPath = path.join(rootDir, '.opensteer', 'config.json')
     if (!fs.existsSync(configPath)) return {}
 
@@ -169,9 +182,11 @@ export function loadConfigFile(rootDir: string): Partial<OpensteerConfig> {
             error,
             'Unable to read or parse config file.'
         )
-        console.warn(
-            `[opensteer] failed to load config file "${configPath}": ${message}`
-        )
+        if (options.debug) {
+            console.warn(
+                `[opensteer] failed to load config file "${configPath}": ${message}`
+            )
+        }
         return {}
     }
 }
@@ -359,6 +374,9 @@ export function resolveCloudSelection(
 export function resolveConfig(
     input: OpensteerConfig = {}
 ): ResolvedOpensteerConfig {
+    const processEnv = process.env as EnvMap
+    const debugHint =
+        input.debug === true || parseBool(processEnv.OPENSTEER_DEBUG) === true
     const initialRootDir =
         input.storage?.rootDir ?? process.cwd()
     const runtimeDefaults = mergeDeep(DEFAULT_CONFIG, {
@@ -370,7 +388,9 @@ export function resolveConfig(
     assertNoLegacyAiConfig('Opensteer constructor config', input)
     assertNoLegacyRuntimeConfig('Opensteer constructor config', input)
 
-    const fileConfig = loadConfigFile(initialRootDir)
+    const fileConfig = loadConfigFile(initialRootDir, {
+        debug: debugHint,
+    })
     assertNoLegacyAiConfig('.opensteer/config.json', fileConfig)
     assertNoLegacyRuntimeConfig('.opensteer/config.json', fileConfig)
     const fileRootDir =
@@ -381,7 +401,9 @@ export function resolveConfig(
         input.storage?.rootDir ??
         fileRootDir ??
         initialRootDir
-    const env = resolveEnv(envRootDir)
+    const env = resolveEnv(envRootDir, {
+        debug: debugHint,
+    })
 
     if (env.OPENSTEER_AI_MODEL) {
         throw new Error(

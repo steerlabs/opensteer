@@ -1,7 +1,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
     loadConfigFile,
     resolveCloudSelection,
@@ -18,6 +18,7 @@ afterEach(() => {
 
 describe('config', () => {
     it('loadConfigFile returns empty object when file is missing or malformed', () => {
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
         const root = fs.mkdtempSync(
             path.join(os.tmpdir(), 'opensteer-config-missing-')
         )
@@ -28,6 +29,20 @@ describe('config', () => {
         fs.writeFileSync(path.join(configDir, 'config.json'), '{oops', 'utf8')
 
         expect(loadConfigFile(root)).toEqual({})
+        expect(warnSpy).not.toHaveBeenCalled()
+        warnSpy.mockRestore()
+    })
+
+    it('loadConfigFile logs malformed files only when debug is enabled', () => {
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-config-debug-'))
+        const configDir = path.join(root, '.opensteer')
+        fs.mkdirSync(configDir, { recursive: true })
+        fs.writeFileSync(path.join(configDir, 'config.json'), '{oops', 'utf8')
+
+        expect(loadConfigFile(root, { debug: true })).toEqual({})
+        expect(warnSpy).toHaveBeenCalledTimes(1)
+        warnSpy.mockRestore()
     })
 
     it('resolveConfig merges defaults, file config, env config, then explicit input', () => {
