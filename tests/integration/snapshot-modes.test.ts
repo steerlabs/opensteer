@@ -108,14 +108,10 @@ describe('integration/snapshot-modes', () => {
                 expect(value).toBe(firstCounter + index)
             })
 
-            const bindingKeys = [
-                ...(snapshot.counterBindings?.keys() || []),
-            ].sort((a, b) => a - b)
             const indexKeys = [...(snapshot.counterIndex?.keys() || [])].sort(
                 (a, b) => a - b
             )
 
-            expect(bindingKeys).toEqual(sortedCounters)
             expect(indexKeys).toEqual(sortedCounters)
             expect(snapshot.cleanedHtml).not.toContain('data-os-node-id')
         }

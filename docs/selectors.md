@@ -19,7 +19,7 @@ Each descriptor stores:
 During replay, Opensteer resolves in this order:
 
 1. Persisted path by `description`
-2. Snapshot `element` counter
+2. Live DOM `element` counter
 3. Explicit CSS `selector`
 4. Built-in LLM resolution
 

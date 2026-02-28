@@ -854,7 +854,7 @@ export class Opensteer {
             let persistPath: ElementPath | null = null
             try {
                 if (storageKey && resolution.shouldPersist) {
-                    persistPath = await this.buildPathFromResolvedHandle(
+                    persistPath = await this.tryBuildPathFromResolvedHandle(
                         handle,
                         'hover',
                         resolution.counter
@@ -978,7 +978,7 @@ export class Opensteer {
             let persistPath: ElementPath | null = null
             try {
                 if (storageKey && resolution.shouldPersist) {
-                    persistPath = await this.buildPathFromResolvedHandle(
+                    persistPath = await this.tryBuildPathFromResolvedHandle(
                         handle,
                         'input',
                         resolution.counter
@@ -1106,7 +1106,7 @@ export class Opensteer {
             let persistPath: ElementPath | null = null
             try {
                 if (storageKey && resolution.shouldPersist) {
-                    persistPath = await this.buildPathFromResolvedHandle(
+                    persistPath = await this.tryBuildPathFromResolvedHandle(
                         handle,
                         'select',
                         resolution.counter
@@ -1241,7 +1241,7 @@ export class Opensteer {
             let persistPath: ElementPath | null = null
             try {
                 if (storageKey && resolution.shouldPersist) {
-                    persistPath = await this.buildPathFromResolvedHandle(
+                    persistPath = await this.tryBuildPathFromResolvedHandle(
                         handle,
                         'scroll',
                         resolution.counter
@@ -1607,17 +1607,19 @@ export class Opensteer {
             const handle = await this.resolveCounterHandle(resolution.counter)
             try {
                 if (storageKey && resolution.shouldPersist) {
-                    const persistPath = await this.buildPathFromResolvedHandle(
+                    const persistPath = await this.tryBuildPathFromResolvedHandle(
                         handle,
                         method,
                         resolution.counter
                     )
-                    this.persistPath(
-                        storageKey,
-                        method,
-                        options.description,
-                        persistPath
-                    )
+                    if (persistPath) {
+                        this.persistPath(
+                            storageKey,
+                            method,
+                            options.description,
+                            persistPath
+                        )
+                    }
                 }
                 return await counterFn(handle)
             } catch (err) {
@@ -1661,7 +1663,7 @@ export class Opensteer {
             let persistPath: ElementPath | null = null
             try {
                 if (storageKey && resolution.shouldPersist) {
-                    persistPath = await this.buildPathFromResolvedHandle(
+                    persistPath = await this.tryBuildPathFromResolvedHandle(
                         handle,
                         'uploadFile',
                         resolution.counter
@@ -2034,7 +2036,7 @@ export class Opensteer {
             let persistPath: ElementPath | null = null
             try {
                 if (storageKey && resolution.shouldPersist) {
-                    persistPath = await this.buildPathFromResolvedHandle(
+                    persistPath = await this.tryBuildPathFromResolvedHandle(
                         handle,
                         'click',
                         resolution.counter
@@ -2161,18 +2163,6 @@ export class Opensteer {
         }
 
         if (options.element != null) {
-            const pathFromElement = await this.tryBuildPathFromCounter(
-                options.element
-            )
-            if (pathFromElement) {
-                return {
-                    path: pathFromElement,
-                    counter: null,
-                    shouldPersist: Boolean(storageKey),
-                    source: 'element',
-                }
-            }
-
             return {
                 path: null,
                 counter: options.element,
@@ -2202,18 +2192,6 @@ export class Opensteer {
                 options.description
             )
             if (resolved?.counter != null) {
-                const pathFromAiCounter = await this.tryBuildPathFromCounter(
-                    resolved.counter
-                )
-                if (pathFromAiCounter) {
-                    return {
-                        path: pathFromAiCounter,
-                        counter: null,
-                        shouldPersist: Boolean(storageKey),
-                        source: 'ai',
-                    }
-                }
-
                 return {
                     path: null,
                     counter: resolved.counter,
@@ -2326,7 +2304,14 @@ export class Opensteer {
         try {
             const builtPath = await buildElementPathFromHandle(handle)
             if (builtPath) {
-                return this.withIndexedIframeContext(builtPath, indexedPath)
+                const withFrameContext = await this.withHandleIframeContext(
+                    handle,
+                    builtPath
+                )
+                return this.withIndexedIframeContext(
+                    withFrameContext,
+                    indexedPath
+                )
             }
             return indexedPath
         } finally {
@@ -2334,19 +2319,8 @@ export class Opensteer {
         }
     }
 
-    private async tryBuildPathFromCounter(
-        counter: number
-    ): Promise<ElementPath | null> {
-        try {
-            return await this.buildPathFromElement(counter)
-        } catch {
-            return null
-        }
-    }
-
     private async resolveCounterHandle(element: number) {
-        const snapshot = await this.ensureSnapshotWithCounters()
-        return resolveCounterElement(this.page, snapshot, element)
+        return resolveCounterElement(this.page, element)
     }
 
     private async resolveCounterHandleForAction(
@@ -2380,8 +2354,12 @@ export class Opensteer {
         const indexedPath = await this.readPathFromCounterIndex(counter)
         const builtPath = await buildElementPathFromHandle(handle)
         if (builtPath) {
+            const withFrameContext = await this.withHandleIframeContext(
+                handle,
+                builtPath
+            )
             const normalized = this.withIndexedIframeContext(
-                builtPath,
+                withFrameContext,
                 indexedPath
             )
             if (normalized.nodes.length) return normalized
@@ -2391,6 +2369,22 @@ export class Opensteer {
         throw new Error(
             `Unable to build element path from counter ${counter} during ${action}.`
         )
+    }
+
+    private async tryBuildPathFromResolvedHandle(
+        handle: ElementHandle,
+        action: string,
+        counter: number
+    ): Promise<ElementPath | null> {
+        try {
+            return await this.buildPathFromResolvedHandle(handle, action, counter)
+        } catch (error) {
+            this.logDebugError(
+                `path persistence skipped for ${action} counter ${counter}`,
+                error
+            )
+            return null
+        }
     }
 
     private withIndexedIframeContext(
@@ -2420,11 +2414,66 @@ export class Opensteer {
         return normalizedBuilt
     }
 
+    private async withHandleIframeContext(
+        handle: ElementHandle,
+        path: ElementPath
+    ): Promise<ElementPath> {
+        const ownFrame = await handle.ownerFrame()
+        if (!ownFrame) {
+            return this.normalizePath(path)
+        }
+
+        let frame = ownFrame
+        let prefix: ElementPath['context'] = []
+        while (frame && frame !== this.page.mainFrame()) {
+            const parent = frame.parentFrame()
+            if (!parent) break
+
+            const frameElement = await frame.frameElement().catch(() => null)
+            if (!frameElement) break
+
+            try {
+                const frameElementPath =
+                    await buildElementPathFromHandle(frameElement)
+                if (frameElementPath?.nodes.length) {
+                    const segment: ElementPath['context'] = [
+                        ...cloneContextHops(frameElementPath.context),
+                        {
+                            kind: 'iframe',
+                            host: cloneElementPath(frameElementPath).nodes,
+                        },
+                    ]
+                    prefix = [...segment, ...prefix]
+                }
+            } finally {
+                await frameElement.dispose().catch(() => undefined)
+            }
+
+            frame = parent
+        }
+
+        if (!prefix.length) {
+            return this.normalizePath(path)
+        }
+
+        return this.normalizePath({
+            context: [...prefix, ...cloneContextHops(path.context)],
+            nodes: cloneElementPath(path).nodes,
+        })
+    }
+
     private async readPathFromCounterIndex(
         counter: number
     ): Promise<ElementPath | null> {
-        const snapshot = await this.ensureSnapshotWithCounters()
-        const indexed = snapshot.counterIndex?.get(counter)
+        if (
+            !this.snapshotCache ||
+            this.snapshotCache.url !== this.page.url() ||
+            !this.snapshotCache.counterIndex
+        ) {
+            return null
+        }
+
+        const indexed = this.snapshotCache.counterIndex.get(counter)
         if (!indexed) return null
         const normalized = this.normalizePath(indexed)
         if (!normalized.nodes.length) return null
@@ -2437,21 +2486,6 @@ export class Opensteer {
         const path = await buildElementPathFromSelector(this.page, selector)
         if (!path) return null
         return this.normalizePath(path)
-    }
-
-    private async ensureSnapshotWithCounters(): Promise<PreparedSnapshot> {
-        if (
-            !this.snapshotCache ||
-            !this.snapshotCache.counterBindings ||
-            this.snapshotCache.url !== this.page.url()
-        ) {
-            await this.snapshot({
-                mode: 'full',
-                withCounters: true,
-            })
-        }
-
-        return this.snapshotCache as PreparedSnapshot
     }
 
     private persistPath(
@@ -2807,18 +2841,6 @@ export class Opensteer {
             }
 
             if (normalized.element != null) {
-                const path = await this.tryBuildPathFromCounter(
-                    normalized.element
-                )
-                if (path) {
-                    fields.push({
-                        key: fieldKey,
-                        path,
-                        attribute: normalized.attribute,
-                    })
-                    return
-                }
-
                 fields.push({
                     key: fieldKey,
                     counter: normalized.element,
@@ -2872,16 +2894,6 @@ export class Opensteer {
             }
 
             if (fieldPlan.element != null) {
-                const path = await this.tryBuildPathFromCounter(fieldPlan.element)
-                if (path) {
-                    fields.push({
-                        key,
-                        path,
-                        attribute: fieldPlan.attribute,
-                    })
-                    continue
-                }
-
                 fields.push({
                     key,
                     counter: fieldPlan.element,
@@ -2950,12 +2962,7 @@ export class Opensteer {
         }
 
         if (counterRequests.length) {
-            const snapshot = await this.ensureSnapshotWithCounters()
-            const counterValues = await resolveCountersBatch(
-                this.page,
-                snapshot,
-                counterRequests
-            )
+            const counterValues = await resolveCountersBatch(this.page, counterRequests)
             Object.assign(result, counterValues)
         }
 
@@ -2992,9 +2999,7 @@ export class Opensteer {
 
             const path = await this.buildPathFromElement(field.counter)
             if (!path) {
-                throw new Error(
-                    `Unable to build element path from counter ${field.counter} for extraction field "${field.key}".`
-                )
+                continue
             }
 
             resolved.push({
