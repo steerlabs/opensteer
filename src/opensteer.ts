@@ -3108,9 +3108,9 @@ function matchesContextPrefix(
     strictHost: boolean
 ): boolean {
     for (let idx = 0; idx < size; idx += 1) {
-        const left = indexedPrefix[indexedPrefix.length - size + idx]
-        const right = builtContext[idx]
-        if (!left || !right || left.kind !== right.kind) {
+        const left = indexedPrefix[indexedPrefix.length - size + idx]!
+        const right = builtContext[idx]!
+        if (left.kind !== right.kind) {
             return false
         }
         if (
