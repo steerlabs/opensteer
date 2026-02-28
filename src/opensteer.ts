@@ -131,6 +131,7 @@ import { createCuaClient, resolveAgentConfig } from './agent/provider.js'
 import { OpensteerCuaAgentHandler } from './agent/handler.js'
 import { normalizeExecuteOptions } from './agent/client.js'
 import { OpensteerAgentBusyError } from './agent/errors.js'
+import { extractErrorMessage, normalizeError } from './error-normalization.js'
 
 interface PathResolutionResult {
     path: ElementPath | null
@@ -213,7 +214,9 @@ export class Opensteer {
 
         const rootDir = resolved.storage?.rootDir || process.cwd()
         this.namespace = resolveNamespace(resolved, rootDir)
-        this.storage = new LocalSelectorStorage(rootDir, this.namespace)
+        this.storage = new LocalSelectorStorage(rootDir, this.namespace, {
+            debug: Boolean(resolved.debug),
+        })
         this.pool = new BrowserPool(resolved.browser || {})
 
         if (cloudSelection.cloud) {
@@ -236,6 +239,19 @@ export class Opensteer {
         } else {
             this.cloud = null
         }
+    }
+
+    private logDebugError(context: string, error: unknown): void {
+        if (!this.config.debug) return
+
+        const normalized = normalizeError(error, 'Unknown error.')
+        const codeSuffix =
+            normalized.code && normalized.code.trim()
+                ? ` [${normalized.code.trim()}]`
+                : ''
+        console.warn(
+            `[opensteer] ${context}: ${normalized.message}${codeSuffix}`
+        )
     }
 
     private createLazyResolveCallback(model: string): AiResolveCallback {
@@ -364,7 +380,8 @@ export class Opensteer {
         let tabs: TabInfo[]
         try {
             tabs = await this.invokeCloudAction<TabInfo[]>('tabs', {})
-        } catch {
+        } catch (error) {
+            this.logDebugError('cloud page reference sync (tabs lookup) failed', error)
             return
         }
         if (!tabs.length) {
@@ -550,15 +567,7 @@ export class Opensteer {
                 try {
                     await this.syncLocalSelectorCacheToCloud()
                 } catch (error) {
-                    if (this.config.debug) {
-                        const message =
-                            error instanceof Error
-                                ? error.message
-                                : String(error)
-                        console.warn(
-                            `[opensteer] cloud selector cache sync failed: ${message}`
-                        )
-                    }
+                    this.logDebugError('cloud selector cache sync failed', error)
                 }
 
                 localRunId = this.cloud.localRunId || buildLocalRunId(this.namespace)
@@ -598,7 +607,12 @@ export class Opensteer {
                 this.cloud.sessionId = sessionId
                 this.cloud.cloudSessionUrl = session.cloudSessionUrl
 
-                await this.syncCloudPageRef().catch(() => undefined)
+                await this.syncCloudPageRef().catch((error) => {
+                    this.logDebugError(
+                        'cloud page reference sync after launch failed',
+                        error
+                    )
+                })
 
                 this.announceCloudSession({
                     sessionId: session.sessionId,
@@ -704,7 +718,9 @@ export class Opensteer {
     private async syncLocalSelectorCacheToCloud(): Promise<void> {
         if (!this.cloud) return
 
-        const entries = collectLocalSelectorCacheEntries(this.storage)
+        const entries = collectLocalSelectorCacheEntries(this.storage, {
+            debug: Boolean(this.config.debug),
+        })
         if (!entries.length) return
 
         await this.cloud.sessionClient.importSelectorCache({
@@ -715,9 +731,12 @@ export class Opensteer {
     async goto(url: string, options?: GotoOptions): Promise<void> {
         if (this.cloud) {
             await this.invokeCloudActionAndResetCache('goto', { url, options })
-            await this.syncCloudPageRef({ expectedUrl: url }).catch(
-                () => undefined
-            )
+            await this.syncCloudPageRef({ expectedUrl: url }).catch((error) => {
+                this.logDebugError(
+                    'cloud page reference sync after goto failed',
+                    error
+                )
+            })
             return
         }
 
@@ -1346,7 +1365,12 @@ export class Opensteer {
                 }
             )
             await this.syncCloudPageRef({ expectedUrl: result.url }).catch(
-                () => undefined
+                (error) => {
+                    this.logDebugError(
+                        'cloud page reference sync after newTab failed',
+                        error
+                    )
+                }
             )
             return result
         }
@@ -1360,7 +1384,12 @@ export class Opensteer {
     async switchTab(index: number): Promise<void> {
         if (this.cloud) {
             await this.invokeCloudActionAndResetCache('switchTab', { index })
-            await this.syncCloudPageRef().catch(() => undefined)
+            await this.syncCloudPageRef().catch((error) => {
+                this.logDebugError(
+                    'cloud page reference sync after switchTab failed',
+                    error
+                )
+            })
             return
         }
 
@@ -1372,7 +1401,12 @@ export class Opensteer {
     async closeTab(index?: number): Promise<void> {
         if (this.cloud) {
             await this.invokeCloudActionAndResetCache('closeTab', { index })
-            await this.syncCloudPageRef().catch(() => undefined)
+            await this.syncCloudPageRef().catch((error) => {
+                this.logDebugError(
+                    'cloud page reference sync after closeTab failed',
+                    error
+                )
+            })
             return
         }
 
@@ -1587,9 +1621,12 @@ export class Opensteer {
                 }
                 return await counterFn(handle)
             } catch (err) {
-                const message =
-                    err instanceof Error ? err.message : `${method} failed.`
-                throw new Error(message)
+                if (err instanceof Error) {
+                    throw err
+                }
+                throw new Error(
+                    `${method} failed. ${extractErrorMessage(err, 'Unknown error.')}`
+                )
             } finally {
                 await handle.dispose()
             }
@@ -1755,6 +1792,10 @@ export class Opensteer {
             return await this.invokeCloudAction<T>('extract', options)
         }
 
+        if (options.schema !== undefined) {
+            assertValidExtractSchemaRoot(options.schema)
+        }
+
         const storageKey = this.resolveStorageKey(options.description)
         const schemaHash = options.schema
             ? computeSchemaHash(options.schema)
@@ -1774,8 +1815,7 @@ export class Opensteer {
             try {
                 payload = normalizePersistedExtractPayload(stored.path)
             } catch (err) {
-                const message =
-                    err instanceof Error ? err.message : 'Unknown error'
+                const message = extractErrorMessage(err, 'Unknown error.')
                 const selectorFile = storageKey
                     ? this.storage.getSelectorPath(storageKey)
                     : 'unknown selector file'
@@ -1797,7 +1837,19 @@ export class Opensteer {
         }
 
         if (!fields.length) {
-            const planResult = await this.parseAiExtractPlan(options)
+            let planResult: ParsedAiExtractResult
+            try {
+                planResult = await this.parseAiExtractPlan(options)
+            } catch (error) {
+                const message = extractErrorMessage(error, 'Unknown error.')
+                const contextMessage = options.schema
+                    ? 'Schema extraction did not resolve deterministic field targets, so Opensteer attempted AI extraction planning.'
+                    : 'Opensteer attempted AI extraction planning.'
+                throw new Error(`${contextMessage} ${message}`, {
+                    cause: error,
+                })
+            }
+
             if (planResult.fields.length) {
                 fields.push(...planResult.fields)
             } else if (planResult.data !== undefined) {
@@ -2695,15 +2747,6 @@ export class Opensteer {
     private async buildFieldTargetsFromSchema(
         schema: unknown
     ): Promise<ExtractFieldTarget[]> {
-        if (!schema || typeof schema !== 'object') {
-            return []
-        }
-
-        // Top-level arrays aren't a valid schema root
-        if (Array.isArray(schema)) {
-            return []
-        }
-
         const fields: ExtractFieldTarget[] = []
         await this.collectFieldTargetsFromSchemaObject(
             schema as Record<string, unknown>,
@@ -2794,6 +2837,10 @@ export class Opensteer {
                         path,
                         attribute: normalized.attribute,
                     })
+                } else {
+                    throw new Error(
+                        `Extraction schema field "${fieldKey}" uses selector "${normalized.selector}", but no matching element path could be built from the current page snapshot.`
+                    )
                 }
                 return
             }
@@ -3272,13 +3319,30 @@ function isPrimitiveLike(value: unknown): boolean {
     )
 }
 
+function assertValidExtractSchemaRoot(schema: unknown): void {
+    if (!schema || typeof schema !== 'object') {
+        throw new Error(
+            'Invalid extraction schema: expected a JSON object at the top level.'
+        )
+    }
+
+    if (Array.isArray(schema)) {
+        throw new Error(
+            'Invalid extraction schema: top-level arrays are not supported. Wrap array fields in an object (for example {"items":[...]}).'
+        )
+    }
+}
+
 function parseAiExtractResponse(response: unknown): ExtractionPlan {
     if (typeof response === 'string') {
         const trimmed = stripCodeFence(response)
         try {
             return JSON.parse(trimmed) as ExtractionPlan
         } catch {
-            throw new Error('LLM extraction returned a non-JSON string.')
+            const preview = summarizeForError(trimmed)
+            throw new Error(
+                `LLM extraction returned a non-JSON response.${preview ? ` Preview: "${preview}"` : ''}`
+            )
         }
     }
 
@@ -3312,6 +3376,13 @@ function stripCodeFence(input: string): string {
     if (lastFence === -1) return withoutHeader.trim()
 
     return withoutHeader.slice(0, lastFence).trim()
+}
+
+function summarizeForError(input: string, maxLength = 180): string {
+    const compact = input.replace(/\s+/g, ' ').trim()
+    if (!compact) return ''
+    if (compact.length <= maxLength) return compact
+    return `${compact.slice(0, maxLength)}...`
 }
 
 function getScrollDelta(options: ScrollOptions): { x: number; y: number } {

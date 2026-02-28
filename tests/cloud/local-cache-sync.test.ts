@@ -1,7 +1,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { collectLocalSelectorCacheEntries } from '../../src/cloud/local-cache-sync.js'
 import { LocalSelectorStorage } from '../../src/storage/local.js'
 
@@ -124,5 +124,39 @@ describe('collectLocalSelectorCacheEntries', () => {
                 siteOrigin: 'https://example.com',
             })
         )
+    })
+
+    it('logs malformed selector cache files only when debug is enabled', () => {
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+        const quietRoot = fs.mkdtempSync(
+            path.join(os.tmpdir(), 'opensteer-cloud-sync-quiet-')
+        )
+        const quietStorage = new LocalSelectorStorage(quietRoot, 'cloud-suite')
+        quietStorage.ensureDirs()
+        fs.writeFileSync(
+            path.join(quietStorage.getNamespaceDir(), 'broken.json'),
+            '{bad json',
+            'utf8'
+        )
+        collectLocalSelectorCacheEntries(quietStorage)
+        expect(warnSpy).not.toHaveBeenCalled()
+
+        const debugRoot = fs.mkdtempSync(
+            path.join(os.tmpdir(), 'opensteer-cloud-sync-debug-')
+        )
+        const debugStorage = new LocalSelectorStorage(debugRoot, 'cloud-suite', {
+            debug: true,
+        })
+        debugStorage.ensureDirs()
+        fs.writeFileSync(
+            path.join(debugStorage.getNamespaceDir(), 'broken.json'),
+            '{bad json',
+            'utf8'
+        )
+        collectLocalSelectorCacheEntries(debugStorage, { debug: true })
+        expect(warnSpy).toHaveBeenCalledTimes(1)
+
+        warnSpy.mockRestore()
     })
 })
