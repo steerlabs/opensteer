@@ -34,4 +34,10 @@ describe('ai/model', () => {
             id: 'claude-sonnet-4-5-20250929',
         })
     })
+
+    it('throws for unsupported explicit provider prefixes', async () => {
+        await expect(getModelProvider('unknown-provider/model-a')).rejects.toThrow(
+            'Unsupported model provider prefix "unknown-provider"'
+        )
+    })
 })

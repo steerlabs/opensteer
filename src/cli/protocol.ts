@@ -1,3 +1,5 @@
+import type { StructuredErrorInfo } from '../error-normalization.js'
+
 export interface CliRequest {
     id: number
     command: string
@@ -9,4 +11,5 @@ export interface CliResponse {
     ok: boolean
     result?: unknown
     error?: string
+    errorInfo?: StructuredErrorInfo
 }

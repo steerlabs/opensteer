@@ -3,6 +3,7 @@ import path from 'path'
 import type { CloudSelectorCacheImportEntry } from './contracts.js'
 import type { SelectorFile } from '../storage/local.js'
 import type { LocalSelectorStorage } from '../storage/local.js'
+import { extractErrorMessage } from '../error-normalization.js'
 
 export function collectLocalSelectorCacheEntries(
     storage: LocalSelectorStorage
@@ -59,7 +60,14 @@ function readSelectorFile(filePath: string): SelectorFile<unknown> | null {
     try {
         const raw = fs.readFileSync(filePath, 'utf8')
         return JSON.parse(raw) as SelectorFile<unknown>
-    } catch {
+    } catch (error) {
+        const message = extractErrorMessage(
+            error,
+            'Unable to parse selector cache file JSON.'
+        )
+        console.warn(
+            `[opensteer] failed to read local selector cache file "${filePath}": ${message}`
+        )
         return null
     }
 }

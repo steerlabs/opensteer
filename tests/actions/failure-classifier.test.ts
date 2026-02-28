@@ -95,4 +95,16 @@ Call log:
             details: { observation: 'hidden' },
         })
     })
+
+    it('preserves original message for unknown failures', () => {
+        const failure = classifyActionFailure({
+            action: 'click',
+            error: new Error('Browser target closed unexpectedly.'),
+            fallbackMessage: 'Click failed.',
+        })
+
+        expect(failure.code).toBe('UNKNOWN')
+        expect(failure.classificationSource).toBe('unknown')
+        expect(failure.message).toBe('Browser target closed unexpectedly.')
+    })
 })
