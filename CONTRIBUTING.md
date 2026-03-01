@@ -74,6 +74,8 @@ RUN_LIVE_WEB=1 pnpm run test:live-web
 - Keep PRs focused and scoped to a single problem.
 - Add or update tests for behavior changes and bug fixes.
 - Update docs when public behavior, env vars, or command usage changes.
+- For skill changes, keep content in `skills/<skill-name>/` and ensure linked
+  reference docs resolve with relative Markdown paths.
 - Do not include unrelated refactors in feature/fix PRs.
 - Avoid new dependencies unless there is a clear need.
 
