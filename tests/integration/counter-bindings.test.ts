@@ -1,8 +1,15 @@
+import { createHash } from 'crypto'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
 import * as cheerio from 'cheerio'
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BrowserContext, Page } from 'playwright'
 import { Opensteer } from '../../src/opensteer.js'
+import { OpensteerActionError } from '../../src/actions/errors.js'
+import type { ActionFailureCode } from '../../src/action-failure.js'
 import { resolveElementPath } from '../../src/element-path/resolver.js'
+import type { ElementPath } from '../../src/element-path/types.js'
 import { prepareSnapshot } from '../../src/html/pipeline.js'
 import { closeTestBrowser, createTestPage } from '../helpers/browser.js'
 import { setFixture } from '../helpers/fixture.js'
@@ -23,7 +30,7 @@ describe('integration/counter-bindings', () => {
         await closeTestBrowser()
     })
 
-    it('keeps sticky counters for unchanged nodes across snapshots', async () => {
+    it('reassigns counters on every snapshot pass', async () => {
         await setFixture(
             page,
             `
@@ -46,7 +53,12 @@ describe('integration/counter-bindings', () => {
             const badge = document.createElement('span')
             badge.id = 'minor-change'
             badge.textContent = 'new sibling'
-            document.body.appendChild(badge)
+            const anchor = document.querySelector('#save')
+            if (anchor?.parentElement) {
+                anchor.parentElement.insertBefore(badge, anchor)
+            } else {
+                document.body.appendChild(badge)
+            }
         })
 
         const second = await opensteer.snapshot({ mode: 'full', withCounters: true })
@@ -56,10 +68,10 @@ describe('integration/counter-bindings', () => {
             10
         )
 
-        expect(secondCounter).toBe(firstCounter)
+        expect(secondCounter).not.toBe(firstCounter)
     })
 
-    it('fails hard on stale counters after node replacement and succeeds after a new snapshot', async () => {
+    it('returns not found when a counter target is replaced and succeeds after a new snapshot', async () => {
         await setFixture(
             page,
             `
@@ -93,9 +105,14 @@ describe('integration/counter-bindings', () => {
             if (status) status.textContent = 'idle'
         })
 
-        await expect(
-            opensteer.click({ element: staleCounter, button: 'left', clickCount: 1 })
-        ).rejects.toThrow(/snapshot\(\) again/i)
+        await expectActionFailure(
+            opensteer.click({
+                element: staleCounter,
+                button: 'left',
+                clickCount: 1,
+            }),
+            'TARGET_NOT_FOUND'
+        )
 
         const second = await opensteer.snapshot({ mode: 'full', withCounters: true })
         const second$ = cheerio.load(second)
@@ -104,7 +121,6 @@ describe('integration/counter-bindings', () => {
             10
         )
         expect(Number.isFinite(freshCounter)).toBe(true)
-        expect(freshCounter).not.toBe(staleCounter)
 
         await opensteer.click({ element: freshCounter, button: 'left', clickCount: 1 })
         expect((await page.textContent('#status'))?.trim()).toBe('clicked')
@@ -219,7 +235,137 @@ describe('integration/counter-bindings', () => {
         expect((await page.textContent('#status'))?.trim()).toBe('clicked')
     })
 
-    it('extracts counter fields in batch and fails when a bound node is replaced', async () => {
+    it('does not fail actions when optional path persistence conversion fails', async () => {
+        await setFixture(
+            page,
+            `
+            <button id="save" onclick="document.querySelector('#status').textContent='clicked'">Save</button>
+            <p id="status">idle</p>
+            `
+        )
+
+        const opensteer = Opensteer.from(page)
+        const html = await opensteer.snapshot({ mode: 'full', withCounters: true })
+        const $$ = cheerio.load(html)
+        const counter = Number.parseInt($$('#save').attr('c') || '', 10)
+        expect(Number.isFinite(counter)).toBe(true)
+
+        const access = opensteer as unknown as {
+            buildPathFromResolvedHandle: (
+                ...args: unknown[]
+            ) => Promise<ElementPath>
+        }
+        const persistSpy = vi
+            .spyOn(access, 'buildPathFromResolvedHandle')
+            .mockRejectedValueOnce(new Error('forced persistence path failure'))
+
+        const result = await opensteer.click({
+            description: 'persist path failure should not fail click',
+            element: counter,
+            button: 'left',
+            clickCount: 1,
+        })
+
+        expect(result.persisted).toBe(false)
+        expect((await page.textContent('#status'))?.trim()).toBe('clicked')
+        persistSpy.mockRestore()
+    })
+
+    it('fails extraction caching when a counter field cannot be converted to a path', async () => {
+        const storageRoot = fs.mkdtempSync(
+            path.join(os.tmpdir(), 'opensteer-counter-cache-')
+        )
+        const description = 'counter-backed extraction cache must stay complete'
+
+        try {
+            await setFixture(
+                page,
+                `
+                <h1 id="title">Main title</h1>
+                `
+            )
+
+            const opensteer = Opensteer.from(page, {
+                name: 'counter-cache-hard-fail',
+                storage: {
+                    rootDir: storageRoot,
+                },
+            })
+
+            const html = await opensteer.snapshot({ mode: 'full', withCounters: true })
+            const $$ = cheerio.load(html)
+            const counter = Number.parseInt($$('#title').attr('c') || '', 10)
+            expect(Number.isFinite(counter)).toBe(true)
+
+            const access = opensteer as unknown as {
+                buildPathFromElement: (
+                    counter: number
+                ) => Promise<ElementPath | null>
+            }
+            const pathSpy = vi
+                .spyOn(access, 'buildPathFromElement')
+                .mockResolvedValueOnce(null)
+
+            try {
+                await expect(
+                    opensteer.extractFromPlan<{ title: string }>({
+                        description,
+                        schema: { title: 'string' },
+                        plan: {
+                            fields: {
+                                title: {
+                                    element: counter,
+                                },
+                            },
+                        },
+                    })
+                ).rejects.toThrow(
+                    'Unable to persist extraction schema field "title"'
+                )
+            } finally {
+                pathSpy.mockRestore()
+            }
+
+            const storageKey = createHash('sha256')
+                .update(description)
+                .digest('hex')
+                .slice(0, 16)
+
+            expect(opensteer.getStorage().readSelector(storageKey)).toBeNull()
+        } finally {
+            fs.rmSync(storageRoot, { recursive: true, force: true })
+        }
+    })
+
+    it('fails snapshot when live counter sync cannot map serialized nodes', async () => {
+        await setFixture(
+            page,
+            `
+            <button id="save">Save</button>
+            `
+        )
+
+        const framesSpy = vi.spyOn(page, 'frames').mockReturnValue([])
+
+        try {
+            await expect(
+                prepareSnapshot(page, {
+                    mode: 'full',
+                    withCounters: true,
+                    markInteractive: true,
+                })
+            ).rejects.toThrow('Failed to synchronize snapshot counters with the live DOM')
+        } finally {
+            framesSpy.mockRestore()
+        }
+
+        const assignedCounterCount = await page.evaluate(
+            () => document.querySelectorAll('[c]').length
+        )
+        expect(assignedCounterCount).toBe(0)
+    })
+
+    it('extracts counter fields in batch and returns null when a bound node is replaced', async () => {
         await setFixture(
             page,
             `
@@ -288,13 +434,20 @@ describe('integration/counter-bindings', () => {
             oldNode.replaceWith(replacement)
         })
 
-        await expect(
-            opensteer.extract({
-                schema: {
-                    inside: { element: insideCounter },
-                },
-            })
-        ).rejects.toThrow(/snapshot\(\) again/i)
+        const afterReplacement = await opensteer.extract<{
+            inside: string | null
+            kind: string | null
+        }>({
+            schema: {
+                inside: { element: insideCounter },
+                kind: { element: insideCounter, attribute: 'data-kind' },
+            },
+        })
+
+        expect(afterReplacement).toEqual({
+            inside: null,
+            kind: null,
+        })
     })
 
     it('uses text content by default and attributes only when requested for counter fields', async () => {
@@ -404,7 +557,7 @@ describe('integration/counter-bindings', () => {
         })
     })
 
-    it('fails with an explicit ambiguity error when duplicate node ids appear', async () => {
+    it('fails with an explicit ambiguity error when duplicate c values appear', async () => {
         await setFixture(
             page,
             `
@@ -429,17 +582,22 @@ describe('integration/counter-bindings', () => {
                 return
             }
 
-            const nodeId = target.getAttribute('data-os-node-id')
-            if (!nodeId) return
-            duplicate.setAttribute('data-os-node-id', nodeId)
+            const counter = target.getAttribute('c')
+            if (!counter) return
+            duplicate.setAttribute('c', counter)
         })
 
-        await expect(
-            opensteer.click({ element: targetCounter, button: 'left', clickCount: 1 })
-        ).rejects.toThrow(/ambiguous|snapshot\(\) again/i)
+        await expectActionFailure(
+            opensteer.click({
+                element: targetCounter,
+                button: 'left',
+                clickCount: 1,
+            }),
+            'TARGET_AMBIGUOUS'
+        )
     })
 
-    it('fails with frame unavailable when an iframe target is removed', async () => {
+    it('fails with not found when an iframe target is removed', async () => {
         await setFixture(
             page,
             `
@@ -468,9 +626,10 @@ describe('integration/counter-bindings', () => {
             document.querySelector('#frame-host')?.remove()
         })
 
-        await expect(
-            opensteer.input({ element: counter, text: 'should-fail' })
-        ).rejects.toThrow(/frame.*unavailable|snapshot\(\) again/i)
+        await expectActionFailure(
+            opensteer.input({ element: counter, text: 'should-fail' }),
+            'TARGET_NOT_FOUND'
+        )
     })
 
     it('ignores page-authored c attributes when assigning runtime counters', async () => {
@@ -498,7 +657,7 @@ describe('integration/counter-bindings', () => {
         expect(counterB).not.toBe(1000)
     })
 
-    it('keeps runtime-owned counters stable when page code mutates c attributes', async () => {
+    it('overwrites page-mutated c attributes on the next snapshot', async () => {
         await setFixture(
             page,
             `
@@ -527,11 +686,11 @@ describe('integration/counter-bindings', () => {
             10
         )
 
-        expect(secondCounter).toBe(firstCounter)
+        expect(Number.isFinite(secondCounter)).toBe(true)
         expect(secondCounter).not.toBe(999999)
     })
 
-    it('fails snapshot when multiple nodes claim the same runtime-owned counter', async () => {
+    it('reassigns unique counters even when the page has duplicate c attributes', async () => {
         await setFixture(
             page,
             `
@@ -544,28 +703,25 @@ describe('integration/counter-bindings', () => {
         await opensteer.snapshot({ mode: 'full', withCounters: true })
 
         await page.evaluate(() => {
-            const a = document.querySelector('#a') as
-                | (Element & Record<string, unknown>)
-                | null
-            const b = document.querySelector('#b') as
-                | (Element & Record<string, unknown>)
-                | null
+            const a = document.querySelector('#a')
+            const b = document.querySelector('#b')
             if (!a || !b) return
 
-            const value = Number(a['__opensteerCounterValue'])
-            if (!Number.isFinite(value) || value <= 0) return
-
-            b['__opensteerCounterOwner'] = true
-            b['__opensteerCounterValue'] = value
-            b.setAttribute('c', String(value))
+            a.setAttribute('c', '777')
+            b.setAttribute('c', '777')
         })
 
-        await expect(
-            opensteer.snapshot({ mode: 'full', withCounters: true })
-        ).rejects.toThrow(/multiple nodes|snapshot\(\) again|ambiguous/i)
+        const html = await opensteer.snapshot({ mode: 'full', withCounters: true })
+        const $$ = cheerio.load(html)
+        const counterA = Number.parseInt($$('#a').attr('c') || '', 10)
+        const counterB = Number.parseInt($$('#b').attr('c') || '', 10)
+
+        expect(Number.isFinite(counterA)).toBe(true)
+        expect(Number.isFinite(counterB)).toBe(true)
+        expect(counterA).not.toBe(counterB)
     })
 
-    it('treats counters as stale after an action replaces the original element node', async () => {
+    it('treats counters as not found after an action replaces the original element node', async () => {
         await setFixture(
             page,
             `
@@ -596,9 +752,10 @@ describe('integration/counter-bindings', () => {
         await opensteer.click({ element: counter, button: 'left', clickCount: 1 })
         expect((await page.textContent('#status'))?.trim()).toBe('replaced')
 
-        await expect(
-            opensteer.click({ element: counter, button: 'left', clickCount: 1 })
-        ).rejects.toThrow(/snapshot\(\) again/i)
+        await expectActionFailure(
+            opensteer.click({ element: counter, button: 'left', clickCount: 1 }),
+            'TARGET_NOT_FOUND'
+        )
     })
 
     it('does not expose closed shadow-root elements as counter-addressable', async () => {
@@ -624,3 +781,17 @@ describe('integration/counter-bindings', () => {
         expect($$('#closed-host os-shadow-root').length).toBe(0)
     })
 })
+
+async function expectActionFailure(
+    operation: Promise<unknown>,
+    code: ActionFailureCode
+): Promise<void> {
+    try {
+        await operation
+        throw new Error('Expected action to fail.')
+    } catch (error) {
+        expect(error).toBeInstanceOf(OpensteerActionError)
+        const actionError = error as OpensteerActionError
+        expect(actionError.failure.code).toBe(code)
+    }
+}
