@@ -233,7 +233,7 @@ describe('integration/extraction-cleaning', () => {
             })
         })
 
-        it('counter bindings match c attrs in cleaned html', async () => {
+        it('counter index keys match c attrs in cleaned html', async () => {
             const snapshot = await prepareSnapshot(page, {
                 mode: 'extraction',
                 withCounters: true,
@@ -246,8 +246,8 @@ describe('integration/extraction-cleaning', () => {
                 if (Number.isFinite(value)) htmlCounters.add(value)
             })
 
-            const bindingKeys = new Set(snapshot.counterBindings?.keys() || [])
-            expect(htmlCounters).toEqual(bindingKeys)
+            const indexKeys = new Set(snapshot.counterIndex?.keys() || [])
+            expect(htmlCounters).toEqual(indexKeys)
         })
     })
 

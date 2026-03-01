@@ -107,7 +107,8 @@ await opensteer.goto('https://example.com', { waitUntil: 'networkidle', settleMs
 
 Return a cleaned HTML snapshot of the current page. Elements are annotated
 with `c="..."` counters that can be used in subsequent actions via the
-`element` option.
+`element` option. Counters are reassigned on each snapshot and synced to the
+live DOM.
 
 ```ts
 const html = await opensteer.snapshot()
@@ -136,7 +137,7 @@ const jpeg = await opensteer.screenshot({ type: 'jpeg', quality: 80, fullPage: t
 All interaction methods resolve elements through the resolution chain:
 
 1. Persisted path for `description` (if previously stored)
-2. `element` counter from the most recent snapshot
+2. `element` counter lookup in the live DOM
 3. Explicit CSS `selector`
 4. Built-in LLM resolution (requires `description`)
 
