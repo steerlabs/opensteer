@@ -124,6 +124,14 @@ in this order: `.env.<NODE_ENV>.local`, `.env.local` (except in test),
 `.env.<NODE_ENV>`, `.env`. Existing `process.env` values are not overwritten.
 Set `OPENSTEER_DISABLE_DOTENV_AUTOLOAD=true` to disable.
 
+## Agent Skills
+
+Opensteer maintains first-party agent skills in-repo under
+[`skills/`](skills/README.md).
+
+- Skill: [`skills/opensteer/SKILL.md`](skills/opensteer/SKILL.md)
+- Supporting references: [`skills/opensteer/references/`](skills/opensteer/references)
+
 ## Docs
 
 - [Getting Started](docs/getting-started.md)
@@ -133,6 +141,7 @@ Set `OPENSTEER_DISABLE_DOTENV_AUTOLOAD=true` to disable.
 - [Selectors and Storage](docs/selectors.md)
 - [HTML Cleaning and Snapshot Modes](docs/html-cleaning.md)
 - [Live Web Validation Suite](docs/live-web-tests.md)
+- [Skills](docs/skills.md)
 
 ## Community
 
