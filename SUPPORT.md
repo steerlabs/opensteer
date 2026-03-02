@@ -2,7 +2,7 @@
 
 ## Getting Help
 
-Use [GitHub issues](https://github.com/opensteer-ai/opensteer/issues) for:
+Use [GitHub issues](https://github.com/steerlabs/opensteer/issues) for:
 
 - bug reports
 - usage questions

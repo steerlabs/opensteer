@@ -134,6 +134,18 @@ Opensteer maintains first-party agent skills in-repo under
 - Supporting references: [`skills/opensteer/references/`](skills/opensteer/references)
 - Supporting references: [`skills/electron/references/`](skills/electron/references)
 
+### Claude Code Marketplace
+
+This repository also publishes a Claude Code plugin marketplace:
+[`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json)
+
+Install from Claude Code:
+
+```text
+/plugin marketplace add steerlabs/opensteer
+/plugin install opensteer@opensteer-marketplace
+```
+
 ## Docs
 
 - [Getting Started](docs/getting-started.md)
