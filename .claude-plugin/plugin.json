@@ -1,0 +1,10 @@
+{
+  "name": "opensteer",
+  "version": "0.5.0",
+  "description": "Opensteer browser automation skills for Claude Code, including web and Electron workflows.",
+  "author": {
+    "name": "timjang"
+  },
+  "repository": "https://github.com/steerlabs/opensteer",
+  "homepage": "https://github.com/steerlabs/opensteer"
+}

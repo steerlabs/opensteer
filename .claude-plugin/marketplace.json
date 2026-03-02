@@ -1,0 +1,16 @@
+{
+  "name": "opensteer-marketplace",
+  "description": "Official Opensteer plugin marketplace for Claude Code.",
+  "metadata": {
+    "description": "Browser automation plugins and skills maintained by Opensteer."
+  },
+  "owner": {
+    "name": "timjang"
+  },
+  "plugins": [
+    {
+      "name": "opensteer",
+      "source": "./"
+    }
+  ]
+}
