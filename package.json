@@ -81,6 +81,6 @@
     ],
     "repository": {
         "type": "git",
-        "url": "https://github.com/opensteer-ai/opensteer"
+        "url": "https://github.com/steerlabs/opensteer"
     }
 }
