@@ -26,3 +26,4 @@ skills/<skill-name>/
 ## Built-in Skills
 
 - `opensteer`: [skills/opensteer/SKILL.md](./opensteer/SKILL.md)
+- `electron`: [skills/electron/SKILL.md](./electron/SKILL.md)
