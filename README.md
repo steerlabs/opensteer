@@ -130,7 +130,9 @@ Opensteer maintains first-party agent skills in-repo under
 [`skills/`](skills/README.md).
 
 - Skill: [`skills/opensteer/SKILL.md`](skills/opensteer/SKILL.md)
+- Skill: [`skills/electron/SKILL.md`](skills/electron/SKILL.md)
 - Supporting references: [`skills/opensteer/references/`](skills/opensteer/references)
+- Supporting references: [`skills/electron/references/`](skills/electron/references)
 
 ## Docs
 
