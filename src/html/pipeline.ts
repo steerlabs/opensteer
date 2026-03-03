@@ -45,6 +45,81 @@ function applyCleaner(mode: SnapshotMode, html: string): string {
     }
 }
 
+interface NodeIdOccurrence {
+    element: DomHandlerElement
+    order: number
+}
+
+function canonicalizeDuplicateNodeIds($: cheerio.CheerioAPI): void {
+    const occurrencesByNodeId = new Map<string, NodeIdOccurrence[]>()
+    let order = 0
+
+    $('*').each(function () {
+        const element = this as DomHandlerElement
+        const nodeId = $(element).attr(OS_NODE_ID_ATTR)
+        if (!nodeId) {
+            order += 1
+            return
+        }
+
+        const list = occurrencesByNodeId.get(nodeId) || []
+        list.push({
+            element,
+            order,
+        })
+        occurrencesByNodeId.set(nodeId, list)
+        order += 1
+    })
+
+    for (const occurrences of occurrencesByNodeId.values()) {
+        if (occurrences.length <= 1) continue
+
+        const canonical = pickCanonicalNodeIdOccurrence($, occurrences)
+        for (const occurrence of occurrences) {
+            if (occurrence.element === canonical.element) continue
+            $(occurrence.element).removeAttr(OS_NODE_ID_ATTR)
+        }
+    }
+}
+
+function pickCanonicalNodeIdOccurrence(
+    $: cheerio.CheerioAPI,
+    occurrences: NodeIdOccurrence[]
+): NodeIdOccurrence {
+    let best = occurrences[0]
+    let bestScore = scoreNodeIdOccurrence($, best.element)
+
+    for (let i = 1; i < occurrences.length; i += 1) {
+        const candidate = occurrences[i]
+        const candidateScore = scoreNodeIdOccurrence($, candidate.element)
+        if (
+            candidateScore > bestScore ||
+            (candidateScore === bestScore && candidate.order < best.order)
+        ) {
+            best = candidate
+            bestScore = candidateScore
+        }
+    }
+
+    return best
+}
+
+function scoreNodeIdOccurrence(
+    $: cheerio.CheerioAPI,
+    element: DomHandlerElement
+): number {
+    const el = $(element)
+    const descendantCount = el.find('*').length
+    const normalizedTextLength = el.text().replace(/\s+/g, ' ').trim().length
+    const attributeCount = Object.keys(el.attr() || {}).length
+
+    return (
+        descendantCount * 100 +
+        normalizedTextLength * 10 +
+        attributeCount
+    )
+}
+
 async function assignCounters(
     page: Page,
     html: string,
@@ -55,6 +130,7 @@ async function assignCounters(
     counterIndex: Map<number, ElementPath>
 }> {
     const $ = cheerio.load(html, { xmlMode: false })
+    canonicalizeDuplicateNodeIds($)
     const counterIndex = new Map<number, ElementPath>()
 
     let nextCounter = 1
@@ -280,6 +356,13 @@ function stripNodeIds(html: string): string {
     return $.html()
 }
 
+function isLiveCounterSyncFailure(error: unknown): boolean {
+    if (!(error instanceof Error)) return false
+    return error.message.startsWith(
+        'Failed to synchronize snapshot counters with the live DOM:'
+    )
+}
+
 export async function prepareSnapshot(
     page: Page,
     options: SnapshotOptions = {}
@@ -288,47 +371,68 @@ export async function prepareSnapshot(
     const withCounters = options.withCounters ?? true
     const shouldMarkInteractive = options.markInteractive ?? true
 
-    if (shouldMarkInteractive) {
-        await markInteractiveElements(page)
-    }
+    const maxAttempts = withCounters ? 4 : 1
+    let lastCounterSyncError: unknown = null
 
-    const serialized = await serializePageHTML(page)
-    const rawHtml = serialized.html
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        if (shouldMarkInteractive) {
+            await markInteractiveElements(page)
+        }
 
-    const processedHtml = rawHtml
-    const reducedHtml = applyCleaner(mode, processedHtml)
+        const serialized = await serializePageHTML(page)
+        const rawHtml = serialized.html
 
-    let cleanedHtml = reducedHtml
-    let counterIndex: Map<number, ElementPath> | null = null
+        const processedHtml = rawHtml
+        const reducedHtml = applyCleaner(mode, processedHtml)
 
-    if (withCounters) {
-        const counted = await assignCounters(
-            page,
+        let cleanedHtml = reducedHtml
+        let counterIndex: Map<number, ElementPath> | null = null
+
+        if (withCounters) {
+            try {
+                const counted = await assignCounters(
+                    page,
+                    reducedHtml,
+                    serialized.nodePaths,
+                    serialized.nodeMeta
+                )
+                cleanedHtml = counted.html
+                counterIndex = counted.counterIndex
+            } catch (error) {
+                if (
+                    attempt < maxAttempts &&
+                    isLiveCounterSyncFailure(error)
+                ) {
+                    lastCounterSyncError = error
+                    continue
+                }
+                throw error
+            }
+        } else {
+            cleanedHtml = stripNodeIds(cleanedHtml)
+        }
+
+        // cleanForExtraction uses a compact serializer that omits html/head/body,
+        // but cheerio operations in assignCounters/stripNodeIds re-add them.
+        // Strip them again so the final output stays compact.
+        if (mode === 'extraction') {
+            const $unwrap = cheerio.load(cleanedHtml, { xmlMode: false })
+            cleanedHtml = $unwrap('body').html()?.trim() || cleanedHtml
+        }
+
+        return {
+            mode,
+            url: page.url(),
+            rawHtml,
+            processedHtml,
             reducedHtml,
-            serialized.nodePaths,
-            serialized.nodeMeta
-        )
-        cleanedHtml = counted.html
-        counterIndex = counted.counterIndex
-    } else {
-        cleanedHtml = stripNodeIds(cleanedHtml)
+            cleanedHtml,
+            counterIndex,
+        }
     }
 
-    // cleanForExtraction uses a compact serializer that omits html/head/body,
-    // but cheerio operations in assignCounters/stripNodeIds re-add them.
-    // Strip them again so the final output stays compact.
-    if (mode === 'extraction') {
-        const $unwrap = cheerio.load(cleanedHtml, { xmlMode: false })
-        cleanedHtml = $unwrap('body').html()?.trim() || cleanedHtml
-    }
-
-    return {
-        mode,
-        url: page.url(),
-        rawHtml,
-        processedHtml,
-        reducedHtml,
-        cleanedHtml,
-        counterIndex,
-    }
+    throw (
+        lastCounterSyncError ||
+        new Error('Failed to prepare snapshot after retrying counter sync.')
+    )
 }
