@@ -25,6 +25,27 @@ const SKILLS_INSTALLER_SCRIPT = join(
     'cli',
     'skills-installer.js'
 )
+const SKILLS_HELP_TEXT = `Usage: opensteer skills <install|add> [options]
+
+Installs the first-party Opensteer skill using the upstream "skills" CLI.
+
+Commands:
+  install                  Install the opensteer skill
+  add                      Alias for install
+
+Supported Options:
+  -a, --agent <agents...>  Target specific agent(s)
+  -g, --global             Install globally
+  -y, --yes                Skip confirmations
+  --copy                   Copy files instead of symlinking
+  --all                    Install to all agents
+  -h, --help               Show this help
+
+Examples:
+  opensteer skills install
+  opensteer skills add --agent codex --global --yes
+  opensteer skills install --all --yes
+`
 
 const CONNECT_TIMEOUT = 15000
 const POLL_INTERVAL = 100
@@ -742,7 +763,31 @@ function toObject(value) {
     return value
 }
 
+function isSkillsHelpRequest(args) {
+    if (args.length === 0) return true
+
+    const [subcommand, ...rest] = args
+    if (subcommand === 'help' || subcommand === '--help' || subcommand === '-h') {
+        return true
+    }
+
+    if (subcommand !== 'install' && subcommand !== 'add') {
+        return false
+    }
+
+    return rest.includes('--help') || rest.includes('-h')
+}
+
+function printSkillsHelp() {
+    process.stdout.write(SKILLS_HELP_TEXT)
+}
+
 async function runSkillsSubcommand(args) {
+    if (isSkillsHelpRequest(args)) {
+        printSkillsHelp()
+        return
+    }
+
     if (!existsSync(SKILLS_INSTALLER_SCRIPT)) {
         throw new Error(
             `Skills installer module not found: ${SKILLS_INSTALLER_SCRIPT}. Run the build script first.`
