@@ -371,14 +371,14 @@ export async function prepareSnapshot(
     const withCounters = options.withCounters ?? true
     const shouldMarkInteractive = options.markInteractive ?? true
 
-    if (shouldMarkInteractive) {
-        await markInteractiveElements(page)
-    }
-
     const maxAttempts = withCounters ? 4 : 1
     let lastCounterSyncError: unknown = null
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        if (shouldMarkInteractive) {
+            await markInteractiveElements(page)
+        }
+
         const serialized = await serializePageHTML(page)
         const rawHtml = serialized.html
 

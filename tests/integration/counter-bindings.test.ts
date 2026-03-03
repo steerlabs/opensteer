@@ -401,6 +401,52 @@ describe('integration/counter-bindings', () => {
         expect(assignedCounterCount).toBeGreaterThan(0)
     })
 
+    it('re-marks interactive nodes before each retry attempt', async () => {
+        await setFixture(
+            page,
+            `
+            <button id="save">Save</button>
+            <script>
+              setTimeout(() => {
+                const input = document.createElement('input')
+                input.id = 'late-input'
+                input.placeholder = 'Late search'
+                document.body.appendChild(input)
+              }, 0)
+            </script>
+            `
+        )
+
+        const originalFrames = page.frames.bind(page)
+        let calls = 0
+        const framesSpy = vi.spyOn(page, 'frames').mockImplementation(() => {
+            calls += 1
+            if (calls === 1) return []
+            return originalFrames()
+        })
+
+        const snapshot = await (async () => {
+            try {
+                return await prepareSnapshot(page, {
+                    mode: 'action',
+                    withCounters: true,
+                    markInteractive: true,
+                })
+            } finally {
+                framesSpy.mockRestore()
+            }
+        })()
+
+        expect(calls).toBeGreaterThan(1)
+        const lateInputExists = await page.evaluate(() =>
+            Boolean(document.querySelector('#late-input'))
+        )
+        expect(lateInputExists).toBe(true)
+
+        const $$ = cheerio.load(snapshot.cleanedHtml)
+        expect($$('input[placeholder="Late search"]').length).toBe(1)
+    })
+
     it('extracts counter fields in batch and returns null when a bound node is replaced', async () => {
         await setFixture(
             page,
