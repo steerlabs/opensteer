@@ -83,7 +83,7 @@
         "type": "git",
         "url": "https://github.com/steerlabs/opensteer"
     },
-    "homepage": "https://github.com/steerlabs/opensteer#readme",
+    "homepage": "https://opensteer.com",
     "bugs": {
         "url": "https://github.com/steerlabs/opensteer/issues"
     }
