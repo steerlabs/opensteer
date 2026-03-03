@@ -111,6 +111,8 @@ opensteer close --session demo
 ```
 
 For non-interactive runs, set `OPENSTEER_SESSION` or `OPENSTEER_CLIENT_ID`.
+Runtime daemon routing for `OPENSTEER_SESSION` is scoped by canonical `cwd`
+(`realpath(cwd)`) + logical session id.
 
 ## For AI Agents
 

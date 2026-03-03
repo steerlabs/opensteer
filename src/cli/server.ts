@@ -2,7 +2,7 @@ import { createServer, type Socket } from 'net'
 import { writeFileSync, unlinkSync, existsSync } from 'fs'
 import { Opensteer } from '../opensteer.js'
 import type { CliRequest, CliResponse } from './protocol.js'
-import { getSocketPath, getPidPath } from './paths.js'
+import { getMetadataPath, getPidPath, getSocketPath } from './paths.js'
 import { getCommandHandler } from './commands.js'
 import { normalizeError } from '../error-normalization.js'
 
@@ -44,6 +44,8 @@ if (!sessionEnv) {
     process.exit(1)
 }
 const session = sessionEnv
+const logicalSession = process.env.OPENSTEER_LOGICAL_SESSION?.trim() || session
+const scopeDir = process.env.OPENSTEER_SCOPE_DIR?.trim() || process.cwd()
 
 const socketPath = getSocketPath(session)
 const pidPath = getPidPath(session)
@@ -51,6 +53,7 @@ const pidPath = getPidPath(session)
 function cleanup() {
     try { unlinkSync(socketPath) } catch { /* file may not exist */ }
     try { unlinkSync(pidPath) } catch { /* file may not exist */ }
+    try { unlinkSync(getMetadataPath(session)) } catch { /* file may not exist */ }
 }
 
 function beginShutdown() {
@@ -104,10 +107,15 @@ async function handleRequest(
         sendResponse(socket, {
             id,
             ok: false,
-            error: `Session '${session}' is shutting down.`,
+            error: `Session '${logicalSession}' is shutting down.`,
             errorInfo: {
-                message: `Session '${session}' is shutting down.`,
+                message: `Session '${logicalSession}' is shutting down.`,
                 code: 'SESSION_SHUTTING_DOWN',
+                details: {
+                    session: logicalSession,
+                    runtimeSession: session,
+                    scopeDir,
+                },
             },
         })
         return
@@ -117,10 +125,15 @@ async function handleRequest(
         sendResponse(socket, {
             id,
             ok: false,
-            error: `Session '${session}' is shutting down. Retry your command.`,
+            error: `Session '${logicalSession}' is shutting down. Retry your command.`,
             errorInfo: {
-                message: `Session '${session}' is shutting down. Retry your command.`,
+                message: `Session '${logicalSession}' is shutting down. Retry your command.`,
                 code: 'SESSION_SHUTTING_DOWN',
+                details: {
+                    session: logicalSession,
+                    runtimeSession: session,
+                    scopeDir,
+                },
             },
         })
         return
@@ -146,12 +159,14 @@ async function handleRequest(
                 sendResponse(socket, {
                     id,
                     ok: false,
-                    error: `Session '${session}' is already bound to selector namespace '${selectorNamespace}'. Requested '${requestedName}' does not match. Use the same --name for this session or start a different --session.`,
+                    error: `Session '${logicalSession}' is already bound to selector namespace '${selectorNamespace}'. Requested '${requestedName}' does not match. Use the same --name for this session or start a different --session.`,
                     errorInfo: {
-                        message: `Session '${session}' is already bound to selector namespace '${selectorNamespace}'. Requested '${requestedName}' does not match. Use the same --name for this session or start a different --session.`,
+                        message: `Session '${logicalSession}' is already bound to selector namespace '${selectorNamespace}'. Requested '${requestedName}' does not match. Use the same --name for this session or start a different --session.`,
                         code: 'SESSION_NAMESPACE_MISMATCH',
                         details: {
-                            session,
+                            session: logicalSession,
+                            runtimeSession: session,
+                            scopeDir,
                             activeNamespace: selectorNamespace,
                             requestedNamespace: requestedName,
                         },
@@ -161,9 +176,9 @@ async function handleRequest(
             }
 
             if (!selectorNamespace) {
-                selectorNamespace = requestedName ?? session
+                selectorNamespace = requestedName ?? logicalSession
             }
-            const activeNamespace = selectorNamespace ?? session
+            const activeNamespace = selectorNamespace ?? logicalSession
 
             if (instance && !launchPromise) {
                 try {
@@ -211,7 +226,10 @@ async function handleRequest(
                 ok: true,
                 result: {
                     url: instance.page.url(),
-                    session,
+                    session: logicalSession,
+                    logicalSession,
+                    runtimeSession: session,
+                    scopeDir,
                     name: activeNamespace,
                     cloudSessionId: instance.getCloudSessionId() ?? undefined,
                     cloudSessionUrl: instance.getCloudSessionUrl() ?? undefined,
@@ -256,12 +274,14 @@ async function handleRequest(
         sendResponse(socket, {
             id,
             ok: false,
-            error: `No browser session in session '${session}'. Call 'opensteer open --session ${session}' first, or use 'opensteer sessions' to list active sessions.`,
+            error: `No browser session in session '${logicalSession}' (scope '${scopeDir}'). Call 'opensteer open --session ${logicalSession}' first, or use 'opensteer sessions' to list active sessions.`,
             errorInfo: {
-                message: `No browser session in session '${session}'. Call 'opensteer open --session ${session}' first, or use 'opensteer sessions' to list active sessions.`,
+                message: `No browser session in session '${logicalSession}' (scope '${scopeDir}'). Call 'opensteer open --session ${logicalSession}' first, or use 'opensteer sessions' to list active sessions.`,
                 code: 'SESSION_NOT_OPEN',
                 details: {
-                    session,
+                    session: logicalSession,
+                    runtimeSession: session,
+                    scopeDir,
                 },
             },
         })
