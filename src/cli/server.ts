@@ -203,7 +203,7 @@ async function handleRequest(
             }
 
             if (url) {
-                await instance.page.goto(url)
+                await instance.goto(url)
             }
 
             sendResponse(socket, {

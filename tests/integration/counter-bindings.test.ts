@@ -365,6 +365,42 @@ describe('integration/counter-bindings', () => {
         expect(assignedCounterCount).toBe(0)
     })
 
+    it('retries snapshot once when counter sync fails due transient frame churn', async () => {
+        await setFixture(
+            page,
+            `
+            <button id="save">Save</button>
+            `
+        )
+
+        const originalFrames = page.frames.bind(page)
+        let calls = 0
+        const framesSpy = vi.spyOn(page, 'frames').mockImplementation(() => {
+            calls += 1
+            if (calls === 1) return []
+            return originalFrames()
+        })
+
+        try {
+            const snapshot = await prepareSnapshot(page, {
+                mode: 'full',
+                withCounters: true,
+                markInteractive: true,
+            })
+            const $$ = cheerio.load(snapshot.cleanedHtml)
+            const counter = Number.parseInt($$('#save').attr('c') || '', 10)
+            expect(Number.isFinite(counter)).toBe(true)
+        } finally {
+            framesSpy.mockRestore()
+        }
+
+        expect(calls).toBeGreaterThan(1)
+        const assignedCounterCount = await page.evaluate(
+            () => document.querySelectorAll('[c]').length
+        )
+        expect(assignedCounterCount).toBeGreaterThan(0)
+    })
+
     it('extracts counter fields in batch and returns null when a bound node is replaced', async () => {
         await setFixture(
             page,
@@ -719,6 +755,85 @@ describe('integration/counter-bindings', () => {
         expect(Number.isFinite(counterA)).toBe(true)
         expect(Number.isFinite(counterB)).toBe(true)
         expect(counterA).not.toBe(counterB)
+    })
+
+    it('keeps extraction counters synchronized when HTML reparsing duplicates node ids', async () => {
+        await setFixture(
+            page,
+            `
+            <div id="root"></div>
+            <script>
+              const root = document.querySelector('#root')
+
+              const outer = document.createElement('a')
+              outer.id = 'outer'
+              outer.href = '#outer'
+              outer.className = 'outer-link'
+
+              const left = document.createElement('div')
+              const logo = document.createElement('img')
+              logo.src = 'https://example.com/logo.png'
+              left.appendChild(logo)
+
+              const middle = document.createElement('div')
+              const title = document.createElement('span')
+              title.textContent = 'Title'
+              const location = document.createElement('span')
+              location.textContent = 'Location'
+              const description = document.createElement('span')
+              description.textContent = 'Description'
+              middle.append(title, location, description)
+
+              const tags = document.createElement('div')
+              const innerA = document.createElement('a')
+              innerA.href = '#tag-a'
+              innerA.textContent = 'Tag A'
+              const innerB = document.createElement('a')
+              innerB.href = '#tag-b'
+              innerB.textContent = 'Tag B'
+              tags.append(innerA, innerB)
+
+              outer.append(left, middle, tags)
+              root.appendChild(outer)
+            </script>
+            `
+        )
+
+        const opensteer = Opensteer.from(page)
+        const html = await opensteer.snapshot({ mode: 'extraction', withCounters: true })
+        const $$ = cheerio.load(html)
+
+        const snapshotCounters = [
+            ...new Set(
+                $$('[c]')
+                    .map((_, el) => Number.parseInt($$(el).attr('c') || '', 10))
+                    .get()
+                    .filter((value) => Number.isFinite(value))
+            ),
+        ]
+
+        const liveCounters = await page.evaluate(() => {
+            const values: number[] = []
+            const walk = (root: ParentNode): void => {
+                const children = Array.from(root.children) as Element[]
+                for (const child of children) {
+                    const raw = child.getAttribute('c')
+                    if (raw) {
+                        const parsed = Number.parseInt(raw, 10)
+                        if (Number.isFinite(parsed)) values.push(parsed)
+                    }
+                    walk(child)
+                    if (child.shadowRoot) walk(child.shadowRoot)
+                }
+            }
+
+            walk(document)
+            return [...new Set(values)]
+        })
+
+        const liveSet = new Set(liveCounters)
+        const missing = snapshotCounters.filter((counter) => !liveSet.has(counter))
+        expect(missing).toEqual([])
     })
 
     it('treats counters as not found after an action replaces the original element node', async () => {
