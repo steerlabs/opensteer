@@ -16,6 +16,9 @@ on:
                 required: false
                 default: advisory
 
+permissions:
+    contents: read
+
 jobs:
     test-live-web:
         runs-on: ubuntu-latest
