@@ -88,6 +88,12 @@ Include this in your PR description:
 3. How you validated it
 4. Risks, limitations, or follow-up items
 
+## Ownership And Governance
+
+- File ownership is defined in [`.github/CODEOWNERS`](.github/CODEOWNERS).
+- Project decision-making and maintainer responsibilities are defined in
+  [GOVERNANCE.md](GOVERNANCE.md) and [MAINTAINERS.md](MAINTAINERS.md).
+
 ## Reporting Security Issues
 
 Do not open public issues for security vulnerabilities.
