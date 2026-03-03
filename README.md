@@ -7,6 +7,15 @@ structured extraction, and CUA agent workflows.
 
 ## Install
 
+Main setup (recommended):
+
+```bash
+npm i -g opensteer
+npx skills add https://github.com/steerlabs/opensteer-skills --skill opensteer
+```
+
+SDK package (when importing `Opensteer` in app code):
+
 ```bash
 # npm
 npm install opensteer
@@ -16,12 +25,6 @@ pnpm add opensteer
 
 # bun
 bun add opensteer
-```
-
-CLI (optional):
-
-```bash
-npm i -g opensteer
 ```
 
 ## Requirements
@@ -124,6 +127,12 @@ First-party skills:
 - [skills/opensteer/SKILL.md](skills/opensteer/SKILL.md)
 - [skills/electron/SKILL.md](skills/electron/SKILL.md)
 - [skills/README.md](skills/README.md)
+
+Install the Opensteer skill pack:
+
+```bash
+npx skills add https://github.com/steerlabs/opensteer-skills --skill opensteer
+```
 
 Claude Code marketplace plugin:
 
