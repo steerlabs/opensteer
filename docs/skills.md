@@ -18,6 +18,20 @@ References for `electron`:
 - [`references/opensteer-electron-workflow.md`](../skills/electron/references/opensteer-electron-workflow.md)
 - [`references/opensteer-electron-recipes.md`](../skills/electron/references/opensteer-electron-recipes.md)
 
+## Install
+
+Recommended native installer:
+
+```bash
+opensteer skills install
+```
+
+Fallback using upstream `skills` directly:
+
+```bash
+npx skills add https://github.com/steerlabs/opensteer-skills --skill opensteer
+```
+
 ## Authoring
 
 Follow this layout:

@@ -11,7 +11,7 @@ Main setup (recommended):
 
 ```bash
 npm i -g opensteer
-npx skills add https://github.com/steerlabs/opensteer-skills --skill opensteer
+opensteer skills install
 ```
 
 SDK package (when importing `Opensteer` in app code):
@@ -129,6 +129,12 @@ First-party skills:
 - [skills/README.md](skills/README.md)
 
 Install the Opensteer skill pack:
+
+```bash
+opensteer skills install
+```
+
+Fallback (direct upstream `skills` CLI):
 
 ```bash
 npx skills add https://github.com/steerlabs/opensteer-skills --skill opensteer

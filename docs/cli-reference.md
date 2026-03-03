@@ -1,6 +1,8 @@
 # CLI Reference
 
-The `opensteer` CLI runs a per-session local daemon and returns JSON on stdout.
+The `opensteer` CLI runs a per-session local daemon and returns JSON on stdout
+for browser/session commands. `opensteer skills ...` is an installer workflow
+that streams human-readable output from the wrapped upstream `skills` CLI.
 
 ## Session and Namespace Model
 
@@ -85,6 +87,19 @@ opensteer close --session agent-a
 - `wait-for <text>`
 - `wait-selector <selector>`
 - `extract <schema-json>`
+
+### Skills
+
+- `skills install [options]`
+- `skills add [options]` (alias for `skills install`)
+
+Supported options:
+
+- `-a, --agent <agents...>`
+- `-g, --global`
+- `-y, --yes`
+- `--copy`
+- `--all`
 
 ## Global Flags
 
