@@ -1,150 +1,164 @@
 # Opensteer
 
-Open-source browser automation SDK for coding agents and deterministic replay.
+Browser automation framework for developers and AI agents with deterministic replay.
 
-Opensteer combines descriptor-aware actions, resilient selector persistence,
-clean HTML snapshots, and first-class local or cloud runtime support.
-
-## Requirements
-
-- Node.js `>=20`
-- A browser environment supported by Playwright
-- API key for your selected model provider if you use LLM resolve/extract
+Opensteer gives you one API for local and cloud runs, description-based actions,
+structured extraction, and CUA agent workflows.
 
 ## Install
 
 ```bash
 # npm
 npm install opensteer
+
 # pnpm
 pnpm add opensteer
+
 # bun
 bun add opensteer
 ```
 
-Repo maintenance defaults to `pnpm`, with compatibility checks for `npm` and
-`bun` in CI.
+CLI (optional):
 
-If your environment skips Playwright browser downloads, run:
+```bash
+npm i -g opensteer
+```
+
+## Requirements
+
+- Node.js `>=20`
+- Playwright-supported browser runtime
+- Model provider API key for LLM-powered resolution/extraction/CUA
+
+If browser binaries are missing:
 
 ```bash
 npx playwright install chromium
 ```
 
-## Quickstart (SDK)
+## What It Does
+
+- Unified local/cloud execution with the same API surface
+- Descriptor-aware actions with selector persistence for replay
+- Structured extraction with typed schemas
+- CUA agent support (`openai`, `anthropic`, `google`)
+
+## Quick Start: SDK
 
 ```ts
 import { Opensteer } from "opensteer";
 
-const opensteer = new Opensteer({ name: "my-scraper" });
-await opensteer.launch({ headless: false });
+const opensteer = new Opensteer({ name: "quickstart" });
 
 try {
+  await opensteer.launch();
   await opensteer.goto("https://example.com");
-  const html = await opensteer.snapshot();
-  console.log(html.slice(0, 500));
 
-  await opensteer.click({ description: "main call to action", element: 3 });
+  await opensteer.snapshot({ mode: "action" });
+  await opensteer.click({ description: "main call to action" });
+
+  await opensteer.snapshot({ mode: "extraction" });
+  const data = await opensteer.extract({
+    description: "hero section",
+    schema: { title: "string", href: "string" },
+  });
+
+  console.log(data);
 } finally {
   await opensteer.close();
 }
 ```
 
-## CUA Agent
+## Quick Start: CUA Agent
 
 ```ts
 import { Opensteer } from "opensteer";
 
-const opensteer = new Opensteer({
-  model: "openai/computer-use-preview",
-});
+const opensteer = new Opensteer({ model: "openai/computer-use-preview" });
 
-await opensteer.launch();
-
-const agent = opensteer.agent({
-  mode: "cua",
-});
-
-const result = await agent.execute({
-  instruction: "Go to Hacker News and open the top story.",
-  maxSteps: 20,
-  highlightCursor: true,
-});
-
-console.log(result.message);
-await opensteer.close();
+try {
+  await opensteer.launch();
+  const agent = opensteer.agent({ mode: "cua" });
+  const result = await agent.execute({
+    instruction: "Go to Hacker News and open the top story.",
+    maxSteps: 20,
+  });
+  console.log(result.message);
+} finally {
+  await opensteer.close();
+}
 ```
 
-Supported CUA providers in V1: `openai`, `anthropic`, `google`.
-
-## Quickstart (CLI)
-
-Opensteer CLI separates runtime routing from selector namespace routing.
-
-- Runtime routing: `--session` or `OPENSTEER_SESSION`
-- Selector namespace: `--name` or `OPENSTEER_NAME` (used by `open`)
+## Quick Start: CLI
 
 ```bash
-opensteer open https://example.com --session agent-a --name product-scraper
-opensteer snapshot --session agent-a
-opensteer click 3 --session agent-a
-opensteer status --session agent-a
-opensteer close --session agent-a
+# Open a browser session and bind a selector namespace
+opensteer open https://example.com --session demo --name quickstart
+
+# Action snapshot + interaction
+opensteer snapshot action --session demo
+opensteer click --description "main call to action" --session demo
+
+# Extraction snapshot + structured extract
+opensteer snapshot extraction --session demo
+opensteer extract '{"title":"string","href":"string"}' --description "hero section" --session demo
+
+# Close session
+opensteer close --session demo
 ```
 
-In non-interactive environments, set `OPENSTEER_SESSION` or
-`OPENSTEER_CLIENT_ID` explicitly.
+For non-interactive runs, set `OPENSTEER_SESSION` or `OPENSTEER_CLIENT_ID`.
 
-## Resolution and Replay Model
+## For AI Agents
 
-For descriptor-aware actions (`click`, `input`, `hover`, `select`, `scroll`):
+Use this workflow to keep scripts replayable and maintainable:
 
-1. Reuse persisted path for `description`
-2. Use `element` counter from snapshot
-3. Use explicit CSS `selector`
-4. Use built-in LLM resolution (`description` required)
-5. Throw actionable error
+1. Use Opensteer APIs (`goto`, `snapshot`, `click`, `input`, `extract`) instead of raw Playwright calls.
+2. Keep namespace consistent: SDK `name` must match CLI `--name`.
+3. Take `snapshot({ mode: "action" })` before actions and `snapshot({ mode: "extraction" })` before extraction.
+4. Prefer `description` targeting for persistence and deterministic reruns.
+5. Always wrap runs in `try/finally` and call `close()`.
 
-When steps 2-4 succeed and `description` is present, Opensteer persists the
-path for deterministic replay in `.opensteer/selectors/<namespace>`.
+First-party skills:
 
-## Cloud Mode
+- [skills/opensteer/SKILL.md](skills/opensteer/SKILL.md)
+- [skills/electron/SKILL.md](skills/electron/SKILL.md)
+- [skills/README.md](skills/README.md)
 
-Opensteer defaults to local mode.
-
-- `OPENSTEER_MODE=local|cloud`
-- `OPENSTEER_API_KEY` or `cloud.apiKey` required in cloud mode
-- `OPENSTEER_BASE_URL` or `cloud.baseUrl` to override the default cloud host
-- `OPENSTEER_AUTH_SCHEME` or `cloud.authScheme` for auth header mode
-  (`api-key` or `bearer`)
-- `cloud: true` or a `cloud` options object overrides `OPENSTEER_MODE`
-
-`.env` files are auto-loaded from `storage.rootDir` (default `process.cwd()`)
-in this order: `.env.<NODE_ENV>.local`, `.env.local` (except in test),
-`.env.<NODE_ENV>`, `.env`. Existing `process.env` values are not overwritten.
-Set `OPENSTEER_DISABLE_DOTENV_AUTOLOAD=true` to disable.
-
-## Agent Skills
-
-Opensteer maintains first-party agent skills in-repo under
-[`skills/`](skills/README.md).
-
-- Skill: [`skills/opensteer/SKILL.md`](skills/opensteer/SKILL.md)
-- Skill: [`skills/electron/SKILL.md`](skills/electron/SKILL.md)
-- Supporting references: [`skills/opensteer/references/`](skills/opensteer/references)
-- Supporting references: [`skills/electron/references/`](skills/electron/references)
-
-### Claude Code Marketplace
-
-This repository also publishes a Claude Code plugin marketplace:
-[`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json)
-
-Install from Claude Code:
+Claude Code marketplace plugin:
 
 ```text
 /plugin marketplace add steerlabs/opensteer
 /plugin install opensteer@opensteer-marketplace
 ```
+
+## Cloud Mode
+
+Opensteer defaults to local mode. Enable cloud mode with env or constructor options:
+
+```bash
+OPENSTEER_MODE=cloud
+OPENSTEER_API_KEY=<your_api_key>
+```
+
+- `OPENSTEER_BASE_URL` overrides the default cloud host
+- `OPENSTEER_AUTH_SCHEME` supports `api-key` (default) or `bearer`
+- `cloud: true` or a `cloud` options object overrides `OPENSTEER_MODE`
+- Cloud mode is fail-fast (no automatic fallback to local)
+- `Opensteer.from(page)`, `uploadFile`, `exportCookies`, and `importCookies` are local-only
+
+## Resolution and Replay
+
+For descriptor-aware actions (`click`, `input`, `hover`, `select`, `scroll`):
+
+1. Reuse persisted selector path from `description`
+2. Try snapshot counter (`element`)
+3. Try explicit CSS selector (`selector`)
+4. Use LLM resolution (`description` required)
+5. Return actionable error
+
+When step 2-4 succeeds and `description` is present, selector paths are cached
+in `.opensteer/selectors/<namespace>` for deterministic replay.
 
 ## Docs
 
@@ -157,12 +171,25 @@ Install from Claude Code:
 - [Live Web Validation Suite](docs/live-web-tests.md)
 - [Skills](docs/skills.md)
 
+## Development
+
+```bash
+pnpm install
+pnpm typecheck
+pnpm test
+pnpm build
+```
+
 ## Community
 
-- [Contributing Guide](CONTRIBUTING.md)
+- [Contributing](CONTRIBUTING.md)
 - [Code of Conduct](CODE_OF_CONDUCT.md)
 - [Security Policy](SECURITY.md)
 - [Support](SUPPORT.md)
+- [Discussions](https://github.com/steerlabs/opensteer/discussions)
+- [Maintainers](MAINTAINERS.md)
+- [Governance](GOVERNANCE.md)
+- [Releasing](RELEASING.md)
 - [Changelog](CHANGELOG.md)
 
 ## License
