@@ -8,3 +8,4 @@
 - [HTML Cleaning and Snapshot Modes](html-cleaning.md)
 - [Live Web Validation Suite](live-web-tests.md)
 - [Skills](skills.md)
+- [Releasing](releasing.md)

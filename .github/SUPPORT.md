@@ -24,4 +24,4 @@ When filing an issue, include:
 ## Security and Sensitive Reports
 
 For vulnerabilities or sensitive disclosures, use the private channel in
-[SECURITY.md](SECURITY.md) instead of public issues.
+[SECURITY.md](../SECURITY.md) instead of public issues.
