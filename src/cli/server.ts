@@ -2,7 +2,7 @@ import { createServer, type Socket } from 'net'
 import { writeFileSync, unlinkSync, existsSync } from 'fs'
 import { Opensteer } from '../opensteer.js'
 import type { CliRequest, CliResponse } from './protocol.js'
-import { getSocketPath, getPidPath } from './paths.js'
+import { getMetadataPath, getPidPath, getSocketPath } from './paths.js'
 import { getCommandHandler } from './commands.js'
 import { normalizeError } from '../error-normalization.js'
 
@@ -53,6 +53,7 @@ const pidPath = getPidPath(session)
 function cleanup() {
     try { unlinkSync(socketPath) } catch { /* file may not exist */ }
     try { unlinkSync(pidPath) } catch { /* file may not exist */ }
+    try { unlinkSync(getMetadataPath(session)) } catch { /* file may not exist */ }
 }
 
 function beginShutdown() {
