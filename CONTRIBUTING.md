@@ -90,9 +90,56 @@ Include this in your PR description:
 
 ## Ownership And Governance
 
-- File ownership is defined in [`.github/CODEOWNERS`](.github/CODEOWNERS).
-- Project decision-making and maintainer responsibilities are defined in
-  [GOVERNANCE.md](GOVERNANCE.md) and [MAINTAINERS.md](MAINTAINERS.md).
+File ownership is defined in [`.github/CODEOWNERS`](.github/CODEOWNERS).
+
+### Maintainers
+
+#### Active Maintainers
+
+- **Tim Jang** ([`@timjang3`](https://github.com/timjang3)) - Project lead and release manager
+
+#### Maintainer Responsibilities
+
+- Review and merge pull requests.
+- Maintain release quality and publish releases.
+- Triage issues and security reports.
+- Keep documentation, governance, and community policies up to date.
+
+#### Maintainer Availability
+
+If a PR or issue has no response for 7+ days, comment with context and a
+maintainer will follow up.
+
+### Decision Model
+
+We use lazy consensus for routine changes:
+
+- A maintainer proposes a change in an issue or pull request.
+- If there is no substantiated objection within 72 hours, the change may proceed.
+- Any maintainer may request more discussion for high-impact changes.
+
+### What Requires Maintainer Approval
+
+The following always require maintainer approval before merge:
+
+- Public API and CLI behavior changes.
+- Dependency additions or major version upgrades.
+- Security-related behavior and policy changes.
+- Release workflow, publishing, and governance updates.
+
+### Dispute Resolution
+
+If contributors disagree:
+
+1. Discuss in the PR/issue with concrete tradeoffs and alternatives.
+2. Escalate to maintainers for final decision if consensus is not reached.
+3. For conduct issues, follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+
+### Release Authority
+
+Only maintainers may create release tags and publish npm releases.
+Releases are created by GitHub Actions workflows from tagged commits.
+See [docs/releasing.md](docs/releasing.md) for detailed release steps.
 
 ## Reporting Security Issues
 
