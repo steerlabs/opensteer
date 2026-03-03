@@ -44,6 +44,9 @@ importers:
       playwright:
         specifier: ^1.50.0
         version: 1.58.2
+      skills:
+        specifier: 1.4.3
+        version: 1.4.3
       ws:
         specifier: ^8.18.0
         version: 8.19.0
@@ -1175,6 +1178,11 @@ packages:
   signal-exit@4.1.0:
     resolution: {integrity: sha512-bzyZ1e88w9O1iNJbKnOlvYTrWPDl46O1bG0D3XInv+9tkPrxrN8jUUTiFlDkkmKWgn1M6CfIA13SuGqOa9Korw==}
     engines: {node: '>=14'}
+
+  skills@1.4.3:
+    resolution: {integrity: sha512-/HCJQSoaXZ1vXiFv/Xd/2ptex1VhPlQf/nbdHBB3b7ZlJJiCFwiKk5RXgmcfF2OcFM0Yz/qtIWCzJ9bHWsrPcQ==}
+    engines: {node: '>=18'}
+    hasBin: true
 
   source-map-js@1.2.1:
     resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
@@ -2370,6 +2378,8 @@ snapshots:
   siginfo@2.0.0: {}
 
   signal-exit@4.1.0: {}
+
+  skills@1.4.3: {}
 
   source-map-js@1.2.1: {}
 
