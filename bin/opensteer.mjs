@@ -14,10 +14,38 @@ import {
 import { connect } from 'net'
 import { tmpdir } from 'os'
 import { dirname, join } from 'path'
-import { fileURLToPath } from 'url'
+import { fileURLToPath, pathToFileURL } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SERVER_SCRIPT = join(__dirname, '..', 'dist', 'cli', 'server.js')
+const SKILLS_INSTALLER_SCRIPT = join(
+    __dirname,
+    '..',
+    'dist',
+    'cli',
+    'skills-installer.js'
+)
+const SKILLS_HELP_TEXT = `Usage: opensteer skills <install|add> [options]
+
+Installs the first-party Opensteer skill using the upstream "skills" CLI.
+
+Commands:
+  install                  Install the opensteer skill
+  add                      Alias for install
+
+Supported Options:
+  -a, --agent <agents...>  Target specific agent(s)
+  -g, --global             Install globally
+  -y, --yes                Skip confirmations
+  --copy                   Copy files instead of symlinking
+  --all                    Install to all agents
+  -h, --help               Show this help
+
+Examples:
+  opensteer skills install
+  opensteer skills add --agent codex --global --yes
+  opensteer skills install --all --yes
+`
 
 const CONNECT_TIMEOUT = 15000
 const POLL_INTERVAL = 100
@@ -735,6 +763,46 @@ function toObject(value) {
     return value
 }
 
+function isSkillsHelpRequest(args) {
+    if (args.length === 0) return true
+
+    const [subcommand, ...rest] = args
+    if (subcommand === 'help' || subcommand === '--help' || subcommand === '-h') {
+        return true
+    }
+
+    if (subcommand !== 'install' && subcommand !== 'add') {
+        return false
+    }
+
+    return rest.includes('--help') || rest.includes('-h')
+}
+
+function printSkillsHelp() {
+    process.stdout.write(SKILLS_HELP_TEXT)
+}
+
+async function runSkillsSubcommand(args) {
+    if (isSkillsHelpRequest(args)) {
+        printSkillsHelp()
+        return
+    }
+
+    if (!existsSync(SKILLS_INSTALLER_SCRIPT)) {
+        throw new Error(
+            `Skills installer module not found: ${SKILLS_INSTALLER_SCRIPT}. Run the build script first.`
+        )
+    }
+
+    const moduleUrl = pathToFileURL(SKILLS_INSTALLER_SCRIPT).href
+    const { runOpensteerSkillsInstaller } = await import(moduleUrl)
+
+    const exitCode = await runOpensteerSkillsInstaller(args)
+    if (exitCode !== 0) {
+        process.exit(exitCode)
+    }
+}
+
 function printHelp() {
     console.log(`Usage: opensteer <command> [options]
 
@@ -794,6 +862,11 @@ Utility:
   wait-selector <selector>  Wait for selector
   extract <schema-json>     Extract structured data
 
+Skills:
+  skills install [options]  Install Opensteer skill pack for supported agents
+  skills add [options]      Alias for "skills install"
+  skills --help             Show skills installer help
+
 Global Flags:
   --session <id>            Runtime session id for daemon/browser routing
   --name <namespace>        Selector namespace for cache storage on 'open'
@@ -820,6 +893,19 @@ Environment:
 }
 
 async function main() {
+    const rawArgs = process.argv.slice(2)
+    if (rawArgs[0] === 'skills') {
+        try {
+            await runSkillsSubcommand(rawArgs.slice(1))
+        } catch (err) {
+            const message =
+                err instanceof Error ? err.message : 'Failed to run skills command'
+            process.stderr.write(`${message}\n`)
+            process.exit(1)
+        }
+        return
+    }
+
     const { command, flags, positional } = parseArgs(process.argv)
 
     if (command === 'sessions') {

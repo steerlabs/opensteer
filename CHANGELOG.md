@@ -36,6 +36,9 @@
   timeout/stale-target cases more accurately.
 - Cloud action failures now accept optional structured failure details and map
   them to `OpensteerActionError` when available.
+- Added native skills installer commands (`opensteer skills install` and
+  `opensteer skills add`) that wrap the upstream `skills` CLI to install the
+  first-party `opensteer` skill pack without requiring separate global setup.
 - Docs: refreshed README and getting-started guidance to match current SDK/CLI
   behavior and env vars.
 - Docs: added CLI reference and docs index.
