@@ -2,10 +2,15 @@
 
 ## Getting Help
 
+Use [GitHub Discussions](https://github.com/steerlabs/opensteer/discussions) for:
+
+- usage questions
+- ideas and design discussions
+- showcase and feedback
+
 Use [GitHub issues](https://github.com/steerlabs/opensteer/issues) for:
 
 - bug reports
-- usage questions
 - feature requests
 
 When filing an issue, include:
