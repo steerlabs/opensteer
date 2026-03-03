@@ -13,6 +13,10 @@ export function getPidPath(session: string): string {
     return join(tmpdir(), `${prefix(session)}.pid`)
 }
 
+export function getMetadataPath(session: string): string {
+    return join(tmpdir(), `${prefix(session)}.meta.json`)
+}
+
 export function getLockPath(session: string): string {
     return join(tmpdir(), `${prefix(session)}.lock`)
 }
