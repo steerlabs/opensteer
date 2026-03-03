@@ -14,6 +14,10 @@
   health checks to remove startup races across concurrent commands.
 - Added strict in-daemon request serialization for session commands, while
   keeping `ping` out of the queue for reliable liveness checks.
+- Breaking: CLI daemon routing is now scoped by canonical `cwd`
+  (`realpath(cwd)`) + logical session (`--session`/`OPENSTEER_SESSION`) rather
+  than machine-wide session id matching; the same logical session can run in
+  parallel across different directories.
 - Breaking: removed legacy `ai` config from `OpensteerConfig`; use top-level `model` instead.
 - Breaking: `OPENSTEER_AI_MODEL` is no longer supported; use `OPENSTEER_MODEL`.
 - Breaking: `OPENSTEER_RUNTIME` is no longer supported; use `OPENSTEER_MODE`.

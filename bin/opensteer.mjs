@@ -6,6 +6,7 @@ import {
     closeSync,
     existsSync,
     openSync,
+    realpathSync,
     readFileSync,
     readdirSync,
     unlinkSync,
@@ -55,11 +56,13 @@ const RUNTIME_PREFIX = 'opensteer-'
 const SOCKET_SUFFIX = '.sock'
 const PID_SUFFIX = '.pid'
 const LOCK_SUFFIX = '.lock'
+const METADATA_SUFFIX = '.meta.json'
 const CLIENT_BINDING_PREFIX = `${RUNTIME_PREFIX}client-`
 const CLIENT_BINDING_SUFFIX = '.session'
 const CLOSE_ALL_REQUEST = { id: 1, command: 'close', args: {} }
 const PING_REQUEST = { id: 1, command: 'ping', args: {} }
 const SESSION_ID_PATTERN = /^[a-zA-Z0-9_-]+$/
+const RUNTIME_SESSION_PREFIX = 'sc-'
 
 function getVersion() {
     try {
@@ -214,7 +217,20 @@ function isInteractiveTerminal() {
     return Boolean(process.stdin.isTTY && process.stdout.isTTY)
 }
 
-function resolveSession(flags) {
+function resolveScopeDir() {
+    const cwd = process.cwd()
+    try {
+        return realpathSync(cwd)
+    } catch {
+        return cwd
+    }
+}
+
+function buildRuntimeSession(scopeDir, logicalSession) {
+    return `${RUNTIME_SESSION_PREFIX}${hashKey(`${scopeDir}:${logicalSession}`).slice(0, 24)}`
+}
+
+function resolveSession(flags, scopeDir) {
     if (flags.session !== undefined) {
         if (flags.session === true) {
             throw new Error('--session requires a session id value.')
@@ -244,7 +260,7 @@ function resolveSession(flags) {
         process.env.OPENSTEER_CLIENT_ID.trim().length > 0
     ) {
         const clientId = process.env.OPENSTEER_CLIENT_ID.trim()
-        const clientKey = `client:${process.cwd()}:${clientId}`
+        const clientKey = `client:${scopeDir}:${clientId}`
         const bound = readClientBinding(clientKey)
         if (bound) {
             return { session: bound, source: 'client_binding' }
@@ -256,7 +272,7 @@ function resolveSession(flags) {
     }
 
     if (isInteractiveTerminal()) {
-        const ttyKey = `tty:${process.cwd()}:${process.ppid}`
+        const ttyKey = `tty:${scopeDir}:${process.ppid}`
         const bound = readClientBinding(ttyKey)
         if (bound) {
             return { session: bound, source: 'tty_default' }
@@ -282,6 +298,10 @@ function getPidPath(session) {
 
 function getLockPath(session) {
     return join(tmpdir(), `${RUNTIME_PREFIX}${session}${LOCK_SUFFIX}`)
+}
+
+function getMetadataPath(session) {
+    return join(tmpdir(), `${RUNTIME_PREFIX}${session}${METADATA_SUFFIX}`)
 }
 
 function buildRequest(command, flags, positional) {
@@ -430,18 +450,78 @@ function cleanStaleFiles(session, options = {}) {
             unlinkSync(getPidPath(session))
         } catch { }
     }
+
+    try {
+        unlinkSync(getMetadataPath(session))
+    } catch { }
 }
 
-function startServer(session) {
+function startServer(runtimeSession, logicalSession, scopeDir) {
     const child = spawn('node', [SERVER_SCRIPT], {
         detached: true,
         stdio: ['ignore', 'ignore', 'ignore'],
         env: {
             ...process.env,
-            OPENSTEER_SESSION: session,
+            OPENSTEER_SESSION: runtimeSession,
+            OPENSTEER_LOGICAL_SESSION: logicalSession,
+            OPENSTEER_SCOPE_DIR: scopeDir,
         },
     })
     child.unref()
+}
+
+function readMetadata(session) {
+    const metadataPath = getMetadataPath(session)
+    if (!existsSync(metadataPath)) {
+        return null
+    }
+
+    try {
+        const raw = JSON.parse(readFileSync(metadataPath, 'utf-8'))
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+            return null
+        }
+
+        if (
+            typeof raw.logicalSession !== 'string' ||
+            !raw.logicalSession.trim() ||
+            typeof raw.scopeDir !== 'string' ||
+            !raw.scopeDir.trim() ||
+            typeof raw.runtimeSession !== 'string' ||
+            !raw.runtimeSession.trim()
+        ) {
+            return null
+        }
+
+        return {
+            logicalSession: raw.logicalSession.trim(),
+            scopeDir: raw.scopeDir,
+            runtimeSession: raw.runtimeSession.trim(),
+            createdAt:
+                typeof raw.createdAt === 'number' ? raw.createdAt : undefined,
+            updatedAt:
+                typeof raw.updatedAt === 'number' ? raw.updatedAt : undefined,
+        }
+    } catch {
+        return null
+    }
+}
+
+function writeMetadata(runtimeSession, logicalSession, scopeDir) {
+    const metadataPath = getMetadataPath(runtimeSession)
+    const existing = readMetadata(runtimeSession)
+    const now = Date.now()
+    const payload = {
+        runtimeSession,
+        logicalSession,
+        scopeDir,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+    }
+
+    try {
+        writeFileSync(metadataPath, JSON.stringify(payload, null, 2))
+    } catch { }
 }
 
 function sendCommand(socketPath, request, timeoutMs = RESPONSE_TIMEOUT) {
@@ -606,8 +686,14 @@ async function waitForServerReady(session, timeout) {
     throw new Error(`Timed out waiting for server '${session}' to become healthy.`)
 }
 
-async function ensureServer(session) {
-    if (await isServerHealthy(session)) {
+async function ensureServer(context) {
+    const runtimeSession = context.runtimeSession
+    if (await isServerHealthy(runtimeSession)) {
+        writeMetadata(
+            runtimeSession,
+            context.logicalSession,
+            context.scopeDir
+        )
         return
     }
 
@@ -620,31 +706,45 @@ async function ensureServer(session) {
     const deadline = Date.now() + CONNECT_TIMEOUT
 
     while (Date.now() < deadline) {
-        if (await isServerHealthy(session)) {
+        if (await isServerHealthy(runtimeSession)) {
+            writeMetadata(
+                runtimeSession,
+                context.logicalSession,
+                context.scopeDir
+            )
             return
         }
 
-        const existingPid = readPid(getPidPath(session))
+        const existingPid = readPid(getPidPath(runtimeSession))
         if (existingPid && isPidAlive(existingPid)) {
             await sleep(POLL_INTERVAL)
             continue
         }
 
-        recoverStaleStartLock(session)
+        recoverStaleStartLock(runtimeSession)
 
-        if (acquireStartLock(session)) {
+        if (acquireStartLock(runtimeSession)) {
             try {
-                if (!(await isServerHealthy(session))) {
-                    startServer(session)
+                if (!(await isServerHealthy(runtimeSession))) {
+                    startServer(
+                        runtimeSession,
+                        context.logicalSession,
+                        context.scopeDir
+                    )
                 }
 
                 await waitForServerReady(
-                    session,
+                    runtimeSession,
                     Math.max(500, deadline - Date.now())
+                )
+                writeMetadata(
+                    runtimeSession,
+                    context.logicalSession,
+                    context.scopeDir
                 )
                 return
             } finally {
-                releaseStartLock(session)
+                releaseStartLock(runtimeSession)
             }
         }
 
@@ -652,7 +752,7 @@ async function ensureServer(session) {
     }
 
     throw new Error(
-        `Failed to start server for session '${session}' within ${CONNECT_TIMEOUT}ms.`
+        `Failed to start server for session '${context.logicalSession}' in cwd scope '${context.scopeDir}' within ${CONNECT_TIMEOUT}ms.`
     )
 }
 
@@ -665,24 +765,39 @@ function listSessions() {
             continue
         }
 
-        const name = entry.slice(
+        const runtimeSession = entry.slice(
             RUNTIME_PREFIX.length,
             entry.length - PID_SUFFIX.length
         )
-        if (!name) {
+        if (!runtimeSession) {
             continue
         }
 
         const pid = readPid(join(tmpdir(), entry))
         if (!pid || !isPidAlive(pid)) {
-            cleanStaleFiles(name)
+            cleanStaleFiles(runtimeSession)
             continue
         }
 
-        sessions.push({ name, pid })
+        const metadata = readMetadata(runtimeSession)
+        sessions.push({
+            name: metadata?.logicalSession || runtimeSession,
+            logicalSession: metadata?.logicalSession || runtimeSession,
+            runtimeSession,
+            scopeDir: metadata?.scopeDir || null,
+            pid,
+        })
     }
 
-    sessions.sort((a, b) => a.name.localeCompare(b.name))
+    sessions.sort((a, b) => {
+        const scopeA = a.scopeDir || ''
+        const scopeB = b.scopeDir || ''
+        if (scopeA !== scopeB) {
+            return scopeA.localeCompare(scopeB)
+        }
+
+        return a.logicalSession.localeCompare(b.logicalSession)
+    })
     return sessions
 }
 
@@ -692,9 +807,9 @@ async function closeAllSessions() {
     const failures = []
 
     for (const session of sessions) {
-        const socketPath = getSocketPath(session.name)
+        const socketPath = getSocketPath(session.runtimeSession)
         if (!existsSync(socketPath)) {
-            cleanStaleFiles(session.name)
+            cleanStaleFiles(session.runtimeSession)
             continue
         }
 
@@ -704,12 +819,12 @@ async function closeAllSessions() {
                 closed.push(session)
             } else {
                 failures.push(
-                    `${session.name}: ${response?.error || 'unknown close error'}`
+                    `${session.logicalSession} (${session.scopeDir || 'unknown scope'}): ${response?.error || 'unknown close error'}`
                 )
             }
         } catch (err) {
             failures.push(
-                `${session.name}: ${err instanceof Error ? err.message : String(err)}`
+                `${session.logicalSession} (${session.scopeDir || 'unknown scope'}): ${err instanceof Error ? err.message : String(err)}`
             )
         }
     }
@@ -817,7 +932,7 @@ Navigation:
 
 Sessions:
   sessions                  List active session-scoped daemons
-  status                    Show resolved session/name and session state
+  status                    Show resolved logical/runtime session and session state
 
 Observation:
   snapshot [--mode action]  Get page snapshot
@@ -868,7 +983,7 @@ Skills:
   skills --help             Show skills installer help
 
 Global Flags:
-  --session <id>            Runtime session id for daemon/browser routing
+  --session <id>            Logical session id (scoped by canonical cwd)
   --name <namespace>        Selector namespace for cache storage on 'open'
   --headless                Launch browser in headless mode
   --connect-url <url>       Connect to a running browser (e.g. http://localhost:9222)
@@ -881,7 +996,7 @@ Global Flags:
   --version, -v             Show version
 
 Environment:
-  OPENSTEER_SESSION         Runtime session id (equivalent to --session)
+  OPENSTEER_SESSION         Logical session id (equivalent to --session)
   OPENSTEER_CLIENT_ID       Stable client identity for default session binding
   OPENSTEER_NAME            Default selector namespace for 'open' when --name is omitted
   OPENSTEER_MODE            Runtime routing: "local" (default) or "cloud"
@@ -925,27 +1040,37 @@ async function main() {
 
     let resolvedSession
     let resolvedName
+    const scopeDir = resolveScopeDir()
     try {
-        resolvedSession = resolveSession(flags)
+        resolvedSession = resolveSession(flags, scopeDir)
         resolvedName = resolveName(flags, resolvedSession.session)
     } catch (err) {
         error(err instanceof Error ? err.message : 'Failed to resolve session')
     }
 
-    const session = resolvedSession.session
+    const logicalSession = resolvedSession.session
+    const runtimeSession = buildRuntimeSession(scopeDir, logicalSession)
     const sessionSource = resolvedSession.source
     const name = resolvedName.name
     const nameSource = resolvedName.source
-    const socketPath = getSocketPath(session)
+    const socketPath = getSocketPath(runtimeSession)
+    const routingContext = {
+        logicalSession,
+        runtimeSession,
+        scopeDir,
+    }
 
     if (command === 'status') {
         output({
             ok: true,
-            resolvedSession: session,
+            resolvedSession: logicalSession,
+            logicalSession,
+            runtimeSession,
+            scopeDir,
             sessionSource,
             resolvedName: name,
             nameSource,
-            serverRunning: await isServerHealthy(session),
+            serverRunning: await isServerHealthy(runtimeSession),
             socketPath,
             sessions: listSessions(),
         })
@@ -961,20 +1086,20 @@ async function main() {
         request.args.name = name
     }
 
-    if (!(await isServerHealthy(session))) {
+    if (!(await isServerHealthy(runtimeSession))) {
         if (command !== 'open') {
             error(
-                `No server running for session '${session}' (resolved from ${sessionSource}). Run 'opensteer open' first or use 'opensteer sessions' to see active sessions.`
+                `No server running for session '${logicalSession}' in cwd scope '${scopeDir}' (resolved from ${sessionSource}). Run 'opensteer open' first or use 'opensteer sessions' to see active sessions.`
             )
         }
 
         try {
-            await ensureServer(session)
+            await ensureServer(routingContext)
         } catch (err) {
             error(
                 err instanceof Error
                     ? err.message
-                    : `Failed to start server for session '${session}'.`
+                    : `Failed to start server for session '${logicalSession}' in cwd scope '${scopeDir}'.`
             )
         }
     }
@@ -992,7 +1117,7 @@ async function main() {
         error(
             formatTransportFailure(
                 err,
-                `Failed to run '${command}' for session '${session}'`
+                `Failed to run '${command}' for session '${logicalSession}' in cwd scope '${scopeDir}'`
             )
         )
     }
