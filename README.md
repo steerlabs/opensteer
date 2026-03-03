@@ -134,12 +134,6 @@ Install the Opensteer skill pack:
 opensteer skills install
 ```
 
-Fallback (direct upstream `skills` CLI):
-
-```bash
-npx skills add https://github.com/steerlabs/opensteer-skills --skill opensteer
-```
-
 Claude Code marketplace plugin:
 
 ```text
