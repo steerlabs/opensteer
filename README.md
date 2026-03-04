@@ -44,6 +44,7 @@ npx playwright install chromium
 - Descriptor-aware actions with selector persistence for replay
 - Structured extraction with typed schemas
 - CUA agent support (`openai`, `anthropic`, `google`)
+- Stealth cursor preview for interactive actions (CLI default on, SDK default off)
 
 ## Quick Start: SDK
 
@@ -69,6 +70,15 @@ try {
 } finally {
   await opensteer.close();
 }
+```
+
+Enable cursor preview in SDK:
+
+```ts
+const opensteer = new Opensteer({
+  name: "quickstart",
+  cursor: { enabled: true },
+});
 ```
 
 ## Quick Start: CUA Agent
@@ -101,6 +111,10 @@ opensteer open https://example.com --session demo --name quickstart
 opensteer snapshot action --session demo
 opensteer click --description "main call to action" --session demo
 
+# Cursor controls
+opensteer cursor status --session demo
+opensteer cursor off --session demo
+
 # Extraction snapshot + structured extract
 opensteer snapshot extraction --session demo
 opensteer extract '{"title":"string","href":"string"}' --description "hero section" --session demo
@@ -112,6 +126,11 @@ opensteer close --session demo
 For non-interactive runs, set `OPENSTEER_SESSION` or `OPENSTEER_CLIENT_ID`.
 Runtime daemon routing for `OPENSTEER_SESSION` is scoped by canonical `cwd`
 (`realpath(cwd)`) + logical session id.
+
+Cursor defaults:
+
+- CLI sessions: enabled by default (toggle with `--cursor` or `opensteer cursor on|off`)
+- SDK instances: disabled by default (set `cursor.enabled: true` to opt in)
 
 ## For AI Agents
 

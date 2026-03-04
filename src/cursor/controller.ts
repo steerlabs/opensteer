@@ -1,0 +1,253 @@
+import type { Page } from 'playwright'
+import type {
+    OpensteerCursorColor,
+    OpensteerCursorConfig,
+    OpensteerCursorStyle,
+} from '../types.js'
+import { planSnappyCursorMotion } from './motion.js'
+import type { CursorRenderer } from './renderer.js'
+import { CdpOverlayCursorRenderer } from './renderers/cdp-overlay.js'
+import type {
+    CursorIntent,
+    CursorMotionPlan,
+    CursorPoint,
+    CursorStatus,
+} from './types.js'
+
+interface CursorControllerOptions {
+    config?: OpensteerCursorConfig
+    debug?: boolean
+    renderer?: CursorRenderer
+}
+
+const DEFAULT_STYLE: Required<OpensteerCursorStyle> = {
+    size: 13,
+    fillColor: {
+        r: 255,
+        g: 63,
+        b: 63,
+        a: 0.86,
+    },
+    outlineColor: {
+        r: 255,
+        g: 255,
+        b: 255,
+        a: 0.95,
+    },
+    haloColor: {
+        r: 255,
+        g: 63,
+        b: 63,
+        a: 0.32,
+    },
+    pulseScale: 1.7,
+}
+const REINITIALIZE_BACKOFF_MS = 1000
+const MOTION_PLANNERS: Record<
+    NonNullable<OpensteerCursorConfig['profile']>,
+    (from: CursorPoint, to: CursorPoint) => CursorMotionPlan
+> = {
+    snappy: planSnappyCursorMotion,
+}
+
+export class CursorController {
+    private readonly debug: boolean
+    private readonly renderer: CursorRenderer
+    private page: Page | null = null
+    private lastPoint: CursorPoint | null = null
+    private initializedForPage = false
+    private lastInitializeAttemptAt = 0
+    private enabled: boolean
+    private readonly profile: NonNullable<OpensteerCursorConfig['profile']>
+    private readonly style: Required<OpensteerCursorStyle>
+
+    constructor(options: CursorControllerOptions = {}) {
+        const config = options.config || {}
+        this.debug = Boolean(options.debug)
+        this.enabled = config.enabled === true
+        this.profile = config.profile ?? 'snappy'
+        this.style = mergeStyle(config.style)
+        this.renderer = options.renderer ?? new CdpOverlayCursorRenderer()
+    }
+
+    setEnabled(enabled: boolean): void {
+        if (this.enabled && !enabled) {
+            this.lastPoint = null
+            void this.clear()
+        }
+        this.enabled = enabled
+    }
+
+    isEnabled(): boolean {
+        return this.enabled
+    }
+
+    getStatus(): CursorStatus {
+        if (!this.enabled) {
+            return {
+                enabled: false,
+                active: false,
+                reason: 'disabled',
+            }
+        }
+
+        const status = this.renderer.status()
+        if (!this.initializedForPage && !status.active) {
+            return {
+                enabled: true,
+                active: false,
+                reason: 'not_initialized',
+            }
+        }
+
+        return status
+    }
+
+    async attachPage(page: Page): Promise<void> {
+        if (this.page === page && this.initializedForPage) {
+            return
+        }
+
+        this.page = page
+        this.lastPoint = null
+        this.initializedForPage = false
+        this.lastInitializeAttemptAt = 0
+    }
+
+    async preview(point: CursorPoint | null, intent: CursorIntent): Promise<void> {
+        if (!this.enabled || !point) return
+        if (!this.page || this.page.isClosed()) return
+
+        try {
+            await this.ensureInitialized()
+            if (!this.renderer.isActive()) {
+                await this.reinitializeIfEligible()
+            }
+            if (!this.renderer.isActive()) return
+
+            const start = this.lastPoint ?? point
+            const motion = this.planMotion(start, point)
+
+            for (const step of motion.points) {
+                await this.renderer.move(step, this.style)
+                if (motion.stepDelayMs > 0) {
+                    await sleep(motion.stepDelayMs)
+                }
+            }
+
+            if (shouldPulse(intent)) {
+                await this.renderer.pulse(point, this.style)
+            }
+
+            this.lastPoint = point
+        } catch (error) {
+            if (this.debug) {
+                const message =
+                    error instanceof Error ? error.message : String(error)
+                console.warn(`[opensteer] cursor preview failed: ${message}`)
+            }
+        }
+    }
+
+    async clear(): Promise<void> {
+        try {
+            await this.renderer.clear()
+        } catch (error) {
+            if (this.debug) {
+                const message =
+                    error instanceof Error ? error.message : String(error)
+                console.warn(`[opensteer] cursor clear failed: ${message}`)
+            }
+        }
+    }
+
+    async dispose(): Promise<void> {
+        this.lastPoint = null
+        this.initializedForPage = false
+        this.lastInitializeAttemptAt = 0
+        this.page = null
+        await this.renderer.dispose()
+    }
+
+    private async ensureInitialized(): Promise<void> {
+        if (!this.page || this.page.isClosed()) return
+        if (this.initializedForPage) return
+
+        await this.initializeRenderer()
+    }
+
+    private planMotion(from: CursorPoint, to: CursorPoint) {
+        return MOTION_PLANNERS[this.profile](from, to)
+    }
+
+    private async reinitializeIfEligible(): Promise<void> {
+        if (!this.page || this.page.isClosed()) return
+        const elapsed = Date.now() - this.lastInitializeAttemptAt
+        if (elapsed < REINITIALIZE_BACKOFF_MS) return
+
+        await this.initializeRenderer()
+    }
+
+    private async initializeRenderer(): Promise<void> {
+        if (!this.page || this.page.isClosed()) return
+
+        this.lastInitializeAttemptAt = Date.now()
+        await this.renderer.initialize(this.page)
+        this.initializedForPage = true
+    }
+}
+
+function mergeStyle(style?: OpensteerCursorStyle): Required<OpensteerCursorStyle> {
+    return {
+        size: normalizeFinite(style?.size, DEFAULT_STYLE.size, 4, 48),
+        pulseScale: normalizeFinite(
+            style?.pulseScale,
+            DEFAULT_STYLE.pulseScale,
+            1,
+            3
+        ),
+        fillColor: normalizeColor(style?.fillColor, DEFAULT_STYLE.fillColor),
+        outlineColor: normalizeColor(
+            style?.outlineColor,
+            DEFAULT_STYLE.outlineColor
+        ),
+        haloColor: normalizeColor(style?.haloColor, DEFAULT_STYLE.haloColor),
+    }
+}
+
+function normalizeColor(
+    color: OpensteerCursorColor | undefined,
+    fallback: OpensteerCursorColor
+): OpensteerCursorColor {
+    if (!color) return { ...fallback }
+    return {
+        r: normalizeFinite(color.r, fallback.r, 0, 255),
+        g: normalizeFinite(color.g, fallback.g, 0, 255),
+        b: normalizeFinite(color.b, fallback.b, 0, 255),
+        a: normalizeFinite(color.a, fallback.a, 0, 1),
+    }
+}
+
+function normalizeFinite(
+    value: number | undefined,
+    fallback: number,
+    min: number,
+    max: number
+): number {
+    const numeric =
+        typeof value === 'number' && Number.isFinite(value) ? value : fallback
+    return Math.min(max, Math.max(min, numeric))
+}
+
+function shouldPulse(intent: CursorIntent): boolean {
+    return (
+        intent === 'click' ||
+        intent === 'dblclick' ||
+        intent === 'rightclick' ||
+        intent === 'agent'
+    )
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+}

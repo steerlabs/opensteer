@@ -12,12 +12,13 @@ import {
 } from './action-executor.js'
 import { OpensteerAgentExecutionError } from './errors.js'
 import type { ResolvedAgentConfig } from './provider.js'
+import type { CursorController } from '../cursor/controller.js'
 
 interface CuaAgentHandlerOptions {
     page: Page
     config: ResolvedAgentConfig
     client: CuaClient
-    debug: boolean
+    cursorController: CursorController
     onMutatingAction?: (action: OpensteerAgentAction) => void
 }
 
@@ -25,15 +26,14 @@ export class OpensteerCuaAgentHandler {
     private readonly page: Page
     private readonly config: ResolvedAgentConfig
     private readonly client: CuaClient
-    private readonly debug: boolean
+    private readonly cursorController: CursorController
     private readonly onMutatingAction?: (action: OpensteerAgentAction) => void
-    private cursorOverlayInjected = false
 
     constructor(options: CuaAgentHandlerOptions) {
         this.page = options.page
         this.config = options.config
         this.client = options.client
-        this.debug = options.debug
+        this.cursorController = options.cursorController
         this.onMutatingAction = options.onMutatingAction
     }
 
@@ -45,11 +45,9 @@ export class OpensteerCuaAgentHandler {
 
         await this.initializeClient()
 
-        const highlightCursor = options.highlightCursor === true
-
         this.client.setActionHandler(async (action) => {
-            if (highlightCursor) {
-                await this.maybeRenderCursor(action)
+            if (this.cursorController.isEnabled()) {
+                await this.maybePreviewCursor(action)
             }
 
             await executeAgentAction(this.page, action)
@@ -89,6 +87,7 @@ export class OpensteerCuaAgentHandler {
         const viewport = await this.resolveViewport()
         this.client.setViewport(viewport.width, viewport.height)
         this.client.setCurrentUrl(this.page.url())
+        await this.cursorController.attachPage(this.page)
         this.client.setScreenshotProvider(async () => {
             const buffer = await this.page.screenshot({
                 fullPage: false,
@@ -128,7 +127,7 @@ export class OpensteerCuaAgentHandler {
         return DEFAULT_CUA_VIEWPORT
     }
 
-    private async maybeRenderCursor(action: OpensteerAgentAction): Promise<void> {
+    private async maybePreviewCursor(action: OpensteerAgentAction): Promise<void> {
         const x = typeof action.x === 'number' ? action.x : null
         const y = typeof action.y === 'number' ? action.y : null
 
@@ -136,44 +135,7 @@ export class OpensteerCuaAgentHandler {
             return
         }
 
-        try {
-            if (!this.cursorOverlayInjected) {
-                await this.page.evaluate(() => {
-                    if (document.getElementById('__opensteer_cua_cursor')) return
-
-                    const cursor = document.createElement('div')
-                    cursor.id = '__opensteer_cua_cursor'
-                    cursor.style.position = 'fixed'
-                    cursor.style.width = '14px'
-                    cursor.style.height = '14px'
-                    cursor.style.borderRadius = '999px'
-                    cursor.style.background = 'rgba(255, 51, 51, 0.85)'
-                    cursor.style.border = '2px solid rgba(255, 255, 255, 0.95)'
-                    cursor.style.boxShadow = '0 0 0 3px rgba(255, 51, 51, 0.25)'
-                    cursor.style.pointerEvents = 'none'
-                    cursor.style.zIndex = '2147483647'
-                    cursor.style.transform = 'translate(-9999px, -9999px)'
-                    cursor.style.transition = 'transform 80ms linear'
-                    document.documentElement.appendChild(cursor)
-                })
-                this.cursorOverlayInjected = true
-            }
-
-            await this.page.evaluate(
-                ({ px, py }) => {
-                    const cursor = document.getElementById('__opensteer_cua_cursor')
-                    if (!cursor) return
-                    cursor.style.transform = `translate(${Math.round(px - 7)}px, ${Math.round(py - 7)}px)`
-                },
-                { px: x, py: y }
-            )
-        } catch (error) {
-            if (this.debug) {
-                const message =
-                    error instanceof Error ? error.message : String(error)
-                console.warn(`[opensteer] cursor overlay failed: ${message}`)
-            }
-        }
+        await this.cursorController.preview({ x, y }, 'agent')
     }
 }
 

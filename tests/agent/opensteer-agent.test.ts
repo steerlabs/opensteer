@@ -41,8 +41,19 @@ vi.mock('../../src/agent/provider.js', () => ({
 import { Opensteer } from '../../src/opensteer.js'
 
 function createMockPage() {
+    const cdpSession = {
+        send: vi.fn().mockResolvedValue(undefined),
+        detach: vi.fn().mockResolvedValue(undefined),
+    }
+    const contextApi = {
+        newCDPSession: vi.fn().mockResolvedValue(cdpSession),
+    }
+
     return {
-        context: vi.fn(() => ({})),
+        __contextApi: contextApi,
+        __cdpSession: cdpSession,
+        context: vi.fn(() => contextApi),
+        isClosed: vi.fn(() => false),
         viewportSize: vi.fn(() => ({ width: 1200, height: 800 })),
         url: vi.fn(() => 'https://example.com'),
         screenshot: vi.fn().mockResolvedValue(Buffer.from('img')),
@@ -138,5 +149,75 @@ describe('opensteer.agent', () => {
         )
 
         await expect(firstRun).resolves.toMatchObject({ success: true })
+    })
+
+    it('uses highlightCursor option to enable cursor preview for that execution', async () => {
+        const page = createMockPage()
+        const opensteer = Opensteer.from(page as never)
+
+        fakeExecute.mockImplementationOnce(async () => {
+            if (!capturedActionHandler) {
+                throw new Error('expected captured action handler')
+            }
+
+            await capturedActionHandler({
+                type: 'click',
+                x: 33,
+                y: 44,
+                button: 'left',
+            })
+
+            return {
+                success: true,
+                completed: true,
+                message: 'done',
+                actions: [{ type: 'click', x: 33, y: 44 }],
+            }
+        })
+
+        const agent = opensteer.agent({ mode: 'cua' })
+        await agent.execute({
+            instruction: 'click with cursor',
+            highlightCursor: true,
+        })
+
+        expect(page.__contextApi.newCDPSession).toHaveBeenCalled()
+    })
+
+    it('lets highlightCursor=false override a cursor-enabled instance', async () => {
+        const page = createMockPage()
+        const opensteer = Opensteer.from(page as never, {
+            cursor: {
+                enabled: true,
+            },
+        })
+
+        fakeExecute.mockImplementationOnce(async () => {
+            if (!capturedActionHandler) {
+                throw new Error('expected captured action handler')
+            }
+
+            await capturedActionHandler({
+                type: 'click',
+                x: 10,
+                y: 20,
+                button: 'left',
+            })
+
+            return {
+                success: true,
+                completed: true,
+                message: 'done',
+                actions: [{ type: 'click', x: 10, y: 20 }],
+            }
+        })
+
+        const agent = opensteer.agent({ mode: 'cua' })
+        await agent.execute({
+            instruction: 'click without cursor',
+            highlightCursor: false,
+        })
+
+        expect(page.__contextApi.newCDPSession).not.toHaveBeenCalled()
     })
 })

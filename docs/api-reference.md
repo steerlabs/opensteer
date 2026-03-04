@@ -50,6 +50,30 @@ Returns the active cloud session id after `launch()` in cloud mode.
 
 Returns the cloud session URL for deep-linking after `launch()` in cloud mode.
 
+### Cursor Preview
+
+Cursor preview is compositor-based (CDP Overlay), does not inject DOM into the
+target page, and is best-effort (graceful no-op when unsupported).
+
+- SDK default: `cursor.enabled = false`
+- CLI default: enabled for opened sessions
+
+#### `setCursorEnabled(enabled: boolean): void`
+
+Enable or disable cursor preview at runtime for this `Opensteer` instance.
+
+```ts
+opensteer.setCursorEnabled(true)
+```
+
+#### `getCursorState(): { enabled: boolean; active: boolean; reason?: string }`
+
+Return current cursor preview state.
+
+```ts
+const state = opensteer.getCursorState()
+```
+
 ### Agent
 
 #### `agent(config: OpensteerAgentConfig): OpensteerAgentInstance`
@@ -81,6 +105,12 @@ const result = await agent.execute({
 
 - `string` instruction
 - `{ instruction: string, maxSteps?: number, highlightCursor?: boolean }`
+
+`highlightCursor` overrides the instance cursor setting for that execution:
+
+- `true`: force cursor preview on for this run
+- `false`: force cursor preview off for this run
+- omitted: use instance cursor setting
 
 Returns:
 
@@ -351,6 +381,17 @@ interface OpensteerConfig {
     name?: string
     browser?: OpensteerBrowserConfig
     storage?: { rootDir?: string }
+    cursor?: {
+        enabled?: boolean
+        profile?: 'snappy'
+        style?: {
+            size?: number
+            fillColor?: { r: number; g: number; b: number; a: number }
+            outlineColor?: { r: number; g: number; b: number; a: number }
+            haloColor?: { r: number; g: number; b: number; a: number }
+            pulseScale?: number
+        }
+    }
     cloud?: boolean | {
         apiKey?: string
         baseUrl?: string
@@ -374,6 +415,9 @@ interface OpensteerBrowserConfig {
 `model` defaults to `gpt-5.1`. Override with `OPENSTEER_MODEL`.
 For CUA agents, use `provider/model` strings (for example
 `openai/computer-use-preview`).
+
+`cursor.enabled` defaults to `false` for SDK instances. Override with
+`OPENSTEER_CURSOR=true|false` or `setCursorEnabled(...)`.
 
 Cloud defaults to disabled. Override with `OPENSTEER_MODE=local|cloud`.
 

@@ -9,6 +9,7 @@ import { normalizeError } from '../error-normalization.js'
 let instance: Opensteer | null = null
 let launchPromise: Promise<void> | null = null
 let selectorNamespace: string | null = null
+let cursorEnabledPreference: boolean | null = readCursorPreferenceFromEnv()
 let requestQueue: Promise<void> = Promise.resolve()
 let shuttingDown = false
 
@@ -29,6 +30,42 @@ function invalidateInstance() {
     if (!instance) return
     instance.close().catch(() => {})
     instance = null
+}
+
+function normalizeCursorFlag(value: unknown): boolean | null {
+    if (value === undefined || value === null) {
+        return null
+    }
+
+    if (typeof value === 'boolean') {
+        return value
+    }
+
+    if (typeof value === 'number') {
+        if (value === 1) return true
+        if (value === 0) return false
+    }
+
+    throw new Error(
+        '--cursor must be a boolean value ("true" or "false").'
+    )
+}
+
+function readCursorPreferenceFromEnv(): boolean | null {
+    const value = process.env.OPENSTEER_CURSOR
+    if (typeof value !== 'string') {
+        return null
+    }
+
+    const normalized = value.trim().toLowerCase()
+    if (normalized === 'true' || normalized === '1') {
+        return true
+    }
+    if (normalized === 'false' || normalized === '0') {
+        return false
+    }
+
+    return null
 }
 
 function attachLifecycleListeners(inst: Opensteer) {
@@ -146,10 +183,18 @@ async function handleRequest(
             const connectUrl = args['connect-url'] as string | undefined
             const channel = args.channel as string | undefined
             const profileDir = args['profile-dir'] as string | undefined
+            const requestedCursor = normalizeCursorFlag(args.cursor)
             const requestedName =
                 typeof args.name === 'string' && args.name.trim().length > 0
                     ? sanitizeNamespace(args.name)
                     : null
+
+            if (requestedCursor !== null) {
+                cursorEnabledPreference = requestedCursor
+            }
+
+            const effectiveCursorEnabled =
+                cursorEnabledPreference !== null ? cursorEnabledPreference : true
 
             if (
                 selectorNamespace &&
@@ -193,6 +238,9 @@ async function handleRequest(
             if (!instance) {
                 instance = new Opensteer({
                     name: activeNamespace,
+                    cursor: {
+                        enabled: effectiveCursorEnabled,
+                    },
                     browser: {
                         headless: headless ?? false,
                         connectUrl,
@@ -215,6 +263,8 @@ async function handleRequest(
                 }
             } else if (launchPromise) {
                 await launchPromise
+            } else if (requestedCursor !== null) {
+                instance.setCursorEnabled(requestedCursor)
             }
 
             if (url) {
@@ -231,6 +281,7 @@ async function handleRequest(
                     runtimeSession: session,
                     scopeDir,
                     name: activeNamespace,
+                    cursor: instance.getCursorState(),
                     cloudSessionId: instance.getCloudSessionId() ?? undefined,
                     cloudSessionUrl: instance.getCloudSessionUrl() ?? undefined,
                 },
@@ -239,6 +290,48 @@ async function handleRequest(
             sendResponse(
                 socket,
                 buildErrorResponse(id, err, 'Failed to open browser session.')
+            )
+        }
+        return
+    }
+
+    if (command === 'cursor') {
+        try {
+            const mode = typeof args.mode === 'string' ? args.mode : 'status'
+            if (mode === 'on') {
+                cursorEnabledPreference = true
+                instance?.setCursorEnabled(true)
+            } else if (mode === 'off') {
+                cursorEnabledPreference = false
+                instance?.setCursorEnabled(false)
+            } else if (mode !== 'status') {
+                throw new Error(
+                    `Invalid cursor mode "${mode}". Use "on", "off", or "status".`
+                )
+            }
+
+            const defaultEnabled =
+                cursorEnabledPreference !== null ? cursorEnabledPreference : true
+
+            const cursor = instance
+                ? instance.getCursorState()
+                : {
+                      enabled: defaultEnabled,
+                      active: false,
+                      reason: 'session_not_open',
+                  }
+
+            sendResponse(socket, {
+                id,
+                ok: true,
+                result: {
+                    cursor,
+                },
+            })
+        } catch (err) {
+            sendResponse(
+                socket,
+                buildErrorResponse(id, err, 'Failed to update cursor mode.')
             )
         }
         return

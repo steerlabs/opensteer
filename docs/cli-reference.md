@@ -51,6 +51,7 @@ opensteer close --session agent-a
 
 - `snapshot [--mode action|extraction|clickable|scrollable|full]`
 - `state`
+- `cursor [on|off|status]`
 - `screenshot [file]`
 
 ### Actions
@@ -118,6 +119,7 @@ Supported options:
 - `--connect-url <url>`
 - `--channel <browser>`
 - `--profile-dir <path>`
+- `--cursor <true|false>`
 - `--element <N>`
 - `--selector <css>`
 - `--description <text>`
@@ -127,8 +129,15 @@ Supported options:
 - `OPENSTEER_SESSION`: logical session id (scoped by canonical `cwd`)
 - `OPENSTEER_CLIENT_ID`: stable identity for default session binding
 - `OPENSTEER_NAME`: default selector namespace for `open`
+- `OPENSTEER_CURSOR`: cursor default for SDK and CLI daemon preference bootstrap
 - `OPENSTEER_MODE`: `local` (default) or `cloud`
 - `OPENSTEER_API_KEY`: required in cloud mode
 - `OPENSTEER_BASE_URL`: cloud control-plane base URL
 - `OPENSTEER_AUTH_SCHEME`: `api-key` (default) or `bearer`
 - `OPENSTEER_REMOTE_ANNOUNCE`: `always` (default), `off`, or `tty`
+
+Cursor defaults:
+
+- CLI sessions are enabled by default unless overridden by `--cursor` or
+  `OPENSTEER_CURSOR`.
+- SDK instances default to disabled unless configured via `cursor.enabled`.

@@ -111,6 +111,22 @@ describe('config', () => {
         expect(resolved.model).toBe('gpt-5-mini')
     })
 
+    it('resolveConfig maps OPENSTEER_CURSOR into cursor.enabled', () => {
+        process.env.OPENSTEER_CURSOR = 'true'
+        const resolved = resolveConfig({})
+        expect(resolved.cursor?.enabled).toBe(true)
+    })
+
+    it('resolveConfig lets explicit cursor config override OPENSTEER_CURSOR', () => {
+        process.env.OPENSTEER_CURSOR = 'true'
+        const resolved = resolveConfig({
+            cursor: {
+                enabled: false,
+            },
+        })
+        expect(resolved.cursor?.enabled).toBe(false)
+    })
+
     it('resolveCloudSelection defaults to local runtime when unset', () => {
         const selection = resolveCloudSelection({})
         expect(selection).toEqual({
