@@ -1,13 +1,19 @@
 import type { AiResolveCallback } from '../types.js'
+import type { RuntimeEnv } from '../config.js'
 import { getModelProvider } from './model.js'
 import { buildResolveSystemPrompt, buildResolveUserPrompt } from './prompts.js'
 
 export function createResolveCallback(
     model: string,
-    options?: { temperature?: number; maxTokens?: number | null }
+    options?: {
+        temperature?: number
+        maxTokens?: number | null
+        env?: RuntimeEnv
+    }
 ): AiResolveCallback {
     const temperature = options?.temperature ?? 1
     const maxTokens = options?.maxTokens ?? null
+    const env = options?.env
 
     return async (args) => {
         let generateObject: (typeof import('ai'))['generateObject']
@@ -28,7 +34,7 @@ export function createResolveCallback(
             )
         }
 
-        const modelProvider = await getModelProvider(model)
+        const modelProvider = await getModelProvider(model, { env })
 
         const schema = z.object({
             element: z

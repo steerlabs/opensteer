@@ -3,6 +3,7 @@ import type {
     OpensteerAgentModelConfig,
     OpensteerAgentProvider,
 } from '../types.js'
+import type { RuntimeEnv } from '../config.js'
 import { OpensteerAgentConfigError, OpensteerAgentProviderError } from './errors.js'
 
 export interface ResolvedCuaModelConfig {
@@ -30,7 +31,7 @@ const SUPPORTED_CUA_PROVIDERS = new Set<OpensteerAgentProvider>([
 export function resolveCuaModelConfig(args: {
     agentConfig: OpensteerAgentConfig
     fallbackModel?: string
-    env?: NodeJS.ProcessEnv
+    env?: RuntimeEnv
 }): ResolvedCuaModelConfig {
     const env = args.env || process.env
     const source = resolveModelSource(args.agentConfig.model, args.fallbackModel)
@@ -124,7 +125,7 @@ function parseProviderModel(modelName: string): {
 function resolveProviderApiKey(
     provider: OpensteerAgentProvider,
     explicitApiKey: string | undefined,
-    env: NodeJS.ProcessEnv
+    env: RuntimeEnv
 ): string {
     const explicit = normalizeOptional(explicitApiKey)
     if (explicit) return explicit
