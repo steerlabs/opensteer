@@ -110,6 +110,7 @@ import {
     type PersistedExtractObjectNode,
     type PersistedExtractPayload,
 } from './extraction/array-consolidation.js'
+import { stripRedundantPositionClauses } from './extraction/array-field-validation.js'
 import { inflateDataPathObject } from './extraction/data-path.js'
 import {
     cloudSessionContractVersion as CLOUD_SESSION_CONTRACT_VERSION,
@@ -1886,7 +1887,7 @@ export class Opensteer {
         ) {
             const persistedFields =
                 await this.resolveFieldTargetsToPersistableFields(fields)
-            this.persistExtractPaths(
+            await this.persistExtractPaths(
                 storageKey,
                 options.description,
                 persistedFields,
@@ -1931,13 +1932,12 @@ export class Opensteer {
 
         let persisted = false
         if (storageKey) {
-            this.persistExtractPaths(
+            persisted = await this.persistExtractPaths(
                 storageKey,
                 options.description,
                 resolvedFields,
                 schemaHash
             )
-            persisted = true
         }
 
         return {
@@ -2550,12 +2550,12 @@ export class Opensteer {
         return true
     }
 
-    private persistExtractPaths(
+    private async persistExtractPaths(
         id: string,
         description: string | undefined,
         fields: PersistableExtractField[],
         schemaHash: string
-    ): boolean {
+    ): Promise<boolean> {
         const now = Date.now()
         const safeFile = this.storage.getSelectorFileName(id)
 
@@ -2579,12 +2579,21 @@ export class Opensteer {
             }
         )
         const persistedPayload = buildPersistedExtractPayload(normalizedFields)
+        let validatedPayload = persistedPayload
+        try {
+            validatedPayload = await stripRedundantPositionClauses(
+                persistedPayload,
+                this.page
+            )
+        } catch {
+            // Validation is best-effort; keep the original persisted payload on failure.
+        }
 
         const payload: SelectorFile<PersistedExtractPayload> = {
             id,
             method: 'extract',
             description: description || 'Extraction paths',
-            path: persistedPayload,
+            path: validatedPayload,
             schemaHash,
             metadata: {
                 createdAt,
