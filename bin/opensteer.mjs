@@ -307,7 +307,14 @@ function getMetadataPath(session) {
 function buildRequest(command, flags, positional) {
     const id = 1
     const globalFlags = {}
-    for (const key of ['headless', 'json', 'connect-url', 'channel', 'profile-dir']) {
+    for (const key of [
+        'headless',
+        'json',
+        'connect-url',
+        'channel',
+        'profile-dir',
+        'cursor',
+    ]) {
         if (key in flags) {
             globalFlags[key] = flags[key]
             delete flags[key]
@@ -407,6 +414,10 @@ function buildRequest(command, flags, positional) {
 
         case 'snapshot':
             args.mode = positional[0] || args.mode
+            break
+
+        case 'cursor':
+            args.mode = positional[0] || args.mode || 'status'
             break
     }
 
@@ -937,6 +948,7 @@ Sessions:
 Observation:
   snapshot [--mode action]  Get page snapshot
   state                     Get page URL, title, and snapshot
+  cursor [on|off|status]    Configure/query cursor preview mode
   screenshot [file]         Take screenshot
 
 Actions:
@@ -989,6 +1001,7 @@ Global Flags:
   --connect-url <url>       Connect to a running browser (e.g. http://localhost:9222)
   --channel <browser>       Use installed browser (chrome, chrome-beta, msedge)
   --profile-dir <path>      Browser profile directory for logged-in sessions
+  --cursor <true|false>     Enable/disable cursor preview for the session
   --element <N>             Target element by counter
   --selector <css>          Target element by CSS selector
   --description <text>      Description for selector persistence
@@ -999,6 +1012,7 @@ Environment:
   OPENSTEER_SESSION         Logical session id (equivalent to --session)
   OPENSTEER_CLIENT_ID       Stable client identity for default session binding
   OPENSTEER_NAME            Default selector namespace for 'open' when --name is omitted
+  OPENSTEER_CURSOR          Default cursor enablement (SDK + CLI session bootstrap)
   OPENSTEER_MODE            Runtime routing: "local" (default) or "cloud"
   OPENSTEER_API_KEY         Required when cloud mode is selected
   OPENSTEER_BASE_URL        Override cloud control-plane base URL
