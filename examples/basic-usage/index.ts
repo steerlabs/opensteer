@@ -19,7 +19,7 @@ async function run() {
     }
 }
 
-run().catch(() => {
-    console.error('Example failed.')
+run().catch((error) => {
+    console.error('Example failed.', error)
     process.exit(1)
 })
