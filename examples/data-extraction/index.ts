@@ -1,4 +1,5 @@
 import { Opensteer } from "../../src/index.js";
+import { reportError } from "../log.js";
 
 async function run() {
   const opensteer = new Opensteer({
@@ -36,6 +37,6 @@ async function run() {
 }
 
 run().catch((err) => {
-  console.error(err);
+  reportError(err);
   process.exit(1);
 });
