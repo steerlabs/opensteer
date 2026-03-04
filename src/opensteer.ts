@@ -882,7 +882,6 @@ export class Opensteer {
                 resolution.counter
             )
             let persistPath: ElementPath | null = null
-            const targetPoint = await this.resolveHandleCenterPoint(handle)
             try {
                 if (storageKey && resolution.shouldPersist) {
                     persistPath = await this.tryBuildPathFromResolvedHandle(
@@ -892,18 +891,23 @@ export class Opensteer {
                     )
                 }
 
-                await this.runWithCursorPreview(targetPoint, 'hover', async () => {
-                    await this.runWithPostActionWait(
-                        'hover',
-                        options.wait,
-                        async () => {
-                            await handle.hover({
-                                force: options.force,
-                                position: options.position,
-                            })
-                        }
-                    )
-                })
+                await this.runWithCursorPreview(
+                    () =>
+                        this.resolveHandleTargetPoint(handle, options.position),
+                    'hover',
+                    async () => {
+                        await this.runWithPostActionWait(
+                            'hover',
+                            options.wait,
+                            async () => {
+                                await handle.hover({
+                                    force: options.force,
+                                    position: options.position,
+                                })
+                            }
+                        )
+                    }
+                )
             } catch (err) {
                 const failure = classifyActionFailure({
                     action: 'hover',
@@ -946,37 +950,41 @@ export class Opensteer {
             throw new Error('Unable to resolve element path for hover action.')
         }
         const path = resolution.path
-        const targetPoint = await this.resolvePathCenterPoint(path)
 
-        const result = await this.runWithCursorPreview(targetPoint, 'hover', async () => {
-            return await this.runWithPostActionWait(
-                'hover',
-                options.wait,
-                async () => {
-                    const actionResult = await performHover(this.page, path, options)
+        const result = await this.runWithCursorPreview(
+            () => this.resolvePathTargetPoint(path, options.position),
+            'hover',
+            async () => {
+                return await this.runWithPostActionWait(
+                    'hover',
+                    options.wait,
+                    async () => {
+                        const actionResult = await performHover(this.page, path, options)
 
-                    if (!actionResult.ok) {
-                        const failure =
-                            actionResult.failure ||
-                            classifyActionFailure({
-                                action: 'hover',
-                                error:
-                                    actionResult.error ||
-                                    defaultActionFailureMessage('hover'),
-                                fallbackMessage: defaultActionFailureMessage('hover'),
-                            })
-                        throw this.buildActionError(
-                            'hover',
-                            options.description,
-                            failure,
-                            actionResult.usedSelector || null
-                        )
+                        if (!actionResult.ok) {
+                            const failure =
+                                actionResult.failure ||
+                                classifyActionFailure({
+                                    action: 'hover',
+                                    error:
+                                        actionResult.error ||
+                                        defaultActionFailureMessage('hover'),
+                                    fallbackMessage:
+                                        defaultActionFailureMessage('hover'),
+                                })
+                            throw this.buildActionError(
+                                'hover',
+                                options.description,
+                                failure,
+                                actionResult.usedSelector || null
+                            )
+                        }
+
+                        return actionResult
                     }
-
-                    return actionResult
-                }
-            )
-        })
+                )
+            }
+        )
         this.snapshotCache = null
 
         const persisted =
@@ -1016,7 +1024,6 @@ export class Opensteer {
                 resolution.counter
             )
             let persistPath: ElementPath | null = null
-            const targetPoint = await this.resolveHandleCenterPoint(handle)
             try {
                 if (storageKey && resolution.shouldPersist) {
                     persistPath = await this.tryBuildPathFromResolvedHandle(
@@ -1026,22 +1033,26 @@ export class Opensteer {
                     )
                 }
 
-                await this.runWithCursorPreview(targetPoint, 'input', async () => {
-                    await this.runWithPostActionWait(
-                        'input',
-                        options.wait,
-                        async () => {
-                            if (options.clear !== false) {
-                                await handle.fill(options.text)
-                            } else {
-                                await handle.type(options.text)
+                await this.runWithCursorPreview(
+                    () => this.resolveHandleTargetPoint(handle),
+                    'input',
+                    async () => {
+                        await this.runWithPostActionWait(
+                            'input',
+                            options.wait,
+                            async () => {
+                                if (options.clear !== false) {
+                                    await handle.fill(options.text)
+                                } else {
+                                    await handle.type(options.text)
+                                }
+                                if (options.pressEnter) {
+                                    await handle.press('Enter', { noWaitAfter: true })
+                                }
                             }
-                            if (options.pressEnter) {
-                                await handle.press('Enter', { noWaitAfter: true })
-                            }
-                        }
-                    )
-                })
+                        )
+                    }
+                )
             } catch (err) {
                 const failure = classifyActionFailure({
                     action: 'input',
@@ -1084,37 +1095,41 @@ export class Opensteer {
             throw new Error('Unable to resolve element path for input action.')
         }
         const path = resolution.path
-        const targetPoint = await this.resolvePathCenterPoint(path)
 
-        const result = await this.runWithCursorPreview(targetPoint, 'input', async () => {
-            return await this.runWithPostActionWait(
-                'input',
-                options.wait,
-                async () => {
-                    const actionResult = await performInput(this.page, path, options)
+        const result = await this.runWithCursorPreview(
+            () => this.resolvePathTargetPoint(path),
+            'input',
+            async () => {
+                return await this.runWithPostActionWait(
+                    'input',
+                    options.wait,
+                    async () => {
+                        const actionResult = await performInput(this.page, path, options)
 
-                    if (!actionResult.ok) {
-                        const failure =
-                            actionResult.failure ||
-                            classifyActionFailure({
-                                action: 'input',
-                                error:
-                                    actionResult.error ||
-                                    defaultActionFailureMessage('input'),
-                                fallbackMessage: defaultActionFailureMessage('input'),
-                            })
-                        throw this.buildActionError(
-                            'input',
-                            options.description,
-                            failure,
-                            actionResult.usedSelector || null
-                        )
+                        if (!actionResult.ok) {
+                            const failure =
+                                actionResult.failure ||
+                                classifyActionFailure({
+                                    action: 'input',
+                                    error:
+                                        actionResult.error ||
+                                        defaultActionFailureMessage('input'),
+                                    fallbackMessage:
+                                        defaultActionFailureMessage('input'),
+                                })
+                            throw this.buildActionError(
+                                'input',
+                                options.description,
+                                failure,
+                                actionResult.usedSelector || null
+                            )
+                        }
+
+                        return actionResult
                     }
-
-                    return actionResult
-                }
-            )
-        })
+                )
+            }
+        )
         this.snapshotCache = null
 
         const persisted =
@@ -1154,7 +1169,6 @@ export class Opensteer {
                 resolution.counter
             )
             let persistPath: ElementPath | null = null
-            const targetPoint = await this.resolveHandleCenterPoint(handle)
             try {
                 if (storageKey && resolution.shouldPersist) {
                     persistPath = await this.tryBuildPathFromResolvedHandle(
@@ -1164,25 +1178,29 @@ export class Opensteer {
                     )
                 }
 
-                await this.runWithCursorPreview(targetPoint, 'select', async () => {
-                    await this.runWithPostActionWait(
-                        'select',
-                        options.wait,
-                        async () => {
-                            if (options.value != null) {
-                                await handle.selectOption(options.value)
-                            } else if (options.label != null) {
-                                await handle.selectOption({ label: options.label })
-                            } else if (options.index != null) {
-                                await handle.selectOption({ index: options.index })
-                            } else {
-                                throw new Error(
-                                    'Select requires value, label, or index.'
-                                )
+                await this.runWithCursorPreview(
+                    () => this.resolveHandleTargetPoint(handle),
+                    'select',
+                    async () => {
+                        await this.runWithPostActionWait(
+                            'select',
+                            options.wait,
+                            async () => {
+                                if (options.value != null) {
+                                    await handle.selectOption(options.value)
+                                } else if (options.label != null) {
+                                    await handle.selectOption({ label: options.label })
+                                } else if (options.index != null) {
+                                    await handle.selectOption({ index: options.index })
+                                } else {
+                                    throw new Error(
+                                        'Select requires value, label, or index.'
+                                    )
+                                }
                             }
-                        }
-                    )
-                })
+                        )
+                    }
+                )
             } catch (err) {
                 const failure = classifyActionFailure({
                     action: 'select',
@@ -1225,37 +1243,41 @@ export class Opensteer {
             throw new Error('Unable to resolve element path for select action.')
         }
         const path = resolution.path
-        const targetPoint = await this.resolvePathCenterPoint(path)
 
-        const result = await this.runWithCursorPreview(targetPoint, 'select', async () => {
-            return await this.runWithPostActionWait(
-                'select',
-                options.wait,
-                async () => {
-                    const actionResult = await performSelect(this.page, path, options)
+        const result = await this.runWithCursorPreview(
+            () => this.resolvePathTargetPoint(path),
+            'select',
+            async () => {
+                return await this.runWithPostActionWait(
+                    'select',
+                    options.wait,
+                    async () => {
+                        const actionResult = await performSelect(this.page, path, options)
 
-                    if (!actionResult.ok) {
-                        const failure =
-                            actionResult.failure ||
-                            classifyActionFailure({
-                                action: 'select',
-                                error:
-                                    actionResult.error ||
-                                    defaultActionFailureMessage('select'),
-                                fallbackMessage: defaultActionFailureMessage('select'),
-                            })
-                        throw this.buildActionError(
-                            'select',
-                            options.description,
-                            failure,
-                            actionResult.usedSelector || null
-                        )
+                        if (!actionResult.ok) {
+                            const failure =
+                                actionResult.failure ||
+                                classifyActionFailure({
+                                    action: 'select',
+                                    error:
+                                        actionResult.error ||
+                                        defaultActionFailureMessage('select'),
+                                    fallbackMessage:
+                                        defaultActionFailureMessage('select'),
+                                })
+                            throw this.buildActionError(
+                                'select',
+                                options.description,
+                                failure,
+                                actionResult.usedSelector || null
+                            )
+                        }
+
+                        return actionResult
                     }
-
-                    return actionResult
-                }
-            )
-        })
+                )
+            }
+        )
         this.snapshotCache = null
 
         const persisted =
@@ -1295,7 +1317,6 @@ export class Opensteer {
                 resolution.counter
             )
             let persistPath: ElementPath | null = null
-            const targetPoint = await this.resolveHandleCenterPoint(handle)
             try {
                 if (storageKey && resolution.shouldPersist) {
                     persistPath = await this.tryBuildPathFromResolvedHandle(
@@ -1306,19 +1327,23 @@ export class Opensteer {
                 }
 
                 const delta = getScrollDelta(options)
-                await this.runWithCursorPreview(targetPoint, 'scroll', async () => {
-                    await this.runWithPostActionWait(
-                        'scroll',
-                        options.wait,
-                        async () => {
-                            await handle.evaluate((el, value) => {
-                                if (el instanceof HTMLElement) {
-                                    el.scrollBy(value.x, value.y)
-                                }
-                            }, delta)
-                        }
-                    )
-                })
+                await this.runWithCursorPreview(
+                    () => this.resolveHandleTargetPoint(handle),
+                    'scroll',
+                    async () => {
+                        await this.runWithPostActionWait(
+                            'scroll',
+                            options.wait,
+                            async () => {
+                                await handle.evaluate((el, value) => {
+                                    if (el instanceof HTMLElement) {
+                                        el.scrollBy(value.x, value.y)
+                                    }
+                                }, delta)
+                            }
+                        )
+                    }
+                )
             } catch (err) {
                 const failure = classifyActionFailure({
                     action: 'scroll',
@@ -1357,43 +1382,47 @@ export class Opensteer {
             )
         }
 
-        const targetPoint = resolution.path
-            ? await this.resolvePathCenterPoint(resolution.path)
-            : await this.resolveViewportAnchorPoint()
-
-        const result = await this.runWithCursorPreview(targetPoint, 'scroll', async () => {
-            return await this.runWithPostActionWait(
-                'scroll',
-                options.wait,
-                async () => {
-                    const actionResult = await performScroll(
-                        this.page,
-                        resolution.path,
-                        options
-                    )
-
-                    if (!actionResult.ok) {
-                        const failure =
-                            actionResult.failure ||
-                            classifyActionFailure({
-                                action: 'scroll',
-                                error:
-                                    actionResult.error ||
-                                    defaultActionFailureMessage('scroll'),
-                                fallbackMessage: defaultActionFailureMessage('scroll'),
-                            })
-                        throw this.buildActionError(
-                            'scroll',
-                            options.description,
-                            failure,
-                            actionResult.usedSelector || null
+        const result = await this.runWithCursorPreview(
+            () =>
+                resolution.path
+                    ? this.resolvePathTargetPoint(resolution.path)
+                    : this.resolveViewportAnchorPoint(),
+            'scroll',
+            async () => {
+                return await this.runWithPostActionWait(
+                    'scroll',
+                    options.wait,
+                    async () => {
+                        const actionResult = await performScroll(
+                            this.page,
+                            resolution.path,
+                            options
                         )
-                    }
 
-                    return actionResult
-                }
-            )
-        })
+                        if (!actionResult.ok) {
+                            const failure =
+                                actionResult.failure ||
+                                classifyActionFailure({
+                                    action: 'scroll',
+                                    error:
+                                        actionResult.error ||
+                                        defaultActionFailureMessage('scroll'),
+                                    fallbackMessage:
+                                        defaultActionFailureMessage('scroll'),
+                                })
+                            throw this.buildActionError(
+                                'scroll',
+                                options.description,
+                                failure,
+                                actionResult.usedSelector || null
+                            )
+                        }
+
+                        return actionResult
+                    }
+                )
+            }
+        )
         this.snapshotCache = null
 
         const persisted =
@@ -1730,7 +1759,6 @@ export class Opensteer {
                 resolution.counter
             )
             let persistPath: ElementPath | null = null
-            const targetPoint = await this.resolveHandleCenterPoint(handle)
             try {
                 if (storageKey && resolution.shouldPersist) {
                     persistPath = await this.tryBuildPathFromResolvedHandle(
@@ -1739,15 +1767,19 @@ export class Opensteer {
                         resolution.counter
                     )
                 }
-                await this.runWithCursorPreview(targetPoint, 'uploadFile', async () => {
-                    await this.runWithPostActionWait(
-                        'uploadFile',
-                        options.wait,
-                        async () => {
-                            await handle.setInputFiles(options.paths)
-                        }
-                    )
-                })
+                await this.runWithCursorPreview(
+                    () => this.resolveHandleTargetPoint(handle),
+                    'uploadFile',
+                    async () => {
+                        await this.runWithPostActionWait(
+                            'uploadFile',
+                            options.wait,
+                            async () => {
+                                await handle.setInputFiles(options.paths)
+                            }
+                        )
+                    }
+                )
             } catch (err) {
                 const failure = classifyActionFailure({
                     action: 'uploadFile',
@@ -1790,10 +1822,9 @@ export class Opensteer {
             throw new Error('Unable to resolve element path for file upload.')
         }
         const path = resolution.path
-        const targetPoint = await this.resolvePathCenterPoint(path)
 
         const result = await this.runWithCursorPreview(
-            targetPoint,
+            () => this.resolvePathTargetPoint(path),
             'uploadFile',
             async () => {
                 return await this.runWithPostActionWait(
@@ -2131,12 +2162,21 @@ export class Opensteer {
     }
 
     private async runWithCursorPreview<T>(
-        point: CursorPoint | null,
+        pointResolver: () => Promise<CursorPoint | null>,
         intent: CursorIntent,
         execute: () => Promise<T>
     ): Promise<T> {
-        await this.previewCursorPoint(point, intent)
+        if (this.isCursorPreviewEnabled()) {
+            const point = await pointResolver()
+            await this.previewCursorPoint(point, intent)
+        }
         return await execute()
+    }
+
+    private isCursorPreviewEnabled(): boolean {
+        return this.cursorController
+            ? this.cursorController.isEnabled()
+            : this.config.cursor?.enabled === true
     }
 
     private async previewCursorPoint(
@@ -2148,23 +2188,39 @@ export class Opensteer {
         await cursor.preview(point, intent)
     }
 
-    private async resolveHandleCenterPoint(
-        handle: ElementHandle
+    private resolveCursorPointFromBoundingBox(
+        box: BoundingBox,
+        position?: HoverOptions['position']
+    ): CursorPoint {
+        if (position) {
+            return {
+                x: box.x + position.x,
+                y: box.y + position.y,
+            }
+        }
+
+        return {
+            x: box.x + box.width / 2,
+            y: box.y + box.height / 2,
+        }
+    }
+
+    private async resolveHandleTargetPoint(
+        handle: ElementHandle,
+        position?: HoverOptions['position']
     ): Promise<CursorPoint | null> {
         try {
             const box = await handle.boundingBox()
             if (!box) return null
-            return {
-                x: box.x + box.width / 2,
-                y: box.y + box.height / 2,
-            }
+            return this.resolveCursorPointFromBoundingBox(box, position)
         } catch {
             return null
         }
     }
 
-    private async resolvePathCenterPoint(
-        path: ElementPath | null
+    private async resolvePathTargetPoint(
+        path: ElementPath | null,
+        position?: HoverOptions['position']
     ): Promise<CursorPoint | null> {
         if (!path) {
             return null
@@ -2173,7 +2229,7 @@ export class Opensteer {
         let resolved: Awaited<ReturnType<typeof resolveElementPath>> | null = null
         try {
             resolved = await resolveElementPath(this.page, path)
-            return await this.resolveHandleCenterPoint(resolved.element)
+            return await this.resolveHandleTargetPoint(resolved.element, position)
         } catch {
             return null
         } finally {
@@ -2227,7 +2283,6 @@ export class Opensteer {
                 resolution.counter
             )
             let persistPath: ElementPath | null = null
-            const targetPoint = await this.resolveHandleCenterPoint(handle)
             try {
                 if (storageKey && resolution.shouldPersist) {
                     persistPath = await this.tryBuildPathFromResolvedHandle(
@@ -2237,15 +2292,19 @@ export class Opensteer {
                     )
                 }
 
-                await this.runWithCursorPreview(targetPoint, method, async () => {
-                    await this.runWithPostActionWait(method, options.wait, async () => {
-                        await handle.click({
-                            button: options.button,
-                            clickCount: options.clickCount,
-                            modifiers: options.modifiers,
+                await this.runWithCursorPreview(
+                    () => this.resolveHandleTargetPoint(handle),
+                    method,
+                    async () => {
+                        await this.runWithPostActionWait(method, options.wait, async () => {
+                            await handle.click({
+                                button: options.button,
+                                clickCount: options.clickCount,
+                                modifiers: options.modifiers,
+                            })
                         })
-                    })
-                })
+                    }
+                )
             } catch (err) {
                 const failure = classifyActionFailure({
                     action: method,
@@ -2288,35 +2347,39 @@ export class Opensteer {
             throw new Error('Unable to resolve element path for click action.')
         }
         const path = resolution.path
-        const targetPoint = await this.resolvePathCenterPoint(path)
 
-        const result = await this.runWithCursorPreview(targetPoint, method, async () => {
-            return await this.runWithPostActionWait(
-                method,
-                options.wait,
-                async () => {
-                    const actionResult = await performClick(this.page, path, options)
-                    if (!actionResult.ok) {
-                        const failure =
-                            actionResult.failure ||
-                            classifyActionFailure({
-                                action: method,
-                                error:
-                                    actionResult.error ||
-                                    defaultActionFailureMessage(method),
-                                fallbackMessage: defaultActionFailureMessage(method),
-                            })
-                        throw this.buildActionError(
-                            method,
-                            options.description,
-                            failure,
-                            actionResult.usedSelector || null
-                        )
+        const result = await this.runWithCursorPreview(
+            () => this.resolvePathTargetPoint(path),
+            method,
+            async () => {
+                return await this.runWithPostActionWait(
+                    method,
+                    options.wait,
+                    async () => {
+                        const actionResult = await performClick(this.page, path, options)
+                        if (!actionResult.ok) {
+                            const failure =
+                                actionResult.failure ||
+                                classifyActionFailure({
+                                    action: method,
+                                    error:
+                                        actionResult.error ||
+                                        defaultActionFailureMessage(method),
+                                    fallbackMessage:
+                                        defaultActionFailureMessage(method),
+                                })
+                            throw this.buildActionError(
+                                method,
+                                options.description,
+                                failure,
+                                actionResult.usedSelector || null
+                            )
+                        }
+                        return actionResult
                     }
-                    return actionResult
-                }
-            )
-        })
+                )
+            }
+        )
         this.snapshotCache = null
 
         const persisted =
