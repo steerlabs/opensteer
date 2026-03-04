@@ -131,7 +131,7 @@ export class SvgCursorRenderer implements CursorRenderer {
     async clear(): Promise<void> {
         if (!this.page || this.page.isClosed()) return
         try {
-            await this.page.evaluate(hideCursor, HOST_ELEMENT_ID)
+            await this.page.evaluate(removeCursor, HOST_ELEMENT_ID)
         } catch {}
     }
 
@@ -288,13 +288,6 @@ function pulseCursor(args: {
         ring.style.opacity = '0'
     }, args.pulseMs)
     return true
-}
-
-function hideCursor(hostId: string): void {
-    const refs = (window as unknown as Record<string, unknown>)[hostId] as {
-        wrapper: HTMLElement
-    } | null
-    if (refs) refs.wrapper.style.display = 'none'
 }
 
 function removeCursor(hostId: string): void {
