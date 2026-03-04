@@ -15,6 +15,13 @@ export interface ResolvedOpensteerConfig extends OpensteerConfig {
     model: string
 }
 
+export type RuntimeEnv = Record<string, string | undefined>
+
+export interface ResolvedConfigWithEnv {
+    config: ResolvedOpensteerConfig
+    env: RuntimeEnv
+}
+
 type RuntimeMode = 'local' | 'cloud'
 
 export type CloudSelectionSource =
@@ -45,8 +52,6 @@ const DEFAULT_CONFIG: Required<
     debug: false,
 }
 
-type EnvMap = Record<string, string | undefined>
-
 function dotenvFileOrder(nodeEnv: string | undefined): string[] {
     const normalized = nodeEnv?.trim() || ''
     const files: string[] = []
@@ -67,10 +72,10 @@ function dotenvFileOrder(nodeEnv: string | undefined): string[] {
 
 function loadDotenvValues(
     rootDir: string,
-    baseEnv: EnvMap,
+    baseEnv: RuntimeEnv,
     options: { debug?: boolean } = {}
-): EnvMap {
-    const values: EnvMap = {}
+): RuntimeEnv {
+    const values: RuntimeEnv = {}
     if (parseBool(baseEnv.OPENSTEER_DISABLE_DOTENV_AUTOLOAD) === true) {
         return values
     }
@@ -111,8 +116,8 @@ function loadDotenvValues(
 function resolveEnv(
     rootDir: string,
     options: { debug?: boolean } = {}
-): EnvMap {
-    const baseEnv = process.env as EnvMap
+): RuntimeEnv {
+    const baseEnv = process.env as RuntimeEnv
     const dotenvValues = loadDotenvValues(rootDir, baseEnv, options)
     return {
         ...dotenvValues,
@@ -305,19 +310,19 @@ function parseCloudAnnounce(
     )
 }
 
-function resolveOpensteerApiKey(env: EnvMap): string | undefined {
+function resolveOpensteerApiKey(env: RuntimeEnv): string | undefined {
     const value = env.OPENSTEER_API_KEY?.trim()
     if (!value) return undefined
     return value
 }
 
-function resolveOpensteerBaseUrl(env: EnvMap): string | undefined {
+function resolveOpensteerBaseUrl(env: RuntimeEnv): string | undefined {
     const value = env.OPENSTEER_BASE_URL?.trim()
     if (!value) return undefined
     return value
 }
 
-function resolveOpensteerAuthScheme(env: EnvMap): OpensteerAuthScheme | undefined {
+function resolveOpensteerAuthScheme(env: RuntimeEnv): OpensteerAuthScheme | undefined {
     return parseAuthScheme(env.OPENSTEER_AUTH_SCHEME, 'OPENSTEER_AUTH_SCHEME')
 }
 
@@ -346,7 +351,7 @@ function parseCloudEnabled(
 
 export function resolveCloudSelection(
     config: Pick<OpensteerConfig, 'cloud'>,
-    env: EnvMap = process.env as EnvMap
+    env: RuntimeEnv = process.env as RuntimeEnv
 ): CloudSelection {
     const configCloud = parseCloudEnabled(config.cloud, 'cloud')
 
@@ -371,10 +376,10 @@ export function resolveCloudSelection(
     }
 }
 
-export function resolveConfig(
+export function resolveConfigWithEnv(
     input: OpensteerConfig = {}
-): ResolvedOpensteerConfig {
-    const processEnv = process.env as EnvMap
+): ResolvedConfigWithEnv {
+    const processEnv = process.env as RuntimeEnv
     const debugHint =
         typeof input.debug === 'boolean'
             ? input.debug
@@ -495,7 +500,16 @@ export function resolveConfig(
         }
     }
 
-    return resolved
+    return {
+        config: resolved,
+        env,
+    }
+}
+
+export function resolveConfig(
+    input: OpensteerConfig = {}
+): ResolvedOpensteerConfig {
+    return resolveConfigWithEnv(input).config
 }
 
 export function resolveNamespace(

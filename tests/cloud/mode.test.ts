@@ -1,3 +1,6 @@
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { type Page } from 'playwright'
 import { Opensteer } from '../../src/opensteer.js'
@@ -75,6 +78,24 @@ describe('cloud mode', () => {
         expect(() => Opensteer.from({} as never, {})).toThrow(
             'Opensteer.from(page) is not supported in cloud mode.'
         )
+    })
+
+    it('respects OPENSTEER_MODE from .env when evaluating Opensteer.from(page)', () => {
+        const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-cloud-mode-'))
+        fs.writeFileSync(
+            path.join(rootDir, '.env'),
+            ['OPENSTEER_MODE=cloud', 'OPENSTEER_API_KEY=ork_env_file_123'].join('\n'),
+            'utf8'
+        )
+
+        delete process.env.OPENSTEER_MODE
+        delete process.env.OPENSTEER_API_KEY
+
+        expect(() =>
+            Opensteer.from({} as never, {
+                storage: { rootDir },
+            })
+        ).toThrow('Opensteer.from(page) is not supported in cloud mode.')
     })
 
     it('throws explicit unsupported errors for path-based methods', async () => {

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('ai', () => ({
     generateText: vi.fn(),
@@ -9,11 +9,18 @@ vi.mock('../../src/ai/model.js', () => ({
 }))
 
 import { generateText } from 'ai'
+import { getModelProvider } from '../../src/ai/model.js'
 import { createExtractCallback } from '../../src/ai/extractor.js'
 
 const mockedGenerateText = vi.mocked(generateText)
+const mockedGetModelProvider = vi.mocked(getModelProvider)
 
 describe('ai/extractor', () => {
+    beforeEach(() => {
+        vi.clearAllMocks()
+        mockedGetModelProvider.mockResolvedValue('mock-model')
+    })
+
     it('returns ExtractionPlan with flattened fields when contains_data is true', async () => {
         mockedGenerateText.mockResolvedValueOnce({
             text: JSON.stringify({
@@ -251,5 +258,26 @@ describe('ai/extractor', () => {
             | undefined
         expect(callArg).toBeTruthy()
         expect(callArg?.maxOutputTokens).toBe(512)
+    })
+
+    it('forwards injected env to model provider resolution', async () => {
+        mockedGenerateText.mockResolvedValueOnce({
+            text: JSON.stringify({
+                contains_data: true,
+                data: { region: 5 },
+            }),
+        } as never)
+
+        const env = {
+            OPENAI_API_KEY: 'sk-env',
+        }
+        const extract = createExtractCallback('gpt-5-mini', { env })
+        await extract({
+            html: '<div c="5">North</div>',
+            schema: { region: 'string' },
+            url: null,
+        })
+
+        expect(mockedGetModelProvider).toHaveBeenCalledWith('gpt-5-mini', { env })
     })
 })
