@@ -558,7 +558,11 @@ function minimizePathMatchClauses(
         )
 
         let keptPositions: MatchClause[] = []
-        if (!attrClauses.length) {
+        if (mode === 'field') {
+            // Keep a strict positional anchor for field selectors.
+            // Replay already generates relaxed position-free fallbacks.
+            keptPositions = pickMinimalPositionClauses(positionClauses)
+        } else if (!attrClauses.length) {
             keptPositions = pickMinimalPositionClauses(positionClauses)
         } else if (mode === 'item-root' && !isLast) {
             // Keep ancestry shape stable only when attrs are absent.
@@ -683,7 +687,7 @@ function relaxPathForSingleSample(
                 if (!clause || typeof clause !== 'object') return false
 
                 if (clause.kind === 'position') {
-                    if (mode === 'field') return false
+                    if (mode === 'field') return true
                     return !isLast
                 }
 
