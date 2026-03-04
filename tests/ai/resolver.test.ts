@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('ai', () => ({
     generateObject: vi.fn(),
@@ -9,11 +9,18 @@ vi.mock('../../src/ai/model.js', () => ({
 }))
 
 import { generateObject } from 'ai'
+import { getModelProvider } from '../../src/ai/model.js'
 import { createResolveCallback } from '../../src/ai/resolver.js'
 
 const mockedGenerateObject = vi.mocked(generateObject)
+const mockedGetModelProvider = vi.mocked(getModelProvider)
 
 describe('ai/resolver', () => {
+    beforeEach(() => {
+        vi.clearAllMocks()
+        mockedGetModelProvider.mockResolvedValue('mock-model')
+    })
+
     it('returns counter number on high confidence', async () => {
         mockedGenerateObject.mockResolvedValueOnce({
             object: {
@@ -140,5 +147,24 @@ describe('ai/resolver', () => {
             | undefined
         expect(callArg).toBeTruthy()
         expect(callArg?.maxOutputTokens).toBe(512)
+    })
+
+    it('forwards injected env to model provider resolution', async () => {
+        mockedGenerateObject.mockResolvedValueOnce({
+            object: { element: 1, confidence: 0.8, reasoning: 'Found it' },
+        } as never)
+
+        const env = {
+            OPENAI_API_KEY: 'sk-env',
+        }
+        const resolve = createResolveCallback('gpt-5-mini', { env })
+        await resolve({
+            html: '<button c="1">Go</button>',
+            action: 'click',
+            description: 'Go button',
+            url: 'http://example.com',
+        })
+
+        expect(mockedGetModelProvider).toHaveBeenCalledWith('gpt-5-mini', { env })
     })
 })

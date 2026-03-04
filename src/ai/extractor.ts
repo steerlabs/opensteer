@@ -1,14 +1,20 @@
 import type { AiExtractCallback, ExtractionPlan } from '../types.js'
 import { flattenExtractionDataToFieldPlan } from '../extract-field-plan.js'
+import type { RuntimeEnv } from '../config.js'
 import { getModelProvider } from './model.js'
 import { buildExtractSystemPrompt, buildExtractUserPrompt } from './prompts.js'
 
 export function createExtractCallback(
     model: string,
-    options?: { temperature?: number; maxTokens?: number | null }
+    options?: {
+        temperature?: number
+        maxTokens?: number | null
+        env?: RuntimeEnv
+    }
 ): AiExtractCallback {
     const temperature = options?.temperature ?? 1
     const maxTokens = options?.maxTokens ?? null
+    const env = options?.env
 
     return async (args) => {
         let generateText: (typeof import('ai'))['generateText']
@@ -21,7 +27,7 @@ export function createExtractCallback(
             )
         }
 
-        const modelProvider = await getModelProvider(model)
+        const modelProvider = await getModelProvider(model, { env })
 
         const request = {
             model: modelProvider as Parameters<typeof generateText>[0]['model'],

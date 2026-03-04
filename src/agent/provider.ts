@@ -1,4 +1,5 @@
 import type { OpensteerAgentConfig } from '../types.js'
+import type { RuntimeEnv } from '../config.js'
 import {
     OpensteerAgentConfigError,
     OpensteerAgentProviderError,
@@ -22,7 +23,7 @@ export interface ResolvedAgentConfig {
 export function resolveAgentConfig(args: {
     agentConfig: OpensteerAgentConfig
     fallbackModel?: string
-    env?: NodeJS.ProcessEnv
+    env?: RuntimeEnv
 }): ResolvedAgentConfig {
     const { agentConfig } = args
 

@@ -102,6 +102,11 @@ in this order:
 Existing `process.env` values are never overwritten. Set
 `OPENSTEER_DISABLE_DOTENV_AUTOLOAD=true` to disable.
 
+The same resolved environment map is used for Opensteer config, CUA provider key
+resolution, and built-in AI resolve/extract provider setup. Opensteer does not
+mutate global `process.env` when loading dotenv files. Env values are captured
+when an `Opensteer` instance is created.
+
 ## 8) Close resources
 
 ```ts

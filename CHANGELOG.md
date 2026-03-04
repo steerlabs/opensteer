@@ -27,6 +27,8 @@
 - Cloud mode now falls back to `OPENSTEER_API_KEY` when `cloud.apiKey` is omitted.
 - Added automatic `.env` loading from `storage.rootDir` (default `process.cwd()`) so constructor config can consume env vars without requiring `import 'dotenv/config'`.
 - `.env` autoload follows common precedence (`.env.<NODE_ENV>.local`, `.env.local`, `.env.<NODE_ENV>`, `.env`) with `.env.local` skipped in `test`, does not overwrite existing env values, and can be disabled via `OPENSTEER_DISABLE_DOTENV_AUTOLOAD`.
+- Opensteer now reuses one resolved runtime env snapshot for config, CUA provider key resolution, and built-in AI resolve/extract provider setup; dotenv loading still does not mutate global `process.env`.
+- AI helper exports now accept optional `env` maps (`getModelProvider`, `createResolveCallback`, `createExtractCallback`) for deterministic provider initialization without relying on ambient process env state.
 - Mutating actions now include smart best-effort post-action wait with per-action
   profiles and optional per-call overrides via `wait`.
 - Added structured interaction diagnostics via `OpensteerActionError` for

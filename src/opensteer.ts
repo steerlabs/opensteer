@@ -2,9 +2,10 @@ import { createHash, randomUUID } from 'crypto'
 import type { Browser, BrowserContext, ElementHandle, Page } from 'playwright'
 import { BrowserPool } from './browser/pool.js'
 import {
-    resolveConfig,
+    resolveConfigWithEnv,
     resolveCloudSelection,
     resolveNamespace,
+    type RuntimeEnv,
 } from './config.js'
 import { waitForVisualStability } from './navigation.js'
 import type {
@@ -188,6 +189,7 @@ const CLOUD_INTERACTION_METHODS = new Set<CloudActionMethod>([
 
 export class Opensteer {
     private readonly config: OpensteerConfig
+    private readonly runtimeEnv: RuntimeEnv
     private readonly aiResolve: AiResolveCallback
     private readonly aiExtract: AiExtractCallback
     private readonly namespace: string
@@ -203,15 +205,18 @@ export class Opensteer {
     private agentExecutionInFlight = false
 
     constructor(config: OpensteerConfig = {}) {
-        const resolved = resolveConfig(config)
+        const resolvedRuntime = resolveConfigWithEnv(config)
+        const resolved = resolvedRuntime.config
+        const runtimeEnv = resolvedRuntime.env
         const cloudSelection = resolveCloudSelection({
             cloud: resolved.cloud,
-        })
+        }, runtimeEnv)
         const model = resolved.model
 
         this.config = resolved
-        this.aiResolve = this.createLazyResolveCallback(model)
-        this.aiExtract = this.createLazyExtractCallback(model)
+        this.runtimeEnv = runtimeEnv
+        this.aiResolve = this.createLazyResolveCallback(model, runtimeEnv)
+        this.aiExtract = this.createLazyExtractCallback(model, runtimeEnv)
 
         const rootDir = resolved.storage?.rootDir || process.cwd()
         this.namespace = resolveNamespace(resolved, rootDir)
@@ -255,14 +260,17 @@ export class Opensteer {
         )
     }
 
-    private createLazyResolveCallback(model: string): AiResolveCallback {
+    private createLazyResolveCallback(
+        model: string,
+        env: RuntimeEnv
+    ): AiResolveCallback {
         let resolverPromise: Promise<AiResolveCallback> | null = null
 
         return async (...args: [Parameters<AiResolveCallback>[0]]) => {
             try {
                 if (!resolverPromise) {
                     resolverPromise = import('./ai/resolver.js').then((m) =>
-                        m.createResolveCallback(model)
+                        m.createResolveCallback(model, { env })
                     )
                 }
 
@@ -275,14 +283,17 @@ export class Opensteer {
         }
     }
 
-    private createLazyExtractCallback(model: string): AiExtractCallback {
+    private createLazyExtractCallback(
+        model: string,
+        env: RuntimeEnv
+    ): AiExtractCallback {
         let extractorPromise: Promise<AiExtractCallback> | null = null
 
         const extract: AiExtractCallback = async (args) => {
             try {
                 if (!extractorPromise) {
                     extractorPromise = import('./ai/extractor.js').then((m) =>
-                        m.createExtractCallback(model)
+                        m.createExtractCallback(model, { env })
                     )
                 }
 
@@ -654,10 +665,11 @@ export class Opensteer {
     }
 
     static from(page: Page, config: OpensteerConfig = {}): Opensteer {
-        const resolvedConfig = resolveConfig(config)
+        const resolvedRuntime = resolveConfigWithEnv(config)
+        const resolvedConfig = resolvedRuntime.config
         const cloudSelection = resolveCloudSelection({
             cloud: resolvedConfig.cloud,
-        })
+        }, resolvedRuntime.env)
         if (cloudSelection.cloud) {
             throw cloudUnsupportedMethodError(
                 'Opensteer.from(page)',
@@ -1967,6 +1979,7 @@ export class Opensteer {
         const resolvedAgentConfig = resolveAgentConfig({
             agentConfig: config,
             fallbackModel: this.config.model,
+            env: this.runtimeEnv,
         })
 
         return {
