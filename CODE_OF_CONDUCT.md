@@ -15,7 +15,7 @@ We are committed to providing a welcoming and respectful community for everyone.
 
 ## Enforcement
 
-Report concerns to `tim@opensteer.dev`.
+Report concerns to `tim@opensteer.com`.
 All reports are reviewed and handled in good faith.
 
 This code is adapted from [Contributor Covenant v2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).
