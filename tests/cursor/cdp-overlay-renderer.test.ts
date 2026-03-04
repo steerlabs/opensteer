@@ -94,7 +94,7 @@ describe('cursor/cdp-overlay-renderer', () => {
         await renderer.move({ x: 10, y: 20 }, DEFAULT_STYLE)
 
         expect(session.send).toHaveBeenCalledWith('Overlay.highlightQuad', {
-            quad: [10, 20, -0.8, 26.6, -7.4, 17.84, 4.38, 16.17],
+            quad: [10, 20, 15.4, 29.36, 11.44, 35.6, 9.52, 27.44],
             color: expect.any(Object),
             outlineColor: expect.any(Object),
         })
