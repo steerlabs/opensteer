@@ -1,6 +1,8 @@
-import type { Page } from 'playwright'
-import { buildArrayFieldPathCandidates } from '../actions/extract.js'
-import { resolveElementPath } from '../element-path/resolver.js'
+import type { ElementHandle, Page } from 'playwright'
+import {
+    buildArrayFieldPathCandidates,
+    queryAllByElementPath,
+} from '../actions/extract.js'
 import type { ElementPath } from '../element-path/types.js'
 import {
     isPersistedArrayNode,
@@ -22,11 +24,15 @@ interface FieldValidationPlan {
     key: string
     strippedPath: ElementPath
     replacePath: (path: ElementPath) => void
-    selectors: {
-        withPos: string[]
-        withoutPos: string[]
-    }
+    selectors: FieldSelectorCandidates
 }
+
+interface FieldSelectorCandidates {
+    withPos: string[]
+    withoutPos: string[]
+}
+
+type FieldSelectorMap = Record<string, FieldSelectorCandidates>
 
 export async function stripRedundantPositionClauses(
     payload: PersistedExtractPayload,
@@ -155,100 +161,110 @@ async function pruneVariantPositions(
 
     if (!plans.length) return
 
-    let item0: Awaited<ReturnType<typeof resolveElementPath>>
-    try {
-        item0 = await resolveElementPath(page, variant.itemParentPath)
-    } catch {
-        return
+    const selectorMap: FieldSelectorMap = {}
+    for (const plan of plans) {
+        selectorMap[plan.key] = plan.selectors
     }
 
-    let results: Record<string, boolean>
+    const validatedKeys = new Set(plans.map((plan) => plan.key))
+    const items = await queryAllByElementPath(page, variant.itemParentPath)
+    if (!items.length) return
+
     try {
-        const selectorMap = Object.fromEntries(
-            plans.map((plan) => [plan.key, plan.selectors])
-        ) as Record<
-            string,
-            {
-                withPos: string[]
-                withoutPos: string[]
+        for (const item of items) {
+            const results = await validateRowSelectors(item, selectorMap)
+            const failedKeys: string[] = []
+            for (const key of validatedKeys) {
+                if (results[key] === true) continue
+                failedKeys.push(key)
             }
-        >
-
-        results = await item0.element.evaluate((element, fields) => {
-            const tryFirst = (
-                root: Element,
-                selectors: string[]
-            ): { element: Element } | null => {
-                let fallback: Element | null = null
-
-                for (const selector of selectors) {
-                    if (!selector) continue
-                    let matches: Element[] = []
-                    try {
-                        matches = Array.from(root.querySelectorAll(selector))
-                    } catch {
-                        matches = []
-                    }
-
-                    if (!matches.length) continue
-
-                    if (matches.length === 1) {
-                        return {
-                            element: matches[0],
-                        }
-                    }
-
-                    if (!fallback) {
-                        fallback = matches[0]
-                    }
-                }
-
-                return fallback
-                    ? {
-                          element: fallback,
-                      }
-                    : null
+            for (const key of failedKeys) {
+                validatedKeys.delete(key)
             }
 
-            const out: Record<string, boolean> = {}
-            for (const [key, selectors] of Object.entries(fields)) {
-                const original = tryFirst(element, selectors.withPos)
-                if (!original) {
-                    out[key] = false
-                    continue
-                }
-
-                let strippedUnique: Element | null = null
-                for (const selector of selectors.withoutPos) {
-                    if (!selector) continue
-                    let matches: Element[] = []
-                    try {
-                        matches = Array.from(element.querySelectorAll(selector))
-                    } catch {
-                        matches = []
-                    }
-
-                    if (matches.length === 1) {
-                        strippedUnique = matches[0]
-                        break
-                    }
-                }
-
-                out[key] = strippedUnique === original.element
-            }
-
-            return out
-        }, selectorMap)
-    } catch {
-        return
+            if (!validatedKeys.size) break
+        }
     } finally {
-        await item0.element.dispose()
+        await Promise.all(
+            items.map(async (item) => {
+                try {
+                    await item.dispose()
+                } catch {
+                    // ignore cleanup failures
+                }
+            })
+        )
     }
 
     for (const plan of plans) {
-        if (results[plan.key] !== true) continue
+        if (!validatedKeys.has(plan.key)) continue
         plan.replacePath(plan.strippedPath)
     }
+}
+
+async function validateRowSelectors(
+    item: ElementHandle<Element>,
+    fields: FieldSelectorMap
+): Promise<Record<string, boolean>> {
+    return item.evaluate((element, selectorMap) => {
+        const tryFirst = (
+            root: Element,
+            selectors: string[]
+        ): Element | null => {
+            let fallback: Element | null = null
+
+            for (const selector of selectors) {
+                if (!selector) continue
+                let matches: Element[] = []
+                try {
+                    matches = Array.from(root.querySelectorAll(selector))
+                } catch {
+                    matches = []
+                }
+
+                if (!matches.length) continue
+
+                if (matches.length === 1) {
+                    return matches[0]
+                }
+
+                if (!fallback) {
+                    fallback = matches[0]
+                }
+            }
+
+            return fallback
+        }
+
+        const out: Record<string, boolean> = {}
+        for (const [key, selectors] of Object.entries(selectorMap)) {
+            const original = tryFirst(element, selectors.withPos)
+            if (!original) {
+                out[key] = false
+                continue
+            }
+
+            let strippedUnique: Element | null = null
+            for (const selector of selectors.withoutPos) {
+                if (!selector) continue
+                let matches: Element[] = []
+                try {
+                    matches = Array.from(element.querySelectorAll(selector))
+                } catch {
+                    matches = []
+                }
+
+                if (matches.length === 1) {
+                    strippedUnique = matches[0]
+                    break
+                }
+            }
+
+            out[key] = strippedUnique === original
+        }
+
+        return out
+    }, fields)
 }
 
 function stripPositionClauses(path: ElementPath): ElementPath {
