@@ -1,6 +1,6 @@
 {
   "name": "opensteer",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "packageManager": "pnpm@10.29.3",
   "description": "Open-source browser automation SDK and CLI that lets AI agents build complex scrapers directly in your codebase.",
   "license": "MIT",
