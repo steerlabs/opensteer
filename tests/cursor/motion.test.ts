@@ -18,7 +18,7 @@ describe('cursor/motion', () => {
             { x: 2000, y: 1200 }
         )
 
-        expect(path.points.length).toBeLessThanOrEqual(16)
+        expect(path.points.length).toBeLessThanOrEqual(14)
         expect(path.stepDelayMs).toBeGreaterThanOrEqual(0)
         expect(path.stepDelayMs).toBeLessThanOrEqual(64)
     })

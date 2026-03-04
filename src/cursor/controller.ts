@@ -23,16 +23,16 @@ interface CursorControllerOptions {
 const DEFAULT_STYLE: Required<OpensteerCursorStyle> = {
     size: 12,
     fillColor: {
-        r: 35,
-        g: 162,
-        b: 255,
-        a: 0.93,
-    },
-    outlineColor: {
         r: 255,
         g: 255,
         b: 255,
-        a: 0.98,
+        a: 0.96,
+    },
+    outlineColor: {
+        r: 24,
+        g: 30,
+        b: 39,
+        a: 0.94,
     },
     haloColor: {
         r: 35,
@@ -44,6 +44,7 @@ const DEFAULT_STYLE: Required<OpensteerCursorStyle> = {
 }
 const REINITIALIZE_BACKOFF_MS = 1000
 const FIRST_MOVE_CENTER_DISTANCE_THRESHOLD = 16
+const FIRST_MOVE_MAX_TRAVEL = 220
 const FIRST_MOVE_NEAR_TARGET_X_OFFSET = 28
 const FIRST_MOVE_NEAR_TARGET_Y_OFFSET = 18
 const MOTION_PLANNERS: Record<
@@ -218,6 +219,17 @@ export class CursorController {
             distanceBetween(centerPoint, target) >
             FIRST_MOVE_CENTER_DISTANCE_THRESHOLD
         ) {
+            const dx = target.x - centerPoint.x
+            const dy = target.y - centerPoint.y
+            const distance = Math.hypot(dx, dy)
+            if (distance > FIRST_MOVE_MAX_TRAVEL) {
+                const ux = dx / distance
+                const uy = dy / distance
+                return {
+                    x: target.x - ux * FIRST_MOVE_MAX_TRAVEL,
+                    y: target.y - uy * FIRST_MOVE_MAX_TRAVEL,
+                }
+            }
             return centerPoint
         }
 

@@ -7,9 +7,9 @@ interface SnappyMotionOptions {
 }
 
 const DEFAULT_SNAPPY_OPTIONS: Required<SnappyMotionOptions> = {
-    minDurationMs: 64,
-    maxDurationMs: 240,
-    maxPoints: 16,
+    minDurationMs: 46,
+    maxDurationMs: 170,
+    maxPoints: 14,
 }
 
 export function planSnappyCursorMotion(
@@ -26,7 +26,7 @@ export function planSnappyCursorMotion(
     const dy = to.y - from.y
     const distance = Math.hypot(dx, dy)
 
-    if (distance < 4) {
+    if (distance < 5) {
         return {
             points: [roundPoint(to)],
             stepDelayMs: 0,
@@ -34,13 +34,13 @@ export function planSnappyCursorMotion(
     }
 
     const durationMs = clamp(
-        56 + distance * 0.36,
+        44 + distance * 0.26,
         resolved.minDurationMs,
         resolved.maxDurationMs
     )
 
     const rawPoints = clamp(
-        Math.round(durationMs / 14),
+        Math.round(durationMs / 13),
         4,
         resolved.maxPoints
     )
