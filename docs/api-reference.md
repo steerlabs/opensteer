@@ -384,6 +384,9 @@ Opensteer auto-loads `.env` files from `storage.rootDir` (default
 `process.cwd()`) in this order: `.env.<NODE_ENV>.local`, `.env.local` (skipped
 when `NODE_ENV=test`), `.env.<NODE_ENV>`, `.env`. Existing `process.env` values
 always take precedence.
+The resolved env map is reused for Opensteer config and built-in AI/CUA provider
+key resolution, without mutating global `process.env`. Env values are captured
+when an `Opensteer` instance is created.
 
 Cloud mode is fail-fast and does not automatically fall back to local mode.
 If `cloud` is provided in constructor config, it always overrides `OPENSTEER_MODE`.
@@ -649,9 +652,9 @@ These methods throw `CLOUD_UNSUPPORTED_METHOD` in cloud mode:
 
 Exported for advanced integration:
 
-- `createResolveCallback(model: string)` -- create a standalone resolve callback
-- `createExtractCallback(model: string)` -- create a standalone extract callback
-- `getModelProvider(model: string)` -- resolve an AI SDK model provider
+- `createResolveCallback(model: string, options?: { temperature?: number; maxTokens?: number | null; env?: Record<string, string | undefined> })` -- create a standalone resolve callback
+- `createExtractCallback(model: string, options?: { temperature?: number; maxTokens?: number | null; env?: Record<string, string | undefined> })` -- create a standalone extract callback
+- `getModelProvider(model: string, options?: { env?: Record<string, string | undefined> })` -- resolve an AI SDK model provider
 
 ### Environment Variables
 
