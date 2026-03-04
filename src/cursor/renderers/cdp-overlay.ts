@@ -11,15 +11,6 @@ type ProtocolRgba = {
 }
 
 const PULSE_DELAY_MS = 30
-const HEADING_EPSILON = 0.35
-const CURSOR_GEOMETRY = {
-    shoulderForward: 0.9,
-    shoulderSide: 0.55,
-    tail: 1.45,
-    tailSkew: 0.18,
-    leftForwardScale: 0.52,
-    leftSideScale: 0.58,
-} as const
 
 export class CdpOverlayCursorRenderer implements CursorRenderer {
     private page: Page | null = null
@@ -28,7 +19,6 @@ export class CdpOverlayCursorRenderer implements CursorRenderer {
     private reason: CursorCapabilityReason | undefined = 'disabled'
     private lastMessage: string | undefined
     private lastPoint: CursorPoint | null = null
-    private lastHeadingRad = 0
 
     async initialize(page: Page): Promise<void> {
         this.page = page
@@ -61,10 +51,9 @@ export class CdpOverlayCursorRenderer implements CursorRenderer {
         point: CursorPoint,
         style: Required<OpensteerCursorStyle>
     ): Promise<void> {
-        const heading = this.resolveHeading(point)
         await this.sendWithRecovery(async (session) => {
             await session.send('Overlay.highlightQuad', {
-                quad: this.buildCursorQuad(point, style.size, heading),
+                quad: buildCursorQuad(point, style.size),
                 color: toProtocolRgba(style.fillColor),
                 outlineColor: toProtocolRgba(style.outlineColor),
             })
@@ -76,7 +65,6 @@ export class CdpOverlayCursorRenderer implements CursorRenderer {
         point: CursorPoint,
         style: Required<OpensteerCursorStyle>
     ): Promise<void> {
-        const heading = this.resolveHeading(point)
         const pulseSize = style.size * style.pulseScale
         const pulseFill = {
             ...style.fillColor,
@@ -89,7 +77,7 @@ export class CdpOverlayCursorRenderer implements CursorRenderer {
 
         await this.sendWithRecovery(async (session) => {
             await session.send('Overlay.highlightQuad', {
-                quad: this.buildCursorQuad(point, pulseSize, heading),
+                quad: buildCursorQuad(point, pulseSize),
                 color: toProtocolRgba(pulseFill),
                 outlineColor: toProtocolRgba(pulseOutline),
             })
@@ -113,7 +101,6 @@ export class CdpOverlayCursorRenderer implements CursorRenderer {
         this.reason = 'disabled'
         this.lastMessage = undefined
         this.lastPoint = null
-        this.lastHeadingRad = 0
         this.page = null
     }
 
@@ -192,66 +179,34 @@ export class CdpOverlayCursorRenderer implements CursorRenderer {
         this.lastMessage = message
     }
 
-    private resolveHeading(point: CursorPoint): number {
-        if (!this.lastPoint) {
-            return this.lastHeadingRad
-        }
+}
 
-        const dx = point.x - this.lastPoint.x
-        const dy = point.y - this.lastPoint.y
-        if (Math.hypot(dx, dy) < HEADING_EPSILON) {
-            return this.lastHeadingRad
-        }
+/**
+ * Build a 4-point quad shaped like a standard arrow cursor.
+ * The tip is at (x, y) and the body extends down and to the right,
+ * matching the classic pointer orientation. No rotation — a real
+ * cursor always points the same direction regardless of travel.
+ */
+function buildCursorQuad(point: CursorPoint, size: number): number[] {
+    const x = point.x
+    const y = point.y
 
-        this.lastHeadingRad = Math.atan2(dy, dx)
-        return this.lastHeadingRad
-    }
-
-    private buildCursorQuad(
-        point: CursorPoint,
-        size: number,
-        headingRad: number
-    ): number[] {
-        const shoulderForward = size * CURSOR_GEOMETRY.shoulderForward
-        const shoulderSide = size * CURSOR_GEOMETRY.shoulderSide
-        const tail = size * CURSOR_GEOMETRY.tail
-        const tailSkew = size * CURSOR_GEOMETRY.tailSkew
-
-        const ux = Math.cos(headingRad)
-        const uy = Math.sin(headingRad)
-        const vx = -uy
-        const vy = ux
-
-        const right = {
-            x: point.x - ux * shoulderForward + vx * shoulderSide,
-            y: point.y - uy * shoulderForward + vy * shoulderSide,
-        }
-        const tailPoint = {
-            x: point.x - ux * tail - vx * tailSkew,
-            y: point.y - uy * tail - vy * tailSkew,
-        }
-        const left = {
-            x:
-                point.x -
-                ux * shoulderForward * CURSOR_GEOMETRY.leftForwardScale -
-                vx * shoulderSide * CURSOR_GEOMETRY.leftSideScale,
-            y:
-                point.y -
-                uy * shoulderForward * CURSOR_GEOMETRY.leftForwardScale -
-                vy * shoulderSide * CURSOR_GEOMETRY.leftSideScale,
-        }
-
-        return [
-            roundPointValue(point.x),
-            roundPointValue(point.y),
-            roundPointValue(right.x),
-            roundPointValue(right.y),
-            roundPointValue(tailPoint.x),
-            roundPointValue(tailPoint.y),
-            roundPointValue(left.x),
-            roundPointValue(left.y),
-        ]
-    }
+    // Tip is point 0 (top-left, the click hotspot)
+    // Body extends down-right like a standard arrow cursor
+    return [
+        // Point 0: Tip (the hotspot)
+        roundPointValue(x),
+        roundPointValue(y),
+        // Point 1: Right shoulder — extends right and down
+        roundPointValue(x + size * 0.45),
+        roundPointValue(y + size * 0.78),
+        // Point 2: Tail — bottom of the cursor shaft
+        roundPointValue(x + size * 0.12),
+        roundPointValue(y + size * 1.3),
+        // Point 3: Left edge — stays close to the shaft
+        roundPointValue(x - size * 0.04),
+        roundPointValue(y + size * 0.62),
+    ]
 }
 
 function inferSetupReason(message: string): CursorCapabilityReason {
