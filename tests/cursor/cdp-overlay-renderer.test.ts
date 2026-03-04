@@ -24,9 +24,7 @@ function createMockSession(
     }
 }
 
-function createMockPage(
-    newCDPSession: ReturnType<typeof vi.fn>
-) {
+function createMockPage(newCDPSession: ReturnType<typeof vi.fn>) {
     const context = {
         newCDPSession,
     }
@@ -86,15 +84,8 @@ describe('cursor/cdp-overlay-renderer', () => {
         )
     })
 
-    it('applies device-pixel-ratio scaling to position and cursor size', async () => {
-        const session = createMockSession(async (method) => {
-            if (method === 'Emulation.getScreenInfos') {
-                return {
-                    screenInfos: [{ devicePixelRatio: 2 }],
-                }
-            }
-            return undefined
-        })
+    it('renders a directional cursor quad in viewport coordinates', async () => {
+        const session = createMockSession()
         const newCDPSession = vi.fn().mockResolvedValue(session)
         const page = createMockPage(newCDPSession)
         const renderer = new CdpOverlayCursorRenderer()
@@ -103,9 +94,13 @@ describe('cursor/cdp-overlay-renderer', () => {
         await renderer.move({ x: 10, y: 20 }, DEFAULT_STYLE)
 
         expect(session.send).toHaveBeenCalledWith('Overlay.highlightQuad', {
-            quad: [8, 28, 32, 28, 32, 52, 8, 52],
+            quad: [21.04, 20, 8.08, 25.04, 1.36, 20, 8.08, 14.96],
             color: expect.any(Object),
             outlineColor: expect.any(Object),
         })
+
+        expect(
+            session.send.mock.calls.some(([method]) => method === 'Emulation.getScreenInfos')
+        ).toBe(false)
     })
 })

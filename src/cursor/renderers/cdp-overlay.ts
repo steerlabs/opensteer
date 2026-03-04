@@ -10,13 +10,23 @@ type ProtocolRgba = {
     a: number
 }
 
+const PULSE_DELAY_MS = 46
+const HEADING_EPSILON = 0.35
+const CURSOR_GEOMETRY = {
+    tip: 0.92,
+    shoulderForward: 0.16,
+    shoulderSide: 0.42,
+    tail: 0.72,
+} as const
+
 export class CdpOverlayCursorRenderer implements CursorRenderer {
     private page: Page | null = null
     private session: CDPSession | null = null
     private active = false
     private reason: CursorCapabilityReason | undefined = 'disabled'
     private lastMessage: string | undefined
-    private deviceScaleFactor = 1
+    private lastPoint: CursorPoint | null = null
+    private lastHeadingRad = 0
 
     async initialize(page: Page): Promise<void> {
         this.page = page
@@ -49,37 +59,40 @@ export class CdpOverlayCursorRenderer implements CursorRenderer {
         point: CursorPoint,
         style: Required<OpensteerCursorStyle>
     ): Promise<void> {
+        const heading = this.resolveHeading(point)
         await this.sendWithRecovery(async (session) => {
             await session.send('Overlay.highlightQuad', {
-                quad: this.buildQuad(point, style.size),
+                quad: this.buildCursorQuad(point, style.size, heading),
                 color: toProtocolRgba(style.fillColor),
                 outlineColor: toProtocolRgba(style.outlineColor),
             })
         })
+        this.lastPoint = point
     }
 
     async pulse(
         point: CursorPoint,
         style: Required<OpensteerCursorStyle>
     ): Promise<void> {
+        const heading = this.resolveHeading(point)
         const pulseSize = style.size * style.pulseScale
         const pulseFill = {
             ...style.fillColor,
-            a: Math.min(1, style.fillColor.a * 0.65),
+            a: Math.min(1, style.fillColor.a * 0.14),
         }
         const pulseOutline = {
             ...style.haloColor,
-            a: Math.min(1, style.haloColor.a * 0.85),
+            a: Math.min(1, style.haloColor.a * 0.9),
         }
 
         await this.sendWithRecovery(async (session) => {
             await session.send('Overlay.highlightQuad', {
-                quad: this.buildQuad(point, pulseSize),
+                quad: this.buildCursorQuad(point, pulseSize, heading),
                 color: toProtocolRgba(pulseFill),
                 outlineColor: toProtocolRgba(pulseOutline),
             })
         })
-        await sleep(24)
+        await sleep(PULSE_DELAY_MS)
         await this.move(point, style)
     }
 
@@ -97,6 +110,8 @@ export class CdpOverlayCursorRenderer implements CursorRenderer {
         this.active = false
         this.reason = 'disabled'
         this.lastMessage = undefined
+        this.lastPoint = null
+        this.lastHeadingRad = 0
         this.page = null
     }
 
@@ -145,7 +160,6 @@ export class CdpOverlayCursorRenderer implements CursorRenderer {
             const session = await this.page.context().newCDPSession(this.page)
             await session.send('DOM.enable')
             await session.send('Overlay.enable')
-            this.deviceScaleFactor = await this.readDeviceScaleFactor(session)
             this.session = session
             this.active = true
             this.reason = undefined
@@ -164,9 +178,7 @@ export class CdpOverlayCursorRenderer implements CursorRenderer {
 
         try {
             await session.detach()
-        } catch {
-            // no-op; session could already be detached
-        }
+        } catch {}
     }
 
     private markInactive(
@@ -178,37 +190,63 @@ export class CdpOverlayCursorRenderer implements CursorRenderer {
         this.lastMessage = message
     }
 
-    private buildQuad(point: CursorPoint, size: number): number[] {
-        const half = Math.max(2, size / 2) * this.deviceScaleFactor
-        const x = point.x * this.deviceScaleFactor
-        const y = point.y * this.deviceScaleFactor
+    private resolveHeading(point: CursorPoint): number {
+        if (!this.lastPoint) {
+            return this.lastHeadingRad
+        }
 
-        return [
-            x - half,
-            y - half,
-            x + half,
-            y - half,
-            x + half,
-            y + half,
-            x - half,
-            y + half,
-        ]
+        const dx = point.x - this.lastPoint.x
+        const dy = point.y - this.lastPoint.y
+        if (Math.hypot(dx, dy) < HEADING_EPSILON) {
+            return this.lastHeadingRad
+        }
+
+        this.lastHeadingRad = Math.atan2(dy, dx)
+        return this.lastHeadingRad
     }
 
-    private async readDeviceScaleFactor(session: CDPSession): Promise<number> {
-        try {
-            const screenInfo = await session.send('Emulation.getScreenInfos')
-            const first = Array.isArray(screenInfo?.screenInfos)
-                ? screenInfo.screenInfos[0]
-                : null
-            const parsed = Number(first?.devicePixelRatio)
-            if (!Number.isFinite(parsed) || parsed <= 0) {
-                return 1
-            }
-            return parsed
-        } catch {
-            return 1
+    private buildCursorQuad(
+        point: CursorPoint,
+        size: number,
+        headingRad: number
+    ): number[] {
+        const tip = size * CURSOR_GEOMETRY.tip
+        const shoulderForward = size * CURSOR_GEOMETRY.shoulderForward
+        const shoulderSide = size * CURSOR_GEOMETRY.shoulderSide
+        const tail = size * CURSOR_GEOMETRY.tail
+
+        const ux = Math.cos(headingRad)
+        const uy = Math.sin(headingRad)
+        const vx = -uy
+        const vy = ux
+
+        const tipPoint = {
+            x: point.x + ux * tip,
+            y: point.y + uy * tip,
         }
+        const right = {
+            x: point.x - ux * shoulderForward + vx * shoulderSide,
+            y: point.y - uy * shoulderForward + vy * shoulderSide,
+        }
+        const tailPoint = {
+            x: point.x - ux * tail,
+            y: point.y - uy * tail,
+        }
+        const left = {
+            x: point.x - ux * shoulderForward - vx * shoulderSide,
+            y: point.y - uy * shoulderForward - vy * shoulderSide,
+        }
+
+        return [
+            roundPointValue(tipPoint.x),
+            roundPointValue(tipPoint.y),
+            roundPointValue(right.x),
+            roundPointValue(right.y),
+            roundPointValue(tailPoint.x),
+            roundPointValue(tailPoint.y),
+            roundPointValue(left.x),
+            roundPointValue(left.y),
+        ]
     }
 }
 
@@ -250,6 +288,10 @@ function clampColor(value: number): number {
 function clampAlpha(value: number): number {
     const normalized = Number.isFinite(value) ? value : 1
     return Math.min(1, Math.max(0, normalized))
+}
+
+function roundPointValue(value: number): number {
+    return Math.round(value * 100) / 100
 }
 
 function sleep(ms: number): Promise<void> {
