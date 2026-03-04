@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- None.
+
+## 0.6.0
+
 - Breaking: CLI runtime routing now uses `--session`/`OPENSTEER_SESSION` instead
   of `--name`/cwd/active-session fallback.
 - Breaking: non-interactive CLI calls now require explicit runtime identity via
