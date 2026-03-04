@@ -153,7 +153,7 @@ export async function countArrayItemsWithPath(
     return count
 }
 
-async function queryAllByElementPath(
+export async function queryAllByElementPath(
     page: Page,
     path: ElementPath
 ): Promise<ElementHandle<Element>[]> {
@@ -401,7 +401,7 @@ async function queryFirstByCandidates(
     return fallback
 }
 
-function buildArrayFieldPathCandidates(path: ElementPath): string[] {
+export function buildArrayFieldPathCandidates(path: ElementPath): string[] {
     const strict = path.nodes.length ? buildPathCandidates(path.nodes) : []
     const relaxedNodes = stripPositionClauses(path.nodes)
     const relaxed = relaxedNodes.length ? buildPathCandidates(relaxedNodes) : []

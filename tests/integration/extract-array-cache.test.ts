@@ -172,6 +172,443 @@ describe('integration/extract-array-cache', () => {
         })
     })
 
+    it('keeps positional anchors for single-sample tag fields in cached array replay', async () => {
+        await setFixture(
+            page,
+            `
+            <section>
+              <ul id="companies">
+                <li class="company">
+                  <h3 class="name">Airbnb</h3>
+                  <p class="description">Book accommodations around the world.</p>
+                  <div class="pill-wrapper">
+                    <a class="tag-link"><span class="pill">Winter 2009</span></a>
+                    <a class="tag-link"><span class="pill">Consumer</span></a>
+                    <a class="tag-link"><span class="pill">Travel</span></a>
+                  </div>
+                </li>
+                <li class="company">
+                  <h3 class="name">Coinbase</h3>
+                  <p class="description">Buy, sell, and manage cryptocurrencies.</p>
+                  <div class="pill-wrapper">
+                    <a class="tag-link"><span class="pill">Summer 2012</span></a>
+                    <a class="tag-link"><span class="pill">Fintech</span></a>
+                    <a class="tag-link"><span class="pill">Crypto</span></a>
+                  </div>
+                </li>
+                <li class="company">
+                  <h3 class="name">Oklo</h3>
+                  <p class="description">Emission free, always on power from advanced fission power plants.</p>
+                  <div class="pill-wrapper">
+                    <a class="tag-link"><span class="pill">Summer 2014</span></a>
+                    <a class="tag-link"><span class="pill">Industrials</span></a>
+                    <a class="tag-link"><span class="pill">Energy</span></a>
+                  </div>
+                </li>
+              </ul>
+            </section>
+            `
+        )
+
+        const description = 'array cache replay tag positions'
+        const schema = {
+            companies: [
+                {
+                    name: '',
+                    description: '',
+                    industry: '',
+                },
+            ],
+        }
+
+        const namespace = 'extract-array-cache-tag-positions'
+        const opensteer = Opensteer.from(page, {
+            name: namespace,
+            storage: {
+                rootDir: storageRoot,
+            },
+        })
+
+        await opensteer.extractFromPlan({
+            description,
+            schema,
+            plan: {
+                fields: {
+                    'companies[0].name': {
+                        selector: '#companies > li:nth-child(1) .name',
+                    },
+                    'companies[0].description': {
+                        selector: '#companies > li:nth-child(1) .description',
+                    },
+                    'companies[0].industry': {
+                        selector:
+                            '#companies > li:nth-child(1) .pill-wrapper > a:nth-child(2) > .pill',
+                    },
+                },
+            },
+        })
+
+        const replayed = await opensteer.extract<{
+            companies: Array<{
+                name: string | null
+                description: string | null
+                industry: string | null
+            }>
+        }>({
+            description,
+            schema,
+        })
+
+        expect(replayed.companies).toEqual([
+            {
+                name: 'Airbnb',
+                description: 'Book accommodations around the world.',
+                industry: 'Consumer',
+            },
+            {
+                name: 'Coinbase',
+                description: 'Buy, sell, and manage cryptocurrencies.',
+                industry: 'Fintech',
+            },
+            {
+                name: 'Oklo',
+                description:
+                    'Emission free, always on power from advanced fission power plants.',
+                industry: 'Industrials',
+            },
+        ])
+
+        const storageKey = createHash('sha256')
+            .update(description)
+            .digest('hex')
+            .slice(0, 16)
+        const storedPath = path.join(
+            storageRoot,
+            '.opensteer',
+            'selectors',
+            namespace,
+            `${storageKey}.json`
+        )
+        const stored = JSON.parse(fs.readFileSync(storedPath, 'utf8')) as {
+            path?: {
+                companies?: {
+                    $array?: {
+                        variants?: Array<{
+                            item?: {
+                                industry?: {
+                                    $path?: {
+                                        nodes?: Array<{
+                                            match?: Array<{
+                                                kind?: string
+                                            }>
+                                        }>
+                                    }
+                                }
+                            }
+                        }>
+                    }
+                }
+            }
+        }
+
+        const industryNodes =
+            stored.path?.companies?.$array?.variants?.[0]?.item?.industry?.$path
+                ?.nodes || []
+        const hasPositionClause = industryNodes.some((node) =>
+            (node.match || []).some((clause) => clause.kind === 'position')
+        )
+        expect(hasPositionClause).toBe(true)
+    })
+
+    it('keeps positions when stripped selectors diverge across heterogeneous rows', async () => {
+        await setFixture(
+            page,
+            `
+            <section>
+              <ul id="companies">
+                <li class="company">
+                  <h3 class="name">Airbnb</h3>
+                  <div class="pill-wrapper">
+                    <a class="tag-link"><span class="pill label">Batch</span></a>
+                    <a class="tag-link"><span class="pill value">Travel</span></a>
+                  </div>
+                </li>
+                <li class="company">
+                  <h3 class="name">Coinbase</h3>
+                  <div class="pill-wrapper">
+                    <a class="tag-link"><span class="pill value">Fintech</span></a>
+                    <a class="tag-link"><span class="pill value">Crypto</span></a>
+                  </div>
+                </li>
+                <li class="company">
+                  <h3 class="name">Oklo</h3>
+                  <div class="pill-wrapper">
+                    <a class="tag-link"><span class="pill value">Industrials</span></a>
+                    <a class="tag-link"><span class="pill value">Energy</span></a>
+                  </div>
+                </li>
+              </ul>
+            </section>
+            `
+        )
+
+        const description = 'array cache replay heterogeneous position pruning'
+        const schema = {
+            companies: [
+                {
+                    name: '',
+                    industry: '',
+                },
+            ],
+        }
+
+        const namespace = 'extract-array-cache-heterogeneous-positions'
+        const opensteer = Opensteer.from(page, {
+            name: namespace,
+            storage: {
+                rootDir: storageRoot,
+            },
+        })
+
+        const seeded = await opensteer.extractFromPlan<{
+            companies: Array<{
+                name: string | null
+                industry: string | null
+            }>
+        }>({
+            description,
+            schema,
+            plan: {
+                fields: {
+                    'companies[0].name': {
+                        selector: '#companies > li:nth-child(1) .name',
+                    },
+                    'companies[0].industry': {
+                        selector:
+                            '#companies > li:nth-child(1) .pill-wrapper > a:nth-child(2) > .pill',
+                    },
+                },
+            },
+        })
+
+        expect(seeded.data).toEqual({
+            companies: [
+                {
+                    name: 'Airbnb',
+                    industry: 'Travel',
+                },
+            ],
+        })
+
+        const replayed = await opensteer.extract<{
+            companies: Array<{
+                name: string | null
+                industry: string | null
+            }>
+        }>({
+            description,
+            schema,
+        })
+
+        expect(replayed).toEqual({
+            companies: [
+                {
+                    name: 'Airbnb',
+                    industry: 'Travel',
+                },
+                {
+                    name: 'Coinbase',
+                    industry: 'Crypto',
+                },
+                {
+                    name: 'Oklo',
+                    industry: 'Energy',
+                },
+            ],
+        })
+
+        const storageKey = createHash('sha256')
+            .update(description)
+            .digest('hex')
+            .slice(0, 16)
+        const storedPath = path.join(
+            storageRoot,
+            '.opensteer',
+            'selectors',
+            namespace,
+            `${storageKey}.json`
+        )
+        const stored = JSON.parse(fs.readFileSync(storedPath, 'utf8')) as {
+            path?: {
+                companies?: {
+                    $array?: {
+                        variants?: Array<{
+                            item?: {
+                                industry?: {
+                                    $path?: {
+                                        nodes?: Array<{
+                                            match?: Array<{
+                                                kind?: string
+                                            }>
+                                        }>
+                                    }
+                                }
+                            }
+                        }>
+                    }
+                }
+            }
+        }
+
+        const industryNodes =
+            stored.path?.companies?.$array?.variants?.[0]?.item?.industry?.$path
+                ?.nodes || []
+        const hasPositionClause = industryNodes.some((node) =>
+            (node.match || []).some((clause) => clause.kind === 'position')
+        )
+        expect(hasPositionClause).toBe(true)
+    })
+
+    it('strips redundant positional anchors for single-sample unique class fields', async () => {
+        await setFixture(
+            page,
+            `
+            <section>
+              <ul id="companies">
+                <li class="company">
+                  <h3 class="name">Airbnb</h3>
+                  <p class="description">Book accommodations around the world.</p>
+                </li>
+                <li class="company">
+                  <h3 class="name">Coinbase</h3>
+                  <p class="description">Buy, sell, and manage cryptocurrencies.</p>
+                </li>
+                <li class="company">
+                  <h3 class="name">Oklo</h3>
+                  <p class="description">Emission free, always on power from advanced fission power plants.</p>
+                </li>
+              </ul>
+            </section>
+            `
+        )
+
+        const description = 'array cache replay strip redundant positions'
+        const schema = {
+            companies: [
+                {
+                    name: '',
+                    description: '',
+                },
+            ],
+        }
+
+        const namespace = 'extract-array-cache-strip-positions'
+        const opensteer = Opensteer.from(page, {
+            name: namespace,
+            storage: {
+                rootDir: storageRoot,
+            },
+        })
+
+        const seeded = await opensteer.extractFromPlan<{
+            companies: Array<{
+                name: string | null
+                description: string | null
+            }>
+        }>({
+            description,
+            schema,
+            plan: {
+                fields: {
+                    'companies[0].name': {
+                        selector: '#companies > li:nth-child(1) .name',
+                    },
+                    'companies[0].description': {
+                        selector: '#companies > li:nth-child(1) .description',
+                    },
+                },
+            },
+        })
+
+        expect(seeded.data).toEqual({
+            companies: [
+                {
+                    name: 'Airbnb',
+                    description: 'Book accommodations around the world.',
+                },
+            ],
+        })
+
+        const replayed = await opensteer.extract<{
+            companies: Array<{
+                name: string | null
+                description: string | null
+            }>
+        }>({
+            description,
+            schema,
+        })
+
+        expect(replayed).toEqual({
+            companies: [
+                {
+                    name: 'Airbnb',
+                    description: 'Book accommodations around the world.',
+                },
+                {
+                    name: 'Coinbase',
+                    description: 'Buy, sell, and manage cryptocurrencies.',
+                },
+                {
+                    name: 'Oklo',
+                    description:
+                        'Emission free, always on power from advanced fission power plants.',
+                },
+            ],
+        })
+
+        const storageKey = createHash('sha256')
+            .update(description)
+            .digest('hex')
+            .slice(0, 16)
+        const storedPath = path.join(
+            storageRoot,
+            '.opensteer',
+            'selectors',
+            namespace,
+            `${storageKey}.json`
+        )
+        const stored = JSON.parse(fs.readFileSync(storedPath, 'utf8')) as {
+            path?: {
+                companies?: {
+                    $array?: {
+                        variants?: Array<{
+                            item?: {
+                                name?: {
+                                    $path?: {
+                                        nodes?: Array<{
+                                            match?: Array<{
+                                                kind?: string
+                                            }>
+                                        }>
+                                    }
+                                }
+                            }
+                        }>
+                    }
+                }
+            }
+        }
+
+        const nameNodes =
+            stored.path?.companies?.$array?.variants?.[0]?.item?.name?.$path
+                ?.nodes || []
+        const hasPositionClause = nameNodes.some((node) =>
+            (node.match || []).some((clause) => clause.kind === 'position')
+        )
+        expect(hasPositionClause).toBe(false)
+    })
+
     it('normalizes list-valued attributes when replaying cached array extraction', async () => {
         await setFixture(
             page,
