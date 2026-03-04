@@ -1,9 +1,8 @@
 # Opensteer
 
-Browser automation framework for developers and AI agents with deterministic replay.
+Browser automation framework for AI agents to explore websites and build complex scrapers directly in your codebase.
 
-Opensteer gives you one API for local and cloud runs, description-based actions,
-structured extraction, and CUA agent workflows.
+Opensteer enables AI agents like Claude Code and Codex to interact with browsers and Electron applications, building scrapers directly in your local codebase. It provides a token-efficient suite of tools and agent skills designed for seamless integration.
 
 ## Install
 
