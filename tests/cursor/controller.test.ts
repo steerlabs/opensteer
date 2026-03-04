@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { EventEmitter } from 'events'
 import { CursorController } from '../../src/cursor/controller.js'
 import type { CursorRenderer } from '../../src/cursor/renderer.js'
 import type { CursorPoint } from '../../src/cursor/types.js'
@@ -35,11 +36,32 @@ class MockCursorRenderer implements CursorRenderer {
     }
 }
 
-function createMockPage(viewport?: { width: number; height: number }) {
-    return {
-        isClosed: () => false,
-        viewportSize: () => viewport ?? null,
+class MockPage extends EventEmitter {
+    constructor(
+        private readonly viewport?: {
+            width: number
+            height: number
+        }
+    ) {
+        super()
     }
+
+    isClosed(): boolean {
+        return false
+    }
+
+    viewportSize(): { width: number; height: number } | null {
+        return this.viewport ?? null
+    }
+}
+
+function createMockPage(viewport?: { width: number; height: number }): MockPage {
+    return new MockPage(viewport)
+}
+
+async function flushMicrotasks(): Promise<void> {
+    await Promise.resolve()
+    await Promise.resolve()
 }
 
 describe('cursor/controller', () => {
@@ -77,5 +99,50 @@ describe('cursor/controller', () => {
             x: 320,
             y: 160,
         })
+    })
+
+    it('restores the last cursor point after page navigation events', async () => {
+        const renderer = new MockCursorRenderer()
+        const controller = new CursorController({
+            config: {
+                enabled: true,
+            },
+            renderer,
+        })
+        const page = createMockPage({ width: 1200, height: 800 })
+
+        await controller.attachPage(page as never)
+        await controller.preview({ x: 640, y: 360 }, 'hover')
+
+        const movesBeforeNavigation = renderer.moves.length
+        page.emit('domcontentloaded')
+        await flushMicrotasks()
+
+        expect(renderer.moves.length).toBeGreaterThan(movesBeforeNavigation)
+        expect(renderer.moves[renderer.moves.length - 1]).toEqual({
+            x: 640,
+            y: 360,
+        })
+    })
+
+    it('does not restore cursor after navigation when disabled at runtime', async () => {
+        const renderer = new MockCursorRenderer()
+        const controller = new CursorController({
+            config: {
+                enabled: true,
+            },
+            renderer,
+        })
+        const page = createMockPage({ width: 1200, height: 800 })
+
+        await controller.attachPage(page as never)
+        await controller.preview({ x: 700, y: 420 }, 'hover')
+        const movesBeforeDisable = renderer.moves.length
+
+        controller.setEnabled(false)
+        page.emit('domcontentloaded')
+        await flushMicrotasks()
+
+        expect(renderer.moves.length).toBe(movesBeforeDisable)
     })
 })

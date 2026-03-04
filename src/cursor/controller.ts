@@ -58,12 +58,16 @@ export class CursorController {
     private readonly debug: boolean
     private readonly renderer: CursorRenderer
     private page: Page | null = null
+    private listenerPage: Page | null = null
     private lastPoint: CursorPoint | null = null
     private initializedForPage = false
     private lastInitializeAttemptAt = 0
     private enabled: boolean
     private readonly profile: NonNullable<OpensteerCursorConfig['profile']>
     private readonly style: Required<OpensteerCursorStyle>
+    private readonly onDomContentLoaded = (): void => {
+        void this.restoreCursorAfterNavigation()
+    }
 
     constructor(options: CursorControllerOptions = {}) {
         const config = options.config || {}
@@ -108,14 +112,14 @@ export class CursorController {
     }
 
     async attachPage(page: Page): Promise<void> {
-        if (this.page === page && this.initializedForPage) {
-            return
+        if (this.page !== page) {
+            this.detachPageListeners()
+            this.page = page
+            this.lastPoint = null
+            this.initializedForPage = false
+            this.lastInitializeAttemptAt = 0
         }
-
-        this.page = page
-        this.lastPoint = null
-        this.initializedForPage = false
-        this.lastInitializeAttemptAt = 0
+        this.attachPageListeners(page)
     }
 
     async preview(point: CursorPoint | null, intent: CursorIntent): Promise<void> {
@@ -166,6 +170,7 @@ export class CursorController {
     }
 
     async dispose(): Promise<void> {
+        this.detachPageListeners()
         this.lastPoint = null
         this.initializedForPage = false
         this.lastInitializeAttemptAt = 0
@@ -178,6 +183,25 @@ export class CursorController {
         if (this.initializedForPage) return
 
         await this.initializeRenderer()
+    }
+
+    private attachPageListeners(page: Page): void {
+        if (this.listenerPage === page) {
+            return
+        }
+
+        this.detachPageListeners()
+        page.on('domcontentloaded', this.onDomContentLoaded)
+        this.listenerPage = page
+    }
+
+    private detachPageListeners(): void {
+        if (!this.listenerPage) {
+            return
+        }
+
+        this.listenerPage.off('domcontentloaded', this.onDomContentLoaded)
+        this.listenerPage = null
     }
 
     private planMotion(from: CursorPoint, to: CursorPoint) {
@@ -198,6 +222,30 @@ export class CursorController {
         this.lastInitializeAttemptAt = Date.now()
         await this.renderer.initialize(this.page)
         this.initializedForPage = true
+    }
+
+    private async restoreCursorAfterNavigation(): Promise<void> {
+        if (!this.enabled || !this.lastPoint) return
+        if (!this.page || this.page.isClosed()) return
+
+        try {
+            if (!this.renderer.isActive()) {
+                await this.reinitializeIfEligible()
+            }
+            if (!this.renderer.isActive()) {
+                return
+            }
+
+            await this.renderer.move(this.lastPoint, this.style)
+        } catch (error) {
+            if (this.debug) {
+                const message =
+                    error instanceof Error ? error.message : String(error)
+                console.warn(
+                    `[opensteer] cursor restore after navigation failed: ${message}`
+                )
+            }
+        }
     }
 
     private resolveMotionStart(target: CursorPoint): CursorPoint {

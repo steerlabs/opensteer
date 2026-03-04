@@ -1,3 +1,4 @@
+import { EventEmitter } from 'events'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { OpensteerAgentAction, OpensteerAgentResult } from '../../src/types.js'
 
@@ -41,6 +42,7 @@ vi.mock('../../src/agent/provider.js', () => ({
 import { Opensteer } from '../../src/opensteer.js'
 
 function createMockPage() {
+    const events = new EventEmitter()
     const cdpSession = {
         send: vi.fn().mockResolvedValue(undefined),
         detach: vi.fn().mockResolvedValue(undefined),
@@ -58,6 +60,12 @@ function createMockPage() {
         url: vi.fn(() => 'https://example.com'),
         screenshot: vi.fn().mockResolvedValue(Buffer.from('img')),
         evaluate: vi.fn().mockResolvedValue({ width: 1200, height: 800 }),
+        on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+            events.on(event, listener)
+        }),
+        off: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+            events.off(event, listener)
+        }),
         mouse: {
             click: vi.fn().mockResolvedValue(undefined),
             move: vi.fn().mockResolvedValue(undefined),
@@ -181,7 +189,7 @@ describe('opensteer.agent', () => {
             highlightCursor: true,
         })
 
-        expect(page.__contextApi.newCDPSession).toHaveBeenCalled()
+        expect(page.evaluate).toHaveBeenCalled()
     })
 
     it('lets highlightCursor=false override a cursor-enabled instance', async () => {
@@ -218,6 +226,6 @@ describe('opensteer.agent', () => {
             highlightCursor: false,
         })
 
-        expect(page.__contextApi.newCDPSession).not.toHaveBeenCalled()
+        expect(page.evaluate).not.toHaveBeenCalled()
     })
 })
