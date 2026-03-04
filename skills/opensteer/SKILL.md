@@ -5,164 +5,157 @@ description: "Browser automation, web scraping, and structured data extraction u
 
 # Opensteer Browser Automation
 
-Opensteer provides persistent browser automation via a CLI and TypeScript SDK. It maintains browser sessions across calls and caches resolved element paths for deterministic replay.
+**Exploring interactively?** Follow Phase 1.
+**Writing a scraper script?** Follow Phase 2.
 
-## CRITICAL: Always Use Opensteer Methods Over Playwright
+> Never use raw Playwright methods when an Opensteer equivalent exists. Never call `opensteer.navigate()` — the correct method is `opensteer.goto()`.
 
-Opensteer methods are optimized for scraping — they handle waiting, element resolution, and selector caching automatically. **Never use raw Playwright when an Opensteer method exists.**
+---
 
-| Wrong (raw Playwright)                                                        | Right (Opensteer)                                              |
-| ----------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `page.evaluate(() => [...document.querySelectorAll('.item')].map(...))`       | `opensteer.extract({ description: "product listing" })`        |
-| `page.click('.submit')`                                                       | `opensteer.click({ description: "the submit button" })`        |
-| `page.fill('#search', 'query')`                                              | `opensteer.input({ description: "search input", text: "q" })`  |
+## Phase 1 — CLI Exploration
 
-**Why:** `opensteer.extract()` caches structural selectors that work across pages sharing the same template. Raw `querySelectorAll` is brittle, non-replayable, and bypasses the caching system. The only valid use of `opensteer.page.evaluate()` is calling `fetch()` for API-based extraction when a site has internal REST/GraphQL endpoints.
-
-## Default Workflow
-
-**Always use the CLI for exploration first. Only write scripts when the user asks.**
-
-1. **Explore with CLI** — Open pages, snapshot, interact with elements interactively
-2. **Cache selectors** — Re-run actions with `--description` flags to cache element paths for replay
-3. **Cache extractions** — Run `extract` with `--description` for every page type the scraper will visit
-4. **Generate script** — Use cached descriptions in TypeScript (no counters needed)
-
-**Namespace links CLI and SDK.** The `--name` flag on `opensteer open` defines the cache namespace. `new Opensteer({ name: "..." })` in the SDK reads from the same cache. These must match.
-
-## CLI Exploration
+**Step 1 — Set session and open the page.**
 
 ```bash
-# 1. Set session once per shell
 export OPENSTEER_SESSION=my-session
+opensteer open https://example.com --name "my-scraper"
+```
 
-# 2. Open page with namespace
-opensteer open https://example.com/products --name "product-scraper"
+The `--name` value is the cache namespace. It must match `name:` in the SDK constructor (Phase 2). Pick a stable name now and do not change it.
 
-# 3. Snapshot for interactions or data
-opensteer snapshot action       # Interactive elements with counters
-opensteer snapshot extraction   # Data-oriented HTML with counters
+**Step 2 — Snapshot and interact using counters.**
 
-# 4. Interact using counter numbers from snapshot
+Use `snapshot action` for interactions. Use `snapshot extraction` for data. Each element in the output has a counter (`c="N"`). Use that number directly.
+
+```bash
+opensteer snapshot action
 opensteer click 3
 opensteer input 5 "laptop" --pressEnter
+```
 
-# 5. Cache actions with --description for replay
+**Step 3 — Navigate and re-snapshot after every page change.**
+
+```bash
+opensteer navigate https://example.com/results
+opensteer snapshot action
+```
+
+> Use `opensteer open` once at the start only. Use `opensteer navigate` for all subsequent pages — it includes a visual stability wait that `open` does not.
+
+**Step 4 — Cache every action and extraction with `--description`.**
+
+Re-run each action with `--description` added. This writes the resolved selector to the cache so scripts replay without counters.
+
+```bash
 opensteer click 3 --description "the products link"
 opensteer input 5 "laptop" --pressEnter --description "the search input"
+```
 
-# 6. Extract data: snapshot extraction → identify counters → extract with schema
+For data: take an extraction snapshot, identify counter numbers for each field, then run `extract` with a schema and `--description`. For arrays, include at least 2 items so Opensteer infers the repeating pattern.
+
+```bash
 opensteer snapshot extraction
 opensteer extract '{"products":[{"name":{"element":11},"price":{"element":12}},{"name":{"element":25},"price":{"element":26}}]}' \
-  --description "product listing with name and price"
+  --description "product listing"
+```
 
-# 7. Cache extractions for ALL page types the scraper will visit
-opensteer click 11 --description "first product link"
-opensteer snapshot extraction
-opensteer extract '{"title":{"element":3},"price":{"element":7}}' \
-  --description "product detail page"
+Repeat Step 3 → Step 4 for every distinct page type the scraper will visit.
 
-# 8. Always close when done
+**Step 5 — Close when done.**
+
+```bash
 opensteer close
 ```
 
-**Key rules:**
+---
 
-- Set `--name` on `open` to define cache namespace
-- Specify snapshot mode explicitly: `action` (interactions) or `extraction` (data)
-- `snapshot extraction` shows structure; `extract` produces JSON — never parse snapshot HTML manually
-- Use `--description` to cache selectors for replay (one character difference = cache miss)
-- For arrays, include all items in the schema — Opensteer caches the structural pattern and finds all matches on replay
-- `open` does raw `page.goto()`; use `navigate` for subsequent pages (includes stability wait)
-- Re-snapshot after navigation or significant page changes
+## Phase 2 — SDK Scraper Script
 
-## Writing Scraper Scripts
-
-Read [sdk-reference.md](references/sdk-reference.md) for exact method signatures before writing any script.
-
-### Template
+Use cached `description` strings (exact match to CLI `--description` values). `name` must match `--name` from Phase 1.
 
 ```typescript
 import { Opensteer } from "opensteer";
 
 async function run() {
   const opensteer = new Opensteer({
-    name: "product-scraper", // MUST match --name from CLI exploration
+    name: "my-scraper",                       // MUST match --name from Phase 1
     storage: { rootDir: process.cwd() },
   });
 
-  await opensteer.launch({ headless: false });
+  await opensteer.launch({ headless: false }); // headless: false — many sites block headless
 
   try {
-    await opensteer.goto("https://example.com/products");
+    await opensteer.goto("https://example.com");
 
-    await opensteer.input({
-      text: "laptop",
-      description: "the search input", // exact match to CLI --description
-    });
+    await opensteer.input({ description: "the search input", text: "laptop", pressEnter: true });
+    await opensteer.click({ description: "the products link" });
 
-    // Use extract with description — no schema needed when cache exists
-    const data = await opensteer.extract({
-      description: "product listing with name and price",
-    });
+    await opensteer.waitForText("Showing results"); // only for page transitions / SPA content
 
+    const data = await opensteer.extract({ description: "product listing" });
     console.log(JSON.stringify(data, null, 2));
   } finally {
     await opensteer.close();
   }
 }
 
-run().catch((err) => {
-  console.error(err);
-  process.exit(1);
+run().catch((err) => { console.error(err); process.exit(1); });
+```
+
+**Critical method signatures:**
+
+```typescript
+await opensteer.goto(url);
+await opensteer.goto(url, { timeout: 60000 });
+
+await opensteer.click({ description: "..." });
+await opensteer.input({ description: "...", text: "...", pressEnter: true });
+await opensteer.hover({ description: "..." });
+await opensteer.select({ description: "...", label: "Option A" });
+await opensteer.scroll({ direction: "down", amount: 500 });
+
+await opensteer.extract({ description: "..." });                            // replay from cache
+await opensteer.extract({ schema: { title: { element: 3 } }, description: "..." }); // first cache
+
+await opensteer.waitForText("literal text");
+await opensteer.page.waitForSelector("css-selector");                       // SPA content guard
+
+// Do NOT add waits before opensteer actions — they handle waiting internally.
+```
+
+Run with: `npx tsx scraper.ts`
+
+---
+
+## Edge Cases
+
+**Connect to an existing browser (CDP):**
+```bash
+opensteer open --connect-url http://localhost:9222 --name "my-scraper"
+# Verify CDP is running: curl -s http://127.0.0.1:9222/json/version
+```
+
+**API-based extraction (site has internal REST/GraphQL endpoints):**
+Navigate first to acquire session cookies, then call `fetch()` inside `page.evaluate()`. This is the only valid use of `page.evaluate()`.
+```typescript
+await opensteer.goto("https://example.com");
+const data = await opensteer.page.evaluate(async () => {
+  const res = await fetch("https://api.example.com/items?limit=100");
+  return res.json();
 });
 ```
 
-### Script Rules
-
-- No top-level `await` — wrap in `async function run()` + `run().catch(...)`
-- Default to `headless: false` (many sites block headless)
-- Use cached `description` strings for all interactions and extractions
-- Do NOT add wait calls before SDK actions — they handle waiting internally
-- Use `opensteer.waitForText("literal text")` or `page.waitForSelector("css")` only for page transitions or confirming SPA content loaded
-- Run with: `npx tsx scraper.ts`
-
-## Browser Connection
-
-- **Sandbox (default):** `opensteer open <url>` — fresh Chromium, no user sessions
-- **Connect (existing browser):** `opensteer open --connect-url http://localhost:9222` — attach to a running CDP-enabled browser. Verify CDP: `curl -s http://127.0.0.1:9222/json/version`
-
-## Element Targeting (preference order)
-
-1. **Counter** (from snapshot): `click 5` — fast, needs fresh snapshot
-2. **Description** (cached): `click --description "the submit button"` — replayable
-3. **CSS selector**: `click --selector "#btn"` — explicit but brittle
-
-## Snapshot Modes
-
+**Tab management:**
 ```bash
-opensteer snapshot action      # Interactable elements (default)
-opensteer snapshot extraction  # Flattened HTML for data extraction
-opensteer snapshot clickable   # Only clickable elements
-opensteer snapshot scrollable  # Only scrollable containers
-opensteer snapshot full        # Raw HTML — only for debugging
+opensteer tabs
+opensteer tab-new https://example.com
+opensteer tab-switch 0
+opensteer tab-close 1
 ```
 
-All modes except `full` are intelligently filtered to show only relevant elements with counters.
+**Debugging failures (diagnose in this order):**
+1. SPA content not loaded — add `waitForText` or `page.waitForSelector` before extraction.
+2. Missing cache — re-run Phase 1 caching step for the page type that failed.
+3. Obstacle blocking target — cookie banner, modal, or login wall. Dismiss it first.
 
-## Debugging
-
-When a scraper produces wrong or missing data, diagnose in this order:
-
-1. **Timing** — SPA content not rendered. Add `waitForSelector` or `waitForText` before extraction.
-2. **Missing cache** — Forgot to cache extraction during CLI exploration for a page type.
-3. **Obstacles** — Cookie banners, modals, or login walls blocking the target.
-4. **Missing data** — Some pages genuinely lack certain fields. Handle with null checks.
-
-**Do NOT replace `opensteer.extract()` with `page.evaluate()` + `querySelectorAll` when debugging.** The extraction logic is not the problem — fix timing, caching, or obstacles instead.
-
-## Reference
-
-- CLI commands: [cli-reference.md](references/cli-reference.md)
-- SDK API: [sdk-reference.md](references/sdk-reference.md)
-- Full examples: [examples.md](references/examples.md)
+**Full references:** [cli-reference.md](references/cli-reference.md) | [sdk-reference.md](references/sdk-reference.md)
