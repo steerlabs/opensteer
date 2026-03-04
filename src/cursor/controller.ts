@@ -6,7 +6,7 @@ import type {
 } from '../types.js'
 import { planSnappyCursorMotion } from './motion.js'
 import type { CursorRenderer } from './renderer.js'
-import { CdpOverlayCursorRenderer } from './renderers/cdp-overlay.js'
+import { SvgCursorRenderer } from './renderers/svg-overlay.js'
 import type {
     CursorIntent,
     CursorMotionPlan,
@@ -21,7 +21,7 @@ interface CursorControllerOptions {
 }
 
 const DEFAULT_STYLE: Required<OpensteerCursorStyle> = {
-    size: 12,
+    size: 20,
     fillColor: {
         r: 255,
         g: 255,
@@ -29,10 +29,10 @@ const DEFAULT_STYLE: Required<OpensteerCursorStyle> = {
         a: 0.96,
     },
     outlineColor: {
-        r: 24,
-        g: 30,
-        b: 39,
-        a: 0.94,
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 1,
     },
     haloColor: {
         r: 35,
@@ -71,7 +71,7 @@ export class CursorController {
         this.enabled = config.enabled === true
         this.profile = config.profile ?? 'snappy'
         this.style = mergeStyle(config.style)
-        this.renderer = options.renderer ?? new CdpOverlayCursorRenderer()
+        this.renderer = options.renderer ?? new SvgCursorRenderer()
     }
 
     setEnabled(enabled: boolean): void {
