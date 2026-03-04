@@ -35,7 +35,7 @@ export interface CloudSelection {
 }
 
 const DEFAULT_CONFIG: Required<
-    Pick<OpensteerConfig, 'browser' | 'storage' | 'debug' | 'model'>
+    Pick<OpensteerConfig, 'browser' | 'storage' | 'cursor' | 'debug' | 'model'>
 > = {
     browser: {
         headless: false,
@@ -47,6 +47,10 @@ const DEFAULT_CONFIG: Required<
     },
     storage: {
         rootDir: process.cwd(),
+    },
+    cursor: {
+        enabled: false,
+        profile: 'snappy',
     },
     model: 'gpt-5.1',
     debug: false,
@@ -431,6 +435,9 @@ export function resolveConfigWithEnv(
             connectUrl: env.OPENSTEER_CONNECT_URL || undefined,
             channel: env.OPENSTEER_CHANNEL || undefined,
             profileDir: env.OPENSTEER_PROFILE_DIR || undefined,
+        },
+        cursor: {
+            enabled: parseBool(env.OPENSTEER_CURSOR),
         },
         model: env.OPENSTEER_MODEL || undefined,
         debug: parseBool(env.OPENSTEER_DEBUG),

@@ -49,6 +49,23 @@ const commands: Record<string, CommandHandler> = {
         return await opensteer.state()
     },
 
+    async cursor(opensteer, args) {
+        const mode = typeof args.mode === 'string' ? args.mode : 'status'
+        if (mode === 'on') {
+            opensteer.setCursorEnabled(true)
+        } else if (mode === 'off') {
+            opensteer.setCursorEnabled(false)
+        } else if (mode !== 'status') {
+            throw new Error(
+                `Invalid cursor mode "${String(mode)}". Use "on", "off", or "status".`
+            )
+        }
+
+        return {
+            cursor: opensteer.getCursorState(),
+        }
+    },
+
     async screenshot(opensteer, args) {
         const file = (args.file as string) || 'screenshot.png'
         const type = file.endsWith('.jpg') || file.endsWith('.jpeg') ? 'jpeg' : 'png'

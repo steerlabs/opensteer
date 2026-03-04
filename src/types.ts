@@ -104,6 +104,29 @@ export interface OpensteerStorageConfig {
     rootDir?: string
 }
 
+export interface OpensteerCursorColor {
+    r: number
+    g: number
+    b: number
+    a: number
+}
+
+export interface OpensteerCursorStyle {
+    size?: number
+    fillColor?: OpensteerCursorColor
+    outlineColor?: OpensteerCursorColor
+    haloColor?: OpensteerCursorColor
+    pulseScale?: number
+}
+
+export type OpensteerCursorProfile = 'snappy'
+
+export interface OpensteerCursorConfig {
+    enabled?: boolean
+    profile?: OpensteerCursorProfile
+    style?: OpensteerCursorStyle
+}
+
 export type OpensteerAuthScheme = 'api-key' | 'bearer'
 export type OpensteerCloudAnnouncePolicy = 'always' | 'off' | 'tty'
 
@@ -120,6 +143,7 @@ export interface OpensteerConfig {
     name?: string
     browser?: OpensteerBrowserConfig
     storage?: OpensteerStorageConfig
+    cursor?: OpensteerCursorConfig
     cloud?: OpensteerCloudConfig
     model?: string
     debug?: boolean
@@ -224,6 +248,12 @@ export interface ActionResult {
     persisted: boolean
     pathFile: string | null
     selectorUsed?: string | null
+}
+
+export interface OpensteerCursorState {
+    enabled: boolean
+    active: boolean
+    reason?: string
 }
 
 export interface ExtractionRunResult<T = unknown> {
