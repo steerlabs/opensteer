@@ -10,13 +10,15 @@ type ProtocolRgba = {
     a: number
 }
 
-const PULSE_DELAY_MS = 46
+const PULSE_DELAY_MS = 30
 const HEADING_EPSILON = 0.35
 const CURSOR_GEOMETRY = {
-    tip: 0.92,
-    shoulderForward: 0.16,
-    shoulderSide: 0.42,
-    tail: 0.72,
+    shoulderForward: 0.9,
+    shoulderSide: 0.55,
+    tail: 1.45,
+    tailSkew: 0.18,
+    leftForwardScale: 0.52,
+    leftSideScale: 0.58,
 } as const
 
 export class CdpOverlayCursorRenderer implements CursorRenderer {
@@ -210,36 +212,38 @@ export class CdpOverlayCursorRenderer implements CursorRenderer {
         size: number,
         headingRad: number
     ): number[] {
-        const tip = size * CURSOR_GEOMETRY.tip
         const shoulderForward = size * CURSOR_GEOMETRY.shoulderForward
         const shoulderSide = size * CURSOR_GEOMETRY.shoulderSide
         const tail = size * CURSOR_GEOMETRY.tail
+        const tailSkew = size * CURSOR_GEOMETRY.tailSkew
 
         const ux = Math.cos(headingRad)
         const uy = Math.sin(headingRad)
         const vx = -uy
         const vy = ux
 
-        const tipPoint = {
-            x: point.x + ux * tip,
-            y: point.y + uy * tip,
-        }
         const right = {
             x: point.x - ux * shoulderForward + vx * shoulderSide,
             y: point.y - uy * shoulderForward + vy * shoulderSide,
         }
         const tailPoint = {
-            x: point.x - ux * tail,
-            y: point.y - uy * tail,
+            x: point.x - ux * tail - vx * tailSkew,
+            y: point.y - uy * tail - vy * tailSkew,
         }
         const left = {
-            x: point.x - ux * shoulderForward - vx * shoulderSide,
-            y: point.y - uy * shoulderForward - vy * shoulderSide,
+            x:
+                point.x -
+                ux * shoulderForward * CURSOR_GEOMETRY.leftForwardScale -
+                vx * shoulderSide * CURSOR_GEOMETRY.leftSideScale,
+            y:
+                point.y -
+                uy * shoulderForward * CURSOR_GEOMETRY.leftForwardScale -
+                vy * shoulderSide * CURSOR_GEOMETRY.leftSideScale,
         }
 
         return [
-            roundPointValue(tipPoint.x),
-            roundPointValue(tipPoint.y),
+            roundPointValue(point.x),
+            roundPointValue(point.y),
             roundPointValue(right.x),
             roundPointValue(right.y),
             roundPointValue(tailPoint.x),
