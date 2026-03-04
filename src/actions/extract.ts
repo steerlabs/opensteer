@@ -153,7 +153,7 @@ export async function countArrayItemsWithPath(
     return count
 }
 
-async function queryAllByElementPath(
+export async function queryAllByElementPath(
     page: Page,
     path: ElementPath
 ): Promise<ElementHandle<Element>[]> {
