@@ -21,28 +21,31 @@ interface CursorControllerOptions {
 }
 
 const DEFAULT_STYLE: Required<OpensteerCursorStyle> = {
-    size: 13,
+    size: 12,
     fillColor: {
-        r: 255,
-        g: 63,
-        b: 63,
-        a: 0.86,
+        r: 35,
+        g: 162,
+        b: 255,
+        a: 0.93,
     },
     outlineColor: {
         r: 255,
         g: 255,
         b: 255,
-        a: 0.95,
+        a: 0.98,
     },
     haloColor: {
-        r: 255,
-        g: 63,
-        b: 63,
-        a: 0.32,
+        r: 35,
+        g: 162,
+        b: 255,
+        a: 0.38,
     },
-    pulseScale: 1.7,
+    pulseScale: 2.15,
 }
 const REINITIALIZE_BACKOFF_MS = 1000
+const FIRST_MOVE_CENTER_DISTANCE_THRESHOLD = 16
+const FIRST_MOVE_NEAR_TARGET_X_OFFSET = 28
+const FIRST_MOVE_NEAR_TARGET_Y_OFFSET = 18
 const MOTION_PLANNERS: Record<
     NonNullable<OpensteerCursorConfig['profile']>,
     (from: CursorPoint, to: CursorPoint) => CursorMotionPlan
@@ -125,7 +128,7 @@ export class CursorController {
             }
             if (!this.renderer.isActive()) return
 
-            const start = this.lastPoint ?? point
+            const start = this.resolveMotionStart(point)
             const motion = this.planMotion(start, point)
 
             for (const step of motion.points) {
@@ -195,6 +198,34 @@ export class CursorController {
         await this.renderer.initialize(this.page)
         this.initializedForPage = true
     }
+
+    private resolveMotionStart(target: CursorPoint): CursorPoint {
+        if (this.lastPoint) {
+            return this.lastPoint
+        }
+
+        const viewport = this.page?.viewportSize()
+        if (!viewport?.width || !viewport?.height) {
+            return target
+        }
+
+        const centerPoint = {
+            x: viewport.width / 2,
+            y: viewport.height / 2,
+        }
+
+        if (
+            distanceBetween(centerPoint, target) >
+            FIRST_MOVE_CENTER_DISTANCE_THRESHOLD
+        ) {
+            return centerPoint
+        }
+
+        return {
+            x: clamp(target.x - FIRST_MOVE_NEAR_TARGET_X_OFFSET, 0, viewport.width),
+            y: clamp(target.y - FIRST_MOVE_NEAR_TARGET_Y_OFFSET, 0, viewport.height),
+        }
+    }
 }
 
 function mergeStyle(style?: OpensteerCursorStyle): Required<OpensteerCursorStyle> {
@@ -237,6 +268,14 @@ function normalizeFinite(
     const numeric =
         typeof value === 'number' && Number.isFinite(value) ? value : fallback
     return Math.min(max, Math.max(min, numeric))
+}
+
+function distanceBetween(a: CursorPoint, b: CursorPoint): number {
+    return Math.hypot(a.x - b.x, a.y - b.y)
+}
+
+function clamp(value: number, min: number, max: number): number {
+    return Math.min(max, Math.max(min, value))
 }
 
 function shouldPulse(intent: CursorIntent): boolean {
