@@ -32,6 +32,15 @@ const opensteer = new Opensteer({ name: 'my-scraper' })
 await opensteer.launch({ headless: false })
 ```
 
+Enable cursor preview in SDK (default is off):
+
+```ts
+const opensteer = new Opensteer({
+  name: 'my-scraper',
+  cursor: { enabled: true },
+})
+```
+
 ## 4) Navigate and explore
 
 ```ts
@@ -85,9 +94,15 @@ Additional cloud options:
 - `OPENSTEER_BASE_URL` to override `https://api.opensteer.com`
 - `OPENSTEER_AUTH_SCHEME` as `api-key` (default) or `bearer`
 - `OPENSTEER_REMOTE_ANNOUNCE` as `always`, `off`, or `tty`
+- `OPENSTEER_CURSOR` as `true` or `false`
 
 In code, `cloud: true` or a `cloud` options object overrides `OPENSTEER_MODE`.
 Cloud mode is fail-fast and does not automatically fall back to local mode.
+
+Cursor defaults:
+
+- CLI sessions default to enabled.
+- SDK instances default to disabled unless `cursor.enabled` is set.
 
 ## 7) Dotenv autoload behavior
 
