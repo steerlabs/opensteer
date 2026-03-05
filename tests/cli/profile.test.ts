@@ -159,4 +159,60 @@ describe('cli/profile runner', () => {
             })
         )
     })
+
+    it('supports access-token auth for profile list', async () => {
+        const seenContexts: Array<{
+            baseUrl: string
+            authScheme: string
+            token: string
+        }> = []
+
+        const code = await runOpensteerProfileCli(
+            ['list', '--access-token', 'ost_token_123', '--json'],
+            {
+                env: {},
+                isInteractive: () => false,
+                confirm: async () => false,
+                createBrowserProfileClient: (context) => {
+                    seenContexts.push({
+                        baseUrl: context.baseUrl,
+                        authScheme: context.authScheme,
+                        token: context.token,
+                    })
+                    return {
+                        list: async () => ({ profiles: [] }),
+                        create: async () => ({
+                            profileId: 'bp_123',
+                            teamId: 'team_1',
+                            ownerUserId: 'user_1',
+                            name: 'Profile',
+                            status: 'active',
+                            proxyPolicy: 'strict_sticky',
+                            fingerprintMode: 'auto',
+                            createdAt: Date.now(),
+                            updatedAt: Date.now(),
+                        }),
+                    }
+                },
+                createOpensteer: () => ({
+                    launch: async () => undefined,
+                    close: async () => undefined,
+                    getCookies: async () => [],
+                    context: {
+                        addCookies: async () => undefined,
+                    },
+                }),
+                writeStdout: () => undefined,
+                writeStderr: () => undefined,
+            }
+        )
+
+        expect(code).toBe(0)
+        expect(seenContexts).toEqual([
+            expect.objectContaining({
+                authScheme: 'bearer',
+                token: 'ost_token_123',
+            }),
+        ])
+    })
 })

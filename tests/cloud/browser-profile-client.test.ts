@@ -20,6 +20,7 @@ describe('BrowserProfileClient', () => {
                     status: 'active',
                     proxyPolicy: 'strict_sticky',
                     fingerprintMode: 'auto',
+                    latestStorageId: 'storage_123',
                     createdAt: 1,
                     updatedAt: 2,
                 },
