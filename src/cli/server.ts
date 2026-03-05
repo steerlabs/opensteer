@@ -183,6 +183,19 @@ async function handleRequest(
             const connectUrl = args['connect-url'] as string | undefined
             const channel = args.channel as string | undefined
             const profileDir = args['profile-dir'] as string | undefined
+            const cloudProfileId =
+                typeof args['cloud-profile-id'] === 'string'
+                    ? args['cloud-profile-id'].trim()
+                    : undefined
+            const cloudProfileReuseIfActive =
+                typeof args['cloud-profile-reuse-if-active'] === 'boolean'
+                    ? args['cloud-profile-reuse-if-active']
+                    : undefined
+            if (cloudProfileReuseIfActive !== undefined && !cloudProfileId) {
+                throw new Error(
+                    '--cloud-profile-reuse-if-active requires --cloud-profile-id.'
+                )
+            }
             const requestedCursor = normalizeCursorFlag(args.cursor)
             const requestedName =
                 typeof args.name === 'string' && args.name.trim().length > 0
@@ -250,6 +263,12 @@ async function handleRequest(
                 })
                 launchPromise = instance.launch({
                     headless: headless ?? false,
+                    cloudBrowserProfile: cloudProfileId
+                        ? {
+                              profileId: cloudProfileId,
+                              reuseIfActive: cloudProfileReuseIfActive,
+                          }
+                        : undefined,
                     timeout: connectUrl ? 120_000 : 30_000,
                 })
                 try {

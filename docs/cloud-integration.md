@@ -11,6 +11,8 @@ OPENSTEER_MODE=cloud
 OPENSTEER_API_KEY=ork_your_key
 OPENSTEER_AUTH_SCHEME=api-key
 OPENSTEER_REMOTE_ANNOUNCE=always
+OPENSTEER_CLOUD_PROFILE_ID=bp_123
+OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE=true
 ```
 
 These values can be placed in `.env` files. Opensteer auto-loads
@@ -31,6 +33,10 @@ const opensteer = new Opensteer({
         apiKey: process.env.OPENSTEER_API_KEY,
         baseUrl: process.env.OPENSTEER_BASE_URL,
         authScheme: 'api-key', // or 'bearer'
+        browserProfile: {
+            profileId: 'bp_123',
+            reuseIfActive: true,
+        },
     },
 })
 ```
@@ -40,6 +46,11 @@ const opensteer = new Opensteer({
 - API key can be provided via `cloud.apiKey` or `OPENSTEER_API_KEY`
 - Auth scheme can be configured via `cloud.authScheme` or `OPENSTEER_AUTH_SCHEME`
   - Supported values: `api-key` (default), `bearer`
+- Cloud browser profile can be configured via
+  `cloud.browserProfile.profileId` or `OPENSTEER_CLOUD_PROFILE_ID`
+- Optional profile session reuse can be configured via
+  `cloud.browserProfile.reuseIfActive` or
+  `OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE`
 - Default cloud announcement policy: `always`
 - Override cloud announcement with `cloud.announce` or `OPENSTEER_REMOTE_ANNOUNCE`
   - Supported values: `always`, `off`, `tty`
@@ -59,6 +70,10 @@ const opensteer = new Opensteer({
 - `sourceType: "local-cloud"`
 - `clientSessionHint: string`
 - `localRunId: string`
+
+Optional profile launch preference:
+
+- `launchConfig?: { browserProfile?: { profileId: string; reuseIfActive?: boolean } }`
 
 The response includes `cloudSession` metadata and `cloudSessionUrl` for deep links.
 

@@ -49,6 +49,15 @@ export type CloudErrorCode =
     | 'CLOUD_SESSION_STALE'
     | 'CLOUD_CONTROL_PLANE_ERROR'
     | 'CLOUD_CONTRACT_MISMATCH'
+    | 'CLOUD_PROXY_UNAVAILABLE'
+    | 'CLOUD_PROXY_REQUIRED'
+    | 'CLOUD_BILLING_LIMIT_REACHED'
+    | 'CLOUD_RATE_LIMITED'
+    | 'CLOUD_BROWSER_PROFILE_NOT_FOUND'
+    | 'CLOUD_BROWSER_PROFILE_BUSY'
+    | 'CLOUD_BROWSER_PROFILE_DISABLED'
+    | 'CLOUD_BROWSER_PROFILE_PROXY_UNAVAILABLE'
+    | 'CLOUD_BROWSER_PROFILE_SYNC_FAILED'
     | 'CLOUD_INTERNAL'
 
 export const cloudSessionContractVersion = 'v3' as const
@@ -60,6 +69,15 @@ export type CloudSessionSourceType =
     | 'local-cloud'
     | 'manual'
 
+export interface CloudBrowserProfileLaunchPreference {
+    profileId: string
+    reuseIfActive?: boolean
+}
+
+export interface CloudSessionLaunchConfig {
+    browserProfile?: CloudBrowserProfileLaunchPreference
+}
+
 export interface CloudSessionCreateRequest {
     cloudSessionContractVersion: CloudSessionContractVersion
     sourceType: 'local-cloud'
@@ -68,6 +86,7 @@ export interface CloudSessionCreateRequest {
     name?: string
     model?: string
     launchContext?: Record<string, unknown>
+    launchConfig?: CloudSessionLaunchConfig
 }
 
 export interface CloudSessionSummary {
@@ -139,4 +158,52 @@ export type CloudActionResponse = CloudActionSuccess | CloudActionFailure
 
 export interface CloudActionFailureDetails {
     actionFailure?: ActionFailure
+}
+
+export type BrowserProfileStatus = 'active' | 'archived' | 'error'
+export type BrowserProfileProxyPolicy = 'strict_sticky'
+export type CloudFingerprintMode = 'off' | 'auto'
+
+export interface BrowserProfileDescriptor {
+    profileId: string
+    teamId: string
+    ownerUserId: string
+    name: string
+    status: BrowserProfileStatus
+    proxyPolicy: BrowserProfileProxyPolicy
+    stickyProxyId?: string
+    proxyCountryCode?: string
+    proxyRegion?: string
+    proxyCity?: string
+    fingerprintMode: CloudFingerprintMode
+    fingerprintHash?: string
+    activeSessionId?: string
+    lastSessionId?: string
+    lastLaunchedAt?: number
+    latestRevision?: number
+    latestObjectKey?: string
+    latestSizeBytes?: number
+    latestArchiveSha256?: string
+    latestArchiveFormat?: string
+    createdAt: number
+    updatedAt: number
+    lastError?: string
+}
+
+export interface BrowserProfileListResponse {
+    profiles: BrowserProfileDescriptor[]
+    nextCursor?: string
+}
+
+export interface BrowserProfileCreateRequest {
+    name: string
+    proxy?: {
+        proxyId?: string
+        countryCode?: string
+        region?: string
+        city?: string
+    }
+    fingerprint?: {
+        mode?: CloudFingerprintMode
+    }
 }

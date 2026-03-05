@@ -84,6 +84,8 @@ export interface LaunchOptions {
     channel?: string
     /** Browser profile directory. Preserves cookies, extensions, and sessions. */
     profileDir?: string
+    /** Cloud browser profile preference. Applies only when cloud mode is enabled. */
+    cloudBrowserProfile?: OpensteerCloudBrowserProfileOptions
     /** Connection timeout in milliseconds. */
     timeout?: number
 }
@@ -130,11 +132,17 @@ export interface OpensteerCursorConfig {
 export type OpensteerAuthScheme = 'api-key' | 'bearer'
 export type OpensteerCloudAnnouncePolicy = 'always' | 'off' | 'tty'
 
+export interface OpensteerCloudBrowserProfileOptions {
+    profileId: string
+    reuseIfActive?: boolean
+}
+
 export interface OpensteerCloudOptions {
     apiKey?: string
     baseUrl?: string
     authScheme?: OpensteerAuthScheme
     announce?: OpensteerCloudAnnouncePolicy
+    browserProfile?: OpensteerCloudBrowserProfileOptions
 }
 
 export type OpensteerCloudConfig = boolean | OpensteerCloudOptions

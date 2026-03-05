@@ -115,6 +115,31 @@ describe('CloudSessionClient#importSelectorCache', () => {
             })
         )
     })
+
+    it('preserves browser-profile cloud error codes from backend responses', async () => {
+        globalThis.fetch = vi
+            .fn()
+            .mockResolvedValue(
+                new Response(
+                    JSON.stringify({
+                        error: 'profile not found',
+                        code: 'CLOUD_BROWSER_PROFILE_NOT_FOUND',
+                    }),
+                    {
+                        status: 404,
+                        headers: { 'content-type': 'application/json' },
+                    }
+                )
+            ) as never
+
+        const client = new CloudSessionClient('http://localhost:8080', 'ork_key')
+        await expect(client.create(CREATE_REQUEST)).rejects.toEqual(
+            expect.objectContaining<Partial<OpensteerCloudError>>({
+                code: 'CLOUD_BROWSER_PROFILE_NOT_FOUND',
+                status: 404,
+            })
+        )
+    })
 })
 
 describe('CloudSessionClient auth scheme', () => {

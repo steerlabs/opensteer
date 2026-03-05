@@ -2,7 +2,19 @@
 
 ## Unreleased
 
-- None.
+- Added cloud browser profile targeting in SDK config/launch:
+  `cloud.browserProfile` and `launch({ cloudBrowserProfile })`.
+- Added env support for cloud browser profile defaults:
+  `OPENSTEER_CLOUD_PROFILE_ID` and
+  `OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE`.
+- Added CLI launch flags for cloud profile targeting:
+  `--cloud-profile-id` and `--cloud-profile-reuse-if-active`.
+- Added new profile CLI group:
+  `opensteer profile list`, `opensteer profile create`, and
+  `opensteer profile sync` (cookie sync only, no full profile import).
+- Extended cloud error-code mapping to preserve browser-profile cloud errors
+  (for example `CLOUD_BROWSER_PROFILE_NOT_FOUND`) instead of collapsing to
+  generic transport errors.
 
 ## 0.6.0
 
