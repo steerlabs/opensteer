@@ -397,6 +397,10 @@ interface OpensteerConfig {
         baseUrl?: string
         authScheme?: 'api-key' | 'bearer'
         announce?: 'always' | 'off' | 'tty'
+        browserProfile?: {
+            profileId: string
+            reuseIfActive?: boolean
+        }
     }
     model?: string
     debug?: boolean
@@ -446,6 +450,10 @@ interface LaunchOptions {
     connectUrl?: string
     channel?: string
     profileDir?: string
+    cloudBrowserProfile?: {
+        profileId: string
+        reuseIfActive?: boolean
+    }
     timeout?: number
 }
 ```
@@ -710,6 +718,8 @@ Exported for advanced integration:
 | `OPENSTEER_BASE_URL` | Cloud control-plane base URL (default: `https://api.opensteer.com`) |
 | `OPENSTEER_AUTH_SCHEME` | Cloud auth scheme: `api-key` (default) or `bearer` |
 | `OPENSTEER_REMOTE_ANNOUNCE` | Cloud launch announcement policy: `always`, `off`, `tty` (default: `always`) |
+| `OPENSTEER_CLOUD_PROFILE_ID` | Default cloud browser profile id to launch with |
+| `OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE` | Optional `true`/`false` profile session reuse preference |
 | `OPENSTEER_HEADLESS` | `true` or `false` |
 | `OPENSTEER_BROWSER_PATH` | Custom browser executable path |
 | `OPENSTEER_SLOW_MO` | Slow-motion delay in milliseconds |

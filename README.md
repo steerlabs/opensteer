@@ -172,9 +172,34 @@ OPENSTEER_API_KEY=<your_api_key>
 
 - `OPENSTEER_BASE_URL` overrides the default cloud host
 - `OPENSTEER_AUTH_SCHEME` supports `api-key` (default) or `bearer`
+- `OPENSTEER_CLOUD_PROFILE_ID` optionally launches into a specific cloud browser profile
+- `OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE` (`true|false`) optionally reuses an active profile session
 - `cloud: true` or a `cloud` options object overrides `OPENSTEER_MODE`
 - Cloud mode is fail-fast (no automatic fallback to local)
 - `Opensteer.from(page)`, `uploadFile`, `exportCookies`, and `importCookies` are local-only
+
+Select a cloud browser profile in SDK:
+
+```ts
+const opensteer = new Opensteer({
+  cloud: {
+    apiKey: process.env.OPENSTEER_API_KEY,
+    browserProfile: {
+      profileId: "bp_123",
+      reuseIfActive: true,
+    },
+  },
+})
+```
+
+Sync local profile cookies into a cloud profile:
+
+```bash
+opensteer profile sync \
+  --from-profile-dir ~/Library/Application\ Support/Google/Chrome/Default \
+  --to-profile-id bp_123 \
+  --domain github.com
+```
 
 ## Resolution and Replay
 

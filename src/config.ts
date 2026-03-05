@@ -5,6 +5,7 @@ import { parse as parseDotenv } from 'dotenv'
 import { extractErrorMessage } from './error-normalization.js'
 import type {
     OpensteerAuthScheme,
+    OpensteerCloudBrowserProfileOptions,
     OpensteerCloudAnnouncePolicy,
     OpensteerCloudOptions,
     OpensteerConfig,
@@ -330,6 +331,79 @@ function resolveOpensteerAuthScheme(env: RuntimeEnv): OpensteerAuthScheme | unde
     return parseAuthScheme(env.OPENSTEER_AUTH_SCHEME, 'OPENSTEER_AUTH_SCHEME')
 }
 
+function resolveOpensteerCloudProfileId(env: RuntimeEnv): string | undefined {
+    const value = env.OPENSTEER_CLOUD_PROFILE_ID?.trim()
+    if (!value) return undefined
+    return value
+}
+
+function resolveOpensteerCloudProfileReuseIfActive(
+    env: RuntimeEnv
+): boolean | undefined {
+    return parseBool(env.OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE)
+}
+
+function parseCloudBrowserProfileReuseIfActive(
+    value: unknown
+): boolean | undefined {
+    if (value == null) return undefined
+    if (typeof value !== 'boolean') {
+        throw new Error(
+            `Invalid cloud.browserProfile.reuseIfActive value "${String(
+                value
+            )}". Use true or false.`
+        )
+    }
+
+    return value
+}
+
+function normalizeCloudBrowserProfileOptions(
+    value: unknown,
+    source: 'cloud.browserProfile' | 'resolved.cloud.browserProfile'
+): OpensteerCloudBrowserProfileOptions | undefined {
+    if (value == null) {
+        return undefined
+    }
+    if (typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error(
+            `Invalid ${source} value "${String(value)}". Use an object with profileId and optional reuseIfActive.`
+        )
+    }
+
+    const record = value as Record<string, unknown>
+    const rawProfileId = record.profileId
+    if (typeof rawProfileId !== 'string' || !rawProfileId.trim()) {
+        throw new Error(
+            `${source}.profileId must be a non-empty string when browserProfile is provided.`
+        )
+    }
+
+    return {
+        profileId: rawProfileId.trim(),
+        reuseIfActive: parseCloudBrowserProfileReuseIfActive(record.reuseIfActive),
+    }
+}
+
+function resolveEnvCloudBrowserProfile(
+    profileId: string | undefined,
+    reuseIfActive: boolean | undefined
+): OpensteerCloudBrowserProfileOptions | undefined {
+    if (reuseIfActive !== undefined && !profileId) {
+        throw new Error(
+            'OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE requires OPENSTEER_CLOUD_PROFILE_ID.'
+        )
+    }
+    if (!profileId) {
+        return undefined
+    }
+
+    return {
+        profileId,
+        reuseIfActive,
+    }
+}
+
 function normalizeCloudOptions(
     value: OpensteerConfig['cloud']
 ): OpensteerCloudOptions | undefined {
@@ -450,11 +524,18 @@ export function resolveConfigWithEnv(
     const envApiKey = resolveOpensteerApiKey(env)
     const envBaseUrl = resolveOpensteerBaseUrl(env)
     const envAuthScheme = resolveOpensteerAuthScheme(env)
+    const envCloudProfileId = resolveOpensteerCloudProfileId(env)
+    const envCloudProfileReuseIfActive =
+        resolveOpensteerCloudProfileReuseIfActive(env)
     const envCloudAnnounce = parseCloudAnnounce(
         env.OPENSTEER_REMOTE_ANNOUNCE,
         'OPENSTEER_REMOTE_ANNOUNCE'
     )
     const inputCloudOptions = normalizeCloudOptions(input.cloud)
+    const inputCloudBrowserProfile = normalizeCloudBrowserProfileOptions(
+        inputCloudOptions?.browserProfile,
+        'cloud.browserProfile'
+    )
     const inputAuthScheme = parseAuthScheme(
         inputCloudOptions?.authScheme,
         'cloud.authScheme'
@@ -477,6 +558,18 @@ export function resolveConfigWithEnv(
 
     if (cloudSelection.cloud) {
         const resolvedCloud = normalizeCloudOptions(resolved.cloud) ?? {}
+        const resolvedCloudBrowserProfile = normalizeCloudBrowserProfileOptions(
+            resolvedCloud.browserProfile,
+            'resolved.cloud.browserProfile'
+        )
+        const envCloudBrowserProfile = resolveEnvCloudBrowserProfile(
+            envCloudProfileId,
+            envCloudProfileReuseIfActive
+        )
+        const browserProfile =
+            inputCloudBrowserProfile ??
+            envCloudBrowserProfile ??
+            resolvedCloudBrowserProfile
         const authScheme =
             inputAuthScheme ??
             envAuthScheme ??
@@ -491,6 +584,7 @@ export function resolveConfigWithEnv(
             ...resolvedCloud,
             authScheme,
             announce,
+            ...(browserProfile ? { browserProfile } : {}),
         }
     }
 

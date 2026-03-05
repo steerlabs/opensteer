@@ -34,6 +34,7 @@ import type {
     InputOptions,
     LaunchOptions,
     OpensteerConfig,
+    OpensteerCloudBrowserProfileOptions,
     ScrollOptions,
     SelectOptions,
     ScreenshotOptions,
@@ -117,6 +118,7 @@ import { inflateDataPathObject } from './extraction/data-path.js'
 import {
     cloudSessionContractVersion as CLOUD_SESSION_CONTRACT_VERSION,
     type CloudActionMethod,
+    type CloudSessionLaunchConfig,
 } from './cloud/contracts.js'
 import { ActionWsClient } from './cloud/action-ws-client.js'
 import {
@@ -563,6 +565,27 @@ export class Opensteer {
         return true
     }
 
+    private buildCloudSessionLaunchConfig(
+        options: LaunchOptions
+    ): CloudSessionLaunchConfig | undefined {
+        const cloudConfig =
+            this.config.cloud && typeof this.config.cloud === 'object'
+                ? this.config.cloud
+                : undefined
+        const browserProfile = normalizeCloudBrowserProfilePreference(
+            options.cloudBrowserProfile ?? cloudConfig?.browserProfile,
+            options.cloudBrowserProfile ? 'launch options' : 'Opensteer config'
+        )
+
+        if (!browserProfile) {
+            return undefined
+        }
+
+        return {
+            browserProfile,
+        }
+    }
+
     async launch(options: LaunchOptions = {}): Promise<void> {
         if (this.pageRef && !this.ownsBrowser) {
             throw new Error(
@@ -589,6 +612,7 @@ export class Opensteer {
 
                 localRunId = this.cloud.localRunId || buildLocalRunId(this.namespace)
                 this.cloud.localRunId = localRunId
+                const launchConfig = this.buildCloudSessionLaunchConfig(options)
                 const session = await this.cloud.sessionClient.create({
                     cloudSessionContractVersion: CLOUD_SESSION_CONTRACT_VERSION,
                     sourceType: 'local-cloud',
@@ -599,6 +623,7 @@ export class Opensteer {
                     launchContext:
                         (options.context as Record<string, unknown>) ||
                         undefined,
+                    launchConfig,
                 })
 
                 sessionId = session.sessionId
@@ -3740,6 +3765,37 @@ function isInternalOrBlankPageUrl(url: string): boolean {
         url.startsWith('devtools://') ||
         url.startsWith('edge://')
     )
+}
+
+function normalizeCloudBrowserProfilePreference(
+    value: OpensteerCloudBrowserProfileOptions | undefined,
+    source: 'launch options' | 'Opensteer config'
+): { profileId: string; reuseIfActive?: boolean } | undefined {
+    if (!value) {
+        return undefined
+    }
+
+    const profileId =
+        typeof value.profileId === 'string' ? value.profileId.trim() : ''
+    if (!profileId) {
+        throw new Error(
+            `Invalid cloud browser profile in ${source}: profileId must be a non-empty string.`
+        )
+    }
+
+    if (
+        value.reuseIfActive !== undefined &&
+        typeof value.reuseIfActive !== 'boolean'
+    ) {
+        throw new Error(
+            `Invalid cloud browser profile in ${source}: reuseIfActive must be a boolean.`
+        )
+    }
+
+    return {
+        profileId,
+        reuseIfActive: value.reuseIfActive,
+    }
 }
 
 function buildLocalRunId(namespace: string): string {

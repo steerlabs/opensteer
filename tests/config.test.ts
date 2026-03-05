@@ -527,6 +527,49 @@ describe('config', () => {
         })
     })
 
+    it('resolveConfig maps OPENSTEER_CLOUD_PROFILE_ID into cloud.browserProfile', () => {
+        process.env.OPENSTEER_MODE = 'cloud'
+        process.env.OPENSTEER_API_KEY = 'ork_test_123'
+        process.env.OPENSTEER_CLOUD_PROFILE_ID = 'bp_env_123'
+        process.env.OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE = 'true'
+
+        const resolved = resolveConfig({})
+        expect(resolved.cloud).toEqual({
+            apiKey: 'ork_test_123',
+            authScheme: 'api-key',
+            announce: 'always',
+            browserProfile: {
+                profileId: 'bp_env_123',
+                reuseIfActive: true,
+            },
+        })
+    })
+
+    it('resolveConfig keeps explicit cloud.browserProfile over env profile settings', () => {
+        process.env.OPENSTEER_CLOUD_PROFILE_ID = 'bp_env_123'
+        process.env.OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE = 'true'
+
+        const resolved = resolveConfig({
+            cloud: {
+                apiKey: 'ork_test_123',
+                browserProfile: {
+                    profileId: 'bp_config_456',
+                    reuseIfActive: false,
+                },
+            },
+        })
+
+        expect(resolved.cloud).toEqual({
+            apiKey: 'ork_test_123',
+            authScheme: 'api-key',
+            announce: 'always',
+            browserProfile: {
+                profileId: 'bp_config_456',
+                reuseIfActive: false,
+            },
+        })
+    })
+
     it('throws when OPENSTEER_MODE has an invalid value', () => {
         process.env.OPENSTEER_MODE = 'edge'
         expect(() => resolveConfig({})).toThrow(
@@ -545,6 +588,31 @@ describe('config', () => {
         process.env.OPENSTEER_REMOTE_ANNOUNCE = 'sometimes'
         expect(() => resolveConfig({ cloud: true })).toThrow(
             'Invalid OPENSTEER_REMOTE_ANNOUNCE value "sometimes". Use "always", "off", or "tty".'
+        )
+    })
+
+    it('throws when OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE is set without OPENSTEER_CLOUD_PROFILE_ID', () => {
+        process.env.OPENSTEER_MODE = 'cloud'
+        process.env.OPENSTEER_API_KEY = 'ork_test_123'
+        process.env.OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE = 'true'
+
+        expect(() => resolveConfig({})).toThrow(
+            'OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE requires OPENSTEER_CLOUD_PROFILE_ID.'
+        )
+    })
+
+    it('throws when cloud.browserProfile.profileId is missing', () => {
+        expect(() =>
+            resolveConfig({
+                cloud: {
+                    apiKey: 'ork_test_123',
+                    browserProfile: {
+                        profileId: '',
+                    },
+                },
+            })
+        ).toThrow(
+            'cloud.browserProfile.profileId must be a non-empty string when browserProfile is provided.'
         )
     })
 

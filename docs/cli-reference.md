@@ -111,6 +111,12 @@ Supported options:
 - `--copy`
 - `--all`
 
+### Profiles
+
+- `profile list [--json] [--limit <n>] [--status active|archived|error]`
+- `profile create --name <name> [--json]`
+- `profile sync --from-profile-dir <dir> [--to-profile-id <id> | --name <name>] [--domain <domain> ... | --all-domains] [--dry-run] [--yes] [--json]`
+
 ## Global Flags
 
 - `--session <id>`
@@ -119,6 +125,8 @@ Supported options:
 - `--connect-url <url>`
 - `--channel <browser>`
 - `--profile-dir <path>`
+- `--cloud-profile-id <id>`
+- `--cloud-profile-reuse-if-active <true|false>`
 - `--cursor <true|false>`
 - `--element <N>`
 - `--selector <css>`
@@ -135,6 +143,8 @@ Supported options:
 - `OPENSTEER_BASE_URL`: cloud control-plane base URL
 - `OPENSTEER_AUTH_SCHEME`: `api-key` (default) or `bearer`
 - `OPENSTEER_REMOTE_ANNOUNCE`: `always` (default), `off`, or `tty`
+- `OPENSTEER_CLOUD_PROFILE_ID`: default cloud browser profile id
+- `OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE`: optional `true`/`false` profile session reuse
 
 Cursor defaults:
 
