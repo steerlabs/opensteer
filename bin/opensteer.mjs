@@ -27,6 +27,7 @@ const SKILLS_INSTALLER_SCRIPT = join(
     'skills-installer.js'
 )
 const PROFILE_CLI_SCRIPT = join(__dirname, '..', 'dist', 'cli', 'profile.js')
+const AUTH_CLI_SCRIPT = join(__dirname, '..', 'dist', 'cli', 'auth.js')
 const SKILLS_HELP_TEXT = `Usage: opensteer skills <install|add> [options]
 
 Installs the first-party Opensteer skill using the upstream "skills" CLI.
@@ -58,6 +59,17 @@ Commands:
   sync
 
 Run "opensteer profile --help" after building for full command details.
+`
+const AUTH_HELP_TEXT = `Usage: opensteer auth <command> [options]
+
+Authenticate Opensteer CLI with Opensteer Cloud.
+
+Commands:
+  login
+  status
+  logout
+
+Run "opensteer auth --help" after building for full command details.
 `
 
 const CONNECT_TIMEOUT = 15000
@@ -328,6 +340,8 @@ function buildRequest(command, flags, positional) {
         'cloud-profile-id',
         'cloud-profile-reuse-if-active',
         'cursor',
+        'api-key',
+        'access-token',
     ]) {
         if (key in flags) {
             globalFlags[key] = flags[key]
@@ -963,6 +977,62 @@ async function runProfileSubcommand(args) {
     }
 }
 
+async function runAuthSubcommand(args) {
+    if (isAuthHelpRequest(args)) {
+        process.stdout.write(AUTH_HELP_TEXT)
+        return
+    }
+
+    if (!existsSync(AUTH_CLI_SCRIPT)) {
+        throw new Error(
+            `Auth CLI module was not found at "${AUTH_CLI_SCRIPT}". Run "npm run build" to generate dist artifacts.`
+        )
+    }
+
+    const moduleUrl = pathToFileURL(AUTH_CLI_SCRIPT).href
+    const { runOpensteerAuthCli } = await import(moduleUrl)
+    const exitCode = await runOpensteerAuthCli(args)
+    if (exitCode !== 0) {
+        process.exit(exitCode)
+    }
+}
+
+function isAuthHelpRequest(args) {
+    if (args.length === 0) return true
+    const [subcommand, ...rest] = args
+    if (subcommand === '--help' || subcommand === '-h' || subcommand === 'help') {
+        return true
+    }
+    return rest.includes('--help') || rest.includes('-h')
+}
+
+async function ensureOpenCloudCredentials(flags, scopeDir) {
+    if (!existsSync(AUTH_CLI_SCRIPT)) {
+        throw new Error(
+            `Auth CLI module was not found at "${AUTH_CLI_SCRIPT}". Run "npm run build" to generate dist artifacts.`
+        )
+    }
+
+    const apiKeyFlag =
+        typeof flags['api-key'] === 'string' ? flags['api-key'] : undefined
+    const accessTokenFlag =
+        typeof flags['access-token'] === 'string'
+            ? flags['access-token']
+            : undefined
+
+    const moduleUrl = pathToFileURL(AUTH_CLI_SCRIPT).href
+    const { ensureCloudCredentialsForOpenCommand } = await import(moduleUrl)
+    await ensureCloudCredentialsForOpenCommand({
+        scopeDir,
+        env: process.env,
+        apiKeyFlag,
+        accessTokenFlag,
+        interactive: isInteractiveTerminal(),
+        writeStdout: (message) => process.stdout.write(message),
+        writeStderr: (message) => process.stderr.write(message),
+    })
+}
+
 function isProfileHelpRequest(args) {
     if (args.length === 0) return true
     const [subcommand, ...rest] = args
@@ -1037,6 +1107,9 @@ Skills:
   skills add [options]      Alias for "skills install"
   skills --help             Show skills installer help
   profile <command>         Manage cloud browser profiles and cookie sync
+  auth <command>            Manage cloud login credentials (login/status/logout)
+  login                     Alias for "auth login"
+  logout                    Alias for "auth logout"
 
 Global Flags:
   --session <id>            Logical session id (scoped by canonical cwd)
@@ -1061,8 +1134,10 @@ Environment:
   OPENSTEER_NAME            Default selector namespace for 'open' when --name is omitted
   OPENSTEER_CURSOR          Default cursor enablement (SDK + CLI session bootstrap)
   OPENSTEER_MODE            Runtime routing: "local" (default) or "cloud"
-  OPENSTEER_API_KEY         Required when cloud mode is selected
+  OPENSTEER_API_KEY         Cloud API key credential
+  OPENSTEER_ACCESS_TOKEN    Cloud bearer access token credential
   OPENSTEER_BASE_URL        Override cloud control-plane base URL
+  OPENSTEER_CLOUD_SITE_URL  Override cloud site URL for device login endpoints
   OPENSTEER_AUTH_SCHEME     Cloud auth scheme: api-key (default) or bearer
   OPENSTEER_REMOTE_ANNOUNCE Cloud session announcement policy: always (default), off, tty
 `)
@@ -1081,6 +1156,39 @@ async function main() {
         }
         return
     }
+    if (rawArgs[0] === 'auth') {
+        try {
+            await runAuthSubcommand(rawArgs.slice(1))
+        } catch (err) {
+            const message =
+                err instanceof Error ? err.message : 'Failed to run auth command'
+            process.stderr.write(`${message}\n`)
+            process.exit(1)
+        }
+        return
+    }
+    if (rawArgs[0] === 'login') {
+        try {
+            await runAuthSubcommand(['login', ...rawArgs.slice(1)])
+        } catch (err) {
+            const message =
+                err instanceof Error ? err.message : 'Failed to run login command'
+            process.stderr.write(`${message}\n`)
+            process.exit(1)
+        }
+        return
+    }
+    if (rawArgs[0] === 'logout') {
+        try {
+            await runAuthSubcommand(['logout', ...rawArgs.slice(1)])
+        } catch (err) {
+            const message =
+                err instanceof Error ? err.message : 'Failed to run logout command'
+            process.stderr.write(`${message}\n`)
+            process.exit(1)
+        }
+        return
+    }
     if (rawArgs[0] === 'profile') {
         try {
             await runProfileSubcommand(rawArgs.slice(1))
@@ -1092,6 +1200,8 @@ async function main() {
         }
         return
     }
+
+    const scopeDir = resolveScopeDir()
 
     const { command, flags, positional } = parseArgs(process.argv)
 
@@ -1110,9 +1220,20 @@ async function main() {
         return
     }
 
+    if (command === 'open') {
+        try {
+            await ensureOpenCloudCredentials(flags, scopeDir)
+        } catch (err) {
+            error(
+                err instanceof Error
+                    ? err.message
+                    : 'Failed to resolve cloud authentication for open command.'
+            )
+        }
+    }
+
     let resolvedSession
     let resolvedName
-    const scopeDir = resolveScopeDir()
     try {
         resolvedSession = resolveSession(flags, scopeDir)
         resolvedName = resolveName(flags, resolvedSession.session)
@@ -1152,6 +1273,8 @@ async function main() {
     delete flags.name
     delete flags.session
     delete flags.all
+    delete flags['api-key']
+    delete flags['access-token']
 
     const request = buildRequest(command, flags, positional)
     if (command === 'open') {

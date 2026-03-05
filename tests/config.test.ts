@@ -207,6 +207,86 @@ describe('config', () => {
         })
     })
 
+    it('resolveConfig maps OPENSTEER_ACCESS_TOKEN to cloud accessToken', () => {
+        process.env.OPENSTEER_MODE = 'cloud'
+        process.env.OPENSTEER_ACCESS_TOKEN = 'ost_env_token_123'
+
+        const resolved = resolveConfig({})
+        expect(resolved.cloud).toEqual({
+            accessToken: 'ost_env_token_123',
+            authScheme: 'bearer',
+            announce: 'always',
+        })
+    })
+
+    it('resolveConfig replaces file cloud.apiKey with OPENSTEER_ACCESS_TOKEN cleanly', () => {
+        const root = fs.mkdtempSync(
+            path.join(os.tmpdir(), 'opensteer-config-token-overrides-file-key-')
+        )
+        const configDir = path.join(root, '.opensteer')
+        fs.mkdirSync(configDir, { recursive: true })
+        fs.writeFileSync(
+            path.join(configDir, 'config.json'),
+            JSON.stringify(
+                {
+                    cloud: {
+                        apiKey: 'ork_file_123',
+                    },
+                },
+                null,
+                2
+            ),
+            'utf8'
+        )
+        process.env.OPENSTEER_MODE = 'cloud'
+        process.env.OPENSTEER_ACCESS_TOKEN = 'ost_env_token_456'
+
+        const resolved = resolveConfig({
+            storage: { rootDir: root },
+        })
+        expect(resolved.cloud).toEqual({
+            accessToken: 'ost_env_token_456',
+            authScheme: 'bearer',
+            announce: 'always',
+        })
+    })
+
+    it('resolveConfig keeps bearer compatibility with OPENSTEER_AUTH_SCHEME=bearer + OPENSTEER_API_KEY', () => {
+        process.env.OPENSTEER_MODE = 'cloud'
+        process.env.OPENSTEER_AUTH_SCHEME = 'bearer'
+        process.env.OPENSTEER_API_KEY = 'legacy_bearer_token_123'
+
+        const resolved = resolveConfig({})
+        expect(resolved.cloud).toEqual({
+            accessToken: 'legacy_bearer_token_123',
+            authScheme: 'bearer',
+            announce: 'always',
+        })
+    })
+
+    it('resolveConfig rejects OPENSTEER_API_KEY + OPENSTEER_ACCESS_TOKEN together', () => {
+        process.env.OPENSTEER_MODE = 'cloud'
+        process.env.OPENSTEER_API_KEY = 'ork_123'
+        process.env.OPENSTEER_ACCESS_TOKEN = 'ost_123'
+
+        expect(() => resolveConfig({})).toThrow(
+            'OPENSTEER_API_KEY and OPENSTEER_ACCESS_TOKEN are mutually exclusive. Set only one.'
+        )
+    })
+
+    it('resolveConfig rejects cloud.apiKey + cloud.accessToken together', () => {
+        expect(() =>
+            resolveConfig({
+                cloud: {
+                    apiKey: 'ork_123',
+                    accessToken: 'ost_123',
+                },
+            })
+        ).toThrow(
+            'cloud.apiKey and cloud.accessToken are mutually exclusive. Set only one.'
+        )
+    })
+
     it('resolveConfig auto-loads OPENSTEER_BASE_URL from .env', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-config-dotenv-'))
         fs.writeFileSync(

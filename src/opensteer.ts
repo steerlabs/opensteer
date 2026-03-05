@@ -238,16 +238,33 @@ export class Opensteer {
                     ? resolved.cloud
                     : undefined
             const apiKey = cloudConfig?.apiKey?.trim()
-            if (!apiKey) {
+            const accessToken = cloudConfig?.accessToken?.trim()
+            if (apiKey && accessToken) {
                 throw new Error(
-                    'Cloud mode requires a non-empty API key via cloud.apiKey or OPENSTEER_API_KEY.'
+                    'Cloud mode cannot use both cloud.apiKey and cloud.accessToken. Set only one credential.'
+                )
+            }
+
+            let credential = ''
+            let authScheme = cloudConfig?.authScheme ?? 'api-key'
+
+            if (accessToken) {
+                credential = accessToken
+                authScheme = 'bearer'
+            } else if (apiKey) {
+                credential = apiKey
+            }
+
+            if (!credential) {
+                throw new Error(
+                    'Cloud mode requires credentials via cloud.apiKey/cloud.accessToken or OPENSTEER_API_KEY/OPENSTEER_ACCESS_TOKEN.'
                 )
             }
 
             this.cloud = createCloudRuntimeState(
-                apiKey,
+                credential,
                 cloudConfig?.baseUrl,
-                cloudConfig?.authScheme
+                authScheme
             )
         } else {
             this.cloud = null

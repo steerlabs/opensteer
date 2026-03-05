@@ -21,13 +21,20 @@ describe('cloud mode', () => {
         delete process.env.OPENSTEER_API_KEY
 
         expect(() => new Opensteer({})).toThrow(
-            'Cloud mode requires a non-empty API key via cloud.apiKey or OPENSTEER_API_KEY.'
+            'Cloud mode requires credentials via cloud.apiKey/cloud.accessToken or OPENSTEER_API_KEY/OPENSTEER_ACCESS_TOKEN.'
         )
     })
 
     it('uses OPENSTEER_API_KEY when OPENSTEER_MODE=cloud', () => {
         process.env.OPENSTEER_MODE = 'cloud'
         process.env.OPENSTEER_API_KEY = 'ork_env_123'
+
+        expect(() => new Opensteer({})).not.toThrow()
+    })
+
+    it('uses OPENSTEER_ACCESS_TOKEN when OPENSTEER_MODE=cloud', () => {
+        process.env.OPENSTEER_MODE = 'cloud'
+        process.env.OPENSTEER_ACCESS_TOKEN = 'ost_env_123'
 
         expect(() => new Opensteer({})).not.toThrow()
     })
@@ -42,7 +49,7 @@ describe('cloud mode', () => {
         delete process.env.OPENSTEER_API_KEY
 
         expect(() => new Opensteer({ cloud: true })).toThrow(
-            'Cloud mode requires a non-empty API key via cloud.apiKey or OPENSTEER_API_KEY.'
+            'Cloud mode requires credentials via cloud.apiKey/cloud.accessToken or OPENSTEER_API_KEY/OPENSTEER_ACCESS_TOKEN.'
         )
     })
 
@@ -57,7 +64,30 @@ describe('cloud mode', () => {
                     },
                 })
         ).toThrow(
-            'Cloud mode requires a non-empty API key via cloud.apiKey or OPENSTEER_API_KEY.'
+            'Cloud mode requires credentials via cloud.apiKey/cloud.accessToken or OPENSTEER_API_KEY/OPENSTEER_ACCESS_TOKEN.'
+        )
+    })
+
+    it('accepts explicit cloud.accessToken', () => {
+        expect(() =>
+            new Opensteer({
+                cloud: {
+                    accessToken: 'ost_test_123',
+                },
+            })
+        ).not.toThrow()
+    })
+
+    it('rejects cloud config that sets both apiKey and accessToken', () => {
+        expect(() =>
+            new Opensteer({
+                cloud: {
+                    apiKey: 'ork_test_123',
+                    accessToken: 'ost_test_123',
+                },
+            })
+        ).toThrow(
+            'cloud.apiKey and cloud.accessToken are mutually exclusive. Set only one.'
         )
     })
 

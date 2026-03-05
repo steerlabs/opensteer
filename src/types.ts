@@ -139,6 +139,7 @@ export interface OpensteerCloudBrowserProfileOptions {
 
 export interface OpensteerCloudOptions {
     apiKey?: string
+    accessToken?: string
     baseUrl?: string
     authScheme?: OpensteerAuthScheme
     announce?: OpensteerCloudAnnouncePolicy

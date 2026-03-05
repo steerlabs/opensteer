@@ -10,6 +10,7 @@ Main setup (recommended):
 
 ```bash
 npm i -g opensteer
+opensteer auth login
 opensteer skills install
 ```
 
@@ -170,8 +171,18 @@ OPENSTEER_MODE=cloud
 OPENSTEER_API_KEY=<your_api_key>
 ```
 
+- Interactive CLI login:
+
+```bash
+opensteer auth login
+opensteer auth status
+opensteer auth logout
+```
+
 - `OPENSTEER_BASE_URL` overrides the default cloud host
+- `OPENSTEER_ACCESS_TOKEN` provides bearer auth for cloud commands
 - `OPENSTEER_AUTH_SCHEME` supports `api-key` (default) or `bearer`
+- Credential precedence: explicit flags > environment variables > saved machine login
 - `OPENSTEER_CLOUD_PROFILE_ID` optionally launches into a specific cloud browser profile
 - `OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE` (`true|false`) optionally reuses an active profile session
 - `cloud: true` or a `cloud` options object overrides `OPENSTEER_MODE`
@@ -183,7 +194,7 @@ Select a cloud browser profile in SDK:
 ```ts
 const opensteer = new Opensteer({
   cloud: {
-    apiKey: process.env.OPENSTEER_API_KEY,
+    accessToken: process.env.OPENSTEER_ACCESS_TOKEN,
     browserProfile: {
       profileId: "bp_123",
       reuseIfActive: true,

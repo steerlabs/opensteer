@@ -14,8 +14,8 @@ import {
     type BrowserProfileListResponse,
     type BrowserProfileStatus,
 } from '../cloud/contracts.js'
-import { DEFAULT_CLOUD_BASE_URL } from '../cloud/runtime.js'
 import { prepareCookiesForSync } from './profile-sync.js'
+import { ensureCloudCredentialsForCommand } from './auth.js'
 
 export type ParsedProfileArgs =
     | { mode: 'help' }
@@ -26,7 +26,9 @@ export type ParsedProfileArgs =
 
 export interface ProfileCommonCloudArgs {
     apiKey?: string
+    accessToken?: string
     baseUrl?: string
+    siteUrl?: string
     authScheme?: OpensteerAuthScheme
     json?: boolean
 }
@@ -53,9 +55,12 @@ export interface ProfileSyncArgs extends ProfileCommonCloudArgs {
 }
 
 interface CloudAuthContext {
-    apiKey: string
+    token: string
     baseUrl: string
+    siteUrl: string
     authScheme: OpensteerAuthScheme
+    kind: 'api-key' | 'access-token'
+    source: 'flag' | 'env' | 'saved'
 }
 
 interface BrowserProfileClientLike {
@@ -95,7 +100,9 @@ Commands:
 
 Cloud auth options (all commands):
   --api-key <key>           Cloud API key (defaults to OPENSTEER_API_KEY)
+  --access-token <token>    Cloud bearer access token (defaults to OPENSTEER_ACCESS_TOKEN)
   --base-url <url>          Cloud API base URL (defaults to OPENSTEER_BASE_URL)
+  --site-url <url>          Cloud site URL for login/refresh/revoke flows
   --auth-scheme <scheme>    api-key (default) or bearer
   --json                    JSON output (progress logs go to stderr)
 
@@ -182,10 +189,24 @@ function parseListArgs(rawArgs: string[]): ParsedProfileArgs {
             i = value.nextIndex
             continue
         }
+        if (arg === '--access-token') {
+            const value = readFlagValue(rawArgs, i, '--access-token')
+            if (!value.ok) return { mode: 'error', error: value.error }
+            args.accessToken = value.value
+            i = value.nextIndex
+            continue
+        }
         if (arg === '--base-url') {
             const value = readFlagValue(rawArgs, i, '--base-url')
             if (!value.ok) return { mode: 'error', error: value.error }
             args.baseUrl = value.value
+            i = value.nextIndex
+            continue
+        }
+        if (arg === '--site-url') {
+            const value = readFlagValue(rawArgs, i, '--site-url')
+            if (!value.ok) return { mode: 'error', error: value.error }
+            args.siteUrl = value.value
             i = value.nextIndex
             continue
         }
@@ -271,10 +292,24 @@ function parseCreateArgs(rawArgs: string[]): ParsedProfileArgs {
             i = value.nextIndex
             continue
         }
+        if (arg === '--access-token') {
+            const value = readFlagValue(rawArgs, i, '--access-token')
+            if (!value.ok) return { mode: 'error', error: value.error }
+            args.accessToken = value.value
+            i = value.nextIndex
+            continue
+        }
         if (arg === '--base-url') {
             const value = readFlagValue(rawArgs, i, '--base-url')
             if (!value.ok) return { mode: 'error', error: value.error }
             args.baseUrl = value.value
+            i = value.nextIndex
+            continue
+        }
+        if (arg === '--site-url') {
+            const value = readFlagValue(rawArgs, i, '--site-url')
+            if (!value.ok) return { mode: 'error', error: value.error }
+            args.siteUrl = value.value
             i = value.nextIndex
             continue
         }
@@ -387,10 +422,24 @@ function parseSyncArgs(rawArgs: string[]): ParsedProfileArgs {
             i = value.nextIndex
             continue
         }
+        if (arg === '--access-token') {
+            const value = readFlagValue(rawArgs, i, '--access-token')
+            if (!value.ok) return { mode: 'error', error: value.error }
+            args.accessToken = value.value
+            i = value.nextIndex
+            continue
+        }
         if (arg === '--base-url') {
             const value = readFlagValue(rawArgs, i, '--base-url')
             if (!value.ok) return { mode: 'error', error: value.error }
             args.baseUrl = value.value
+            i = value.nextIndex
+            continue
+        }
+        if (arg === '--site-url') {
+            const value = readFlagValue(rawArgs, i, '--site-url')
+            if (!value.ok) return { mode: 'error', error: value.error }
+            args.siteUrl = value.value
             i = value.nextIndex
             continue
         }
@@ -468,7 +517,7 @@ function createDefaultDeps(): ProfileCliDeps {
         createBrowserProfileClient: (context) =>
             new BrowserProfileClient(
                 context.baseUrl,
-                context.apiKey,
+                context.token,
                 context.authScheme
             ),
         createOpensteer: (config) => new Opensteer(config),
@@ -491,58 +540,45 @@ function createDefaultDeps(): ProfileCliDeps {
     }
 }
 
-function buildCloudAuthContext(
+async function buildCloudAuthContext(
     args: ProfileCommonCloudArgs,
-    env: Record<string, string | undefined>
-): CloudAuthContext {
-    const apiKey = (args.apiKey || env.OPENSTEER_API_KEY || '').trim()
-    if (!apiKey) {
-        throw new Error(
-            'Missing cloud API key. Set OPENSTEER_API_KEY or pass --api-key.'
-        )
-    }
+    deps: ProfileCliDeps
+): Promise<CloudAuthContext> {
+    const ensured = await ensureCloudCredentialsForCommand({
+        commandName: 'opensteer profile',
+        env: deps.env,
+        apiKeyFlag: args.apiKey,
+        accessTokenFlag: args.accessToken,
+        baseUrl: args.baseUrl,
+        siteUrl: args.siteUrl,
+        interactive: deps.isInteractive(),
+        autoLoginIfNeeded: true,
+        writeStdout: args.json ? deps.writeStderr : deps.writeStdout,
+        writeStderr: deps.writeStderr,
+    })
 
-    const baseUrl = (
-        args.baseUrl ||
-        env.OPENSTEER_BASE_URL ||
-        DEFAULT_CLOUD_BASE_URL
-    ).trim()
-    assertSecureBaseUrl(baseUrl)
-
-    const rawAuthScheme =
-        args.authScheme || parseAuthScheme(env.OPENSTEER_AUTH_SCHEME || '') || 'api-key'
-
-    return {
-        apiKey,
-        baseUrl,
-        authScheme: rawAuthScheme,
-    }
-}
-
-function assertSecureBaseUrl(baseUrl: string): void {
-    let parsed: URL
-    try {
-        parsed = new URL(baseUrl)
-    } catch {
-        throw new Error(`Invalid --base-url "${baseUrl}".`)
-    }
-
-    if (parsed.protocol === 'https:') return
-
-    if (parsed.protocol === 'http:') {
-        const hostname = parsed.hostname.toLowerCase()
-        if (
-            hostname === 'localhost' ||
-            hostname === '127.0.0.1' ||
-            hostname === '::1'
-        ) {
-            return
+    if (args.authScheme) {
+        if (ensured.kind === 'access-token' && args.authScheme !== 'bearer') {
+            throw new Error(
+                '--auth-scheme=api-key is incompatible with --access-token or saved login credentials.'
+            )
+        }
+        if (ensured.kind === 'api-key' && args.authScheme === 'bearer') {
+            return {
+                ...ensured,
+                authScheme: 'bearer',
+            }
         }
     }
 
-    throw new Error(
-        `Insecure cloud base URL "${baseUrl}". Use HTTPS, or HTTP only for localhost.`
-    )
+    return {
+        token: ensured.token,
+        baseUrl: ensured.baseUrl,
+        siteUrl: ensured.siteUrl,
+        authScheme: ensured.authScheme,
+        kind: ensured.kind,
+        source: ensured.source,
+    }
 }
 
 function printProfileHelp(deps: ProfileCliDeps): void {
@@ -566,7 +602,7 @@ function writeProgressLine(deps: ProfileCliDeps, jsonOutput: boolean, message: s
 }
 
 async function runList(args: ProfileListArgs, deps: ProfileCliDeps): Promise<number> {
-    const auth = buildCloudAuthContext(args, deps.env)
+    const auth = await buildCloudAuthContext(args, deps)
     const client = deps.createBrowserProfileClient(auth)
     const response = await client.list({
         cursor: args.cursor,
@@ -601,7 +637,7 @@ async function runList(args: ProfileListArgs, deps: ProfileCliDeps): Promise<num
 }
 
 async function runCreate(args: ProfileCreateArgs, deps: ProfileCliDeps): Promise<number> {
-    const auth = buildCloudAuthContext(args, deps.env)
+    const auth = await buildCloudAuthContext(args, deps)
     const client = deps.createBrowserProfileClient(auth)
     const profile = await client.create({
         name: args.name,
@@ -795,7 +831,7 @@ async function runSync(args: ProfileSyncArgs, deps: ProfileCliDeps): Promise<num
         return 0
     }
 
-    const auth = buildCloudAuthContext(args, deps.env)
+    const auth = await buildCloudAuthContext(args, deps)
     const client = deps.createBrowserProfileClient(auth)
     const target = await resolveTargetProfileId(args, deps, client)
 
@@ -807,7 +843,9 @@ async function runSync(args: ProfileSyncArgs, deps: ProfileCliDeps): Promise<num
 
     const cloud = deps.createOpensteer({
         cloud: {
-            apiKey: auth.apiKey,
+            ...(auth.kind === 'api-key'
+                ? { apiKey: auth.token }
+                : { accessToken: auth.token }),
             baseUrl: auth.baseUrl,
             authScheme: auth.authScheme,
             browserProfile: {

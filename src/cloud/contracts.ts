@@ -163,6 +163,7 @@ export interface CloudActionFailureDetails {
 export type BrowserProfileStatus = 'active' | 'archived' | 'error'
 export type BrowserProfileProxyPolicy = 'strict_sticky'
 export type CloudFingerprintMode = 'off' | 'auto'
+export type BrowserProfileArchiveFormat = 'tar.gz'
 
 export interface BrowserProfileDescriptor {
     profileId: string
@@ -181,10 +182,10 @@ export interface BrowserProfileDescriptor {
     lastSessionId?: string
     lastLaunchedAt?: number
     latestRevision?: number
-    latestObjectKey?: string
+    latestStorageId?: string
     latestSizeBytes?: number
     latestArchiveSha256?: string
-    latestArchiveFormat?: string
+    latestArchiveFormat?: BrowserProfileArchiveFormat
     createdAt: number
     updatedAt: number
     lastError?: string

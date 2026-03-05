@@ -15,6 +15,13 @@ OPENSTEER_CLOUD_PROFILE_ID=bp_123
 OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE=true
 ```
 
+Or use interactive CLI login and saved machine credentials:
+
+```bash
+opensteer auth login
+opensteer auth status
+```
+
 These values can be placed in `.env` files. Opensteer auto-loads
 `.env.<NODE_ENV>.local`, `.env.local` (skipped when `NODE_ENV=test`),
 `.env.<NODE_ENV>`, then `.env` from your `storage.rootDir` (default:
@@ -30,9 +37,9 @@ import { Opensteer } from 'opensteer'
 
 const opensteer = new Opensteer({
     cloud: {
-        apiKey: process.env.OPENSTEER_API_KEY,
+        accessToken: process.env.OPENSTEER_ACCESS_TOKEN,
         baseUrl: process.env.OPENSTEER_BASE_URL,
-        authScheme: 'api-key', // or 'bearer'
+        authScheme: 'bearer',
         browserProfile: {
             profileId: 'bp_123',
             reuseIfActive: true,
@@ -43,9 +50,16 @@ const opensteer = new Opensteer({
 
 - Default cloud host: `https://api.opensteer.com`
 - Override host with `OPENSTEER_BASE_URL`
-- API key can be provided via `cloud.apiKey` or `OPENSTEER_API_KEY`
+- Cloud credential can be provided via:
+  - `cloud.apiKey` / `OPENSTEER_API_KEY` (CI/headless recommended)
+  - `cloud.accessToken` / `OPENSTEER_ACCESS_TOKEN`
+  - saved machine login (`opensteer auth login`) for interactive CLI commands
 - Auth scheme can be configured via `cloud.authScheme` or `OPENSTEER_AUTH_SCHEME`
   - Supported values: `api-key` (default), `bearer`
+- Credential precedence in CLI commands:
+  1. explicit flags
+  2. environment variables
+  3. saved machine login
 - Cloud browser profile can be configured via
   `cloud.browserProfile.profileId` or `OPENSTEER_CLOUD_PROFILE_ID`
 - Optional profile session reuse can be configured via
