@@ -179,6 +179,11 @@ opensteer auth status
 opensteer auth logout
 ```
 
+- `opensteer auth login` opens your default browser when possible. Use
+  `--no-browser` on remote shells, containers, or CI and paste the printed URL
+  into a browser manually. In `--json` mode, login prompts go to stderr and the
+  final JSON result stays on stdout.
+
 - `OPENSTEER_BASE_URL` overrides the default cloud host
 - `OPENSTEER_ACCESS_TOKEN` provides bearer auth for cloud commands
 - `OPENSTEER_AUTH_SCHEME` supports `api-key` (default) or `bearer`

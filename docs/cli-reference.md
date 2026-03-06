@@ -125,6 +125,11 @@ Supported options:
 - `login` (alias for `auth login`)
 - `logout` (alias for `auth logout`)
 
+`opensteer auth login` opens your default browser when possible. Use
+`opensteer auth login --no-browser` when you need to copy the printed device
+URL into another browser manually. `opensteer auth login --json` keeps prompts
+on stderr and writes the final JSON payload to stdout.
+
 ## Global Flags
 
 - `--session <id>`

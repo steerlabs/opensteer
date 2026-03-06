@@ -22,6 +22,11 @@ opensteer auth login
 opensteer auth status
 ```
 
+`opensteer auth login` opens your default browser when possible. Use
+`opensteer auth login --no-browser` on remote shells, containers, or CI and
+paste the printed URL into a browser manually. In `--json` mode, login prompts
+go to stderr and the final JSON result stays on stdout.
+
 These values can be placed in `.env` files. Opensteer auto-loads
 `.env.<NODE_ENV>.local`, `.env.local` (skipped when `NODE_ENV=test`),
 `.env.<NODE_ENV>`, then `.env` from your `storage.rootDir` (default:
