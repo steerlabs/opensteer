@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import open from 'open'
 import { DEFAULT_CLOUD_BASE_URL } from '../cloud/runtime.js'
 import { normalizeCloudBaseUrl } from '../cloud/http-client.js'
 import { resolveCloudSelection, resolveConfigWithEnv } from '../config.js'
@@ -50,6 +50,7 @@ class CliAuthHttpError extends Error {
 }
 
 export type AuthFetchFn = (input: string, init?: RequestInit) => Promise<Response>
+export type OpenExternalUrlFn = (url: string) => boolean | Promise<boolean>
 
 export interface CloudCredentialStore {
     readCloudCredential(): StoredMachineCloudCredential | null
@@ -81,7 +82,7 @@ export interface EnsureCloudCredentialsOptions {
     fetchFn?: AuthFetchFn
     sleep?: (ms: number) => Promise<void>
     now?: () => number
-    openExternalUrl?: (url: string) => void
+    openExternalUrl?: OpenExternalUrlFn
 }
 
 export interface EnsureCloudCredentialsForOpenOptions {
@@ -95,7 +96,7 @@ export interface EnsureCloudCredentialsForOpenOptions {
     fetchFn?: AuthFetchFn
     sleep?: (ms: number) => Promise<void>
     now?: () => number
-    openExternalUrl?: (url: string) => void
+    openExternalUrl?: OpenExternalUrlFn
 }
 
 interface AuthCliDeps {
@@ -107,7 +108,7 @@ interface AuthCliDeps {
     isInteractive: () => boolean
     sleep: (ms: number) => Promise<void>
     now: () => number
-    openExternalUrl: (url: string) => void
+    openExternalUrl: OpenExternalUrlFn
 }
 
 interface DeviceLoginResult {
@@ -156,8 +157,8 @@ Commands:
 Options:
   --base-url <url>          Cloud API base URL (defaults to OPENSTEER_BASE_URL)
   --site-url <url>          Cloud site URL for browser/device auth
-  --json                    Print JSON output
-  --no-browser              Do not auto-open browser during login
+  --json                    JSON output (login prompts go to stderr)
+  --no-browser              Do not auto-open your default browser during login
   -h, --help                Show this help
 `
 
@@ -179,9 +180,7 @@ function createDefaultDeps(): AuthCliDeps {
             await new Promise((resolve) => setTimeout(resolve, ms))
         },
         now: () => Date.now(),
-        openExternalUrl: (url) => {
-            openBrowser(url)
-        },
+        openExternalUrl: openDefaultBrowser,
     }
 }
 
@@ -542,32 +541,17 @@ async function revokeToken(
     })
 }
 
-function openBrowser(url: string): void {
+async function openDefaultBrowser(url: string): Promise<boolean> {
     try {
-        if (process.platform === 'darwin') {
-            const child = spawn('open', [url], {
-                detached: true,
-                stdio: 'ignore',
-            })
-            child.unref()
-            return
-        }
-
-        if (process.platform === 'win32') {
-            const child = spawn('cmd', ['/c', 'start', '', url], {
-                detached: true,
-                stdio: 'ignore',
-            })
-            child.unref()
-            return
-        }
-
-        const child = spawn('xdg-open', [url], {
-            detached: true,
-            stdio: 'ignore',
+        const child = await open(url, {
+            wait: false,
         })
+        child.on('error', () => undefined)
         child.unref()
-    } catch {}
+        return true
+    } catch {
+        return false
+    }
 }
 
 async function runDeviceLoginFlow(
@@ -575,22 +559,47 @@ async function runDeviceLoginFlow(
         siteUrl: string
         fetchFn: AuthFetchFn
         writeStdout: (message: string) => void
-        openExternalUrl: (url: string) => void
+        openExternalUrl: OpenExternalUrlFn
         sleep: (ms: number) => Promise<void>
         now: () => number
         openBrowser: boolean
+        openBrowserDisabledReason?: string
     }
 ): Promise<DeviceLoginResult> {
     const start = await startDeviceAuthorization(args.siteUrl, args.fetchFn)
 
-    args.writeStdout(
-        `Open this URL to authenticate Opensteer CLI:\n${start.verification_uri_complete}\n`
-    )
+    if (args.openBrowser) {
+        args.writeStdout(
+            'Opening your default browser for Opensteer CLI authentication.\n'
+        )
+        args.writeStdout(
+            `If nothing opens, use this URL:\n${start.verification_uri_complete}\n`
+        )
+    } else {
+        if (args.openBrowserDisabledReason) {
+            args.writeStdout(
+                `Automatic browser open is disabled (${args.openBrowserDisabledReason}).\n`
+            )
+        }
+        args.writeStdout(
+            `Open this URL to authenticate Opensteer CLI:\n${start.verification_uri_complete}\n`
+        )
+    }
     args.writeStdout(`Verification code: ${start.user_code}\n`)
 
     if (args.openBrowser) {
-        args.openExternalUrl(start.verification_uri_complete)
-        args.writeStdout('Opened browser for authentication.\n')
+        const browserOpened = await args.openExternalUrl(
+            start.verification_uri_complete
+        )
+        if (browserOpened) {
+            args.writeStdout(
+                'Opened your default browser. Finish authentication there; this terminal will continue automatically.\n'
+            )
+        } else {
+            args.writeStdout(
+                'Could not open your default browser automatically. Paste the URL above into a browser to continue.\n'
+            )
+        }
     }
 
     const deadline = args.now() + start.expires_in * 1000
@@ -735,6 +744,38 @@ function toAuthMissingMessage(commandName: string): string {
     ].join(' ')
 }
 
+function describeBrowserOpenMode(
+    args: Pick<AuthLoginArgs, 'openBrowser'>,
+    deps: Pick<AuthCliDeps, 'env' | 'isInteractive'>
+): { enabled: boolean; disabledReason?: string } {
+    if (!args.openBrowser) {
+        return {
+            enabled: false,
+            disabledReason: '--no-browser',
+        }
+    }
+    if (!deps.isInteractive()) {
+        return {
+            enabled: false,
+            disabledReason: 'this shell is not interactive',
+        }
+    }
+    if (isCiEnvironment(deps.env)) {
+        return {
+            enabled: false,
+            disabledReason: 'CI',
+        }
+    }
+    return {
+        enabled: true,
+    }
+}
+
+function isCiEnvironment(env: Record<string, string | undefined>): boolean {
+    const value = env.CI?.trim().toLowerCase()
+    return Boolean(value && value !== '0' && value !== 'false')
+}
+
 export function isCloudModeEnabledForRootDir(rootDir: string): boolean {
     const resolved = resolveConfigWithEnv({
         storage: { rootDir },
@@ -782,7 +823,7 @@ export async function ensureCloudCredentialsForCommand(
         await new Promise((resolve) => setTimeout(resolve, ms))
     })
     const now = options.now ?? Date.now
-    const openExternalUrl = options.openExternalUrl ?? openBrowser
+    const openExternalUrl = options.openExternalUrl ?? openDefaultBrowser
     const store =
         options.store ??
         createMachineCredentialStore({
@@ -867,14 +908,17 @@ async function runLogin(
 ): Promise<number> {
     const baseUrl = resolveBaseUrl(args.baseUrl, deps.env)
     const siteUrl = resolveSiteUrl(args.siteUrl, baseUrl, deps.env)
+    const writeProgress = args.json ? deps.writeStderr : deps.writeStdout
+    const browserOpenMode = describeBrowserOpenMode(args, deps)
     const login = await runDeviceLoginFlow({
         siteUrl,
         fetchFn: deps.fetchFn,
-        writeStdout: deps.writeStdout,
+        writeStdout: writeProgress,
         openExternalUrl: deps.openExternalUrl,
         sleep: deps.sleep,
         now: deps.now,
-        openBrowser: args.openBrowser,
+        openBrowser: browserOpenMode.enabled,
+        openBrowserDisabledReason: browserOpenMode.disabledReason,
     })
 
     deps.store.writeCloudCredential({

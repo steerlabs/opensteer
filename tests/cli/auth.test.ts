@@ -100,7 +100,7 @@ describe('cli/auth runner', () => {
             isInteractive: () => false,
             sleep: async () => undefined,
             now: () => Date.now(),
-            openExternalUrl: () => undefined,
+            openExternalUrl: () => true,
         })
 
         expect(code).toBe(0)
@@ -109,6 +109,7 @@ describe('cli/auth runner', () => {
 
     it('runs login flow and persists machine credentials', async () => {
         const stdout: string[] = []
+        const stderr: string[] = []
         const store: CloudCredentialStore = createMemoryStore()
         const fetchMock = createFetchMock()
 
@@ -129,11 +130,13 @@ describe('cli/auth runner', () => {
                 writeStdout: (message) => {
                     stdout.push(message)
                 },
-                writeStderr: () => undefined,
+                writeStderr: (message) => {
+                    stderr.push(message)
+                },
                 isInteractive: () => true,
                 sleep: async () => undefined,
                 now: () => Date.now(),
-                openExternalUrl: () => undefined,
+                openExternalUrl: () => true,
             }
         )
 
@@ -145,11 +148,136 @@ describe('cli/auth runner', () => {
                 siteUrl: 'https://opensteer.com',
             })
         )
+        expect(stdout).toHaveLength(1)
+        expect(stderr.join('')).toContain(
+            'Automatic browser open is disabled (--no-browser).'
+        )
+        expect(stderr.join('')).toContain('Open this URL to authenticate Opensteer CLI:')
         expect(store.readCloudCredential()).toEqual(
             expect.objectContaining({
                 accessToken: 'ost_access_123',
                 refreshToken: 'ost_refresh_123',
             })
+        )
+    })
+
+    it('opens the default browser during login when auto-open succeeds', async () => {
+        const stdout: string[] = []
+        const fetchMock = createFetchMock()
+        const store: CloudCredentialStore = createMemoryStore()
+        const openedUrls: string[] = []
+
+        const code = await runOpensteerAuthCli(
+            [
+                'login',
+                '--base-url',
+                'https://api.opensteer.com',
+                '--site-url',
+                'https://opensteer.com',
+            ],
+            {
+                env: {},
+                store,
+                fetchFn: fetchMock,
+                writeStdout: (message) => {
+                    stdout.push(message)
+                },
+                writeStderr: () => undefined,
+                isInteractive: () => true,
+                sleep: async () => undefined,
+                now: () => Date.now(),
+                openExternalUrl: (url) => {
+                    openedUrls.push(url)
+                    return true
+                },
+            }
+        )
+
+        expect(code).toBe(0)
+        expect(openedUrls).toEqual([
+            'https://opensteer.com/cli/auth/device?user_code=ABCD-1234',
+        ])
+        expect(stdout.join('')).toContain(
+            'Opened your default browser. Finish authentication there; this terminal will continue automatically.'
+        )
+    })
+
+    it('falls back cleanly when the browser cannot be opened automatically', async () => {
+        const stdout: string[] = []
+        const fetchMock = createFetchMock()
+        const store: CloudCredentialStore = createMemoryStore()
+
+        const code = await runOpensteerAuthCli(
+            [
+                'login',
+                '--base-url',
+                'https://api.opensteer.com',
+                '--site-url',
+                'https://opensteer.com',
+            ],
+            {
+                env: {},
+                store,
+                fetchFn: fetchMock,
+                writeStdout: (message) => {
+                    stdout.push(message)
+                },
+                writeStderr: () => undefined,
+                isInteractive: () => true,
+                sleep: async () => undefined,
+                now: () => Date.now(),
+                openExternalUrl: () => false,
+            }
+        )
+
+        expect(code).toBe(0)
+        expect(stdout.join('')).toContain(
+            'Could not open your default browser automatically. Paste the URL above into a browser to continue.'
+        )
+        expect(stdout.join('')).not.toContain('Opened your default browser.')
+    })
+
+    it('does not try to auto-open a browser in CI', async () => {
+        const stdout: string[] = []
+        const fetchMock = createFetchMock()
+        const store: CloudCredentialStore = createMemoryStore()
+        let openCount = 0
+
+        const code = await runOpensteerAuthCli(
+            [
+                'login',
+                '--base-url',
+                'https://api.opensteer.com',
+                '--site-url',
+                'https://opensteer.com',
+            ],
+            {
+                env: {
+                    CI: '1',
+                },
+                store,
+                fetchFn: fetchMock,
+                writeStdout: (message) => {
+                    stdout.push(message)
+                },
+                writeStderr: () => undefined,
+                isInteractive: () => true,
+                sleep: async () => undefined,
+                now: () => Date.now(),
+                openExternalUrl: () => {
+                    openCount += 1
+                    return true
+                },
+            }
+        )
+
+        expect(code).toBe(0)
+        expect(openCount).toBe(0)
+        expect(stdout.join('')).toContain(
+            'Automatic browser open is disabled (CI).'
+        )
+        expect(stdout.join('')).toContain(
+            'Open this URL to authenticate Opensteer CLI:'
         )
     })
 })
@@ -191,7 +319,7 @@ describe('ensureCloudCredentialsForCommand', () => {
                 nowMs += 1
                 return nowMs
             },
-            openExternalUrl: () => undefined,
+            openExternalUrl: () => true,
             writeStdout: () => undefined,
             writeStderr: () => undefined,
         })
