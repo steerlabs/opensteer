@@ -27,10 +27,10 @@ opensteer auth status
 paste the printed URL into a browser manually. In `--json` mode, login prompts
 go to stderr and the final JSON result stays on stdout.
 
-Saved machine logins are scoped per resolved cloud host (`baseUrl` + `siteUrl`).
-`opensteer auth status` and `opensteer auth logout` inspect that resolved host,
-so pass `--base-url` or `--site-url` when switching between production,
-staging, or self-hosted control planes.
+Saved machine logins remain scoped per resolved cloud host (`baseUrl` +
+`siteUrl`). The CLI remembers the last selected cloud host, so `opensteer auth
+status`, `opensteer auth logout`, and other cloud commands reuse it by default
+unless `--base-url`, `--site-url`, or env vars select a different host.
 
 These values can be placed in `.env` files. Opensteer auto-loads
 `.env.<NODE_ENV>.local`, `.env.local` (skipped when `NODE_ENV=test`),

@@ -3,13 +3,16 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createKeychainStore } from './keychain-store.js'
+import { stripTrailingSlashes } from '../utils/strip-trailing-slashes.js'
 
 const METADATA_VERSION = 1
+const ACTIVE_TARGET_VERSION = 1
 const KEYCHAIN_SERVICE = 'com.opensteer.cli.cloud'
 const KEYCHAIN_ACCOUNT_PREFIX = 'machine:'
 const LEGACY_KEYCHAIN_ACCOUNT = 'machine'
 const LEGACY_METADATA_FILE_NAME = 'cli-login.json'
 const LEGACY_FALLBACK_SECRET_FILE_NAME = 'cli-login.secret.json'
+const ACTIVE_TARGET_FILE_NAME = 'cli-target.json'
 
 interface MachineCredentialMetadata {
     version: number
@@ -25,6 +28,13 @@ interface MachineCredentialMetadata {
 interface CloudCredentialSecretPayload {
     accessToken: string
     refreshToken: string
+}
+
+interface ActiveCloudTargetMetadata {
+    version: number
+    baseUrl: string
+    siteUrl: string
+    updatedAt: number
 }
 
 export interface StoredMachineCloudCredential {
@@ -138,6 +148,22 @@ export class MachineCredentialStore {
         }
 
         writeJsonFile(slot.metadataPath, metadata)
+    }
+
+    readActiveCloudTarget(): CloudCredentialStoreTarget | null {
+        return readActiveCloudTargetMetadata(resolveActiveTargetPath(this.authDir))
+    }
+
+    writeActiveCloudTarget(target: CloudCredentialStoreTarget): void {
+        const baseUrl = normalizeCredentialUrl(target.baseUrl, 'baseUrl')
+        const siteUrl = normalizeCredentialUrl(target.siteUrl, 'siteUrl')
+        ensureDirectory(this.authDir)
+        writeJsonFile(resolveActiveTargetPath(this.authDir), {
+            version: ACTIVE_TARGET_VERSION,
+            baseUrl,
+            siteUrl,
+            updatedAt: Date.now(),
+        } satisfies ActiveCloudTargetMetadata)
     }
 
     clearCloudCredential(target: CloudCredentialStoreTarget): void {
@@ -281,6 +307,10 @@ function resolveLegacyCredentialSlot(authDir: string): ResolvedCredentialSlot {
     }
 }
 
+function resolveActiveTargetPath(authDir: string): string {
+    return path.join(authDir, ACTIVE_TARGET_FILE_NAME)
+}
+
 function matchesCredentialTarget(
     value: Pick<StoredMachineCloudCredential, 'baseUrl' | 'siteUrl'>,
     target: CloudCredentialStoreTarget
@@ -294,7 +324,7 @@ function matchesCredentialTarget(
 }
 
 function normalizeCredentialUrl(value: string, field: 'baseUrl' | 'siteUrl'): string {
-    const normalized = value.trim().replace(/\/+$/, '')
+    const normalized = stripTrailingSlashes(value.trim())
     if (!normalized) {
         throw new Error(`Cannot persist machine credential without ${field}.`)
     }
@@ -368,6 +398,35 @@ function readMetadata(filePath: string): MachineCredentialMetadata | null {
             obtainedAt: parsed.obtainedAt,
             expiresAt: parsed.expiresAt,
             updatedAt: parsed.updatedAt,
+        }
+    } catch {
+        return null
+    }
+}
+
+function readActiveCloudTargetMetadata(
+    filePath: string
+): CloudCredentialStoreTarget | null {
+    if (!fs.existsSync(filePath)) {
+        return null
+    }
+
+    try {
+        const raw = fs.readFileSync(filePath, 'utf8')
+        const parsed = JSON.parse(raw) as Partial<ActiveCloudTargetMetadata>
+        if (parsed.version !== ACTIVE_TARGET_VERSION) {
+            return null
+        }
+        if (typeof parsed.baseUrl !== 'string' || !parsed.baseUrl.trim()) {
+            return null
+        }
+        if (typeof parsed.siteUrl !== 'string' || !parsed.siteUrl.trim()) {
+            return null
+        }
+
+        return {
+            baseUrl: parsed.baseUrl,
+            siteUrl: parsed.siteUrl,
         }
     } catch {
         return null
