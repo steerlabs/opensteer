@@ -966,8 +966,6 @@ async function runLogin(
     }
 
     writeHumanLine(deps, 'Opensteer CLI login successful.')
-    writeHumanLine(deps, `  API Base URL: ${baseUrl}`)
-    writeHumanLine(deps, `  Expires At: ${new Date(login.expiresAt).toISOString()}`)
     return 0
 }
 
