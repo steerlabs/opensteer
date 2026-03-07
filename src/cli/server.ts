@@ -11,11 +11,17 @@ import {
     resolveSessionCloudProfileBinding,
     type CloudProfileBinding,
 } from './cloud-profile-binding.js'
+import {
+    buildServerOpenConfig,
+    normalizeCliOpenCloudAuth,
+    type CliOpenCloudAuth,
+} from './open-cloud-auth.js'
 
 let instance: Opensteer | null = null
 let launchPromise: Promise<void> | null = null
 let selectorNamespace: string | null = null
 let cloudProfileBinding: CloudProfileBinding | null = null
+let cloudAuthOverride: CliOpenCloudAuth | null = null
 let cursorEnabledPreference: boolean | null = readCursorPreferenceFromEnv()
 let requestQueue: Promise<void> = Promise.resolve()
 let shuttingDown = false
@@ -203,6 +209,9 @@ async function handleRequest(
                 profileId: cloudProfileId,
                 reuseIfActive: cloudProfileReuseIfActive,
             })
+            const requestedCloudAuth = normalizeCliOpenCloudAuth(
+                args['cloud-auth']
+            )
             if (cloudProfileReuseIfActive !== undefined && !cloudProfileId) {
                 throw new Error(
                     '--cloud-profile-reuse-if-active requires --cloud-profile-id.'
@@ -250,6 +259,10 @@ async function handleRequest(
             }
             const activeNamespace = selectorNamespace ?? logicalSession
 
+            if (requestedCloudAuth) {
+                cloudAuthOverride = requestedCloudAuth
+            }
+
             if (instance && !launchPromise) {
                 try {
                     if (instance.page.isClosed()) {
@@ -269,18 +282,18 @@ async function handleRequest(
             }
 
             if (!instance) {
-                instance = new Opensteer({
-                    name: activeNamespace,
-                    cursor: {
-                        enabled: effectiveCursorEnabled,
-                    },
-                    browser: {
-                        headless: headless ?? false,
+                instance = new Opensteer(
+                    buildServerOpenConfig({
+                        scopeDir,
+                        name: activeNamespace,
+                        cursorEnabled: effectiveCursorEnabled,
+                        headless,
                         connectUrl,
                         channel,
                         profileDir,
-                    },
-                })
+                        cloudAuth: cloudAuthOverride,
+                    })
+                )
                 const nextCloudProfileBinding = resolveSessionCloudProfileBinding(
                     instance.getConfig(),
                     requestedCloudProfileBinding
