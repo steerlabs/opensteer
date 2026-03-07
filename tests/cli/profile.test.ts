@@ -78,12 +78,11 @@ describe('cli/profile runner', () => {
                 createOpensteer: () => ({
                     launch: async () => undefined,
                     close: async () => undefined,
-                    getCookies: async () => [],
                     context: {
                         addCookies: async () => undefined,
                     },
                 }),
-                loadLocalProfileCookies: async () => null,
+                loadLocalProfileCookies: async () => [],
                 writeStdout: () => undefined,
                 writeStderr: (message) => {
                     stderr.push(message)
@@ -133,7 +132,6 @@ describe('cli/profile runner', () => {
                 createOpensteer: () => ({
                     launch: async () => undefined,
                     close: async () => undefined,
-                    getCookies: async () => [],
                     context: {
                         addCookies: async () => undefined,
                     },
@@ -197,12 +195,11 @@ describe('cli/profile runner', () => {
                 createOpensteer: () => ({
                     launch: async () => undefined,
                     close: async () => undefined,
-                    getCookies: async () => [],
                     context: {
                         addCookies: async () => undefined,
                     },
                 }),
-                loadLocalProfileCookies: async () => null,
+                loadLocalProfileCookies: async () => [],
                 writeStdout: () => undefined,
                 writeStderr: () => undefined,
             }
@@ -249,7 +246,6 @@ describe('cli/profile runner', () => {
                             })
                         },
                         close: async () => undefined,
-                        getCookies: async () => [],
                         context: {
                             addCookies,
                         },
@@ -293,9 +289,26 @@ describe('cli/profile runner', () => {
         expect(addCookies).toHaveBeenCalled()
     })
 
-    it('falls back to launching the local profile when direct cookie loading is unavailable', async () => {
-        const localLaunch = vi.fn(async () => undefined)
-        const localClose = vi.fn(async () => undefined)
+    it('passes the sync headless preference to the local cookie loader', async () => {
+        const loadLocalProfileCookies = vi.fn(async () => [
+            {
+                name: 'sid',
+                value: 'v1',
+                domain: '.example.com',
+                path: '/',
+                expires: 999999,
+                httpOnly: true,
+                secure: true,
+                sameSite: 'Lax' as const,
+            },
+        ])
+        const createOpensteer = vi.fn(() => ({
+            launch: async () => undefined,
+            close: async () => undefined,
+            context: {
+                addCookies: async () => undefined,
+            },
+        }))
 
         const code = await runOpensteerProfileCli(
             [
@@ -304,6 +317,8 @@ describe('cli/profile runner', () => {
                 '/tmp/profile',
                 '--domain',
                 'example.com',
+                '--headless',
+                'false',
                 '--yes',
                 '--dry-run',
                 '--json',
@@ -315,33 +330,61 @@ describe('cli/profile runner', () => {
                 isInteractive: () => false,
                 confirm: async () => false,
                 createBrowserProfileClient: createMockBrowserProfileClient,
-                createOpensteer: () => ({
-                    launch: localLaunch,
-                    close: localClose,
-                    getCookies: async () => [
-                        {
-                            name: 'sid',
-                            value: 'v1',
-                            domain: '.example.com',
-                            path: '/',
-                            expires: 999999,
-                            httpOnly: true,
-                            secure: true,
-                            sameSite: 'Lax',
-                        },
-                    ],
-                    context: {
-                        addCookies: async () => undefined,
-                    },
-                }),
-                loadLocalProfileCookies: async () => null,
+                createOpensteer,
+                loadLocalProfileCookies,
                 writeStdout: () => undefined,
                 writeStderr: () => undefined,
             }
         )
 
         expect(code).toBe(0)
-        expect(localLaunch).toHaveBeenCalledOnce()
-        expect(localClose).toHaveBeenCalledOnce()
+        expect(loadLocalProfileCookies).toHaveBeenCalledWith('/tmp/profile', {
+            headless: false,
+            timeout: 120_000,
+        })
+        expect(createOpensteer).not.toHaveBeenCalled()
+    })
+
+    it('surfaces profile loader errors without attempting a local browser launch', async () => {
+        const stderr: string[] = []
+        const createOpensteer = vi.fn(() => ({
+            launch: async () => undefined,
+            close: async () => undefined,
+            context: {
+                addCookies: async () => undefined,
+            },
+        }))
+
+        const code = await runOpensteerProfileCli(
+            [
+                'sync',
+                '--from-profile-dir',
+                '/tmp/not-a-profile',
+                '--domain',
+                'example.com',
+                '--yes',
+                '--dry-run',
+            ],
+            {
+                env: {
+                    OPENSTEER_API_KEY: 'ork_test_123',
+                },
+                isInteractive: () => false,
+                confirm: async () => false,
+                createBrowserProfileClient: createMockBrowserProfileClient,
+                createOpensteer,
+                loadLocalProfileCookies: async () => {
+                    throw new Error('Unsupported profile source "/tmp/not-a-profile".')
+                },
+                writeStdout: () => undefined,
+                writeStderr: (message) => {
+                    stderr.push(message)
+                },
+            }
+        )
+
+        expect(code).toBe(1)
+        expect(createOpensteer).not.toHaveBeenCalled()
+        expect(stderr.join('')).toContain('Unsupported profile source')
     })
 })

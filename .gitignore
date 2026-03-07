@@ -20,8 +20,10 @@ coverage/
 
 # Local framework/runtime state
 .opensteer/
+$HOME/
 
 # Local agent/editor state
+.codex/
 .claude/
 .vscode/
 .idea/

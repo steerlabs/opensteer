@@ -78,7 +78,6 @@ interface BrowserProfileClientLike {
 interface OpensteerLike {
     launch(options?: Record<string, unknown>): Promise<void>
     close(): Promise<void>
-    getCookies(url?: string): Promise<Cookie[]>
     readonly context: {
         addCookies(cookies: CookieParam[]): Promise<void>
     }
@@ -91,8 +90,12 @@ interface ProfileCliDeps {
     ) => BrowserProfileClientLike
     readonly createOpensteer: (config: OpensteerConfig) => OpensteerLike
     readonly loadLocalProfileCookies: (
-        profileDir: string
-    ) => Promise<Cookie[] | null>
+        profileDir: string,
+        options?: {
+            headless?: boolean
+            timeout?: number
+        }
+    ) => Promise<Cookie[]>
     readonly isInteractive: () => boolean
     readonly confirm: (message: string) => Promise<boolean>
     readonly writeStdout: (message: string) => void
@@ -531,8 +534,8 @@ function createDefaultDeps(): ProfileCliDeps {
                 context.authScheme
             ),
         createOpensteer: (config) => new Opensteer(config),
-        loadLocalProfileCookies: (profileDir) =>
-            loadCookiesFromLocalProfileDir(profileDir),
+        loadLocalProfileCookies: (profileDir, options) =>
+            loadCookiesFromLocalProfileDir(profileDir, options),
         isInteractive: () => Boolean(process.stdin.isTTY && process.stdout.isTTY),
         confirm: async (message) => {
             const rl = createInterface({
@@ -810,29 +813,10 @@ async function runSync(args: ProfileSyncArgs, deps: ProfileCliDeps): Promise<num
     )
 
     let sourceCookies: Cookie[] = []
-    const directCookies = await deps.loadLocalProfileCookies(sourceProfileDir)
-    if (directCookies) {
-        sourceCookies = directCookies
-    } else {
-        const local = deps.createOpensteer({
-            cloud: false,
-            cursor: { enabled: false },
-            browser: {
-                headless: args.headless,
-                profileDir: sourceProfileDir,
-            },
-        })
-        try {
-            await local.launch({
-                headless: args.headless,
-                profileDir: sourceProfileDir,
-                timeout: 120_000,
-            })
-            sourceCookies = await local.getCookies()
-        } finally {
-            await local.close().catch(() => undefined)
-        }
-    }
+    sourceCookies = await deps.loadLocalProfileCookies(sourceProfileDir, {
+        headless: args.headless,
+        timeout: 120_000,
+    })
 
     const prepared = prepareCookiesForSync(sourceCookies, {
         domains: args.allDomains ? [] : args.domains,
