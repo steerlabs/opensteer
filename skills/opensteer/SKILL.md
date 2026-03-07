@@ -51,23 +51,22 @@ opensteer click 3 --description "the products link"
 opensteer input 5 "laptop" --pressEnter --description "the search input"
 ```
 
-For data, `schema` describes the output shape, not just selector bindings.
+For data, the agent must define the extraction object from the snapshot.
 
-- Use explicit counters/selectors when you already know the exact fields from the snapshot and want deterministic replay.
-- Use semantic placeholders like `"string"` with `--description` and `--prompt` when the extractor needs to associate related content or apply fallback rules.
-- For explicit counter-based arrays, include at least 2 items so Opensteer infers the repeating pattern. For semantic extraction, a single representative object shape is enough.
-- Use `extract` before custom DOM parsing whenever the task can be expressed as structured output plus instructions.
+- First run `opensteer snapshot extraction` and inspect the counters.
+- Decide the exact JSON object the task needs.
+- Treat the extraction snapshot as a planning aid only. It is trimmed/filtered, so do not read final values from the snapshot HTML itself.
+- Build the full `extract` schema yourself so every leaf field is explicitly bound with `{ element: N }`, `{ element: N, attribute: "..." }`, or `{ source: "current_url" }`.
+- Always call `extract` to read the actual field values from the live page/runtime DOM.
+- Use `--description` only to cache that extraction for replay. Do not rely on `--description` to tell Opensteer what data to collect.
+- For arrays, include at least 2 representative items so Opensteer infers the repeating pattern.
+- Do not replace `extract` with custom DOM parsing when the desired output can be expressed as a structured object.
 
 ```bash
 opensteer snapshot extraction
-# Explicit counter-based extraction
-opensteer extract '{"products":[{"name":{"element":11},"price":{"element":12}},{"name":{"element":25},"price":{"element":26}}]}' \
-  --description "product listing"
-
-# Semantic extraction with relationship/fallback rules
-opensteer extract '{"images":[{"imageUrl":"string","alt":"string","caption":"string","credit":"string"}]}' \
-  --description "article images with captions and credits" \
-  --prompt "For each image, return the image URL, alt text, caption, and credit. Prefer caption and credit from the same figure. If missing, look at sibling text, then parent/container text, then nearby alt/data-* attributes."
+# Decide the full output object first, then bind every leaf field explicitly
+opensteer extract '{"images":[{"imageUrl":{"element":11,"attribute":"src"},"alt":{"element":11,"attribute":"alt"},"caption":{"element":14},"credit":{"element":15}},{"imageUrl":{"element":24,"attribute":"src"},"alt":{"element":24,"attribute":"alt"},"caption":{"element":27},"credit":{"element":28}}]}' \
+  --description "article images with captions and credits"
 ```
 
 Repeat Step 3 → Step 4 for every distinct page type the scraper will visit.
@@ -82,7 +81,7 @@ opensteer close
 
 ## Phase 2 — SDK Scraper Script
 
-Use cached `description` strings (exact match to CLI `--description` values). `name` must match `--name` from Phase 1.
+Use cached `description` strings (exact match to CLI `--description` values) only after Phase 1 has already established the exact extraction schema from `snapshot extraction`. `name` must match `--name` from Phase 1.
 
 ```typescript
 import { Opensteer } from "opensteer";
@@ -129,9 +128,23 @@ await opensteer.extract({ description: "..." });                            // r
 await opensteer.extract({ schema: { title: { element: 3 } }, description: "..." }); // explicit first cache
 await opensteer.extract({
   description: "article images with captions and credits",
-  schema: { images: [{ imageUrl: "string", alt: "string", caption: "string", credit: "string" }] },
-  prompt: "Prefer the same figure first, then sibling text, then parent/container text, then nearby alt/data-* attributes.",
-}); // semantic extraction with relationship/fallback rules
+  schema: {
+    images: [
+      {
+        imageUrl: { element: 11, attribute: "src" },
+        alt: { element: 11, attribute: "alt" },
+        caption: { element: 14 },
+        credit: { element: 15 },
+      },
+      {
+        imageUrl: { element: 24, attribute: "src" },
+        alt: { element: 24, attribute: "alt" },
+        caption: { element: 27 },
+        credit: { element: 28 },
+      },
+    ],
+  },
+}); // first extraction run: agent defines the full object from the snapshot
 
 await opensteer.waitForText("literal text");
 await opensteer.page.waitForSelector("css-selector");                       // SPA content guard
