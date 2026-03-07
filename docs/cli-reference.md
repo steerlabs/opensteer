@@ -98,6 +98,14 @@ opensteer close --session agent-a
 - `wait-selector <selector>`
 - `extract <schema-json>`
 
+`schema-json` describes the output shape, not just selector bindings. Use semantic placeholders like `"string"` with `--description` and `--prompt`, or explicit bindings like `{ "element": 3 }` and `{ "attribute": "href" }` when you want deterministic field mappings.
+
+```bash
+opensteer extract '{"images":[{"imageUrl":"string","alt":"string","caption":"string","credit":"string"}]}' \
+  --description "article images with captions and credits" \
+  --prompt "For each image, return the image URL, alt text, caption, and credit. Prefer caption and credit from the same figure. If missing, look at sibling text, then parent/container text, then nearby alt/data-* attributes."
+```
+
 ### Skills
 
 - `skills install [options]`

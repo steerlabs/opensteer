@@ -136,19 +136,21 @@ opensteer wait-selector "h1"                        # Wait for selector to appea
 
 ```bash
 opensteer snapshot extraction
-# Read counters from output, then:
+# `schema-json` describes the output shape. It can use explicit bindings or semantic placeholders.
+
+# Explicit field bindings from observed counters/attributes:
 opensteer extract '{"title":{"element":3},"price":{"element":7}}'
 opensteer extract '{"url":{"element":5,"attribute":"href"}}'
 opensteer extract '{"pageUrl":{"source":"current_url"},"title":{"element":3}}'
 
-# Arrays: include multiple items to identify the pattern
+# Explicit array bindings: include multiple items to identify the repeating pattern
 opensteer extract '{"results":[{"title":{"element":11},"url":{"element":10,"attribute":"href"}},{"title":{"element":16},"url":{"element":15,"attribute":"href"}}]}'
+
+# Semantic extraction: use the output shape plus description/prompt
+opensteer extract '{"title":"string","price":"string"}' --description "product details"
+opensteer extract '{"images":[{"imageUrl":"string","alt":"string","caption":"string","credit":"string"}]}' \
+  --description "article images with captions and credits" \
+  --prompt "For each image, return the image URL, alt text, caption, and credit. Prefer caption and credit from the same figure. If missing, look at sibling text, then parent/container text, then nearby alt/data-* attributes."
 ```
 
-### AI-based (limited and requires LLM API keys)
-
-```bash
-opensteer extract '{"title":"","price":""}' --description "product details"
-```
-
-Always prefer counter-based. AI extraction requires `@ai-sdk/*` packages and does NOT work from workspace root scripts.
+Use explicit bindings when you need deterministic element-to-field mappings. Use semantic extraction when the fields require relationship inference or fallback rules. `--prompt` is the place to describe those rules.
