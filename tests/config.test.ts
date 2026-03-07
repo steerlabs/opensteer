@@ -317,6 +317,74 @@ describe('config', () => {
         })
     })
 
+    it('resolveConfig prefers input cloud.accessToken over file cloud.apiKey', () => {
+        const root = fs.mkdtempSync(
+            path.join(os.tmpdir(), 'opensteer-config-input-token-overrides-file-key-')
+        )
+        const configDir = path.join(root, '.opensteer')
+        fs.mkdirSync(configDir, { recursive: true })
+        fs.writeFileSync(
+            path.join(configDir, 'config.json'),
+            JSON.stringify(
+                {
+                    cloud: {
+                        apiKey: 'ork_file_123',
+                    },
+                },
+                null,
+                2
+            ),
+            'utf8'
+        )
+
+        const resolved = resolveConfig({
+            storage: { rootDir: root },
+            cloud: {
+                accessToken: 'ost_input_456',
+            },
+        })
+
+        expect(resolved.cloud).toEqual({
+            accessToken: 'ost_input_456',
+            authScheme: 'bearer',
+            announce: 'always',
+        })
+    })
+
+    it('resolveConfig prefers input cloud.apiKey over file cloud.accessToken', () => {
+        const root = fs.mkdtempSync(
+            path.join(os.tmpdir(), 'opensteer-config-input-key-overrides-file-token-')
+        )
+        const configDir = path.join(root, '.opensteer')
+        fs.mkdirSync(configDir, { recursive: true })
+        fs.writeFileSync(
+            path.join(configDir, 'config.json'),
+            JSON.stringify(
+                {
+                    cloud: {
+                        accessToken: 'ost_file_123',
+                    },
+                },
+                null,
+                2
+            ),
+            'utf8'
+        )
+
+        const resolved = resolveConfig({
+            storage: { rootDir: root },
+            cloud: {
+                apiKey: 'ork_input_456',
+            },
+        })
+
+        expect(resolved.cloud).toEqual({
+            apiKey: 'ork_input_456',
+            authScheme: 'api-key',
+            announce: 'always',
+        })
+    })
+
     it('resolveConfig keeps bearer compatibility when OPENSTEER_AUTH_SCHEME=bearer and both env credentials are set', () => {
         process.env.OPENSTEER_MODE = 'cloud'
         process.env.OPENSTEER_AUTH_SCHEME = 'bearer'
