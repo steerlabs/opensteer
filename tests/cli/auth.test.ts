@@ -10,7 +10,6 @@ import {
 
 interface StoredCredential {
     baseUrl: string
-    siteUrl: string
     scope: string[]
     accessToken: string
     refreshToken: string
@@ -20,48 +19,39 @@ interface StoredCredential {
 
 function createMemoryStore() {
     const saved = new Map<string, StoredCredential>()
-    let activeTarget: { baseUrl: string; siteUrl: string } | null = null
-    const toKey = (credential: Pick<StoredCredential, 'baseUrl' | 'siteUrl'>) =>
-        `${credential.baseUrl}\u0000${credential.siteUrl}`
+    let activeTarget: { baseUrl: string } | null = null
 
     return {
-        readCloudCredential: (target: {
-            baseUrl: string
-            siteUrl: string
-        }) => saved.get(toKey(target)) ?? null,
+        readCloudCredential: (target: { baseUrl: string }) =>
+            saved.get(target.baseUrl) ?? null,
         writeCloudCredential: (value: StoredCredential) => {
-            saved.set(toKey(value), value)
+            saved.set(value.baseUrl, value)
         },
-        clearCloudCredential: (target: {
-            baseUrl: string
-            siteUrl: string
-        }) => {
-            saved.delete(toKey(target))
+        clearCloudCredential: (target: { baseUrl: string }) => {
+            saved.delete(target.baseUrl)
         },
         readActiveCloudTarget: () => activeTarget,
-        writeActiveCloudTarget: (target: {
-            baseUrl: string
-            siteUrl: string
-        }) => {
+        writeActiveCloudTarget: (target: { baseUrl: string }) => {
             activeTarget = {
                 baseUrl: target.baseUrl,
-                siteUrl: target.siteUrl,
             }
         },
     }
 }
 
-function createFetchMock(): AuthFetchFn {
+function createFetchMock(options: { authSiteUrl?: string } = {}): AuthFetchFn {
+    const authSiteUrl = options.authSiteUrl ?? 'https://opensteer.com'
+
     return async (input: string): Promise<Response> => {
         const url = String(input)
-        if (url.endsWith('/api/cli-auth/device/start')) {
+        if (url === `${authSiteUrl}/api/cli-auth/device/start`) {
             return new Response(
                 JSON.stringify({
                     device_code: 'device_123',
                     user_code: 'ABCD-1234',
-                    verification_uri: 'https://opensteer.com/cli/auth/device',
+                    verification_uri: `${authSiteUrl}/cli/auth/device`,
                     verification_uri_complete:
-                        'https://opensteer.com/cli/auth/device?user_code=ABCD-1234',
+                        `${authSiteUrl}/cli/auth/device?user_code=ABCD-1234`,
                     expires_in: 600,
                     interval: 1,
                 }),
@@ -71,7 +61,7 @@ function createFetchMock(): AuthFetchFn {
                 }
             )
         }
-        if (url.endsWith('/api/cli-auth/device/token')) {
+        if (url === `${authSiteUrl}/api/cli-auth/device/token`) {
             return new Response(
                 JSON.stringify({
                     access_token: 'ost_access_123',
@@ -85,6 +75,27 @@ function createFetchMock(): AuthFetchFn {
                     headers: { 'content-type': 'application/json' },
                 }
             )
+        }
+        if (url === `${authSiteUrl}/api/cli-auth/token`) {
+            return new Response(
+                JSON.stringify({
+                    access_token: 'ost_refreshed_access',
+                    token_type: 'Bearer',
+                    expires_in: 900,
+                    refresh_token: 'ost_refreshed_refresh',
+                    scope: 'cloud:browser',
+                }),
+                {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }
+            )
+        }
+        if (url === `${authSiteUrl}/api/cli-auth/revoke`) {
+            return new Response(JSON.stringify({ revoked: true }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            })
         }
         throw new Error(`Unexpected URL: ${url}`)
     }
@@ -102,6 +113,14 @@ describe('cli/auth parser', () => {
             mode: 'error',
             error: 'Unsupported auth subcommand "unknown".',
         })
+    })
+
+    it('rejects the removed --site-url option', () => {
+        expect(parseOpensteerAuthArgs(['login', '--site-url', 'https://opensteer.com']))
+            .toEqual({
+                mode: 'error',
+                error: 'Unsupported option "--site-url".',
+            })
     })
 })
 
@@ -127,7 +146,6 @@ describe('cli/auth runner', () => {
         expect(JSON.parse(stdout.join(''))).toEqual({
             loggedIn: false,
             baseUrl: 'https://api.opensteer.com',
-            siteUrl: 'https://opensteer.com',
         })
     })
 
@@ -136,7 +154,6 @@ describe('cli/auth runner', () => {
         const store: CloudCredentialStore = createMemoryStore()
         store.writeActiveCloudTarget({
             baseUrl: 'not a url',
-            siteUrl: 'still not a url',
         })
 
         const code = await runOpensteerAuthCli(['status', '--json'], {
@@ -157,7 +174,6 @@ describe('cli/auth runner', () => {
         expect(JSON.parse(stdout.join(''))).toEqual({
             loggedIn: false,
             baseUrl: 'https://api.opensteer.com',
-            siteUrl: 'https://opensteer.com',
         })
     })
 
@@ -168,15 +184,7 @@ describe('cli/auth runner', () => {
         const fetchMock = createFetchMock()
 
         const code = await runOpensteerAuthCli(
-            [
-                'login',
-                '--base-url',
-                'https://api.opensteer.com',
-                '--site-url',
-                'https://opensteer.com',
-                '--no-browser',
-                '--json',
-            ],
+            ['login', '--base-url', 'https://api.opensteer.com', '--no-browser', '--json'],
             {
                 env: {},
                 store,
@@ -199,7 +207,6 @@ describe('cli/auth runner', () => {
             expect.objectContaining({
                 loggedIn: true,
                 baseUrl: 'https://api.opensteer.com',
-                siteUrl: 'https://opensteer.com',
             })
         )
         expect(stdout).toHaveLength(1)
@@ -210,7 +217,6 @@ describe('cli/auth runner', () => {
         expect(
             store.readCloudCredential({
                 baseUrl: 'https://api.opensteer.com',
-                siteUrl: 'https://opensteer.com',
             })
         ).toEqual(
             expect.objectContaining({
@@ -224,15 +230,7 @@ describe('cli/auth runner', () => {
         const store: CloudCredentialStore = createMemoryStore()
         const fetchMock = createFetchMock()
         const loginCode = await runOpensteerAuthCli(
-            [
-                'login',
-                '--base-url',
-                'http://localhost:8080',
-                '--site-url',
-                'http://localhost:3001',
-                '--no-browser',
-                '--json',
-            ],
+            ['login', '--base-url', 'http://localhost:8080', '--no-browser', '--json'],
             {
                 env: {},
                 store,
@@ -267,8 +265,79 @@ describe('cli/auth runner', () => {
             expect.objectContaining({
                 loggedIn: true,
                 baseUrl: 'http://localhost:8080',
-                siteUrl: 'http://localhost:3001',
             })
+        )
+    })
+
+    it('defaults auth login to the production host when no host is provided', async () => {
+        const stdout: string[] = []
+        const stderr: string[] = []
+        const store: CloudCredentialStore = createMemoryStore()
+        store.writeActiveCloudTarget({
+            baseUrl: 'http://localhost:8080',
+        })
+
+        const code = await runOpensteerAuthCli(['login', '--no-browser', '--json'], {
+            env: {},
+            store,
+            fetchFn: createFetchMock(),
+            writeStdout: (message) => {
+                stdout.push(message)
+            },
+            writeStderr: (message) => {
+                stderr.push(message)
+            },
+            isInteractive: () => true,
+            sleep: async () => undefined,
+            now: () => Date.now(),
+            openExternalUrl: () => true,
+        })
+
+        expect(code).toBe(0)
+        expect(stderr.join('')).toContain(
+            'https://opensteer.com/cli/auth/device?user_code=ABCD-1234'
+        )
+        expect(JSON.parse(stdout[stdout.length - 1] || '{}')).toEqual(
+            expect.objectContaining({
+                loggedIn: true,
+                baseUrl: 'https://api.opensteer.com',
+            })
+        )
+        expect(
+            store.readCloudCredential({
+                baseUrl: 'https://api.opensteer.com',
+            })
+        ).toEqual(
+            expect.objectContaining({
+                accessToken: 'ost_access_123',
+                refreshToken: 'ost_refresh_123',
+            })
+        )
+    })
+
+    it('supports an internal auth-site override for local testing', async () => {
+        const stderr: string[] = []
+        const code = await runOpensteerAuthCli(['login', '--no-browser', '--json'], {
+            env: {
+                OPENSTEER_INTERNAL_AUTH_SITE_URL: 'http://localhost:3001',
+            },
+            store: createMemoryStore(),
+            fetchFn: createFetchMock({
+                authSiteUrl: 'http://localhost:3001',
+            }),
+            writeStdout: () => undefined,
+            writeStderr: (message) => {
+                stderr.push(message)
+            },
+            isInteractive: () => true,
+            sleep: async () => undefined,
+            now: () => Date.now(),
+            openExternalUrl: () => true,
+        })
+
+        expect(code).toBe(0)
+        expect(stderr.join('')).toContain(
+            'http://localhost:3001/cli/auth/device?user_code=ABCD-1234'
         )
     })
 
@@ -279,13 +348,7 @@ describe('cli/auth runner', () => {
         const openedUrls: string[] = []
 
         const code = await runOpensteerAuthCli(
-            [
-                'login',
-                '--base-url',
-                'https://api.opensteer.com',
-                '--site-url',
-                'https://opensteer.com',
-            ],
+            ['login', '--base-url', 'https://api.opensteer.com'],
             {
                 env: {},
                 store,
@@ -319,13 +382,7 @@ describe('cli/auth runner', () => {
         const store: CloudCredentialStore = createMemoryStore()
 
         const code = await runOpensteerAuthCli(
-            [
-                'login',
-                '--base-url',
-                'https://api.opensteer.com',
-                '--site-url',
-                'https://opensteer.com',
-            ],
+            ['login', '--base-url', 'https://api.opensteer.com'],
             {
                 env: {},
                 store,
@@ -355,13 +412,7 @@ describe('cli/auth runner', () => {
         let openCount = 0
 
         const code = await runOpensteerAuthCli(
-            [
-                'login',
-                '--base-url',
-                'https://api.opensteer.com',
-                '--site-url',
-                'https://opensteer.com',
-            ],
+            ['login', '--base-url', 'https://api.opensteer.com'],
             {
                 env: {
                     CI: '1',
@@ -422,7 +473,6 @@ describe('ensureCloudCredentialsForCommand', () => {
             store,
             interactive: true,
             autoLoginIfNeeded: true,
-            siteUrl: 'https://opensteer.com',
             baseUrl: 'https://api.opensteer.com',
             fetchFn: fetchMock,
             sleep: async () => undefined,
@@ -440,18 +490,18 @@ describe('ensureCloudCredentialsForCommand', () => {
                 kind: 'access-token',
                 authScheme: 'bearer',
                 baseUrl: 'https://api.opensteer.com',
-                siteUrl: 'https://opensteer.com',
             })
         )
         expect(env.OPENSTEER_ACCESS_TOKEN).toBe('ost_access_123')
         expect(env.OPENSTEER_AUTH_SCHEME).toBe('bearer')
+        expect(env.OPENSTEER_BASE_URL).toBe('https://api.opensteer.com')
+        expect(env.OPENSTEER_CLOUD_SITE_URL).toBeUndefined()
     })
 
     it('does not reuse a saved credential from a different cloud host', async () => {
         const store: CloudCredentialStore = createMemoryStore()
         store.writeCloudCredential({
             baseUrl: 'https://api.opensteer.com',
-            siteUrl: 'https://opensteer.com',
             scope: ['cloud:browser'],
             accessToken: 'ost_saved_prod',
             refreshToken: 'rt_saved_prod',
@@ -467,7 +517,6 @@ describe('ensureCloudCredentialsForCommand', () => {
                 interactive: false,
                 autoLoginIfNeeded: false,
                 baseUrl: 'https://api.staging.example',
-                siteUrl: 'https://staging.example',
                 fetchFn: fetch as AuthFetchFn,
             })
         ).rejects.toThrow(
@@ -479,7 +528,6 @@ describe('ensureCloudCredentialsForCommand', () => {
         const store: CloudCredentialStore = createMemoryStore()
         store.writeCloudCredential({
             baseUrl: 'http://localhost:8080',
-            siteUrl: 'http://localhost:3001',
             scope: ['cloud:browser'],
             accessToken: 'ost_saved_local',
             refreshToken: 'rt_saved_local',
@@ -488,7 +536,6 @@ describe('ensureCloudCredentialsForCommand', () => {
         })
         store.writeActiveCloudTarget({
             baseUrl: 'http://localhost:8080',
-            siteUrl: 'http://localhost:3001',
         })
 
         const env: Record<string, string | undefined> = {}
@@ -508,11 +555,9 @@ describe('ensureCloudCredentialsForCommand', () => {
                 source: 'saved',
                 token: 'ost_saved_local',
                 baseUrl: 'http://localhost:8080',
-                siteUrl: 'http://localhost:3001',
             })
         )
         expect(env.OPENSTEER_BASE_URL).toBe('http://localhost:8080')
-        expect(env.OPENSTEER_CLOUD_SITE_URL).toBe('http://localhost:3001')
     })
 })
 
@@ -548,7 +593,6 @@ describe('ensureCloudCredentialsForOpenCommand', () => {
                 kind: 'access-token',
                 authScheme: 'bearer',
                 baseUrl: 'https://api.opensteer.com',
-                siteUrl: 'https://opensteer.com',
             })
         )
         expect(stderr.join('')).toContain(

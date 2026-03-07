@@ -1149,7 +1149,6 @@ Environment:
   OPENSTEER_API_KEY         Cloud API key credential
   OPENSTEER_ACCESS_TOKEN    Cloud bearer access token credential
   OPENSTEER_BASE_URL        Override cloud control-plane base URL
-  OPENSTEER_CLOUD_SITE_URL  Override cloud site URL for device login endpoints
   OPENSTEER_AUTH_SCHEME     Cloud auth scheme: api-key (default) or bearer
   OPENSTEER_REMOTE_ANNOUNCE Cloud session announcement policy: always (default), off, tty
 `)
