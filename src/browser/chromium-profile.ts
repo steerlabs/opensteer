@@ -2,6 +2,7 @@ import { promisify } from 'node:util'
 import { execFile } from 'node:child_process'
 import { createDecipheriv, createHash, pbkdf2Sync } from 'node:crypto'
 import {
+    cp,
     copyFile,
     mkdtemp,
     readdir,
@@ -11,7 +12,7 @@ import {
 import { existsSync, statSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
-import type { Cookie } from 'playwright'
+import { chromium, type Cookie } from 'playwright'
 import { createKeychainStore } from '../auth/keychain-store.js'
 import { expandHome } from './chrome.js'
 
@@ -27,6 +28,11 @@ const KEY_SALT = 'saltysalt'
 export interface ChromiumLaunchProfile {
     userDataDir: string
     profileDirectory?: string
+}
+
+export interface LoadLocalProfileCookiesOptions {
+    headless?: boolean
+    timeout?: number
 }
 
 interface ChromiumProfileLocation extends ChromiumLaunchProfile {
@@ -52,6 +58,7 @@ interface ChromiumBrand {
     macService: string
     macAccount: string
     linuxApplications: string[]
+    playwrightChannel?: 'chrome' | 'chrome-beta' | 'msedge'
 }
 
 const DEFAULT_CHROMIUM_BRAND: ChromiumBrand = {
@@ -75,6 +82,7 @@ const CHROMIUM_BRANDS: Array<{ match: string[]; brand: ChromiumBrand }> = [
             macService: 'Microsoft Edge Safe Storage',
             macAccount: 'Microsoft Edge',
             linuxApplications: ['microsoft-edge'],
+            playwrightChannel: 'msedge',
         },
     },
     {
@@ -83,6 +91,7 @@ const CHROMIUM_BRANDS: Array<{ match: string[]; brand: ChromiumBrand }> = [
             macService: 'Chrome Beta Safe Storage',
             macAccount: 'Chrome Beta',
             linuxApplications: ['chrome-beta'],
+            playwrightChannel: 'chrome-beta',
         },
     },
     {
@@ -91,6 +100,7 @@ const CHROMIUM_BRANDS: Array<{ match: string[]; brand: ChromiumBrand }> = [
             macService: 'Chrome Safe Storage',
             macAccount: 'Chrome',
             linuxApplications: ['chrome', 'google-chrome'],
+            playwrightChannel: 'chrome',
         },
     },
     {
@@ -131,12 +141,7 @@ function resolveCookieDbPath(profileDir: string): string | null {
 
 async function selectProfileDirFromUserDataDir(
     userDataDir: string
-): Promise<string | null> {
-    const defaultProfileDir = join(userDataDir, 'Default')
-    if (resolveCookieDbPath(defaultProfileDir)) {
-        return defaultProfileDir
-    }
-
+): Promise<string[]> {
     const entries = await readdir(userDataDir, {
         withFileTypes: true,
     }).catch(() => [])
@@ -146,15 +151,15 @@ async function selectProfileDirFromUserDataDir(
         .map((entry) => join(userDataDir, entry.name))
         .filter((entryPath) => resolveCookieDbPath(entryPath))
 
-    return candidates.length === 1 ? candidates[0] : null
+    return candidates
 }
 
 async function resolveChromiumProfileLocation(
     inputPath: string
-): Promise<ChromiumProfileLocation | null> {
+): Promise<ChromiumProfileLocation> {
     const expandedPath = expandHome(inputPath.trim())
     if (!expandedPath) {
-        return null
+        throw new Error('Profile path cannot be empty.')
     }
 
     if (fileExists(expandedPath) && basename(expandedPath) === 'Cookies') {
@@ -173,8 +178,16 @@ async function resolveChromiumProfileLocation(
         }
     }
 
+    if (fileExists(expandedPath)) {
+        throw new Error(
+            `Unsupported profile source "${inputPath}". Pass a Chromium profile directory, user-data dir, or Cookies database path.`
+        )
+    }
+
     if (!directoryExists(expandedPath)) {
-        return null
+        throw new Error(
+            `Could not find a Chromium profile at "${inputPath}".`
+        )
     }
 
     const directCookieDb = resolveCookieDbPath(expandedPath)
@@ -193,17 +206,30 @@ async function resolveChromiumProfileLocation(
 
     const localStatePath = join(expandedPath, 'Local State')
     if (!fileExists(localStatePath)) {
-        return null
+        throw new Error(
+            `Unsupported profile source "${inputPath}". Pass a Chromium profile directory, user-data dir, or Cookies database path.`
+        )
     }
 
-    const selectedProfileDir = await selectProfileDirFromUserDataDir(expandedPath)
-    if (!selectedProfileDir) {
-        return null
+    const profileDirs = await selectProfileDirFromUserDataDir(expandedPath)
+    if (profileDirs.length === 0) {
+        throw new Error(
+            `No Chromium profile with a Cookies database was found under "${inputPath}".`
+        )
+    }
+    if (profileDirs.length > 1) {
+        const candidates = profileDirs.map((entry) => basename(entry)).join(', ')
+        throw new Error(
+            `"${inputPath}" contains multiple Chromium profiles (${candidates}). Pass a specific profile directory such as "${profileDirs[0]}".`
+        )
     }
 
+    const selectedProfileDir = profileDirs[0]
     const cookieDbPath = resolveCookieDbPath(selectedProfileDir)
     if (!cookieDbPath) {
-        return null
+        throw new Error(
+            `No Chromium Cookies database was found for "${inputPath}".`
+        )
     }
 
     return {
@@ -287,30 +313,11 @@ async function createSqliteSnapshot(dbPath: string): Promise<{
 }
 
 async function querySqliteJson<T>(dbPath: string, query: string): Promise<T[]> {
-    let stdout: string
-    try {
-        const result = await execFileAsync(
-            'sqlite3',
-            ['-json', dbPath, query],
-            {
-                encoding: 'utf8',
-                maxBuffer: 64 * 1024 * 1024,
-            }
-        )
-        stdout = result.stdout
-    } catch (error) {
-        if (
-            error &&
-            typeof error === 'object' &&
-            'code' in error &&
-            error.code === 'ENOENT'
-        ) {
-            throw new Error(
-                'Local Chromium cookie sync requires the `sqlite3` command-line tool to be installed.'
-            )
-        }
-        throw error
-    }
+    const result = await execFileAsync('sqlite3', ['-json', dbPath, query], {
+        encoding: 'utf8',
+        maxBuffer: 64 * 1024 * 1024,
+    })
+    const stdout = result.stdout
 
     const trimmed = stdout.trim()
     if (!trimmed) {
@@ -553,13 +560,25 @@ function buildPlaywrightCookie(row: ChromiumCookieRow, value: string): Cookie | 
 }
 
 export async function loadCookiesFromLocalProfileDir(
-    inputPath: string
-): Promise<Cookie[] | null> {
+    inputPath: string,
+    options: LoadLocalProfileCookiesOptions = {}
+): Promise<Cookie[]> {
     const location = await resolveChromiumProfileLocation(inputPath)
-    if (!location) {
-        return null
+
+    try {
+        return await loadCookiesFromSqlite(location)
+    } catch (error) {
+        if (!isMissingSqliteBinary(error)) {
+            throw error
+        }
     }
 
+    return await loadCookiesFromBrowserSnapshot(location, options)
+}
+
+async function loadCookiesFromSqlite(
+    location: ChromiumProfileLocation
+): Promise<Cookie[]> {
     const snapshot = await createSqliteSnapshot(location.cookieDbPath)
     try {
         const rows = await querySqliteJson<ChromiumCookieRow>(
@@ -599,4 +618,52 @@ export async function loadCookiesFromLocalProfileDir(
     } finally {
         await snapshot.cleanup()
     }
+}
+
+async function loadCookiesFromBrowserSnapshot(
+    location: ChromiumProfileLocation,
+    options: LoadLocalProfileCookiesOptions
+): Promise<Cookie[]> {
+    const snapshotRootDir = await mkdtemp(join(tmpdir(), 'opensteer-profile-'))
+    const snapshotProfileDir = join(
+        snapshotRootDir,
+        basename(location.profileDir)
+    )
+
+    let context:
+        | Awaited<ReturnType<typeof chromium.launchPersistentContext>>
+        | null = null
+
+    try {
+        await cp(location.profileDir, snapshotProfileDir, {
+            recursive: true,
+        })
+        if (location.localStatePath) {
+            await copyFile(location.localStatePath, join(snapshotRootDir, 'Local State'))
+        }
+
+        const brand = detectChromiumBrand(location)
+        const args = [`--profile-directory=${basename(snapshotProfileDir)}`]
+
+        context = await chromium.launchPersistentContext(snapshotRootDir, {
+            channel: brand.playwrightChannel,
+            headless: options.headless ?? true,
+            timeout: options.timeout ?? 120_000,
+            args,
+        })
+
+        return await context.cookies()
+    } finally {
+        await context?.close().catch(() => undefined)
+        await rm(snapshotRootDir, { recursive: true, force: true })
+    }
+}
+
+function isMissingSqliteBinary(error: unknown): boolean {
+    return Boolean(
+        error &&
+            typeof error === 'object' &&
+            'code' in error &&
+            error.code === 'ENOENT'
+    )
 }
