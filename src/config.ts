@@ -120,9 +120,9 @@ function loadDotenvValues(
 
 function resolveEnv(
     rootDir: string,
-    options: { debug?: boolean } = {}
+    options: { debug?: boolean; baseEnv?: RuntimeEnv } = {}
 ): RuntimeEnv {
-    const baseEnv = process.env as RuntimeEnv
+    const baseEnv = options.baseEnv ?? (process.env as RuntimeEnv)
     const dotenvValues = loadDotenvValues(rootDir, baseEnv, options)
     return {
         ...dotenvValues,
@@ -467,9 +467,10 @@ export function resolveCloudSelection(
 }
 
 export function resolveConfigWithEnv(
-    input: OpensteerConfig = {}
+    input: OpensteerConfig = {},
+    options: { env?: RuntimeEnv } = {}
 ): ResolvedConfigWithEnv {
-    const processEnv = process.env as RuntimeEnv
+    const processEnv = options.env ?? (process.env as RuntimeEnv)
     const debugHint =
         typeof input.debug === 'boolean'
             ? input.debug
@@ -500,6 +501,7 @@ export function resolveConfigWithEnv(
         initialRootDir
     const env = resolveEnv(envRootDir, {
         debug: debugHint,
+        baseEnv: processEnv,
     })
 
     if (env.OPENSTEER_AI_MODEL) {

@@ -335,6 +335,10 @@ await opensteer.waitForText('Order confirmed', { timeout: 10000 })
 Extract structured data from the page using a schema with element references
 or LLM-driven extraction.
 
+Relative URL-like attributes extracted from accessible iframe documents are
+resolved against the iframe document base URL. Main-frame extraction keeps the
+existing raw relative attribute behavior.
+
 ```ts
 const data = await opensteer.extract({
     description: 'product-info',

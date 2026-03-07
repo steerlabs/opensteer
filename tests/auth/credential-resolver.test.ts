@@ -61,31 +61,12 @@ describe('credential-resolver', () => {
         })
     })
 
-    it('falls back to saved machine credentials when flag/env credentials are missing', () => {
-        const store = {
-            readCloudCredential: () => ({
-                baseUrl: 'https://api.opensteer.com',
-                siteUrl: 'https://opensteer.com',
-                scope: ['cloud:browser'],
-                accessToken: 'ost_saved_123',
-                refreshToken: 'rt_saved_123',
-                obtainedAt: 1,
-                expiresAt: 2,
-            }),
-        }
+    it('returns null when explicit flag/env credentials are missing', () => {
         const resolved = resolveCloudCredential({
             env: {},
-            store,
         })
 
-        expect(resolved).toEqual(
-            expect.objectContaining({
-                kind: 'access-token',
-                source: 'saved',
-                token: 'ost_saved_123',
-                authScheme: 'bearer',
-            })
-        )
+        expect(resolved).toBeNull()
     })
 
     it('applies access-token credentials to env with bearer auth scheme', () => {

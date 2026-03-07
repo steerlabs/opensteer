@@ -130,6 +130,10 @@ Supported options:
 URL into another browser manually. `opensteer auth login --json` keeps prompts
 on stderr and writes the final JSON payload to stdout.
 
+Saved machine logins are scoped per resolved cloud host (`baseUrl` + `siteUrl`).
+`opensteer auth status` and `opensteer auth logout` operate on that resolved
+host, so pass `--base-url` or `--site-url` when switching between environments.
+
 ## Global Flags
 
 - `--session <id>`
@@ -173,4 +177,4 @@ Credential precedence for cloud commands:
 
 1. explicit flags (`--api-key` / `--access-token`)
 2. environment (`OPENSTEER_API_KEY` / `OPENSTEER_ACCESS_TOKEN`)
-3. saved machine login (`opensteer auth login`)
+3. saved machine login for the resolved host (`opensteer auth login`)

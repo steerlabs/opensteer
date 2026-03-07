@@ -1,8 +1,14 @@
 import path from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import type { Cookie } from 'playwright'
+import { resolveConfigWithEnv } from '../config.js'
 import { Opensteer } from '../opensteer.js'
-import type { OpensteerConfig, OpensteerAuthScheme, CookieParam } from '../types.js'
+import type {
+    OpensteerConfig,
+    OpensteerAuthScheme,
+    OpensteerCloudBrowserProfileOptions,
+    CookieParam,
+} from '../types.js'
 import { expandHome } from '../browser/chrome.js'
 import {
     BrowserProfileClient,
@@ -735,6 +741,35 @@ async function resolveTargetProfileId(
     }
 }
 
+function resolveSyncBrowserProfilePreference(
+    profileId: string,
+    env: Record<string, string | undefined>
+): OpensteerCloudBrowserProfileOptions {
+    const resolved = resolveConfigWithEnv({
+        cloud: true,
+    }, {
+        env,
+    }).config
+    const cloudConfig =
+        resolved.cloud && typeof resolved.cloud === 'object'
+            ? resolved.cloud
+            : undefined
+    const configured = cloudConfig?.browserProfile
+
+    if (
+        configured &&
+        configured.profileId.trim() === profileId &&
+        configured.reuseIfActive !== undefined
+    ) {
+        return {
+            profileId,
+            reuseIfActive: configured.reuseIfActive,
+        }
+    }
+
+    return { profileId }
+}
+
 async function runSync(args: ProfileSyncArgs, deps: ProfileCliDeps): Promise<number> {
     const sourceProfileDir = expandHome(args.fromProfileDir.trim())
     const nonInteractive = !deps.isInteractive()
@@ -834,6 +869,10 @@ async function runSync(args: ProfileSyncArgs, deps: ProfileCliDeps): Promise<num
     const auth = await buildCloudAuthContext(args, deps)
     const client = deps.createBrowserProfileClient(auth)
     const target = await resolveTargetProfileId(args, deps, client)
+    const targetBrowserProfile = resolveSyncBrowserProfilePreference(
+        target.profileId,
+        deps.env
+    )
 
     writeProgressLine(
         deps,
@@ -848,9 +887,7 @@ async function runSync(args: ProfileSyncArgs, deps: ProfileCliDeps): Promise<num
                 : { accessToken: auth.token }),
             baseUrl: auth.baseUrl,
             authScheme: auth.authScheme,
-            browserProfile: {
-                profileId: target.profileId,
-            },
+            browserProfile: targetBrowserProfile,
         },
         cursor: { enabled: false },
     })
@@ -860,9 +897,6 @@ async function runSync(args: ProfileSyncArgs, deps: ProfileCliDeps): Promise<num
     try {
         await cloud.launch({
             headless: args.headless,
-            cloudBrowserProfile: {
-                profileId: target.profileId,
-            },
             timeout: 120_000,
         })
         const result = await importCookiesInBatches(cloud.context, prepared.cookies)
