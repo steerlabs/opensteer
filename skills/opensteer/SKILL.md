@@ -51,12 +51,23 @@ opensteer click 3 --description "the products link"
 opensteer input 5 "laptop" --pressEnter --description "the search input"
 ```
 
-For data: take an extraction snapshot, identify counter numbers for each field, then run `extract` with a schema and `--description`. For arrays, include at least 2 items so Opensteer infers the repeating pattern.
+For data, `schema` describes the output shape, not just selector bindings.
+
+- Use explicit counters/selectors when you already know the exact fields from the snapshot and want deterministic replay.
+- Use semantic placeholders like `"string"` with `--description` and `--prompt` when the extractor needs to associate related content or apply fallback rules.
+- For explicit counter-based arrays, include at least 2 items so Opensteer infers the repeating pattern. For semantic extraction, a single representative object shape is enough.
+- Use `extract` before custom DOM parsing whenever the task can be expressed as structured output plus instructions.
 
 ```bash
 opensteer snapshot extraction
+# Explicit counter-based extraction
 opensteer extract '{"products":[{"name":{"element":11},"price":{"element":12}},{"name":{"element":25},"price":{"element":26}}]}' \
   --description "product listing"
+
+# Semantic extraction with relationship/fallback rules
+opensteer extract '{"images":[{"imageUrl":"string","alt":"string","caption":"string","credit":"string"}]}' \
+  --description "article images with captions and credits" \
+  --prompt "For each image, return the image URL, alt text, caption, and credit. Prefer caption and credit from the same figure. If missing, look at sibling text, then parent/container text, then nearby alt/data-* attributes."
 ```
 
 Repeat Step 3 → Step 4 for every distinct page type the scraper will visit.
@@ -115,7 +126,12 @@ await opensteer.select({ description: "...", label: "Option A" });
 await opensteer.scroll({ direction: "down", amount: 500 });
 
 await opensteer.extract({ description: "..." });                            // replay from cache
-await opensteer.extract({ schema: { title: { element: 3 } }, description: "..." }); // first cache
+await opensteer.extract({ schema: { title: { element: 3 } }, description: "..." }); // explicit first cache
+await opensteer.extract({
+  description: "article images with captions and credits",
+  schema: { images: [{ imageUrl: "string", alt: "string", caption: "string", credit: "string" }] },
+  prompt: "Prefer the same figure first, then sibling text, then parent/container text, then nearby alt/data-* attributes.",
+}); // semantic extraction with relationship/fallback rules
 
 await opensteer.waitForText("literal text");
 await opensteer.page.waitForSelector("css-selector");                       // SPA content guard

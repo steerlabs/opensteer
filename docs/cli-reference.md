@@ -98,6 +98,14 @@ opensteer close --session agent-a
 - `wait-selector <selector>`
 - `extract <schema-json>`
 
+`schema-json` describes the output shape, not just selector bindings. Use semantic placeholders like `"string"` with `--description` and `--prompt`, or explicit bindings like `{ "element": 3 }` and `{ "attribute": "href" }` when you want deterministic field mappings.
+
+```bash
+opensteer extract '{"images":[{"imageUrl":"string","alt":"string","caption":"string","credit":"string"}]}' \
+  --description "article images with captions and credits" \
+  --prompt "For each image, return the image URL, alt text, caption, and credit. Prefer caption and credit from the same figure. If missing, look at sibling text, then parent/container text, then nearby alt/data-* attributes."
+```
+
 ### Skills
 
 - `skills install [options]`
@@ -117,6 +125,11 @@ Supported options:
 - `profile create --name <name> [--json]`
 - `profile sync --from-profile-dir <dir> [--to-profile-id <id> | --name <name>] [--domain <domain> ... | --all-domains] [--dry-run] [--yes] [--json]`
 
+Use `profile list` to inspect available cloud browser profiles, `profile create`
+to provision a new reusable profile, and `profile sync` to upload cookies and
+other browser state from a local profile directory into a cloud profile before
+launch.
+
 ### Auth
 
 - `auth login`
@@ -130,10 +143,10 @@ Supported options:
 URL into another browser manually. `opensteer auth login --json` keeps prompts
 on stderr and writes the final JSON payload to stdout.
 
-Saved machine logins remain scoped per cloud host (`baseUrl` + `siteUrl`).
-The CLI remembers the last selected cloud host, so `opensteer auth status`,
-`opensteer auth logout`, and other cloud commands reuse it by default unless
-`--base-url`, `--site-url`, or env vars select a different host.
+Saved machine logins remain scoped per resolved cloud host (`baseUrl` +
+`siteUrl`). The CLI remembers the last selected cloud host, so `opensteer auth
+status`, `opensteer auth logout`, and other cloud commands reuse it by default
+unless `--base-url`, `--site-url`, or env vars select a different host.
 
 ## Global Flags
 

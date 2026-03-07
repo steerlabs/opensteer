@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeExtractedValue } from '../../src/extract-value-normalization.js'
+import {
+    normalizeExtractedValue,
+    resolveExtractedValueInContext,
+} from '../../src/extract-value-normalization.js'
 
 describe('extract-value-normalization', () => {
     it('selects the largest width candidate for srcset', () => {
@@ -67,5 +70,134 @@ describe('extract-value-normalization', () => {
         )
 
         expect(value).toBe('Alpha Beta Gamma')
+    })
+
+    it('resolves iframe-relative href values against the iframe document base url', () => {
+        const value = resolveExtractedValueInContext('products/item', {
+            attribute: 'href',
+            baseURI: 'https://fixtures.opensteer.dev/frame/',
+            insideIframe: true,
+        })
+
+        expect(value).toBe('https://fixtures.opensteer.dev/frame/products/item')
+    })
+
+    it('resolves normalized iframe srcset candidates against the iframe document base url', () => {
+        const normalized = normalizeExtractedValue(
+            'images/320.jpg 320w, images/1280.jpg 1280w',
+            'srcset'
+        )
+
+        const value = resolveExtractedValueInContext(normalized, {
+            attribute: 'srcset',
+            baseURI: 'https://fixtures.opensteer.dev/frame/',
+            insideIframe: true,
+        })
+
+        expect(value).toBe('https://fixtures.opensteer.dev/frame/images/1280.jpg')
+    })
+
+    it('resolves the first iframe ping token against the iframe document base url', () => {
+        const normalized = normalizeExtractedValue(
+            '../track/ping https://backup.example/ping',
+            'ping'
+        )
+
+        const value = resolveExtractedValueInContext(normalized, {
+            attribute: 'ping',
+            baseURI: 'https://fixtures.opensteer.dev/frame/',
+            insideIframe: true,
+        })
+
+        expect(value).toBe('https://fixtures.opensteer.dev/track/ping')
+    })
+
+    it('leaves main-frame values unchanged', () => {
+        const value = resolveExtractedValueInContext('/products/item', {
+            attribute: 'href',
+            baseURI: 'https://fixtures.opensteer.dev/frame/',
+            insideIframe: false,
+        })
+
+        expect(value).toBe('/products/item')
+    })
+
+    it('leaves non-url attributes unchanged inside iframes', () => {
+        const value = resolveExtractedValueInContext('Hero image', {
+            attribute: 'alt',
+            baseURI: 'https://fixtures.opensteer.dev/frame/',
+            insideIframe: true,
+        })
+
+        expect(value).toBe('Hero image')
+    })
+
+    it('falls back to the normalized value when resolution fails', () => {
+        const value = resolveExtractedValueInContext('products/item', {
+            attribute: 'href',
+            baseURI: 'not a valid base url',
+            insideIframe: true,
+        })
+
+        expect(value).toBe('products/item')
+    })
+
+    it('preserves absolute iframe urls unchanged', () => {
+        const value = resolveExtractedValueInContext(
+            'https://example.com/products/item',
+            {
+                attribute: 'href',
+                baseURI: 'https://fixtures.opensteer.dev/frame/',
+                insideIframe: true,
+            }
+        )
+
+        expect(value).toBe('https://example.com/products/item')
+    })
+
+    it('resolves protocol-relative iframe urls with the iframe document scheme', () => {
+        const value = resolveExtractedValueInContext(
+            '//cdn.example.com/assets/item.png',
+            {
+                attribute: 'src',
+                baseURI: 'https://fixtures.opensteer.dev/frame/',
+                insideIframe: true,
+            }
+        )
+
+        expect(value).toBe('https://cdn.example.com/assets/item.png')
+    })
+
+    it('resolves query-only iframe urls against the iframe document base url', () => {
+        const value = resolveExtractedValueInContext('?page=2', {
+            attribute: 'action',
+            baseURI: 'https://fixtures.opensteer.dev/frame/',
+            insideIframe: true,
+        })
+
+        expect(value).toBe('https://fixtures.opensteer.dev/frame/?page=2')
+    })
+
+    it('resolves fragment-only iframe urls against the iframe document base url', () => {
+        const value = resolveExtractedValueInContext('#details', {
+            attribute: 'formaction',
+            baseURI: 'https://fixtures.opensteer.dev/frame/',
+            insideIframe: true,
+        })
+
+        expect(value).toBe('https://fixtures.opensteer.dev/frame/#details')
+    })
+
+    it('preserves data urls for iframe media attributes', () => {
+        const value = resolveExtractedValueInContext(
+            'data:image/svg+xml,%3Csvg%3E%3C/svg%3E',
+            {
+                attribute: 'src',
+                baseURI: 'https://fixtures.opensteer.dev/frame/',
+                insideIframe: true,
+            }
+        )
+
+        expect(value).toBe('data:image/svg+xml,%3Csvg%3E%3C/svg%3E')
     })
 })

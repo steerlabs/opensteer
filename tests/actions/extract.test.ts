@@ -1,7 +1,13 @@
+import * as cheerio from 'cheerio'
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { BrowserContext, Page } from 'playwright'
-import { buildElementPathFromSelector } from '../../src/element-path/build.js'
+import {
+    buildElementPathFromSelector,
+    cloneElementPath,
+} from '../../src/element-path/build.js'
 import { extractWithPaths } from '../../src/actions/extract.js'
+import { prepareSnapshot } from '../../src/html/pipeline.js'
+import type { ElementPath } from '../../src/element-path/types.js'
 import { closeTestBrowser, createTestPage } from '../helpers/browser.js'
 import { setFixture } from '../helpers/fixture.js'
 
@@ -152,4 +158,114 @@ describe('extractWithPaths', () => {
             metaContent: 'Product details',
         })
     })
+
+    it('resolves url-like attributes inside iframes against the iframe base url', async () => {
+        await setFixture(
+            page,
+            `
+        <iframe
+          id="frame-host"
+          srcdoc="<!doctype html><html><head><base href='https://fixtures.opensteer.dev/frame/' /></head><body>
+            <a id='frame-link' href='products/widget'>Widget</a>
+            <img id='frame-image' src='images/widget-fallback.jpg' srcset='images/widget-320.jpg 320w, images/widget-1280.jpg 1280w' />
+            <a id='frame-ping' ping='../track/ping https://backup.example/ping'>Track</a>
+          </body></html>"
+        ></iframe>
+      `
+        )
+
+        await waitForIframeSelector(page, '#frame-link')
+
+        const linkPath = await buildPathFromSnapshotSelector(
+            page,
+            '#frame-host + os-iframe-root #frame-link'
+        )
+        const imagePath = await buildPathFromSnapshotSelector(
+            page,
+            '#frame-host + os-iframe-root #frame-image'
+        )
+        const pingPath = await buildPathFromSnapshotSelector(
+            page,
+            '#frame-host + os-iframe-root #frame-ping'
+        )
+
+        const data = await extractWithPaths(page, [
+            { key: 'href', path: linkPath, attribute: 'href' },
+            { key: 'srcset', path: imagePath, attribute: 'srcset' },
+            { key: 'ping', path: pingPath, attribute: 'ping' },
+        ])
+
+        expect(data).toEqual({
+            href: 'https://fixtures.opensteer.dev/frame/products/widget',
+            srcset: 'https://fixtures.opensteer.dev/frame/images/widget-1280.jpg',
+            ping: 'https://fixtures.opensteer.dev/track/ping',
+        })
+    })
+
+    it('keeps relative urls unchanged outside iframe contexts', async () => {
+        await setFixture(
+            page,
+            `
+        <div id="shadow-host"></div>
+        <script>
+          const host = document.querySelector('#shadow-host')
+          const root = host?.attachShadow({ mode: 'open' })
+          if (root) {
+            root.innerHTML = "<a id='shadow-link' href='/shadow/widget'>Shadow widget</a>"
+          }
+        </script>
+      `
+        )
+
+        const shadowLinkPath = await buildPathFromSnapshotSelector(
+            page,
+            '#shadow-host os-shadow-root #shadow-link'
+        )
+
+        const data = await extractWithPaths(page, [
+            { key: 'shadowHref', path: shadowLinkPath, attribute: 'href' },
+        ])
+
+        expect(data).toEqual({
+            shadowHref: '/shadow/widget',
+        })
+    })
 })
+
+async function buildPathFromSnapshotSelector(
+    page: Page,
+    selector: string
+): Promise<ElementPath> {
+    const snapshot = await prepareSnapshot(page, {
+        mode: 'full',
+        withCounters: true,
+        markInteractive: true,
+    })
+
+    const $$ = cheerio.load(snapshot.cleanedHtml)
+    const value = $$(selector).first().attr('c')
+    const counter = Number.parseInt(value || '', 10)
+    if (!Number.isFinite(counter)) {
+        throw new Error(`No counter found for selector: ${selector}`)
+    }
+
+    const path = snapshot.counterIndex?.get(counter)
+    if (!path) {
+        throw new Error(`No ElementPath found for selector: ${selector}`)
+    }
+
+    return cloneElementPath(path)
+}
+
+async function waitForIframeSelector(
+    page: Page,
+    selector: string
+): Promise<void> {
+    await page.waitForFunction((targetSelector) => {
+        const frame = document.querySelector('#frame-host')
+        if (!(frame instanceof HTMLIFrameElement)) return false
+        const doc = frame.contentDocument
+        if (!doc) return false
+        return !!doc.querySelector(targetSelector)
+    }, selector)
+}

@@ -1,4 +1,14 @@
 const URL_LIST_ATTRIBUTES = new Set(['srcset', 'imagesrcset', 'ping'])
+const IFRAME_URL_ATTRIBUTES = new Set([
+    'href',
+    'src',
+    'srcset',
+    'imagesrcset',
+    'action',
+    'formaction',
+    'poster',
+    'ping',
+])
 
 interface SrcsetCandidate {
     url: string
@@ -29,6 +39,33 @@ export function normalizeExtractedValue(
 
     const text = rawText.replace(/\s+/g, ' ').trim()
     return text || null
+}
+
+export function resolveExtractedValueInContext(
+    normalizedValue: string | null,
+    options: {
+        attribute?: string
+        baseURI?: string | null
+        insideIframe?: boolean
+    }
+): string | null {
+    if (normalizedValue == null) return null
+
+    const normalizedAttribute = String(options.attribute || '')
+        .trim()
+        .toLowerCase()
+
+    if (!options.insideIframe) return normalizedValue
+    if (!IFRAME_URL_ATTRIBUTES.has(normalizedAttribute)) return normalizedValue
+
+    const baseURI = String(options.baseURI || '').trim()
+    if (!baseURI) return normalizedValue
+
+    try {
+        return new URL(normalizedValue, baseURI).href
+    } catch {
+        return normalizedValue
+    }
 }
 
 function pickSingleListAttributeValue(attribute: string, raw: string): string {

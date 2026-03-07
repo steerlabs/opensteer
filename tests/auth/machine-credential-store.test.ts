@@ -110,7 +110,6 @@ describe('machine-credential-store', () => {
             siteUrl: 'http://localhost:3001',
         })
     })
-
     it('stores and clears credentials independently for each cloud host', () => {
         const store = createTestStore()
         const prodCredential = {
