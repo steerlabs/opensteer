@@ -1,11 +1,17 @@
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createKeychainStore } from './keychain-store.js'
 
 const METADATA_VERSION = 1
+const ACTIVE_TARGET_VERSION = 1
 const KEYCHAIN_SERVICE = 'com.opensteer.cli.cloud'
-const KEYCHAIN_ACCOUNT = 'machine'
+const KEYCHAIN_ACCOUNT_PREFIX = 'machine:'
+const LEGACY_KEYCHAIN_ACCOUNT = 'machine'
+const LEGACY_METADATA_FILE_NAME = 'cli-login.json'
+const LEGACY_FALLBACK_SECRET_FILE_NAME = 'cli-login.secret.json'
+const ACTIVE_TARGET_FILE_NAME = 'cli-target.json'
 
 interface MachineCredentialMetadata {
     version: number
@@ -21,6 +27,13 @@ interface MachineCredentialMetadata {
 interface CloudCredentialSecretPayload {
     accessToken: string
     refreshToken: string
+}
+
+interface ActiveCloudTargetMetadata {
+    version: number
+    baseUrl: string
+    siteUrl: string
+    updatedAt: number
 }
 
 export interface StoredMachineCloudCredential {
@@ -43,6 +56,11 @@ export interface WriteMachineCloudCredentialArgs {
     expiresAt: number
 }
 
+export interface CloudCredentialStoreTarget {
+    baseUrl: string
+    siteUrl: string
+}
+
 export interface MachineCredentialStoreWarning {
     code: 'fallback_file_store'
     path: string
@@ -56,8 +74,7 @@ export interface MachineCredentialStoreOptions {
 }
 
 export class MachineCredentialStore {
-    private readonly metadataPath: string
-    private readonly fallbackSecretPath: string
+    private readonly authDir: string
     private readonly warn: (warning: MachineCredentialStoreWarning) => void
     private readonly keychain = createKeychainStore()
     private warnedFallback = false
@@ -66,19 +83,111 @@ export class MachineCredentialStore {
         const appName = options.appName || 'opensteer'
         const env = options.env ?? process.env
         const configDir = resolveConfigDir(appName, env)
-        const authDir = path.join(configDir, 'auth')
-        this.metadataPath = path.join(authDir, 'cli-login.json')
-        this.fallbackSecretPath = path.join(authDir, 'cli-login.secret.json')
+        this.authDir = path.join(configDir, 'auth')
         this.warn = options.warn ?? (() => undefined)
     }
 
-    readCloudCredential(): StoredMachineCloudCredential | null {
-        const metadata = readMetadata(this.metadataPath)
+    readCloudCredential(
+        target: CloudCredentialStoreTarget
+    ): StoredMachineCloudCredential | null {
+        const slot = resolveCredentialSlot(this.authDir, target)
+        return (
+            this.readCredentialSlot(slot, target) ??
+            this.readAndMigrateLegacyCredential(target)
+        )
+    }
+
+    writeCloudCredential(args: WriteMachineCloudCredentialArgs): void {
+        const accessToken = args.accessToken.trim()
+        const refreshToken = args.refreshToken.trim()
+        if (!accessToken || !refreshToken) {
+            throw new Error('Cannot persist empty machine credential secrets.')
+        }
+
+        const baseUrl = normalizeCredentialUrl(args.baseUrl, 'baseUrl')
+        const siteUrl = normalizeCredentialUrl(args.siteUrl, 'siteUrl')
+        const slot = resolveCredentialSlot(this.authDir, {
+            baseUrl,
+            siteUrl,
+        })
+        ensureDirectory(this.authDir)
+
+        const secretPayload: CloudCredentialSecretPayload = {
+            accessToken,
+            refreshToken,
+        }
+
+        let secretBackend: MachineCredentialMetadata['secretBackend'] = 'file'
+        if (this.keychain) {
+            try {
+                this.keychain.set(
+                    KEYCHAIN_SERVICE,
+                    slot.keychainAccount,
+                    JSON.stringify(secretPayload)
+                )
+                secretBackend = 'keychain'
+                removeFileIfExists(slot.fallbackSecretPath)
+            } catch {
+                this.writeFallbackSecret(slot, secretPayload)
+                secretBackend = 'file'
+            }
+        } else {
+            this.writeFallbackSecret(slot, secretPayload)
+        }
+
+        const metadata: MachineCredentialMetadata = {
+            version: METADATA_VERSION,
+            secretBackend,
+            baseUrl,
+            siteUrl,
+            scope: args.scope,
+            obtainedAt: args.obtainedAt,
+            expiresAt: args.expiresAt,
+            updatedAt: Date.now(),
+        }
+
+        writeJsonFile(slot.metadataPath, metadata)
+    }
+
+    readActiveCloudTarget(): CloudCredentialStoreTarget | null {
+        return readActiveCloudTargetMetadata(resolveActiveTargetPath(this.authDir))
+    }
+
+    writeActiveCloudTarget(target: CloudCredentialStoreTarget): void {
+        const baseUrl = normalizeCredentialUrl(target.baseUrl, 'baseUrl')
+        const siteUrl = normalizeCredentialUrl(target.siteUrl, 'siteUrl')
+        ensureDirectory(this.authDir)
+        writeJsonFile(resolveActiveTargetPath(this.authDir), {
+            version: ACTIVE_TARGET_VERSION,
+            baseUrl,
+            siteUrl,
+            updatedAt: Date.now(),
+        } satisfies ActiveCloudTargetMetadata)
+    }
+
+    clearCloudCredential(target: CloudCredentialStoreTarget): void {
+        this.clearCredentialSlot(resolveCredentialSlot(this.authDir, target))
+
+        const legacySlot = resolveLegacyCredentialSlot(this.authDir)
+        const legacyMetadata = readMetadata(legacySlot.metadataPath)
+        if (legacyMetadata && matchesCredentialTarget(legacyMetadata, target)) {
+            this.clearCredentialSlot(legacySlot)
+        }
+    }
+
+    private readCredentialSlot(
+        slot: ResolvedCredentialSlot,
+        target?: CloudCredentialStoreTarget
+    ): StoredMachineCloudCredential | null {
+        const metadata = readMetadata(slot.metadataPath)
         if (!metadata) {
             return null
         }
+        if (target && !matchesCredentialTarget(metadata, target)) {
+            return null
+        }
 
-        const secret = this.readSecret(metadata.secretBackend)
+        const secret = this.readSecret(slot, metadata.secretBackend)
         if (!secret) {
             return null
         }
@@ -94,67 +203,30 @@ export class MachineCredentialStore {
         }
     }
 
-    writeCloudCredential(args: WriteMachineCloudCredentialArgs): void {
-        const accessToken = args.accessToken.trim()
-        const refreshToken = args.refreshToken.trim()
-        if (!accessToken || !refreshToken) {
-            throw new Error('Cannot persist empty machine credential secrets.')
+    private readAndMigrateLegacyCredential(
+        target: CloudCredentialStoreTarget
+    ): StoredMachineCloudCredential | null {
+        const legacySlot = resolveLegacyCredentialSlot(this.authDir)
+        const legacyCredential = this.readCredentialSlot(legacySlot, target)
+        if (!legacyCredential) {
+            return null
         }
 
-        ensureDirectory(path.dirname(this.metadataPath))
-
-        const secretPayload: CloudCredentialSecretPayload = {
-            accessToken,
-            refreshToken,
-        }
-
-        let secretBackend: MachineCredentialMetadata['secretBackend'] = 'file'
-        if (this.keychain) {
-            try {
-                this.keychain.set(
-                    KEYCHAIN_SERVICE,
-                    KEYCHAIN_ACCOUNT,
-                    JSON.stringify(secretPayload)
-                )
-                secretBackend = 'keychain'
-                removeFileIfExists(this.fallbackSecretPath)
-            } catch {
-                this.writeFallbackSecret(secretPayload)
-                secretBackend = 'file'
-            }
-        } else {
-            this.writeFallbackSecret(secretPayload)
-        }
-
-        const metadata: MachineCredentialMetadata = {
-            version: METADATA_VERSION,
-            secretBackend,
-            baseUrl: args.baseUrl.trim(),
-            siteUrl: args.siteUrl.trim(),
-            scope: args.scope,
-            obtainedAt: args.obtainedAt,
-            expiresAt: args.expiresAt,
-            updatedAt: Date.now(),
-        }
-
-        writeJsonFile(this.metadataPath, metadata)
-    }
-
-    clearCloudCredential(): void {
-        removeFileIfExists(this.metadataPath)
-        removeFileIfExists(this.fallbackSecretPath)
-
-        if (this.keychain) {
-            this.keychain.delete(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
-        }
+        this.writeCloudCredential(legacyCredential)
+        this.clearCredentialSlot(legacySlot)
+        return legacyCredential
     }
 
     private readSecret(
+        slot: ResolvedCredentialSlot,
         backend: MachineCredentialMetadata['secretBackend']
     ): CloudCredentialSecretPayload | null {
         if (backend === 'keychain' && this.keychain) {
             try {
-                const secret = this.keychain.get(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
+                const secret = this.keychain.get(
+                    KEYCHAIN_SERVICE,
+                    slot.keychainAccount
+                )
                 if (!secret) return null
                 return parseSecretPayload(secret)
             } catch {
@@ -162,21 +234,33 @@ export class MachineCredentialStore {
             }
         }
 
-        return readSecretFile(this.fallbackSecretPath)
+        return readSecretFile(slot.fallbackSecretPath)
     }
 
-    private writeFallbackSecret(secretPayload: CloudCredentialSecretPayload): void {
-        writeJsonFile(this.fallbackSecretPath, secretPayload, {
+    private writeFallbackSecret(
+        slot: ResolvedCredentialSlot,
+        secretPayload: CloudCredentialSecretPayload
+    ): void {
+        writeJsonFile(slot.fallbackSecretPath, secretPayload, {
             mode: 0o600,
         })
         if (!this.warnedFallback) {
             this.warn({
                 code: 'fallback_file_store',
-                path: this.fallbackSecretPath,
+                path: slot.fallbackSecretPath,
                 message:
                     'Secure keychain is unavailable. Falling back to file-based credential storage with mode 0600.',
             })
             this.warnedFallback = true
+        }
+    }
+
+    private clearCredentialSlot(slot: ResolvedCredentialSlot): void {
+        removeFileIfExists(slot.metadataPath)
+        removeFileIfExists(slot.fallbackSecretPath)
+
+        if (this.keychain) {
+            this.keychain.delete(KEYCHAIN_SERVICE, slot.keychainAccount)
         }
     }
 }
@@ -185,6 +269,65 @@ export function createMachineCredentialStore(
     options: MachineCredentialStoreOptions = {}
 ): MachineCredentialStore {
     return new MachineCredentialStore(options)
+}
+
+interface ResolvedCredentialSlot {
+    keychainAccount: string
+    metadataPath: string
+    fallbackSecretPath: string
+}
+
+function resolveCredentialSlot(
+    authDir: string,
+    target: CloudCredentialStoreTarget
+): ResolvedCredentialSlot {
+    const normalizedBaseUrl = normalizeCredentialUrl(target.baseUrl, 'baseUrl')
+    const normalizedSiteUrl = normalizeCredentialUrl(target.siteUrl, 'siteUrl')
+    const storageKey = createHash('sha256')
+        .update(`${normalizedBaseUrl}\u0000${normalizedSiteUrl}`)
+        .digest('hex')
+        .slice(0, 24)
+
+    return {
+        keychainAccount: `${KEYCHAIN_ACCOUNT_PREFIX}${storageKey}`,
+        metadataPath: path.join(authDir, `cli-login.${storageKey}.json`),
+        fallbackSecretPath: path.join(
+            authDir,
+            `cli-login.${storageKey}.secret.json`
+        ),
+    }
+}
+
+function resolveLegacyCredentialSlot(authDir: string): ResolvedCredentialSlot {
+    return {
+        keychainAccount: LEGACY_KEYCHAIN_ACCOUNT,
+        metadataPath: path.join(authDir, LEGACY_METADATA_FILE_NAME),
+        fallbackSecretPath: path.join(authDir, LEGACY_FALLBACK_SECRET_FILE_NAME),
+    }
+}
+
+function resolveActiveTargetPath(authDir: string): string {
+    return path.join(authDir, ACTIVE_TARGET_FILE_NAME)
+}
+
+function matchesCredentialTarget(
+    value: Pick<StoredMachineCloudCredential, 'baseUrl' | 'siteUrl'>,
+    target: CloudCredentialStoreTarget
+): boolean {
+    return (
+        normalizeCredentialUrl(value.baseUrl, 'baseUrl') ===
+            normalizeCredentialUrl(target.baseUrl, 'baseUrl') &&
+        normalizeCredentialUrl(value.siteUrl, 'siteUrl') ===
+            normalizeCredentialUrl(target.siteUrl, 'siteUrl')
+    )
+}
+
+function normalizeCredentialUrl(value: string, field: 'baseUrl' | 'siteUrl'): string {
+    const normalized = value.trim().replace(/\/+$/, '')
+    if (!normalized) {
+        throw new Error(`Cannot persist machine credential without ${field}.`)
+    }
+    return normalized
 }
 
 function resolveConfigDir(
@@ -254,6 +397,35 @@ function readMetadata(filePath: string): MachineCredentialMetadata | null {
             obtainedAt: parsed.obtainedAt,
             expiresAt: parsed.expiresAt,
             updatedAt: parsed.updatedAt,
+        }
+    } catch {
+        return null
+    }
+}
+
+function readActiveCloudTargetMetadata(
+    filePath: string
+): CloudCredentialStoreTarget | null {
+    if (!fs.existsSync(filePath)) {
+        return null
+    }
+
+    try {
+        const raw = fs.readFileSync(filePath, 'utf8')
+        const parsed = JSON.parse(raw) as Partial<ActiveCloudTargetMetadata>
+        if (parsed.version !== ACTIVE_TARGET_VERSION) {
+            return null
+        }
+        if (typeof parsed.baseUrl !== 'string' || !parsed.baseUrl.trim()) {
+            return null
+        }
+        if (typeof parsed.siteUrl !== 'string' || !parsed.siteUrl.trim()) {
+            return null
+        }
+
+        return {
+            baseUrl: parsed.baseUrl,
+            siteUrl: parsed.siteUrl,
         }
     } catch {
         return null

@@ -15,7 +15,17 @@ import { Opensteer } from '../../src/opensteer.js'
 import { closeTestBrowser, createTestPage } from '../helpers/browser.js'
 import { gotoRoute } from '../helpers/integration.js'
 
-describe('e2e/ai-resolve', () => {
+const RUN_AI_E2E = process.env.RUN_AI_E2E === '1'
+
+if (RUN_AI_E2E && !process.env.OPENAI_API_KEY?.trim()) {
+    throw new Error(
+        'RUN_AI_E2E=1 requires OPENAI_API_KEY for the AI e2e suite.'
+    )
+}
+
+const describeAiE2E = RUN_AI_E2E ? describe : describe.skip
+
+describeAiE2E('e2e/ai-resolve', () => {
     let context: BrowserContext
     let page: Page
     let rootDir: string

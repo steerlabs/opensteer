@@ -83,6 +83,7 @@ describe('cli/profile runner', () => {
                         addCookies: async () => undefined,
                     },
                 }),
+                loadLocalProfileCookies: async () => null,
                 writeStdout: () => undefined,
                 writeStderr: (message) => {
                     stderr.push(message)
@@ -98,8 +99,18 @@ describe('cli/profile runner', () => {
 
     it('supports non-interactive dry-run sync with explicit scope and --yes', async () => {
         const stdout: string[] = []
-        const localLaunch = vi.fn(async () => undefined)
-        const localClose = vi.fn(async () => undefined)
+        const loadLocalProfileCookies = vi.fn(async () => [
+            {
+                name: 'sid',
+                value: 'v1',
+                domain: '.example.com',
+                path: '/',
+                expires: 999999,
+                httpOnly: true,
+                secure: true,
+                sameSite: 'Lax' as const,
+            },
+        ])
 
         const code = await runOpensteerProfileCli(
             [
@@ -120,24 +131,14 @@ describe('cli/profile runner', () => {
                 confirm: async () => false,
                 createBrowserProfileClient: createMockBrowserProfileClient,
                 createOpensteer: () => ({
-                    launch: localLaunch,
-                    close: localClose,
-                    getCookies: async () => [
-                        {
-                            name: 'sid',
-                            value: 'v1',
-                            domain: '.example.com',
-                            path: '/',
-                            expires: 999999,
-                            httpOnly: true,
-                            secure: true,
-                            sameSite: 'Lax',
-                        },
-                    ],
+                    launch: async () => undefined,
+                    close: async () => undefined,
+                    getCookies: async () => [],
                     context: {
                         addCookies: async () => undefined,
                     },
                 }),
+                loadLocalProfileCookies,
                 writeStdout: (message) => {
                     stdout.push(message)
                 },
@@ -146,8 +147,7 @@ describe('cli/profile runner', () => {
         )
 
         expect(code).toBe(0)
-        expect(localLaunch).toHaveBeenCalledOnce()
-        expect(localClose).toHaveBeenCalledOnce()
+        expect(loadLocalProfileCookies).toHaveBeenCalledOnce()
 
         const payload = JSON.parse(stdout.join(''))
         expect(payload).toEqual(
@@ -202,6 +202,7 @@ describe('cli/profile runner', () => {
                         addCookies: async () => undefined,
                     },
                 }),
+                loadLocalProfileCookies: async () => null,
                 writeStdout: () => undefined,
                 writeStderr: () => undefined,
             }
@@ -214,5 +215,133 @@ describe('cli/profile runner', () => {
                 token: 'ost_token_123',
             }),
         ])
+    })
+
+    it('preserves reuseIfActive when sync targets the configured browser profile', async () => {
+        const seenLaunches: Array<Record<string, unknown>> = []
+        const addCookies = vi.fn(async () => undefined)
+
+        const code = await runOpensteerProfileCli(
+            [
+                'sync',
+                '--from-profile-dir',
+                '/tmp/profile',
+                '--to-profile-id',
+                'bp_123',
+                '--all-domains',
+                '--yes',
+            ],
+            {
+                env: {
+                    OPENSTEER_ACCESS_TOKEN: 'ost_token_123',
+                    OPENSTEER_CLOUD_PROFILE_ID: 'bp_123',
+                    OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE: 'true',
+                },
+                isInteractive: () => false,
+                confirm: async () => false,
+                createBrowserProfileClient: createMockBrowserProfileClient,
+                createOpensteer: (config) => {
+                    return {
+                        launch: async (options) => {
+                            seenLaunches.push({
+                                config,
+                                options: options || {},
+                            })
+                        },
+                        close: async () => undefined,
+                        getCookies: async () => [],
+                        context: {
+                            addCookies,
+                        },
+                    }
+                },
+                loadLocalProfileCookies: async () => [
+                    {
+                        name: 'sid',
+                        value: 'v1',
+                        domain: '.example.com',
+                        path: '/',
+                        expires: 999999,
+                        httpOnly: true,
+                        secure: true,
+                        sameSite: 'Lax',
+                    },
+                ],
+                writeStdout: () => undefined,
+                writeStderr: () => undefined,
+            }
+        )
+
+        expect(code).toBe(0)
+        expect(seenLaunches).toHaveLength(1)
+        expect(seenLaunches[0]).toEqual(
+            expect.objectContaining({
+                config: expect.objectContaining({
+                    cloud: expect.objectContaining({
+                        browserProfile: {
+                            profileId: 'bp_123',
+                            reuseIfActive: true,
+                        },
+                    }),
+                }),
+                options: expect.objectContaining({
+                    headless: true,
+                    timeout: 120_000,
+                }),
+            })
+        )
+        expect(addCookies).toHaveBeenCalled()
+    })
+
+    it('falls back to launching the local profile when direct cookie loading is unavailable', async () => {
+        const localLaunch = vi.fn(async () => undefined)
+        const localClose = vi.fn(async () => undefined)
+
+        const code = await runOpensteerProfileCli(
+            [
+                'sync',
+                '--from-profile-dir',
+                '/tmp/profile',
+                '--domain',
+                'example.com',
+                '--yes',
+                '--dry-run',
+                '--json',
+            ],
+            {
+                env: {
+                    OPENSTEER_API_KEY: 'ork_test_123',
+                },
+                isInteractive: () => false,
+                confirm: async () => false,
+                createBrowserProfileClient: createMockBrowserProfileClient,
+                createOpensteer: () => ({
+                    launch: localLaunch,
+                    close: localClose,
+                    getCookies: async () => [
+                        {
+                            name: 'sid',
+                            value: 'v1',
+                            domain: '.example.com',
+                            path: '/',
+                            expires: 999999,
+                            httpOnly: true,
+                            secure: true,
+                            sameSite: 'Lax',
+                        },
+                    ],
+                    context: {
+                        addCookies: async () => undefined,
+                    },
+                }),
+                loadLocalProfileCookies: async () => null,
+                writeStdout: () => undefined,
+                writeStderr: () => undefined,
+            }
+        )
+
+        expect(code).toBe(0)
+        expect(localLaunch).toHaveBeenCalledOnce()
+        expect(localClose).toHaveBeenCalledOnce()
     })
 })

@@ -6,7 +6,7 @@ import {
 } from 'playwright'
 import type { LaunchOptions, OpensteerBrowserConfig } from '../types.js'
 import { CDPProxy, discoverTargets } from './cdp-proxy.js'
-import { expandHome } from './chrome.js'
+import { resolvePersistentChromiumLaunchProfile } from './chromium-profile.js'
 
 export interface BrowserSession {
     browser: Browser
@@ -18,6 +18,7 @@ export interface BrowserSession {
 
 export class BrowserPool {
     private browser: Browser | null = null
+    private persistentContext: BrowserContext | null = null
     private cdpProxy: CDPProxy | null = null
     private readonly defaults: OpensteerBrowserConfig
 
@@ -39,9 +40,14 @@ export class BrowserPool {
             return this.connectToRunning(connectUrl, options.timeout)
         }
 
-        // ── Profile mode: launch with user profile ──
-        if (channel || profileDir) {
-            return this.launchWithProfile(options, channel, profileDir)
+        // ── Profile mode: launch a persistent context ──
+        if (profileDir) {
+            return this.launchPersistentProfile(options, channel, profileDir)
+        }
+
+        // ── Channel mode: launch a specific browser binary ──
+        if (channel) {
+            return this.launchWithChannel(options, channel)
         }
 
         // ── Sandbox mode: fresh Chromium (existing behavior) ──
@@ -50,10 +56,14 @@ export class BrowserPool {
 
     async close(): Promise<void> {
         const browser = this.browser
+        const persistentContext = this.persistentContext
         this.browser = null
+        this.persistentContext = null
 
         try {
-            if (browser) {
+            if (persistentContext) {
+                await persistentContext.close()
+            } else if (browser) {
                 await browser.close()
             }
         } finally {
@@ -85,6 +95,7 @@ export class BrowserPool {
                 timeout: timeout ?? 30_000,
             })
             this.browser = browser
+            this.persistentContext = null
 
             const contexts = browser.contexts()
             if (contexts.length === 0) {
@@ -103,22 +114,63 @@ export class BrowserPool {
                 await browser.close().catch(() => undefined)
             }
             this.browser = null
+            this.persistentContext = null
             this.cdpProxy?.close()
             this.cdpProxy = null
             throw error
         }
     }
 
-    private async launchWithProfile(
+    private async launchPersistentProfile(
         options: LaunchOptions,
         channel: string | undefined,
-        profileDir: string | undefined
+        profileDir: string
     ): Promise<BrowserSession> {
         const args: string[] = []
-        if (profileDir) {
-            args.push(`--user-data-dir=${expandHome(profileDir)}`)
+        const launchProfile = resolvePersistentChromiumLaunchProfile(profileDir)
+        if (launchProfile.profileDirectory) {
+            args.push(`--profile-directory=${launchProfile.profileDirectory}`)
         }
 
+        const context = await chromium.launchPersistentContext(
+            launchProfile.userDataDir,
+            {
+                channel: channel as
+                    | 'chrome'
+                    | 'chrome-beta'
+                    | 'msedge'
+                    | undefined,
+                headless: options.headless ?? this.defaults.headless,
+                executablePath:
+                    options.executablePath ??
+                    this.defaults.executablePath ??
+                    undefined,
+                slowMo: options.slowMo ?? this.defaults.slowMo ?? 0,
+                timeout: options.timeout,
+                ...(options.context || {}),
+                args,
+            }
+        )
+
+        const browser = context.browser()
+        if (!browser) {
+            await context.close().catch(() => undefined)
+            throw new Error('Persistent browser launch did not expose a browser instance.')
+        }
+
+        this.browser = browser
+        this.persistentContext = context
+
+        const pages = context.pages()
+        const page = pages.length > 0 ? pages[0] : await context.newPage()
+
+        return { browser, context, page, isExternal: false }
+    }
+
+    private async launchWithChannel(
+        options: LaunchOptions,
+        channel: string
+    ): Promise<BrowserSession> {
         const browser = await chromium.launch({
             channel: channel as
                 | 'chrome'
@@ -131,24 +183,14 @@ export class BrowserPool {
                 this.defaults.executablePath ??
                 undefined,
             slowMo: options.slowMo ?? this.defaults.slowMo ?? 0,
-            args,
+            timeout: options.timeout,
         })
 
         this.browser = browser
+        this.persistentContext = null
 
-        // When profileDir is set, Chrome creates a default context with the profile
-        const contexts = browser.contexts()
-        let context: BrowserContext
-        let page: Page
-
-        if (contexts.length > 0) {
-            context = contexts[0]
-            const pages = context.pages()
-            page = pages.length > 0 ? pages[0] : await context.newPage()
-        } else {
-            context = await browser.newContext(options.context || {})
-            page = await context.newPage()
-        }
+        const context = await browser.newContext(options.context || {})
+        const page = await context.newPage()
 
         return { browser, context, page, isExternal: false }
     }
@@ -163,13 +205,15 @@ export class BrowserPool {
                 this.defaults.executablePath ??
                 undefined,
             slowMo: options.slowMo ?? this.defaults.slowMo ?? 0,
+            timeout: options.timeout,
         })
 
         const context = await browser.newContext(options.context || {})
         const page = await context.newPage()
 
         this.browser = browser
+        this.persistentContext = null
 
         return { browser, context, page, isExternal: false }
-}
+    }
 }

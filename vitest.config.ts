@@ -1,9 +1,10 @@
 import { defineConfig } from 'vitest/config'
-import { loadEnv } from 'vite'
 
-export default defineConfig(({ mode }) => ({
+export default defineConfig(() => ({
     test: {
-        env: loadEnv(mode, process.cwd(), ''),
+        env: {
+            OPENSTEER_DISABLE_DOTENV_AUTOLOAD: 'true',
+        },
         include: ['tests/**/*.test.ts'],
         exclude: ['tests/live-web/**/*.test.ts'],
         globalSetup: ['./tests/globalSetup.ts'],
