@@ -1,3 +1,4 @@
+import http from 'node:http'
 import * as cheerio from 'cheerio'
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { BrowserContext, Page } from 'playwright'
@@ -161,6 +162,72 @@ describe('integration/iframe-url-extraction', () => {
             emptyAction: null,
         })
     })
+
+    it('resolves cross-origin iframe src values through path extraction', async () => {
+        const server = await startCrossOriginIframeFixtureServer()
+
+        try {
+            await page.goto(server.parentUrl, { waitUntil: 'domcontentloaded' })
+            await page
+                .frameLocator('#frame-host')
+                .locator('#cross-origin-image')
+                .waitFor()
+
+            const paths = await buildPathsFromSnapshotSelectors(page, {
+                imageSrc: innerSelector('#cross-origin-image'),
+            })
+
+            const data = await extractWithPaths(page, [
+                {
+                    key: 'imageSrc',
+                    path: paths.imageSrc,
+                    attribute: 'src',
+                },
+            ])
+
+            expect(data).toEqual({
+                imageSrc: server.expectedImageSrc,
+            })
+        } finally {
+            await server.close()
+        }
+    })
+
+    it('resolves cross-origin iframe src values for counter extraction', async () => {
+        const server = await startCrossOriginIframeFixtureServer()
+
+        try {
+            await page.goto(server.parentUrl, { waitUntil: 'domcontentloaded' })
+            await page
+                .frameLocator('#frame-host')
+                .locator('#cross-origin-image')
+                .waitFor()
+
+            const opensteer = Opensteer.from(page)
+            const html = await opensteer.snapshot({ mode: 'full', withCounters: true })
+            const $$ = cheerio.load(html)
+
+            const data = await opensteer.extract<{
+                imageSrc: string | null
+            }>({
+                schema: {
+                    imageSrc: {
+                        element: requireCounter(
+                            $$,
+                            innerSelector('#cross-origin-image')
+                        ),
+                        attribute: 'src',
+                    },
+                },
+            })
+
+            expect(data).toEqual({
+                imageSrc: server.expectedImageSrc,
+            })
+        } finally {
+            await server.close()
+        }
+    })
 })
 
 async function setIframeFixture(page: Page): Promise<void> {
@@ -258,4 +325,74 @@ function requireCounter(
 
 function innerSelector(selector: string): string {
     return `#frame-host + os-iframe-root ${selector}`
+}
+
+interface CrossOriginIframeFixtureServer {
+    expectedImageSrc: string
+    parentUrl: string
+    close: () => Promise<void>
+}
+
+async function startCrossOriginIframeFixtureServer(): Promise<CrossOriginIframeFixtureServer> {
+    let port = 0
+    const server = http.createServer((request, response) => {
+        const requestUrl = new URL(request.url || '/', 'http://127.0.0.1')
+        if (requestUrl.pathname === '/parent') {
+            response.writeHead(200, {
+                'Content-Type': 'text/html; charset=utf-8',
+            })
+            response.end(`<!doctype html><html><body>
+                <iframe id="frame-host" src="http://localhost:${port}/frame"></iframe>
+            </body></html>`)
+            return
+        }
+
+        if (requestUrl.pathname === '/frame') {
+            response.writeHead(200, {
+                'Content-Type': 'text/html; charset=utf-8',
+            })
+            response.end(`<!doctype html><html><head>
+                <base href="http://localhost:${port}/assets/" />
+            </head><body>
+                <img id="cross-origin-image" src="./images/Charli_03.png" />
+            </body></html>`)
+            return
+        }
+
+        if (requestUrl.pathname === '/assets/images/Charli_03.png') {
+            response.writeHead(204)
+            response.end()
+            return
+        }
+
+        response.writeHead(404, {
+            'Content-Type': 'text/plain; charset=utf-8',
+        })
+        response.end('Not found')
+    })
+
+    await new Promise<void>((resolve) => {
+        server.listen(0, '127.0.0.1', () => resolve())
+    })
+
+    const address = server.address()
+    if (!address || typeof address === 'string') {
+        throw new Error('Unable to resolve cross-origin iframe fixture server')
+    }
+
+    port = address.port
+    return {
+        expectedImageSrc: `http://localhost:${port}/assets/images/Charli_03.png`,
+        parentUrl: `http://127.0.0.1:${port}/parent`,
+        close: () =>
+            new Promise<void>((resolve, reject) => {
+                server.close((error) => {
+                    if (error) {
+                        reject(error)
+                        return
+                    }
+                    resolve()
+                })
+            }),
+    }
 }
