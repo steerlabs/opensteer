@@ -82,6 +82,37 @@ const opensteer = new Opensteer({
 - `cloud` in constructor config overrides `OPENSTEER_MODE`
 - Cloud mode is fail-fast and does not fall back to local mode
 
+## Common Cloud Workflows
+
+Interactive CLI auth for local development:
+
+```bash
+opensteer auth login
+opensteer auth status
+opensteer auth logout
+```
+
+Use API keys for CI and headless jobs. Use `opensteer auth login` when you want
+the CLI to store a bearer token locally and reuse it for later cloud commands
+against the same resolved host.
+
+Manage cloud browser profiles from the CLI:
+
+```bash
+opensteer profile list
+opensteer profile create --name "Main Chrome"
+opensteer profile sync \
+  --from-profile-dir ~/Library/Application\ Support/Google/Chrome/Default \
+  --to-profile-id bp_123 \
+  --domain github.com
+```
+
+Bind a profile when you launch the session, either with
+`OPENSTEER_CLOUD_PROFILE_ID` / `OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE` or
+with `cloud.browserProfile` in SDK config. Profile selection applies when the
+session is first created; reuse the same binding for that session or start a
+new `--session` if you need a different profile.
+
 ## Control API Contract
 
 - `POST /sessions`
