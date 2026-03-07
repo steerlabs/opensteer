@@ -61,6 +61,55 @@ afterEach(() => {
 })
 
 describe('machine-credential-store', () => {
+    it('normalizes trailing slashes in persisted cloud targets and credentials', () => {
+        const store = createTestStore()
+
+        store.writeActiveCloudTarget({
+            baseUrl: 'http://localhost:8080///',
+            siteUrl: 'http://localhost:3001////',
+        })
+        store.writeCloudCredential({
+            baseUrl: 'https://api.opensteer.com///',
+            siteUrl: 'https://opensteer.com////',
+            scope: ['cloud:browser'],
+            accessToken: 'ost_prod_access',
+            refreshToken: 'ost_prod_refresh',
+            obtainedAt: 1,
+            expiresAt: 2,
+        })
+
+        expect(store.readActiveCloudTarget()).toEqual({
+            baseUrl: 'http://localhost:8080',
+            siteUrl: 'http://localhost:3001',
+        })
+        expect(
+            store.readCloudCredential({
+                baseUrl: 'https://api.opensteer.com',
+                siteUrl: 'https://opensteer.com',
+            })
+        ).toEqual(
+            expect.objectContaining({
+                baseUrl: 'https://api.opensteer.com',
+                siteUrl: 'https://opensteer.com',
+            })
+        )
+    })
+
+    it('persists the active cloud target separately from credentials', () => {
+        const store = createTestStore()
+
+        expect(store.readActiveCloudTarget()).toBeNull()
+
+        store.writeActiveCloudTarget({
+            baseUrl: 'http://localhost:8080',
+            siteUrl: 'http://localhost:3001',
+        })
+
+        expect(store.readActiveCloudTarget()).toEqual({
+            baseUrl: 'http://localhost:8080',
+            siteUrl: 'http://localhost:3001',
+        })
+    })
     it('stores and clears credentials independently for each cloud host', () => {
         const store = createTestStore()
         const prodCredential = {

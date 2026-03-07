@@ -82,7 +82,7 @@ export interface LaunchOptions {
     connectUrl?: string
     /** Browser channel: "chrome", "chrome-beta", or "msedge" */
     channel?: string
-    /** Browser profile directory. Preserves cookies, extensions, and sessions. */
+    /** Browser profile directory or Chromium user-data dir. Preserves cookies, extensions, and sessions. */
     profileDir?: string
     /** Cloud browser profile preference. Applies only when cloud mode is enabled. */
     cloudBrowserProfile?: OpensteerCloudBrowserProfileOptions
@@ -98,7 +98,7 @@ export interface OpensteerBrowserConfig {
     connectUrl?: string
     /** Browser channel: "chrome", "chrome-beta", or "msedge" */
     channel?: string
-    /** Browser profile directory. Preserves cookies, extensions, and sessions. */
+    /** Browser profile directory or Chromium user-data dir. Preserves cookies, extensions, and sessions. */
     profileDir?: string
 }
 

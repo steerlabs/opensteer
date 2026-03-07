@@ -130,9 +130,10 @@ Supported options:
 URL into another browser manually. `opensteer auth login --json` keeps prompts
 on stderr and writes the final JSON payload to stdout.
 
-Saved machine logins are scoped per resolved cloud host (`baseUrl` + `siteUrl`).
-`opensteer auth status` and `opensteer auth logout` operate on that resolved
-host, so pass `--base-url` or `--site-url` when switching between environments.
+Saved machine logins remain scoped per resolved cloud host (`baseUrl` +
+`siteUrl`). The CLI remembers the last selected cloud host, so `opensteer auth
+status`, `opensteer auth logout`, and other cloud commands reuse it by default
+unless `--base-url`, `--site-url`, or env vars select a different host.
 
 ## Global Flags
 

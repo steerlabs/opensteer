@@ -1,6 +1,7 @@
 import type { OpensteerAuthScheme } from '../types.js'
 import type { CloudErrorCode } from './contracts.js'
 import { OpensteerCloudError } from './errors.js'
+import { stripTrailingSlashes } from '../utils/strip-trailing-slashes.js'
 
 interface CloudHttpErrorBody {
     error?: string
@@ -9,7 +10,7 @@ interface CloudHttpErrorBody {
 }
 
 export function normalizeCloudBaseUrl(baseUrl: string): string {
-    return baseUrl.replace(/\/+$/, '')
+    return stripTrailingSlashes(baseUrl)
 }
 
 export function cloudAuthHeaders(

@@ -147,6 +147,27 @@ describe('CloudSessionClient auth scheme', () => {
         globalThis.fetch = ORIGINAL_FETCH
     })
 
+    it('normalizes trailing slashes in the configured base url', async () => {
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValue(
+                new Response(JSON.stringify(CREATE_RESPONSE), {
+                    status: 201,
+                    headers: { 'content-type': 'application/json' },
+                })
+            )
+        globalThis.fetch = fetchMock as unknown as typeof fetch
+
+        const client = new CloudSessionClient(
+            'http://localhost:8080////',
+            'ork_key'
+        )
+        await client.create(CREATE_REQUEST)
+
+        const [url] = fetchMock.mock.calls[0] as [string, RequestInit]
+        expect(url).toBe('http://localhost:8080/sessions')
+    })
+
     it('uses x-api-key by default', async () => {
         const fetchMock = vi
             .fn()

@@ -340,8 +340,6 @@ function buildRequest(command, flags, positional) {
         'cloud-profile-id',
         'cloud-profile-reuse-if-active',
         'cursor',
-        'api-key',
-        'access-token',
     ]) {
         if (key in flags) {
             globalFlags[key] = flags[key]
@@ -1022,13 +1020,13 @@ async function ensureOpenCloudCredentials(flags, scopeDir) {
 
     const moduleUrl = pathToFileURL(AUTH_CLI_SCRIPT).href
     const { ensureCloudCredentialsForOpenCommand } = await import(moduleUrl)
-    await ensureCloudCredentialsForOpenCommand({
+    return await ensureCloudCredentialsForOpenCommand({
         scopeDir,
         env: process.env,
         apiKeyFlag,
         accessTokenFlag,
         interactive: isInteractiveTerminal(),
-        writeStdout: (message) => process.stdout.write(message),
+        writeProgress: (message) => process.stderr.write(message),
         writeStderr: (message) => process.stderr.write(message),
     })
 }
@@ -1040,6 +1038,20 @@ function isProfileHelpRequest(args) {
         return true
     }
     return rest.includes('--help') || rest.includes('-h')
+}
+
+function buildOpenCloudAuthPayload(auth) {
+    if (!auth) {
+        return null
+    }
+
+    return {
+        ...(auth.kind === 'access-token'
+            ? { accessToken: auth.token }
+            : { apiKey: auth.token }),
+        baseUrl: auth.baseUrl,
+        authScheme: auth.authScheme,
+    }
 }
 
 function printHelp() {
@@ -1220,9 +1232,10 @@ async function main() {
         return
     }
 
+    let openCloudAuth = null
     if (command === 'open') {
         try {
-            await ensureOpenCloudCredentials(flags, scopeDir)
+            openCloudAuth = await ensureOpenCloudCredentials(flags, scopeDir)
         } catch (err) {
             error(
                 err instanceof Error
@@ -1279,6 +1292,10 @@ async function main() {
     const request = buildRequest(command, flags, positional)
     if (command === 'open') {
         request.args.name = name
+        const cloudAuthPayload = buildOpenCloudAuthPayload(openCloudAuth)
+        if (cloudAuthPayload) {
+            request.args['cloud-auth'] = cloudAuthPayload
+        }
     }
 
     if (!(await isServerHealthy(runtimeSession))) {
