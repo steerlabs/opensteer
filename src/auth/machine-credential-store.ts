@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createKeychainStore } from './keychain-store.js'
+import { stripTrailingSlashes } from '../utils/strip-trailing-slashes.js'
 
 const METADATA_VERSION = 1
 const ACTIVE_TARGET_VERSION = 1
@@ -323,7 +324,7 @@ function matchesCredentialTarget(
 }
 
 function normalizeCredentialUrl(value: string, field: 'baseUrl' | 'siteUrl'): string {
-    const normalized = value.trim().replace(/\/+$/, '')
+    const normalized = stripTrailingSlashes(value.trim())
     if (!normalized) {
         throw new Error(`Cannot persist machine credential without ${field}.`)
     }

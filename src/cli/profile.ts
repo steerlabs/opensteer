@@ -568,7 +568,7 @@ async function buildCloudAuthContext(
         siteUrl: args.siteUrl,
         interactive: deps.isInteractive(),
         autoLoginIfNeeded: true,
-        writeStdout: args.json ? deps.writeStderr : deps.writeStdout,
+        writeProgress: args.json ? deps.writeStderr : deps.writeStdout,
         writeStderr: deps.writeStderr,
     })
 

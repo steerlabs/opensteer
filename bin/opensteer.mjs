@@ -1028,7 +1028,7 @@ async function ensureOpenCloudCredentials(flags, scopeDir) {
         apiKeyFlag,
         accessTokenFlag,
         interactive: isInteractiveTerminal(),
-        writeStdout: (message) => process.stdout.write(message),
+        writeProgress: (message) => process.stderr.write(message),
         writeStderr: (message) => process.stderr.write(message),
     })
 }
