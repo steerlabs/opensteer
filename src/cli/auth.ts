@@ -82,6 +82,7 @@ export interface EnsureCloudCredentialsOptions {
     siteUrl?: string
     interactive?: boolean
     autoLoginIfNeeded?: boolean
+    writeProgress?: (message: string) => void
     writeStdout?: (message: string) => void
     writeStderr?: (message: string) => void
     fetchFn?: AuthFetchFn
@@ -93,10 +94,11 @@ export interface EnsureCloudCredentialsOptions {
 export interface EnsureCloudCredentialsForOpenOptions {
     scopeDir: string
     env?: Record<string, string | undefined>
+    store?: CloudCredentialStore
     apiKeyFlag?: string
     accessTokenFlag?: string
     interactive?: boolean
-    writeStdout?: (message: string) => void
+    writeProgress?: (message: string) => void
     writeStderr?: (message: string) => void
     fetchFn?: AuthFetchFn
     sleep?: (ms: number) => Promise<void>
@@ -405,7 +407,7 @@ function deriveSiteUrlFromBaseUrl(baseUrl: string): string {
         parsed.pathname = ''
         parsed.search = ''
         parsed.hash = ''
-        return parsed.toString().replace(/\/+$/, '')
+        return normalizeCloudBaseUrl(parsed.toString())
     }
 
     if (
@@ -417,13 +419,13 @@ function deriveSiteUrlFromBaseUrl(baseUrl: string): string {
         parsed.pathname = ''
         parsed.search = ''
         parsed.hash = ''
-        return parsed.toString().replace(/\/+$/, '')
+        return normalizeCloudBaseUrl(parsed.toString())
     }
 
     parsed.pathname = ''
     parsed.search = ''
     parsed.hash = ''
-    return parsed.toString().replace(/\/+$/, '')
+    return normalizeCloudBaseUrl(parsed.toString())
 }
 
 function assertSecureUrl(value: string, flag: string): void {
@@ -618,7 +620,7 @@ async function runDeviceLoginFlow(
     args: {
         siteUrl: string
         fetchFn: AuthFetchFn
-        writeStdout: (message: string) => void
+        writeProgress: (message: string) => void
         openExternalUrl: OpenExternalUrlFn
         sleep: (ms: number) => Promise<void>
         now: () => number
@@ -629,34 +631,34 @@ async function runDeviceLoginFlow(
     const start = await startDeviceAuthorization(args.siteUrl, args.fetchFn)
 
     if (args.openBrowser) {
-        args.writeStdout(
+        args.writeProgress(
             'Opening your default browser for Opensteer CLI authentication.\n'
         )
-        args.writeStdout(
+        args.writeProgress(
             `If nothing opens, use this URL:\n${start.verification_uri_complete}\n`
         )
     } else {
         if (args.openBrowserDisabledReason) {
-            args.writeStdout(
+            args.writeProgress(
                 `Automatic browser open is disabled (${args.openBrowserDisabledReason}).\n`
             )
         }
-        args.writeStdout(
+        args.writeProgress(
             `Open this URL to authenticate Opensteer CLI:\n${start.verification_uri_complete}\n`
         )
     }
-    args.writeStdout(`Verification code: ${start.user_code}\n`)
+    args.writeProgress(`Verification code: ${start.user_code}\n`)
 
     if (args.openBrowser) {
         const browserOpened = await args.openExternalUrl(
             start.verification_uri_complete
         )
         if (browserOpened) {
-            args.writeStdout(
+            args.writeProgress(
                 'Opened your default browser. Finish authentication there; this terminal will continue automatically.\n'
             )
         } else {
-            args.writeStdout(
+            args.writeProgress(
                 'Could not open your default browser automatically. Paste the URL above into a browser to continue.\n'
             )
         }
@@ -832,10 +834,18 @@ function isCiEnvironment(env: Record<string, string | undefined>): boolean {
     return Boolean(value && value !== '0' && value !== 'false')
 }
 
-export function isCloudModeEnabledForRootDir(rootDir: string): boolean {
-    const resolved = resolveConfigWithEnv({
-        storage: { rootDir },
-    })
+export function isCloudModeEnabledForRootDir(
+    rootDir: string,
+    env?: Record<string, string | undefined>
+): boolean {
+    const resolved = resolveConfigWithEnv(
+        {
+            storage: { rootDir },
+        },
+        {
+            env,
+        }
+    )
     return resolveCloudSelection(
         {
             cloud: resolved.config.cloud,
@@ -848,19 +858,23 @@ export async function ensureCloudCredentialsForOpenCommand(
     options: EnsureCloudCredentialsForOpenOptions
 ): Promise<EnsuredCloudAuthContext | null> {
     const env = options.env ?? (process.env as Record<string, string | undefined>)
-    if (!isCloudModeEnabledForRootDir(options.scopeDir)) {
+    if (!isCloudModeEnabledForRootDir(options.scopeDir, env)) {
         return null
     }
+
+    const writeStderr =
+        options.writeStderr ?? ((message: string) => process.stderr.write(message))
 
     return await ensureCloudCredentialsForCommand({
         commandName: 'opensteer open',
         env,
+        store: options.store,
         apiKeyFlag: options.apiKeyFlag,
         accessTokenFlag: options.accessTokenFlag,
         interactive: options.interactive,
         autoLoginIfNeeded: true,
-        writeStdout: options.writeStdout,
-        writeStderr: options.writeStderr,
+        writeProgress: options.writeProgress ?? writeStderr,
+        writeStderr,
         fetchFn: options.fetchFn,
         sleep: options.sleep,
         now: options.now,
@@ -872,7 +886,10 @@ export async function ensureCloudCredentialsForCommand(
     options: EnsureCloudCredentialsOptions
 ): Promise<EnsuredCloudAuthContext> {
     const env = options.env ?? (process.env as Record<string, string | undefined>)
-    const writeStdout = options.writeStdout ?? ((message: string) => process.stdout.write(message))
+    const writeProgress =
+        options.writeProgress ??
+        options.writeStdout ??
+        ((message: string) => process.stdout.write(message))
     const writeStderr = options.writeStderr ?? ((message: string) => process.stderr.write(message))
     const fetchFn = options.fetchFn ?? fetch
     const sleep = options.sleep ?? (async (ms: number) => {
@@ -927,7 +944,7 @@ export async function ensureCloudCredentialsForCommand(
             const loggedIn = await runDeviceLoginFlow({
                 siteUrl,
                 fetchFn,
-                writeStdout,
+                writeProgress,
                 openExternalUrl,
                 sleep,
                 now,
@@ -950,7 +967,7 @@ export async function ensureCloudCredentialsForCommand(
                 token: loggedIn.accessToken,
                 authScheme: 'bearer',
             }
-            writeStdout('Cloud login complete.\n')
+            writeProgress('Cloud login complete.\n')
         } else {
             throw new Error(toAuthMissingMessage(options.commandName))
         }
@@ -984,7 +1001,7 @@ async function runLogin(
     const login = await runDeviceLoginFlow({
         siteUrl,
         fetchFn: deps.fetchFn,
-        writeStdout: writeProgress,
+        writeProgress,
         openExternalUrl: deps.openExternalUrl,
         sleep: deps.sleep,
         now: deps.now,

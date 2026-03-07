@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
     ensureCloudCredentialsForCommand,
+    ensureCloudCredentialsForOpenCommand,
     parseOpensteerAuthArgs,
     runOpensteerAuthCli,
     type AuthFetchFn,
@@ -512,5 +513,47 @@ describe('ensureCloudCredentialsForCommand', () => {
         )
         expect(env.OPENSTEER_BASE_URL).toBe('http://localhost:8080')
         expect(env.OPENSTEER_CLOUD_SITE_URL).toBe('http://localhost:3001')
+    })
+})
+
+describe('ensureCloudCredentialsForOpenCommand', () => {
+    it('defaults interactive auto-login prompts to stderr', async () => {
+        const stderr: string[] = []
+        const store: CloudCredentialStore = createMemoryStore()
+        const env: Record<string, string | undefined> = {
+            OPENSTEER_MODE: 'cloud',
+            OPENSTEER_DISABLE_DOTENV_AUTOLOAD: '1',
+        }
+        let nowMs = 1_000
+
+        const resolved = await ensureCloudCredentialsForOpenCommand({
+            scopeDir: process.cwd(),
+            env,
+            store,
+            interactive: true,
+            fetchFn: createFetchMock(),
+            sleep: async () => undefined,
+            now: () => {
+                nowMs += 1
+                return nowMs
+            },
+            openExternalUrl: () => true,
+            writeStderr: (message) => {
+                stderr.push(message)
+            },
+        })
+
+        expect(resolved).toEqual(
+            expect.objectContaining({
+                kind: 'access-token',
+                authScheme: 'bearer',
+                baseUrl: 'https://api.opensteer.com',
+                siteUrl: 'https://opensteer.com',
+            })
+        )
+        expect(stderr.join('')).toContain(
+            'Opening your default browser for Opensteer CLI authentication.'
+        )
+        expect(stderr.join('')).toContain('Cloud login complete.')
     })
 })
