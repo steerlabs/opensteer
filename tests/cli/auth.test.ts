@@ -226,6 +226,35 @@ describe('cli/auth runner', () => {
         )
     })
 
+    it('keeps human login success output concise', async () => {
+        const stdout: string[] = []
+        const store: CloudCredentialStore = createMemoryStore()
+        const fetchMock = createFetchMock()
+
+        const code = await runOpensteerAuthCli(
+            ['login', '--base-url', 'https://api.opensteer.com', '--no-browser'],
+            {
+                env: {},
+                store,
+                fetchFn: fetchMock,
+                writeStdout: (message) => {
+                    stdout.push(message)
+                },
+                writeStderr: () => undefined,
+                isInteractive: () => true,
+                sleep: async () => undefined,
+                now: () => Date.now(),
+                openExternalUrl: () => true,
+            }
+        )
+
+        expect(code).toBe(0)
+        const output = stdout.join('')
+        expect(output).toContain('Opensteer CLI login successful.')
+        expect(output).not.toContain('API Base URL:')
+        expect(output).not.toContain('Expires At:')
+    })
+
     it('reuses the last selected cloud target for auth status when no host is provided', async () => {
         const store: CloudCredentialStore = createMemoryStore()
         const fetchMock = createFetchMock()
