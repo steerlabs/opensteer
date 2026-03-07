@@ -394,9 +394,14 @@ interface OpensteerConfig {
     }
     cloud?: boolean | {
         apiKey?: string
+        accessToken?: string
         baseUrl?: string
         authScheme?: 'api-key' | 'bearer'
         announce?: 'always' | 'off' | 'tty'
+        browserProfile?: {
+            profileId: string
+            reuseIfActive?: boolean
+        }
     }
     model?: string
     debug?: boolean
@@ -421,9 +426,13 @@ For CUA agents, use `provider/model` strings (for example
 
 Cloud defaults to disabled. Override with `OPENSTEER_MODE=local|cloud`.
 
-When cloud mode is selected, an API key is required via `cloud.apiKey` or
-`OPENSTEER_API_KEY`. Cloud base URL defaults to `https://api.opensteer.com`
-and can be overridden with `OPENSTEER_BASE_URL`.
+When cloud mode is selected, credentials are required via either:
+
+- `cloud.apiKey` / `OPENSTEER_API_KEY`
+- `cloud.accessToken` / `OPENSTEER_ACCESS_TOKEN`
+
+Cloud base URL defaults to `https://api.opensteer.com` and can be overridden
+with `OPENSTEER_BASE_URL`.
 Opensteer auto-loads `.env` files from `storage.rootDir` (default
 `process.cwd()`) in this order: `.env.<NODE_ENV>.local`, `.env.local` (skipped
 when `NODE_ENV=test`), `.env.<NODE_ENV>`, `.env`. Existing `process.env` values
@@ -446,6 +455,10 @@ interface LaunchOptions {
     connectUrl?: string
     channel?: string
     profileDir?: string
+    cloudBrowserProfile?: {
+        profileId: string
+        reuseIfActive?: boolean
+    }
     timeout?: number
 }
 ```
@@ -707,9 +720,13 @@ Exported for advanced integration:
 | `OPENSTEER_MODE` | `local` (default) or `cloud` |
 | `OPENSTEER_MODEL` | Default model for LLM resolve/extract (default: `gpt-5.1`) |
 | `OPENSTEER_API_KEY` | API key for cloud mode |
+| `OPENSTEER_ACCESS_TOKEN` | Bearer token for cloud mode |
 | `OPENSTEER_BASE_URL` | Cloud control-plane base URL (default: `https://api.opensteer.com`) |
+| `OPENSTEER_CLOUD_SITE_URL` | Cloud site URL for CLI device login endpoints |
 | `OPENSTEER_AUTH_SCHEME` | Cloud auth scheme: `api-key` (default) or `bearer` |
 | `OPENSTEER_REMOTE_ANNOUNCE` | Cloud launch announcement policy: `always`, `off`, `tty` (default: `always`) |
+| `OPENSTEER_CLOUD_PROFILE_ID` | Default cloud browser profile id to launch with |
+| `OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE` | Optional `true`/`false` profile session reuse preference |
 | `OPENSTEER_HEADLESS` | `true` or `false` |
 | `OPENSTEER_BROWSER_PATH` | Custom browser executable path |
 | `OPENSTEER_SLOW_MO` | Slow-motion delay in milliseconds |

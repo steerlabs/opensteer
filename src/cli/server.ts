@@ -5,10 +5,23 @@ import type { CliRequest, CliResponse } from './protocol.js'
 import { getMetadataPath, getPidPath, getSocketPath } from './paths.js'
 import { getCommandHandler } from './commands.js'
 import { normalizeError } from '../error-normalization.js'
+import {
+    assertCompatibleCloudProfileBinding,
+    normalizeCloudProfileBinding,
+    resolveSessionCloudProfileBinding,
+    type CloudProfileBinding,
+} from './cloud-profile-binding.js'
+import {
+    buildServerOpenConfig,
+    normalizeCliOpenCloudAuth,
+    type CliOpenCloudAuth,
+} from './open-cloud-auth.js'
 
 let instance: Opensteer | null = null
 let launchPromise: Promise<void> | null = null
 let selectorNamespace: string | null = null
+let cloudProfileBinding: CloudProfileBinding | null = null
+let cloudAuthOverride: CliOpenCloudAuth | null = null
 let cursorEnabledPreference: boolean | null = readCursorPreferenceFromEnv()
 let requestQueue: Promise<void> = Promise.resolve()
 let shuttingDown = false
@@ -30,6 +43,7 @@ function invalidateInstance() {
     if (!instance) return
     instance.close().catch(() => {})
     instance = null
+    cloudProfileBinding = null
 }
 
 function normalizeCursorFlag(value: unknown): boolean | null {
@@ -183,6 +197,26 @@ async function handleRequest(
             const connectUrl = args['connect-url'] as string | undefined
             const channel = args.channel as string | undefined
             const profileDir = args['profile-dir'] as string | undefined
+            const cloudProfileId =
+                typeof args['cloud-profile-id'] === 'string'
+                    ? args['cloud-profile-id'].trim()
+                    : undefined
+            const cloudProfileReuseIfActive =
+                typeof args['cloud-profile-reuse-if-active'] === 'boolean'
+                    ? args['cloud-profile-reuse-if-active']
+                    : undefined
+            const requestedCloudProfileBinding = normalizeCloudProfileBinding({
+                profileId: cloudProfileId,
+                reuseIfActive: cloudProfileReuseIfActive,
+            })
+            const requestedCloudAuth = normalizeCliOpenCloudAuth(
+                args['cloud-auth']
+            )
+            if (cloudProfileReuseIfActive !== undefined && !cloudProfileId) {
+                throw new Error(
+                    '--cloud-profile-reuse-if-active requires --cloud-profile-id.'
+                )
+            }
             const requestedCursor = normalizeCursorFlag(args.cursor)
             const requestedName =
                 typeof args.name === 'string' && args.name.trim().length > 0
@@ -225,6 +259,10 @@ async function handleRequest(
             }
             const activeNamespace = selectorNamespace ?? logicalSession
 
+            if (requestedCloudAuth) {
+                cloudAuthOverride = requestedCloudAuth
+            }
+
             if (instance && !launchPromise) {
                 try {
                     if (instance.page.isClosed()) {
@@ -235,28 +273,54 @@ async function handleRequest(
                 }
             }
 
+            if (instance && !launchPromise) {
+                assertCompatibleCloudProfileBinding(
+                    logicalSession,
+                    cloudProfileBinding,
+                    requestedCloudProfileBinding
+                )
+            }
+
             if (!instance) {
-                instance = new Opensteer({
-                    name: activeNamespace,
-                    cursor: {
-                        enabled: effectiveCursorEnabled,
-                    },
-                    browser: {
-                        headless: headless ?? false,
+                instance = new Opensteer(
+                    buildServerOpenConfig({
+                        scopeDir,
+                        name: activeNamespace,
+                        cursorEnabled: effectiveCursorEnabled,
+                        headless,
                         connectUrl,
                         channel,
                         profileDir,
-                    },
-                })
+                        cloudAuth: cloudAuthOverride,
+                    })
+                )
+                const nextCloudProfileBinding = resolveSessionCloudProfileBinding(
+                    instance.getConfig(),
+                    requestedCloudProfileBinding
+                )
+                if (requestedCloudProfileBinding && !nextCloudProfileBinding) {
+                    instance = null
+                    throw new Error(
+                        '--cloud-profile-id can only be used when cloud mode is enabled for this session.'
+                    )
+                }
                 launchPromise = instance.launch({
                     headless: headless ?? false,
+                    cloudBrowserProfile: cloudProfileId
+                        ? {
+                              profileId: cloudProfileId,
+                              reuseIfActive: cloudProfileReuseIfActive,
+                          }
+                        : undefined,
                     timeout: connectUrl ? 120_000 : 30_000,
                 })
                 try {
                     await launchPromise
                     attachLifecycleListeners(instance)
+                    cloudProfileBinding = nextCloudProfileBinding
                 } catch (err) {
                     instance = null
+                    cloudProfileBinding = null
                     throw err
                 } finally {
                     launchPromise = null

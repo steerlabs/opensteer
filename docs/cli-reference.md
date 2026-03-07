@@ -111,6 +111,30 @@ Supported options:
 - `--copy`
 - `--all`
 
+### Profiles
+
+- `profile list [--json] [--limit <n>] [--status active|archived|error]`
+- `profile create --name <name> [--json]`
+- `profile sync --from-profile-dir <dir> [--to-profile-id <id> | --name <name>] [--domain <domain> ... | --all-domains] [--dry-run] [--yes] [--json]`
+
+### Auth
+
+- `auth login`
+- `auth status`
+- `auth logout`
+- `login` (alias for `auth login`)
+- `logout` (alias for `auth logout`)
+
+`opensteer auth login` opens your default browser when possible. Use
+`opensteer auth login --no-browser` when you need to copy the printed device
+URL into another browser manually. `opensteer auth login --json` keeps prompts
+on stderr and writes the final JSON payload to stdout.
+
+Saved machine logins remain scoped per cloud host (`baseUrl` + `siteUrl`).
+The CLI remembers the last selected cloud host, so `opensteer auth status`,
+`opensteer auth logout`, and other cloud commands reuse it by default unless
+`--base-url`, `--site-url`, or env vars select a different host.
+
 ## Global Flags
 
 - `--session <id>`
@@ -119,6 +143,10 @@ Supported options:
 - `--connect-url <url>`
 - `--channel <browser>`
 - `--profile-dir <path>`
+- `--cloud-profile-id <id>`
+- `--cloud-profile-reuse-if-active <true|false>`
+- `--api-key <key>`
+- `--access-token <token>`
 - `--cursor <true|false>`
 - `--element <N>`
 - `--selector <css>`
@@ -131,13 +159,23 @@ Supported options:
 - `OPENSTEER_NAME`: default selector namespace for `open`
 - `OPENSTEER_CURSOR`: cursor default for SDK and CLI daemon preference bootstrap
 - `OPENSTEER_MODE`: `local` (default) or `cloud`
-- `OPENSTEER_API_KEY`: required in cloud mode
+- `OPENSTEER_API_KEY`: cloud API key credential (best for CI/headless)
+- `OPENSTEER_ACCESS_TOKEN`: cloud bearer token credential (from `opensteer auth login`)
 - `OPENSTEER_BASE_URL`: cloud control-plane base URL
+- `OPENSTEER_CLOUD_SITE_URL`: cloud site URL for device login endpoints
 - `OPENSTEER_AUTH_SCHEME`: `api-key` (default) or `bearer`
 - `OPENSTEER_REMOTE_ANNOUNCE`: `always` (default), `off`, or `tty`
+- `OPENSTEER_CLOUD_PROFILE_ID`: default cloud browser profile id
+- `OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE`: optional `true`/`false` profile session reuse
 
 Cursor defaults:
 
 - CLI sessions are enabled by default unless overridden by `--cursor` or
   `OPENSTEER_CURSOR`.
 - SDK instances default to disabled unless configured via `cursor.enabled`.
+
+Credential precedence for cloud commands:
+
+1. explicit flags (`--api-key` / `--access-token`)
+2. environment (`OPENSTEER_API_KEY` / `OPENSTEER_ACCESS_TOKEN`)
+3. saved machine login for the resolved host (`opensteer auth login`)

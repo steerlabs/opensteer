@@ -82,8 +82,10 @@ export interface LaunchOptions {
     connectUrl?: string
     /** Browser channel: "chrome", "chrome-beta", or "msedge" */
     channel?: string
-    /** Browser profile directory. Preserves cookies, extensions, and sessions. */
+    /** Browser profile directory or Chromium user-data dir. Preserves cookies, extensions, and sessions. */
     profileDir?: string
+    /** Cloud browser profile preference. Applies only when cloud mode is enabled. */
+    cloudBrowserProfile?: OpensteerCloudBrowserProfileOptions
     /** Connection timeout in milliseconds. */
     timeout?: number
 }
@@ -96,7 +98,7 @@ export interface OpensteerBrowserConfig {
     connectUrl?: string
     /** Browser channel: "chrome", "chrome-beta", or "msedge" */
     channel?: string
-    /** Browser profile directory. Preserves cookies, extensions, and sessions. */
+    /** Browser profile directory or Chromium user-data dir. Preserves cookies, extensions, and sessions. */
     profileDir?: string
 }
 
@@ -130,11 +132,18 @@ export interface OpensteerCursorConfig {
 export type OpensteerAuthScheme = 'api-key' | 'bearer'
 export type OpensteerCloudAnnouncePolicy = 'always' | 'off' | 'tty'
 
+export interface OpensteerCloudBrowserProfileOptions {
+    profileId: string
+    reuseIfActive?: boolean
+}
+
 export interface OpensteerCloudOptions {
     apiKey?: string
+    accessToken?: string
     baseUrl?: string
     authScheme?: OpensteerAuthScheme
     announce?: OpensteerCloudAnnouncePolicy
+    browserProfile?: OpensteerCloudBrowserProfileOptions
 }
 
 export type OpensteerCloudConfig = boolean | OpensteerCloudOptions

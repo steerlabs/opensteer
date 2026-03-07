@@ -115,11 +115,57 @@ describe('CloudSessionClient#importSelectorCache', () => {
             })
         )
     })
+
+    it('preserves browser-profile cloud error codes from backend responses', async () => {
+        globalThis.fetch = vi
+            .fn()
+            .mockResolvedValue(
+                new Response(
+                    JSON.stringify({
+                        error: 'profile not found',
+                        code: 'CLOUD_BROWSER_PROFILE_NOT_FOUND',
+                    }),
+                    {
+                        status: 404,
+                        headers: { 'content-type': 'application/json' },
+                    }
+                )
+            ) as never
+
+        const client = new CloudSessionClient('http://localhost:8080', 'ork_key')
+        await expect(client.create(CREATE_REQUEST)).rejects.toEqual(
+            expect.objectContaining<Partial<OpensteerCloudError>>({
+                code: 'CLOUD_BROWSER_PROFILE_NOT_FOUND',
+                status: 404,
+            })
+        )
+    })
 })
 
 describe('CloudSessionClient auth scheme', () => {
     afterEach(() => {
         globalThis.fetch = ORIGINAL_FETCH
+    })
+
+    it('normalizes trailing slashes in the configured base url', async () => {
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValue(
+                new Response(JSON.stringify(CREATE_RESPONSE), {
+                    status: 201,
+                    headers: { 'content-type': 'application/json' },
+                })
+            )
+        globalThis.fetch = fetchMock as unknown as typeof fetch
+
+        const client = new CloudSessionClient(
+            'http://localhost:8080////',
+            'ork_key'
+        )
+        await client.create(CREATE_REQUEST)
+
+        const [url] = fetchMock.mock.calls[0] as [string, RequestInit]
+        expect(url).toBe('http://localhost:8080/sessions')
     })
 
     it('uses x-api-key by default', async () => {

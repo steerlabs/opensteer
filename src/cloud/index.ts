@@ -1,6 +1,7 @@
 export * from './contracts.js'
 export * from './errors.js'
 export * from './session-client.js'
+export * from './browser-profile-client.js'
 export * from './action-ws-client.js'
 export * from './cdp-client.js'
 export * from './local-cache-sync.js'

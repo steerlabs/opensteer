@@ -21,13 +21,20 @@ describe('cloud mode', () => {
         delete process.env.OPENSTEER_API_KEY
 
         expect(() => new Opensteer({})).toThrow(
-            'Cloud mode requires a non-empty API key via cloud.apiKey or OPENSTEER_API_KEY.'
+            'Cloud mode requires credentials via cloud.apiKey/cloud.accessToken or OPENSTEER_API_KEY/OPENSTEER_ACCESS_TOKEN.'
         )
     })
 
     it('uses OPENSTEER_API_KEY when OPENSTEER_MODE=cloud', () => {
         process.env.OPENSTEER_MODE = 'cloud'
         process.env.OPENSTEER_API_KEY = 'ork_env_123'
+
+        expect(() => new Opensteer({})).not.toThrow()
+    })
+
+    it('uses OPENSTEER_ACCESS_TOKEN when OPENSTEER_MODE=cloud', () => {
+        process.env.OPENSTEER_MODE = 'cloud'
+        process.env.OPENSTEER_ACCESS_TOKEN = 'ost_env_123'
 
         expect(() => new Opensteer({})).not.toThrow()
     })
@@ -42,7 +49,7 @@ describe('cloud mode', () => {
         delete process.env.OPENSTEER_API_KEY
 
         expect(() => new Opensteer({ cloud: true })).toThrow(
-            'Cloud mode requires a non-empty API key via cloud.apiKey or OPENSTEER_API_KEY.'
+            'Cloud mode requires credentials via cloud.apiKey/cloud.accessToken or OPENSTEER_API_KEY/OPENSTEER_ACCESS_TOKEN.'
         )
     })
 
@@ -57,7 +64,30 @@ describe('cloud mode', () => {
                     },
                 })
         ).toThrow(
-            'Cloud mode requires a non-empty API key via cloud.apiKey or OPENSTEER_API_KEY.'
+            'Cloud mode requires credentials via cloud.apiKey/cloud.accessToken or OPENSTEER_API_KEY/OPENSTEER_ACCESS_TOKEN.'
+        )
+    })
+
+    it('accepts explicit cloud.accessToken', () => {
+        expect(() =>
+            new Opensteer({
+                cloud: {
+                    accessToken: 'ost_test_123',
+                },
+            })
+        ).not.toThrow()
+    })
+
+    it('rejects cloud config that sets both apiKey and accessToken', () => {
+        expect(() =>
+            new Opensteer({
+                cloud: {
+                    apiKey: 'ork_test_123',
+                    accessToken: 'ost_test_123',
+                },
+            })
+        ).toThrow(
+            'cloud.apiKey and cloud.accessToken are mutually exclusive. Set only one.'
         )
     })
 
@@ -90,6 +120,7 @@ describe('cloud mode', () => {
 
         delete process.env.OPENSTEER_MODE
         delete process.env.OPENSTEER_API_KEY
+        delete process.env.OPENSTEER_DISABLE_DOTENV_AUTOLOAD
 
         expect(() =>
             Opensteer.from({} as never, {
@@ -133,6 +164,159 @@ describe('cloud mode', () => {
                 description: 'login button',
             })
         ).rejects.toThrow('Cloud session is not connected. Call launch() first.')
+    })
+
+    it('includes launchConfig.browserProfile from constructor cloud options', async () => {
+        const opensteer = new Opensteer({
+            cloud: {
+                apiKey: 'ork_test_123',
+                browserProfile: {
+                    profileId: 'bp_constructor_123',
+                    reuseIfActive: true,
+                },
+            },
+        })
+
+        const access = opensteer as unknown as {
+            cloud: {
+                sessionClient: {
+                    create: (
+                        args: Record<string, unknown>
+                    ) => Promise<Record<string, unknown>>
+                    close: (sessionId: string) => Promise<void>
+                }
+                cdpClient: {
+                    connect: (
+                        args: Record<string, unknown>
+                    ) => Promise<{
+                        browser: { close: () => Promise<void> }
+                        context: unknown
+                        page: unknown
+                    }>
+                }
+            } | null
+        }
+
+        if (!access.cloud) throw new Error('Expected cloud runtime state to exist.')
+
+        const createSpy = vi.spyOn(access.cloud.sessionClient, 'create').mockResolvedValue({
+            sessionId: 'sess_123',
+            actionWsUrl: 'wss://action.example.com',
+            cdpWsUrl: 'wss://cdp.example.com',
+            actionToken: 'act_123',
+            cdpToken: 'cdp_123',
+            cloudSessionUrl: 'https://app.opensteer.com/browser/cloud_123',
+            cloudSession: {
+                sessionId: 'cloud_123',
+                workspaceId: 'ws_123',
+                state: 'active',
+                createdAt: 1735707600000,
+                sourceType: 'local-cloud' as const,
+            },
+        })
+        vi.spyOn(access.cloud.cdpClient, 'connect').mockResolvedValue({
+            browser: { close: async () => undefined },
+            context: {},
+            page: {},
+        })
+        vi.spyOn(ActionWsClient, 'connect').mockResolvedValue({
+            close: async () => undefined,
+            request: async () => undefined,
+        } as unknown as ActionWsClient)
+        vi.spyOn(access.cloud.sessionClient, 'close').mockResolvedValue(undefined)
+
+        await opensteer.launch()
+        await opensteer.close()
+
+        expect(createSpy).toHaveBeenCalledWith(
+            expect.objectContaining({
+                launchConfig: {
+                    browserProfile: {
+                        profileId: 'bp_constructor_123',
+                        reuseIfActive: true,
+                    },
+                },
+            })
+        )
+    })
+
+    it('uses launch() cloudBrowserProfile options over constructor config', async () => {
+        const opensteer = new Opensteer({
+            cloud: {
+                apiKey: 'ork_test_123',
+                browserProfile: {
+                    profileId: 'bp_constructor_123',
+                    reuseIfActive: true,
+                },
+            },
+        })
+
+        const access = opensteer as unknown as {
+            cloud: {
+                sessionClient: {
+                    create: (
+                        args: Record<string, unknown>
+                    ) => Promise<Record<string, unknown>>
+                    close: (sessionId: string) => Promise<void>
+                }
+                cdpClient: {
+                    connect: (
+                        args: Record<string, unknown>
+                    ) => Promise<{
+                        browser: { close: () => Promise<void> }
+                        context: unknown
+                        page: unknown
+                    }>
+                }
+            } | null
+        }
+
+        if (!access.cloud) throw new Error('Expected cloud runtime state to exist.')
+
+        const createSpy = vi.spyOn(access.cloud.sessionClient, 'create').mockResolvedValue({
+            sessionId: 'sess_123',
+            actionWsUrl: 'wss://action.example.com',
+            cdpWsUrl: 'wss://cdp.example.com',
+            actionToken: 'act_123',
+            cdpToken: 'cdp_123',
+            cloudSessionUrl: 'https://app.opensteer.com/browser/cloud_123',
+            cloudSession: {
+                sessionId: 'cloud_123',
+                workspaceId: 'ws_123',
+                state: 'active',
+                createdAt: 1735707600000,
+                sourceType: 'local-cloud' as const,
+            },
+        })
+        vi.spyOn(access.cloud.cdpClient, 'connect').mockResolvedValue({
+            browser: { close: async () => undefined },
+            context: {},
+            page: {},
+        })
+        vi.spyOn(ActionWsClient, 'connect').mockResolvedValue({
+            close: async () => undefined,
+            request: async () => undefined,
+        } as unknown as ActionWsClient)
+        vi.spyOn(access.cloud.sessionClient, 'close').mockResolvedValue(undefined)
+
+        await opensteer.launch({
+            cloudBrowserProfile: {
+                profileId: 'bp_launch_456',
+                reuseIfActive: false,
+            },
+        })
+        await opensteer.close()
+
+        expect(createSpy).toHaveBeenCalledWith(
+            expect.objectContaining({
+                launchConfig: {
+                    browserProfile: {
+                        profileId: 'bp_launch_456',
+                        reuseIfActive: false,
+                    },
+                },
+            })
+        )
     })
 
     it('uses cloudSessionUrl from the cloud session payload', async () => {
