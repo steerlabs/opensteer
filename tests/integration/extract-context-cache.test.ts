@@ -257,6 +257,183 @@ describe('integration/extract-context-cache', () => {
         await opensteer.close()
     })
 
+    it('replays cached iframe array extraction with resolved url-like attributes', async () => {
+        await setFixture(page, '<iframe id="frame-host"></iframe>')
+        await page.evaluate(() => {
+            const frame = document.querySelector('#frame-host')
+            if (!(frame instanceof HTMLIFrameElement)) return
+            frame.srcdoc = `<!doctype html><html><head><base href="https://fixtures.opensteer.dev/frame/" /></head><body>
+                <ul id="products">
+                  <li class="card">
+                    <a class="title" href="products/apple" ping="../track/apple https://backup.example/apple">Apple</a>
+                    <img class="responsive" src="images/apple-fallback.jpg" srcset="images/apple-320.jpg 320w, images/apple-1280.jpg 1280w" />
+                  </li>
+                  <li class="card">
+                    <a class="title" href="products/banana" ping="../track/banana https://backup.example/banana">Banana</a>
+                    <img class="responsive" src="images/banana-fallback.jpg" srcset="images/banana-640.jpg 640w, images/banana-1440.jpg 1440w" />
+                  </li>
+                </ul>
+              </body></html>`
+        })
+        await waitForIframeSelector(page, '#products li:nth-child(2) .responsive')
+
+        const description = 'iframe array context cache url attrs'
+        const schema = {
+            products: [
+                {
+                    title: '',
+                    href: '',
+                    imageUrl: '',
+                    pingUrl: '',
+                },
+            ],
+        }
+
+        const firstTitle = await getCounterBySnapshotSelector(
+            page,
+            '#frame-host + os-iframe-root #products > li:nth-child(1) .title'
+        )
+        const firstImage = await getCounterBySnapshotSelector(
+            page,
+            '#frame-host + os-iframe-root #products > li:nth-child(1) .responsive'
+        )
+        const secondTitle = await getCounterBySnapshotSelector(
+            page,
+            '#frame-host + os-iframe-root #products > li:nth-child(2) .title'
+        )
+        const secondImage = await getCounterBySnapshotSelector(
+            page,
+            '#frame-host + os-iframe-root #products > li:nth-child(2) .responsive'
+        )
+
+        const opensteer = Opensteer.from(page, {
+            name: 'extract-context-iframe-array-url-attrs',
+            storage: { rootDir: storageRoot },
+        })
+
+        const seeded = await opensteer.extractFromPlan<{
+            products: Array<{
+                title: string
+                href: string
+                imageUrl: string
+                pingUrl: string
+            }>
+        }>({
+            description,
+            schema,
+            plan: {
+                fields: {
+                    'products[0].title': { element: firstTitle },
+                    'products[0].href': {
+                        element: firstTitle,
+                        attribute: 'href',
+                    },
+                    'products[0].imageUrl': {
+                        element: firstImage,
+                        attribute: 'srcset',
+                    },
+                    'products[0].pingUrl': {
+                        element: firstTitle,
+                        attribute: 'ping',
+                    },
+                    'products[1].title': { element: secondTitle },
+                    'products[1].href': {
+                        element: secondTitle,
+                        attribute: 'href',
+                    },
+                    'products[1].imageUrl': {
+                        element: secondImage,
+                        attribute: 'srcset',
+                    },
+                    'products[1].pingUrl': {
+                        element: secondTitle,
+                        attribute: 'ping',
+                    },
+                },
+            },
+        })
+
+        expect(seeded.data).toEqual({
+            products: [
+                {
+                    title: 'Apple',
+                    href: 'https://fixtures.opensteer.dev/frame/products/apple',
+                    imageUrl:
+                        'https://fixtures.opensteer.dev/frame/images/apple-1280.jpg',
+                    pingUrl: 'https://fixtures.opensteer.dev/track/apple',
+                },
+                {
+                    title: 'Banana',
+                    href: 'https://fixtures.opensteer.dev/frame/products/banana',
+                    imageUrl:
+                        'https://fixtures.opensteer.dev/frame/images/banana-1440.jpg',
+                    pingUrl: 'https://fixtures.opensteer.dev/track/banana',
+                },
+            ],
+        })
+
+        await page.evaluate(() => {
+            const frame = document.querySelector('#frame-host')
+            if (
+                !(frame instanceof HTMLIFrameElement) ||
+                !frame.contentDocument
+            ) {
+                return
+            }
+
+            const list = frame.contentDocument.querySelector('#products')
+            if (!list) return
+
+            const li = frame.contentDocument.createElement('li')
+            li.className = 'card'
+            li.innerHTML = `
+                <a class="title" href="products/cherry" ping="../track/cherry https://backup.example/cherry">Cherry</a>
+                <img class="responsive" src="images/cherry-fallback.jpg" srcset="images/cherry-800.jpg 800w, images/cherry-1600.jpg 1600w" />
+            `
+            list.appendChild(li)
+        })
+
+        const replayed = await opensteer.extract<{
+            products: Array<{
+                title: string | null
+                href: string | null
+                imageUrl: string | null
+                pingUrl: string | null
+            }>
+        }>({
+            description,
+            schema,
+        })
+
+        expect(replayed).toEqual({
+            products: [
+                {
+                    title: 'Apple',
+                    href: 'https://fixtures.opensteer.dev/frame/products/apple',
+                    imageUrl:
+                        'https://fixtures.opensteer.dev/frame/images/apple-1280.jpg',
+                    pingUrl: 'https://fixtures.opensteer.dev/track/apple',
+                },
+                {
+                    title: 'Banana',
+                    href: 'https://fixtures.opensteer.dev/frame/products/banana',
+                    imageUrl:
+                        'https://fixtures.opensteer.dev/frame/images/banana-1440.jpg',
+                    pingUrl: 'https://fixtures.opensteer.dev/track/banana',
+                },
+                {
+                    title: 'Cherry',
+                    href: 'https://fixtures.opensteer.dev/frame/products/cherry',
+                    imageUrl:
+                        'https://fixtures.opensteer.dev/frame/images/cherry-1600.jpg',
+                    pingUrl: 'https://fixtures.opensteer.dev/track/cherry',
+                },
+            ],
+        })
+
+        await opensteer.close()
+    })
+
     it('replays cached array extraction inside shadow roots', async () => {
         await setFixture(page, '<div id="shadow-host"></div>')
         await page.evaluate(() => {

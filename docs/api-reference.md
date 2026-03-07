@@ -332,10 +332,36 @@ await opensteer.waitForText('Order confirmed', { timeout: 10000 })
 
 #### `extract<T>(options: ExtractOptions): Promise<T>`
 
-Extract structured data from the page using a schema with element references
-or LLM-driven extraction.
+Extract structured data from the page.
+
+`schema` describes the output shape, not just selector bindings. You can use
+semantic field hints such as `"string"` and arrays of objects for AI
+extraction, or explicit bindings such as `{ element: 3 }`,
+`{ element: 5, attribute: "href" }`, `{ selector: ".price" }`, and
+`{ source: "current_url" }` for deterministic extraction. Use `prompt` to
+describe relationship/fallback rules.
+
+Relative URL-like attributes extracted from accessible iframe documents are
+resolved against the iframe document base URL. Main-frame extraction keeps the
+existing raw relative attribute behavior.
 
 ```ts
+const images = await opensteer.extract({
+    description: 'article images with captions and credits',
+    prompt:
+        'For each image, return the image URL, alt text, caption, and credit. Prefer caption and credit from the same figure. If missing, look at sibling text, then parent/container text, then nearby alt/data-* attributes.',
+    schema: {
+        images: [
+            {
+                imageUrl: 'string',
+                alt: 'string',
+                caption: 'string',
+                credit: 'string',
+            },
+        ],
+    },
+})
+
 const data = await opensteer.extract({
     description: 'product-info',
     schema: {
@@ -345,6 +371,10 @@ const data = await opensteer.extract({
     },
 })
 ```
+
+For explicit array bindings, include multiple representative items so
+Opensteer can infer the repeating pattern. For semantic extraction, a single
+representative object shape is enough.
 
 #### `extractFromPlan<T>(options: ExtractFromPlanOptions): Promise<ExtractionRunResult<T>>`
 

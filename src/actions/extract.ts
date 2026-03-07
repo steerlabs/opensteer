@@ -3,7 +3,7 @@ import type { ElementPath } from '../element-path/types.js'
 import { sanitizeElementPath } from '../element-path/build.js'
 import { buildPathCandidates } from '../element-path/match-selectors.js'
 import { resolveElementPath } from '../element-path/resolver.js'
-import { normalizeExtractedValue } from '../extract-value-normalization.js'
+import { readExtractedValueFromHandle } from '../extract-value-reader.js'
 
 export interface FieldSelector {
     key: string
@@ -26,24 +26,6 @@ export interface ArrayExtractedRow {
     meta: ArrayRowMetadata
 }
 
-async function readFieldValueFromHandle(
-    element: ElementHandle<Element>,
-    options: { attribute?: string }
-): Promise<string | null> {
-    const raw = await element.evaluate(
-        (target, payload) => {
-            return payload.attribute
-                ? target.getAttribute(payload.attribute)
-                : target.textContent
-        },
-        {
-            attribute: options.attribute,
-        }
-    )
-
-    return normalizeExtractedValue(raw, options.attribute)
-}
-
 export async function extractWithPaths(
     page: Page,
     fields: FieldSelector[]
@@ -60,7 +42,7 @@ export async function extractWithPaths(
         }
 
         try {
-            result[field.key] = await readFieldValueFromHandle(
+            result[field.key] = await readExtractedValueFromHandle(
                 resolved.element,
                 {
                     attribute: field.attribute,
@@ -117,7 +99,7 @@ export async function extractArrayRowsWithPaths(
 
                 try {
                     const value = target
-                        ? await readFieldValueFromHandle(target, {
+                        ? await readExtractedValueFromHandle(target, {
                               attribute: field.attribute,
                           })
                         : null

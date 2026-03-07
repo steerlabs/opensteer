@@ -1,5 +1,5 @@
 import type { ElementHandle, Frame, Page } from 'playwright'
-import { normalizeExtractedValue } from '../extract-value-normalization.js'
+import { readExtractedValueFromHandle } from '../extract-value-reader.js'
 
 export interface CounterRequest {
     key: string
@@ -26,10 +26,14 @@ interface CounterScanEntry {
     frame: Frame | null
 }
 
-interface CounterReadResult {
-    status: 'ok' | 'missing' | 'ambiguous'
-    value?: string | null
-}
+type CounterElementResolution =
+    | { status: 'missing' }
+    | { status: 'ambiguous' }
+    | { status: 'resolved'; element: ElementHandle<Element> }
+
+type CounterValueReadResult =
+    | { status: 'missing' }
+    | { status: 'ok'; value: string | null }
 
 export async function resolveCounterElement(
     page: Page,
@@ -49,14 +53,15 @@ export async function resolveCounterElement(
         throw buildCounterAmbiguousError(counter)
     }
 
-    const handle = await resolveUniqueHandleInFrame(entry.frame, normalized)
-    const element = handle.asElement() as ElementHandle<Element> | null
-    if (!element) {
-        await handle.dispose()
+    const resolution = await resolveCounterElementInFrame(entry.frame, normalized)
+    if (resolution.status === 'ambiguous') {
+        throw buildCounterAmbiguousError(counter)
+    }
+    if (resolution.status === 'missing') {
         throw buildCounterNotFoundError(counter)
     }
 
-    return element
+    return resolution.element
 }
 
 export async function resolveCountersBatch(
@@ -76,47 +81,65 @@ export async function resolveCountersBatch(
         }
     }
 
-    const valueCache = new Map<string, unknown>()
-    for (const request of requests) {
-        const normalized = normalizeCounter(request.counter)
-        if (normalized == null) {
-            out[request.key] = null
-            continue
-        }
+    const valueCache = new Map<string, string | null>()
+    const elementCache = new Map<number, CounterElementResolution>()
 
-        const entry = scan.get(normalized)
-        if (!entry || entry.count <= 0 || !entry.frame) {
-            out[request.key] = null
-            continue
-        }
+    try {
+        for (const request of requests) {
+            const normalized = normalizeCounter(request.counter)
+            if (normalized == null) {
+                out[request.key] = null
+                continue
+            }
 
-        const cacheKey = `${normalized}:${request.attribute || ''}`
-        if (valueCache.has(cacheKey)) {
-            out[request.key] = valueCache.get(cacheKey)
-            continue
-        }
+            const entry = scan.get(normalized)
+            if (!entry || entry.count <= 0 || !entry.frame) {
+                out[request.key] = null
+                continue
+            }
 
-        const read = await readCounterValueInFrame(
-            entry.frame,
-            normalized,
-            request.attribute
-        )
-        if (read.status === 'ambiguous') {
-            throw buildCounterAmbiguousError(normalized)
-        }
+            const cacheKey = `${normalized}:${request.attribute || ''}`
+            if (valueCache.has(cacheKey)) {
+                out[request.key] = valueCache.get(cacheKey)
+                continue
+            }
 
-        if (read.status === 'missing') {
-            valueCache.set(cacheKey, null)
-            out[request.key] = null
-            continue
-        }
+            if (!elementCache.has(normalized)) {
+                elementCache.set(
+                    normalized,
+                    await resolveCounterElementInFrame(entry.frame, normalized)
+                )
+            }
 
-        const normalizedValue = normalizeExtractedValue(
-            read.value ?? null,
-            request.attribute
-        )
-        valueCache.set(cacheKey, normalizedValue)
-        out[request.key] = normalizedValue
+            const resolution = elementCache.get(normalized)!
+            if (resolution.status === 'ambiguous') {
+                throw buildCounterAmbiguousError(normalized)
+            }
+            if (resolution.status === 'missing') {
+                valueCache.set(cacheKey, null)
+                out[request.key] = null
+                continue
+            }
+
+            const value = await readCounterValueFromElement(
+                resolution.element,
+                request.attribute
+            )
+            if (value.status === 'missing') {
+                await resolution.element.dispose()
+                elementCache.set(normalized, {
+                    status: 'missing',
+                })
+                valueCache.set(cacheKey, null)
+                out[request.key] = null
+                continue
+            }
+
+            valueCache.set(cacheKey, value.value)
+            out[request.key] = value.value
+        }
+    } finally {
+        await disposeResolvedCounterElements(elementCache.values())
     }
 
     return out
@@ -206,91 +229,104 @@ async function scanCounterOccurrences(
     return out
 }
 
-async function resolveUniqueHandleInFrame(
+async function resolveCounterElementInFrame(
     frame: Frame,
     counter: number
-) {
-    return frame.evaluateHandle((targetCounter) => {
-        const matches: Element[] = []
+): Promise<CounterElementResolution> {
+    try {
+        const handle = await frame.evaluateHandle((targetCounter) => {
+            const matches: Element[] = []
 
-        const walk = (root: ParentNode): void => {
-            const children = Array.from(root.children) as Element[]
-            for (const child of children) {
-                if (child.getAttribute('c') === targetCounter) {
-                    matches.push(child)
+            const walk = (root: ParentNode): void => {
+                const children = Array.from(root.children) as Element[]
+                for (const child of children) {
+                    if (child.getAttribute('c') === targetCounter) {
+                        matches.push(child)
+                    }
+                    walk(child)
+                    if (child.shadowRoot) {
+                        walk(child.shadowRoot)
+                    }
                 }
-                walk(child)
-                if (child.shadowRoot) {
-                    walk(child.shadowRoot)
-                }
+            }
+
+            walk(document)
+            if (!matches.length) {
+                return 'missing'
+            }
+            if (matches.length > 1) {
+                return 'ambiguous'
+            }
+            return matches[0]
+        }, String(counter))
+
+        const element = handle.asElement() as ElementHandle<Element> | null
+        if (element) {
+            return {
+                status: 'resolved',
+                element,
             }
         }
 
-        walk(document)
-        if (matches.length !== 1) {
-            return null
+        const status = await handle.jsonValue()
+        await handle.dispose()
+        return status === 'ambiguous'
+            ? { status: 'ambiguous' }
+            : { status: 'missing' }
+    } catch (error) {
+        if (isRecoverableCounterReadRace(error)) {
+            return {
+                status: 'missing',
+            }
         }
-        return matches[0]
-    }, String(counter))
+        throw error
+    }
 }
 
-async function readCounterValueInFrame(
-    frame: Frame,
-    counter: number,
+async function readCounterValueFromElement(
+    element: ElementHandle<Element>,
     attribute?: string
-): Promise<CounterReadResult> {
+): Promise<CounterValueReadResult> {
     try {
-        return await frame.evaluate(
-            ({ targetCounter, attribute }) => {
-                const matches: Element[] = []
-
-                const walk = (root: ParentNode): void => {
-                    const children = Array.from(root.children) as Element[]
-                    for (const child of children) {
-                        if (child.getAttribute('c') === targetCounter) {
-                            matches.push(child)
-                        }
-                        walk(child)
-                        if (child.shadowRoot) {
-                            walk(child.shadowRoot)
-                        }
-                    }
-                }
-
-                walk(document)
-
-                if (!matches.length) {
-                    return {
-                        status: 'missing',
-                    }
-                }
-
-                if (matches.length > 1) {
-                    return {
-                        status: 'ambiguous',
-                    }
-                }
-
-                const target = matches[0]
-                const value = attribute
-                    ? target.getAttribute(attribute)
-                    : target.textContent
-
-                return {
-                    status: 'ok',
-                    value,
-                }
-            },
-            {
-                targetCounter: String(counter),
-                attribute,
-            }
-        )
-    } catch {
         return {
-            status: 'missing',
+            status: 'ok',
+            value: await readExtractedValueFromHandle(element, {
+                attribute,
+            }),
         }
+    } catch (error) {
+        if (isRecoverableCounterReadRace(error)) {
+            return {
+                status: 'missing',
+            }
+        }
+        throw error
     }
+}
+
+async function disposeResolvedCounterElements(
+    resolutions: Iterable<CounterElementResolution>
+): Promise<void> {
+    const disposals: Promise<void>[] = []
+    for (const resolution of resolutions) {
+        if (resolution.status !== 'resolved') continue
+        disposals.push(resolution.element.dispose())
+    }
+    await Promise.all(disposals)
+}
+
+function isRecoverableCounterReadRace(error: unknown): boolean {
+    if (!(error instanceof Error)) return false
+
+    const message = error.message
+    return (
+        message.includes('Execution context was destroyed') ||
+        message.includes('Cannot find context with specified id') ||
+        message.includes('Cannot find execution context') ||
+        message.includes('Frame was detached') ||
+        message.includes('Element is not attached to the DOM') ||
+        message.includes('Element is detached')
+    )
 }
 
 function buildCounterNotFoundError(counter: number): CounterResolutionError {
