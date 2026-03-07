@@ -1,5 +1,4 @@
 import type { OpensteerAuthScheme } from '../types.js'
-import type { StoredMachineCloudCredential } from './machine-credential-store.js'
 
 export type CloudCredentialKind = 'api-key' | 'access-token'
 export type CloudCredentialSource = 'flag' | 'env' | 'saved'
@@ -10,17 +9,12 @@ export interface ResolvedCloudCredential {
     token: string
     authScheme: OpensteerAuthScheme
     compatibilityBearerApiKey?: boolean
-    savedCredential?: StoredMachineCloudCredential
 }
 
 export interface ResolveCloudCredentialOptions {
     env: Record<string, string | undefined>
     apiKeyFlag?: string
     accessTokenFlag?: string
-    allowSaved?: boolean
-    store?: {
-        readCloudCredential(): StoredMachineCloudCredential | null
-    }
 }
 
 export function resolveCloudCredential(
@@ -86,19 +80,6 @@ export function resolveCloudCredential(
             source: 'env',
             token: envApiKey,
             authScheme: envAuthScheme ?? 'api-key',
-        }
-    }
-
-    if (options.allowSaved !== false && options.store) {
-        const savedCredential = options.store.readCloudCredential()
-        if (savedCredential?.accessToken.trim()) {
-            return {
-                kind: 'access-token',
-                source: 'saved',
-                token: savedCredential.accessToken.trim(),
-                authScheme: 'bearer',
-                savedCredential,
-            }
         }
     }
 

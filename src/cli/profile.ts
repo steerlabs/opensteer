@@ -1,9 +1,16 @@
 import path from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import type { Cookie } from 'playwright'
+import { resolveConfigWithEnv } from '../config.js'
 import { Opensteer } from '../opensteer.js'
-import type { OpensteerConfig, OpensteerAuthScheme, CookieParam } from '../types.js'
+import type {
+    OpensteerConfig,
+    OpensteerAuthScheme,
+    OpensteerCloudBrowserProfileOptions,
+    CookieParam,
+} from '../types.js'
 import { expandHome } from '../browser/chrome.js'
+import { loadCookiesFromLocalProfileDir } from '../browser/chromium-profile.js'
 import {
     BrowserProfileClient,
     type BrowserProfileListRequest,
@@ -83,6 +90,9 @@ interface ProfileCliDeps {
         context: CloudAuthContext
     ) => BrowserProfileClientLike
     readonly createOpensteer: (config: OpensteerConfig) => OpensteerLike
+    readonly loadLocalProfileCookies: (
+        profileDir: string
+    ) => Promise<Cookie[] | null>
     readonly isInteractive: () => boolean
     readonly confirm: (message: string) => Promise<boolean>
     readonly writeStdout: (message: string) => void
@@ -101,13 +111,13 @@ Commands:
 Cloud auth options (all commands):
   --api-key <key>           Cloud API key (defaults to OPENSTEER_API_KEY)
   --access-token <token>    Cloud bearer access token (defaults to OPENSTEER_ACCESS_TOKEN)
-  --base-url <url>          Cloud API base URL (defaults to OPENSTEER_BASE_URL)
+  --base-url <url>          Cloud API base URL (defaults to env or the last selected host)
   --site-url <url>          Cloud site URL for login/refresh/revoke flows
   --auth-scheme <scheme>    api-key (default) or bearer
   --json                    JSON output (progress logs go to stderr)
 
 Sync options:
-  --from-profile-dir <dir>  Local browser profile directory to read cookies from (required)
+  --from-profile-dir <dir>  Local browser profile directory or Chromium user-data dir to read cookies from (required)
   --to-profile-id <id>      Destination cloud profile id
   --name <name>             Create destination cloud profile with this name if --to-profile-id is omitted
   --domain <domain>         Restrict sync to one domain (repeatable)
@@ -521,6 +531,8 @@ function createDefaultDeps(): ProfileCliDeps {
                 context.authScheme
             ),
         createOpensteer: (config) => new Opensteer(config),
+        loadLocalProfileCookies: (profileDir) =>
+            loadCookiesFromLocalProfileDir(profileDir),
         isInteractive: () => Boolean(process.stdin.isTTY && process.stdout.isTTY),
         confirm: async (message) => {
             const rl = createInterface({
@@ -735,6 +747,35 @@ async function resolveTargetProfileId(
     }
 }
 
+function resolveSyncBrowserProfilePreference(
+    profileId: string,
+    env: Record<string, string | undefined>
+): OpensteerCloudBrowserProfileOptions {
+    const resolved = resolveConfigWithEnv({
+        cloud: true,
+    }, {
+        env,
+    }).config
+    const cloudConfig =
+        resolved.cloud && typeof resolved.cloud === 'object'
+            ? resolved.cloud
+            : undefined
+    const configured = cloudConfig?.browserProfile
+
+    if (
+        configured &&
+        configured.profileId.trim() === profileId &&
+        configured.reuseIfActive !== undefined
+    ) {
+        return {
+            profileId,
+            reuseIfActive: configured.reuseIfActive,
+        }
+    }
+
+    return { profileId }
+}
+
 async function runSync(args: ProfileSyncArgs, deps: ProfileCliDeps): Promise<number> {
     const sourceProfileDir = expandHome(args.fromProfileDir.trim())
     const nonInteractive = !deps.isInteractive()
@@ -768,24 +809,29 @@ async function runSync(args: ProfileSyncArgs, deps: ProfileCliDeps): Promise<num
         `Reading cookies from local profile: ${sourceProfileDir}`
     )
 
-    const local = deps.createOpensteer({
-        cloud: false,
-        cursor: { enabled: false },
-        browser: {
-            headless: args.headless,
-            profileDir: sourceProfileDir,
-        },
-    })
     let sourceCookies: Cookie[] = []
-    try {
-        await local.launch({
-            headless: args.headless,
-            profileDir: sourceProfileDir,
-            timeout: 120_000,
+    const directCookies = await deps.loadLocalProfileCookies(sourceProfileDir)
+    if (directCookies) {
+        sourceCookies = directCookies
+    } else {
+        const local = deps.createOpensteer({
+            cloud: false,
+            cursor: { enabled: false },
+            browser: {
+                headless: args.headless,
+                profileDir: sourceProfileDir,
+            },
         })
-        sourceCookies = await local.getCookies()
-    } finally {
-        await local.close().catch(() => undefined)
+        try {
+            await local.launch({
+                headless: args.headless,
+                profileDir: sourceProfileDir,
+                timeout: 120_000,
+            })
+            sourceCookies = await local.getCookies()
+        } finally {
+            await local.close().catch(() => undefined)
+        }
     }
 
     const prepared = prepareCookiesForSync(sourceCookies, {
@@ -834,6 +880,10 @@ async function runSync(args: ProfileSyncArgs, deps: ProfileCliDeps): Promise<num
     const auth = await buildCloudAuthContext(args, deps)
     const client = deps.createBrowserProfileClient(auth)
     const target = await resolveTargetProfileId(args, deps, client)
+    const targetBrowserProfile = resolveSyncBrowserProfilePreference(
+        target.profileId,
+        deps.env
+    )
 
     writeProgressLine(
         deps,
@@ -848,9 +898,7 @@ async function runSync(args: ProfileSyncArgs, deps: ProfileCliDeps): Promise<num
                 : { accessToken: auth.token }),
             baseUrl: auth.baseUrl,
             authScheme: auth.authScheme,
-            browserProfile: {
-                profileId: target.profileId,
-            },
+            browserProfile: targetBrowserProfile,
         },
         cursor: { enabled: false },
     })
@@ -860,9 +908,6 @@ async function runSync(args: ProfileSyncArgs, deps: ProfileCliDeps): Promise<num
     try {
         await cloud.launch({
             headless: args.headless,
-            cloudBrowserProfile: {
-                profileId: target.profileId,
-            },
             timeout: 120_000,
         })
         const result = await importCookiesInBatches(cloud.context, prepared.cookies)

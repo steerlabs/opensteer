@@ -27,6 +27,11 @@ opensteer auth status
 paste the printed URL into a browser manually. In `--json` mode, login prompts
 go to stderr and the final JSON result stays on stdout.
 
+Saved machine logins remain scoped per cloud host (`baseUrl` + `siteUrl`).
+The CLI remembers the last selected cloud host, so `opensteer auth status`,
+`opensteer auth logout`, and other cloud commands reuse it by default unless
+`--base-url`, `--site-url`, or env vars select a different host.
+
 These values can be placed in `.env` files. Opensteer auto-loads
 `.env.<NODE_ENV>.local`, `.env.local` (skipped when `NODE_ENV=test`),
 `.env.<NODE_ENV>`, then `.env` from your `storage.rootDir` (default:
@@ -58,13 +63,14 @@ const opensteer = new Opensteer({
 - Cloud credential can be provided via:
   - `cloud.apiKey` / `OPENSTEER_API_KEY` (CI/headless recommended)
   - `cloud.accessToken` / `OPENSTEER_ACCESS_TOKEN`
-  - saved machine login (`opensteer auth login`) for interactive CLI commands
+  - saved machine login (`opensteer auth login`) for interactive CLI commands,
+    scoped per resolved host
 - Auth scheme can be configured via `cloud.authScheme` or `OPENSTEER_AUTH_SCHEME`
   - Supported values: `api-key` (default), `bearer`
 - Credential precedence in CLI commands:
   1. explicit flags
   2. environment variables
-  3. saved machine login
+  3. saved machine login for the resolved host
 - Cloud browser profile can be configured via
   `cloud.browserProfile.profileId` or `OPENSTEER_CLOUD_PROFILE_ID`
 - Optional profile session reuse can be configured via
