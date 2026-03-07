@@ -69,7 +69,6 @@ export interface EnsuredCloudAuthContext {
     source: 'flag' | 'env' | 'saved'
     kind: 'api-key' | 'access-token'
     baseUrl: string
-    siteUrl: string
 }
 
 export interface EnsureCloudCredentialsOptions {
@@ -79,7 +78,6 @@ export interface EnsureCloudCredentialsOptions {
     apiKeyFlag?: string
     accessTokenFlag?: string
     baseUrl?: string
-    siteUrl?: string
     interactive?: boolean
     autoLoginIfNeeded?: boolean
     writeProgress?: (message: string) => void
@@ -134,7 +132,6 @@ interface RefreshResult {
 
 interface AuthCommonArgs {
     baseUrl?: string
-    siteUrl?: string
     json?: boolean
 }
 
@@ -163,11 +160,13 @@ Commands:
 
 Options:
   --base-url <url>          Cloud API base URL (defaults to env or the last selected host)
-  --site-url <url>          Cloud site URL for browser/device auth (defaults to env or the last selected host)
   --json                    JSON output (login prompts go to stderr)
   --no-browser              Do not auto-open your default browser during login
   -h, --help                Show this help
 `
+
+const DEFAULT_AUTH_SITE_URL = 'https://opensteer.com'
+const INTERNAL_AUTH_SITE_URL_ENV = 'OPENSTEER_INTERNAL_AUTH_SITE_URL'
 
 function createDefaultDeps(): AuthCliDeps {
     const env = process.env as Record<string, string | undefined>
@@ -226,13 +225,6 @@ function parseAuthCommonArgs(rawArgs: string[]): {
             const value = readFlagValue(rawArgs, i, '--base-url')
             if (!value.ok) return { args, error: value.error }
             args.baseUrl = value.value
-            i = value.nextIndex
-            continue
-        }
-        if (arg === '--site-url') {
-            const value = readFlagValue(rawArgs, i, '--site-url')
-            if (!value.ok) return { args, error: value.error }
-            args.siteUrl = value.value
             i = value.nextIndex
             continue
         }
@@ -322,32 +314,23 @@ function resolveBaseUrl(
     return baseUrl
 }
 
-function resolveSiteUrl(
-    provided: string | undefined,
-    baseUrl: string,
-    env: Record<string, string | undefined>
-): string {
-    const siteUrl = normalizeCloudBaseUrl(
-        (
-            provided ||
-            env.OPENSTEER_CLOUD_SITE_URL ||
-            deriveSiteUrlFromBaseUrl(baseUrl)
-        ).trim()
+function resolveAuthSiteUrl(env: Record<string, string | undefined>): string {
+    const authSiteUrl = normalizeCloudBaseUrl(
+        (env[INTERNAL_AUTH_SITE_URL_ENV] || DEFAULT_AUTH_SITE_URL).trim()
     )
-    assertSecureUrl(siteUrl, '--site-url')
-    return siteUrl
+    assertSecureUrl(
+        authSiteUrl,
+        `environment variable ${INTERNAL_AUTH_SITE_URL_ENV}`
+    )
+    return authSiteUrl
 }
 
 function hasExplicitCloudTargetSelection(
     providedBaseUrl: string | undefined,
-    providedSiteUrl: string | undefined,
     env: Record<string, string | undefined>
 ): boolean {
     return Boolean(
-        providedBaseUrl?.trim() ||
-            providedSiteUrl?.trim() ||
-            env.OPENSTEER_BASE_URL?.trim() ||
-            env.OPENSTEER_CLOUD_SITE_URL?.trim()
+        providedBaseUrl?.trim() || env.OPENSTEER_BASE_URL?.trim()
     )
 }
 
@@ -361,24 +344,23 @@ function readRememberedCloudTarget(
 
     try {
         const baseUrl = normalizeCloudBaseUrl(activeTarget.baseUrl)
-        const siteUrl = normalizeCloudBaseUrl(activeTarget.siteUrl)
         assertSecureUrl(baseUrl, '--base-url')
-        assertSecureUrl(siteUrl, '--site-url')
-        return {
-            baseUrl,
-            siteUrl,
-        }
+        return { baseUrl }
     } catch {
         return null
     }
 }
 
 function resolveCloudTarget(
-    args: Pick<AuthCommonArgs, 'baseUrl' | 'siteUrl'>,
+    args: Pick<AuthCommonArgs, 'baseUrl'>,
     env: Record<string, string | undefined>,
-    store: Pick<CloudCredentialStore, 'readActiveCloudTarget'>
+    store: Pick<CloudCredentialStore, 'readActiveCloudTarget'>,
+    options: { allowRememberedTarget?: boolean } = {}
 ): CloudCredentialStoreTarget {
-    if (!hasExplicitCloudTargetSelection(args.baseUrl, args.siteUrl, env)) {
+    if (
+        options.allowRememberedTarget !== false &&
+        !hasExplicitCloudTargetSelection(args.baseUrl, env)
+    ) {
         const rememberedTarget = readRememberedCloudTarget(store)
         if (rememberedTarget) {
             return rememberedTarget
@@ -386,46 +368,7 @@ function resolveCloudTarget(
     }
 
     const baseUrl = resolveBaseUrl(args.baseUrl, env)
-    const siteUrl = resolveSiteUrl(args.siteUrl, baseUrl, env)
-    return {
-        baseUrl,
-        siteUrl,
-    }
-}
-
-function deriveSiteUrlFromBaseUrl(baseUrl: string): string {
-    let parsed: URL
-    try {
-        parsed = new URL(baseUrl)
-    } catch {
-        return 'https://opensteer.com'
-    }
-
-    const hostname = parsed.hostname.toLowerCase()
-    if (hostname.startsWith('api.')) {
-        parsed.hostname = hostname.slice('api.'.length)
-        parsed.pathname = ''
-        parsed.search = ''
-        parsed.hash = ''
-        return normalizeCloudBaseUrl(parsed.toString())
-    }
-
-    if (
-        hostname === 'localhost' ||
-        hostname === '127.0.0.1' ||
-        hostname === '::1'
-    ) {
-        parsed.port = '3001'
-        parsed.pathname = ''
-        parsed.search = ''
-        parsed.hash = ''
-        return normalizeCloudBaseUrl(parsed.toString())
-    }
-
-    parsed.pathname = ''
-    parsed.search = ''
-    parsed.hash = ''
-    return normalizeCloudBaseUrl(parsed.toString())
+    return { baseUrl }
 }
 
 function assertSecureUrl(value: string, flag: string): void {
@@ -537,12 +480,12 @@ function parseCliOauthError(error: unknown): CliOauthErrorResponse | null {
 }
 
 async function startDeviceAuthorization(
-    siteUrl: string,
+    authSiteUrl: string,
     fetchFn: AuthFetchFn
 ): Promise<CliDeviceStartResponse> {
     const response = await postJson<CliDeviceStartResponse>(
         fetchFn,
-        `${siteUrl}/api/cli-auth/device/start`,
+        `${authSiteUrl}/api/cli-auth/device/start`,
         {
             scope: ['cloud:browser'],
         }
@@ -568,13 +511,13 @@ async function startDeviceAuthorization(
 }
 
 async function pollDeviceToken(
-    siteUrl: string,
+    authSiteUrl: string,
     deviceCode: string,
     fetchFn: AuthFetchFn
 ): Promise<CliTokenResponse> {
     return await postJson<CliTokenResponse>(
         fetchFn,
-        `${siteUrl}/api/cli-auth/device/token`,
+        `${authSiteUrl}/api/cli-auth/device/token`,
         {
             grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
             device_code: deviceCode,
@@ -583,22 +526,22 @@ async function pollDeviceToken(
 }
 
 async function refreshToken(
-    siteUrl: string,
+    authSiteUrl: string,
     refreshTokenValue: string,
     fetchFn: AuthFetchFn
 ): Promise<CliTokenResponse> {
-    return await postJson<CliTokenResponse>(fetchFn, `${siteUrl}/api/cli-auth/token`, {
+    return await postJson<CliTokenResponse>(fetchFn, `${authSiteUrl}/api/cli-auth/token`, {
         grant_type: 'refresh_token',
         refresh_token: refreshTokenValue,
     })
 }
 
 async function revokeToken(
-    siteUrl: string,
+    authSiteUrl: string,
     refreshTokenValue: string,
     fetchFn: AuthFetchFn
 ): Promise<void> {
-    await postJson<{ revoked: boolean }>(fetchFn, `${siteUrl}/api/cli-auth/revoke`, {
+    await postJson<{ revoked: boolean }>(fetchFn, `${authSiteUrl}/api/cli-auth/revoke`, {
         token: refreshTokenValue,
     })
 }
@@ -618,7 +561,7 @@ async function openDefaultBrowser(url: string): Promise<boolean> {
 
 async function runDeviceLoginFlow(
     args: {
-        siteUrl: string
+        authSiteUrl: string
         fetchFn: AuthFetchFn
         writeProgress: (message: string) => void
         openExternalUrl: OpenExternalUrlFn
@@ -628,7 +571,7 @@ async function runDeviceLoginFlow(
         openBrowserDisabledReason?: string
     }
 ): Promise<DeviceLoginResult> {
-    const start = await startDeviceAuthorization(args.siteUrl, args.fetchFn)
+    const start = await startDeviceAuthorization(args.authSiteUrl, args.fetchFn)
 
     if (args.openBrowser) {
         args.writeProgress(
@@ -672,7 +615,7 @@ async function runDeviceLoginFlow(
 
         try {
             const tokenPayload = await pollDeviceToken(
-                args.siteUrl,
+                args.authSiteUrl,
                 start.device_code,
                 args.fetchFn
             )
@@ -728,10 +671,10 @@ async function runDeviceLoginFlow(
 
 async function refreshSavedCredential(
     saved: StoredMachineCloudCredential,
-    deps: Pick<AuthCliDeps, 'fetchFn' | 'store' | 'now'>
+    deps: Pick<AuthCliDeps, 'env' | 'fetchFn' | 'store' | 'now'>
 ): Promise<RefreshResult> {
     const tokenPayload = await refreshToken(
-        saved.siteUrl,
+        resolveAuthSiteUrl(deps.env),
         saved.refreshToken,
         deps.fetchFn
     )
@@ -745,7 +688,6 @@ async function refreshSavedCredential(
 
     deps.store.writeCloudCredential({
         baseUrl: saved.baseUrl,
-        siteUrl: saved.siteUrl,
         scope: updated.scope,
         accessToken: updated.accessToken,
         refreshToken: updated.refreshToken,
@@ -758,7 +700,7 @@ async function refreshSavedCredential(
 
 async function ensureSavedCredentialIsFresh(
     saved: StoredMachineCloudCredential,
-    deps: Pick<AuthCliDeps, 'fetchFn' | 'store' | 'now' | 'writeStderr'>
+    deps: Pick<AuthCliDeps, 'env' | 'fetchFn' | 'store' | 'now' | 'writeStderr'>
 ): Promise<StoredMachineCloudCredential | null> {
     const refreshSkewMs = 60_000
     if (saved.expiresAt > deps.now() + refreshSkewMs) {
@@ -781,7 +723,6 @@ async function ensureSavedCredentialIsFresh(
             if (oauth?.error === 'invalid_grant' || oauth?.error === 'expired_token') {
                 deps.store.clearCloudCredential({
                     baseUrl: saved.baseUrl,
-                    siteUrl: saved.siteUrl,
                 })
                 return null
             }
@@ -906,7 +847,7 @@ export async function ensureCloudCredentialsForCommand(
             },
         })
 
-    const { baseUrl, siteUrl } = resolveCloudTarget(options, env, store)
+    const { baseUrl } = resolveCloudTarget(options, env, store)
 
     const initialCredential = resolveCloudCredential({
         env,
@@ -916,12 +857,10 @@ export async function ensureCloudCredentialsForCommand(
 
     let credential: ResolvedCloudCredential | null = initialCredential
     if (!credential) {
-        const saved = store.readCloudCredential({
-            baseUrl,
-            siteUrl,
-        })
+        const saved = store.readCloudCredential({ baseUrl })
         const freshSaved = saved
             ? await ensureSavedCredentialIsFresh(saved, {
+                  env,
                   fetchFn,
                   store,
                   now,
@@ -942,7 +881,7 @@ export async function ensureCloudCredentialsForCommand(
     if (!credential) {
         if (options.autoLoginIfNeeded && (options.interactive ?? false)) {
             const loggedIn = await runDeviceLoginFlow({
-                siteUrl,
+                authSiteUrl: resolveAuthSiteUrl(env),
                 fetchFn,
                 writeProgress,
                 openExternalUrl,
@@ -953,7 +892,6 @@ export async function ensureCloudCredentialsForCommand(
 
             store.writeCloudCredential({
                 baseUrl,
-                siteUrl,
                 scope: loggedIn.scope,
                 accessToken: loggedIn.accessToken,
                 refreshToken: loggedIn.refreshToken,
@@ -973,13 +911,9 @@ export async function ensureCloudCredentialsForCommand(
         }
     }
 
-    store.writeActiveCloudTarget({
-        baseUrl,
-        siteUrl,
-    })
+    store.writeActiveCloudTarget({ baseUrl })
     applyCloudCredentialToEnv(env, credential)
     env.OPENSTEER_BASE_URL = baseUrl
-    env.OPENSTEER_CLOUD_SITE_URL = siteUrl
 
     return {
         token: credential.token,
@@ -987,7 +921,6 @@ export async function ensureCloudCredentialsForCommand(
         source: credential.source,
         kind: credential.kind,
         baseUrl,
-        siteUrl,
     }
 }
 
@@ -995,11 +928,13 @@ async function runLogin(
     args: AuthLoginArgs,
     deps: AuthCliDeps
 ): Promise<number> {
-    const { baseUrl, siteUrl } = resolveCloudTarget(args, deps.env, deps.store)
+    const { baseUrl } = resolveCloudTarget(args, deps.env, deps.store, {
+        allowRememberedTarget: false,
+    })
     const writeProgress = args.json ? deps.writeStderr : deps.writeStdout
     const browserOpenMode = describeBrowserOpenMode(args, deps)
     const login = await runDeviceLoginFlow({
-        siteUrl,
+        authSiteUrl: resolveAuthSiteUrl(deps.env),
         fetchFn: deps.fetchFn,
         writeProgress,
         openExternalUrl: deps.openExternalUrl,
@@ -1011,23 +946,18 @@ async function runLogin(
 
     deps.store.writeCloudCredential({
         baseUrl,
-        siteUrl,
         scope: login.scope,
         accessToken: login.accessToken,
         refreshToken: login.refreshToken,
         obtainedAt: deps.now(),
         expiresAt: login.expiresAt,
     })
-    deps.store.writeActiveCloudTarget({
-        baseUrl,
-        siteUrl,
-    })
+    deps.store.writeActiveCloudTarget({ baseUrl })
 
     if (args.json) {
         writeJsonLine(deps, {
             loggedIn: true,
             baseUrl,
-            siteUrl,
             expiresAt: login.expiresAt,
             scope: login.scope,
             authSource: 'device',
@@ -1036,7 +966,6 @@ async function runLogin(
     }
 
     writeHumanLine(deps, 'Opensteer CLI login successful.')
-    writeHumanLine(deps, `  Site URL: ${siteUrl}`)
     writeHumanLine(deps, `  API Base URL: ${baseUrl}`)
     writeHumanLine(deps, `  Expires At: ${new Date(login.expiresAt).toISOString()}`)
     return 0
@@ -1046,27 +975,17 @@ async function runStatus(
     args: AuthStatusArgs,
     deps: AuthCliDeps
 ): Promise<number> {
-    const { baseUrl, siteUrl } = resolveCloudTarget(args, deps.env, deps.store)
-    deps.store.writeActiveCloudTarget({
-        baseUrl,
-        siteUrl,
-    })
-    const saved = deps.store.readCloudCredential({
-        baseUrl,
-        siteUrl,
-    })
+    const { baseUrl } = resolveCloudTarget(args, deps.env, deps.store)
+    deps.store.writeActiveCloudTarget({ baseUrl })
+    const saved = deps.store.readCloudCredential({ baseUrl })
     if (!saved) {
         if (args.json) {
             writeJsonLine(deps, {
                 loggedIn: false,
                 baseUrl,
-                siteUrl,
             })
         } else {
-            writeHumanLine(
-                deps,
-                `Opensteer CLI is not logged in for ${siteUrl}.`
-            )
+            writeHumanLine(deps, `Opensteer CLI is not logged in for ${baseUrl}.`)
         }
         return 0
     }
@@ -1078,7 +997,6 @@ async function runStatus(
             loggedIn: true,
             expired,
             baseUrl: saved.baseUrl,
-            siteUrl: saved.siteUrl,
             expiresAt: saved.expiresAt,
             scope: saved.scope,
         })
@@ -1091,7 +1009,6 @@ async function runStatus(
             ? 'Opensteer CLI has a saved login, but the access token is expired.'
             : 'Opensteer CLI is logged in.'
     )
-    writeHumanLine(deps, `  Site URL: ${saved.siteUrl}`)
     writeHumanLine(deps, `  API Base URL: ${saved.baseUrl}`)
     writeHumanLine(deps, `  Expires At: ${new Date(saved.expiresAt).toISOString()}`)
     return 0
@@ -1101,40 +1018,31 @@ async function runLogout(
     args: AuthLogoutArgs,
     deps: AuthCliDeps
 ): Promise<number> {
-    const { baseUrl, siteUrl } = resolveCloudTarget(args, deps.env, deps.store)
-    deps.store.writeActiveCloudTarget({
-        baseUrl,
-        siteUrl,
-    })
-    const saved = deps.store.readCloudCredential({
-        baseUrl,
-        siteUrl,
-    })
+    const { baseUrl } = resolveCloudTarget(args, deps.env, deps.store)
+    deps.store.writeActiveCloudTarget({ baseUrl })
+    const saved = deps.store.readCloudCredential({ baseUrl })
     if (saved) {
         try {
-            await revokeToken(saved.siteUrl, saved.refreshToken, deps.fetchFn)
+            await revokeToken(
+                resolveAuthSiteUrl(deps.env),
+                saved.refreshToken,
+                deps.fetchFn
+            )
         } catch {
             // Best-effort revoke; local logout still succeeds.
         }
     }
 
-    deps.store.clearCloudCredential({
-        baseUrl,
-        siteUrl,
-    })
+    deps.store.clearCloudCredential({ baseUrl })
     if (args.json) {
         writeJsonLine(deps, {
             loggedOut: true,
             baseUrl,
-            siteUrl,
         })
         return 0
     }
 
-    writeHumanLine(
-        deps,
-        `Opensteer CLI login removed for ${siteUrl}.`
-    )
+    writeHumanLine(deps, `Opensteer CLI login removed for ${baseUrl}.`)
     return 0
 }
 

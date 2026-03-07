@@ -35,7 +35,6 @@ export interface ProfileCommonCloudArgs {
     apiKey?: string
     accessToken?: string
     baseUrl?: string
-    siteUrl?: string
     authScheme?: OpensteerAuthScheme
     json?: boolean
 }
@@ -64,7 +63,6 @@ export interface ProfileSyncArgs extends ProfileCommonCloudArgs {
 interface CloudAuthContext {
     token: string
     baseUrl: string
-    siteUrl: string
     authScheme: OpensteerAuthScheme
     kind: 'api-key' | 'access-token'
     source: 'flag' | 'env' | 'saved'
@@ -115,7 +113,6 @@ Cloud auth options (all commands):
   --api-key <key>           Cloud API key (defaults to OPENSTEER_API_KEY)
   --access-token <token>    Cloud bearer access token (defaults to OPENSTEER_ACCESS_TOKEN)
   --base-url <url>          Cloud API base URL (defaults to env or the last selected host)
-  --site-url <url>          Cloud site URL for login/refresh/revoke flows
   --auth-scheme <scheme>    api-key (default) or bearer
   --json                    JSON output (progress logs go to stderr)
 
@@ -216,13 +213,6 @@ function parseListArgs(rawArgs: string[]): ParsedProfileArgs {
             i = value.nextIndex
             continue
         }
-        if (arg === '--site-url') {
-            const value = readFlagValue(rawArgs, i, '--site-url')
-            if (!value.ok) return { mode: 'error', error: value.error }
-            args.siteUrl = value.value
-            i = value.nextIndex
-            continue
-        }
         if (arg === '--auth-scheme') {
             const value = readFlagValue(rawArgs, i, '--auth-scheme')
             if (!value.ok) return { mode: 'error', error: value.error }
@@ -316,13 +306,6 @@ function parseCreateArgs(rawArgs: string[]): ParsedProfileArgs {
             const value = readFlagValue(rawArgs, i, '--base-url')
             if (!value.ok) return { mode: 'error', error: value.error }
             args.baseUrl = value.value
-            i = value.nextIndex
-            continue
-        }
-        if (arg === '--site-url') {
-            const value = readFlagValue(rawArgs, i, '--site-url')
-            if (!value.ok) return { mode: 'error', error: value.error }
-            args.siteUrl = value.value
             i = value.nextIndex
             continue
         }
@@ -449,13 +432,6 @@ function parseSyncArgs(rawArgs: string[]): ParsedProfileArgs {
             i = value.nextIndex
             continue
         }
-        if (arg === '--site-url') {
-            const value = readFlagValue(rawArgs, i, '--site-url')
-            if (!value.ok) return { mode: 'error', error: value.error }
-            args.siteUrl = value.value
-            i = value.nextIndex
-            continue
-        }
         if (arg === '--auth-scheme') {
             const value = readFlagValue(rawArgs, i, '--auth-scheme')
             if (!value.ok) return { mode: 'error', error: value.error }
@@ -565,7 +541,6 @@ async function buildCloudAuthContext(
         apiKeyFlag: args.apiKey,
         accessTokenFlag: args.accessToken,
         baseUrl: args.baseUrl,
-        siteUrl: args.siteUrl,
         interactive: deps.isInteractive(),
         autoLoginIfNeeded: true,
         writeProgress: args.json ? deps.writeStderr : deps.writeStdout,
@@ -589,7 +564,6 @@ async function buildCloudAuthContext(
     return {
         token: ensured.token,
         baseUrl: ensured.baseUrl,
-        siteUrl: ensured.siteUrl,
         authScheme: ensured.authScheme,
         kind: ensured.kind,
         source: ensured.source,
