@@ -143,10 +143,10 @@ launch.
 URL into another browser manually. `opensteer auth login --json` keeps prompts
 on stderr and writes the final JSON payload to stdout.
 
-Saved machine logins remain scoped per resolved cloud host (`baseUrl` +
-`siteUrl`). The CLI remembers the last selected cloud host, so `opensteer auth
-status`, `opensteer auth logout`, and other cloud commands reuse it by default
-unless `--base-url`, `--site-url`, or env vars select a different host.
+Saved machine logins remain scoped per resolved cloud API host (`baseUrl`). The
+CLI remembers the last selected cloud host, so `opensteer auth status`,
+`opensteer auth logout`, and other cloud commands reuse it by default unless
+`--base-url` or env vars select a different host.
 
 ## Global Flags
 
@@ -175,7 +175,6 @@ unless `--base-url`, `--site-url`, or env vars select a different host.
 - `OPENSTEER_API_KEY`: cloud API key credential (best for CI/headless)
 - `OPENSTEER_ACCESS_TOKEN`: cloud bearer token credential (from `opensteer auth login`)
 - `OPENSTEER_BASE_URL`: cloud control-plane base URL
-- `OPENSTEER_CLOUD_SITE_URL`: cloud site URL for device login endpoints
 - `OPENSTEER_AUTH_SCHEME`: `api-key` (default) or `bearer`
 - `OPENSTEER_REMOTE_ANNOUNCE`: `always` (default), `off`, or `tty`
 - `OPENSTEER_CLOUD_PROFILE_ID`: default cloud browser profile id

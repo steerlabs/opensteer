@@ -752,7 +752,6 @@ Exported for advanced integration:
 | `OPENSTEER_API_KEY` | API key for cloud mode |
 | `OPENSTEER_ACCESS_TOKEN` | Bearer token for cloud mode |
 | `OPENSTEER_BASE_URL` | Cloud control-plane base URL (default: `https://api.opensteer.com`) |
-| `OPENSTEER_CLOUD_SITE_URL` | Cloud site URL for CLI device login endpoints |
 | `OPENSTEER_AUTH_SCHEME` | Cloud auth scheme: `api-key` (default) or `bearer` |
 | `OPENSTEER_REMOTE_ANNOUNCE` | Cloud launch announcement policy: `always`, `off`, `tty` (default: `always`) |
 | `OPENSTEER_CLOUD_PROFILE_ID` | Default cloud browser profile id to launch with |

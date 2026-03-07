@@ -5,20 +5,16 @@ import path from 'node:path'
 import { createKeychainStore } from './keychain-store.js'
 import { stripTrailingSlashes } from '../utils/strip-trailing-slashes.js'
 
-const METADATA_VERSION = 1
-const ACTIVE_TARGET_VERSION = 1
+const METADATA_VERSION = 2
+const ACTIVE_TARGET_VERSION = 2
 const KEYCHAIN_SERVICE = 'com.opensteer.cli.cloud'
 const KEYCHAIN_ACCOUNT_PREFIX = 'machine:'
-const LEGACY_KEYCHAIN_ACCOUNT = 'machine'
-const LEGACY_METADATA_FILE_NAME = 'cli-login.json'
-const LEGACY_FALLBACK_SECRET_FILE_NAME = 'cli-login.secret.json'
 const ACTIVE_TARGET_FILE_NAME = 'cli-target.json'
 
 interface MachineCredentialMetadata {
     version: number
     secretBackend: 'keychain' | 'file'
     baseUrl: string
-    siteUrl: string
     scope: string[]
     obtainedAt: number
     expiresAt: number
@@ -33,13 +29,11 @@ interface CloudCredentialSecretPayload {
 interface ActiveCloudTargetMetadata {
     version: number
     baseUrl: string
-    siteUrl: string
     updatedAt: number
 }
 
 export interface StoredMachineCloudCredential {
     baseUrl: string
-    siteUrl: string
     scope: string[]
     accessToken: string
     refreshToken: string
@@ -49,7 +43,6 @@ export interface StoredMachineCloudCredential {
 
 export interface WriteMachineCloudCredentialArgs {
     baseUrl: string
-    siteUrl: string
     scope: string[]
     accessToken: string
     refreshToken: string
@@ -59,7 +52,6 @@ export interface WriteMachineCloudCredentialArgs {
 
 export interface CloudCredentialStoreTarget {
     baseUrl: string
-    siteUrl: string
 }
 
 export interface MachineCredentialStoreWarning {
@@ -91,10 +83,10 @@ export class MachineCredentialStore {
     readCloudCredential(
         target: CloudCredentialStoreTarget
     ): StoredMachineCloudCredential | null {
-        const slot = resolveCredentialSlot(this.authDir, target)
-        return (
-            this.readCredentialSlot(slot, target) ??
-            this.readAndMigrateLegacyCredential(target)
+        const normalizedTarget = normalizeCloudCredentialTarget(target)
+        return this.readCredentialSlot(
+            resolveCredentialSlot(this.authDir, normalizedTarget),
+            normalizedTarget
         )
     }
 
@@ -105,12 +97,8 @@ export class MachineCredentialStore {
             throw new Error('Cannot persist empty machine credential secrets.')
         }
 
-        const baseUrl = normalizeCredentialUrl(args.baseUrl, 'baseUrl')
-        const siteUrl = normalizeCredentialUrl(args.siteUrl, 'siteUrl')
-        const slot = resolveCredentialSlot(this.authDir, {
-            baseUrl,
-            siteUrl,
-        })
+        const baseUrl = normalizeCredentialUrl(args.baseUrl)
+        const slot = resolveCredentialSlot(this.authDir, { baseUrl })
         ensureDirectory(this.authDir)
 
         const secretPayload: CloudCredentialSecretPayload = {
@@ -140,7 +128,6 @@ export class MachineCredentialStore {
             version: METADATA_VERSION,
             secretBackend,
             baseUrl,
-            siteUrl,
             scope: args.scope,
             obtainedAt: args.obtainedAt,
             expiresAt: args.expiresAt,
@@ -155,25 +142,19 @@ export class MachineCredentialStore {
     }
 
     writeActiveCloudTarget(target: CloudCredentialStoreTarget): void {
-        const baseUrl = normalizeCredentialUrl(target.baseUrl, 'baseUrl')
-        const siteUrl = normalizeCredentialUrl(target.siteUrl, 'siteUrl')
+        const baseUrl = normalizeCredentialUrl(target.baseUrl)
         ensureDirectory(this.authDir)
         writeJsonFile(resolveActiveTargetPath(this.authDir), {
             version: ACTIVE_TARGET_VERSION,
             baseUrl,
-            siteUrl,
             updatedAt: Date.now(),
         } satisfies ActiveCloudTargetMetadata)
     }
 
     clearCloudCredential(target: CloudCredentialStoreTarget): void {
-        this.clearCredentialSlot(resolveCredentialSlot(this.authDir, target))
-
-        const legacySlot = resolveLegacyCredentialSlot(this.authDir)
-        const legacyMetadata = readMetadata(legacySlot.metadataPath)
-        if (legacyMetadata && matchesCredentialTarget(legacyMetadata, target)) {
-            this.clearCredentialSlot(legacySlot)
-        }
+        this.clearCredentialSlot(
+            resolveCredentialSlot(this.authDir, normalizeCloudCredentialTarget(target))
+        )
     }
 
     private readCredentialSlot(
@@ -195,27 +176,12 @@ export class MachineCredentialStore {
 
         return {
             baseUrl: metadata.baseUrl,
-            siteUrl: metadata.siteUrl,
             scope: metadata.scope,
             accessToken: secret.accessToken,
             refreshToken: secret.refreshToken,
             obtainedAt: metadata.obtainedAt,
             expiresAt: metadata.expiresAt,
         }
-    }
-
-    private readAndMigrateLegacyCredential(
-        target: CloudCredentialStoreTarget
-    ): StoredMachineCloudCredential | null {
-        const legacySlot = resolveLegacyCredentialSlot(this.authDir)
-        const legacyCredential = this.readCredentialSlot(legacySlot, target)
-        if (!legacyCredential) {
-            return null
-        }
-
-        this.writeCloudCredential(legacyCredential)
-        this.clearCredentialSlot(legacySlot)
-        return legacyCredential
     }
 
     private readSecret(
@@ -282,10 +248,9 @@ function resolveCredentialSlot(
     authDir: string,
     target: CloudCredentialStoreTarget
 ): ResolvedCredentialSlot {
-    const normalizedBaseUrl = normalizeCredentialUrl(target.baseUrl, 'baseUrl')
-    const normalizedSiteUrl = normalizeCredentialUrl(target.siteUrl, 'siteUrl')
+    const normalizedBaseUrl = normalizeCredentialUrl(target.baseUrl)
     const storageKey = createHash('sha256')
-        .update(`${normalizedBaseUrl}\u0000${normalizedSiteUrl}`)
+        .update(normalizedBaseUrl)
         .digest('hex')
         .slice(0, 24)
 
@@ -299,36 +264,31 @@ function resolveCredentialSlot(
     }
 }
 
-function resolveLegacyCredentialSlot(authDir: string): ResolvedCredentialSlot {
-    return {
-        keychainAccount: LEGACY_KEYCHAIN_ACCOUNT,
-        metadataPath: path.join(authDir, LEGACY_METADATA_FILE_NAME),
-        fallbackSecretPath: path.join(authDir, LEGACY_FALLBACK_SECRET_FILE_NAME),
-    }
-}
-
 function resolveActiveTargetPath(authDir: string): string {
     return path.join(authDir, ACTIVE_TARGET_FILE_NAME)
 }
 
 function matchesCredentialTarget(
-    value: Pick<StoredMachineCloudCredential, 'baseUrl' | 'siteUrl'>,
+    value: Pick<StoredMachineCloudCredential, 'baseUrl'>,
     target: CloudCredentialStoreTarget
 ): boolean {
-    return (
-        normalizeCredentialUrl(value.baseUrl, 'baseUrl') ===
-            normalizeCredentialUrl(target.baseUrl, 'baseUrl') &&
-        normalizeCredentialUrl(value.siteUrl, 'siteUrl') ===
-            normalizeCredentialUrl(target.siteUrl, 'siteUrl')
-    )
+    return normalizeCredentialUrl(value.baseUrl) === normalizeCredentialUrl(target.baseUrl)
 }
 
-function normalizeCredentialUrl(value: string, field: 'baseUrl' | 'siteUrl'): string {
+function normalizeCredentialUrl(value: string): string {
     const normalized = stripTrailingSlashes(value.trim())
     if (!normalized) {
-        throw new Error(`Cannot persist machine credential without ${field}.`)
+        throw new Error('Cannot persist machine credential without baseUrl.')
     }
     return normalized
+}
+
+function normalizeCloudCredentialTarget(
+    target: CloudCredentialStoreTarget
+): CloudCredentialStoreTarget {
+    return {
+        baseUrl: normalizeCredentialUrl(target.baseUrl),
+    }
 }
 
 function resolveConfigDir(
@@ -381,7 +341,6 @@ function readMetadata(filePath: string): MachineCredentialMetadata | null {
             return null
         }
         if (typeof parsed.baseUrl !== 'string' || !parsed.baseUrl.trim()) return null
-        if (typeof parsed.siteUrl !== 'string' || !parsed.siteUrl.trim()) return null
         if (!Array.isArray(parsed.scope)) return null
         if (typeof parsed.obtainedAt !== 'number') return null
         if (typeof parsed.expiresAt !== 'number') return null
@@ -391,7 +350,6 @@ function readMetadata(filePath: string): MachineCredentialMetadata | null {
             version: parsed.version,
             secretBackend: parsed.secretBackend,
             baseUrl: parsed.baseUrl,
-            siteUrl: parsed.siteUrl,
             scope: parsed.scope.filter((value): value is string =>
                 typeof value === 'string'
             ),
@@ -420,13 +378,9 @@ function readActiveCloudTargetMetadata(
         if (typeof parsed.baseUrl !== 'string' || !parsed.baseUrl.trim()) {
             return null
         }
-        if (typeof parsed.siteUrl !== 'string' || !parsed.siteUrl.trim()) {
-            return null
-        }
 
         return {
             baseUrl: parsed.baseUrl,
-            siteUrl: parsed.siteUrl,
         }
     } catch {
         return null
@@ -460,8 +414,7 @@ function readSecretFile(filePath: string): CloudCredentialSecretPayload | null {
     }
 
     try {
-        const raw = fs.readFileSync(filePath, 'utf8')
-        return parseSecretPayload(raw)
+        return parseSecretPayload(fs.readFileSync(filePath, 'utf8'))
     } catch {
         return null
     }
@@ -469,10 +422,10 @@ function readSecretFile(filePath: string): CloudCredentialSecretPayload | null {
 
 function writeJsonFile(
     filePath: string,
-    payload: unknown,
+    value: unknown,
     options: { mode?: number } = {}
 ): void {
-    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), {
+    fs.writeFileSync(filePath, JSON.stringify(value, null, 2), {
         encoding: 'utf8',
         mode: options.mode ?? 0o600,
     })

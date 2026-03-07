@@ -55,6 +55,14 @@ describe('cli/profile parser', () => {
             error: 'Use either --all-domains or --domain, not both.',
         })
     })
+
+    it('rejects the removed --site-url option', () => {
+        expect(parseOpensteerProfileArgs(['list', '--site-url', 'https://opensteer.com']))
+            .toEqual({
+                mode: 'error',
+                error: 'Unsupported option "--site-url" for "opensteer profile list".',
+            })
+    })
 })
 
 describe('cli/profile runner', () => {
@@ -230,6 +238,7 @@ describe('cli/profile runner', () => {
             ],
             {
                 env: {
+                    OPENSTEER_DISABLE_DOTENV_AUTOLOAD: '1',
                     OPENSTEER_ACCESS_TOKEN: 'ost_token_123',
                     OPENSTEER_CLOUD_PROFILE_ID: 'bp_123',
                     OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE: 'true',
