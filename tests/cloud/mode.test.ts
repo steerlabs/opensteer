@@ -78,7 +78,7 @@ describe('cloud mode', () => {
         ).not.toThrow()
     })
 
-    it('rejects cloud config that sets both apiKey and accessToken', () => {
+    it('prefers cloud apiKey when cloud config sets both apiKey and accessToken', () => {
         expect(() =>
             new Opensteer({
                 cloud: {
@@ -86,9 +86,7 @@ describe('cloud mode', () => {
                     accessToken: 'ost_test_123',
                 },
             })
-        ).toThrow(
-            'cloud.apiKey and cloud.accessToken are mutually exclusive. Set only one.'
-        )
+        ).not.toThrow()
     })
 
     it('rejects Opensteer.from(page) in cloud mode', () => {

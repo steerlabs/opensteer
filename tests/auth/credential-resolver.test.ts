@@ -21,27 +21,35 @@ describe('credential-resolver', () => {
         })
     })
 
-    it('rejects conflicting flags', () => {
-        expect(() =>
-            resolveCloudCredential({
-                env: {},
-                apiKeyFlag: 'ork_123',
-                accessTokenFlag: 'ost_123',
-            })
-        ).toThrow('--api-key and --access-token are mutually exclusive.')
+    it('prefers --api-key when conflicting flags are provided', () => {
+        const resolved = resolveCloudCredential({
+            env: {},
+            apiKeyFlag: 'ork_123',
+            accessTokenFlag: 'ost_123',
+        })
+
+        expect(resolved).toEqual({
+            kind: 'api-key',
+            source: 'flag',
+            token: 'ork_123',
+            authScheme: 'api-key',
+        })
     })
 
-    it('rejects conflicting env credentials when flags are not set', () => {
-        expect(() =>
-            resolveCloudCredential({
-                env: {
-                    OPENSTEER_API_KEY: 'ork_123',
-                    OPENSTEER_ACCESS_TOKEN: 'ost_123',
-                },
-            })
-        ).toThrow(
-            'OPENSTEER_API_KEY and OPENSTEER_ACCESS_TOKEN are mutually exclusive. Set only one.'
-        )
+    it('prefers OPENSTEER_API_KEY when conflicting env credentials are set', () => {
+        const resolved = resolveCloudCredential({
+            env: {
+                OPENSTEER_API_KEY: 'ork_123',
+                OPENSTEER_ACCESS_TOKEN: 'ost_123',
+            },
+        })
+
+        expect(resolved).toEqual({
+            kind: 'api-key',
+            source: 'env',
+            token: 'ork_123',
+            authScheme: 'api-key',
+        })
     })
 
     it('maps OPENSTEER_AUTH_SCHEME=bearer + OPENSTEER_API_KEY to access-token compatibility mode', () => {
@@ -49,6 +57,24 @@ describe('credential-resolver', () => {
             env: {
                 OPENSTEER_AUTH_SCHEME: 'bearer',
                 OPENSTEER_API_KEY: 'legacy_bearer_token',
+            },
+        })
+
+        expect(resolved).toEqual({
+            kind: 'access-token',
+            source: 'env',
+            token: 'legacy_bearer_token',
+            authScheme: 'bearer',
+            compatibilityBearerApiKey: true,
+        })
+    })
+
+    it('keeps bearer compatibility when OPENSTEER_AUTH_SCHEME=bearer and both env credentials are set', () => {
+        const resolved = resolveCloudCredential({
+            env: {
+                OPENSTEER_AUTH_SCHEME: 'bearer',
+                OPENSTEER_API_KEY: 'legacy_bearer_token',
+                OPENSTEER_ACCESS_TOKEN: 'ost_ignored',
             },
         })
 
