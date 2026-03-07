@@ -3,7 +3,10 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { parse as parseDotenv } from 'dotenv'
 import { extractErrorMessage } from './error-normalization.js'
-import { selectCloudCredential } from './cloud/credential-selection.js'
+import {
+    selectCloudCredentialByPrecedence,
+    type SelectedCloudCredentialLayer,
+} from './cloud/credential-selection.js'
 import type {
     OpensteerAuthScheme,
     OpensteerCloudBrowserProfileOptions,
@@ -440,6 +443,27 @@ function parseCloudEnabled(
     )
 }
 
+function resolveCloudCredentialFields(
+    selectedLayer: SelectedCloudCredentialLayer | null | undefined
+): Pick<OpensteerCloudOptions, 'apiKey' | 'accessToken'> {
+    const credential = selectedLayer?.credential
+    if (!credential) return {}
+
+    if (
+        credential.kind === 'api-key' ||
+        (credential.compatibilityBearerApiKey === true &&
+            selectedLayer?.source !== 'env')
+    ) {
+        return {
+            apiKey: credential.token,
+        }
+    }
+
+    return {
+        accessToken: credential.token,
+    }
+}
+
 export function resolveCloudSelection(
     config: Pick<OpensteerConfig, 'cloud'>,
     env: RuntimeEnv = process.env as RuntimeEnv
@@ -492,6 +516,9 @@ export function resolveConfigWithEnv(
     })
     assertNoLegacyAiConfig('.opensteer/config.json', fileConfig)
     assertNoLegacyRuntimeConfig('.opensteer/config.json', fileConfig)
+    const fileCloudOptions = normalizeCloudOptions(fileConfig.cloud)
+    const fileHasCloudApiKey = hasOwn(fileCloudOptions, 'apiKey')
+    const fileHasCloudAccessToken = hasOwn(fileCloudOptions, 'accessToken')
     const fileRootDir =
         typeof fileConfig.storage?.rootDir === 'string'
             ? fileConfig.storage.rootDir
@@ -540,15 +567,6 @@ export function resolveConfigWithEnv(
     const envAccessTokenRaw = resolveOpensteerAccessToken(env)
     const envBaseUrl = resolveOpensteerBaseUrl(env)
     const envAuthScheme = resolveOpensteerAuthScheme(env)
-    const envCredential = selectCloudCredential({
-        apiKey: envApiKey,
-        accessToken: envAccessTokenRaw,
-        authScheme: envAuthScheme,
-    })
-    const envAccessToken =
-        envCredential?.kind === 'access-token' ? envCredential.token : undefined
-    const envApiCredential =
-        envCredential?.kind === 'api-key' ? envCredential.token : undefined
     const envCloudProfileId = resolveOpensteerCloudProfileId(env)
     const envCloudProfileReuseIfActive =
         resolveOpensteerCloudProfileReuseIfActive(env)
@@ -614,25 +632,34 @@ export function resolveConfigWithEnv(
             envCloudAnnounce ??
             parseCloudAnnounce(resolvedCloud.announce, 'cloud.announce') ??
             'always'
-        const credentialOverriddenByInput =
-            inputHasCloudApiKey || inputHasCloudAccessToken
-        const resolvedCloudCredential = selectCloudCredential({
-            apiKey: resolvedCloudApiKeyRaw,
-            accessToken: resolvedCloudAccessTokenRaw,
-            authScheme,
-        })
-        let apiKey = resolvedCloudCredential?.apiKey
-        let accessToken = resolvedCloudCredential?.accessToken
-
-        if (!credentialOverriddenByInput) {
-            if (envAccessToken) {
-                accessToken = envAccessToken
-                apiKey = undefined
-            } else if (envApiCredential) {
-                apiKey = envApiCredential
-                accessToken = undefined
-            }
-        }
+        const selectedCredentialLayer = selectCloudCredentialByPrecedence(
+            [
+                {
+                    source: 'input',
+                    apiKey: inputCloudOptions?.apiKey,
+                    accessToken: inputCloudOptions?.accessToken,
+                    hasApiKey: inputHasCloudApiKey,
+                    hasAccessToken: inputHasCloudAccessToken,
+                },
+                {
+                    source: 'env',
+                    apiKey: envApiKey,
+                    accessToken: envAccessTokenRaw,
+                    hasApiKey: envApiKey !== undefined,
+                    hasAccessToken: envAccessTokenRaw !== undefined,
+                },
+                {
+                    source: 'file',
+                    apiKey: fileCloudOptions?.apiKey,
+                    accessToken: fileCloudOptions?.accessToken,
+                    hasApiKey: fileHasCloudApiKey,
+                    hasAccessToken: fileHasCloudAccessToken,
+                },
+            ],
+            authScheme
+        )
+        const { apiKey, accessToken } =
+            resolveCloudCredentialFields(selectedCredentialLayer)
 
         if (accessToken) {
             authScheme = 'bearer'
@@ -642,13 +669,13 @@ export function resolveConfigWithEnv(
             ...resolvedCloudRest,
             ...(apiKey
                 ? { apiKey }
-                : inputHasCloudApiKey && !accessToken
-                  ? { apiKey: resolvedCloudApiKeyRaw }
+                : selectedCredentialLayer?.hasApiKey && !accessToken
+                  ? { apiKey: selectedCredentialLayer.apiKey }
                   : {}),
             ...(accessToken
                 ? { accessToken }
-                : inputHasCloudAccessToken && !apiKey
-                  ? { accessToken: resolvedCloudAccessTokenRaw }
+                : selectedCredentialLayer?.hasAccessToken && !apiKey
+                  ? { accessToken: selectedCredentialLayer.accessToken }
                   : {}),
             authScheme,
             announce,
