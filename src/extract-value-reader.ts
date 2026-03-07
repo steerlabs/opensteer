@@ -7,26 +7,22 @@ import {
 interface ExtractedValueReadPayload {
     raw: string | null
     baseURI: string | null
-    insideIframe: boolean
 }
 
 export async function readExtractedValueFromHandle(
     element: ElementHandle<Element>,
     options: { attribute?: string }
 ): Promise<string | null> {
+    const insideIframe = await isElementInsideIframe(element)
     const payload = await element.evaluate(
         (target, browserOptions): ExtractedValueReadPayload => {
             const ownerDocument = target.ownerDocument
-            const view = ownerDocument?.defaultView
-            const frameElement = view?.frameElement
-            const frameTag = String(frameElement?.tagName || '').toLowerCase()
 
             return {
                 raw: browserOptions.attribute
                     ? target.getAttribute(browserOptions.attribute)
                     : target.textContent,
                 baseURI: ownerDocument?.baseURI || null,
-                insideIframe: frameTag === 'iframe',
             }
         },
         {
@@ -42,6 +38,13 @@ export async function readExtractedValueFromHandle(
     return resolveExtractedValueInContext(normalizedValue, {
         attribute: options.attribute,
         baseURI: payload.baseURI,
-        insideIframe: payload.insideIframe,
+        insideIframe,
     })
+}
+
+async function isElementInsideIframe(
+    element: ElementHandle<Element>
+): Promise<boolean> {
+    const ownerFrame = await element.ownerFrame()
+    return !!ownerFrame?.parentFrame()
 }
