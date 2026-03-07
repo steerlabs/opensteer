@@ -10,7 +10,6 @@ Main setup (recommended):
 
 ```bash
 npm i -g opensteer
-opensteer auth login
 opensteer skills install
 ```
 
@@ -210,7 +209,7 @@ const opensteer = new Opensteer({
       reuseIfActive: true,
     },
   },
-})
+});
 ```
 
 Sync local profile cookies into a cloud profile:
