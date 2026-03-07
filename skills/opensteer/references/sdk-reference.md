@@ -64,16 +64,27 @@ const data = await opensteer.extract({
   description: "product details",
 });
 
-// Counter-based (during exploration or when no cache exists)
+// Semantic extraction: schema is the output shape
+const images = await opensteer.extract({
+  description: "article images with captions and credits",
+  prompt: "For each image, return the image URL, alt text, caption, and credit. Prefer caption and credit from the same figure. If missing, look at sibling text, then parent/container text, then nearby alt/data-* attributes.",
+  schema: {
+    images: [{ imageUrl: "string", alt: "string", caption: "string", credit: "string" }],
+  },
+});
+
+// Explicit bindings (during exploration or when no cache exists)
 const data = await opensteer.extract({
   schema: { title: { element: 3 }, price: { element: 7 } },
   description: "product details",
 });
 ```
 
-Schema field types: `{ element: N }`, `{ element: N, attribute: "href" }`, `{ selector: ".price" }`, `{ source: "current_url" }`.
+`schema` describes the output shape, not just selector config. It can use semantic placeholders like `"string"` and arrays of objects, or explicit field bindings such as `{ element: N }`, `{ element: N, attribute: "href" }`, `{ selector: ".price" }`, and `{ source: "current_url" }`.
 
-For arrays, include multiple items in the schema. Opensteer caches the structural pattern and expands to all matching items on replay.
+Use `prompt` to describe relationship/fallback rules, such as matching each image to its caption and credit.
+
+For explicit array bindings, include multiple items in the schema so Opensteer can infer the repeating pattern. For semantic extraction, a single representative object shape is enough.
 
 ## Keyboard
 
