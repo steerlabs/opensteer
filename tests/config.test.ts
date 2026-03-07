@@ -1,7 +1,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
     loadConfigFile,
     resolveCloudSelection,
@@ -11,9 +11,34 @@ import {
 import type { OpensteerConfig } from '../src/types.js'
 
 const ORIGINAL_ENV = { ...process.env }
+const ORIGINAL_CWD = process.cwd()
+let isolatedCwd: string | null = null
+
+function createIsolatedEnv(): Record<string, string | undefined> {
+    const env = { ...ORIGINAL_ENV }
+    for (const key of Object.keys(env)) {
+        if (key.startsWith('OPENSTEER_')) {
+            delete env[key]
+        }
+    }
+    return env
+}
+
+beforeEach(() => {
+    process.env = createIsolatedEnv()
+    isolatedCwd = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'opensteer-config-test-cwd-')
+    )
+    process.chdir(isolatedCwd)
+})
 
 afterEach(() => {
+    process.chdir(ORIGINAL_CWD)
     process.env = { ...ORIGINAL_ENV }
+    if (isolatedCwd) {
+        fs.rmSync(isolatedCwd, { recursive: true, force: true })
+        isolatedCwd = null
+    }
 })
 
 describe('config', () => {
@@ -205,6 +230,86 @@ describe('config', () => {
             authScheme: 'api-key',
             announce: 'always',
         })
+    })
+
+    it('resolveConfig maps OPENSTEER_ACCESS_TOKEN to cloud accessToken', () => {
+        process.env.OPENSTEER_MODE = 'cloud'
+        process.env.OPENSTEER_ACCESS_TOKEN = 'ost_env_token_123'
+
+        const resolved = resolveConfig({})
+        expect(resolved.cloud).toEqual({
+            accessToken: 'ost_env_token_123',
+            authScheme: 'bearer',
+            announce: 'always',
+        })
+    })
+
+    it('resolveConfig replaces file cloud.apiKey with OPENSTEER_ACCESS_TOKEN cleanly', () => {
+        const root = fs.mkdtempSync(
+            path.join(os.tmpdir(), 'opensteer-config-token-overrides-file-key-')
+        )
+        const configDir = path.join(root, '.opensteer')
+        fs.mkdirSync(configDir, { recursive: true })
+        fs.writeFileSync(
+            path.join(configDir, 'config.json'),
+            JSON.stringify(
+                {
+                    cloud: {
+                        apiKey: 'ork_file_123',
+                    },
+                },
+                null,
+                2
+            ),
+            'utf8'
+        )
+        process.env.OPENSTEER_MODE = 'cloud'
+        process.env.OPENSTEER_ACCESS_TOKEN = 'ost_env_token_456'
+
+        const resolved = resolveConfig({
+            storage: { rootDir: root },
+        })
+        expect(resolved.cloud).toEqual({
+            accessToken: 'ost_env_token_456',
+            authScheme: 'bearer',
+            announce: 'always',
+        })
+    })
+
+    it('resolveConfig keeps bearer compatibility with OPENSTEER_AUTH_SCHEME=bearer + OPENSTEER_API_KEY', () => {
+        process.env.OPENSTEER_MODE = 'cloud'
+        process.env.OPENSTEER_AUTH_SCHEME = 'bearer'
+        process.env.OPENSTEER_API_KEY = 'legacy_bearer_token_123'
+
+        const resolved = resolveConfig({})
+        expect(resolved.cloud).toEqual({
+            accessToken: 'legacy_bearer_token_123',
+            authScheme: 'bearer',
+            announce: 'always',
+        })
+    })
+
+    it('resolveConfig rejects OPENSTEER_API_KEY + OPENSTEER_ACCESS_TOKEN together', () => {
+        process.env.OPENSTEER_MODE = 'cloud'
+        process.env.OPENSTEER_API_KEY = 'ork_123'
+        process.env.OPENSTEER_ACCESS_TOKEN = 'ost_123'
+
+        expect(() => resolveConfig({})).toThrow(
+            'OPENSTEER_API_KEY and OPENSTEER_ACCESS_TOKEN are mutually exclusive. Set only one.'
+        )
+    })
+
+    it('resolveConfig rejects cloud.apiKey + cloud.accessToken together', () => {
+        expect(() =>
+            resolveConfig({
+                cloud: {
+                    apiKey: 'ork_123',
+                    accessToken: 'ost_123',
+                },
+            })
+        ).toThrow(
+            'cloud.apiKey and cloud.accessToken are mutually exclusive. Set only one.'
+        )
     })
 
     it('resolveConfig auto-loads OPENSTEER_BASE_URL from .env', () => {
@@ -527,6 +632,49 @@ describe('config', () => {
         })
     })
 
+    it('resolveConfig maps OPENSTEER_CLOUD_PROFILE_ID into cloud.browserProfile', () => {
+        process.env.OPENSTEER_MODE = 'cloud'
+        process.env.OPENSTEER_API_KEY = 'ork_test_123'
+        process.env.OPENSTEER_CLOUD_PROFILE_ID = 'bp_env_123'
+        process.env.OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE = 'true'
+
+        const resolved = resolveConfig({})
+        expect(resolved.cloud).toEqual({
+            apiKey: 'ork_test_123',
+            authScheme: 'api-key',
+            announce: 'always',
+            browserProfile: {
+                profileId: 'bp_env_123',
+                reuseIfActive: true,
+            },
+        })
+    })
+
+    it('resolveConfig keeps explicit cloud.browserProfile over env profile settings', () => {
+        process.env.OPENSTEER_CLOUD_PROFILE_ID = 'bp_env_123'
+        process.env.OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE = 'true'
+
+        const resolved = resolveConfig({
+            cloud: {
+                apiKey: 'ork_test_123',
+                browserProfile: {
+                    profileId: 'bp_config_456',
+                    reuseIfActive: false,
+                },
+            },
+        })
+
+        expect(resolved.cloud).toEqual({
+            apiKey: 'ork_test_123',
+            authScheme: 'api-key',
+            announce: 'always',
+            browserProfile: {
+                profileId: 'bp_config_456',
+                reuseIfActive: false,
+            },
+        })
+    })
+
     it('throws when OPENSTEER_MODE has an invalid value', () => {
         process.env.OPENSTEER_MODE = 'edge'
         expect(() => resolveConfig({})).toThrow(
@@ -545,6 +693,31 @@ describe('config', () => {
         process.env.OPENSTEER_REMOTE_ANNOUNCE = 'sometimes'
         expect(() => resolveConfig({ cloud: true })).toThrow(
             'Invalid OPENSTEER_REMOTE_ANNOUNCE value "sometimes". Use "always", "off", or "tty".'
+        )
+    })
+
+    it('throws when OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE is set without OPENSTEER_CLOUD_PROFILE_ID', () => {
+        process.env.OPENSTEER_MODE = 'cloud'
+        process.env.OPENSTEER_API_KEY = 'ork_test_123'
+        process.env.OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE = 'true'
+
+        expect(() => resolveConfig({})).toThrow(
+            'OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE requires OPENSTEER_CLOUD_PROFILE_ID.'
+        )
+    })
+
+    it('throws when cloud.browserProfile.profileId is missing', () => {
+        expect(() =>
+            resolveConfig({
+                cloud: {
+                    apiKey: 'ork_test_123',
+                    browserProfile: {
+                        profileId: '',
+                    },
+                },
+            })
+        ).toThrow(
+            'cloud.browserProfile.profileId must be a non-empty string when browserProfile is provided.'
         )
     })
 

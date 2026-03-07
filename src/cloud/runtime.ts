@@ -2,6 +2,7 @@ import { ActionWsClient } from './action-ws-client.js'
 import { CloudCdpClient } from './cdp-client.js'
 import { CloudSessionClient } from './session-client.js'
 import type { OpensteerAuthScheme } from '../types.js'
+import { normalizeCloudBaseUrl } from './http-client.js'
 
 export interface CloudRuntimeState {
     readonly sessionClient: CloudSessionClient
@@ -40,10 +41,6 @@ export function resolveCloudBaseUrl(): string {
     const value = process.env.OPENSTEER_BASE_URL?.trim()
     if (!value) return DEFAULT_CLOUD_BASE_URL
     return normalizeCloudBaseUrl(value)
-}
-
-function normalizeCloudBaseUrl(value: string): string {
-    return value.replace(/\/+$/, '')
 }
 
 export function readCloudActionDescription(

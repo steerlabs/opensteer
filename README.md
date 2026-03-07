@@ -10,6 +10,7 @@ Main setup (recommended):
 
 ```bash
 npm i -g opensteer
+opensteer auth login
 opensteer skills install
 ```
 
@@ -170,11 +171,55 @@ OPENSTEER_MODE=cloud
 OPENSTEER_API_KEY=<your_api_key>
 ```
 
+- Interactive CLI login:
+
+```bash
+opensteer auth login
+opensteer auth status
+opensteer auth logout
+```
+
+- `opensteer auth login` opens your default browser when possible. Use
+  `--no-browser` on remote shells, containers, or CI and paste the printed URL
+  into a browser manually. In `--json` mode, login prompts go to stderr and the
+  final JSON result stays on stdout.
+- Saved machine logins are still scoped per cloud host (`baseUrl` + `siteUrl`).
+  The CLI also remembers the last selected cloud host, so `opensteer auth status`,
+  `opensteer auth logout`, and other cloud commands reuse it by default unless
+  `--base-url`, `--site-url`, or env vars select a different host.
+
 - `OPENSTEER_BASE_URL` overrides the default cloud host
+- `OPENSTEER_ACCESS_TOKEN` provides bearer auth for cloud commands
 - `OPENSTEER_AUTH_SCHEME` supports `api-key` (default) or `bearer`
+- Credential precedence: explicit flags > environment variables > saved machine login
+- `OPENSTEER_CLOUD_PROFILE_ID` optionally launches into a specific cloud browser profile
+- `OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE` (`true|false`) optionally reuses an active profile session
 - `cloud: true` or a `cloud` options object overrides `OPENSTEER_MODE`
 - Cloud mode is fail-fast (no automatic fallback to local)
 - `Opensteer.from(page)`, `uploadFile`, `exportCookies`, and `importCookies` are local-only
+
+Select a cloud browser profile in SDK:
+
+```ts
+const opensteer = new Opensteer({
+  cloud: {
+    accessToken: process.env.OPENSTEER_ACCESS_TOKEN,
+    browserProfile: {
+      profileId: "bp_123",
+      reuseIfActive: true,
+    },
+  },
+})
+```
+
+Sync local profile cookies into a cloud profile:
+
+```bash
+opensteer profile sync \
+  --from-profile-dir ~/Library/Application\ Support/Google/Chrome/Default \
+  --to-profile-id bp_123 \
+  --domain github.com
+```
 
 ## Resolution and Replay
 

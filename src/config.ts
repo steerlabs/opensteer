@@ -5,6 +5,7 @@ import { parse as parseDotenv } from 'dotenv'
 import { extractErrorMessage } from './error-normalization.js'
 import type {
     OpensteerAuthScheme,
+    OpensteerCloudBrowserProfileOptions,
     OpensteerCloudAnnouncePolicy,
     OpensteerCloudOptions,
     OpensteerConfig,
@@ -119,9 +120,9 @@ function loadDotenvValues(
 
 function resolveEnv(
     rootDir: string,
-    options: { debug?: boolean } = {}
+    options: { debug?: boolean; baseEnv?: RuntimeEnv } = {}
 ): RuntimeEnv {
-    const baseEnv = process.env as RuntimeEnv
+    const baseEnv = options.baseEnv ?? (process.env as RuntimeEnv)
     const dotenvValues = loadDotenvValues(rootDir, baseEnv, options)
     return {
         ...dotenvValues,
@@ -320,6 +321,12 @@ function resolveOpensteerApiKey(env: RuntimeEnv): string | undefined {
     return value
 }
 
+function resolveOpensteerAccessToken(env: RuntimeEnv): string | undefined {
+    const value = env.OPENSTEER_ACCESS_TOKEN?.trim()
+    if (!value) return undefined
+    return value
+}
+
 function resolveOpensteerBaseUrl(env: RuntimeEnv): string | undefined {
     const value = env.OPENSTEER_BASE_URL?.trim()
     if (!value) return undefined
@@ -330,6 +337,79 @@ function resolveOpensteerAuthScheme(env: RuntimeEnv): OpensteerAuthScheme | unde
     return parseAuthScheme(env.OPENSTEER_AUTH_SCHEME, 'OPENSTEER_AUTH_SCHEME')
 }
 
+function resolveOpensteerCloudProfileId(env: RuntimeEnv): string | undefined {
+    const value = env.OPENSTEER_CLOUD_PROFILE_ID?.trim()
+    if (!value) return undefined
+    return value
+}
+
+function resolveOpensteerCloudProfileReuseIfActive(
+    env: RuntimeEnv
+): boolean | undefined {
+    return parseBool(env.OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE)
+}
+
+function parseCloudBrowserProfileReuseIfActive(
+    value: unknown
+): boolean | undefined {
+    if (value == null) return undefined
+    if (typeof value !== 'boolean') {
+        throw new Error(
+            `Invalid cloud.browserProfile.reuseIfActive value "${String(
+                value
+            )}". Use true or false.`
+        )
+    }
+
+    return value
+}
+
+function normalizeCloudBrowserProfileOptions(
+    value: unknown,
+    source: 'cloud.browserProfile' | 'resolved.cloud.browserProfile'
+): OpensteerCloudBrowserProfileOptions | undefined {
+    if (value == null) {
+        return undefined
+    }
+    if (typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error(
+            `Invalid ${source} value "${String(value)}". Use an object with profileId and optional reuseIfActive.`
+        )
+    }
+
+    const record = value as Record<string, unknown>
+    const rawProfileId = record.profileId
+    if (typeof rawProfileId !== 'string' || !rawProfileId.trim()) {
+        throw new Error(
+            `${source}.profileId must be a non-empty string when browserProfile is provided.`
+        )
+    }
+
+    return {
+        profileId: rawProfileId.trim(),
+        reuseIfActive: parseCloudBrowserProfileReuseIfActive(record.reuseIfActive),
+    }
+}
+
+function resolveEnvCloudBrowserProfile(
+    profileId: string | undefined,
+    reuseIfActive: boolean | undefined
+): OpensteerCloudBrowserProfileOptions | undefined {
+    if (reuseIfActive !== undefined && !profileId) {
+        throw new Error(
+            'OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE requires OPENSTEER_CLOUD_PROFILE_ID.'
+        )
+    }
+    if (!profileId) {
+        return undefined
+    }
+
+    return {
+        profileId,
+        reuseIfActive,
+    }
+}
+
 function normalizeCloudOptions(
     value: OpensteerConfig['cloud']
 ): OpensteerCloudOptions | undefined {
@@ -338,6 +418,12 @@ function normalizeCloudOptions(
     }
 
     return value as OpensteerCloudOptions
+}
+
+function normalizeNonEmptyString(value: unknown): string | undefined {
+    if (typeof value !== 'string') return undefined
+    const normalized = value.trim()
+    return normalized.length ? normalized : undefined
 }
 
 function parseCloudEnabled(
@@ -381,9 +467,10 @@ export function resolveCloudSelection(
 }
 
 export function resolveConfigWithEnv(
-    input: OpensteerConfig = {}
+    input: OpensteerConfig = {},
+    options: { env?: RuntimeEnv } = {}
 ): ResolvedConfigWithEnv {
-    const processEnv = process.env as RuntimeEnv
+    const processEnv = options.env ?? (process.env as RuntimeEnv)
     const debugHint =
         typeof input.debug === 'boolean'
             ? input.debug
@@ -414,6 +501,7 @@ export function resolveConfigWithEnv(
         initialRootDir
     const env = resolveEnv(envRootDir, {
         debug: debugHint,
+        baseEnv: processEnv,
     })
 
     if (env.OPENSTEER_AI_MODEL) {
@@ -448,13 +536,33 @@ export function resolveConfigWithEnv(
     const resolved = mergeDeep(mergedWithEnv, input) as ResolvedOpensteerConfig
 
     const envApiKey = resolveOpensteerApiKey(env)
+    const envAccessTokenRaw = resolveOpensteerAccessToken(env)
     const envBaseUrl = resolveOpensteerBaseUrl(env)
     const envAuthScheme = resolveOpensteerAuthScheme(env)
+    if (envApiKey && envAccessTokenRaw) {
+        throw new Error(
+            'OPENSTEER_API_KEY and OPENSTEER_ACCESS_TOKEN are mutually exclusive. Set only one.'
+        )
+    }
+    const envAccessToken =
+        envAccessTokenRaw ||
+        (envAuthScheme === 'bearer' ? envApiKey : undefined)
+    const envApiCredential =
+        envAuthScheme === 'bearer' && !envAccessTokenRaw
+            ? undefined
+            : envApiKey
+    const envCloudProfileId = resolveOpensteerCloudProfileId(env)
+    const envCloudProfileReuseIfActive =
+        resolveOpensteerCloudProfileReuseIfActive(env)
     const envCloudAnnounce = parseCloudAnnounce(
         env.OPENSTEER_REMOTE_ANNOUNCE,
         'OPENSTEER_REMOTE_ANNOUNCE'
     )
     const inputCloudOptions = normalizeCloudOptions(input.cloud)
+    const inputCloudBrowserProfile = normalizeCloudBrowserProfileOptions(
+        inputCloudOptions?.browserProfile,
+        'cloud.browserProfile'
+    )
     const inputAuthScheme = parseAuthScheme(
         inputCloudOptions?.authScheme,
         'cloud.authScheme'
@@ -467,17 +575,54 @@ export function resolveConfigWithEnv(
         inputCloudOptions &&
             Object.prototype.hasOwnProperty.call(inputCloudOptions, 'apiKey')
     )
+    const inputHasCloudAccessToken = Boolean(
+        inputCloudOptions &&
+            Object.prototype.hasOwnProperty.call(inputCloudOptions, 'accessToken')
+    )
     const inputHasCloudBaseUrl = Boolean(
         inputCloudOptions &&
             Object.prototype.hasOwnProperty.call(inputCloudOptions, 'baseUrl')
     )
+    if (
+        normalizeNonEmptyString(inputCloudOptions?.apiKey) &&
+        normalizeNonEmptyString(inputCloudOptions?.accessToken)
+    ) {
+        throw new Error(
+            'cloud.apiKey and cloud.accessToken are mutually exclusive. Set only one.'
+        )
+    }
     const cloudSelection = resolveCloudSelection({
         cloud: resolved.cloud,
     }, env)
 
     if (cloudSelection.cloud) {
         const resolvedCloud = normalizeCloudOptions(resolved.cloud) ?? {}
-        const authScheme =
+        const {
+            apiKey: resolvedCloudApiKeyRaw,
+            accessToken: resolvedCloudAccessTokenRaw,
+            ...resolvedCloudRest
+        } = resolvedCloud
+        if (
+            normalizeNonEmptyString(resolvedCloudApiKeyRaw) &&
+            normalizeNonEmptyString(resolvedCloudAccessTokenRaw)
+        ) {
+            throw new Error(
+                'Cloud config cannot include both apiKey and accessToken at the same time.'
+            )
+        }
+        const resolvedCloudBrowserProfile = normalizeCloudBrowserProfileOptions(
+            resolvedCloud.browserProfile,
+            'resolved.cloud.browserProfile'
+        )
+        const envCloudBrowserProfile = resolveEnvCloudBrowserProfile(
+            envCloudProfileId,
+            envCloudProfileReuseIfActive
+        )
+        const browserProfile =
+            inputCloudBrowserProfile ??
+            envCloudBrowserProfile ??
+            resolvedCloudBrowserProfile
+        let authScheme =
             inputAuthScheme ??
             envAuthScheme ??
             parseAuthScheme(resolvedCloud.authScheme, 'cloud.authScheme') ??
@@ -487,19 +632,43 @@ export function resolveConfigWithEnv(
             envCloudAnnounce ??
             parseCloudAnnounce(resolvedCloud.announce, 'cloud.announce') ??
             'always'
+        const credentialOverriddenByInput =
+            inputHasCloudApiKey || inputHasCloudAccessToken
+        let apiKey = normalizeNonEmptyString(resolvedCloudApiKeyRaw)
+        let accessToken = normalizeNonEmptyString(resolvedCloudAccessTokenRaw)
+
+        if (!credentialOverriddenByInput) {
+            if (envAccessToken) {
+                accessToken = envAccessToken
+                apiKey = undefined
+            } else if (envApiCredential) {
+                apiKey = envApiCredential
+                accessToken = undefined
+            }
+        }
+
+        if (accessToken) {
+            authScheme = 'bearer'
+        }
+
         resolved.cloud = {
-            ...resolvedCloud,
+            ...resolvedCloudRest,
+            ...(inputHasCloudApiKey
+                ? { apiKey: resolvedCloudApiKeyRaw }
+                : apiKey
+                  ? { apiKey }
+                  : {}),
+            ...(inputHasCloudAccessToken
+                ? { accessToken: resolvedCloudAccessTokenRaw }
+                : accessToken
+                  ? { accessToken }
+                  : {}),
             authScheme,
             announce,
+            ...(browserProfile ? { browserProfile } : {}),
         }
     }
 
-    if (envApiKey && cloudSelection.cloud && !inputHasCloudApiKey) {
-        resolved.cloud = {
-            ...(normalizeCloudOptions(resolved.cloud) ?? {}),
-            apiKey: envApiKey,
-        }
-    }
     if (envBaseUrl && cloudSelection.cloud && !inputHasCloudBaseUrl) {
         resolved.cloud = {
             ...(normalizeCloudOptions(resolved.cloud) ?? {}),

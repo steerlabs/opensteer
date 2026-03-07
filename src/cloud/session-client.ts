@@ -1,5 +1,4 @@
 import type {
-    CloudErrorCode,
     CloudSelectorCacheImportRequest,
     CloudSelectorCacheImportResponse,
     CloudSessionCreateRequest,
@@ -7,12 +6,11 @@ import type {
 } from './contracts.js'
 import { OpensteerCloudError } from './errors.js'
 import type { OpensteerAuthScheme } from '../types.js'
-
-interface CloudHttpErrorBody {
-    error?: string
-    code?: string
-    details?: Record<string, unknown>
-}
+import {
+    cloudAuthHeaders,
+    normalizeCloudBaseUrl,
+    parseCloudHttpError,
+} from './http-client.js'
 
 const CACHE_IMPORT_BATCH_SIZE = 200
 
@@ -26,7 +24,7 @@ export class CloudSessionClient {
         key: string,
         authScheme: OpensteerAuthScheme = 'api-key'
     ) {
-        this.baseUrl = normalizeBaseUrl(baseUrl)
+        this.baseUrl = normalizeCloudBaseUrl(baseUrl)
         this.key = key
         this.authScheme = authScheme
     }
@@ -38,13 +36,13 @@ export class CloudSessionClient {
             method: 'POST',
             headers: {
                 'content-type': 'application/json',
-                ...this.authHeaders(),
+                ...cloudAuthHeaders(this.key, this.authScheme),
             },
             body: JSON.stringify(request),
         })
 
         if (!response.ok) {
-            throw await parseHttpError(response)
+            throw await parseCloudHttpError(response)
         }
 
         let body: unknown
@@ -65,7 +63,7 @@ export class CloudSessionClient {
         const response = await fetch(`${this.baseUrl}/sessions/${sessionId}`, {
             method: 'DELETE',
             headers: {
-                ...this.authHeaders(),
+                ...cloudAuthHeaders(this.key, this.authScheme),
             },
         })
 
@@ -74,7 +72,7 @@ export class CloudSessionClient {
         }
 
         if (!response.ok) {
-            throw await parseHttpError(response)
+            throw await parseCloudHttpError(response)
         }
     }
 
@@ -110,33 +108,17 @@ export class CloudSessionClient {
             method: 'POST',
             headers: {
                 'content-type': 'application/json',
-                ...this.authHeaders(),
+                ...cloudAuthHeaders(this.key, this.authScheme),
             },
             body: JSON.stringify({ entries }),
         })
 
         if (!response.ok) {
-            throw await parseHttpError(response)
+            throw await parseCloudHttpError(response)
         }
 
         return (await response.json()) as CloudSelectorCacheImportResponse
     }
-
-    private authHeaders(): Record<string, string> {
-        if (this.authScheme === 'bearer') {
-            return {
-                authorization: `Bearer ${this.key}`,
-            }
-        }
-
-        return {
-            'x-api-key': this.key,
-        }
-    }
-}
-
-function normalizeBaseUrl(baseUrl: string): string {
-    return baseUrl.replace(/\/+$/, '')
 }
 
 function parseCreateResponse(
@@ -334,52 +316,4 @@ function mergeImportResponse(
         updated: first.updated + second.updated,
         skipped: first.skipped + second.skipped,
     }
-}
-
-async function parseHttpError(
-    response: Response
-): Promise<OpensteerCloudError> {
-    let body: CloudHttpErrorBody | null = null
-
-    try {
-        body = (await response.json()) as CloudHttpErrorBody
-    } catch {
-        body = null
-    }
-
-    const code =
-        typeof body?.code === 'string'
-            ? toCloudErrorCode(body.code)
-            : ('CLOUD_TRANSPORT_ERROR' as const)
-    const message =
-        typeof body?.error === 'string'
-            ? body.error
-            : `Cloud request failed with status ${response.status}.`
-
-    return new OpensteerCloudError(code, message, response.status, body?.details)
-}
-
-function toCloudErrorCode(
-    code: string
-): CloudErrorCode | 'CLOUD_TRANSPORT_ERROR' {
-    if (
-        code === 'CLOUD_AUTH_FAILED' ||
-        code === 'CLOUD_SESSION_NOT_FOUND' ||
-        code === 'CLOUD_SESSION_CLOSED' ||
-        code === 'CLOUD_UNSUPPORTED_METHOD' ||
-        code === 'CLOUD_INVALID_REQUEST' ||
-        code === 'CLOUD_MODEL_NOT_ALLOWED' ||
-        code === 'CLOUD_ACTION_FAILED' ||
-        code === 'CLOUD_INTERNAL' ||
-        code === 'CLOUD_CAPACITY_EXHAUSTED' ||
-        code === 'CLOUD_RUNTIME_UNAVAILABLE' ||
-        code === 'CLOUD_RUNTIME_MISMATCH' ||
-        code === 'CLOUD_SESSION_STALE' ||
-        code === 'CLOUD_CONTRACT_MISMATCH' ||
-        code === 'CLOUD_CONTROL_PLANE_ERROR'
-    ) {
-        return code
-    }
-
-    return 'CLOUD_TRANSPORT_ERROR'
 }
