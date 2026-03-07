@@ -182,11 +182,10 @@ opensteer auth logout
   `--no-browser` on remote shells, containers, or CI and paste the printed URL
   into a browser manually. In `--json` mode, login prompts go to stderr and the
   final JSON result stays on stdout.
-- Saved machine logins remain scoped per resolved cloud host (`baseUrl` +
-  `siteUrl`). The CLI also remembers the last selected cloud host, so
-  `opensteer auth status`, `opensteer auth logout`, and other cloud commands
-  reuse it by default unless `--base-url`, `--site-url`, or env vars select a
-  different host.
+- Saved machine logins remain scoped per resolved cloud API host (`baseUrl`).
+  The CLI also remembers the last selected cloud host, so `opensteer auth
+  status`, `opensteer auth logout`, and other cloud commands reuse it by
+  default unless `--base-url` or env vars select a different host.
 
 - `OPENSTEER_BASE_URL` overrides the default cloud host
 - `OPENSTEER_ACCESS_TOKEN` provides bearer auth for cloud commands

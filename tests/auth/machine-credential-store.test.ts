@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -66,11 +67,9 @@ describe('machine-credential-store', () => {
 
         store.writeActiveCloudTarget({
             baseUrl: 'http://localhost:8080///',
-            siteUrl: 'http://localhost:3001////',
         })
         store.writeCloudCredential({
             baseUrl: 'https://api.opensteer.com///',
-            siteUrl: 'https://opensteer.com////',
             scope: ['cloud:browser'],
             accessToken: 'ost_prod_access',
             refreshToken: 'ost_prod_refresh',
@@ -80,17 +79,14 @@ describe('machine-credential-store', () => {
 
         expect(store.readActiveCloudTarget()).toEqual({
             baseUrl: 'http://localhost:8080',
-            siteUrl: 'http://localhost:3001',
         })
         expect(
             store.readCloudCredential({
                 baseUrl: 'https://api.opensteer.com',
-                siteUrl: 'https://opensteer.com',
             })
         ).toEqual(
             expect.objectContaining({
                 baseUrl: 'https://api.opensteer.com',
-                siteUrl: 'https://opensteer.com',
             })
         )
     })
@@ -102,19 +98,17 @@ describe('machine-credential-store', () => {
 
         store.writeActiveCloudTarget({
             baseUrl: 'http://localhost:8080',
-            siteUrl: 'http://localhost:3001',
         })
 
         expect(store.readActiveCloudTarget()).toEqual({
             baseUrl: 'http://localhost:8080',
-            siteUrl: 'http://localhost:3001',
         })
     })
+
     it('stores and clears credentials independently for each cloud host', () => {
         const store = createTestStore()
         const prodCredential = {
             baseUrl: 'https://api.opensteer.com',
-            siteUrl: 'https://opensteer.com',
             scope: ['cloud:browser'],
             accessToken: 'ost_prod_access',
             refreshToken: 'ost_prod_refresh',
@@ -123,7 +117,6 @@ describe('machine-credential-store', () => {
         }
         const stagingCredential = {
             baseUrl: 'https://api.staging.example',
-            siteUrl: 'https://staging.example',
             scope: ['cloud:browser'],
             accessToken: 'ost_stage_access',
             refreshToken: 'ost_stage_refresh',
@@ -137,43 +130,40 @@ describe('machine-credential-store', () => {
         expect(
             store.readCloudCredential({
                 baseUrl: prodCredential.baseUrl,
-                siteUrl: prodCredential.siteUrl,
             })
         ).toEqual(prodCredential)
         expect(
             store.readCloudCredential({
                 baseUrl: stagingCredential.baseUrl,
-                siteUrl: stagingCredential.siteUrl,
             })
         ).toEqual(stagingCredential)
 
         store.clearCloudCredential({
             baseUrl: stagingCredential.baseUrl,
-            siteUrl: stagingCredential.siteUrl,
         })
 
         expect(
             store.readCloudCredential({
                 baseUrl: prodCredential.baseUrl,
-                siteUrl: prodCredential.siteUrl,
             })
         ).toEqual(prodCredential)
         expect(
             store.readCloudCredential({
                 baseUrl: stagingCredential.baseUrl,
-                siteUrl: stagingCredential.siteUrl,
             })
         ).toBeNull()
     })
 
-    it('migrates a legacy single-slot credential into the host-scoped layout', () => {
+    it('ignores legacy metadata that still includes siteUrl', () => {
         const root = createStoreRoot()
         const authDir = resolveAuthDir(root)
-        const legacyMetadataPath = path.join(authDir, 'cli-login.json')
-        const legacySecretPath = path.join(authDir, 'cli-login.secret.json')
+        const storageKey = createHash('sha256')
+            .update('https://api.opensteer.com')
+            .digest('hex')
+            .slice(0, 24)
         fs.mkdirSync(authDir, { recursive: true })
         fs.writeFileSync(
-            legacyMetadataPath,
+            path.join(authDir, `cli-login.${storageKey}.json`),
             JSON.stringify(
                 {
                     version: 1,
@@ -191,7 +181,7 @@ describe('machine-credential-store', () => {
             'utf8'
         )
         fs.writeFileSync(
-            legacySecretPath,
+            path.join(authDir, `cli-login.${storageKey}.secret.json`),
             JSON.stringify(
                 {
                     accessToken: 'ost_legacy_access',
@@ -202,28 +192,28 @@ describe('machine-credential-store', () => {
             ),
             'utf8'
         )
+        fs.writeFileSync(
+            path.join(authDir, 'cli-target.json'),
+            JSON.stringify(
+                {
+                    version: 1,
+                    baseUrl: 'https://api.opensteer.com',
+                    siteUrl: 'https://opensteer.com',
+                    updatedAt: 33,
+                },
+                null,
+                2
+            ),
+            'utf8'
+        )
 
         const store = createTestStore(root)
-        const credential = store.readCloudCredential({
-            baseUrl: 'https://api.opensteer.com',
-            siteUrl: 'https://opensteer.com',
-        })
 
-        expect(credential).toEqual({
-            baseUrl: 'https://api.opensteer.com',
-            siteUrl: 'https://opensteer.com',
-            scope: ['cloud:browser'],
-            accessToken: 'ost_legacy_access',
-            refreshToken: 'ost_legacy_refresh',
-            obtainedAt: 11,
-            expiresAt: 22,
-        })
-        expect(fs.existsSync(legacyMetadataPath)).toBe(false)
-        expect(fs.existsSync(legacySecretPath)).toBe(false)
-
-        const authFiles = fs.readdirSync(authDir).sort()
-        expect(authFiles).toHaveLength(2)
-        expect(authFiles[0]).toMatch(/^cli-login\.[a-f0-9]{24}\.json$/)
-        expect(authFiles[1]).toMatch(/^cli-login\.[a-f0-9]{24}\.secret\.json$/)
+        expect(
+            store.readCloudCredential({
+                baseUrl: 'https://api.opensteer.com',
+            })
+        ).toBeNull()
+        expect(store.readActiveCloudTarget()).toBeNull()
     })
 })

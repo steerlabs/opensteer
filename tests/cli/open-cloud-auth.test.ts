@@ -14,7 +14,6 @@ describe('CLI open cloud auth helpers', () => {
                 authScheme: 'bearer',
                 source: 'saved',
                 baseUrl: 'https://api.opensteer.test',
-                siteUrl: 'https://app.opensteer.test',
             })
         ).toEqual({
             accessToken: 'token-123',
