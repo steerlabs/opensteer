@@ -125,6 +125,11 @@ Supported options:
 - `profile create --name <name> [--json]`
 - `profile sync --from-profile-dir <dir> [--to-profile-id <id> | --name <name>] [--domain <domain> ... | --all-domains] [--dry-run] [--yes] [--json]`
 
+Use `profile list` to inspect available cloud browser profiles, `profile create`
+to provision a new reusable profile, and `profile sync` to upload cookies and
+other browser state from a local profile directory into a cloud profile before
+launch.
+
 ### Auth
 
 - `auth login`
