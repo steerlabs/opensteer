@@ -1,4 +1,8 @@
 import type { OpensteerAuthScheme } from '../types.js'
+import {
+    selectCloudCredential,
+    type SelectedCloudCredential,
+} from '../cloud/credential-selection.js'
 
 export type CloudCredentialKind = 'api-key' | 'access-token'
 export type CloudCredentialSource = 'flag' | 'env' | 'saved'
@@ -20,67 +24,22 @@ export interface ResolveCloudCredentialOptions {
 export function resolveCloudCredential(
     options: ResolveCloudCredentialOptions
 ): ResolvedCloudCredential | null {
-    const flagApiKey = normalizeToken(options.apiKeyFlag)
-    const flagAccessToken = normalizeToken(options.accessTokenFlag)
-
-    if (flagApiKey && flagAccessToken) {
-        throw new Error('--api-key and --access-token are mutually exclusive.')
-    }
-
-    if (flagAccessToken) {
-        return {
-            kind: 'access-token',
-            source: 'flag',
-            token: flagAccessToken,
-            authScheme: 'bearer',
-        }
-    }
-
-    if (flagApiKey) {
-        return {
-            kind: 'api-key',
-            source: 'flag',
-            token: flagApiKey,
-            authScheme: 'api-key',
-        }
+    const flagCredential = selectCloudCredential({
+        apiKey: options.apiKeyFlag,
+        accessToken: options.accessTokenFlag,
+    })
+    if (flagCredential) {
+        return toResolvedCloudCredential('flag', flagCredential)
     }
 
     const envAuthScheme = parseEnvAuthScheme(options.env.OPENSTEER_AUTH_SCHEME)
-    const envApiKey = normalizeToken(options.env.OPENSTEER_API_KEY)
-    const envAccessToken = normalizeToken(options.env.OPENSTEER_ACCESS_TOKEN)
-
-    if (envApiKey && envAccessToken) {
-        throw new Error(
-            'OPENSTEER_API_KEY and OPENSTEER_ACCESS_TOKEN are mutually exclusive. Set only one.'
-        )
-    }
-
-    if (envAccessToken) {
-        return {
-            kind: 'access-token',
-            source: 'env',
-            token: envAccessToken,
-            authScheme: 'bearer',
-        }
-    }
-
-    if (envApiKey) {
-        if (envAuthScheme === 'bearer') {
-            return {
-                kind: 'access-token',
-                source: 'env',
-                token: envApiKey,
-                authScheme: 'bearer',
-                compatibilityBearerApiKey: true,
-            }
-        }
-
-        return {
-            kind: 'api-key',
-            source: 'env',
-            token: envApiKey,
-            authScheme: envAuthScheme ?? 'api-key',
-        }
+    const envCredential = selectCloudCredential({
+        apiKey: options.env.OPENSTEER_API_KEY,
+        accessToken: options.env.OPENSTEER_ACCESS_TOKEN,
+        authScheme: envAuthScheme,
+    })
+    if (envCredential) {
+        return toResolvedCloudCredential('env', envCredential)
     }
 
     return null
@@ -119,4 +78,26 @@ function normalizeToken(value: string | undefined): string | undefined {
     if (typeof value !== 'string') return undefined
     const normalized = value.trim()
     return normalized.length ? normalized : undefined
+}
+
+function toResolvedCloudCredential(
+    source: CloudCredentialSource,
+    credential: SelectedCloudCredential
+): ResolvedCloudCredential {
+    if (credential.compatibilityBearerApiKey) {
+        return {
+            kind: credential.kind,
+            source,
+            token: credential.token,
+            authScheme: credential.authScheme,
+            compatibilityBearerApiKey: true,
+        }
+    }
+
+    return {
+        kind: credential.kind,
+        source,
+        token: credential.token,
+        authScheme: credential.authScheme,
+    }
 }

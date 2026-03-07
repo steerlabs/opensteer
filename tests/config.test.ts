@@ -289,27 +289,46 @@ describe('config', () => {
         })
     })
 
-    it('resolveConfig rejects OPENSTEER_API_KEY + OPENSTEER_ACCESS_TOKEN together', () => {
+    it('resolveConfig prefers OPENSTEER_API_KEY when OPENSTEER_API_KEY + OPENSTEER_ACCESS_TOKEN are both set', () => {
         process.env.OPENSTEER_MODE = 'cloud'
         process.env.OPENSTEER_API_KEY = 'ork_123'
         process.env.OPENSTEER_ACCESS_TOKEN = 'ost_123'
 
-        expect(() => resolveConfig({})).toThrow(
-            'OPENSTEER_API_KEY and OPENSTEER_ACCESS_TOKEN are mutually exclusive. Set only one.'
-        )
+        const resolved = resolveConfig({})
+        expect(resolved.cloud).toEqual({
+            apiKey: 'ork_123',
+            authScheme: 'api-key',
+            announce: 'always',
+        })
     })
 
-    it('resolveConfig rejects cloud.apiKey + cloud.accessToken together', () => {
-        expect(() =>
-            resolveConfig({
-                cloud: {
-                    apiKey: 'ork_123',
-                    accessToken: 'ost_123',
-                },
-            })
-        ).toThrow(
-            'cloud.apiKey and cloud.accessToken are mutually exclusive. Set only one.'
-        )
+    it('resolveConfig prefers cloud.apiKey when cloud.apiKey + cloud.accessToken are both set', () => {
+        const resolved = resolveConfig({
+            cloud: {
+                apiKey: 'ork_123',
+                accessToken: 'ost_123',
+            },
+        })
+
+        expect(resolved.cloud).toEqual({
+            apiKey: 'ork_123',
+            authScheme: 'api-key',
+            announce: 'always',
+        })
+    })
+
+    it('resolveConfig keeps bearer compatibility when OPENSTEER_AUTH_SCHEME=bearer and both env credentials are set', () => {
+        process.env.OPENSTEER_MODE = 'cloud'
+        process.env.OPENSTEER_AUTH_SCHEME = 'bearer'
+        process.env.OPENSTEER_API_KEY = 'legacy_bearer_token_123'
+        process.env.OPENSTEER_ACCESS_TOKEN = 'ost_ignored'
+
+        const resolved = resolveConfig({})
+        expect(resolved.cloud).toEqual({
+            accessToken: 'legacy_bearer_token_123',
+            authScheme: 'bearer',
+            announce: 'always',
+        })
     })
 
     it('resolveConfig auto-loads OPENSTEER_BASE_URL from .env', () => {

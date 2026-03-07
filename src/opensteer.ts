@@ -121,6 +121,7 @@ import {
     type CloudSessionLaunchConfig,
 } from './cloud/contracts.js'
 import { ActionWsClient } from './cloud/action-ws-client.js'
+import { selectCloudCredential } from './cloud/credential-selection.js'
 import {
     cloudNotLaunchedError,
     OpensteerCloudError,
@@ -237,23 +238,11 @@ export class Opensteer {
                 resolved.cloud && typeof resolved.cloud === 'object'
                     ? resolved.cloud
                     : undefined
-            const apiKey = cloudConfig?.apiKey?.trim()
-            const accessToken = cloudConfig?.accessToken?.trim()
-            if (apiKey && accessToken) {
-                throw new Error(
-                    'Cloud mode cannot use both cloud.apiKey and cloud.accessToken. Set only one credential.'
-                )
-            }
-
-            let credential = ''
-            let authScheme = cloudConfig?.authScheme ?? 'api-key'
-
-            if (accessToken) {
-                credential = accessToken
-                authScheme = 'bearer'
-            } else if (apiKey) {
-                credential = apiKey
-            }
+            const credential = selectCloudCredential({
+                apiKey: cloudConfig?.apiKey,
+                accessToken: cloudConfig?.accessToken,
+                authScheme: cloudConfig?.authScheme,
+            })
 
             if (!credential) {
                 throw new Error(
@@ -262,9 +251,9 @@ export class Opensteer {
             }
 
             this.cloud = createCloudRuntimeState(
-                credential,
+                credential.token,
                 cloudConfig?.baseUrl,
-                authScheme
+                credential.authScheme
             )
         } else {
             this.cloud = null

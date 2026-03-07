@@ -3,6 +3,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { parse as parseDotenv } from 'dotenv'
 import { extractErrorMessage } from './error-normalization.js'
+import { selectCloudCredential } from './cloud/credential-selection.js'
 import type {
     OpensteerAuthScheme,
     OpensteerCloudBrowserProfileOptions,
@@ -539,18 +540,15 @@ export function resolveConfigWithEnv(
     const envAccessTokenRaw = resolveOpensteerAccessToken(env)
     const envBaseUrl = resolveOpensteerBaseUrl(env)
     const envAuthScheme = resolveOpensteerAuthScheme(env)
-    if (envApiKey && envAccessTokenRaw) {
-        throw new Error(
-            'OPENSTEER_API_KEY and OPENSTEER_ACCESS_TOKEN are mutually exclusive. Set only one.'
-        )
-    }
+    const envCredential = selectCloudCredential({
+        apiKey: envApiKey,
+        accessToken: envAccessTokenRaw,
+        authScheme: envAuthScheme,
+    })
     const envAccessToken =
-        envAccessTokenRaw ||
-        (envAuthScheme === 'bearer' ? envApiKey : undefined)
+        envCredential?.kind === 'access-token' ? envCredential.token : undefined
     const envApiCredential =
-        envAuthScheme === 'bearer' && !envAccessTokenRaw
-            ? undefined
-            : envApiKey
+        envCredential?.kind === 'api-key' ? envCredential.token : undefined
     const envCloudProfileId = resolveOpensteerCloudProfileId(env)
     const envCloudProfileReuseIfActive =
         resolveOpensteerCloudProfileReuseIfActive(env)
@@ -583,14 +581,6 @@ export function resolveConfigWithEnv(
         inputCloudOptions &&
             Object.prototype.hasOwnProperty.call(inputCloudOptions, 'baseUrl')
     )
-    if (
-        normalizeNonEmptyString(inputCloudOptions?.apiKey) &&
-        normalizeNonEmptyString(inputCloudOptions?.accessToken)
-    ) {
-        throw new Error(
-            'cloud.apiKey and cloud.accessToken are mutually exclusive. Set only one.'
-        )
-    }
     const cloudSelection = resolveCloudSelection({
         cloud: resolved.cloud,
     }, env)
@@ -602,14 +592,6 @@ export function resolveConfigWithEnv(
             accessToken: resolvedCloudAccessTokenRaw,
             ...resolvedCloudRest
         } = resolvedCloud
-        if (
-            normalizeNonEmptyString(resolvedCloudApiKeyRaw) &&
-            normalizeNonEmptyString(resolvedCloudAccessTokenRaw)
-        ) {
-            throw new Error(
-                'Cloud config cannot include both apiKey and accessToken at the same time.'
-            )
-        }
         const resolvedCloudBrowserProfile = normalizeCloudBrowserProfileOptions(
             resolvedCloud.browserProfile,
             'resolved.cloud.browserProfile'
@@ -634,8 +616,13 @@ export function resolveConfigWithEnv(
             'always'
         const credentialOverriddenByInput =
             inputHasCloudApiKey || inputHasCloudAccessToken
-        let apiKey = normalizeNonEmptyString(resolvedCloudApiKeyRaw)
-        let accessToken = normalizeNonEmptyString(resolvedCloudAccessTokenRaw)
+        const resolvedCloudCredential = selectCloudCredential({
+            apiKey: resolvedCloudApiKeyRaw,
+            accessToken: resolvedCloudAccessTokenRaw,
+            authScheme,
+        })
+        let apiKey = resolvedCloudCredential?.apiKey
+        let accessToken = resolvedCloudCredential?.accessToken
 
         if (!credentialOverriddenByInput) {
             if (envAccessToken) {
@@ -653,15 +640,15 @@ export function resolveConfigWithEnv(
 
         resolved.cloud = {
             ...resolvedCloudRest,
-            ...(inputHasCloudApiKey
-                ? { apiKey: resolvedCloudApiKeyRaw }
-                : apiKey
-                  ? { apiKey }
+            ...(apiKey
+                ? { apiKey }
+                : inputHasCloudApiKey && !accessToken
+                  ? { apiKey: resolvedCloudApiKeyRaw }
                   : {}),
-            ...(inputHasCloudAccessToken
-                ? { accessToken: resolvedCloudAccessTokenRaw }
-                : accessToken
-                  ? { accessToken }
+            ...(accessToken
+                ? { accessToken }
+                : inputHasCloudAccessToken && !apiKey
+                  ? { accessToken: resolvedCloudAccessTokenRaw }
                   : {}),
             authScheme,
             announce,
