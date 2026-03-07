@@ -10,6 +10,7 @@ import {
 } from '../auth/credential-resolver.js'
 import {
     createMachineCredentialStore,
+    type CloudCredentialStoreTarget,
     type StoredMachineCloudCredential,
     type WriteMachineCloudCredentialArgs,
 } from '../auth/machine-credential-store.js'
@@ -53,9 +54,11 @@ export type AuthFetchFn = (input: string, init?: RequestInit) => Promise<Respons
 export type OpenExternalUrlFn = (url: string) => boolean | Promise<boolean>
 
 export interface CloudCredentialStore {
-    readCloudCredential(): StoredMachineCloudCredential | null
+    readCloudCredential(
+        target: CloudCredentialStoreTarget
+    ): StoredMachineCloudCredential | null
     writeCloudCredential(args: WriteMachineCloudCredentialArgs): void
-    clearCloudCredential(): void
+    clearCloudCredential(target: CloudCredentialStoreTarget): void
 }
 
 export interface EnsuredCloudAuthContext {
@@ -151,8 +154,8 @@ Authenticate Opensteer CLI with Opensteer Cloud.
 
 Commands:
   login                     Start device login flow in browser
-  status                    Show saved machine login state
-  logout                    Revoke and remove saved machine login
+  status                    Show saved machine login state for the resolved cloud host
+  logout                    Revoke and remove saved machine login for the resolved cloud host
 
 Options:
   --base-url <url>          Cloud API base URL (defaults to OPENSTEER_BASE_URL)
@@ -695,36 +698,32 @@ async function refreshSavedCredential(
 }
 
 async function ensureSavedCredentialIsFresh(
-    credential: ResolvedCloudCredential,
+    saved: StoredMachineCloudCredential,
     deps: Pick<AuthCliDeps, 'fetchFn' | 'store' | 'now' | 'writeStderr'>
-): Promise<ResolvedCloudCredential | null> {
-    const saved = credential.savedCredential
-    if (!saved) return credential
-
+): Promise<StoredMachineCloudCredential | null> {
     const refreshSkewMs = 60_000
     if (saved.expiresAt > deps.now() + refreshSkewMs) {
-        return credential
+        return saved
     }
 
     try {
         const refreshed = await refreshSavedCredential(saved, deps)
         return {
-            ...credential,
-            token: refreshed.accessToken,
-            savedCredential: {
-                ...saved,
-                accessToken: refreshed.accessToken,
-                refreshToken: refreshed.refreshToken,
-                expiresAt: refreshed.expiresAt,
-                scope: refreshed.scope,
-                obtainedAt: deps.now(),
-            },
+            ...saved,
+            accessToken: refreshed.accessToken,
+            refreshToken: refreshed.refreshToken,
+            expiresAt: refreshed.expiresAt,
+            scope: refreshed.scope,
+            obtainedAt: deps.now(),
         }
     } catch (error) {
         if (error instanceof CliAuthHttpError) {
             const oauth = parseCliOauthError(error.body)
             if (oauth?.error === 'invalid_grant' || oauth?.error === 'expired_token') {
-                deps.store.clearCloudCredential()
+                deps.store.clearCloudCredential({
+                    baseUrl: saved.baseUrl,
+                    siteUrl: saved.siteUrl,
+                })
                 return null
             }
         }
@@ -840,18 +839,31 @@ export async function ensureCloudCredentialsForCommand(
         env,
         apiKeyFlag: options.apiKeyFlag,
         accessTokenFlag: options.accessTokenFlag,
-        store,
-        allowSaved: true,
     })
 
     let credential: ResolvedCloudCredential | null = initialCredential
-    if (credential?.source === 'saved') {
-        credential = await ensureSavedCredentialIsFresh(credential, {
-            fetchFn,
-            store,
-            now,
-            writeStderr,
+    if (!credential) {
+        const saved = store.readCloudCredential({
+            baseUrl,
+            siteUrl,
         })
+        const freshSaved = saved
+            ? await ensureSavedCredentialIsFresh(saved, {
+                  fetchFn,
+                  store,
+                  now,
+                  writeStderr,
+              })
+            : null
+
+        if (freshSaved) {
+            credential = {
+                kind: 'access-token',
+                source: 'saved',
+                token: freshSaved.accessToken,
+                authScheme: 'bearer',
+            }
+        }
     }
 
     if (!credential) {
@@ -954,12 +966,24 @@ async function runStatus(
     args: AuthStatusArgs,
     deps: AuthCliDeps
 ): Promise<number> {
-    const saved = deps.store.readCloudCredential()
+    const baseUrl = resolveBaseUrl(args.baseUrl, deps.env)
+    const siteUrl = resolveSiteUrl(args.siteUrl, baseUrl, deps.env)
+    const saved = deps.store.readCloudCredential({
+        baseUrl,
+        siteUrl,
+    })
     if (!saved) {
         if (args.json) {
-            writeJsonLine(deps, { loggedIn: false })
+            writeJsonLine(deps, {
+                loggedIn: false,
+                baseUrl,
+                siteUrl,
+            })
         } else {
-            writeHumanLine(deps, 'Opensteer CLI is not logged in.')
+            writeHumanLine(
+                deps,
+                `Opensteer CLI is not logged in for ${siteUrl}.`
+            )
         }
         return 0
     }
@@ -994,25 +1018,37 @@ async function runLogout(
     args: AuthLogoutArgs,
     deps: AuthCliDeps
 ): Promise<number> {
-    const saved = deps.store.readCloudCredential()
+    const baseUrl = resolveBaseUrl(args.baseUrl, deps.env)
+    const siteUrl = resolveSiteUrl(args.siteUrl, baseUrl, deps.env)
+    const saved = deps.store.readCloudCredential({
+        baseUrl,
+        siteUrl,
+    })
     if (saved) {
-        const siteUrl = resolveSiteUrl(args.siteUrl, saved.baseUrl, deps.env)
         try {
-            await revokeToken(siteUrl, saved.refreshToken, deps.fetchFn)
+            await revokeToken(saved.siteUrl, saved.refreshToken, deps.fetchFn)
         } catch {
             // Best-effort revoke; local logout still succeeds.
         }
     }
 
-    deps.store.clearCloudCredential()
+    deps.store.clearCloudCredential({
+        baseUrl,
+        siteUrl,
+    })
     if (args.json) {
         writeJsonLine(deps, {
             loggedOut: true,
+            baseUrl,
+            siteUrl,
         })
         return 0
     }
 
-    writeHumanLine(deps, 'Opensteer CLI login removed from this machine.')
+    writeHumanLine(
+        deps,
+        `Opensteer CLI login removed for ${siteUrl}.`
+    )
     return 0
 }
 

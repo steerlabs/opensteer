@@ -120,6 +120,7 @@ describe('cloud mode', () => {
 
         delete process.env.OPENSTEER_MODE
         delete process.env.OPENSTEER_API_KEY
+        delete process.env.OPENSTEER_DISABLE_DOTENV_AUTOLOAD
 
         expect(() =>
             Opensteer.from({} as never, {

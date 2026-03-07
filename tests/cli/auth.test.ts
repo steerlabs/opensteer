@@ -18,15 +18,23 @@ interface StoredCredential {
 }
 
 function createMemoryStore() {
-    let saved: StoredCredential | null = null
+    const saved = new Map<string, StoredCredential>()
+    const toKey = (credential: Pick<StoredCredential, 'baseUrl' | 'siteUrl'>) =>
+        `${credential.baseUrl}\u0000${credential.siteUrl}`
 
     return {
-        readCloudCredential: () => saved,
+        readCloudCredential: (target: {
+            baseUrl: string
+            siteUrl: string
+        }) => saved.get(toKey(target)) ?? null,
         writeCloudCredential: (value: StoredCredential) => {
-            saved = value
+            saved.set(toKey(value), value)
         },
-        clearCloudCredential: () => {
-            saved = null
+        clearCloudCredential: (target: {
+            baseUrl: string
+            siteUrl: string
+        }) => {
+            saved.delete(toKey(target))
         },
     }
 }
@@ -104,7 +112,11 @@ describe('cli/auth runner', () => {
         })
 
         expect(code).toBe(0)
-        expect(JSON.parse(stdout.join(''))).toEqual({ loggedIn: false })
+        expect(JSON.parse(stdout.join(''))).toEqual({
+            loggedIn: false,
+            baseUrl: 'https://api.opensteer.com',
+            siteUrl: 'https://opensteer.com',
+        })
     })
 
     it('runs login flow and persists machine credentials', async () => {
@@ -153,7 +165,12 @@ describe('cli/auth runner', () => {
             'Automatic browser open is disabled (--no-browser).'
         )
         expect(stderr.join('')).toContain('Open this URL to authenticate Opensteer CLI:')
-        expect(store.readCloudCredential()).toEqual(
+        expect(
+            store.readCloudCredential({
+                baseUrl: 'https://api.opensteer.com',
+                siteUrl: 'https://opensteer.com',
+            })
+        ).toEqual(
             expect.objectContaining({
                 accessToken: 'ost_access_123',
                 refreshToken: 'ost_refresh_123',
@@ -334,5 +351,33 @@ describe('ensureCloudCredentialsForCommand', () => {
         )
         expect(env.OPENSTEER_ACCESS_TOKEN).toBe('ost_access_123')
         expect(env.OPENSTEER_AUTH_SCHEME).toBe('bearer')
+    })
+
+    it('does not reuse a saved credential from a different cloud host', async () => {
+        const store: CloudCredentialStore = createMemoryStore()
+        store.writeCloudCredential({
+            baseUrl: 'https://api.opensteer.com',
+            siteUrl: 'https://opensteer.com',
+            scope: ['cloud:browser'],
+            accessToken: 'ost_saved_prod',
+            refreshToken: 'rt_saved_prod',
+            obtainedAt: 1,
+            expiresAt: Date.now() + 60_000,
+        })
+
+        await expect(
+            ensureCloudCredentialsForCommand({
+                commandName: 'opensteer profile list',
+                env: {},
+                store,
+                interactive: false,
+                autoLoginIfNeeded: false,
+                baseUrl: 'https://api.staging.example',
+                siteUrl: 'https://staging.example',
+                fetchFn: fetch as AuthFetchFn,
+            })
+        ).rejects.toThrow(
+            'opensteer profile list requires cloud authentication. Use --api-key, --access-token, OPENSTEER_API_KEY, OPENSTEER_ACCESS_TOKEN, or run "opensteer auth login".'
+        )
     })
 })

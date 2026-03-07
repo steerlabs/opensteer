@@ -639,6 +639,76 @@ describe('integration/counter-bindings', () => {
         })
     })
 
+    it('resolves iframe url-like attributes while leaving main-frame urls unchanged for counter extraction', async () => {
+        await setFixture(
+            page,
+            `
+            <a id="main-link" href="/top-level">Top level</a>
+            <iframe
+              id="frame-host"
+              srcdoc="<!doctype html><html><head><base href='https://fixtures.opensteer.dev/frame/' /></head><body>
+                <a id='frame-link' href='products/widget'>Widget</a>
+                <img id='frame-image' src='images/widget-fallback.jpg' srcset='images/widget-320.jpg 320w, images/widget-1280.jpg 1280w' />
+                <a id='frame-ping' ping='../track/ping https://backup.example/ping'>Track</a>
+              </body></html>"
+            ></iframe>
+            `
+        )
+
+        await page
+            .frameLocator('#frame-host')
+            .locator('#frame-link')
+            .waitFor({ state: 'visible' })
+
+        const opensteer = Opensteer.from(page)
+        const html = await opensteer.snapshot({ mode: 'full', withCounters: true })
+        const $$ = cheerio.load(html)
+
+        const mainCounter = Number.parseInt($$('#main-link').attr('c') || '', 10)
+        const frameLinkCounter = Number.parseInt(
+            $$('#frame-host + os-iframe-root #frame-link').attr('c') || '',
+            10
+        )
+        const frameImageCounter = Number.parseInt(
+            $$('#frame-host + os-iframe-root #frame-image').attr('c') || '',
+            10
+        )
+        const framePingCounter = Number.parseInt(
+            $$('#frame-host + os-iframe-root #frame-ping').attr('c') || '',
+            10
+        )
+
+        expect(Number.isFinite(mainCounter)).toBe(true)
+        expect(Number.isFinite(frameLinkCounter)).toBe(true)
+        expect(Number.isFinite(frameImageCounter)).toBe(true)
+        expect(Number.isFinite(framePingCounter)).toBe(true)
+
+        const data = await opensteer.extract<{
+            mainHref: string | null
+            frameHref: string | null
+            frameImage: string | null
+            framePing: string | null
+        }>({
+            schema: {
+                mainHref: { element: mainCounter, attribute: 'href' },
+                frameHref: { element: frameLinkCounter, attribute: 'href' },
+                frameImage: {
+                    element: frameImageCounter,
+                    attribute: 'srcset',
+                },
+                framePing: { element: framePingCounter, attribute: 'ping' },
+            },
+        })
+
+        expect(data).toEqual({
+            mainHref: '/top-level',
+            frameHref: 'https://fixtures.opensteer.dev/frame/products/widget',
+            frameImage:
+                'https://fixtures.opensteer.dev/frame/images/widget-1280.jpg',
+            framePing: 'https://fixtures.opensteer.dev/track/ping',
+        })
+    })
+
     it('fails with an explicit ambiguity error when duplicate c values appear', async () => {
         await setFixture(
             page,

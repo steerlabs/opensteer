@@ -1,7 +1,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
     loadConfigFile,
     resolveCloudSelection,
@@ -11,9 +11,34 @@ import {
 import type { OpensteerConfig } from '../src/types.js'
 
 const ORIGINAL_ENV = { ...process.env }
+const ORIGINAL_CWD = process.cwd()
+let isolatedCwd: string | null = null
+
+function createIsolatedEnv(): Record<string, string | undefined> {
+    const env = { ...ORIGINAL_ENV }
+    for (const key of Object.keys(env)) {
+        if (key.startsWith('OPENSTEER_')) {
+            delete env[key]
+        }
+    }
+    return env
+}
+
+beforeEach(() => {
+    process.env = createIsolatedEnv()
+    isolatedCwd = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'opensteer-config-test-cwd-')
+    )
+    process.chdir(isolatedCwd)
+})
 
 afterEach(() => {
+    process.chdir(ORIGINAL_CWD)
     process.env = { ...ORIGINAL_ENV }
+    if (isolatedCwd) {
+        fs.rmSync(isolatedCwd, { recursive: true, force: true })
+        isolatedCwd = null
+    }
 })
 
 describe('config', () => {

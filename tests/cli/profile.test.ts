@@ -215,4 +215,83 @@ describe('cli/profile runner', () => {
             }),
         ])
     })
+
+    it('preserves reuseIfActive when sync targets the configured browser profile', async () => {
+        const seenLaunches: Array<Record<string, unknown>> = []
+        let opensteerInstance = 0
+
+        const code = await runOpensteerProfileCli(
+            [
+                'sync',
+                '--from-profile-dir',
+                '/tmp/profile',
+                '--to-profile-id',
+                'bp_123',
+                '--all-domains',
+                '--yes',
+            ],
+            {
+                env: {
+                    OPENSTEER_ACCESS_TOKEN: 'ost_token_123',
+                    OPENSTEER_CLOUD_PROFILE_ID: 'bp_123',
+                    OPENSTEER_CLOUD_PROFILE_REUSE_IF_ACTIVE: 'true',
+                },
+                isInteractive: () => false,
+                confirm: async () => false,
+                createBrowserProfileClient: createMockBrowserProfileClient,
+                createOpensteer: (config) => {
+                    opensteerInstance += 1
+                    return {
+                        launch: async (options) => {
+                            seenLaunches.push({
+                                instance: opensteerInstance,
+                                config,
+                                options: options || {},
+                            })
+                        },
+                        close: async () => undefined,
+                        getCookies: async () =>
+                            opensteerInstance === 1
+                                ? [
+                                      {
+                                          name: 'sid',
+                                          value: 'v1',
+                                          domain: '.example.com',
+                                          path: '/',
+                                          expires: 999999,
+                                          httpOnly: true,
+                                          secure: true,
+                                          sameSite: 'Lax',
+                                      },
+                                  ]
+                                : [],
+                        context: {
+                            addCookies: async () => undefined,
+                        },
+                    }
+                },
+                writeStdout: () => undefined,
+                writeStderr: () => undefined,
+            }
+        )
+
+        expect(code).toBe(0)
+        expect(seenLaunches).toHaveLength(2)
+        expect(seenLaunches[1]).toEqual(
+            expect.objectContaining({
+                config: expect.objectContaining({
+                    cloud: expect.objectContaining({
+                        browserProfile: {
+                            profileId: 'bp_123',
+                            reuseIfActive: true,
+                        },
+                    }),
+                }),
+                options: expect.objectContaining({
+                    headless: true,
+                    timeout: 120_000,
+                }),
+            })
+        )
+    })
 })

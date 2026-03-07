@@ -1,5 +1,5 @@
 import type { ElementHandle, Frame, Page } from 'playwright'
-import { normalizeExtractedValue } from '../extract-value-normalization.js'
+import { readExtractedValueFromHandle } from '../extract-value-reader.js'
 
 export interface CounterRequest {
     key: string
@@ -26,11 +26,6 @@ interface CounterScanEntry {
     frame: Frame | null
 }
 
-interface CounterReadResult {
-    status: 'ok' | 'missing' | 'ambiguous'
-    value?: string | null
-}
-
 export async function resolveCounterElement(
     page: Page,
     counter: number
@@ -49,10 +44,8 @@ export async function resolveCounterElement(
         throw buildCounterAmbiguousError(counter)
     }
 
-    const handle = await resolveUniqueHandleInFrame(entry.frame, normalized)
-    const element = handle.asElement() as ElementHandle<Element> | null
+    const element = await resolveUniqueElementInFrame(entry.frame, normalized)
     if (!element) {
-        await handle.dispose()
         throw buildCounterNotFoundError(counter)
     }
 
@@ -76,47 +69,57 @@ export async function resolveCountersBatch(
         }
     }
 
-    const valueCache = new Map<string, unknown>()
-    for (const request of requests) {
-        const normalized = normalizeCounter(request.counter)
-        if (normalized == null) {
-            out[request.key] = null
-            continue
-        }
+    const valueCache = new Map<string, string | null>()
+    const elementCache = new Map<number, ElementHandle<Element> | null>()
 
-        const entry = scan.get(normalized)
-        if (!entry || entry.count <= 0 || !entry.frame) {
-            out[request.key] = null
-            continue
-        }
+    try {
+        for (const request of requests) {
+            const normalized = normalizeCounter(request.counter)
+            if (normalized == null) {
+                out[request.key] = null
+                continue
+            }
 
-        const cacheKey = `${normalized}:${request.attribute || ''}`
-        if (valueCache.has(cacheKey)) {
-            out[request.key] = valueCache.get(cacheKey)
-            continue
-        }
+            const entry = scan.get(normalized)
+            if (!entry || entry.count <= 0 || !entry.frame) {
+                out[request.key] = null
+                continue
+            }
 
-        const read = await readCounterValueInFrame(
-            entry.frame,
-            normalized,
-            request.attribute
+            const cacheKey = `${normalized}:${request.attribute || ''}`
+            if (valueCache.has(cacheKey)) {
+                out[request.key] = valueCache.get(cacheKey)
+                continue
+            }
+
+            if (!elementCache.has(normalized)) {
+                elementCache.set(
+                    normalized,
+                    await resolveUniqueElementInFrame(entry.frame, normalized)
+                )
+            }
+
+            const element = elementCache.get(normalized)
+            if (element == null) {
+                valueCache.set(cacheKey, null)
+                out[request.key] = null
+                continue
+            }
+
+            const value = await readExtractedValueFromHandle(element, {
+                attribute: request.attribute,
+            })
+            valueCache.set(cacheKey, value)
+            out[request.key] = value
+        }
+    } finally {
+        await Promise.all(
+            [...elementCache.values()]
+                .filter(
+                    (element): element is ElementHandle<Element> => !!element
+                )
+                .map((element) => element.dispose())
         )
-        if (read.status === 'ambiguous') {
-            throw buildCounterAmbiguousError(normalized)
-        }
-
-        if (read.status === 'missing') {
-            valueCache.set(cacheKey, null)
-            out[request.key] = null
-            continue
-        }
-
-        const normalizedValue = normalizeExtractedValue(
-            read.value ?? null,
-            request.attribute
-        )
-        valueCache.set(cacheKey, normalizedValue)
-        out[request.key] = normalizedValue
     }
 
     return out
@@ -206,11 +209,11 @@ async function scanCounterOccurrences(
     return out
 }
 
-async function resolveUniqueHandleInFrame(
+async function resolveUniqueElementInFrame(
     frame: Frame,
     counter: number
-) {
-    return frame.evaluateHandle((targetCounter) => {
+): Promise<ElementHandle<Element> | null> {
+    const handle = await frame.evaluateHandle((targetCounter) => {
         const matches: Element[] = []
 
         const walk = (root: ParentNode): void => {
@@ -232,65 +235,14 @@ async function resolveUniqueHandleInFrame(
         }
         return matches[0]
     }, String(counter))
-}
 
-async function readCounterValueInFrame(
-    frame: Frame,
-    counter: number,
-    attribute?: string
-): Promise<CounterReadResult> {
-    try {
-        return await frame.evaluate(
-            ({ targetCounter, attribute }) => {
-                const matches: Element[] = []
-
-                const walk = (root: ParentNode): void => {
-                    const children = Array.from(root.children) as Element[]
-                    for (const child of children) {
-                        if (child.getAttribute('c') === targetCounter) {
-                            matches.push(child)
-                        }
-                        walk(child)
-                        if (child.shadowRoot) {
-                            walk(child.shadowRoot)
-                        }
-                    }
-                }
-
-                walk(document)
-
-                if (!matches.length) {
-                    return {
-                        status: 'missing',
-                    }
-                }
-
-                if (matches.length > 1) {
-                    return {
-                        status: 'ambiguous',
-                    }
-                }
-
-                const target = matches[0]
-                const value = attribute
-                    ? target.getAttribute(attribute)
-                    : target.textContent
-
-                return {
-                    status: 'ok',
-                    value,
-                }
-            },
-            {
-                targetCounter: String(counter),
-                attribute,
-            }
-        )
-    } catch {
-        return {
-            status: 'missing',
-        }
+    const element = handle.asElement() as ElementHandle<Element> | null
+    if (!element) {
+        await handle.dispose()
+        return null
     }
+
+    return element
 }
 
 function buildCounterNotFoundError(counter: number): CounterResolutionError {

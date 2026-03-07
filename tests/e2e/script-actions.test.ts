@@ -7,6 +7,16 @@ import { Opensteer } from '../../src/opensteer.js'
 import { closeTestBrowser, createTestPage } from '../helpers/browser.js'
 import { gotoRoute } from '../helpers/integration.js'
 
+const RUN_AI_E2E = process.env.RUN_AI_E2E === '1'
+
+if (RUN_AI_E2E && !process.env.OPENAI_API_KEY?.trim()) {
+    throw new Error(
+        'RUN_AI_E2E=1 requires OPENAI_API_KEY for the AI e2e suite.'
+    )
+}
+
+const describeAiE2E = RUN_AI_E2E ? describe : describe.skip
+
 /**
  * Runs sequential, script-like actions through the Opensteer class
  * where every action is resolved by an LLM via `description` only.
@@ -14,7 +24,7 @@ import { gotoRoute } from '../helpers/integration.js'
  * No `selector`, no `element` counter -- the AI sees the page HTML
  * and picks the right element for each step.
  */
-describe('e2e/script-actions', () => {
+describeAiE2E('e2e/script-actions', () => {
     let context: BrowserContext
     let page: Page
     let rootDir: string

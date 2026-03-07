@@ -15,6 +15,9 @@
 - Extended cloud error-code mapping to preserve browser-profile cloud errors
   (for example `CLOUD_BROWSER_PROFILE_NOT_FOUND`) instead of collapsing to
   generic transport errors.
+- Extraction now resolves relative URL-like attributes against the iframe
+  document base URL when the extracted element lives inside an accessible
+  iframe, while preserving existing main-frame extraction behavior.
 
 ## 0.6.0
 
