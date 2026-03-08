@@ -8,7 +8,7 @@ description: "Browser automation, web scraping, and structured data extraction u
 **Exploring interactively?** Follow Phase 1.
 **Writing a scraper script?** Follow Phase 2.
 
-> Never use raw Playwright methods when an Opensteer equivalent exists. Never call `opensteer.navigate()` — the correct method is `opensteer.goto()`.
+> **SDK Rule**: Every browser action in a script MUST use an `opensteer.*` method. The SDK covers navigation, clicks, hover, input, select, scroll, extraction, text retrieval, HTML retrieval, screenshots, and waits. The correct navigation method is `opensteer.goto()` (not `navigate`).
 
 ---
 
@@ -77,6 +77,8 @@ Repeat Step 3 → Step 4 for every distinct page type the scraper will visit.
 opensteer close
 ```
 
+> **SDK Rule**: Every browser action in a script MUST use an `opensteer.*` method.
+
 ---
 
 ## Phase 2 — SDK Scraper Script
@@ -112,6 +114,13 @@ async function run() {
 run().catch((err) => { console.error(err); process.exit(1); });
 ```
 
+> **SDK Rule**: Every browser action in a script MUST use an `opensteer.*` method.
+
+**Before writing a script, verify:**
+1. Every interaction uses `opensteer.click()`, `opensteer.input()`, `opensteer.hover()`, `opensteer.extract()` — not `page.*` equivalents
+2. Every extraction uses `opensteer.extract({ description: "..." })` — not `page.evaluate()` for DOM data
+3. Waits use `opensteer.waitForText()` — not `page.waitForSelector()` (unless no stable text exists)
+
 **Critical method signatures:**
 
 ```typescript
@@ -146,8 +155,7 @@ await opensteer.extract({
   },
 }); // first extraction run: agent defines the full object from the snapshot
 
-await opensteer.waitForText("literal text");
-await opensteer.page.waitForSelector("css-selector");                       // SPA content guard
+await opensteer.waitForText("literal text");                                // page-transition wait
 
 // Do NOT add waits before opensteer actions — they handle waiting internally.
 ```
@@ -164,16 +172,6 @@ opensteer open --connect-url http://localhost:9222 --name "my-scraper"
 # Verify CDP is running: curl -s http://127.0.0.1:9222/json/version
 ```
 
-**API-based extraction (site has internal REST/GraphQL endpoints):**
-Navigate first to acquire session cookies, then call `fetch()` inside `page.evaluate()`. This is the only valid use of `page.evaluate()`.
-```typescript
-await opensteer.goto("https://example.com");
-const data = await opensteer.page.evaluate(async () => {
-  const res = await fetch("https://api.example.com/items?limit=100");
-  return res.json();
-});
-```
-
 **Tab management:**
 ```bash
 opensteer tabs
@@ -183,8 +181,30 @@ opensteer tab-close 1
 ```
 
 **Debugging failures (diagnose in this order):**
-1. SPA content not loaded — add `waitForText` or `page.waitForSelector` before extraction.
+1. SPA content not loaded — add `opensteer.waitForText()` before extraction.
 2. Missing cache — re-run Phase 1 caching step for the page type that failed.
 3. Obstacle blocking target — cookie banner, modal, or login wall. Dismiss it first.
+
+### Advanced: Direct Page Access (rare)
+
+Use `opensteer.page` ONLY for these two patterns. There are no other valid uses.
+
+**SPA selector guard** — when `waitForText` cannot work (no stable visible text):
+```typescript
+await opensteer.page.waitForSelector("css-selector");
+```
+
+**Internal API call** — site has REST/GraphQL endpoints and you need session cookies:
+```typescript
+await opensteer.goto("https://example.com");
+const data = await opensteer.page.evaluate(async () => {
+  const res = await fetch("https://api.example.com/items?limit=100");
+  return res.json();
+});
+```
+
+These two patterns are the complete list.
+
+> **SDK Rule**: Every browser action in a script MUST use an `opensteer.*` method.
 
 **Full references:** [cli-reference.md](references/cli-reference.md) | [sdk-reference.md](references/sdk-reference.md)

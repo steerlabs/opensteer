@@ -59,7 +59,7 @@ async function run() {
     // Visit each detail page and extract using cached description
     for (const job of listings.jobs) {
       await opensteer.goto(job.url);
-      await opensteer.page.waitForSelector("h1");
+      await opensteer.waitForText(job.title || "Job details");
 
       const detail = await opensteer.extract({
         description: "job detail page",
@@ -77,9 +77,9 @@ run().catch((err) => {
 });
 ```
 
-## API-Based Extraction
+## Advanced: API-Based Extraction (uses direct page access)
 
-When a site has internal APIs (REST, GraphQL, Algolia), navigate first for cookies, then use `fetch()` inside `page.evaluate()`. This is the only valid use of `page.evaluate()` for data.
+> This is a rare pattern. Only use it when the site has internal REST/GraphQL endpoints and DOM extraction via `opensteer.extract()` is insufficient.
 
 ```typescript
 import { Opensteer } from "opensteer";
@@ -114,3 +114,5 @@ run().catch((err) => {
   process.exit(1);
 });
 ```
+
+> **SDK Rule**: For all other data extraction, use `opensteer.extract()`.
