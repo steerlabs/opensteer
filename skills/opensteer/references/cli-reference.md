@@ -28,7 +28,7 @@ opensteer sessions                                  # List active sessions
 opensteer status                                    # Show resolved session/name state
 ```
 
-`open` does raw `page.goto()` (no stability wait). `navigate` includes `waitForVisualStability`. Use `open` once to start, then `navigate` for subsequent pages.
+`open` performs a basic navigation (no stability wait). `navigate` includes `waitForVisualStability`. Use `open` once to start, then `navigate` for subsequent pages.
 
 ## Observation
 

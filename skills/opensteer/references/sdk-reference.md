@@ -12,15 +12,15 @@ const opensteer = new Opensteer({
 await opensteer.launch({ headless: false });
 await opensteer.close();
 
-// Or wrap an existing Playwright page:
+// Wrap an existing page instance:
 const opensteer = Opensteer.from(existingPage, { name: "my-scraper" });
 ```
 
 ## Properties
 
 ```typescript
-opensteer.page;    // Raw Playwright Page — only for page.evaluate(fetch), page.waitForSelector, page.waitForTimeout
-opensteer.context; // Raw Playwright BrowserContext
+opensteer.page;    // Low-level page handle (see "Advanced: Direct Page Access" in SKILL.md)
+opensteer.context; // Low-level browser context handle
 ```
 
 ## Navigation
@@ -113,8 +113,7 @@ const title = await opensteer.getTitle();
 ```typescript
 await opensteer.waitForText("Success");                              // Literal text on page
 await opensteer.waitForText("Success", { timeout: 5000 });
-await opensteer.page.waitForSelector("article");                     // CSS selector
-await opensteer.page.waitForSelector(".loading", { state: "hidden" });
+// For CSS selector waits, see "Advanced: Direct Page Access" in SKILL.md
 ```
 
 ## Tabs
@@ -142,13 +141,16 @@ await opensteer.importCookies("/tmp/cookies.json");
 await opensteer.uploadFile({ element: 5, paths: ["/path/to/file.pdf"] });
 ```
 
-## Methods That DO NOT Exist
+## Common Mistakes
 
-| Wrong (throws)                   | Correct                                |
-| -------------------------------- | -------------------------------------- |
-| `opensteer.evaluate(...)`        | `opensteer.page.evaluate(...)`         |
-| `opensteer.waitForSelector(...)` | `opensteer.page.waitForSelector(...)`  |
-| `opensteer.waitForLoad(...)`     | `opensteer.page.waitForLoadState(...)` |
-| `opensteer.navigate(...)`        | `opensteer.goto(...)`                  |
-| `opensteer.browser_launch(...)`  | `opensteer.launch(...)`                |
-| `opensteer.browser_close(...)`   | `opensteer.close(...)`                 |
+| If you want to...        | Use this                          |
+| ------------------------ | --------------------------------- |
+| Navigate to a URL        | `opensteer.goto(url)`             |
+| Launch the browser       | `opensteer.launch()`              |
+| Close the browser        | `opensteer.close()`               |
+| Get page text content    | `opensteer.getElementText()`      |
+| Get page HTML            | `opensteer.getHtml()`             |
+| Extract structured data  | `opensteer.extract()`             |
+| Wait for content         | `opensteer.waitForText()`         |
+
+> **SDK Rule**: Every browser action in a script MUST use an `opensteer.*` method.
