@@ -56,7 +56,7 @@ describe('CLI open cloud auth helpers', () => {
             scopeDir: '/tmp/opensteer-scope',
             name: 'session-a',
             cursorEnabled: true,
-            connectUrl: 'http://localhost:9222',
+            cdpUrl: 'http://localhost:9222',
             cloudAuth,
             env: {
                 OPENSTEER_MODE: 'cloud',
@@ -66,10 +66,12 @@ describe('CLI open cloud auth helpers', () => {
         expect(cloudConfig.storage?.rootDir).toBe('/tmp/opensteer-scope')
         expect(cloudConfig.cloud).toEqual(cloudAuth)
         expect(cloudConfig.browser).toEqual({
-            headless: false,
-            connectUrl: 'http://localhost:9222',
-            channel: undefined,
-            profileDir: undefined,
+            headless: undefined,
+            mode: undefined,
+            cdpUrl: 'http://localhost:9222',
+            userDataDir: undefined,
+            profileDirectory: undefined,
+            executablePath: undefined,
         })
 
         const localConfig = buildServerOpenConfig({
@@ -83,5 +85,22 @@ describe('CLI open cloud auth helpers', () => {
         })
 
         expect(localConfig.cloud).toBeUndefined()
+    })
+
+    it('preserves unset browser overrides so config and env defaults can resolve later', () => {
+        expect(
+            buildServerOpenConfig({
+                scopeDir: '/tmp/opensteer-scope',
+                name: 'session-a',
+                cursorEnabled: true,
+            }).browser
+        ).toEqual({
+            headless: undefined,
+            mode: undefined,
+            cdpUrl: undefined,
+            userDataDir: undefined,
+            profileDirectory: undefined,
+            executablePath: undefined,
+        })
     })
 })
