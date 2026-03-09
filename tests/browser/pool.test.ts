@@ -50,14 +50,17 @@ describe('BrowserPool', () => {
         await writeFile(join(rootDir, 'Local State'), '{}')
         await writeFile(join(profileDir, 'Cookies'), '')
 
-        const startupPage = {
+        const startupPage: TestPage = {
             url: () => 'chrome://new-tab-page/',
+        }
+        const page = {
+            url: () => 'about:blank',
             goto: vi.fn(async () => undefined),
         }
         const context = {
             pages: () => [startupPage],
-            waitForEvent: vi.fn(async () => startupPage),
-            newPage: vi.fn(async () => startupPage),
+            waitForEvent: vi.fn(async () => page),
+            newPage: vi.fn(async () => page),
         }
         const browser = {
             close: vi.fn(async () => undefined),
@@ -92,7 +95,7 @@ describe('BrowserPool', () => {
                 '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
         })
 
-        expect(session.page).toBe(startupPage)
+        expect(session.page).toBe(page)
         expect(childProcessMocks.spawn).toHaveBeenCalledWith(
             '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
             expect.arrayContaining([
@@ -104,12 +107,12 @@ describe('BrowserPool', () => {
                 stdio: 'ignore',
             })
         )
-        expect(startupPage.goto).toHaveBeenCalledWith(
+        expect(page.goto).toHaveBeenCalledWith(
             'https://example.com',
             { timeout: 30_000, waitUntil: 'domcontentloaded' }
         )
         expect(context.waitForEvent).not.toHaveBeenCalled()
-        expect(context.newPage).not.toHaveBeenCalled()
+        expect(context.newPage).toHaveBeenCalledOnce()
 
         const processKill = vi
             .spyOn(process, 'kill')
@@ -349,9 +352,7 @@ describe('BrowserPool', () => {
         })
 
         expect(session.page).toBe(page)
-        expect(context.waitForEvent).toHaveBeenCalledWith('page', {
-            timeout: 1_000,
-        })
+        expect(context.waitForEvent).not.toHaveBeenCalled()
         expect(context.newPage).toHaveBeenCalledOnce()
         expect(page.goto).toHaveBeenCalledWith(
             'https://example.com',
@@ -363,6 +364,67 @@ describe('BrowserPool', () => {
             .mockImplementation(() => true)
         await pool.close()
         processKill.mockRestore()
+    })
+
+    it('creates an inspectable page when attached browser only exposes internal tabs', async () => {
+        const internalPage = {
+            url: () => 'chrome://new-tab-page/',
+        }
+        const page = {
+            url: () => 'about:blank',
+        }
+        const context = {
+            pages: () => [internalPage],
+            newPage: vi.fn(async () => page),
+        }
+        const browser = {
+            close: vi.fn(async () => undefined),
+            contexts: () => [context],
+        }
+        playwrightMocks.connectOverCDP.mockResolvedValue(browser)
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(async (input: unknown) => {
+                const url = String(input)
+                if (url.endsWith('/json')) {
+                    return {
+                        ok: true,
+                        json: async () => [
+                            {
+                                id: 'startup-page',
+                                type: 'page',
+                                url: 'about:blank',
+                            },
+                        ],
+                    }
+                }
+
+                if (url.endsWith('/json/version')) {
+                    return {
+                        ok: true,
+                        json: async () => ({
+                            webSocketDebuggerUrl:
+                                'ws://127.0.0.1:9222/devtools/browser/root',
+                        }),
+                    }
+                }
+
+                throw new Error(`Unexpected discovery URL: ${url}`)
+            })
+        )
+
+        const pool = new BrowserPool()
+
+        try {
+            const session = await pool.launch({
+                cdpUrl: 'http://127.0.0.1:9222',
+            })
+
+            expect(session.page).toBe(page)
+            expect(context.newPage).toHaveBeenCalledOnce()
+        } finally {
+            await pool.close()
+        }
     })
 })
 
