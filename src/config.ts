@@ -46,9 +46,10 @@ const DEFAULT_CONFIG: Required<
         headless: false,
         executablePath: undefined,
         slowMo: 0,
-        connectUrl: undefined,
-        channel: undefined,
-        profileDir: undefined,
+        mode: undefined,
+        cdpUrl: undefined,
+        userDataDir: undefined,
+        profileDirectory: undefined,
     },
     storage: {
         rootDir: process.cwd(),
@@ -523,6 +524,8 @@ export function resolveConfigWithEnv(
         typeof fileConfig.storage?.rootDir === 'string'
             ? fileConfig.storage.rootDir
             : undefined
+    assertNoRemovedBrowserConfig(input.browser, 'Opensteer constructor config')
+    assertNoRemovedBrowserConfig(fileConfig.browser, '.opensteer/config.json')
     const envRootDir =
         input.storage?.rootDir ??
         fileRootDir ??
@@ -542,15 +545,36 @@ export function resolveConfigWithEnv(
             'OPENSTEER_RUNTIME is no longer supported. Use OPENSTEER_MODE instead.'
         )
     }
+    if (env.OPENSTEER_CONNECT_URL != null) {
+        throw new Error(
+            'OPENSTEER_CONNECT_URL is no longer supported. Use OPENSTEER_CDP_URL instead.'
+        )
+    }
+    if (env.OPENSTEER_CHANNEL != null) {
+        throw new Error(
+            'OPENSTEER_CHANNEL is no longer supported. Use OPENSTEER_BROWSER plus OPENSTEER_BROWSER_PATH when needed.'
+        )
+    }
+    if (env.OPENSTEER_PROFILE_DIR != null) {
+        throw new Error(
+            'OPENSTEER_PROFILE_DIR is no longer supported. Use OPENSTEER_USER_DATA_DIR and OPENSTEER_PROFILE_DIRECTORY instead.'
+        )
+    }
 
     const envConfig: Partial<OpensteerConfig> = {
         browser: {
             headless: parseBool(env.OPENSTEER_HEADLESS),
             executablePath: env.OPENSTEER_BROWSER_PATH || undefined,
             slowMo: parseNumber(env.OPENSTEER_SLOW_MO),
-            connectUrl: env.OPENSTEER_CONNECT_URL || undefined,
-            channel: env.OPENSTEER_CHANNEL || undefined,
-            profileDir: env.OPENSTEER_PROFILE_DIR || undefined,
+            mode:
+                env.OPENSTEER_BROWSER === 'real' ||
+                env.OPENSTEER_BROWSER === 'chromium'
+                    ? env.OPENSTEER_BROWSER
+                    : undefined,
+            cdpUrl: env.OPENSTEER_CDP_URL || undefined,
+            userDataDir: env.OPENSTEER_USER_DATA_DIR || undefined,
+            profileDirectory:
+                env.OPENSTEER_PROFILE_DIRECTORY || undefined,
         },
         cursor: {
             enabled: parseBool(env.OPENSTEER_CURSOR),
@@ -562,6 +586,32 @@ export function resolveConfigWithEnv(
     const mergedWithFile = mergeDeep(runtimeDefaults, fileConfig)
     const mergedWithEnv = mergeDeep(mergedWithFile, envConfig)
     const resolved = mergeDeep(mergedWithEnv, input) as ResolvedOpensteerConfig
+
+    function assertNoRemovedBrowserConfig(
+        value: unknown,
+        source: string
+    ): void {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
+            return
+        }
+
+        const record = value as Record<string, unknown>
+        if (record.connectUrl !== undefined) {
+            throw new Error(
+                `${source}.browser.connectUrl is no longer supported. Use browser.cdpUrl instead.`
+            )
+        }
+        if (record.channel !== undefined) {
+            throw new Error(
+                `${source}.browser.channel is no longer supported. Use browser.mode plus browser.executablePath instead.`
+            )
+        }
+        if (record.profileDir !== undefined) {
+            throw new Error(
+                `${source}.browser.profileDir is no longer supported. Use browser.userDataDir and browser.profileDirectory instead.`
+            )
+        }
+    }
 
     const envApiKey = resolveOpensteerApiKey(env)
     const envAccessTokenRaw = resolveOpensteerAccessToken(env)

@@ -5,16 +5,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const playwrightMocks = vi.hoisted(() => ({
     launch: vi.fn(),
-    launchPersistentContext: vi.fn(),
     connectOverCDP: vi.fn(),
+}))
+
+const childProcessMocks = vi.hoisted(() => ({
+    spawn: vi.fn(),
 }))
 
 vi.mock('playwright', () => ({
     chromium: {
         launch: playwrightMocks.launch,
-        launchPersistentContext: playwrightMocks.launchPersistentContext,
         connectOverCDP: playwrightMocks.connectOverCDP,
     },
+}))
+
+vi.mock('node:child_process', () => ({
+    spawn: childProcessMocks.spawn,
 }))
 
 import { BrowserPool } from '../../src/browser/pool.js'
@@ -22,53 +28,82 @@ import { BrowserPool } from '../../src/browser/pool.js'
 describe('BrowserPool', () => {
     beforeEach(() => {
         playwrightMocks.launch.mockReset()
-        playwrightMocks.launchPersistentContext.mockReset()
         playwrightMocks.connectOverCDP.mockReset()
+        childProcessMocks.spawn.mockReset()
+        vi.unstubAllGlobals()
     })
 
-    it('uses launchPersistentContext for profile directory launches', async () => {
+    it('launches a copied real-browser profile over CDP', async () => {
         const rootDir = await mkdtemp(join(tmpdir(), 'opensteer-browser-pool-'))
-        const profileDir = join(rootDir, 'Default')
+        const profileDirectory = 'Default'
+        const profileDir = join(rootDir, profileDirectory)
         await mkdir(profileDir, { recursive: true })
         await writeFile(join(rootDir, 'Local State'), '{}')
         await writeFile(join(profileDir, 'Cookies'), '')
 
-        const page = {}
-        const browserClose = vi.fn(async () => undefined)
-        const contextClose = vi.fn(async () => undefined)
+        const page = {
+            url: () => 'https://example.com',
+        }
         const browser = {
-            close: browserClose,
+            close: vi.fn(async () => undefined),
+            contexts: () => [
+                {
+                    pages: () => [page],
+                    newPage: vi.fn(async () => page),
+                },
+            ],
         }
-        const context = {
-            browser: () => browser,
-            pages: () => [page],
-            newPage: vi.fn(async () => page),
-            close: contextClose,
-        }
-        playwrightMocks.launchPersistentContext.mockResolvedValue(context)
+        playwrightMocks.connectOverCDP.mockResolvedValue(browser)
+        childProcessMocks.spawn.mockReturnValue({
+            pid: 4321,
+            exitCode: null,
+            unref: vi.fn(),
+            kill: vi.fn(),
+        })
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(async () => ({
+                ok: true,
+                json: async () => ({
+                    webSocketDebuggerUrl:
+                        'ws://127.0.0.1:9222/devtools/browser/root',
+                }),
+            }))
+        )
 
         const pool = new BrowserPool()
         const session = await pool.launch({
-            profileDir,
-            headless: true,
+            mode: 'real',
+            userDataDir: rootDir,
+            profileDirectory,
+            executablePath:
+                '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
         })
 
         expect(session.page).toBe(page)
-        expect(playwrightMocks.launchPersistentContext).toHaveBeenCalledWith(
-            rootDir,
+        expect(childProcessMocks.spawn).toHaveBeenCalledWith(
+            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+            expect.arrayContaining([
+                expect.stringMatching(/^--user-data-dir=/),
+                '--profile-directory=Default',
+                expect.stringMatching(/^--remote-debugging-port=/),
+                '--headless=new',
+            ]),
             expect.objectContaining({
-                headless: true,
-                args: ['--profile-directory=Default'],
+                stdio: 'ignore',
             })
         )
 
+        const processKill = vi
+            .spyOn(process, 'kill')
+            .mockImplementation(() => true)
         await pool.close()
+        processKill.mockRestore()
 
-        expect(contextClose).toHaveBeenCalledOnce()
-        expect(browserClose).not.toHaveBeenCalled()
+        expect(browser.close).toHaveBeenCalledOnce()
     })
 
-    it('keeps channel-only launches on browserType.launch', async () => {
+    it('keeps chromium launches on browserType.launch', async () => {
         const page = {}
         const context = {
             newPage: vi.fn(async () => page),
@@ -81,17 +116,14 @@ describe('BrowserPool', () => {
 
         const pool = new BrowserPool()
         const session = await pool.launch({
-            channel: 'chrome',
             headless: true,
         })
 
         expect(session.page).toBe(page)
         expect(playwrightMocks.launch).toHaveBeenCalledWith(
             expect.objectContaining({
-                channel: 'chrome',
                 headless: true,
             })
         )
-        expect(playwrightMocks.launchPersistentContext).not.toHaveBeenCalled()
     })
 })
