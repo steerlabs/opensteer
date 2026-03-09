@@ -16,7 +16,10 @@ Global flags: `--session <id>`, `--name <namespace>`, `--headless`, `--descripti
 opensteer open <url>                                # Open browser, navigate to URL
 opensteer open <url> --name "my-scraper"            # Set selector cache namespace
 opensteer open <url> --headless                     # Headless mode
-opensteer open --connect-url http://localhost:9222   # Connect to running browser
+opensteer open --cdp-url http://localhost:9222        # Connect to running browser via CDP
+opensteer open <url> --browser real                   # Use real Chrome profile (headless)
+opensteer open <url> --browser real --headed           # Real Chrome, visible window
+opensteer open <url> --browser real --profile "Work"   # Specific Chrome profile
 opensteer navigate <url>                            # Navigate with visual stability wait
 opensteer navigate <url> --timeout 60000            # Custom timeout (default 30s)
 opensteer back                                      # Go back in history

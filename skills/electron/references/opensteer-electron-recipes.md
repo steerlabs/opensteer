@@ -29,7 +29,7 @@ curl -s http://127.0.0.1:9222/json/version
 ## Connect and Select Target
 
 ```bash
-opensteer open --connect-url http://127.0.0.1:9222 --session electron --name electron
+opensteer open --cdp-url http://127.0.0.1:9222 --session electron --name electron
 opensteer tabs --session electron
 opensteer tab-switch 0 --session electron
 opensteer snapshot action --session electron
@@ -63,10 +63,10 @@ opensteer extract '{"items":[{"title":{"element":15},"meta":{"element":16}}]}' \
 
 ```bash
 # Slack
-opensteer open --connect-url http://127.0.0.1:9222 --session slack --name slack-electron
+opensteer open --cdp-url http://127.0.0.1:9222 --session slack --name slack-electron
 
 # VS Code
-opensteer open --connect-url http://127.0.0.1:9223 --session vscode --name vscode-electron
+opensteer open --cdp-url http://127.0.0.1:9223 --session vscode --name vscode-electron
 
 opensteer snapshot action --session slack
 opensteer snapshot action --session vscode
@@ -84,3 +84,5 @@ opensteer snapshot action --session vscode
   - UI changed and counters are stale; take a fresh `snapshot action`.
 - Wrong selectors on replay:
   - `--description` string differs from the original text; use exact wording.
+- Connection works but extraction returns empty:
+  - The Electron app may render in a webview. Use `opensteer tabs` + `opensteer tab-switch` to find the correct target.
