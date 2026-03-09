@@ -1,9 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { copyFile, cp, mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { rm } from 'node:fs/promises'
 import { createServer } from 'node:net'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import {
     chromium,
     type Browser,
@@ -13,6 +10,11 @@ import {
 import type { LaunchOptions, OpensteerBrowserConfig } from '../types.js'
 import { CDPProxy, createBlankTarget, discoverTargets } from './cdp-proxy.js'
 import { detectChromePaths, expandHome } from './chrome.js'
+import {
+    clearPersistentProfileSingletons,
+    getOrCreatePersistentProfile,
+} from './persistent-profile.js'
+import { applyStealthScripts } from './stealth.js'
 
 export interface BrowserSession {
     browser: Browser
@@ -26,7 +28,8 @@ export class BrowserPool {
     private browser: Browser | null = null
     private cdpProxy: CDPProxy | null = null
     private launchedProcess: ChildProcess | null = null
-    private tempUserDataDir: string | null = null
+    private managedUserDataDir: string | null = null
+    private persistentProfile = false
     private readonly defaults: OpensteerBrowserConfig
 
     constructor(defaults: OpensteerBrowserConfig = {}) {
@@ -38,7 +41,7 @@ export class BrowserPool {
             this.browser ||
             this.cdpProxy ||
             this.launchedProcess ||
-            this.tempUserDataDir
+            this.managedUserDataDir
         ) {
             await this.close()
         }
@@ -97,11 +100,13 @@ export class BrowserPool {
         const browser = this.browser
         const cdpProxy = this.cdpProxy
         const launchedProcess = this.launchedProcess
-        const tempUserDataDir = this.tempUserDataDir
+        const managedUserDataDir = this.managedUserDataDir
+        const persistentProfile = this.persistentProfile
         this.browser = null
         this.cdpProxy = null
         this.launchedProcess = null
-        this.tempUserDataDir = null
+        this.managedUserDataDir = null
+        this.persistentProfile = false
 
         try {
             if (browser) {
@@ -110,8 +115,8 @@ export class BrowserPool {
         } finally {
             cdpProxy?.close()
             await killProcessTree(launchedProcess)
-            if (tempUserDataDir) {
-                await rm(tempUserDataDir, {
+            if (managedUserDataDir && !persistentProfile) {
+                await rm(managedUserDataDir, {
                     recursive: true,
                     force: true,
                 }).catch(() => undefined)
@@ -172,10 +177,11 @@ export class BrowserPool {
             options.userDataDir ?? chromePaths.defaultUserDataDir
         )
         const profileDirectory = options.profileDirectory ?? 'Default'
-        const tempUserDataDir = await cloneProfileToTempDir(
+        const persistentProfile = await getOrCreatePersistentProfile(
             sourceUserDataDir,
             profileDirectory
         )
+        await clearPersistentProfileSingletons(persistentProfile.userDataDir)
         const debugPort = await reserveDebugPort()
         const headless = resolveLaunchHeadless(
             'real',
@@ -183,7 +189,7 @@ export class BrowserPool {
             this.defaults.headless
         )
         const launchArgs = buildRealBrowserLaunchArgs({
-            userDataDir: tempUserDataDir,
+            userDataDir: persistentProfile.userDataDir,
             profileDirectory,
             debugPort,
             headless,
@@ -204,24 +210,24 @@ export class BrowserPool {
                 timeout: options.timeout ?? 30_000,
             })
             const { context, page } = await createOwnedBrowserContextAndPage(
-                browser,
-                {
-                    initialUrl: options.initialUrl,
-                    timeoutMs: options.timeout ?? 30_000,
-                }
+                browser
             )
+            await applyStealthScripts(context, page)
+            if (options.initialUrl) {
+                await page.goto(options.initialUrl, {
+                    waitUntil: 'domcontentloaded',
+                    timeout: options.timeout ?? 30_000,
+                })
+            }
             this.browser = browser
             this.launchedProcess = processHandle
-            this.tempUserDataDir = tempUserDataDir
+            this.managedUserDataDir = persistentProfile.userDataDir
+            this.persistentProfile = true
 
             return { browser, context, page, isExternal: false }
         } catch (error) {
             await browser?.close().catch(() => undefined)
             await killProcessTree(processHandle)
-            await rm(tempUserDataDir, {
-                recursive: true,
-                force: true,
-            }).catch(() => undefined)
             throw error
         }
     }
@@ -277,21 +283,13 @@ function resolveLaunchHeadless(
 }
 
 async function createOwnedBrowserContextAndPage(
-    browser: Browser,
-    options: { initialUrl?: string; timeoutMs: number }
+    browser: Browser
 ): Promise<{
     context: BrowserContext
     page: Page
 }> {
     const context = getPrimaryBrowserContext(browser)
     const page = await getInspectablePageOrCreate(context)
-
-    if (options.initialUrl) {
-        await page.goto(options.initialUrl, {
-            waitUntil: 'domcontentloaded',
-            timeout: options.timeoutMs,
-        })
-    }
 
     return { context, page }
 }
@@ -438,35 +436,6 @@ async function reserveDebugPort(): Promise<number> {
     })
 }
 
-async function cloneProfileToTempDir(
-    userDataDir: string,
-    profileDirectory: string
-): Promise<string> {
-    const resolvedUserDataDir = expandHome(userDataDir)
-    const tempUserDataDir = await mkdtemp(
-        join(tmpdir(), 'opensteer-real-browser-')
-    )
-    const sourceProfileDir = join(resolvedUserDataDir, profileDirectory)
-    const targetProfileDir = join(tempUserDataDir, profileDirectory)
-
-    if (existsSync(sourceProfileDir)) {
-        await cp(sourceProfileDir, targetProfileDir, {
-            recursive: true,
-        })
-    } else {
-        await mkdir(targetProfileDir, {
-            recursive: true,
-        })
-    }
-
-    const localStatePath = join(resolvedUserDataDir, 'Local State')
-    if (existsSync(localStatePath)) {
-        await copyFile(localStatePath, join(tempUserDataDir, 'Local State'))
-    }
-
-    return tempUserDataDir
-}
-
 function buildRealBrowserLaunchArgs(options: {
     userDataDir: string
     profileDirectory: string
@@ -479,9 +448,8 @@ function buildRealBrowserLaunchArgs(options: {
         `--remote-debugging-port=${options.debugPort}`,
         '--no-first-run',
         '--no-default-browser-check',
-        '--disable-background-networking',
-        '--disable-sync',
         '--disable-popup-blocking',
+        '--disable-blink-features=AutomationControlled',
     ]
 
     if (options.headless) {

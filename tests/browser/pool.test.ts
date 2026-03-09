@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -13,6 +14,11 @@ const childProcessMocks = vi.hoisted(() => ({
     spawn: vi.fn(),
 }))
 
+const persistentProfileMocks = vi.hoisted(() => ({
+    clearPersistentProfileSingletons: vi.fn(),
+    getOrCreatePersistentProfile: vi.fn(),
+}))
+
 vi.mock('playwright', () => ({
     chromium: {
         launch: playwrightMocks.launch,
@@ -22,6 +28,13 @@ vi.mock('playwright', () => ({
 
 vi.mock('node:child_process', () => ({
     spawn: childProcessMocks.spawn,
+}))
+
+vi.mock('../../src/browser/persistent-profile.js', () => ({
+    clearPersistentProfileSingletons:
+        persistentProfileMocks.clearPersistentProfileSingletons,
+    getOrCreatePersistentProfile:
+        persistentProfileMocks.getOrCreatePersistentProfile,
 }))
 
 import { BrowserPool } from '../../src/browser/pool.js'
@@ -39,6 +52,15 @@ describe('BrowserPool', () => {
         playwrightMocks.launch.mockReset()
         playwrightMocks.connectOverCDP.mockReset()
         childProcessMocks.spawn.mockReset()
+        persistentProfileMocks.clearPersistentProfileSingletons.mockReset()
+        persistentProfileMocks.getOrCreatePersistentProfile.mockReset()
+        persistentProfileMocks.getOrCreatePersistentProfile.mockResolvedValue({
+            created: false,
+            userDataDir: join(tmpdir(), 'opensteer-persistent-profile'),
+        })
+        persistentProfileMocks.clearPersistentProfileSingletons.mockResolvedValue(
+            undefined
+        )
         vi.unstubAllGlobals()
     })
 
@@ -46,18 +68,27 @@ describe('BrowserPool', () => {
         const rootDir = await mkdtemp(join(tmpdir(), 'opensteer-browser-pool-'))
         const profileDirectory = 'Default'
         const profileDir = join(rootDir, profileDirectory)
+        const persistentUserDataDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-persistent-profile-')
+        )
         await mkdir(profileDir, { recursive: true })
         await writeFile(join(rootDir, 'Local State'), '{}')
         await writeFile(join(profileDir, 'Cookies'), '')
+        persistentProfileMocks.getOrCreatePersistentProfile.mockResolvedValue({
+            created: true,
+            userDataDir: persistentUserDataDir,
+        })
 
         const startupPage: TestPage = {
             url: () => 'chrome://new-tab-page/',
         }
         const page = {
             url: () => 'about:blank',
+            evaluate: vi.fn(async () => undefined),
             goto: vi.fn(async () => undefined),
         }
         const context = {
+            addInitScript: vi.fn(async () => undefined),
             pages: () => [startupPage],
             waitForEvent: vi.fn(async () => page),
             newPage: vi.fn(async () => page),
@@ -99,14 +130,32 @@ describe('BrowserPool', () => {
         expect(childProcessMocks.spawn).toHaveBeenCalledWith(
             '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
             expect.arrayContaining([
-                expect.stringMatching(/^--user-data-dir=/),
+                `--user-data-dir=${persistentUserDataDir}`,
                 '--profile-directory=Default',
                 expect.stringMatching(/^--remote-debugging-port=/),
+                '--disable-blink-features=AutomationControlled',
             ]),
             expect.objectContaining({
                 stdio: 'ignore',
             })
         )
+        expect(childProcessMocks.spawn).toHaveBeenCalledWith(
+            expect.any(String),
+            expect.not.arrayContaining([
+                '--disable-background-networking',
+                '--disable-sync',
+            ]),
+            expect.any(Object)
+        )
+        expect(persistentProfileMocks.getOrCreatePersistentProfile).toHaveBeenCalledWith(
+            rootDir,
+            profileDirectory
+        )
+        expect(
+            persistentProfileMocks.clearPersistentProfileSingletons
+        ).toHaveBeenCalledWith(persistentUserDataDir)
+        expect(context.addInitScript).toHaveBeenCalledOnce()
+        expect(page.evaluate).toHaveBeenCalledOnce()
         expect(page.goto).toHaveBeenCalledWith(
             'https://example.com',
             { timeout: 30_000, waitUntil: 'domcontentloaded' }
@@ -121,6 +170,7 @@ describe('BrowserPool', () => {
         processKill.mockRestore()
 
         expect(browser.close).toHaveBeenCalledOnce()
+        expect(existsSync(persistentUserDataDir)).toBe(true)
     })
 
     it('keeps chromium launches on browserType.launch', async () => {
@@ -245,9 +295,11 @@ describe('BrowserPool', () => {
 
         const page = {
             url: () => 'about:blank',
+            evaluate: vi.fn(async () => undefined),
             goto: vi.fn(async () => undefined),
         }
         const context = {
+            addInitScript: vi.fn(async () => undefined),
             pages: () => [page],
             waitForEvent: vi.fn(async () => page),
             newPage: vi.fn(async () => page),
@@ -306,9 +358,11 @@ describe('BrowserPool', () => {
 
         const page = {
             url: () => 'about:blank',
+            evaluate: vi.fn(async () => undefined),
             goto: vi.fn(async () => undefined),
         }
         const context = {
+            addInitScript: vi.fn(async () => undefined),
             pages: (): TestPage[] => [],
             waitForEvent: vi.fn(async () => {
                 const error = new Error('Timed out waiting for page')
