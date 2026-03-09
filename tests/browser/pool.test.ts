@@ -27,6 +27,10 @@ import { BrowserPool } from '../../src/browser/pool.js'
 
 type TestPage = {
     url: () => string
+    waitForLoadState?: (
+        state: string,
+        options?: { timeout?: number }
+    ) => Promise<void>
 }
 
 describe('BrowserPool', () => {
@@ -51,6 +55,7 @@ describe('BrowserPool', () => {
         let pages: TestPage[] = [startupPage]
         const page = {
             url: () => 'https://example.com',
+            waitForLoadState: vi.fn(async () => undefined),
         }
         const context = {
             pages: () => pages,
@@ -147,6 +152,10 @@ describe('BrowserPool', () => {
             'Target.closeTarget',
             { targetId: 'startup-1' }
         )
+        expect(page.waitForLoadState).toHaveBeenCalledWith(
+            'domcontentloaded',
+            { timeout: 30_000 }
+        )
         expect(browserSession.detach).toHaveBeenCalledOnce()
 
         const processKill = vi
@@ -180,5 +189,93 @@ describe('BrowserPool', () => {
                 headless: true,
             })
         )
+    })
+
+    it('does not wait for navigation when owned real-browser startup opens about:blank', async () => {
+        const rootDir = await mkdtemp(join(tmpdir(), 'opensteer-browser-pool-'))
+        const profileDirectory = 'Default'
+        const profileDir = join(rootDir, profileDirectory)
+        await mkdir(profileDir, { recursive: true })
+        await writeFile(join(rootDir, 'Local State'), '{}')
+        await writeFile(join(profileDir, 'Cookies'), '')
+
+        const startupPage = {
+            url: () => 'chrome://new-tab-page/',
+        }
+        let pages: TestPage[] = [startupPage]
+        const page = {
+            url: () => 'about:blank',
+            waitForLoadState: vi.fn(async () => undefined),
+        }
+        const context = {
+            pages: () => pages,
+        }
+        const browserSession = {
+            send: vi.fn(async (method: string) => {
+                if (method === 'Target.createTarget') {
+                    pages = [startupPage, page]
+                    return { targetId: 'target-1' }
+                }
+                if (method === 'Target.getTargets') {
+                    return {
+                        targetInfos: [
+                            {
+                                targetId: 'startup-1',
+                                type: 'page',
+                                url: 'chrome://new-tab-page/',
+                            },
+                            {
+                                targetId: 'target-1',
+                                type: 'page',
+                                url: 'about:blank',
+                            },
+                        ],
+                    }
+                }
+                return {}
+            }),
+            detach: vi.fn(async () => undefined),
+        }
+        const browser = {
+            close: vi.fn(async () => undefined),
+            contexts: () => [context],
+            newBrowserCDPSession: vi.fn(async () => browserSession),
+        }
+        playwrightMocks.connectOverCDP.mockResolvedValue(browser)
+        childProcessMocks.spawn.mockReturnValue({
+            pid: 4321,
+            exitCode: null,
+            unref: vi.fn(),
+            kill: vi.fn(),
+        })
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(async () => ({
+                ok: true,
+                json: async () => ({
+                    webSocketDebuggerUrl:
+                        'ws://127.0.0.1:9222/devtools/browser/root',
+                }),
+            }))
+        )
+
+        const pool = new BrowserPool()
+        const session = await pool.launch({
+            mode: 'real',
+            headless: false,
+            userDataDir: rootDir,
+            profileDirectory,
+            executablePath:
+                '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        })
+
+        expect(session.page).toBe(page)
+        expect(page.waitForLoadState).not.toHaveBeenCalled()
+
+        const processKill = vi
+            .spyOn(process, 'kill')
+            .mockImplementation(() => true)
+        await pool.close()
+        processKill.mockRestore()
     })
 })
