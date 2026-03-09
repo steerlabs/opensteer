@@ -136,10 +136,12 @@ export class BrowserPool {
 
         try {
             const { browserWsUrl, targets } = await discoverTargets(cdpUrl)
-
-            const targetId = targets.length > 0
-                ? targets[0].id
-                : await createBlankTarget(browserWsUrl)
+            let targetId: string
+            if (targets.length > 0) {
+                targetId = targets[0].id
+            } else {
+                targetId = await createBlankTarget(browserWsUrl)
+            }
             cdpProxy = new CDPProxy(browserWsUrl, targetId)
             const proxyWsUrl = await cdpProxy.start()
 
