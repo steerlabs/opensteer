@@ -91,8 +91,9 @@ export interface LaunchOptions {
     headless?: boolean
     executablePath?: string
     slowMo?: number
+    /** Sandbox-only context options. Not supported with cdpUrl or mode "real". */
     context?: BrowserContextOptions
-    /** Initial URL to open as part of browser startup when supported. */
+    /** Initial URL to open as part of owned real-browser startup. */
     initialUrl?: string
     /** Local browser mode. Defaults to "chromium". */
     mode?: OpensteerLocalBrowserMode

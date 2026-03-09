@@ -11,6 +11,7 @@ import {
     type Page,
 } from 'playwright'
 import type { LaunchOptions, OpensteerBrowserConfig } from '../types.js'
+import { CDPProxy, discoverTargets } from './cdp-proxy.js'
 import { detectChromePaths, expandHome } from './chrome.js'
 
 type BrowserCdpSession = Awaited<ReturnType<Browser['newBrowserCDPSession']>>
@@ -31,6 +32,7 @@ export interface BrowserSession {
 
 export class BrowserPool {
     private browser: Browser | null = null
+    private cdpProxy: CDPProxy | null = null
     private launchedProcess: ChildProcess | null = null
     private tempUserDataDir: string | null = null
     private readonly defaults: OpensteerBrowserConfig
@@ -40,7 +42,12 @@ export class BrowserPool {
     }
 
     async launch(options: LaunchOptions = {}): Promise<BrowserSession> {
-        if (this.browser || this.launchedProcess || this.tempUserDataDir) {
+        if (
+            this.browser ||
+            this.cdpProxy ||
+            this.launchedProcess ||
+            this.tempUserDataDir
+        ) {
             await this.close()
         }
 
@@ -96,9 +103,11 @@ export class BrowserPool {
 
     async close(): Promise<void> {
         const browser = this.browser
+        const cdpProxy = this.cdpProxy
         const launchedProcess = this.launchedProcess
         const tempUserDataDir = this.tempUserDataDir
         this.browser = null
+        this.cdpProxy = null
         this.launchedProcess = null
         this.tempUserDataDir = null
 
@@ -107,6 +116,7 @@ export class BrowserPool {
                 await browser.close().catch(() => undefined)
             }
         } finally {
+            cdpProxy?.close()
             await killProcessTree(launchedProcess)
             if (tempUserDataDir) {
                 await rm(tempUserDataDir, {
@@ -122,16 +132,25 @@ export class BrowserPool {
         timeout?: number
     ): Promise<BrowserSession> {
         let browser: Browser | null = null
+        let cdpProxy: CDPProxy | null = null
 
         try {
-            const browserWsUrl = await resolveCdpWebSocketUrl(
-                cdpUrl,
-                timeout ?? 30_000
-            )
-            browser = await chromium.connectOverCDP(browserWsUrl, {
+            const { browserWsUrl, targets } = await discoverTargets(cdpUrl)
+
+            if (targets.length === 0) {
+                throw new Error(
+                    'No page targets found. Is the browser running with an open window?'
+                )
+            }
+
+            cdpProxy = new CDPProxy(browserWsUrl, targets[0].id)
+            const proxyWsUrl = await cdpProxy.start()
+
+            browser = await chromium.connectOverCDP(proxyWsUrl, {
                 timeout: timeout ?? 30_000,
             })
             this.browser = browser
+            this.cdpProxy = cdpProxy
             const { context, page } = await pickBrowserContextAndPage(browser)
 
             return { browser, context, page, isExternal: true }
@@ -139,7 +158,9 @@ export class BrowserPool {
             if (browser) {
                 await browser.close().catch(() => undefined)
             }
+            cdpProxy?.close()
             this.browser = null
+            this.cdpProxy = null
             throw error
         }
     }
@@ -165,12 +186,11 @@ export class BrowserPool {
             profileDirectory
         )
         const debugPort = await reserveDebugPort()
-        const headless =
-            options.headless ??
-            (this.defaults.mode === 'real' &&
-            this.defaults.headless !== undefined
-                ? this.defaults.headless
-                : true)
+        const headless = resolveLaunchHeadless(
+            'real',
+            options.headless,
+            this.defaults.headless
+        )
         const launchArgs = buildRealBrowserLaunchArgs({
             userDataDir: tempUserDataDir,
             profileDirectory,
@@ -220,7 +240,11 @@ export class BrowserPool {
         options: LaunchOptions
     ): Promise<BrowserSession> {
         const browser = await chromium.launch({
-            headless: options.headless ?? this.defaults.headless,
+            headless: resolveLaunchHeadless(
+                'chromium',
+                options.headless,
+                this.defaults.headless
+            ),
             executablePath:
                 options.executablePath ??
                 this.defaults.executablePath ??
@@ -250,6 +274,20 @@ async function pickBrowserContextAndPage(browser: Browser): Promise<{
         (await context.newPage())
 
     return { context, page }
+}
+
+function resolveLaunchHeadless(
+    mode: 'chromium' | 'real',
+    requestedHeadless: boolean | undefined,
+    defaultHeadless: boolean | undefined
+): boolean {
+    if (requestedHeadless !== undefined) {
+        return requestedHeadless
+    }
+    if (defaultHeadless !== undefined) {
+        return defaultHeadless
+    }
+    return mode === 'real'
 }
 
 async function createOwnedBrowserContextAndPage(

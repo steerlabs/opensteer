@@ -586,6 +586,17 @@ export function resolveConfigWithEnv(
     const mergedWithFile = mergeDeep(runtimeDefaults, fileConfig)
     const mergedWithEnv = mergeDeep(mergedWithFile, envConfig)
     const resolved = mergeDeep(mergedWithEnv, input) as ResolvedOpensteerConfig
+    const browserHeadlessExplicit =
+        input.browser?.headless !== undefined ||
+        fileConfig.browser?.headless !== undefined ||
+        envConfig.browser?.headless !== undefined
+
+    if (!browserHeadlessExplicit && resolved.browser?.mode === 'real') {
+        resolved.browser = {
+            ...resolved.browser,
+            headless: true,
+        }
+    }
 
     function assertNoRemovedBrowserConfig(
         value: unknown,

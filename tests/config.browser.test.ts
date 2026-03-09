@@ -25,4 +25,25 @@ describe('browser config compatibility', () => {
             )
         ).toThrow('OPENSTEER_CONNECT_URL')
     })
+
+    it('defaults real-browser mode to headless when not explicitly configured', () => {
+        expect(
+            resolveConfigWithEnv({
+                browser: {
+                    mode: 'real',
+                },
+            }).config.browser?.headless
+        ).toBe(true)
+    })
+
+    it('preserves explicit real-browser headless settings', () => {
+        expect(
+            resolveConfigWithEnv({
+                browser: {
+                    mode: 'real',
+                    headless: false,
+                },
+            }).config.browser?.headless
+        ).toBe(false)
+    })
 })
