@@ -16,6 +16,7 @@ import {
     normalizeCliOpenCloudAuth,
     type CliOpenCloudAuth,
 } from './open-cloud-auth.js'
+import { resolveCliBrowserRequestConfig } from './open-browser-config.js'
 
 let instance: Opensteer | null = null
 let launchPromise: Promise<void> | null = null
@@ -300,6 +301,15 @@ async function handleRequest(
                 }
             }
 
+            const requestedBrowserConfig = resolveCliBrowserRequestConfig({
+                browser: browser ?? undefined,
+                headless,
+                cdpUrl,
+                profileDirectory,
+                userDataDir,
+                executablePath,
+            })
+
             if (instance && !launchPromise) {
                 assertCompatibleCloudProfileBinding(
                     logicalSession,
@@ -311,21 +321,7 @@ async function handleRequest(
                     instance.getConfig().browser || {}
                 const existingBrowserRecord =
                     existingBrowserConfig as Record<string, unknown>
-                const explicitBrowserConfig = {
-                    mode:
-                        browser ??
-                        (profileDirectory ||
-                        userDataDir ||
-                        executablePath
-                            ? 'real'
-                            : undefined),
-                    cdpUrl,
-                    profileDirectory,
-                    userDataDir,
-                    executablePath,
-                    headless,
-                }
-                const mismatch = Object.entries(explicitBrowserConfig).find(
+                const mismatch = Object.entries(requestedBrowserConfig).find(
                     ([key, value]) =>
                         value !== undefined &&
                         existingBrowserRecord[key] !== value
@@ -338,20 +334,7 @@ async function handleRequest(
                 }
             }
 
-            const effectiveBrowserMode =
-                browser ??
-                (profileDirectory || userDataDir || executablePath
-                    ? 'real'
-                    : 'chromium')
-            const effectiveHeadless =
-                headless ??
-                (effectiveBrowserMode === 'real' ? true : false)
-
-            const shouldLaunchInitialUrl =
-                Boolean(url) &&
-                effectiveBrowserMode === 'real' &&
-                !cdpUrl &&
-                !instance
+            let shouldLaunchInitialUrl = false
 
             if (!instance) {
                 instance = new Opensteer(
@@ -359,15 +342,15 @@ async function handleRequest(
                         scopeDir,
                         name: activeNamespace,
                         cursorEnabled: effectiveCursorEnabled,
-                        headless: effectiveHeadless,
-                        mode: effectiveBrowserMode,
-                        cdpUrl,
-                        userDataDir,
-                        profileDirectory,
-                        executablePath,
+                        ...requestedBrowserConfig,
                         cloudAuth: cloudAuthOverride,
                     })
                 )
+                const resolvedBrowserConfig = instance.getConfig().browser || {}
+                shouldLaunchInitialUrl =
+                    Boolean(url) &&
+                    resolvedBrowserConfig.mode === 'real' &&
+                    !resolvedBrowserConfig.cdpUrl
                 const nextCloudProfileBinding = resolveSessionCloudProfileBinding(
                     instance.getConfig(),
                     requestedCloudProfileBinding
@@ -379,13 +362,8 @@ async function handleRequest(
                     )
                 }
                 launchPromise = instance.launch({
-                    headless: effectiveHeadless,
                     initialUrl: shouldLaunchInitialUrl ? url : undefined,
-                    mode: effectiveBrowserMode,
-                    cdpUrl,
-                    userDataDir,
-                    profileDirectory,
-                    executablePath,
+                    ...requestedBrowserConfig,
                     cloudBrowserProfile: cloudProfileId
                         ? {
                               profileId: cloudProfileId,
