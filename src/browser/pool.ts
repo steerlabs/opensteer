@@ -13,6 +13,14 @@ import {
 import type { LaunchOptions, OpensteerBrowserConfig } from '../types.js'
 import { detectChromePaths, expandHome } from './chrome.js'
 
+type BrowserCdpSession = Awaited<ReturnType<Browser['newBrowserCDPSession']>>
+
+interface BrowserTargetInfo {
+    targetId: string
+    type: string
+    url: string
+}
+
 export interface BrowserSession {
     browser: Browser
     context: BrowserContext
@@ -184,7 +192,14 @@ export class BrowserPool {
             browser = await chromium.connectOverCDP(wsUrl, {
                 timeout: options.timeout ?? 30_000,
             })
-            const { context, page } = await pickBrowserContextAndPage(browser)
+            const { context, page } = await createOwnedBrowserContextAndPage(
+                browser,
+                {
+                    headless,
+                    initialUrl: options.initialUrl,
+                    timeoutMs: options.timeout ?? 30_000,
+                }
+            )
             this.browser = browser
             this.launchedProcess = processHandle
             this.tempUserDataDir = tempUserDataDir
@@ -227,14 +242,7 @@ async function pickBrowserContextAndPage(browser: Browser): Promise<{
     context: BrowserContext
     page: Page
 }> {
-    const contexts = browser.contexts()
-    if (contexts.length === 0) {
-        throw new Error(
-            'Connection succeeded but no browser contexts were exposed.'
-        )
-    }
-
-    const context = contexts[0]
+    const context = getPrimaryBrowserContext(browser)
     const pages = context.pages()
     const page =
         pages.find((candidate) => isInspectablePageUrl(candidate.url())) ||
@@ -244,12 +252,173 @@ async function pickBrowserContextAndPage(browser: Browser): Promise<{
     return { context, page }
 }
 
+async function createOwnedBrowserContextAndPage(
+    browser: Browser,
+    options: { headless: boolean; initialUrl?: string; timeoutMs: number }
+): Promise<{
+    context: BrowserContext
+    page: Page
+}> {
+    const context = getPrimaryBrowserContext(browser)
+    const page = await createOwnedBrowserPage(browser, context, options)
+
+    return { context, page }
+}
+
+async function createOwnedBrowserPage(
+    browser: Browser,
+    context: BrowserContext,
+    options: { headless: boolean; initialUrl?: string; timeoutMs: number }
+): Promise<Page> {
+    const targetUrl = options.initialUrl ?? 'about:blank'
+    const existingPages = new Set(context.pages())
+    const browserSession = await browser.newBrowserCDPSession()
+
+    try {
+        const { targetId } = await browserSession.send('Target.createTarget', {
+            url: targetUrl,
+            newWindow: !options.headless,
+        })
+
+        await browserSession
+            .send('Target.activateTarget', { targetId })
+            .catch(() => undefined)
+
+        const page = await waitForOwnedBrowserPage(context, {
+            existingPages,
+            targetUrl,
+            timeoutMs: options.timeoutMs,
+        })
+        await closeDisposableStartupTargets(browserSession, targetId)
+        return page
+    } finally {
+        await browserSession.detach().catch(() => undefined)
+    }
+}
+
+async function closeDisposableStartupTargets(
+    browserSession: BrowserCdpSession,
+    preservedTargetId: string
+): Promise<void> {
+    const response = await browserSession
+        .send('Target.getTargets')
+        .catch(() => null) as { targetInfos: BrowserTargetInfo[] } | null
+
+    if (!response) {
+        return
+    }
+
+    for (const targetInfo of response.targetInfos) {
+        if (
+            targetInfo.targetId === preservedTargetId ||
+            targetInfo.type !== 'page' ||
+            !isDisposableStartupPageUrl(targetInfo.url)
+        ) {
+            continue
+        }
+
+        await browserSession
+            .send('Target.closeTarget', { targetId: targetInfo.targetId })
+            .catch(() => undefined)
+    }
+}
+
+async function waitForOwnedBrowserPage(
+    context: BrowserContext,
+    options: {
+        existingPages: Set<Page>
+        targetUrl: string
+        timeoutMs: number
+    }
+): Promise<Page> {
+    const deadline = Date.now() + options.timeoutMs
+    let fallbackPage: Page | null = null
+
+    while (Date.now() < deadline) {
+        for (const candidate of context.pages()) {
+            if (options.existingPages.has(candidate)) {
+                continue
+            }
+
+            const url = candidate.url()
+            if (!isInspectablePageUrl(url)) {
+                continue
+            }
+
+            fallbackPage ??= candidate
+            if (options.targetUrl === 'about:blank') {
+                return candidate
+            }
+
+            if (pageLooselyMatchesUrl(url, options.targetUrl)) {
+                return candidate
+            }
+        }
+
+        await sleep(100)
+    }
+
+    if (fallbackPage) {
+        return fallbackPage
+    }
+
+    throw new Error(
+        `Chrome created a target for ${options.targetUrl}, but Playwright did not expose the page in time.`
+    )
+}
+
+function getPrimaryBrowserContext(browser: Browser): BrowserContext {
+    const contexts = browser.contexts()
+    if (contexts.length === 0) {
+        throw new Error(
+            'Connection succeeded but no browser contexts were exposed.'
+        )
+    }
+
+    return contexts[0]
+}
+
 function isInspectablePageUrl(url: string): boolean {
     return (
         url === 'about:blank' ||
         url.startsWith('http://') ||
         url.startsWith('https://')
     )
+}
+
+function isDisposableStartupPageUrl(url: string): boolean {
+    return (
+        url === 'about:blank' ||
+        url === 'chrome://newtab/' ||
+        url === 'chrome://new-tab-page/'
+    )
+}
+
+function pageLooselyMatchesUrl(currentUrl: string, initialUrl: string): boolean {
+    try {
+        const current = new URL(currentUrl)
+        const requested = new URL(initialUrl)
+
+        if (current.href === requested.href) {
+            return true
+        }
+
+        if (
+            current.protocol === requested.protocol &&
+            current.hostname === requested.hostname &&
+            current.pathname === requested.pathname
+        ) {
+            return true
+        }
+
+        return (
+            current.hostname === requested.hostname &&
+            requested.pathname === '/' &&
+            current.pathname !== '/'
+        )
+    } catch {
+        return currentUrl === initialUrl
+    }
 }
 
 function normalizeDiscoveryUrl(cdpUrl: string): URL {

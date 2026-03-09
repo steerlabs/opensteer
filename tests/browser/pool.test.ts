@@ -25,6 +25,10 @@ vi.mock('node:child_process', () => ({
 
 import { BrowserPool } from '../../src/browser/pool.js'
 
+type TestPage = {
+    url: () => string
+}
+
 describe('BrowserPool', () => {
     beforeEach(() => {
         playwrightMocks.launch.mockReset()
@@ -41,17 +45,46 @@ describe('BrowserPool', () => {
         await writeFile(join(rootDir, 'Local State'), '{}')
         await writeFile(join(profileDir, 'Cookies'), '')
 
+        const startupPage = {
+            url: () => 'chrome://new-tab-page/',
+        }
+        let pages: TestPage[] = [startupPage]
         const page = {
             url: () => 'https://example.com',
         }
+        const context = {
+            pages: () => pages,
+        }
+        const browserSession = {
+            send: vi.fn(async (method: string) => {
+                if (method === 'Target.createTarget') {
+                    pages = [startupPage, page]
+                    return { targetId: 'target-1' }
+                }
+                if (method === 'Target.getTargets') {
+                    return {
+                        targetInfos: [
+                            {
+                                targetId: 'startup-1',
+                                type: 'page',
+                                url: 'chrome://new-tab-page/',
+                            },
+                            {
+                                targetId: 'target-1',
+                                type: 'page',
+                                url: 'https://example.com',
+                            },
+                        ],
+                    }
+                }
+                return {}
+            }),
+            detach: vi.fn(async () => undefined),
+        }
         const browser = {
             close: vi.fn(async () => undefined),
-            contexts: () => [
-                {
-                    pages: () => [page],
-                    newPage: vi.fn(async () => page),
-                },
-            ],
+            contexts: () => [context],
+            newBrowserCDPSession: vi.fn(async () => browserSession),
         }
         playwrightMocks.connectOverCDP.mockResolvedValue(browser)
         childProcessMocks.spawn.mockReturnValue({
@@ -74,6 +107,8 @@ describe('BrowserPool', () => {
         const pool = new BrowserPool()
         const session = await pool.launch({
             mode: 'real',
+            headless: false,
+            initialUrl: 'https://example.com',
             userDataDir: rootDir,
             profileDirectory,
             executablePath:
@@ -87,12 +122,32 @@ describe('BrowserPool', () => {
                 expect.stringMatching(/^--user-data-dir=/),
                 '--profile-directory=Default',
                 expect.stringMatching(/^--remote-debugging-port=/),
-                '--headless=new',
             ]),
             expect.objectContaining({
                 stdio: 'ignore',
             })
         )
+        expect(browser.newBrowserCDPSession).toHaveBeenCalledOnce()
+        expect(browserSession.send).toHaveBeenNthCalledWith(
+            1,
+            'Target.createTarget',
+            {
+                url: 'https://example.com',
+                newWindow: true,
+            }
+        )
+        expect(browserSession.send).toHaveBeenNthCalledWith(
+            2,
+            'Target.activateTarget',
+            { targetId: 'target-1' }
+        )
+        expect(browserSession.send).toHaveBeenNthCalledWith(3, 'Target.getTargets')
+        expect(browserSession.send).toHaveBeenNthCalledWith(
+            4,
+            'Target.closeTarget',
+            { targetId: 'startup-1' }
+        )
+        expect(browserSession.detach).toHaveBeenCalledOnce()
 
         const processKill = vi
             .spyOn(process, 'kill')

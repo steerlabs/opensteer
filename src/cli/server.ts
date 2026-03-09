@@ -347,6 +347,12 @@ async function handleRequest(
                 headless ??
                 (effectiveBrowserMode === 'real' ? true : false)
 
+            const shouldLaunchInitialUrl =
+                Boolean(url) &&
+                effectiveBrowserMode === 'real' &&
+                !cdpUrl &&
+                !instance
+
             if (!instance) {
                 instance = new Opensteer(
                     buildServerOpenConfig({
@@ -374,6 +380,7 @@ async function handleRequest(
                 }
                 launchPromise = instance.launch({
                     headless: effectiveHeadless,
+                    initialUrl: shouldLaunchInitialUrl ? url : undefined,
                     mode: effectiveBrowserMode,
                     cdpUrl,
                     userDataDir,
@@ -404,7 +411,7 @@ async function handleRequest(
                 instance.setCursorEnabled(requestedCursor)
             }
 
-            if (url) {
+            if (url && !shouldLaunchInitialUrl) {
                 await instance.goto(url)
             }
 
