@@ -7,12 +7,12 @@ This document describes the Opensteer-native flow for automating Electron apps.
 Electron apps embed Chromium. Opensteer connects through Chrome DevTools Protocol (CDP):
 
 - Launch app with `--remote-debugging-port=<port>`
-- Attach with `opensteer open --connect-url http://127.0.0.1:<port>`
+- Attach with `opensteer open --cdp-url http://127.0.0.1:<port>`
 
 Example:
 
 ```bash
-opensteer open --connect-url http://127.0.0.1:9222 --session electron --name electron
+opensteer open --cdp-url http://127.0.0.1:9222 --session electron --name electron
 ```
 
 `--session` controls runtime routing (which daemon/browser instance handles commands).

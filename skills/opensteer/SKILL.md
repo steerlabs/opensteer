@@ -166,11 +166,22 @@ Run with: `npx tsx scraper.ts`
 
 ## Edge Cases
 
-**Connect to an existing browser (CDP):**
+**Connect to a running browser (CDP):**
 ```bash
-opensteer open --connect-url http://localhost:9222 --name "my-scraper"
-# Verify CDP is running: curl -s http://127.0.0.1:9222/json/version
+# Verify CDP is reachable first:
+curl -s http://127.0.0.1:9222/json/version
+
+# Connect (works even if Chrome has zero open tabs):
+opensteer open --cdp-url http://localhost:9222 --name "my-scraper"
 ```
+
+**Real browser mode (your actual Chrome profile):**
+```bash
+opensteer open https://example.com --browser real --name "my-scraper"            # headless
+opensteer open https://example.com --browser real --headed --name "my-scraper"   # visible window
+opensteer open https://example.com --browser real --profile "Profile 1" --headed # specific profile
+```
+`--browser real` clones your local Chrome profile. Defaults to headless — add `--headed` to see the window. Profile cloning takes several seconds; do not assume the command hung.
 
 **Tab management:**
 ```bash
@@ -184,6 +195,9 @@ opensteer tab-close 1
 1. SPA content not loaded — add `opensteer.waitForText()` before extraction.
 2. Missing cache — re-run Phase 1 caching step for the page type that failed.
 3. Obstacle blocking target — cookie banner, modal, or login wall. Dismiss it first.
+4. Timeout on navigation — increase timeout: `opensteer navigate <url> --timeout 60000`.
+5. CDP connection refused — verify `curl -s http://127.0.0.1:<port>/json/version` returns JSON.
+6. Stale counters — take a fresh `snapshot action` and re-identify elements.
 
 ### Advanced: Direct Page Access (rare)
 

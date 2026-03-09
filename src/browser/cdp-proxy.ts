@@ -39,6 +39,56 @@ export async function discoverTargets(
     }
 }
 
+export async function createBlankTarget(browserWsUrl: string): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+        const ws = new WebSocket(browserWsUrl)
+        const timeout = setTimeout(() => {
+            ws.close()
+            reject(new Error('Timed out creating a blank tab via CDP.'))
+        }, 5_000)
+
+        ws.on('open', () => {
+            ws.send(JSON.stringify({
+                id: 1,
+                method: 'Target.createTarget',
+                params: { url: 'about:blank' },
+            }))
+        })
+
+        ws.on('message', (data) => {
+            try {
+                const msg = JSON.parse(String(data))
+                if (msg.id === 1) {
+                    clearTimeout(timeout)
+                    ws.close()
+                    if (msg.error) {
+                        reject(new Error(
+                            `Target.createTarget failed: ${msg.error.message ?? JSON.stringify(msg.error)}`
+                        ))
+                        return
+                    }
+                    const targetId = msg.result?.targetId
+                    if (typeof targetId === 'string' && targetId) {
+                        resolve(targetId)
+                    } else {
+                        reject(new Error(
+                            'Target.createTarget succeeded but no targetId was returned.'
+                        ))
+                    }
+                }
+            } catch {
+                // ignore non-JSON or unrelated messages
+            }
+        })
+
+        ws.on('error', (err) => {
+            clearTimeout(timeout)
+            ws.close()
+            reject(new Error(`Failed to create blank tab: ${String(err)}`))
+        })
+    })
+}
+
 export class CDPProxy {
     private server: WebSocketServer | null = null
     private browserSocket: WebSocket | null = null
