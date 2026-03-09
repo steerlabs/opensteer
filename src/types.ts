@@ -92,6 +92,8 @@ export interface LaunchOptions {
     executablePath?: string
     slowMo?: number
     context?: BrowserContextOptions
+    /** Initial URL to open as part of browser startup when supported. */
+    initialUrl?: string
     /** Local browser mode. Defaults to "chromium". */
     mode?: OpensteerLocalBrowserMode
     /** Connect to a running CDP-enabled browser. Example: "http://localhost:9222" */
