@@ -27,6 +27,13 @@ const SKILLS_INSTALLER_SCRIPT = join(
     'skills-installer.js'
 )
 const PROFILE_CLI_SCRIPT = join(__dirname, '..', 'dist', 'cli', 'profile.js')
+const LOCAL_PROFILE_CLI_SCRIPT = join(
+    __dirname,
+    '..',
+    'dist',
+    'cli',
+    'local-profile.js'
+)
 const AUTH_CLI_SCRIPT = join(__dirname, '..', 'dist', 'cli', 'auth.js')
 const SKILLS_HELP_TEXT = `Usage: opensteer skills <install|add> [options]
 
@@ -60,6 +67,15 @@ Commands:
 
 Run "opensteer profile --help" after building for full command details.
 `
+const LOCAL_PROFILE_HELP_TEXT = `Usage: opensteer local-profile <command> [options]
+
+Inspect local Chrome profiles for real-browser mode.
+
+Commands:
+  list
+
+Run "opensteer local-profile --help" after building for full command details.
+`
 const AUTH_HELP_TEXT = `Usage: opensteer auth <command> [options]
 
 Authenticate Opensteer CLI with Opensteer Cloud.
@@ -87,6 +103,7 @@ const CLOSE_ALL_REQUEST = { id: 1, command: 'close', args: {} }
 const PING_REQUEST = { id: 1, command: 'ping', args: {} }
 const SESSION_ID_PATTERN = /^[a-zA-Z0-9_-]+$/
 const RUNTIME_SESSION_PREFIX = 'sc-'
+const BOOLEAN_FLAGS = new Set(['all', 'headless', 'headed', 'json'])
 
 function getVersion() {
     try {
@@ -118,7 +135,14 @@ function parseArgs(argv) {
         if (arg.startsWith('--')) {
             const key = arg.slice(2)
             const next = args[i + 1]
-            if (next !== undefined && !next.startsWith('--')) {
+            if (
+                BOOLEAN_FLAGS.has(key) &&
+                next !== undefined &&
+                next !== 'true' &&
+                next !== 'false'
+            ) {
+                flags[key] = true
+            } else if (next !== undefined && !next.startsWith('--')) {
                 flags[key] = parseValue(next)
                 i++
             } else {
@@ -334,9 +358,11 @@ function buildRequest(command, flags, positional) {
     for (const key of [
         'headless',
         'json',
-        'connect-url',
-        'channel',
-        'profile-dir',
+        'browser',
+        'profile',
+        'cdp-url',
+        'user-data-dir',
+        'browser-path',
         'cloud-profile-id',
         'cloud-profile-reuse-if-active',
         'cursor',
@@ -348,6 +374,11 @@ function buildRequest(command, flags, positional) {
     }
 
     const args = { ...globalFlags, ...flags }
+    if ('headed' in flags) {
+        const headed = flags.headed === false ? false : Boolean(flags.headed)
+        args.headless = args.headless ?? !headed
+        delete args.headed
+    }
 
     switch (command) {
         case 'open':
@@ -975,6 +1006,30 @@ async function runProfileSubcommand(args) {
     }
 }
 
+async function runLocalProfileSubcommand(args) {
+    if (
+        args.length === 0 ||
+        args.includes('--help') ||
+        args.includes('-h')
+    ) {
+        process.stdout.write(LOCAL_PROFILE_HELP_TEXT)
+        return
+    }
+
+    if (!existsSync(LOCAL_PROFILE_CLI_SCRIPT)) {
+        throw new Error(
+            `Local profile CLI module was not found at "${LOCAL_PROFILE_CLI_SCRIPT}". Run "npm run build" to generate dist artifacts.`
+        )
+    }
+
+    const moduleUrl = pathToFileURL(LOCAL_PROFILE_CLI_SCRIPT).href
+    const { runOpensteerLocalProfileCli } = await import(moduleUrl)
+    const exitCode = await runOpensteerLocalProfileCli(args)
+    if (exitCode !== 0) {
+        process.exit(exitCode)
+    }
+}
+
 async function runAuthSubcommand(args) {
     if (isAuthHelpRequest(args)) {
         process.stdout.write(AUTH_HELP_TEXT)
@@ -1119,6 +1174,7 @@ Skills:
   skills add [options]      Alias for "skills install"
   skills --help             Show skills installer help
   profile <command>         Manage cloud browser profiles and cookie sync
+  local-profile <command>   Inspect local Chrome profiles for real-browser mode
   auth <command>            Manage cloud login credentials (login/status/logout)
   login                     Alias for "auth login"
   logout                    Alias for "auth logout"
@@ -1126,10 +1182,13 @@ Skills:
 Global Flags:
   --session <id>            Logical session id (scoped by canonical cwd)
   --name <namespace>        Selector namespace for cache storage on 'open'
-  --headless                Launch browser in headless mode
-  --connect-url <url>       Connect to a running browser (e.g. http://localhost:9222)
-  --channel <browser>       Use installed browser (chrome, chrome-beta, msedge)
-  --profile-dir <path>      Browser profile directory for logged-in sessions
+  --headless                Launch chromium mode in headless mode
+  --browser <mode>          Browser mode: chromium or real
+  --profile <name>          Browser profile directory name for real-browser mode
+  --headed                  Launch real-browser mode with a visible window
+  --cdp-url <url>           Connect to a running browser (e.g. http://localhost:9222)
+  --user-data-dir <path>    Browser user-data root for real-browser mode
+  --browser-path <path>     Override Chrome executable path for real-browser mode
   --cloud-profile-id <id>   Launch cloud session with a specific browser profile
   --cloud-profile-reuse-if-active <true|false>
                             Reuse active cloud session for that browser profile
@@ -1151,6 +1210,10 @@ Environment:
   OPENSTEER_BASE_URL        Override cloud control-plane base URL
   OPENSTEER_AUTH_SCHEME     Cloud auth scheme: api-key (default) or bearer
   OPENSTEER_REMOTE_ANNOUNCE Cloud session announcement policy: always (default), off, tty
+  OPENSTEER_BROWSER         Local browser mode: chromium or real
+  OPENSTEER_CDP_URL         Connect to a running browser (e.g. http://localhost:9222)
+  OPENSTEER_USER_DATA_DIR   Browser user-data root for real-browser mode
+  OPENSTEER_PROFILE_DIRECTORY Browser profile directory for real-browser mode
 `)
 }
 
@@ -1211,10 +1274,33 @@ async function main() {
         }
         return
     }
+    if (rawArgs[0] === 'local-profile') {
+        try {
+            await runLocalProfileSubcommand(rawArgs.slice(1))
+        } catch (err) {
+            const message =
+                err instanceof Error
+                    ? err.message
+                    : 'Failed to run local-profile command'
+            process.stderr.write(`${message}\n`)
+            process.exit(1)
+        }
+        return
+    }
 
     const scopeDir = resolveScopeDir()
 
     const { command, flags, positional } = parseArgs(process.argv)
+
+    if (
+        flags['connect-url'] !== undefined ||
+        flags.channel !== undefined ||
+        flags['profile-dir'] !== undefined
+    ) {
+        error(
+            '--connect-url, --channel, and --profile-dir are no longer supported. Use --cdp-url, --browser real, --profile, --user-data-dir, and --browser-path instead.'
+        )
+    }
 
     if (command === 'sessions') {
         output({ ok: true, sessions: listSessions() })

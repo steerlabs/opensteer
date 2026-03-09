@@ -153,9 +153,12 @@ CLI remembers the last selected cloud host, so `opensteer auth status`,
 - `--session <id>`
 - `--name <namespace>`
 - `--headless`
-- `--connect-url <url>`
-- `--channel <browser>`
-- `--profile-dir <path>`
+- `--browser <chromium|real>`
+- `--profile <name>`
+- `--headed`
+- `--cdp-url <url>`
+- `--user-data-dir <path>`
+- `--browser-path <path>`
 - `--cloud-profile-id <id>`
 - `--cloud-profile-reuse-if-active <true|false>`
 - `--api-key <key>`

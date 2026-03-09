@@ -2,6 +2,10 @@ import { createHash, randomUUID } from 'crypto'
 import type { Browser, BrowserContext, ElementHandle, Page } from 'playwright'
 import { BrowserPool } from './browser/pool.js'
 import {
+    detectChromePaths,
+    listLocalChromeProfiles,
+} from './browser/chrome.js'
+import {
     resolveConfigWithEnv,
     resolveCloudSelection,
     resolveNamespace,
@@ -34,6 +38,8 @@ import type {
     InputOptions,
     LaunchOptions,
     OpensteerConfig,
+    OpensteerLocalProfileDescriptor,
+    OpensteerRealBrowserOptions,
     OpensteerCloudBrowserProfileOptions,
     ScrollOptions,
     SelectOptions,
@@ -690,10 +696,16 @@ export class Opensteer {
 
         const session = await this.pool.launch({
             ...options,
-            connectUrl: options.connectUrl ?? this.config.browser?.connectUrl,
-            channel: options.channel ?? this.config.browser?.channel,
-            profileDir:
-                options.profileDir ?? this.config.browser?.profileDir,
+            mode: options.mode ?? this.config.browser?.mode,
+            cdpUrl: options.cdpUrl ?? this.config.browser?.cdpUrl,
+            userDataDir:
+                options.userDataDir ?? this.config.browser?.userDataDir,
+            profileDirectory:
+                options.profileDirectory ??
+                this.config.browser?.profileDirectory,
+            executablePath:
+                options.executablePath ??
+                this.config.browser?.executablePath,
         })
 
         this.browser = session.browser
@@ -726,6 +738,56 @@ export class Opensteer {
         instance.ownsBrowser = false
         instance.snapshotCache = null
         return instance
+    }
+
+    static listLocalProfiles(
+        userDataDir?: string
+    ): OpensteerLocalProfileDescriptor[] {
+        return listLocalChromeProfiles(userDataDir)
+    }
+
+    static fromSystemChrome(
+        browser: OpensteerRealBrowserOptions = {},
+        config: OpensteerConfig = {}
+    ): Opensteer {
+        const chromePaths = detectChromePaths()
+        const executablePath =
+            browser.executablePath ??
+            config.browser?.executablePath ??
+            chromePaths.executable ??
+            undefined
+
+        if (!executablePath) {
+            throw new Error(
+                'Chrome was not found. Pass executablePath explicitly or install Chrome in a supported location.'
+            )
+        }
+
+        const userDataDir =
+            browser.userDataDir ??
+            config.browser?.userDataDir ??
+            chromePaths.defaultUserDataDir
+        const autoDetectedProfiles = listLocalChromeProfiles(userDataDir)
+        const profileDirectory =
+            browser.profileDirectory ??
+            config.browser?.profileDirectory ??
+            autoDetectedProfiles[0]?.directory ??
+            'Default'
+
+        return new Opensteer({
+            ...config,
+            browser: {
+                ...(config.browser || {}),
+                mode: 'real',
+                headless:
+                    browser.headless ??
+                    config.browser?.headless ??
+                    true,
+                executablePath,
+                userDataDir,
+                profileDirectory,
+            },
+        })
     }
 
     async close(): Promise<void> {

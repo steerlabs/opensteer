@@ -18,9 +18,11 @@ interface BuildServerOpenConfigOptions {
     name: string
     cursorEnabled: boolean
     headless?: boolean
-    connectUrl?: string
-    channel?: string
-    profileDir?: string
+    mode?: 'chromium' | 'real'
+    cdpUrl?: string
+    userDataDir?: string
+    profileDirectory?: string
+    executablePath?: string
     cloudAuth?: CliOpenCloudAuth | null
     env?: Record<string, string | undefined>
 }
@@ -92,9 +94,11 @@ export function buildServerOpenConfig(
         },
         browser: {
             headless: options.headless ?? false,
-            connectUrl: options.connectUrl,
-            channel: options.channel,
-            profileDir: options.profileDir,
+            mode: options.mode,
+            cdpUrl: options.cdpUrl,
+            userDataDir: options.userDataDir,
+            profileDirectory: options.profileDirectory,
+            executablePath: options.executablePath,
         },
     }
 

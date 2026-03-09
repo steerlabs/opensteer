@@ -441,9 +441,10 @@ interface OpensteerBrowserConfig {
     headless?: boolean
     executablePath?: string
     slowMo?: number
-    connectUrl?: string
-    channel?: string
-    profileDir?: string
+    mode?: 'chromium' | 'real'
+    cdpUrl?: string
+    userDataDir?: string
+    profileDirectory?: string
 }
 ```
 
@@ -482,9 +483,10 @@ interface LaunchOptions {
     executablePath?: string
     slowMo?: number
     context?: BrowserContextOptions
-    connectUrl?: string
-    channel?: string
-    profileDir?: string
+    mode?: 'chromium' | 'real'
+    cdpUrl?: string
+    userDataDir?: string
+    profileDirectory?: string
     cloudBrowserProfile?: {
         profileId: string
         reuseIfActive?: boolean
@@ -759,9 +761,10 @@ Exported for advanced integration:
 | `OPENSTEER_HEADLESS` | `true` or `false` |
 | `OPENSTEER_BROWSER_PATH` | Custom browser executable path |
 | `OPENSTEER_SLOW_MO` | Slow-motion delay in milliseconds |
-| `OPENSTEER_CONNECT_URL` | Connect to a running browser (e.g. `http://localhost:9222`) |
-| `OPENSTEER_CHANNEL` | Browser channel: `chrome`, `chrome-beta`, or `msedge` |
-| `OPENSTEER_PROFILE_DIR` | Browser profile directory |
+| `OPENSTEER_BROWSER` | Local browser mode: `chromium` or `real` |
+| `OPENSTEER_CDP_URL` | Connect to a running browser (e.g. `http://localhost:9222`) |
+| `OPENSTEER_USER_DATA_DIR` | Browser user-data root for real-browser mode |
+| `OPENSTEER_PROFILE_DIRECTORY` | Browser profile directory name for real-browser mode |
 | `OPENSTEER_DEBUG` | Enable debug logging |
 | `OPENSTEER_DISABLE_DOTENV_AUTOLOAD` | Disable automatic `.env` loading (`true`/`1`) |
 

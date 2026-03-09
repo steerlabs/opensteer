@@ -56,7 +56,7 @@ describe('CLI open cloud auth helpers', () => {
             scopeDir: '/tmp/opensteer-scope',
             name: 'session-a',
             cursorEnabled: true,
-            connectUrl: 'http://localhost:9222',
+            cdpUrl: 'http://localhost:9222',
             cloudAuth,
             env: {
                 OPENSTEER_MODE: 'cloud',
@@ -67,9 +67,11 @@ describe('CLI open cloud auth helpers', () => {
         expect(cloudConfig.cloud).toEqual(cloudAuth)
         expect(cloudConfig.browser).toEqual({
             headless: false,
-            connectUrl: 'http://localhost:9222',
-            channel: undefined,
-            profileDir: undefined,
+            mode: undefined,
+            cdpUrl: 'http://localhost:9222',
+            userDataDir: undefined,
+            profileDirectory: undefined,
+            executablePath: undefined,
         })
 
         const localConfig = buildServerOpenConfig({

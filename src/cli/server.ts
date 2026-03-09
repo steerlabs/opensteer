@@ -194,9 +194,18 @@ async function handleRequest(
         try {
             const url = args.url as string | undefined
             const headless = args.headless as boolean | undefined
-            const connectUrl = args['connect-url'] as string | undefined
-            const channel = args.channel as string | undefined
-            const profileDir = args['profile-dir'] as string | undefined
+            const browser =
+                args.browser === 'real' || args.browser === 'chromium'
+                    ? (args.browser as 'real' | 'chromium')
+                    : args.browser === undefined
+                      ? undefined
+                      : null
+            const cdpUrl = args['cdp-url'] as string | undefined
+            const profileDirectory = args.profile as string | undefined
+            const userDataDir =
+                args['user-data-dir'] as string | undefined
+            const executablePath =
+                args['browser-path'] as string | undefined
             const cloudProfileId =
                 typeof args['cloud-profile-id'] === 'string'
                     ? args['cloud-profile-id'].trim()
@@ -215,6 +224,24 @@ async function handleRequest(
             if (cloudProfileReuseIfActive !== undefined && !cloudProfileId) {
                 throw new Error(
                     '--cloud-profile-reuse-if-active requires --cloud-profile-id.'
+                )
+            }
+            if (browser === null) {
+                throw new Error(
+                    '--browser must be either "chromium" or "real".'
+                )
+            }
+            if (
+                browser === 'chromium' &&
+                (profileDirectory || userDataDir || executablePath)
+            ) {
+                throw new Error(
+                    '--profile, --user-data-dir, and --browser-path require --browser real.'
+                )
+            }
+            if (cdpUrl && browser === 'real') {
+                throw new Error(
+                    '--cdp-url cannot be combined with --browser real.'
                 )
             }
             const requestedCursor = normalizeCursorFlag(args.cursor)
@@ -279,7 +306,46 @@ async function handleRequest(
                     cloudProfileBinding,
                     requestedCloudProfileBinding
                 )
+
+                const existingBrowserConfig =
+                    instance.getConfig().browser || {}
+                const existingBrowserRecord =
+                    existingBrowserConfig as Record<string, unknown>
+                const explicitBrowserConfig = {
+                    mode:
+                        browser ??
+                        (profileDirectory ||
+                        userDataDir ||
+                        executablePath
+                            ? 'real'
+                            : undefined),
+                    cdpUrl,
+                    profileDirectory,
+                    userDataDir,
+                    executablePath,
+                    headless,
+                }
+                const mismatch = Object.entries(explicitBrowserConfig).find(
+                    ([key, value]) =>
+                        value !== undefined &&
+                        existingBrowserRecord[key] !== value
+                )
+                if (mismatch) {
+                    const [key, value] = mismatch
+                    throw new Error(
+                        `Session '${logicalSession}' is already bound to browser setting "${key}"=${JSON.stringify(existingBrowserRecord[key])}. Requested ${JSON.stringify(value)} does not match. Use the same browser flags for this session or start a different --session.`
+                    )
+                }
             }
+
+            const effectiveBrowserMode =
+                browser ??
+                (profileDirectory || userDataDir || executablePath
+                    ? 'real'
+                    : 'chromium')
+            const effectiveHeadless =
+                headless ??
+                (effectiveBrowserMode === 'real' ? true : false)
 
             if (!instance) {
                 instance = new Opensteer(
@@ -287,10 +353,12 @@ async function handleRequest(
                         scopeDir,
                         name: activeNamespace,
                         cursorEnabled: effectiveCursorEnabled,
-                        headless,
-                        connectUrl,
-                        channel,
-                        profileDir,
+                        headless: effectiveHeadless,
+                        mode: effectiveBrowserMode,
+                        cdpUrl,
+                        userDataDir,
+                        profileDirectory,
+                        executablePath,
                         cloudAuth: cloudAuthOverride,
                     })
                 )
@@ -305,14 +373,19 @@ async function handleRequest(
                     )
                 }
                 launchPromise = instance.launch({
-                    headless: headless ?? false,
+                    headless: effectiveHeadless,
+                    mode: effectiveBrowserMode,
+                    cdpUrl,
+                    userDataDir,
+                    profileDirectory,
+                    executablePath,
                     cloudBrowserProfile: cloudProfileId
                         ? {
                               profileId: cloudProfileId,
                               reuseIfActive: cloudProfileReuseIfActive,
                           }
                         : undefined,
-                    timeout: connectUrl ? 120_000 : 30_000,
+                    timeout: cdpUrl ? 120_000 : 30_000,
                 })
                 try {
                     await launchPromise
