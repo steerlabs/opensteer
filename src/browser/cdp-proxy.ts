@@ -3,11 +3,15 @@ import WebSocket, { WebSocketServer, type RawData } from 'ws'
 const CDP_DISCOVERY_TIMEOUT_MS = 3_000
 const LOCAL_PROXY_HOST = '127.0.0.1'
 const INTERNAL_COMMAND_ID_START = 1_000_000_000
+const CREATE_BLANK_TARGET_COMMAND_ID = 1
+const CREATE_BLANK_TARGET_TIMEOUT_MS = 5_000
 
 interface CDPMessage {
     id?: unknown
     method?: unknown
     params?: unknown
+    result?: unknown
+    error?: unknown
     sessionId?: unknown
 }
 
@@ -39,52 +43,89 @@ export async function discoverTargets(
     }
 }
 
-export async function createBlankTarget(browserWsUrl: string): Promise<string> {
+export function createBlankTarget(browserWsUrl: string): Promise<string> {
     return new Promise<string>((resolve, reject) => {
         const ws = new WebSocket(browserWsUrl)
-        const timeout = setTimeout(() => {
-            ws.close()
-            reject(new Error('Timed out creating a blank tab via CDP.'))
-        }, 5_000)
+        let settled = false
 
-        ws.on('open', () => {
-            ws.send(JSON.stringify({
-                id: 1,
-                method: 'Target.createTarget',
-                params: { url: 'about:blank' },
-            }))
-        })
-
-        ws.on('message', (data) => {
-            try {
-                const msg = JSON.parse(String(data))
-                if (msg.id === 1) {
-                    clearTimeout(timeout)
-                    ws.close()
-                    if (msg.error) {
-                        reject(new Error(
-                            `Target.createTarget failed: ${msg.error.message ?? JSON.stringify(msg.error)}`
-                        ))
-                        return
-                    }
-                    const targetId = msg.result?.targetId
-                    if (typeof targetId === 'string' && targetId) {
-                        resolve(targetId)
-                    } else {
-                        reject(new Error(
-                            'Target.createTarget succeeded but no targetId was returned.'
-                        ))
-                    }
-                }
-            } catch {
-                // ignore non-JSON or unrelated messages
+        function settle(handler: () => void): void {
+            if (settled) {
+                return
             }
-        })
 
-        ws.on('error', (err) => {
+            settled = true
             clearTimeout(timeout)
             ws.close()
-            reject(new Error(`Failed to create blank tab: ${String(err)}`))
+            handler()
+        }
+
+        const timeout = setTimeout(() => {
+            settle(() =>
+                reject(new Error('Timed out creating a blank tab via CDP.'))
+            )
+        }, CREATE_BLANK_TARGET_TIMEOUT_MS)
+
+        ws.once('open', () => {
+            ws.send(
+                JSON.stringify({
+                    id: CREATE_BLANK_TARGET_COMMAND_ID,
+                    method: 'Target.createTarget',
+                    params: { url: 'about:blank' },
+                })
+            )
+        })
+
+        ws.on('message', (data, isBinary) => {
+            if (isBinary) {
+                return
+            }
+
+            const message = parseMessage(data)
+            if (!message || asNumber(message.id) !== CREATE_BLANK_TARGET_COMMAND_ID) {
+                return
+            }
+
+            const cdpError = asObject(message.error)
+            if (cdpError) {
+                settle(() =>
+                    reject(
+                        new Error(
+                            `Target.createTarget failed: ${asString(cdpError.message) ?? JSON.stringify(cdpError)}`
+                        )
+                    )
+                )
+                return
+            }
+
+            const targetId = asString(asObject(message.result)?.targetId)
+            if (targetId) {
+                settle(() => resolve(targetId))
+                return
+            }
+
+            settle(() =>
+                reject(
+                    new Error(
+                        'Target.createTarget succeeded but no targetId was returned.'
+                    )
+                )
+            )
+        })
+
+        ws.once('error', (err) => {
+            settle(() =>
+                reject(new Error(`Failed to create blank tab: ${errorMessage(err)}`))
+            )
+        })
+
+        ws.once('close', () => {
+            settle(() =>
+                reject(
+                    new Error(
+                        'CDP browser websocket closed before blank tab creation completed.'
+                    )
+                )
+            )
         })
     })
 }
