@@ -257,11 +257,7 @@ async function pickBrowserContextAndPage(browser: Browser): Promise<{
     page: Page
 }> {
     const context = getPrimaryBrowserContext(browser)
-    const pages = context.pages()
-    const page =
-        pages.find((candidate) => isInspectablePageUrl(candidate.url())) ||
-        pages[0] ||
-        (await context.newPage())
+    const page = await getInspectablePageOrCreate(context)
 
     return { context, page }
 }
@@ -288,7 +284,7 @@ async function createOwnedBrowserContextAndPage(
     page: Page
 }> {
     const context = getPrimaryBrowserContext(browser)
-    const page = await resolveOwnedBrowserPage(context, options.timeoutMs)
+    const page = await getInspectablePageOrCreate(context)
 
     if (options.initialUrl) {
         await page.goto(options.initialUrl, {
@@ -300,23 +296,15 @@ async function createOwnedBrowserContextAndPage(
     return { context, page }
 }
 
-async function resolveOwnedBrowserPage(
-    context: BrowserContext,
-    timeoutMs: number
+async function getInspectablePageOrCreate(
+    context: BrowserContext
 ): Promise<Page> {
-    const existingPage = context.pages()[0]
+    const existingPage = context
+        .pages()
+        .find((candidate) => isInspectablePageUrl(safePageUrl(candidate)))
+
     if (existingPage) {
         return existingPage
-    }
-
-    try {
-        return await context.waitForEvent('page', {
-            timeout: timeoutMs,
-        })
-    } catch (error) {
-        if (!(error instanceof Error) || error.name !== 'TimeoutError') {
-            throw error
-        }
     }
 
     return await context.newPage()
@@ -339,6 +327,14 @@ function isInspectablePageUrl(url: string): boolean {
         url.startsWith('http://') ||
         url.startsWith('https://')
     )
+}
+
+function safePageUrl(page: Page): string {
+    try {
+        return page.url()
+    } catch {
+        return ''
+    }
 }
 
 function normalizeDiscoveryUrl(cdpUrl: string): URL {
