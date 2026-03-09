@@ -73,17 +73,36 @@ export interface GotoOptions {
     settleMs?: number
 }
 
+export type OpensteerLocalBrowserMode = 'chromium' | 'real'
+
+export interface OpensteerLocalProfileDescriptor {
+    directory: string
+    name: string
+}
+
+export interface OpensteerRealBrowserOptions {
+    headless?: boolean
+    executablePath?: string
+    userDataDir?: string
+    profileDirectory?: string
+}
+
 export interface LaunchOptions {
     headless?: boolean
     executablePath?: string
     slowMo?: number
+    /** Sandbox-only context options. Not supported with cdpUrl or mode "real". */
     context?: BrowserContextOptions
-    /** Connect to a running browser. Example: "http://localhost:9222" */
-    connectUrl?: string
-    /** Browser channel: "chrome", "chrome-beta", or "msedge" */
-    channel?: string
-    /** Browser profile directory or Chromium user-data dir. Preserves cookies, extensions, and sessions. */
-    profileDir?: string
+    /** Initial URL to open as part of owned real-browser startup. */
+    initialUrl?: string
+    /** Local browser mode. Defaults to "chromium". */
+    mode?: OpensteerLocalBrowserMode
+    /** Connect to a running CDP-enabled browser. Example: "http://localhost:9222" */
+    cdpUrl?: string
+    /** Browser user-data root directory for real-browser mode. */
+    userDataDir?: string
+    /** Browser profile directory name for real-browser mode. */
+    profileDirectory?: string
     /** Cloud browser profile preference. Applies only when cloud mode is enabled. */
     cloudBrowserProfile?: OpensteerCloudBrowserProfileOptions
     /** Connection timeout in milliseconds. */
@@ -94,12 +113,14 @@ export interface OpensteerBrowserConfig {
     headless?: boolean
     executablePath?: string
     slowMo?: number
-    /** Connect to a running browser. Example: "http://localhost:9222" */
-    connectUrl?: string
-    /** Browser channel: "chrome", "chrome-beta", or "msedge" */
-    channel?: string
-    /** Browser profile directory or Chromium user-data dir. Preserves cookies, extensions, and sessions. */
-    profileDir?: string
+    /** Local browser mode. Defaults to "chromium". */
+    mode?: OpensteerLocalBrowserMode
+    /** Connect to a running CDP-enabled browser. Example: "http://localhost:9222" */
+    cdpUrl?: string
+    /** Browser user-data root directory for real-browser mode. */
+    userDataDir?: string
+    /** Browser profile directory name for real-browser mode. */
+    profileDirectory?: string
 }
 
 export interface OpensteerStorageConfig {
