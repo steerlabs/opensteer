@@ -327,6 +327,11 @@ async function createOwnedBrowserPage(
             targetUrl,
             timeoutMs: options.timeoutMs,
         })
+        if (targetUrl !== 'about:blank') {
+            await page.waitForLoadState('domcontentloaded', {
+                timeout: options.timeoutMs,
+            })
+        }
         await closeDisposableStartupTargets(browserSession, targetId)
         return page
     } finally {
