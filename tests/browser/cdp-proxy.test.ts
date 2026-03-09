@@ -2,7 +2,11 @@ import { createServer, type Server, type ServerResponse } from 'node:http'
 import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, describe, expect, it } from 'vitest'
 import WebSocket, { WebSocketServer } from 'ws'
-import { CDPProxy, discoverTargets } from '../../src/browser/cdp-proxy.js'
+import {
+    CDPProxy,
+    createBlankTarget,
+    discoverTargets,
+} from '../../src/browser/cdp-proxy.js'
 
 describe('discoverTargets', () => {
     const servers: Server[] = []
@@ -281,6 +285,74 @@ describe('CDPProxy', () => {
         } finally {
             proxy.close()
         }
+    })
+})
+
+describe('createBlankTarget', () => {
+    const servers: WebSocketServer[] = []
+    const sockets: WebSocket[] = []
+
+    afterEach(async () => {
+        while (sockets.length > 0) {
+            const socket = sockets.pop()
+            if (!socket) continue
+            await closeSocket(socket)
+        }
+
+        while (servers.length > 0) {
+            const server = servers.pop()
+            if (!server) continue
+            await closeWsServer(server)
+        }
+    })
+
+    it('creates an about:blank target through the browser websocket', async () => {
+        const browserMessages: Record<string, unknown>[] = []
+        const browserServer = new WebSocketServer({
+            host: '127.0.0.1',
+            port: 0,
+        })
+        servers.push(browserServer)
+
+        browserServer.on('connection', (socket) => {
+            sockets.push(socket)
+
+            socket.on('message', (rawData) => {
+                const payload = JSON.parse(rawData.toString()) as Record<
+                    string,
+                    unknown
+                >
+                browserMessages.push(payload)
+
+                if (payload.method === 'Target.createTarget') {
+                    socket.send(
+                        JSON.stringify({
+                            id: payload.id,
+                            result: {
+                                targetId: 'blank-target',
+                            },
+                        })
+                    )
+                }
+            })
+        })
+
+        await waitForListening(browserServer)
+        const browserPort = getWsServerPort(browserServer)
+
+        await expect(
+            createBlankTarget(
+                `ws://127.0.0.1:${browserPort}/devtools/browser/root`
+            )
+        ).resolves.toBe('blank-target')
+
+        expect(browserMessages).toContainEqual({
+            id: 1,
+            method: 'Target.createTarget',
+            params: {
+                url: 'about:blank',
+            },
+        })
     })
 })
 

@@ -11,7 +11,7 @@ import {
     type Page,
 } from 'playwright'
 import type { LaunchOptions, OpensteerBrowserConfig } from '../types.js'
-import { CDPProxy, discoverTargets } from './cdp-proxy.js'
+import { CDPProxy, createBlankTarget, discoverTargets } from './cdp-proxy.js'
 import { detectChromePaths, expandHome } from './chrome.js'
 
 type BrowserCdpSession = Awaited<ReturnType<Browser['newBrowserCDPSession']>>
@@ -136,14 +136,13 @@ export class BrowserPool {
 
         try {
             const { browserWsUrl, targets } = await discoverTargets(cdpUrl)
-
-            if (targets.length === 0) {
-                throw new Error(
-                    'No page targets found. Is the browser running with an open window?'
-                )
+            let targetId: string
+            if (targets.length > 0) {
+                targetId = targets[0].id
+            } else {
+                targetId = await createBlankTarget(browserWsUrl)
             }
-
-            cdpProxy = new CDPProxy(browserWsUrl, targets[0].id)
+            cdpProxy = new CDPProxy(browserWsUrl, targetId)
             const proxyWsUrl = await cdpProxy.start()
 
             browser = await chromium.connectOverCDP(proxyWsUrl, {

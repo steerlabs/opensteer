@@ -12,14 +12,14 @@ Read [opensteer-electron-workflow.md](references/opensteer-electron-workflow.md)
 ## Core Workflow
 
 1. Launch the Electron app with `--remote-debugging-port=<port>`.
-2. Connect Opensteer with `open --connect-url http://127.0.0.1:<port>`.
+2. Connect Opensteer with `open --cdp-url http://127.0.0.1:<port>`.
 3. List windows/webviews with `tabs`, then switch with `tab-switch`.
 4. Run `snapshot action`, interact (`click`, `input`, `press`), then re-snapshot.
 5. Use `snapshot extraction` and `extract` for structured data.
 
 ```bash
 # Connect Opensteer to a running Electron app on port 9222
-opensteer open --connect-url http://127.0.0.1:9222 --session slack-desktop --name slack-desktop
+opensteer open --cdp-url http://127.0.0.1:9222 --session slack-desktop --name slack-desktop
 
 # Discover available windows/webviews
 opensteer tabs --session slack-desktop
@@ -65,8 +65,8 @@ Use `--description` when possible so selector paths persist for replay.
 Use one Opensteer session per app:
 
 ```bash
-opensteer open --connect-url http://127.0.0.1:9222 --session slack --name slack-electron
-opensteer open --connect-url http://127.0.0.1:9223 --session vscode --name vscode-electron
+opensteer open --cdp-url http://127.0.0.1:9222 --session slack --name slack-electron
+opensteer open --cdp-url http://127.0.0.1:9223 --session vscode --name vscode-electron
 
 opensteer snapshot action --session slack
 opensteer snapshot action --session vscode
@@ -78,6 +78,8 @@ opensteer snapshot action --session vscode
 - Re-snapshot after each navigation or large UI change before reusing counters.
 - Keep `--name` stable inside a session for deterministic selector replay.
 - Close sessions when done: `opensteer close --session <id>`.
+- If the app has no visible page targets, Opensteer creates one automatically.
+- If `--cdp-url` connection fails, verify with `curl -s http://127.0.0.1:<port>/json/version`.
 
 ## References
 
