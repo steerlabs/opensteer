@@ -28,9 +28,9 @@ import { BrowserPool } from '../../src/browser/pool.js'
 
 type TestPage = {
     url: () => string
-    waitForLoadState?: (
-        state: string,
-        options?: { timeout?: number }
+    goto?: (
+        url: string,
+        options?: { timeout?: number; waitUntil?: string }
     ) => Promise<void>
 }
 
@@ -52,45 +52,16 @@ describe('BrowserPool', () => {
 
         const startupPage = {
             url: () => 'chrome://new-tab-page/',
-        }
-        let pages: TestPage[] = [startupPage]
-        const page = {
-            url: () => 'https://example.com',
-            waitForLoadState: vi.fn(async () => undefined),
+            goto: vi.fn(async () => undefined),
         }
         const context = {
-            pages: () => pages,
-        }
-        const browserSession = {
-            send: vi.fn(async (method: string) => {
-                if (method === 'Target.createTarget') {
-                    pages = [startupPage, page]
-                    return { targetId: 'target-1' }
-                }
-                if (method === 'Target.getTargets') {
-                    return {
-                        targetInfos: [
-                            {
-                                targetId: 'startup-1',
-                                type: 'page',
-                                url: 'chrome://new-tab-page/',
-                            },
-                            {
-                                targetId: 'target-1',
-                                type: 'page',
-                                url: 'https://example.com',
-                            },
-                        ],
-                    }
-                }
-                return {}
-            }),
-            detach: vi.fn(async () => undefined),
+            pages: () => [startupPage],
+            waitForEvent: vi.fn(async () => startupPage),
+            newPage: vi.fn(async () => startupPage),
         }
         const browser = {
             close: vi.fn(async () => undefined),
             contexts: () => [context],
-            newBrowserCDPSession: vi.fn(async () => browserSession),
         }
         playwrightMocks.connectOverCDP.mockResolvedValue(browser)
         childProcessMocks.spawn.mockReturnValue({
@@ -121,7 +92,7 @@ describe('BrowserPool', () => {
                 '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
         })
 
-        expect(session.page).toBe(page)
+        expect(session.page).toBe(startupPage)
         expect(childProcessMocks.spawn).toHaveBeenCalledWith(
             '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
             expect.arrayContaining([
@@ -133,31 +104,12 @@ describe('BrowserPool', () => {
                 stdio: 'ignore',
             })
         )
-        expect(browser.newBrowserCDPSession).toHaveBeenCalledOnce()
-        expect(browserSession.send).toHaveBeenNthCalledWith(
-            1,
-            'Target.createTarget',
-            {
-                url: 'https://example.com',
-                newWindow: true,
-            }
+        expect(startupPage.goto).toHaveBeenCalledWith(
+            'https://example.com',
+            { timeout: 30_000, waitUntil: 'domcontentloaded' }
         )
-        expect(browserSession.send).toHaveBeenNthCalledWith(
-            2,
-            'Target.activateTarget',
-            { targetId: 'target-1' }
-        )
-        expect(browserSession.send).toHaveBeenNthCalledWith(3, 'Target.getTargets')
-        expect(browserSession.send).toHaveBeenNthCalledWith(
-            4,
-            'Target.closeTarget',
-            { targetId: 'startup-1' }
-        )
-        expect(page.waitForLoadState).toHaveBeenCalledWith(
-            'domcontentloaded',
-            { timeout: 30_000 }
-        )
-        expect(browserSession.detach).toHaveBeenCalledOnce()
+        expect(context.waitForEvent).not.toHaveBeenCalled()
+        expect(context.newPage).not.toHaveBeenCalled()
 
         const processKill = vi
             .spyOn(process, 'kill')
@@ -288,47 +240,18 @@ describe('BrowserPool', () => {
         await writeFile(join(rootDir, 'Local State'), '{}')
         await writeFile(join(profileDir, 'Cookies'), '')
 
-        const startupPage = {
-            url: () => 'chrome://new-tab-page/',
-        }
-        let pages: TestPage[] = [startupPage]
         const page = {
             url: () => 'about:blank',
-            waitForLoadState: vi.fn(async () => undefined),
+            goto: vi.fn(async () => undefined),
         }
         const context = {
-            pages: () => pages,
-        }
-        const browserSession = {
-            send: vi.fn(async (method: string) => {
-                if (method === 'Target.createTarget') {
-                    pages = [startupPage, page]
-                    return { targetId: 'target-1' }
-                }
-                if (method === 'Target.getTargets') {
-                    return {
-                        targetInfos: [
-                            {
-                                targetId: 'startup-1',
-                                type: 'page',
-                                url: 'chrome://new-tab-page/',
-                            },
-                            {
-                                targetId: 'target-1',
-                                type: 'page',
-                                url: 'about:blank',
-                            },
-                        ],
-                    }
-                }
-                return {}
-            }),
-            detach: vi.fn(async () => undefined),
+            pages: () => [page],
+            waitForEvent: vi.fn(async () => page),
+            newPage: vi.fn(async () => page),
         }
         const browser = {
             close: vi.fn(async () => undefined),
             contexts: () => [context],
-            newBrowserCDPSession: vi.fn(async () => browserSession),
         }
         playwrightMocks.connectOverCDP.mockResolvedValue(browser)
         childProcessMocks.spawn.mockReturnValue({
@@ -359,7 +282,9 @@ describe('BrowserPool', () => {
         })
 
         expect(session.page).toBe(page)
-        expect(page.waitForLoadState).not.toHaveBeenCalled()
+        expect(page.goto).not.toHaveBeenCalled()
+        expect(context.waitForEvent).not.toHaveBeenCalled()
+        expect(context.newPage).not.toHaveBeenCalled()
 
         const processKill = vi
             .spyOn(process, 'kill')
@@ -368,7 +293,7 @@ describe('BrowserPool', () => {
         processKill.mockRestore()
     })
 
-    it('accepts protocol redirects for owned real-browser startup pages', async () => {
+    it('creates a new page when Chrome exposes no startup page', async () => {
         const rootDir = await mkdtemp(join(tmpdir(), 'opensteer-browser-pool-'))
         const profileDirectory = 'Default'
         const profileDir = join(rootDir, profileDirectory)
@@ -376,47 +301,22 @@ describe('BrowserPool', () => {
         await writeFile(join(rootDir, 'Local State'), '{}')
         await writeFile(join(profileDir, 'Cookies'), '')
 
-        const startupPage = {
-            url: () => 'chrome://new-tab-page/',
-        }
-        let pages: TestPage[] = [startupPage]
         const page = {
-            url: () => 'https://example.com/',
-            waitForLoadState: vi.fn(async () => undefined),
+            url: () => 'about:blank',
+            goto: vi.fn(async () => undefined),
         }
         const context = {
-            pages: () => pages,
-        }
-        const browserSession = {
-            send: vi.fn(async (method: string) => {
-                if (method === 'Target.createTarget') {
-                    pages = [startupPage, page]
-                    return { targetId: 'target-1' }
-                }
-                if (method === 'Target.getTargets') {
-                    return {
-                        targetInfos: [
-                            {
-                                targetId: 'startup-1',
-                                type: 'page',
-                                url: 'chrome://new-tab-page/',
-                            },
-                            {
-                                targetId: 'target-1',
-                                type: 'page',
-                                url: 'https://example.com/',
-                            },
-                        ],
-                    }
-                }
-                return {}
+            pages: (): TestPage[] => [],
+            waitForEvent: vi.fn(async () => {
+                const error = new Error('Timed out waiting for page')
+                error.name = 'TimeoutError'
+                throw error
             }),
-            detach: vi.fn(async () => undefined),
+            newPage: vi.fn(async () => page),
         }
         const browser = {
             close: vi.fn(async () => undefined),
             contexts: () => [context],
-            newBrowserCDPSession: vi.fn(async () => browserSession),
         }
         playwrightMocks.connectOverCDP.mockResolvedValue(browser)
         childProcessMocks.spawn.mockReturnValue({
@@ -437,11 +337,10 @@ describe('BrowserPool', () => {
         )
 
         const pool = new BrowserPool()
-        const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout')
         const session = await pool.launch({
             mode: 'real',
             headless: false,
-            initialUrl: 'http://example.com/',
+            initialUrl: 'https://example.com',
             timeout: 1_000,
             userDataDir: rootDir,
             profileDirectory,
@@ -450,10 +349,13 @@ describe('BrowserPool', () => {
         })
 
         expect(session.page).toBe(page)
-        expect(setTimeoutSpy).not.toHaveBeenCalledWith(expect.any(Function), 100)
-        expect(page.waitForLoadState).toHaveBeenCalledWith(
-            'domcontentloaded',
-            { timeout: 1_000 }
+        expect(context.waitForEvent).toHaveBeenCalledWith('page', {
+            timeout: 1_000,
+        })
+        expect(context.newPage).toHaveBeenCalledOnce()
+        expect(page.goto).toHaveBeenCalledWith(
+            'https://example.com',
+            { timeout: 1_000, waitUntil: 'domcontentloaded' }
         )
 
         const processKill = vi
@@ -461,7 +363,6 @@ describe('BrowserPool', () => {
             .mockImplementation(() => true)
         await pool.close()
         processKill.mockRestore()
-        setTimeoutSpy.mockRestore()
     })
 })
 
