@@ -446,18 +446,9 @@ function pageLooselyMatchesUrl(currentUrl: string, initialUrl: string): boolean 
             return true
         }
 
-        if (
-            current.protocol === requested.protocol &&
-            current.hostname === requested.hostname &&
-            current.pathname === requested.pathname
-        ) {
-            return true
-        }
-
         return (
             current.hostname === requested.hostname &&
-            requested.pathname === '/' &&
-            current.pathname !== '/'
+            current.pathname === requested.pathname
         )
     } catch {
         return currentUrl === initialUrl

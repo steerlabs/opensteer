@@ -93,7 +93,7 @@ export function buildServerOpenConfig(
             enabled: options.cursorEnabled,
         },
         browser: {
-            headless: options.headless ?? false,
+            headless: options.headless,
             mode: options.mode,
             cdpUrl: options.cdpUrl,
             userDataDir: options.userDataDir,
