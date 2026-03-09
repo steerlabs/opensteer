@@ -495,6 +495,10 @@ interface LaunchOptions {
 }
 ```
 
+`context` applies only to sandbox Chromium launches. `cdpUrl` attaches to an
+existing browser. `mode: 'real'` uses owned Chrome startup and accepts
+`initialUrl`, `userDataDir`, and `profileDirectory` instead of `context`.
+
 ### GotoOptions
 
 ```ts
