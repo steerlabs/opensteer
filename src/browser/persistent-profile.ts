@@ -1,17 +1,56 @@
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { cp, copyFile, mkdir, rm, writeFile } from 'node:fs/promises'
+import {
+    cp,
+    copyFile,
+    mkdir,
+    readdir,
+    rm,
+    stat,
+    writeFile,
+} from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { expandHome } from './chrome.js'
 
 const OPENSTEER_META_FILE = '.opensteer-meta.json'
-const TRANSIENT_PROFILE_ENTRIES = [
+
+/**
+ * Entries that are transient runtime artifacts from a running Chrome instance.
+ * These must be removed before launching a new Chrome process and must never
+ * be copied from the source profile.
+ */
+const TRANSIENT_ENTRIES = new Set([
     'SingletonCookie',
     'SingletonLock',
     'SingletonSocket',
     'DevToolsActivePort',
-] as const
+    'lockfile',
+    OPENSTEER_META_FILE,
+])
+
+/**
+ * Root-level directories that are large, regenerated automatically by Chrome,
+ * or contain data irrelevant to device identity. Skipping these keeps the
+ * cloned profile lean without sacrificing authenticity.
+ */
+const SKIPPED_ROOT_DIRECTORIES = new Set([
+    'Crash Reports',
+    'Crashpad',
+    'BrowserMetrics',
+    'GrShaderCache',
+    'ShaderCache',
+    'GraphiteDawnCache',
+    'component_crx_cache',
+    'Crowd Deny',
+    'hyphen-data',
+    'OnDeviceHeadSuggestModel',
+    'OptimizationGuidePredictionModels',
+    'Segmentation Platform',
+    'SmartCardDeviceNames',
+    'WidevineCdm',
+    'pnacl',
+])
 
 interface PersistentProfileMetadata {
     createdAt: string
@@ -48,20 +87,23 @@ export async function getOrCreatePersistentProfile(
     if (created) {
         try {
             await mkdir(targetUserDataDir, { recursive: true })
+
+            // Copy the target profile subdirectory (e.g. "Default/")
             await cp(sourceProfileDir, targetProfileDir, {
                 recursive: true,
             })
 
-            await copyRootFileIfPresent(
+            // Copy all root-level identity files and small directories from the
+            // source user-data-dir. This preserves device identity markers like
+            // Local State (encryption keys), First Run, Variations Seed,
+            // Last Version, Safe Browsing state, certificate data, etc. that
+            // Google uses to recognize a trusted device.
+            await copyRootLevelEntries(
                 resolvedSourceUserDataDir,
                 targetUserDataDir,
-                'Local State'
+                profileDirectory
             )
-            await copyRootFileIfPresent(
-                resolvedSourceUserDataDir,
-                targetUserDataDir,
-                'First Run'
-            )
+
             await writePersistentProfileMetadata(targetUserDataDir, {
                 createdAt: new Date().toISOString(),
                 profileDirectory,
@@ -92,7 +134,7 @@ export async function clearPersistentProfileSingletons(
     userDataDir: string
 ): Promise<void> {
     await Promise.all(
-        TRANSIENT_PROFILE_ENTRIES.map((entry) =>
+        [...TRANSIENT_ENTRIES].map((entry) =>
             rm(join(userDataDir, entry), {
                 force: true,
                 recursive: true,
@@ -124,17 +166,81 @@ function sanitizePathSegment(value: string): string {
     return sanitized.replace(/^-|-$/g, '') || 'profile'
 }
 
-async function copyRootFileIfPresent(
-    sourceRootDir: string,
-    targetRootDir: string,
-    fileName: string
+/**
+ * Determines whether a root-level entry in the user-data-dir is a Chrome
+ * profile directory (e.g. "Default", "Profile 1", "Profile 2", etc.).
+ * Chrome profiles always contain a Preferences file.
+ */
+function isProfileDirectory(userDataDir: string, entry: string): boolean {
+    return existsSync(join(userDataDir, entry, 'Preferences'))
+}
+
+/**
+ * Copies all root-level files and small identity-relevant directories from the
+ * source user-data-dir to the target, skipping transient files, large caches,
+ * and other Chrome profile subdirectories (we only want the one target profile).
+ *
+ * This ensures the cloned profile retains the full device identity: encryption
+ * keys (Local State), A/B test state (Variations Seed), certificate revocation
+ * lists, origin trial tokens, safe browsing data, and other markers that make
+ * the browser instance look identical to the user's real Chrome.
+ */
+async function copyRootLevelEntries(
+    sourceUserDataDir: string,
+    targetUserDataDir: string,
+    targetProfileDirectory: string
 ): Promise<void> {
-    const sourcePath = join(sourceRootDir, fileName)
-    if (!existsSync(sourcePath)) {
+    let entries: string[]
+    try {
+        entries = await readdir(sourceUserDataDir)
+    } catch {
         return
     }
 
-    await copyFile(sourcePath, join(targetRootDir, fileName))
+    const copyTasks: Promise<void>[] = []
+
+    for (const entry of entries) {
+        // Skip transient runtime artifacts
+        if (TRANSIENT_ENTRIES.has(entry)) continue
+
+        // Skip the target profile directory (already copied separately)
+        if (entry === targetProfileDirectory) continue
+
+        const sourcePath = join(sourceUserDataDir, entry)
+        const targetPath = join(targetUserDataDir, entry)
+
+        // Skip if already exists in target (don't overwrite)
+        if (existsSync(targetPath)) continue
+
+        let entryStat: Awaited<ReturnType<typeof stat>>
+        try {
+            entryStat = await stat(sourcePath)
+        } catch {
+            continue
+        }
+
+        if (entryStat.isFile()) {
+            // Copy all root-level files — these are small identity markers
+            copyTasks.push(copyFile(sourcePath, targetPath).catch(() => undefined))
+        } else if (entryStat.isDirectory()) {
+            // Skip other Chrome profile directories
+            if (isProfileDirectory(sourceUserDataDir, entry)) continue
+
+            // Skip large/regenerable directories
+            if (SKIPPED_ROOT_DIRECTORIES.has(entry)) continue
+
+            // Copy remaining directories (Safe Browsing, CertificateRevocation,
+            // FileTypePolicies, MEIPreload, OriginTrials, SSLErrorAssistant,
+            // Subresource Filter, ZxcvbnData, etc.)
+            copyTasks.push(
+                cp(sourcePath, targetPath, { recursive: true }).catch(
+                    () => undefined
+                )
+            )
+        }
+    }
+
+    await Promise.all(copyTasks)
 }
 
 async function writePersistentProfileMetadata(

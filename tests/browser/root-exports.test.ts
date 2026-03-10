@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
     BrowserPool,
-    applyStealthScripts,
     clearPersistentProfileSingletons,
     detectChromePaths,
     getOrCreatePersistentProfile,
@@ -13,6 +12,5 @@ describe('root browser exports', () => {
         expect(detectChromePaths).toBeTypeOf('function')
         expect(getOrCreatePersistentProfile).toBeTypeOf('function')
         expect(clearPersistentProfileSingletons).toBeTypeOf('function')
-        expect(applyStealthScripts).toBeTypeOf('function')
     })
 })
