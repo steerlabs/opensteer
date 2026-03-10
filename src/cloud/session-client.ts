@@ -1,8 +1,16 @@
 import type {
     CloudSelectorCacheImportRequest,
     CloudSelectorCacheImportResponse,
+    CloudSessionSourceType,
     CloudSessionCreateRequest,
     CloudSessionCreateResponse,
+    CloudSessionStatus,
+} from './contracts.js'
+import {
+    cloudSessionSourceTypes,
+    cloudSessionStatuses,
+    isCloudSessionSourceType,
+    isCloudSessionStatus,
 } from './contracts.js'
 import { OpensteerCloudError } from './errors.js'
 import type { OpensteerAuthScheme } from '../types.js'
@@ -150,7 +158,12 @@ function parseCreateResponse(
             status,
             'cloudSession'
         ),
-        state: requireString(cloudSessionRoot, 'state', status, 'cloudSession'),
+        state: requireSessionStatus(
+            cloudSessionRoot,
+            'state',
+            status,
+            'cloudSession'
+        ),
         createdAt: requireNumber(cloudSessionRoot, 'createdAt', status, 'cloudSession'),
         sourceType: requireSourceType(cloudSessionRoot, 'sourceType', status, 'cloudSession'),
         sourceRef: optionalString(cloudSessionRoot, 'sourceRef', status, 'cloudSession'),
@@ -272,14 +285,9 @@ function requireSourceType(
     field: string,
     status: number,
     parent?: string
-): 'agent-thread' | 'agent-run' | 'local-cloud' | 'manual' {
+): CloudSessionSourceType {
     const value = source[field]
-    if (
-        value === 'agent-thread' ||
-        value === 'agent-run' ||
-        value === 'local-cloud' ||
-        value === 'manual'
-    ) {
+    if (isCloudSessionSourceType(value)) {
         return value
     }
 
@@ -288,13 +296,38 @@ function requireSourceType(
         `Invalid cloud session create response: ${formatFieldPath(
             field,
             parent
-        )} must be one of "agent-thread", "agent-run", "local-cloud", or "manual".`,
+        )} must be one of ${formatAllowedValues(cloudSessionSourceTypes)}.`,
+        status
+    )
+}
+
+function requireSessionStatus(
+    source: Record<string, unknown>,
+    field: string,
+    status: number,
+    parent?: string
+): CloudSessionStatus {
+    const value = source[field]
+    if (isCloudSessionStatus(value)) {
+        return value
+    }
+
+    throw new OpensteerCloudError(
+        'CLOUD_CONTRACT_MISMATCH',
+        `Invalid cloud session create response: ${formatFieldPath(
+            field,
+            parent
+        )} must be one of ${formatAllowedValues(cloudSessionStatuses)}.`,
         status
     )
 }
 
 function formatFieldPath(field: string, parent?: string): string {
     return parent ? `"${parent}.${field}"` : `"${field}"`
+}
+
+function formatAllowedValues(values: readonly string[]): string {
+    return values.map((value) => `"${value}"`).join(', ')
 }
 
 function zeroImportResponse(): CloudSelectorCacheImportResponse {

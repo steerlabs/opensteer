@@ -5,6 +5,7 @@ import {
     type Page,
 } from 'playwright'
 import { OpensteerCloudError } from './errors.js'
+import { withTokenQuery } from './ws-url.js'
 
 export interface CloudCdpConnectArgs {
     wsUrl: string
@@ -92,10 +93,4 @@ function isInternalOrEmptyUrl(url: string): boolean {
         url.startsWith('devtools://') ||
         url.startsWith('edge://')
     )
-}
-
-function withTokenQuery(wsUrl: string, token: string): string {
-    const url = new URL(wsUrl)
-    url.searchParams.set('token', token)
-    return url.toString()
 }
