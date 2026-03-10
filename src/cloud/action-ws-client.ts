@@ -6,6 +6,7 @@ import type {
     CloudActionResponse,
 } from './contracts.js'
 import { OpensteerCloudError } from './errors.js'
+import { withTokenQuery } from './ws-url.js'
 
 interface ActionWsClientOptions {
     url: string
@@ -174,10 +175,4 @@ function rawDataToUtf8(raw: RawData): string {
     if (raw instanceof ArrayBuffer) return Buffer.from(raw).toString('utf8')
     if (Array.isArray(raw)) return Buffer.concat(raw).toString('utf8')
     return raw.toString('utf8')
-}
-
-function withTokenQuery(wsUrl: string, token: string): string {
-    const url = new URL(wsUrl)
-    url.searchParams.set('token', token)
-    return url.toString()
 }
