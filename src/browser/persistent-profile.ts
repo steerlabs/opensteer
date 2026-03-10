@@ -4,7 +4,9 @@ import {
     cp,
     copyFile,
     mkdir,
+    mkdtemp,
     readdir,
+    rename,
     rm,
     stat,
     writeFile,
@@ -16,16 +18,22 @@ import { expandHome } from './chrome.js'
 const OPENSTEER_META_FILE = '.opensteer-meta.json'
 
 /**
- * Entries that are transient runtime artifacts from a running Chrome instance.
- * These must be removed before launching a new Chrome process and must never
- * be copied from the source profile.
+ * Entries that Chrome recreates at runtime and must be cleared before launch.
  */
-const TRANSIENT_ENTRIES = new Set([
+const CHROME_SINGLETON_ENTRIES = new Set([
     'SingletonCookie',
     'SingletonLock',
     'SingletonSocket',
     'DevToolsActivePort',
     'lockfile',
+])
+
+/**
+ * Entries that should never be copied from the source user-data-dir into a
+ * persistent clone.
+ */
+const COPY_SKIP_ENTRIES = new Set([
+    ...CHROME_SINGLETON_ENTRIES,
     OPENSTEER_META_FILE,
 ])
 
@@ -74,7 +82,10 @@ export async function getOrCreatePersistentProfile(
         buildPersistentProfileKey(resolvedSourceUserDataDir, profileDirectory)
     )
     const sourceProfileDir = join(resolvedSourceUserDataDir, profileDirectory)
-    const targetProfileDir = join(targetUserDataDir, profileDirectory)
+    const metadata = buildPersistentProfileMetadata(
+        resolvedSourceUserDataDir,
+        profileDirectory
+    )
 
     await mkdir(dirname(targetUserDataDir), { recursive: true })
     if (!existsSync(sourceProfileDir)) {
@@ -83,46 +94,15 @@ export async function getOrCreatePersistentProfile(
         )
     }
 
-    const created = !existsSync(targetUserDataDir)
-    if (created) {
-        try {
-            await mkdir(targetUserDataDir, { recursive: true })
+    const created = await createPersistentProfileClone(
+        resolvedSourceUserDataDir,
+        sourceProfileDir,
+        targetUserDataDir,
+        profileDirectory,
+        metadata
+    )
 
-            // Copy the target profile subdirectory (e.g. "Default/")
-            await cp(sourceProfileDir, targetProfileDir, {
-                recursive: true,
-            })
-
-            // Copy all root-level identity files and small directories from the
-            // source user-data-dir. This preserves device identity markers like
-            // Local State (encryption keys), First Run, Variations Seed,
-            // Last Version, Safe Browsing state, certificate data, etc. that
-            // Google uses to recognize a trusted device.
-            await copyRootLevelEntries(
-                resolvedSourceUserDataDir,
-                targetUserDataDir,
-                profileDirectory
-            )
-
-            await writePersistentProfileMetadata(targetUserDataDir, {
-                createdAt: new Date().toISOString(),
-                profileDirectory,
-                source: resolvedSourceUserDataDir,
-            })
-        } catch (error) {
-            await rm(targetUserDataDir, {
-                recursive: true,
-                force: true,
-            }).catch(() => undefined)
-            throw error
-        }
-    } else if (!existsSync(join(targetUserDataDir, OPENSTEER_META_FILE))) {
-        await writePersistentProfileMetadata(targetUserDataDir, {
-            createdAt: new Date().toISOString(),
-            profileDirectory,
-            source: resolvedSourceUserDataDir,
-        })
-    }
+    await ensurePersistentProfileMetadata(targetUserDataDir, metadata)
 
     return {
         created,
@@ -134,7 +114,7 @@ export async function clearPersistentProfileSingletons(
     userDataDir: string
 ): Promise<void> {
     await Promise.all(
-        [...TRANSIENT_ENTRIES].map((entry) =>
+        [...CHROME_SINGLETON_ENTRIES].map((entry) =>
             rm(join(userDataDir, entry), {
                 force: true,
                 recursive: true,
@@ -200,8 +180,8 @@ async function copyRootLevelEntries(
     const copyTasks: Promise<void>[] = []
 
     for (const entry of entries) {
-        // Skip transient runtime artifacts
-        if (TRANSIENT_ENTRIES.has(entry)) continue
+        // Skip runtime artifacts and Opensteer bookkeeping files
+        if (COPY_SKIP_ENTRIES.has(entry)) continue
 
         // Skip the target profile directory (already copied separately)
         if (entry === targetProfileDirectory) continue
@@ -250,5 +230,95 @@ async function writePersistentProfileMetadata(
     await writeFile(
         join(userDataDir, OPENSTEER_META_FILE),
         JSON.stringify(metadata, null, 2)
+    )
+}
+
+function buildPersistentProfileMetadata(
+    sourceUserDataDir: string,
+    profileDirectory: string
+): PersistentProfileMetadata {
+    return {
+        createdAt: new Date().toISOString(),
+        profileDirectory,
+        source: sourceUserDataDir,
+    }
+}
+
+async function createPersistentProfileClone(
+    sourceUserDataDir: string,
+    sourceProfileDir: string,
+    targetUserDataDir: string,
+    profileDirectory: string,
+    metadata: PersistentProfileMetadata
+): Promise<boolean> {
+    if (existsSync(targetUserDataDir)) {
+        return false
+    }
+
+    const tempUserDataDir = await mkdtemp(
+        join(dirname(targetUserDataDir), `${basename(targetUserDataDir)}-tmp-`)
+    )
+    let published = false
+
+    try {
+        await cp(sourceProfileDir, join(tempUserDataDir, profileDirectory), {
+            recursive: true,
+        })
+
+        await copyRootLevelEntries(
+            sourceUserDataDir,
+            tempUserDataDir,
+            profileDirectory
+        )
+
+        await writePersistentProfileMetadata(tempUserDataDir, metadata)
+
+        try {
+            await rename(tempUserDataDir, targetUserDataDir)
+        } catch (error) {
+            if (wasProfilePublishedByAnotherProcess(error, targetUserDataDir)) {
+                return false
+            }
+            throw error
+        }
+
+        published = true
+        return true
+    } finally {
+        if (!published) {
+            await rm(tempUserDataDir, {
+                recursive: true,
+                force: true,
+            }).catch(() => undefined)
+        }
+    }
+}
+
+async function ensurePersistentProfileMetadata(
+    userDataDir: string,
+    metadata: PersistentProfileMetadata
+): Promise<void> {
+    if (existsSync(join(userDataDir, OPENSTEER_META_FILE))) {
+        return
+    }
+
+    await writePersistentProfileMetadata(userDataDir, metadata)
+}
+
+function wasProfilePublishedByAnotherProcess(
+    error: unknown,
+    targetUserDataDir: string
+): boolean {
+    const code =
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        typeof error.code === 'string'
+            ? error.code
+            : undefined
+
+    return (
+        existsSync(targetUserDataDir) &&
+        (code === 'EEXIST' || code === 'ENOTEMPTY' || code === 'EPERM')
     )
 }
