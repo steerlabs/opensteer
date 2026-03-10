@@ -327,7 +327,19 @@ function formatFieldPath(field: string, parent?: string): string {
 }
 
 function formatAllowedValues(values: readonly string[]): string {
-    return values.map((value) => `"${value}"`).join(', ')
+    if (values.length === 0) {
+        return ''
+    }
+    if (values.length === 1) {
+        return `"${values[0]}"`
+    }
+    if (values.length === 2) {
+        return `"${values[0]}" or "${values[1]}"`
+    }
+    const quotedValues = values.map((value) => `"${value}"`)
+    return `${quotedValues.slice(0, -1).join(', ')}, or ${
+        quotedValues[quotedValues.length - 1]
+    }`
 }
 
 function zeroImportResponse(): CloudSelectorCacheImportResponse {
