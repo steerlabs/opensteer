@@ -14,7 +14,6 @@ import {
     clearPersistentProfileSingletons,
     getOrCreatePersistentProfile,
 } from './persistent-profile.js'
-import { applyStealthScripts } from './stealth.js'
 
 export interface BrowserSession {
     browser: Browser
@@ -212,7 +211,6 @@ export class BrowserPool {
             const { context, page } = await createOwnedBrowserContextAndPage(
                 browser
             )
-            await applyStealthScripts(context, page)
             if (options.initialUrl) {
                 await page.goto(options.initialUrl, {
                     waitUntil: 'domcontentloaded',
@@ -446,9 +444,6 @@ function buildRealBrowserLaunchArgs(options: {
         `--user-data-dir=${options.userDataDir}`,
         `--profile-directory=${options.profileDirectory}`,
         `--remote-debugging-port=${options.debugPort}`,
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--disable-popup-blocking',
         '--disable-blink-features=AutomationControlled',
     ]
 
