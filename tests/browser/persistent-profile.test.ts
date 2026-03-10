@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
     clearPersistentProfileSingletons,
@@ -146,6 +146,85 @@ describe('persistent real-browser profiles', () => {
             )
         ).toBe('cookie-63')
         expect(existsSync(join(userDataDir, '.opensteer-meta.json'))).toBe(true)
+    })
+
+    it('removes orphaned temp clone directories before recreating a profile', async () => {
+        const sourceRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-orphan-source-')
+        )
+        const profilesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-orphan-cache-')
+        )
+        const profileDirectory = 'Default'
+        const sourceProfileDir = join(sourceRootDir, profileDirectory)
+        await mkdir(sourceProfileDir, { recursive: true })
+        await writeFile(join(sourceRootDir, 'Local State'), '{"profile":{}}')
+        await writeFile(join(sourceProfileDir, 'Cookies'), 'session-cookie')
+
+        const created = await getOrCreatePersistentProfile(
+            sourceRootDir,
+            profileDirectory,
+            profilesRootDir
+        )
+        const targetBaseName = basename(created.userDataDir)
+
+        await rm(created.userDataDir, { recursive: true, force: true })
+
+        const orphanTempDir = join(
+            profilesRootDir,
+            `${targetBaseName}-tmp-999999-1-orphaned`
+        )
+        await mkdir(orphanTempDir, { recursive: true })
+        await writeFile(join(orphanTempDir, 'stale-cookie'), 'stale')
+
+        const recreated = await getOrCreatePersistentProfile(
+            sourceRootDir,
+            profileDirectory,
+            profilesRootDir
+        )
+
+        expect(recreated.created).toBe(true)
+        expect(existsSync(orphanTempDir)).toBe(false)
+        expect(existsSync(recreated.userDataDir)).toBe(true)
+    })
+
+    it('preserves temp clone directories owned by the current live process', async () => {
+        const sourceRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-live-source-')
+        )
+        const profilesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-live-cache-')
+        )
+        const profileDirectory = 'Default'
+        const sourceProfileDir = join(sourceRootDir, profileDirectory)
+        await mkdir(sourceProfileDir, { recursive: true })
+        await writeFile(join(sourceRootDir, 'Local State'), '{"profile":{}}')
+        await writeFile(join(sourceProfileDir, 'Cookies'), 'session-cookie')
+
+        const created = await getOrCreatePersistentProfile(
+            sourceRootDir,
+            profileDirectory,
+            profilesRootDir
+        )
+        const targetBaseName = basename(created.userDataDir)
+
+        await rm(created.userDataDir, { recursive: true, force: true })
+
+        const processStartedAtMs = Math.floor(Date.now() - process.uptime() * 1_000)
+        const liveTempDir = join(
+            profilesRootDir,
+            `${targetBaseName}-tmp-${process.pid}-${processStartedAtMs}-live`
+        )
+        await mkdir(liveTempDir, { recursive: true })
+        await writeFile(join(liveTempDir, 'in-flight'), 'live')
+
+        await getOrCreatePersistentProfile(
+            sourceRootDir,
+            profileDirectory,
+            profilesRootDir
+        )
+
+        expect(existsSync(liveTempDir)).toBe(true)
     })
 
     it('fails when the source profile directory does not exist', async () => {

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { existsSync, type Dirent } from 'node:fs'
 import {
     cp,
     copyFile,
@@ -16,6 +16,8 @@ import { basename, dirname, join } from 'node:path'
 import { expandHome } from './chrome.js'
 
 const OPENSTEER_META_FILE = '.opensteer-meta.json'
+const PROCESS_STARTED_AT_MS = Math.floor(Date.now() - process.uptime() * 1_000)
+const PROCESS_START_TIME_TOLERANCE_MS = 1_000
 
 /**
  * Entries that Chrome recreates at runtime and must be cleared before launch.
@@ -88,6 +90,10 @@ export async function getOrCreatePersistentProfile(
     )
 
     await mkdir(dirname(targetUserDataDir), { recursive: true })
+    await cleanOrphanedTempDirs(
+        dirname(targetUserDataDir),
+        basename(targetUserDataDir)
+    )
     if (!existsSync(sourceProfileDir)) {
         throw new Error(
             `Chrome profile "${profileDirectory}" was not found in "${resolvedSourceUserDataDir}".`
@@ -256,7 +262,7 @@ async function createPersistentProfileClone(
     }
 
     const tempUserDataDir = await mkdtemp(
-        join(dirname(targetUserDataDir), `${basename(targetUserDataDir)}-tmp-`)
+        buildPersistentProfileTempDirPrefix(targetUserDataDir)
     )
     let published = false
 
@@ -321,4 +327,110 @@ function wasProfilePublishedByAnotherProcess(
         existsSync(targetUserDataDir) &&
         (code === 'EEXIST' || code === 'ENOTEMPTY' || code === 'EPERM')
     )
+}
+
+function buildPersistentProfileTempDirPrefix(targetUserDataDir: string): string {
+    return join(
+        dirname(targetUserDataDir),
+        `${basename(targetUserDataDir)}-tmp-${process.pid}-${PROCESS_STARTED_AT_MS}-`
+    )
+}
+
+async function cleanOrphanedTempDirs(
+    profilesDir: string,
+    targetBaseName: string
+): Promise<void> {
+    let entries: Dirent<string>[]
+    try {
+        entries = await readdir(profilesDir, {
+            encoding: 'utf8',
+            withFileTypes: true,
+        })
+    } catch {
+        return
+    }
+
+    const tempDirPrefix = `${targetBaseName}-tmp-`
+    await Promise.all(
+        entries.map(async (entry) => {
+            if (!entry.isDirectory() || !entry.name.startsWith(tempDirPrefix)) {
+                return
+            }
+
+            if (isTempDirOwnedByLiveProcess(entry.name, tempDirPrefix)) {
+                return
+            }
+
+            await rm(join(profilesDir, entry.name), {
+                recursive: true,
+                force: true,
+            }).catch(() => undefined)
+        })
+    )
+}
+
+function isTempDirOwnedByLiveProcess(
+    tempDirName: string,
+    tempDirPrefix: string
+): boolean {
+    const owner = parseTempDirOwner(tempDirName, tempDirPrefix)
+    if (!owner) {
+        return false
+    }
+
+    if (
+        owner.pid === process.pid &&
+        Math.abs(owner.processStartedAtMs - PROCESS_STARTED_AT_MS) <=
+            PROCESS_START_TIME_TOLERANCE_MS
+    ) {
+        return true
+    }
+
+    return isProcessRunning(owner.pid)
+}
+
+function parseTempDirOwner(
+    tempDirName: string,
+    tempDirPrefix: string
+): { pid: number; processStartedAtMs: number } | null {
+    const remainder = tempDirName.slice(tempDirPrefix.length)
+    const firstDashIndex = remainder.indexOf('-')
+    const secondDashIndex =
+        firstDashIndex === -1 ? -1 : remainder.indexOf('-', firstDashIndex + 1)
+
+    if (firstDashIndex === -1 || secondDashIndex === -1) {
+        return null
+    }
+
+    const pid = Number.parseInt(remainder.slice(0, firstDashIndex), 10)
+    const processStartedAtMs = Number.parseInt(
+        remainder.slice(firstDashIndex + 1, secondDashIndex),
+        10
+    )
+
+    if (!Number.isInteger(pid) || pid <= 0) {
+        return null
+    }
+    if (!Number.isInteger(processStartedAtMs) || processStartedAtMs <= 0) {
+        return null
+    }
+
+    return { pid, processStartedAtMs }
+}
+
+function isProcessRunning(pid: number): boolean {
+    try {
+        process.kill(pid, 0)
+        return true
+    } catch (error) {
+        const code =
+            typeof error === 'object' &&
+            error !== null &&
+            'code' in error &&
+            typeof error.code === 'string'
+                ? error.code
+                : undefined
+
+        return code !== 'ESRCH'
+    }
 }
