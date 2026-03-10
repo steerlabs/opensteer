@@ -775,10 +775,13 @@ function isCiEnvironment(env: Record<string, string | undefined>): boolean {
     return Boolean(value && value !== '0' && value !== 'false')
 }
 
-export function isCloudModeEnabledForRootDir(
+function resolveCloudSessionEnvForRootDir(
     rootDir: string,
     env?: Record<string, string | undefined>
-): boolean {
+): {
+    cloud: boolean
+    env: Record<string, string | undefined>
+} {
     const resolved = resolveConfigWithEnv(
         {
             storage: { rootDir },
@@ -787,28 +790,40 @@ export function isCloudModeEnabledForRootDir(
             env,
         }
     )
-    return resolveCloudSelection(
-        {
-            cloud: resolved.config.cloud,
-        },
-        resolved.env
-    ).cloud
+
+    return {
+        cloud: resolveCloudSelection(
+            {
+                cloud: resolved.config.cloud,
+            },
+            resolved.env
+        ).cloud,
+        env: resolved.env,
+    }
+}
+
+export function isCloudModeEnabledForRootDir(
+    rootDir: string,
+    env?: Record<string, string | undefined>
+): boolean {
+    return resolveCloudSessionEnvForRootDir(rootDir, env).cloud
 }
 
 export async function ensureCloudCredentialsForOpenCommand(
     options: EnsureCloudCredentialsForOpenOptions
 ): Promise<EnsuredCloudAuthContext | null> {
-    const env = options.env ?? (process.env as Record<string, string | undefined>)
-    if (!isCloudModeEnabledForRootDir(options.scopeDir, env)) {
+    const processEnv = options.env ?? (process.env as Record<string, string | undefined>)
+    const runtime = resolveCloudSessionEnvForRootDir(options.scopeDir, processEnv)
+    if (!runtime.cloud) {
         return null
     }
 
     const writeStderr =
         options.writeStderr ?? ((message: string) => process.stderr.write(message))
 
-    return await ensureCloudCredentialsForCommand({
+    const auth = await ensureCloudCredentialsForCommand({
         commandName: 'opensteer open',
-        env,
+        env: runtime.env,
         store: options.store,
         apiKeyFlag: options.apiKeyFlag,
         accessTokenFlag: options.accessTokenFlag,
@@ -821,6 +836,16 @@ export async function ensureCloudCredentialsForOpenCommand(
         now: options.now,
         openExternalUrl: options.openExternalUrl,
     })
+
+    applyCloudCredentialToEnv(processEnv, {
+        kind: auth.kind,
+        source: auth.source,
+        token: auth.token,
+        authScheme: auth.authScheme,
+    })
+    processEnv.OPENSTEER_BASE_URL = auth.baseUrl
+
+    return auth
 }
 
 export async function ensureCloudCredentialsForCommand(
