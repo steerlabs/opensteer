@@ -220,6 +220,61 @@ describe('CloudSessionClient auth scheme', () => {
         )
     })
 
+    it('accepts project-agent-run as a valid cloud session source type', async () => {
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValue(
+                new Response(
+                    JSON.stringify({
+                        ...CREATE_RESPONSE,
+                        cloudSession: {
+                            ...CREATE_RESPONSE.cloudSession,
+                            sourceType: 'project-agent-run',
+                        },
+                    }),
+                    {
+                        status: 201,
+                        headers: { 'content-type': 'application/json' },
+                    }
+                )
+            )
+        globalThis.fetch = fetchMock as unknown as typeof fetch
+
+        const client = new CloudSessionClient('http://localhost:8080', 'ork_key')
+        const response = await client.create(CREATE_REQUEST)
+
+        expect(response.cloudSession.sourceType).toBe('project-agent-run')
+    })
+
+    it('rejects create responses with invalid session states', async () => {
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValue(
+                new Response(
+                    JSON.stringify({
+                        ...CREATE_RESPONSE,
+                        cloudSession: {
+                            ...CREATE_RESPONSE.cloudSession,
+                            state: 'zombie',
+                        },
+                    }),
+                    {
+                        status: 201,
+                        headers: { 'content-type': 'application/json' },
+                    }
+                )
+            )
+        globalThis.fetch = fetchMock as unknown as typeof fetch
+
+        const client = new CloudSessionClient('http://localhost:8080', 'ork_key')
+        await expect(client.create(CREATE_REQUEST)).rejects.toEqual(
+            expect.objectContaining<Partial<OpensteerCloudError>>({
+                code: 'CLOUD_CONTRACT_MISMATCH',
+                status: 201,
+            })
+        )
+    })
+
     it('throws CLOUD_CONTRACT_MISMATCH when create response is not valid JSON', async () => {
         const fetchMock = vi
             .fn()

@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
     ensureCloudCredentialsForCommand,
@@ -99,6 +102,19 @@ function createFetchMock(options: { authSiteUrl?: string } = {}): AuthFetchFn {
         }
         throw new Error(`Unexpected URL: ${url}`)
     }
+}
+
+function createOpenScopeDir(lines: string[]): string {
+    const scopeDir = mkdtempSync(path.join(tmpdir(), 'opensteer-open-auth-'))
+    writeFileSync(path.join(scopeDir, '.env'), lines.join('\n'), 'utf8')
+    return scopeDir
+}
+
+function destroyScopeDir(scopeDir: string): void {
+    rmSync(scopeDir, {
+        recursive: true,
+        force: true,
+    })
 }
 
 describe('cli/auth parser', () => {
@@ -591,6 +607,142 @@ describe('ensureCloudCredentialsForCommand', () => {
 })
 
 describe('ensureCloudCredentialsForOpenCommand', () => {
+    it('loads cloud auth from dotenv files in the open scope directory', async () => {
+        const scopeDir = createOpenScopeDir([
+            'OPENSTEER_MODE=cloud',
+            'OPENSTEER_API_KEY=osk_from_dotenv',
+            'OPENSTEER_BASE_URL=http://localhost:8080',
+        ])
+        const env: Record<string, string | undefined> = {}
+
+        try {
+            const resolved = await ensureCloudCredentialsForOpenCommand({
+                scopeDir,
+                env,
+                interactive: false,
+                writeStderr: () => undefined,
+            })
+
+            expect(resolved).toEqual({
+                kind: 'api-key',
+                source: 'env',
+                token: 'osk_from_dotenv',
+                authScheme: 'api-key',
+                baseUrl: 'http://localhost:8080',
+            })
+            expect(env.OPENSTEER_API_KEY).toBe('osk_from_dotenv')
+            expect(env.OPENSTEER_ACCESS_TOKEN).toBeUndefined()
+            expect(env.OPENSTEER_AUTH_SCHEME).toBe('api-key')
+            expect(env.OPENSTEER_BASE_URL).toBe('http://localhost:8080')
+        } finally {
+            destroyScopeDir(scopeDir)
+        }
+    })
+
+    it('prefers dotenv env credentials over saved login for open commands', async () => {
+        const scopeDir = createOpenScopeDir([
+            'OPENSTEER_MODE=cloud',
+            'OPENSTEER_API_KEY=osk_from_dotenv',
+            'OPENSTEER_BASE_URL=http://localhost:8080',
+        ])
+        const store: CloudCredentialStore = createMemoryStore()
+
+        try {
+            store.writeCloudCredential({
+                baseUrl: 'http://localhost:8080',
+                scope: ['cloud:browser'],
+                accessToken: 'ost_saved_local',
+                refreshToken: 'rt_saved_local',
+                obtainedAt: 1,
+                expiresAt: Date.now() + 5 * 60_000,
+            })
+
+            const resolved = await ensureCloudCredentialsForOpenCommand({
+                scopeDir,
+                env: {},
+                store,
+                interactive: false,
+                writeStderr: () => undefined,
+            })
+
+            expect(resolved).toEqual({
+                kind: 'api-key',
+                source: 'env',
+                token: 'osk_from_dotenv',
+                authScheme: 'api-key',
+                baseUrl: 'http://localhost:8080',
+            })
+        } finally {
+            destroyScopeDir(scopeDir)
+        }
+    })
+
+    it('prefers dotenv access tokens over saved login for open commands', async () => {
+        const scopeDir = createOpenScopeDir([
+            'OPENSTEER_MODE=cloud',
+            'OPENSTEER_ACCESS_TOKEN=ost_from_dotenv',
+            'OPENSTEER_BASE_URL=http://localhost:8080',
+        ])
+        const store: CloudCredentialStore = createMemoryStore()
+
+        try {
+            store.writeCloudCredential({
+                baseUrl: 'http://localhost:8080',
+                scope: ['cloud:browser'],
+                accessToken: 'ost_saved_local',
+                refreshToken: 'rt_saved_local',
+                obtainedAt: 1,
+                expiresAt: Date.now() + 5 * 60_000,
+            })
+
+            const resolved = await ensureCloudCredentialsForOpenCommand({
+                scopeDir,
+                env: {},
+                store,
+                interactive: false,
+                writeStderr: () => undefined,
+            })
+
+            expect(resolved).toEqual({
+                kind: 'access-token',
+                source: 'env',
+                token: 'ost_from_dotenv',
+                authScheme: 'bearer',
+                baseUrl: 'http://localhost:8080',
+            })
+        } finally {
+            destroyScopeDir(scopeDir)
+        }
+    })
+
+    it('keeps explicit flags ahead of dotenv env credentials for open commands', async () => {
+        const scopeDir = createOpenScopeDir([
+            'OPENSTEER_MODE=cloud',
+            'OPENSTEER_API_KEY=osk_from_dotenv',
+            'OPENSTEER_BASE_URL=http://localhost:8080',
+        ])
+
+        try {
+            const resolved = await ensureCloudCredentialsForOpenCommand({
+                scopeDir,
+                env: {},
+                apiKeyFlag: 'osk_from_flag',
+                interactive: false,
+                writeStderr: () => undefined,
+            })
+
+            expect(resolved).toEqual({
+                kind: 'api-key',
+                source: 'flag',
+                token: 'osk_from_flag',
+                authScheme: 'api-key',
+                baseUrl: 'http://localhost:8080',
+            })
+        } finally {
+            destroyScopeDir(scopeDir)
+        }
+    })
+
     it('defaults interactive auto-login prompts to stderr', async () => {
         const stderr: string[] = []
         const store: CloudCredentialStore = createMemoryStore()
