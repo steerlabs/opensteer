@@ -38,6 +38,7 @@ vi.mock('../../src/browser/persistent-profile.js', () => ({
 }))
 
 import { BrowserPool } from '../../src/browser/pool.js'
+import { CDPProxy } from '../../src/browser/cdp-proxy.js'
 
 type TestPage = {
     url: () => string
@@ -81,14 +82,13 @@ describe('BrowserPool', () => {
 
         const startupPage: TestPage = {
             url: () => 'chrome://new-tab-page/',
+            goto: vi.fn(async () => undefined),
         }
         const page = {
             url: () => 'about:blank',
-            evaluate: vi.fn(async () => undefined),
             goto: vi.fn(async () => undefined),
         }
         const context = {
-            addInitScript: vi.fn(async () => undefined),
             pages: () => [startupPage],
             waitForEvent: vi.fn(async () => page),
             newPage: vi.fn(async () => page),
@@ -126,7 +126,7 @@ describe('BrowserPool', () => {
                 '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
         })
 
-        expect(session.page).toBe(page)
+        expect(session.page).toBe(startupPage)
         expect(childProcessMocks.spawn).toHaveBeenCalledWith(
             '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
             expect.arrayContaining([
@@ -154,14 +154,12 @@ describe('BrowserPool', () => {
         expect(
             persistentProfileMocks.clearPersistentProfileSingletons
         ).toHaveBeenCalledWith(persistentUserDataDir)
-        expect(context.addInitScript).toHaveBeenCalledOnce()
-        expect(page.evaluate).toHaveBeenCalledOnce()
-        expect(page.goto).toHaveBeenCalledWith(
+        expect(startupPage.goto).toHaveBeenCalledWith(
             'https://example.com',
             { timeout: 30_000, waitUntil: 'domcontentloaded' }
         )
         expect(context.waitForEvent).not.toHaveBeenCalled()
-        expect(context.newPage).toHaveBeenCalledOnce()
+        expect(context.newPage).not.toHaveBeenCalled()
 
         const processKill = vi
             .spyOn(process, 'kill')
@@ -285,6 +283,78 @@ describe('BrowserPool', () => {
         }
     })
 
+    it('reuses the attached target when a CDP session exposes only an internal page', async () => {
+        const internalPage = {
+            url: () => 'chrome://new-tab-page/',
+        }
+        const context = {
+            pages: () => [internalPage],
+            newPage: vi.fn(async () => {
+                throw new Error('should not create a new page')
+            }),
+        }
+        const browser = {
+            close: vi.fn(async () => undefined),
+            contexts: () => [context],
+        }
+        playwrightMocks.connectOverCDP.mockResolvedValue(browser)
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(async (input: unknown) => {
+                const url = String(input)
+                if (url.endsWith('/json')) {
+                    return {
+                        ok: true,
+                        json: async () => [
+                            {
+                                id: 'target-1',
+                                type: 'page',
+                                url: 'https://example.com',
+                                title: 'Example',
+                                webSocketDebuggerUrl:
+                                    'ws://127.0.0.1:9222/devtools/page/target-1',
+                            },
+                        ],
+                    }
+                }
+
+                if (url.endsWith('/json/version')) {
+                    return {
+                        ok: true,
+                        json: async () => ({
+                            webSocketDebuggerUrl:
+                                'ws://127.0.0.1:9222/devtools/browser/root',
+                        }),
+                    }
+                }
+
+                throw new Error(`Unexpected discovery URL: ${url}`)
+            })
+        )
+
+        const proxyStart = vi
+            .spyOn(CDPProxy.prototype, 'start')
+            .mockResolvedValue('ws://127.0.0.1:9000')
+        const proxyClose = vi
+            .spyOn(CDPProxy.prototype, 'close')
+            .mockImplementation(() => undefined)
+
+        const pool = new BrowserPool()
+
+        try {
+            const session = await pool.launch({
+                cdpUrl: 'http://127.0.0.1:9222',
+            })
+
+            expect(session.page).toBe(internalPage)
+            expect(context.newPage).not.toHaveBeenCalled()
+        } finally {
+            await pool.close()
+            proxyStart.mockRestore()
+            proxyClose.mockRestore()
+        }
+    })
+
     it('does not wait for navigation when owned real-browser startup opens about:blank', async () => {
         const rootDir = await mkdtemp(join(tmpdir(), 'opensteer-browser-pool-'))
         const profileDirectory = 'Default'
@@ -295,11 +365,9 @@ describe('BrowserPool', () => {
 
         const page = {
             url: () => 'about:blank',
-            evaluate: vi.fn(async () => undefined),
             goto: vi.fn(async () => undefined),
         }
         const context = {
-            addInitScript: vi.fn(async () => undefined),
             pages: () => [page],
             waitForEvent: vi.fn(async () => page),
             newPage: vi.fn(async () => page),
@@ -358,11 +426,9 @@ describe('BrowserPool', () => {
 
         const page = {
             url: () => 'about:blank',
-            evaluate: vi.fn(async () => undefined),
             goto: vi.fn(async () => undefined),
         }
         const context = {
-            addInitScript: vi.fn(async () => undefined),
             pages: (): TestPage[] => [],
             waitForEvent: vi.fn(async () => {
                 const error = new Error('Timed out waiting for page')
@@ -420,66 +486,6 @@ describe('BrowserPool', () => {
         processKill.mockRestore()
     })
 
-    it('creates an inspectable page when attached browser only exposes internal tabs', async () => {
-        const internalPage = {
-            url: () => 'chrome://new-tab-page/',
-        }
-        const page = {
-            url: () => 'about:blank',
-        }
-        const context = {
-            pages: () => [internalPage],
-            newPage: vi.fn(async () => page),
-        }
-        const browser = {
-            close: vi.fn(async () => undefined),
-            contexts: () => [context],
-        }
-        playwrightMocks.connectOverCDP.mockResolvedValue(browser)
-        vi.stubGlobal(
-            'fetch',
-            vi.fn(async (input: unknown) => {
-                const url = String(input)
-                if (url.endsWith('/json')) {
-                    return {
-                        ok: true,
-                        json: async () => [
-                            {
-                                id: 'startup-page',
-                                type: 'page',
-                                url: 'about:blank',
-                            },
-                        ],
-                    }
-                }
-
-                if (url.endsWith('/json/version')) {
-                    return {
-                        ok: true,
-                        json: async () => ({
-                            webSocketDebuggerUrl:
-                                'ws://127.0.0.1:9222/devtools/browser/root',
-                        }),
-                    }
-                }
-
-                throw new Error(`Unexpected discovery URL: ${url}`)
-            })
-        )
-
-        const pool = new BrowserPool()
-
-        try {
-            const session = await pool.launch({
-                cdpUrl: 'http://127.0.0.1:9222',
-            })
-
-            expect(session.page).toBe(page)
-            expect(context.newPage).toHaveBeenCalledOnce()
-        } finally {
-            await pool.close()
-        }
-    })
 })
 
 async function waitForListening(server: WebSocketServer): Promise<void> {
