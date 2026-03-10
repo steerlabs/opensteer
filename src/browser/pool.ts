@@ -261,7 +261,7 @@ async function pickBrowserContextAndPage(browser: Browser): Promise<{
     page: Page
 }> {
     const context = getPrimaryBrowserContext(browser)
-    const page = await getInspectablePageOrCreate(context)
+    const page = await getAttachedPageOrCreate(context)
 
     return { context, page }
 }
@@ -287,18 +287,35 @@ async function createOwnedBrowserContextAndPage(
     page: Page
 }> {
     const context = getPrimaryBrowserContext(browser)
-    const page = await getInspectablePageOrCreate(context)
+    const page = await getExistingPageOrCreate(context)
 
     return { context, page }
 }
 
-async function getInspectablePageOrCreate(
+async function getAttachedPageOrCreate(
     context: BrowserContext
 ): Promise<Page> {
-    const existingPage = context
-        .pages()
-        .find((candidate) => isInspectablePageUrl(safePageUrl(candidate)))
+    const pages = context.pages()
+    const inspectablePage = pages.find((candidate) =>
+        isInspectablePageUrl(safePageUrl(candidate))
+    )
 
+    if (inspectablePage) {
+        return inspectablePage
+    }
+
+    const attachedPage = pages[0]
+    if (attachedPage) {
+        return attachedPage
+    }
+
+    return await context.newPage()
+}
+
+async function getExistingPageOrCreate(
+    context: BrowserContext
+): Promise<Page> {
+    const existingPage = context.pages()[0]
     if (existingPage) {
         return existingPage
     }
