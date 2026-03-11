@@ -184,26 +184,27 @@ export class BrowserPool {
         const runtimeProfile = await createIsolatedRuntimeProfile(
             persistentProfile.userDataDir
         )
-        const debugPort = await reserveDebugPort()
-        const headless = resolveLaunchHeadless(
-            'real',
-            options.headless,
-            this.defaults.headless
-        )
-        const launchArgs = buildRealBrowserLaunchArgs({
-            userDataDir: runtimeProfile.userDataDir,
-            profileDirectory,
-            debugPort,
-            headless,
-        })
-        const processHandle = spawn(executablePath, launchArgs, {
-            detached: process.platform !== 'win32',
-            stdio: 'ignore',
-        })
-        processHandle.unref()
-
         let browser: Browser | null = null
+        let processHandle: ChildProcess | null = null
         try {
+            const debugPort = await reserveDebugPort()
+            const headless = resolveLaunchHeadless(
+                'real',
+                options.headless,
+                this.defaults.headless
+            )
+            const launchArgs = buildRealBrowserLaunchArgs({
+                userDataDir: runtimeProfile.userDataDir,
+                profileDirectory,
+                debugPort,
+                headless,
+            })
+            processHandle = spawn(executablePath, launchArgs, {
+                detached: process.platform !== 'win32',
+                stdio: 'ignore',
+            })
+            processHandle.unref()
+
             const wsUrl = await resolveCdpWebSocketUrl(
                 `http://127.0.0.1:${debugPort}`,
                 options.timeout ?? 30_000
