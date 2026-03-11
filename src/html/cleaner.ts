@@ -14,7 +14,7 @@ import {
     OS_UNAVAILABLE_ATTR,
 } from './serializer.js'
 import {
-    INTERACTIVE_ROLE_TOKENS,
+    INTERACTIVE_ROLE_SET,
     NATIVE_INTERACTIVE_TAGS,
     hasNonNegativeTabIndex,
 } from './interactive-patterns.js'
@@ -126,7 +126,7 @@ function isClickable(
     const tag = ((el[0] as Element | undefined)?.tagName || '').toLowerCase()
     if (!tag || ROOT_TAGS.has(tag)) return false
 
-    if (NATIVE_INTERACTIVE_TAGS.includes(tag)) {
+    if (NATIVE_INTERACTIVE_TAGS.has(tag)) {
         if (tag === 'input') {
             const inputType = String(el.attr('type') || '').toLowerCase()
             if (inputType === 'hidden') return false
@@ -148,7 +148,7 @@ function isClickable(
     }
 
     const role = String(attrs.role || '').toLowerCase()
-    if (INTERACTIVE_ROLE_TOKENS.includes(role)) {
+    if (INTERACTIVE_ROLE_SET.has(role)) {
         return true
     }
 
