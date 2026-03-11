@@ -15,7 +15,7 @@ const childProcessMocks = vi.hoisted(() => ({
 }))
 
 const persistentProfileMocks = vi.hoisted(() => ({
-    clearPersistentProfileSingletons: vi.fn(),
+    createIsolatedRuntimeProfile: vi.fn(),
     getOrCreatePersistentProfile: vi.fn(),
 }))
 
@@ -31,8 +31,8 @@ vi.mock('node:child_process', () => ({
 }))
 
 vi.mock('../../src/browser/persistent-profile.js', () => ({
-    clearPersistentProfileSingletons:
-        persistentProfileMocks.clearPersistentProfileSingletons,
+    createIsolatedRuntimeProfile:
+        persistentProfileMocks.createIsolatedRuntimeProfile,
     getOrCreatePersistentProfile:
         persistentProfileMocks.getOrCreatePersistentProfile,
 }))
@@ -53,27 +53,30 @@ describe('BrowserPool', () => {
         playwrightMocks.launch.mockReset()
         playwrightMocks.connectOverCDP.mockReset()
         childProcessMocks.spawn.mockReset()
-        persistentProfileMocks.clearPersistentProfileSingletons.mockReset()
+        persistentProfileMocks.createIsolatedRuntimeProfile.mockReset()
         persistentProfileMocks.getOrCreatePersistentProfile.mockReset()
         persistentProfileMocks.getOrCreatePersistentProfile.mockResolvedValue({
             created: false,
             userDataDir: join(tmpdir(), 'opensteer-persistent-profile'),
         })
-        persistentProfileMocks.clearPersistentProfileSingletons.mockResolvedValue(
-            undefined
-        )
+        persistentProfileMocks.createIsolatedRuntimeProfile.mockResolvedValue({
+            userDataDir: join(tmpdir(), 'opensteer-runtime-profile'),
+        })
     })
 
     afterEach(() => {
         vi.unstubAllGlobals()
     })
 
-    it('launches a copied real-browser profile over CDP', async () => {
+    it('launches an isolated real-browser runtime profile over CDP', async () => {
         const rootDir = await mkdtemp(join(tmpdir(), 'opensteer-browser-pool-'))
         const profileDirectory = 'Default'
         const profileDir = join(rootDir, profileDirectory)
         const persistentUserDataDir = await mkdtemp(
             join(tmpdir(), 'opensteer-persistent-profile-')
+        )
+        const runtimeUserDataDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-runtime-profile-')
         )
         await mkdir(profileDir, { recursive: true })
         await writeFile(join(rootDir, 'Local State'), '{}')
@@ -81,6 +84,9 @@ describe('BrowserPool', () => {
         persistentProfileMocks.getOrCreatePersistentProfile.mockResolvedValue({
             created: true,
             userDataDir: persistentUserDataDir,
+        })
+        persistentProfileMocks.createIsolatedRuntimeProfile.mockResolvedValue({
+            userDataDir: runtimeUserDataDir,
         })
 
         const startupPage: TestPage = {
@@ -133,7 +139,7 @@ describe('BrowserPool', () => {
         expect(childProcessMocks.spawn).toHaveBeenCalledWith(
             '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
             expect.arrayContaining([
-                `--user-data-dir=${persistentUserDataDir}`,
+                `--user-data-dir=${runtimeUserDataDir}`,
                 '--profile-directory=Default',
                 expect.stringMatching(/^--remote-debugging-port=/),
                 '--disable-blink-features=AutomationControlled',
@@ -155,7 +161,7 @@ describe('BrowserPool', () => {
             profileDirectory
         )
         expect(
-            persistentProfileMocks.clearPersistentProfileSingletons
+            persistentProfileMocks.createIsolatedRuntimeProfile
         ).toHaveBeenCalledWith(persistentUserDataDir)
         expect(startupPage.goto).toHaveBeenCalledWith(
             'https://example.com',
@@ -172,6 +178,7 @@ describe('BrowserPool', () => {
 
         expect(browser.close).toHaveBeenCalledOnce()
         expect(existsSync(persistentUserDataDir)).toBe(true)
+        expect(existsSync(runtimeUserDataDir)).toBe(false)
     })
 
     it('keeps chromium launches on browserType.launch', async () => {

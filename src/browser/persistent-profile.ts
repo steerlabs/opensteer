@@ -11,7 +11,7 @@ import {
     stat,
     writeFile,
 } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { expandHome } from './chrome.js'
 
@@ -129,6 +129,41 @@ export async function clearPersistentProfileSingletons(
     )
 }
 
+export async function createIsolatedRuntimeProfile(
+    sourceUserDataDir: string,
+    runtimesRootDir = defaultRuntimeProfilesRootDir()
+): Promise<{ userDataDir: string }> {
+    const resolvedSourceUserDataDir = expandHome(sourceUserDataDir)
+    const runtimeRootDir = expandHome(runtimesRootDir)
+    await mkdir(runtimeRootDir, { recursive: true })
+
+    const runtimeUserDataDir = await mkdtemp(
+        join(
+            runtimeRootDir,
+            `${sanitizePathSegment(
+                basename(resolvedSourceUserDataDir) || 'profile'
+            )}-runtime-`
+        )
+    )
+
+    try {
+        await cp(resolvedSourceUserDataDir, runtimeUserDataDir, {
+            recursive: true,
+        })
+        await clearPersistentProfileSingletons(runtimeUserDataDir)
+
+        return {
+            userDataDir: runtimeUserDataDir,
+        }
+    } catch (error) {
+        await rm(runtimeUserDataDir, {
+            recursive: true,
+            force: true,
+        }).catch(() => undefined)
+        throw error
+    }
+}
+
 function buildPersistentProfileKey(
     sourceUserDataDir: string,
     profileDirectory: string
@@ -145,6 +180,10 @@ function buildPersistentProfileKey(
 
 function defaultPersistentProfilesRootDir(): string {
     return join(homedir(), '.opensteer', 'real-browser-profiles')
+}
+
+function defaultRuntimeProfilesRootDir(): string {
+    return join(tmpdir(), 'opensteer-real-browser-runtimes')
 }
 
 function sanitizePathSegment(value: string): string {
