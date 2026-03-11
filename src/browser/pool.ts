@@ -104,7 +104,6 @@ export class BrowserPool {
         this.browser = null
         this.cdpProxy = null
         this.launchedProcess = null
-        this.managedRuntimeProfile = null
 
         try {
             if (browser) {
@@ -119,6 +118,7 @@ export class BrowserPool {
                     managedRuntimeProfile.persistentUserDataDir
                 )
             }
+            this.managedRuntimeProfile = null
         }
     }
 

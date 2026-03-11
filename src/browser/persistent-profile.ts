@@ -160,7 +160,6 @@ export async function createIsolatedRuntimeProfile(
                 runtimeRootDir,
                 buildRuntimeProfileDirNamePrefix(resolvedSourceUserDataDir)
             )
-            await clearPersistentProfileSingletons(resolvedSourceUserDataDir)
 
             const runtimeUserDataDir = await mkdtemp(
                 buildRuntimeProfileDirPrefix(
@@ -204,12 +203,9 @@ export async function persistIsolatedRuntimeProfile(
             buildPersistentProfileTempDirNamePrefix(resolvedPersistentUserDataDir)
         )
 
-        const metadata = await readPersistentProfileMetadata(resolvedRuntimeUserDataDir)
-        if (!metadata) {
-            throw new Error(
-                `Persistent profile metadata was not found for "${resolvedRuntimeUserDataDir}".`
-            )
-        }
+        const metadata = await requirePersistentProfileMetadata(
+            resolvedPersistentUserDataDir
+        )
 
         await publishPersistentProfileSnapshot(
             resolvedRuntimeUserDataDir,
@@ -507,6 +503,19 @@ async function readPersistentProfileMetadata(
     } catch {
         return null
     }
+}
+
+async function requirePersistentProfileMetadata(
+    userDataDir: string
+): Promise<PersistentProfileMetadata> {
+    const metadata = await readPersistentProfileMetadata(userDataDir)
+    if (!metadata) {
+        throw new Error(
+            `Persistent profile metadata was not found for "${userDataDir}".`
+        )
+    }
+
+    return metadata
 }
 
 function wasDirPublishedByAnotherProcess(
