@@ -27,6 +27,7 @@ const LOCK_RECLAIMER_DIR = 'reclaimer'
 const PROCESS_STARTED_AT_MS = Math.floor(Date.now() - process.uptime() * 1_000)
 const PROCESS_START_TIME_TOLERANCE_MS = 1_000
 const PROFILE_LOCK_RETRY_DELAY_MS = 50
+const PROCESS_LIST_MAX_BUFFER_BYTES = 16 * 1024 * 1024
 const PS_COMMAND_ENV = { ...process.env, LC_ALL: 'C' }
 const LINUX_STAT_START_TIME_FIELD_INDEX = 19
 
@@ -82,6 +83,8 @@ interface PersistentProfileMetadata {
 
 interface RuntimeProfileMetadata {
     baseEntries: Record<string, SnapshotManifestEntry>
+    creator: LockOwner
+    persistentUserDataDir: string
     profileDirectory: string | null
 }
 
@@ -144,6 +147,7 @@ export async function getOrCreatePersistentProfile(
     await mkdir(dirname(targetUserDataDir), { recursive: true })
 
     return await withPersistentProfileLock(targetUserDataDir, async () => {
+        await recoverPersistentProfileBackup(targetUserDataDir)
         await cleanOrphanedOwnedDirs(
             dirname(targetUserDataDir),
             buildPersistentProfileTempDirNamePrefix(targetUserDataDir)
@@ -198,7 +202,7 @@ export async function createIsolatedRuntimeProfile(
             const sourceMetadata = await readPersistentProfileMetadata(
                 resolvedSourceUserDataDir
             )
-            await cleanOrphanedOwnedDirs(
+            await cleanOrphanedRuntimeProfileDirs(
                 runtimeRootDir,
                 buildRuntimeProfileDirNamePrefix(resolvedSourceUserDataDir)
             )
@@ -219,6 +223,7 @@ export async function createIsolatedRuntimeProfile(
                     runtimeUserDataDir,
                     await buildRuntimeProfileMetadata(
                         runtimeUserDataDir,
+                        resolvedSourceUserDataDir,
                         sourceMetadata?.profileDirectory ?? null
                     )
                 )
@@ -247,6 +252,7 @@ export async function persistIsolatedRuntimeProfile(
 
     await withPersistentProfileLock(resolvedPersistentUserDataDir, async () => {
         await mkdir(dirname(resolvedPersistentUserDataDir), { recursive: true })
+        await recoverPersistentProfileBackup(resolvedPersistentUserDataDir)
         await cleanOrphanedOwnedDirs(
             dirname(resolvedPersistentUserDataDir),
             buildPersistentProfileTempDirNamePrefix(resolvedPersistentUserDataDir)
@@ -257,6 +263,7 @@ export async function persistIsolatedRuntimeProfile(
         )
         const runtimeMetadata = await requireRuntimeProfileMetadata(
             resolvedRuntimeUserDataDir,
+            resolvedPersistentUserDataDir,
             metadata.profileDirectory
         )
 
@@ -543,22 +550,22 @@ async function mergePersistentProfileSnapshot(
 
 async function buildRuntimeProfileMetadata(
     runtimeUserDataDir: string,
+    persistentUserDataDir: string,
     profileDirectory: string | null
 ): Promise<RuntimeProfileMetadata> {
-    if (!profileDirectory) {
-        return {
-            baseEntries: {},
-            profileDirectory: null,
-        }
-    }
-
-    const baseEntries = await collectPersistentSnapshotEntries(
-        runtimeUserDataDir,
-        profileDirectory
-    )
+    const baseEntries = profileDirectory
+        ? serializeSnapshotManifestEntries(
+              await collectPersistentSnapshotEntries(
+                  runtimeUserDataDir,
+                  profileDirectory
+              )
+          )
+        : {}
 
     return {
-        baseEntries: serializeSnapshotManifestEntries(baseEntries),
+        baseEntries,
+        creator: CURRENT_PROCESS_LOCK_OWNER,
+        persistentUserDataDir,
         profileDirectory,
     }
 }
@@ -582,6 +589,11 @@ async function readRuntimeProfileMetadata(
             'utf8'
         )
         const parsed = JSON.parse(raw) as Partial<RuntimeProfileMetadata>
+        const creator = parseLockOwner(parsed.creator)
+        const persistentUserDataDir =
+            typeof parsed.persistentUserDataDir === 'string'
+                ? parsed.persistentUserDataDir
+                : undefined
         const profileDirectory =
             parsed.profileDirectory === null
                 ? null
@@ -589,6 +601,8 @@ async function readRuntimeProfileMetadata(
                   ? parsed.profileDirectory
                   : undefined
         if (
+            !creator ||
+            persistentUserDataDir === undefined ||
             profileDirectory === undefined ||
             typeof parsed.baseEntries !== 'object' ||
             parsed.baseEntries === null ||
@@ -603,6 +617,8 @@ async function readRuntimeProfileMetadata(
 
         return {
             baseEntries: Object.fromEntries(baseEntries),
+            creator,
+            persistentUserDataDir,
             profileDirectory,
         }
     } catch {
@@ -612,6 +628,7 @@ async function readRuntimeProfileMetadata(
 
 async function requireRuntimeProfileMetadata(
     userDataDir: string,
+    expectedPersistentUserDataDir: string,
     expectedProfileDirectory: string
 ): Promise<RuntimeProfileMetadata> {
     const metadata = await readRuntimeProfileMetadata(userDataDir)
@@ -623,6 +640,11 @@ async function requireRuntimeProfileMetadata(
     if (metadata.profileDirectory !== expectedProfileDirectory) {
         throw new Error(
             `Runtime profile "${userDataDir}" was created for profile "${metadata.profileDirectory ?? 'unknown'}", expected "${expectedProfileDirectory}".`
+        )
+    }
+    if (metadata.persistentUserDataDir !== expectedPersistentUserDataDir) {
+        throw new Error(
+            `Runtime profile "${userDataDir}" does not belong to persistent profile "${expectedPersistentUserDataDir}".`
         )
     }
 
@@ -919,6 +941,64 @@ async function ensurePersistentProfileMetadata(
     await writePersistentProfileMetadata(userDataDir, metadata)
 }
 
+async function recoverPersistentProfileBackup(
+    targetUserDataDir: string
+): Promise<void> {
+    const backupDirPaths = await listPersistentProfileBackupDirs(targetUserDataDir)
+    if (backupDirPaths.length === 0) {
+        return
+    }
+
+    if (!existsSync(targetUserDataDir)) {
+        const [latestBackupDirPath, ...staleBackupDirPaths] = backupDirPaths
+        await rename(latestBackupDirPath!, targetUserDataDir)
+        await Promise.all(
+            staleBackupDirPaths.map((backupDirPath) =>
+                rm(backupDirPath, {
+                    recursive: true,
+                    force: true,
+                }).catch(() => undefined)
+            )
+        )
+        return
+    }
+
+    await Promise.all(
+        backupDirPaths.map((backupDirPath) =>
+            rm(backupDirPath, {
+                recursive: true,
+                force: true,
+            }).catch(() => undefined)
+        )
+    )
+}
+
+async function listPersistentProfileBackupDirs(
+    targetUserDataDir: string
+): Promise<string[]> {
+    const profilesDir = dirname(targetUserDataDir)
+    let entries: Dirent<string>[]
+    try {
+        entries = await readdir(profilesDir, {
+            encoding: 'utf8',
+            withFileTypes: true,
+        })
+    } catch {
+        return []
+    }
+
+    const backupDirNamePrefix =
+        buildPersistentProfileBackupDirNamePrefix(targetUserDataDir)
+
+    return entries
+        .filter(
+            (entry) =>
+                entry.isDirectory() && entry.name.startsWith(backupDirNamePrefix)
+        )
+        .map((entry) => join(profilesDir, entry.name))
+        .sort((leftPath, rightPath) => rightPath.localeCompare(leftPath))
+}
+
 async function readPersistentProfileMetadata(
     userDataDir: string
 ): Promise<PersistentProfileMetadata | null> {
@@ -1096,22 +1176,11 @@ async function readLockParticipantRecord(
 ): Promise<LockParticipantRecord> {
     try {
         const raw = await readFile(filePath, 'utf8')
-        const parsed = JSON.parse(raw) as Partial<LockOwner>
-        const pid = Number(parsed.pid)
-        const processStartedAtMs = Number(parsed.processStartedAtMs)
-        if (!Number.isInteger(pid) || !Number.isInteger(processStartedAtMs)) {
-            return {
-                exists: true,
-                owner: null,
-            }
-        }
+        const owner = parseLockOwner(JSON.parse(raw))
 
         return {
             exists: true,
-            owner: {
-                pid,
-                processStartedAtMs,
-            },
+            owner,
         }
     } catch (error) {
         return {
@@ -1270,8 +1339,14 @@ function buildPersistentProfileTempDirNamePrefix(
 function buildPersistentProfileBackupDirPath(targetUserDataDir: string): string {
     return join(
         dirname(targetUserDataDir),
-        `${buildPersistentProfileTempDirNamePrefix(targetUserDataDir)}${process.pid}-${PROCESS_STARTED_AT_MS}-backup-${Date.now()}`
+        `${buildPersistentProfileBackupDirNamePrefix(targetUserDataDir)}${Date.now()}-${process.pid}-${PROCESS_STARTED_AT_MS}-${randomUUID()}`
     )
+}
+
+function buildPersistentProfileBackupDirNamePrefix(
+    targetUserDataDir: string
+): string {
+    return `${basename(targetUserDataDir)}-backup-`
 }
 
 function buildPersistentProfileLockDirPath(targetUserDataDir: string): string {
@@ -1301,7 +1376,50 @@ function buildRuntimeProfileDirPrefix(
 ): string {
     return join(
         runtimesRootDir,
-        `${buildRuntimeProfileDirNamePrefix(sourceUserDataDir)}${process.pid}-${PROCESS_STARTED_AT_MS}-`
+        buildRuntimeProfileDirNamePrefix(sourceUserDataDir)
+    )
+}
+
+async function cleanOrphanedRuntimeProfileDirs(
+    rootDir: string,
+    runtimeDirNamePrefix: string
+): Promise<void> {
+    let entries: Dirent<string>[]
+    try {
+        entries = await readdir(rootDir, {
+            encoding: 'utf8',
+            withFileTypes: true,
+        })
+    } catch {
+        return
+    }
+
+    const liveProcessCommandLines = await listProcessCommandLines()
+
+    await Promise.all(
+        entries.map(async (entry) => {
+            if (
+                !entry.isDirectory() ||
+                !entry.name.startsWith(runtimeDirNamePrefix)
+            ) {
+                return
+            }
+
+            const runtimeDirPath = join(rootDir, entry.name)
+            if (
+                await isRuntimeProfileDirInUse(
+                    runtimeDirPath,
+                    liveProcessCommandLines
+                )
+            ) {
+                return
+            }
+
+            await rm(runtimeDirPath, {
+                recursive: true,
+                force: true,
+            }).catch(() => undefined)
+        })
     )
 }
 
@@ -1348,6 +1466,20 @@ async function isOwnedDirByLiveProcess(
     return owner ? (await getProcessLiveness(owner)) !== 'dead' : false
 }
 
+async function isRuntimeProfileDirInUse(
+    runtimeDirPath: string,
+    liveProcessCommandLines: readonly string[]
+): Promise<boolean> {
+    const metadata = await readRuntimeProfileMetadata(runtimeDirPath)
+    if (metadata && (await getProcessLiveness(metadata.creator)) !== 'dead') {
+        return true
+    }
+
+    return liveProcessCommandLines.some((commandLine) =>
+        commandLineIncludesUserDataDir(commandLine, runtimeDirPath)
+    )
+}
+
 function parseOwnedDirOwner(
     ownedDirName: string,
     ownedDirPrefix: string
@@ -1375,6 +1507,27 @@ function parseOwnedDirOwner(
     }
 
     return { pid, processStartedAtMs }
+}
+
+function parseLockOwner(value: unknown): LockOwner | null {
+    if (!value || typeof value !== 'object') {
+        return null
+    }
+
+    const parsed = value as Partial<LockOwner>
+    const pid = Number(parsed.pid)
+    const processStartedAtMs = Number(parsed.processStartedAtMs)
+    if (!Number.isInteger(pid) || pid <= 0) {
+        return null
+    }
+    if (!Number.isInteger(processStartedAtMs) || processStartedAtMs <= 0) {
+        return null
+    }
+
+    return {
+        pid,
+        processStartedAtMs,
+    }
 }
 
 function isProcessRunning(pid: number): boolean {
@@ -1495,7 +1648,10 @@ async function readPsProcessStartedAtMs(pid: number): Promise<number | null> {
         const { stdout } = await execFileAsync(
             'ps',
             ['-p', String(pid), '-o', 'lstart='],
-            { env: PS_COMMAND_ENV }
+            {
+                env: PS_COMMAND_ENV,
+                maxBuffer: PROCESS_LIST_MAX_BUFFER_BYTES,
+            }
         )
         return parsePsStartedAtMs(stdout)
     } catch (error) {
@@ -1525,12 +1681,81 @@ async function readWindowsProcessStartedAtMs(
     try {
         const { stdout } = await execFileAsync(
             'powershell.exe',
-            ['-NoLogo', '-NoProfile', '-Command', script]
+            ['-NoLogo', '-NoProfile', '-Command', script],
+            {
+                maxBuffer: PROCESS_LIST_MAX_BUFFER_BYTES,
+            }
         )
         return parsePsStartedAtMs(stdout)
     } catch (error) {
         return null
     }
+}
+
+async function listProcessCommandLines(): Promise<string[]> {
+    if (process.platform === 'win32') {
+        return await listWindowsProcessCommandLines()
+    }
+
+    return await listPsProcessCommandLines()
+}
+
+async function listPsProcessCommandLines(): Promise<string[]> {
+    try {
+        const { stdout } = await execFileAsync(
+            'ps',
+            ['-axww', '-o', 'command='],
+            {
+                env: PS_COMMAND_ENV,
+                maxBuffer: PROCESS_LIST_MAX_BUFFER_BYTES,
+            }
+        )
+
+        return stdout
+            .split('\n')
+            .map((line) => line.trim())
+            .filter((line) => line.length > 0)
+    } catch {
+        return []
+    }
+}
+
+async function listWindowsProcessCommandLines(): Promise<string[]> {
+    const script = [
+        '$processes = Get-CimInstance Win32_Process | Select-Object CommandLine',
+        '$processes | ConvertTo-Json -Compress',
+    ].join('; ')
+
+    try {
+        const { stdout } = await execFileAsync(
+            'powershell.exe',
+            ['-NoLogo', '-NoProfile', '-Command', script],
+            {
+                maxBuffer: PROCESS_LIST_MAX_BUFFER_BYTES,
+            }
+        )
+        const parsed = JSON.parse(stdout) as
+            | Array<{ CommandLine?: string | null }>
+            | { CommandLine?: string | null }
+        const records = Array.isArray(parsed) ? parsed : [parsed]
+
+        return records
+            .map((record) => record?.CommandLine?.trim() ?? '')
+            .filter((commandLine) => commandLine.length > 0)
+    } catch {
+        return []
+    }
+}
+
+function commandLineIncludesUserDataDir(
+    commandLine: string,
+    userDataDir: string
+): boolean {
+    return [
+        `--user-data-dir=${userDataDir}`,
+        `--user-data-dir="${userDataDir}"`,
+        `--user-data-dir='${userDataDir}'`,
+    ].some((candidate) => commandLine.includes(candidate))
 }
 
 function getErrorCode(error: unknown): string | number | undefined {
