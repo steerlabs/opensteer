@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -17,6 +17,7 @@ const childProcessMocks = vi.hoisted(() => ({
 const persistentProfileMocks = vi.hoisted(() => ({
     createIsolatedRuntimeProfile: vi.fn(),
     getOrCreatePersistentProfile: vi.fn(),
+    persistIsolatedRuntimeProfile: vi.fn(),
 }))
 
 vi.mock('playwright', () => ({
@@ -35,6 +36,8 @@ vi.mock('../../src/browser/persistent-profile.js', () => ({
         persistentProfileMocks.createIsolatedRuntimeProfile,
     getOrCreatePersistentProfile:
         persistentProfileMocks.getOrCreatePersistentProfile,
+    persistIsolatedRuntimeProfile:
+        persistentProfileMocks.persistIsolatedRuntimeProfile,
 }))
 
 import { BrowserPool } from '../../src/browser/pool.js'
@@ -55,13 +58,23 @@ describe('BrowserPool', () => {
         childProcessMocks.spawn.mockReset()
         persistentProfileMocks.createIsolatedRuntimeProfile.mockReset()
         persistentProfileMocks.getOrCreatePersistentProfile.mockReset()
+        persistentProfileMocks.persistIsolatedRuntimeProfile.mockReset()
         persistentProfileMocks.getOrCreatePersistentProfile.mockResolvedValue({
             created: false,
             userDataDir: join(tmpdir(), 'opensteer-persistent-profile'),
         })
         persistentProfileMocks.createIsolatedRuntimeProfile.mockResolvedValue({
+            persistentUserDataDir: join(tmpdir(), 'opensteer-persistent-profile'),
             userDataDir: join(tmpdir(), 'opensteer-runtime-profile'),
         })
+        persistentProfileMocks.persistIsolatedRuntimeProfile.mockImplementation(
+            async (runtimeUserDataDir: string) => {
+                await rm(runtimeUserDataDir, {
+                    recursive: true,
+                    force: true,
+                })
+            }
+        )
     })
 
     afterEach(() => {
@@ -86,6 +99,7 @@ describe('BrowserPool', () => {
             userDataDir: persistentUserDataDir,
         })
         persistentProfileMocks.createIsolatedRuntimeProfile.mockResolvedValue({
+            persistentUserDataDir: persistentUserDataDir,
             userDataDir: runtimeUserDataDir,
         })
 
@@ -177,6 +191,9 @@ describe('BrowserPool', () => {
         processKill.mockRestore()
 
         expect(browser.close).toHaveBeenCalledOnce()
+        expect(
+            persistentProfileMocks.persistIsolatedRuntimeProfile
+        ).toHaveBeenCalledWith(runtimeUserDataDir, persistentUserDataDir)
         expect(existsSync(persistentUserDataDir)).toBe(true)
         expect(existsSync(runtimeUserDataDir)).toBe(false)
     })

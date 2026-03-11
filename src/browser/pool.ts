@@ -13,6 +13,8 @@ import { detectChromePaths, expandHome } from './chrome.js'
 import {
     createIsolatedRuntimeProfile,
     getOrCreatePersistentProfile,
+    persistIsolatedRuntimeProfile,
+    type IsolatedRuntimeProfileResult,
 } from './persistent-profile.js'
 
 export interface BrowserSession {
@@ -27,8 +29,7 @@ export class BrowserPool {
     private browser: Browser | null = null
     private cdpProxy: CDPProxy | null = null
     private launchedProcess: ChildProcess | null = null
-    private managedUserDataDir: string | null = null
-    private persistentProfile = false
+    private managedRuntimeProfile: IsolatedRuntimeProfileResult | null = null
     private readonly defaults: OpensteerBrowserConfig
 
     constructor(defaults: OpensteerBrowserConfig = {}) {
@@ -40,7 +41,7 @@ export class BrowserPool {
             this.browser ||
             this.cdpProxy ||
             this.launchedProcess ||
-            this.managedUserDataDir
+            this.managedRuntimeProfile
         ) {
             await this.close()
         }
@@ -99,13 +100,11 @@ export class BrowserPool {
         const browser = this.browser
         const cdpProxy = this.cdpProxy
         const launchedProcess = this.launchedProcess
-        const managedUserDataDir = this.managedUserDataDir
-        const persistentProfile = this.persistentProfile
+        const managedRuntimeProfile = this.managedRuntimeProfile
         this.browser = null
         this.cdpProxy = null
         this.launchedProcess = null
-        this.managedUserDataDir = null
-        this.persistentProfile = false
+        this.managedRuntimeProfile = null
 
         try {
             if (browser) {
@@ -114,11 +113,11 @@ export class BrowserPool {
         } finally {
             cdpProxy?.close()
             await killProcessTree(launchedProcess)
-            if (managedUserDataDir && !persistentProfile) {
-                await rm(managedUserDataDir, {
-                    recursive: true,
-                    force: true,
-                }).catch(() => undefined)
+            if (managedRuntimeProfile) {
+                await persistIsolatedRuntimeProfile(
+                    managedRuntimeProfile.userDataDir,
+                    managedRuntimeProfile.persistentUserDataDir
+                )
             }
         }
     }
@@ -221,8 +220,7 @@ export class BrowserPool {
             }
             this.browser = browser
             this.launchedProcess = processHandle
-            this.managedUserDataDir = runtimeProfile.userDataDir
-            this.persistentProfile = false
+            this.managedRuntimeProfile = runtimeProfile
 
             return { browser, context, page, isExternal: false }
         } catch (error) {
