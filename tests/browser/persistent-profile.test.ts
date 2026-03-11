@@ -7,6 +7,7 @@ import {
     createIsolatedRuntimeProfile,
     clearPersistentProfileSingletons,
     getOrCreatePersistentProfile,
+    persistIsolatedRuntimeProfile,
 } from '../../src/browser/persistent-profile.js'
 
 describe('persistent real-browser profiles', () => {
@@ -140,6 +141,12 @@ describe('persistent real-browser profiles', () => {
         ])
 
         expect(firstRuntime.userDataDir).not.toBe(secondRuntime.userDataDir)
+        expect(firstRuntime.persistentUserDataDir).toBe(
+            persistentProfile.userDataDir
+        )
+        expect(secondRuntime.persistentUserDataDir).toBe(
+            persistentProfile.userDataDir
+        )
         expect(
             await readFile(
                 join(firstRuntime.userDataDir, profileDirectory, 'Cookies'),
@@ -176,6 +183,87 @@ describe('persistent real-browser profiles', () => {
                 'utf8'
             )
         ).toBe('session-cookie')
+    })
+
+    it('publishes runtime profile changes back into the persistent snapshot', async () => {
+        const sourceRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-publish-source-')
+        )
+        const profilesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-publish-cache-')
+        )
+        const runtimesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-publish-runs-')
+        )
+        const profileDirectory = 'Default'
+        const sourceProfileDir = join(sourceRootDir, profileDirectory)
+        await mkdir(sourceProfileDir, { recursive: true })
+        await writeFile(join(sourceRootDir, 'Local State'), '{"profile":{}}')
+        await writeFile(join(sourceRootDir, 'TransportSecurity'), 'source-state')
+        await writeFile(join(sourceProfileDir, 'Cookies'), 'session-cookie')
+
+        const persistentProfile = await getOrCreatePersistentProfile(
+            sourceRootDir,
+            profileDirectory,
+            profilesRootDir
+        )
+        const runtimeProfile = await createIsolatedRuntimeProfile(
+            persistentProfile.userDataDir,
+            runtimesRootDir
+        )
+
+        await writeFile(
+            join(runtimeProfile.userDataDir, profileDirectory, 'Cookies'),
+            'runtime-cookie'
+        )
+        await writeFile(
+            join(runtimeProfile.userDataDir, 'TransportSecurity'),
+            'runtime-state'
+        )
+        await mkdir(join(runtimeProfile.userDataDir, 'Crashpad'), {
+            recursive: true,
+        })
+        await writeFile(
+            join(runtimeProfile.userDataDir, 'Crashpad', 'ignored'),
+            'ignore-me'
+        )
+
+        await persistIsolatedRuntimeProfile(
+            runtimeProfile.userDataDir,
+            persistentProfile.userDataDir
+        )
+
+        expect(existsSync(runtimeProfile.userDataDir)).toBe(false)
+        expect(
+            await readFile(
+                join(persistentProfile.userDataDir, profileDirectory, 'Cookies'),
+                'utf8'
+            )
+        ).toBe('runtime-cookie')
+        expect(
+            await readFile(
+                join(persistentProfile.userDataDir, 'TransportSecurity'),
+                'utf8'
+            )
+        ).toBe('runtime-state')
+        expect(existsSync(join(persistentProfile.userDataDir, 'Crashpad'))).toBe(
+            false
+        )
+
+        const reopenedRuntime = await createIsolatedRuntimeProfile(
+            persistentProfile.userDataDir,
+            runtimesRootDir
+        )
+        expect(
+            await readFile(
+                join(reopenedRuntime.userDataDir, profileDirectory, 'Cookies'),
+                'utf8'
+            )
+        ).toBe('runtime-cookie')
+        await rm(reopenedRuntime.userDataDir, {
+            recursive: true,
+            force: true,
+        })
     })
 
     it('publishes only one clone when the same profile is created concurrently', async () => {
@@ -224,6 +312,62 @@ describe('persistent real-browser profiles', () => {
             )
         ).toBe('cookie-63')
         expect(existsSync(join(userDataDir, '.opensteer-meta.json'))).toBe(true)
+    })
+
+    it('removes orphaned runtime directories before creating a fresh runtime', async () => {
+        const sourceRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-runtime-orphan-source-')
+        )
+        const profilesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-runtime-orphan-cache-')
+        )
+        const runtimesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-runtime-orphan-runs-')
+        )
+        const profileDirectory = 'Default'
+        const sourceProfileDir = join(sourceRootDir, profileDirectory)
+        await mkdir(sourceProfileDir, { recursive: true })
+        await writeFile(join(sourceRootDir, 'Local State'), '{"profile":{}}')
+        await writeFile(join(sourceProfileDir, 'Cookies'), 'session-cookie')
+
+        const persistentProfile = await getOrCreatePersistentProfile(
+            sourceRootDir,
+            profileDirectory,
+            profilesRootDir
+        )
+        const firstRuntime = await createIsolatedRuntimeProfile(
+            persistentProfile.userDataDir,
+            runtimesRootDir
+        )
+        const firstRuntimeName = basename(firstRuntime.userDataDir)
+        const runtimeMarkerIndex = firstRuntimeName.lastIndexOf('-runtime-')
+        const runtimePrefix = `${firstRuntimeName.slice(
+            0,
+            runtimeMarkerIndex
+        )}-runtime-`
+        await rm(firstRuntime.userDataDir, {
+            recursive: true,
+            force: true,
+        })
+
+        const orphanRuntimeDir = join(
+            runtimesRootDir,
+            `${runtimePrefix}orphaned`
+        )
+        await mkdir(orphanRuntimeDir, { recursive: true })
+        await writeFile(join(orphanRuntimeDir, 'stale-cookie'), 'stale')
+
+        const recreatedRuntime = await createIsolatedRuntimeProfile(
+            persistentProfile.userDataDir,
+            runtimesRootDir
+        )
+
+        expect(existsSync(orphanRuntimeDir)).toBe(false)
+        expect(existsSync(recreatedRuntime.userDataDir)).toBe(true)
+        await rm(recreatedRuntime.userDataDir, {
+            recursive: true,
+            force: true,
+        })
     })
 
     it('removes orphaned temp clone directories before recreating a profile', async () => {

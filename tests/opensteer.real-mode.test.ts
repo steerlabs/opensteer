@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -15,6 +15,7 @@ const childProcessMocks = vi.hoisted(() => ({
 const persistentProfileMocks = vi.hoisted(() => ({
     createIsolatedRuntimeProfile: vi.fn(),
     getOrCreatePersistentProfile: vi.fn(),
+    persistIsolatedRuntimeProfile: vi.fn(),
 }))
 
 vi.mock('playwright', () => ({
@@ -32,6 +33,8 @@ vi.mock('../src/browser/persistent-profile.js', () => ({
         persistentProfileMocks.createIsolatedRuntimeProfile,
     getOrCreatePersistentProfile:
         persistentProfileMocks.getOrCreatePersistentProfile,
+    persistIsolatedRuntimeProfile:
+        persistentProfileMocks.persistIsolatedRuntimeProfile,
 }))
 
 import { Opensteer } from '../src/opensteer.js'
@@ -42,6 +45,15 @@ describe('Opensteer real-browser launch', () => {
         childProcessMocks.spawn.mockReset()
         persistentProfileMocks.createIsolatedRuntimeProfile.mockReset()
         persistentProfileMocks.getOrCreatePersistentProfile.mockReset()
+        persistentProfileMocks.persistIsolatedRuntimeProfile.mockReset()
+        persistentProfileMocks.persistIsolatedRuntimeProfile.mockImplementation(
+            async (runtimeUserDataDir: string) => {
+                await rm(runtimeUserDataDir, {
+                    recursive: true,
+                    force: true,
+                })
+            }
+        )
         vi.unstubAllGlobals()
     })
 
@@ -69,6 +81,7 @@ describe('Opensteer real-browser launch', () => {
             userDataDir: join(tmpdir(), 'opensteer-persistent-profile'),
         })
         persistentProfileMocks.createIsolatedRuntimeProfile.mockResolvedValue({
+            persistentUserDataDir: join(tmpdir(), 'opensteer-persistent-profile'),
             userDataDir: join(tmpdir(), 'opensteer-runtime-profile'),
         })
         vi.stubGlobal(
@@ -154,9 +167,17 @@ describe('Opensteer real-browser launch', () => {
         })
         persistentProfileMocks.createIsolatedRuntimeProfile
             .mockResolvedValueOnce({
+                persistentUserDataDir: join(
+                    tmpdir(),
+                    'opensteer-persistent-profile'
+                ),
                 userDataDir: runtimeUserDataDirs[0],
             })
             .mockResolvedValueOnce({
+                persistentUserDataDir: join(
+                    tmpdir(),
+                    'opensteer-persistent-profile'
+                ),
                 userDataDir: runtimeUserDataDirs[1],
             })
         vi.stubGlobal(
