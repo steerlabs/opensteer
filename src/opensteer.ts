@@ -825,17 +825,17 @@ export class Opensteer {
             return
         }
 
-        let releasedOwnedBrowser = !this.ownsBrowser
+        let closedOwnedBrowser = false
         try {
             if (this.ownsBrowser) {
                 await this.pool.close()
+                closedOwnedBrowser = true
             }
-            releasedOwnedBrowser = true
         } finally {
             this.browser = null
             this.pageRef = null
             this.contextRef = null
-            if (releasedOwnedBrowser) {
+            if (!this.ownsBrowser || closedOwnedBrowser) {
                 this.ownsBrowser = false
             }
             if (this.cursorController) {

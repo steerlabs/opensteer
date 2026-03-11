@@ -1,106 +1,135 @@
-import { existsSync } from 'node:fs'
-import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-const playwrightMocks = vi.hoisted(() => ({
-    connectOverCDP: vi.fn(),
-    launch: vi.fn(),
-}))
-
-const childProcessMocks = vi.hoisted(() => ({
-    spawn: vi.fn(),
-}))
-
 const persistentProfileMocks = vi.hoisted(() => ({
-    createIsolatedRuntimeProfile: vi.fn(),
     getOrCreatePersistentProfile: vi.fn(),
-    persistIsolatedRuntimeProfile: vi.fn(),
+}))
+
+const sharedSessionMocks = vi.hoisted(() => ({
+    acquireSharedRealBrowserSession: vi.fn(),
 }))
 
 describe('BrowserPool real-browser launch cleanup', () => {
     afterEach(() => {
         vi.resetModules()
         vi.restoreAllMocks()
-        vi.unmock('playwright')
-        vi.unmock('node:child_process')
-        vi.unmock('node:net')
         vi.unmock('../../src/browser/persistent-profile.js')
+        vi.unmock('../../src/browser/shared-real-browser-session.js')
     })
 
-    it('removes the runtime profile when reserving a debug port fails', async () => {
-        const runtimeUserDataDir = await mkdtemp(
-            join(tmpdir(), 'opensteer-runtime-profile-failed-launch-')
-        )
-        const persistentUserDataDir = join(
-            tmpdir(),
-            'opensteer-persistent-profile-failed-launch'
-        )
-
-        persistentProfileMocks.getOrCreatePersistentProfile.mockResolvedValue({
+    it('clears failed shared-session launch state so the next launch can succeed', async () => {
+        const persistentProfile = {
             created: false,
-            userDataDir: persistentUserDataDir,
-        })
-        persistentProfileMocks.createIsolatedRuntimeProfile.mockResolvedValue({
-            persistentUserDataDir,
-            userDataDir: runtimeUserDataDir,
-        })
-        persistentProfileMocks.persistIsolatedRuntimeProfile.mockResolvedValue(
-            undefined
+            userDataDir: join(tmpdir(), 'opensteer-persistent-profile'),
+        }
+        const session = createSharedSessionStub()
+
+        persistentProfileMocks.getOrCreatePersistentProfile.mockResolvedValue(
+            persistentProfile
         )
-
-        vi.doMock('playwright', () => ({
-            chromium: {
-                connectOverCDP: playwrightMocks.connectOverCDP,
-                launch: playwrightMocks.launch,
-            },
-        }))
-        vi.doMock('node:child_process', () => ({
-            spawn: childProcessMocks.spawn,
-        }))
-        vi.doMock('../../src/browser/persistent-profile.js', () => ({
-            createIsolatedRuntimeProfile:
-                persistentProfileMocks.createIsolatedRuntimeProfile,
-            getOrCreatePersistentProfile:
-                persistentProfileMocks.getOrCreatePersistentProfile,
-            persistIsolatedRuntimeProfile:
-                persistentProfileMocks.persistIsolatedRuntimeProfile,
-        }))
-        vi.doMock('node:net', () => ({
-            createServer: () => {
-                let onError: ((error: Error) => void) | null = null
-
-                return {
-                    address: vi.fn(),
-                    close: vi.fn(),
-                    listen: vi.fn(() => {
-                        const error = new Error('listen denied')
-                        Object.assign(error, { code: 'EPERM' })
-                        onError?.(error)
-                    }),
-                    on: vi.fn((event: string, handler: (error: Error) => void) => {
-                        if (event === 'error') {
-                            onError = handler
-                        }
-                    }),
-                    unref: vi.fn(),
-                }
-            },
-        }))
+        sharedSessionMocks.acquireSharedRealBrowserSession
+            .mockRejectedValueOnce(new Error('launch failed'))
+            .mockResolvedValueOnce(session)
+        mockRealBrowserLaunchDeps()
 
         const { BrowserPool } = await import('../../src/browser/pool.js')
         const pool = new BrowserPool()
 
         await expect(
             pool.launch({
-                mode: 'real',
                 executablePath:
                     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+                mode: 'real',
             })
-        ).rejects.toThrow('listen denied')
+        ).rejects.toThrow('launch failed')
 
-        expect(childProcessMocks.spawn).not.toHaveBeenCalled()
-        expect(existsSync(runtimeUserDataDir)).toBe(false)
+        const recovered = await pool.launch({
+            executablePath:
+                '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+            mode: 'real',
+        })
+
+        expect(recovered.page).toBe(session.page)
+        expect(
+            sharedSessionMocks.acquireSharedRealBrowserSession
+        ).toHaveBeenCalledTimes(2)
+
+        await pool.close()
+        expect(session.close).toHaveBeenCalledOnce()
+    })
+
+    it('retries a failed shared-session close without losing the releaser', async () => {
+        const persistentProfile = {
+            created: false,
+            userDataDir: join(tmpdir(), 'opensteer-persistent-profile'),
+        }
+        const session = createSharedSessionStub()
+        session.close
+            .mockRejectedValueOnce(new Error('close failed'))
+            .mockResolvedValueOnce(undefined)
+
+        persistentProfileMocks.getOrCreatePersistentProfile.mockResolvedValue(
+            persistentProfile
+        )
+        sharedSessionMocks.acquireSharedRealBrowserSession.mockResolvedValue(
+            session
+        )
+        mockRealBrowserLaunchDeps()
+
+        const { BrowserPool } = await import('../../src/browser/pool.js')
+        const pool = new BrowserPool()
+
+        await pool.launch({
+            executablePath:
+                '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+            mode: 'real',
+        })
+
+        await expect(pool.close()).rejects.toThrow('close failed')
+        await expect(pool.close()).resolves.toBeUndefined()
+
+        expect(session.close).toHaveBeenCalledTimes(2)
     })
 })
+
+function mockRealBrowserLaunchDeps() {
+    vi.doMock('../../src/browser/persistent-profile.js', () => ({
+        getOrCreatePersistentProfile:
+            persistentProfileMocks.getOrCreatePersistentProfile,
+    }))
+    vi.doMock(
+        '../../src/browser/shared-real-browser-session.js',
+        async (importOriginal) => {
+            const actual =
+                await importOriginal<typeof import('../../src/browser/shared-real-browser-session.js')>()
+
+            return {
+                ...actual,
+                acquireSharedRealBrowserSession:
+                    sharedSessionMocks.acquireSharedRealBrowserSession,
+            }
+        }
+    )
+}
+
+function createSharedSessionStub() {
+    const page = {
+        close: vi.fn(async () => undefined),
+    }
+    const context = {
+        pages: () => [page],
+        newPage: vi.fn(async () => page),
+    }
+    const browser = {
+        contexts: () => [context],
+        close: vi.fn(async () => undefined),
+    }
+
+    return {
+        browser,
+        close: vi.fn(async () => undefined),
+        context,
+        page,
+    }
+}
