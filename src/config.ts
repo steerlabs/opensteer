@@ -43,7 +43,7 @@ const DEFAULT_CONFIG: Required<
     Pick<OpensteerConfig, 'browser' | 'storage' | 'cursor' | 'debug' | 'model'>
 > = {
     browser: {
-        headless: false,
+        headless: undefined,
         executablePath: undefined,
         slowMo: 0,
         mode: undefined,

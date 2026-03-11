@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { WebSocketServer } from 'ws'
 
 const playwrightMocks = vi.hoisted(() => ({
@@ -62,6 +62,9 @@ describe('BrowserPool', () => {
         persistentProfileMocks.clearPersistentProfileSingletons.mockResolvedValue(
             undefined
         )
+    })
+
+    afterEach(() => {
         vi.unstubAllGlobals()
     })
 
@@ -193,6 +196,61 @@ describe('BrowserPool', () => {
                 headless: true,
             })
         )
+    })
+
+    it('defaults owned real-browser launches to headless when headless is not configured', async () => {
+        const rootDir = await mkdtemp(join(tmpdir(), 'opensteer-browser-pool-'))
+        const profileDirectory = 'Default'
+        const profileDir = join(rootDir, profileDirectory)
+        await mkdir(profileDir, { recursive: true })
+        await writeFile(join(rootDir, 'Local State'), '{}')
+        await writeFile(join(profileDir, 'Cookies'), '')
+
+        const page = {
+            url: () => 'about:blank',
+        }
+        const context = {
+            pages: () => [page],
+        }
+        const browser = {
+            close: vi.fn(async () => undefined),
+            contexts: () => [context],
+        }
+        playwrightMocks.connectOverCDP.mockResolvedValue(browser)
+        childProcessMocks.spawn.mockReturnValue({
+            pid: 4321,
+            exitCode: null,
+            unref: vi.fn(),
+            kill: vi.fn(),
+        })
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(async () => ({
+                ok: true,
+                json: async () => ({
+                    webSocketDebuggerUrl:
+                        'ws://127.0.0.1:9222/devtools/browser/root',
+                }),
+            }))
+        )
+
+        const pool = new BrowserPool()
+
+        await pool.launch({
+            mode: 'real',
+            userDataDir: rootDir,
+            profileDirectory,
+            executablePath:
+                '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        })
+
+        expect(childProcessMocks.spawn).toHaveBeenCalledWith(
+            expect.any(String),
+            expect.arrayContaining(['--headless=new']),
+            expect.any(Object)
+        )
+
+        await pool.close()
     })
 
     it('creates a blank target when attaching to a CDP browser with no pages', async () => {
