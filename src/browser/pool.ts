@@ -1,6 +1,3 @@
-import { spawn, type ChildProcess } from 'node:child_process'
-import { rm } from 'node:fs/promises'
-import { createServer } from 'node:net'
 import {
     chromium,
     type Browser,
@@ -11,11 +8,13 @@ import type { LaunchOptions, OpensteerBrowserConfig } from '../types.js'
 import { CDPProxy, createBlankTarget, discoverTargets } from './cdp-proxy.js'
 import { detectChromePaths, expandHome } from './chrome.js'
 import {
-    createIsolatedRuntimeProfile,
     getOrCreatePersistentProfile,
-    persistIsolatedRuntimeProfile,
-    type IsolatedRuntimeProfileResult,
 } from './persistent-profile.js'
+import {
+    acquireSharedRealBrowserSession,
+} from './shared-real-browser-session.js'
+
+export { getOwnedRealBrowserProcessPolicy } from './shared-real-browser-session.js'
 
 export interface BrowserSession {
     browser: Browser
@@ -27,9 +26,8 @@ export interface BrowserSession {
 
 export class BrowserPool {
     private browser: Browser | null = null
-    private cdpProxy: CDPProxy | null = null
-    private launchedProcess: ChildProcess | null = null
-    private managedRuntimeProfile: IsolatedRuntimeProfileResult | null = null
+    private activeSessionClose: (() => Promise<void>) | null = null
+    private closeInFlight: Promise<void> | null = null
     private readonly defaults: OpensteerBrowserConfig
 
     constructor(defaults: OpensteerBrowserConfig = {}) {
@@ -37,12 +35,7 @@ export class BrowserPool {
     }
 
     async launch(options: LaunchOptions = {}): Promise<BrowserSession> {
-        if (
-            this.browser ||
-            this.cdpProxy ||
-            this.launchedProcess ||
-            this.managedRuntimeProfile
-        ) {
+        if (this.browser || this.activeSessionClose) {
             await this.close()
         }
 
@@ -97,31 +90,30 @@ export class BrowserPool {
     }
 
     async close(): Promise<void> {
-        const browser = this.browser
-        const cdpProxy = this.cdpProxy
-        const launchedProcess = this.launchedProcess
-        const managedRuntimeProfile = this.managedRuntimeProfile
-        this.browser = null
-        this.cdpProxy = null
-        this.launchedProcess = null
+        if (this.closeInFlight) {
+            await this.closeInFlight
+            return
+        }
+
+        const closeOperation = this.closeCurrent()
+        this.closeInFlight = closeOperation
 
         try {
-            if (browser) {
-                await browser.close().catch(() => undefined)
-            }
+            await closeOperation
+            this.browser = null
+            this.activeSessionClose = null
         } finally {
-            cdpProxy?.close()
-            await killProcessTree(launchedProcess)
-            if (managedRuntimeProfile) {
-                await persistIsolatedRuntimeProfile(
-                    managedRuntimeProfile.userDataDir,
-                    managedRuntimeProfile.persistentUserDataDir
-                )
-                if (this.managedRuntimeProfile === managedRuntimeProfile) {
-                    this.managedRuntimeProfile = null
-                }
-            }
+            this.closeInFlight = null
         }
+    }
+
+    private async closeCurrent(): Promise<void> {
+        if (this.activeSessionClose) {
+            await this.activeSessionClose()
+            return
+        }
+
+        await this.browser?.close().catch(() => undefined)
     }
 
     private async connectToRunning(
@@ -146,7 +138,10 @@ export class BrowserPool {
                 timeout: timeout ?? 30_000,
             })
             this.browser = browser
-            this.cdpProxy = cdpProxy
+            this.activeSessionClose = async () => {
+                await browser?.close().catch(() => undefined)
+                cdpProxy?.close()
+            }
             const { context, page } = await pickBrowserContextAndPage(browser)
 
             return { browser, context, page, isExternal: true }
@@ -156,7 +151,7 @@ export class BrowserPool {
             }
             cdpProxy?.close()
             this.browser = null
-            this.cdpProxy = null
+            this.activeSessionClose = null
             throw error
         }
     }
@@ -181,59 +176,27 @@ export class BrowserPool {
             sourceUserDataDir,
             profileDirectory
         )
-        const runtimeProfile = await createIsolatedRuntimeProfile(
-            persistentProfile.userDataDir
-        )
-        let browser: Browser | null = null
-        let processHandle: ChildProcess | null = null
-        try {
-            const debugPort = await reserveDebugPort()
-            const headless = resolveLaunchHeadless(
+        const sharedSession = await acquireSharedRealBrowserSession({
+            executablePath,
+            headless: resolveLaunchHeadless(
                 'real',
                 options.headless,
                 this.defaults.headless
-            )
-            const launchArgs = buildRealBrowserLaunchArgs({
-                userDataDir: runtimeProfile.userDataDir,
-                profileDirectory,
-                debugPort,
-                headless,
-            })
-            processHandle = spawn(executablePath, launchArgs, {
-                detached: process.platform !== 'win32',
-                stdio: 'ignore',
-            })
-            processHandle.unref()
+            ),
+            initialUrl: options.initialUrl,
+            persistentProfile,
+            profileDirectory,
+            timeoutMs: options.timeout ?? 30_000,
+        })
 
-            const wsUrl = await resolveCdpWebSocketUrl(
-                `http://127.0.0.1:${debugPort}`,
-                options.timeout ?? 30_000
-            )
-            browser = await chromium.connectOverCDP(wsUrl, {
-                timeout: options.timeout ?? 30_000,
-            })
-            const { context, page } = await createOwnedBrowserContextAndPage(
-                browser
-            )
-            if (options.initialUrl) {
-                await page.goto(options.initialUrl, {
-                    waitUntil: 'domcontentloaded',
-                    timeout: options.timeout ?? 30_000,
-                })
-            }
-            this.browser = browser
-            this.launchedProcess = processHandle
-            this.managedRuntimeProfile = runtimeProfile
+        this.browser = sharedSession.browser
+        this.activeSessionClose = sharedSession.close
 
-            return { browser, context, page, isExternal: false }
-        } catch (error) {
-            await browser?.close().catch(() => undefined)
-            await killProcessTree(processHandle)
-            await rm(runtimeProfile.userDataDir, {
-                recursive: true,
-                force: true,
-            }).catch(() => undefined)
-            throw error
+        return {
+            browser: sharedSession.browser,
+            context: sharedSession.context,
+            page: sharedSession.page,
+            isExternal: false,
         }
     }
 
@@ -258,6 +221,9 @@ export class BrowserPool {
         const page = await context.newPage()
 
         this.browser = browser
+        this.activeSessionClose = async () => {
+            await browser.close().catch(() => undefined)
+        }
 
         return { browser, context, page, isExternal: false }
     }
@@ -287,18 +253,6 @@ function resolveLaunchHeadless(
     return mode === 'real'
 }
 
-async function createOwnedBrowserContextAndPage(
-    browser: Browser
-): Promise<{
-    context: BrowserContext
-    page: Page
-}> {
-    const context = getPrimaryBrowserContext(browser)
-    const page = await getExistingPageOrCreate(context)
-
-    return { context, page }
-}
-
 async function getAttachedPageOrCreate(
     context: BrowserContext
 ): Promise<Page> {
@@ -314,17 +268,6 @@ async function getAttachedPageOrCreate(
     const attachedPage = pages[0]
     if (attachedPage) {
         return attachedPage
-    }
-
-    return await context.newPage()
-}
-
-async function getExistingPageOrCreate(
-    context: BrowserContext
-): Promise<Page> {
-    const existingPage = context.pages()[0]
-    if (existingPage) {
-        return existingPage
     }
 
     return await context.newPage()
@@ -434,86 +377,6 @@ async function resolveCdpWebSocketUrl(
     )
 }
 
-async function reserveDebugPort(): Promise<number> {
-    return await new Promise<number>((resolve, reject) => {
-        const server = createServer()
-        server.unref()
-        server.on('error', reject)
-        server.listen(0, '127.0.0.1', () => {
-            const address = server.address()
-            if (!address || typeof address === 'string') {
-                server.close()
-                reject(new Error('Failed to reserve a local debug port.'))
-                return
-            }
-
-            server.close((error) => {
-                if (error) {
-                    reject(error)
-                    return
-                }
-                resolve(address.port)
-            })
-        })
-    })
-}
-
-function buildRealBrowserLaunchArgs(options: {
-    userDataDir: string
-    profileDirectory: string
-    debugPort: number
-    headless: boolean
-}): string[] {
-    const args = [
-        `--user-data-dir=${options.userDataDir}`,
-        `--profile-directory=${options.profileDirectory}`,
-        `--remote-debugging-port=${options.debugPort}`,
-        '--disable-blink-features=AutomationControlled',
-    ]
-
-    if (options.headless) {
-        args.push('--headless=new')
-    }
-
-    return args
-}
-
-async function killProcessTree(
-    processHandle: ChildProcess | null
-): Promise<void> {
-    if (
-        !processHandle ||
-        processHandle.pid == null ||
-        processHandle.exitCode !== null
-    ) {
-        return
-    }
-
-    if (process.platform === 'win32') {
-        await new Promise<void>((resolve) => {
-            const killer = spawn(
-                'taskkill',
-                ['/pid', String(processHandle.pid), '/t', '/f'],
-                {
-                    stdio: 'ignore',
-                }
-            )
-            killer.on('error', () => resolve())
-            killer.on('exit', () => resolve())
-        })
-        return
-    }
-
-    try {
-        process.kill(-processHandle.pid, 'SIGKILL')
-    } catch {
-        try {
-            processHandle.kill('SIGKILL')
-        } catch {
-            // best-effort cleanup
-        }
-    }
-}
 
 async function sleep(ms: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, ms))

@@ -1,8 +1,23 @@
+import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+const OPENSTEER_META_FILE = '.opensteer-meta.json'
+const OPENSTEER_RUNTIME_META_FILE = '.opensteer-runtime.json'
+
+function createDeferred<T = void>(): {
+    promise: Promise<T>
+    resolve: (value: T | PromiseLike<T>) => void
+} {
+    let resolve!: (value: T | PromiseLike<T>) => void
+    const promise = new Promise<T>((promiseResolve) => {
+        resolve = promiseResolve
+    })
+    return { promise, resolve }
+}
 
 describe('persistent profile lock races', () => {
     afterEach(() => {
@@ -197,8 +212,383 @@ describe('persistent profile lock races', () => {
             force: true,
         })
     })
+
+    it('starts concurrent runtime copies for the same persistent profile before either resolves', async () => {
+        const persistentUserDataDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-parallel-source-')
+        )
+        const runtimesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-parallel-runs-')
+        )
+
+        await seedPersistentProfile(persistentUserDataDir)
+
+        const actualFsPromises =
+            await vi.importActual<typeof import('node:fs/promises')>(
+                'node:fs/promises'
+            )
+
+        const copiesReleased = createDeferred()
+        const bothCopiesStarted = createDeferred()
+        let startedCopies = 0
+        let resolvedRuntimes = 0
+
+        vi.doMock('node:fs/promises', () => ({
+            ...actualFsPromises,
+            cp: vi.fn(
+                async (
+                    source: string,
+                    destination: string,
+                    options?: Parameters<typeof actualFsPromises.cp>[2]
+                ) => {
+                    if (
+                        source === persistentUserDataDir &&
+                        destination.startsWith(runtimesRootDir)
+                    ) {
+                        startedCopies += 1
+                        if (startedCopies === 2) {
+                            bothCopiesStarted.resolve()
+                        }
+                        await copiesReleased.promise
+                        return
+                    }
+
+                    return await actualFsPromises.cp(
+                        source,
+                        destination,
+                        options
+                    )
+                }
+            ),
+        }))
+
+        const { createIsolatedRuntimeProfile } = await import(
+            '../../src/browser/persistent-profile.js'
+        )
+
+        const firstPromise = createIsolatedRuntimeProfile(
+            persistentUserDataDir,
+            runtimesRootDir
+        ).then((result) => {
+            resolvedRuntimes += 1
+            return result
+        })
+        const secondPromise = createIsolatedRuntimeProfile(
+            persistentUserDataDir,
+            runtimesRootDir
+        ).then((result) => {
+            resolvedRuntimes += 1
+            return result
+        })
+
+        await Promise.race([
+            bothCopiesStarted.promise,
+            new Promise<never>((_, reject) =>
+                setTimeout(
+                    () =>
+                        reject(
+                            new Error(
+                                'second runtime copy never started while the first was still blocked'
+                            )
+                        ),
+                    1_000
+                )
+            ),
+        ])
+
+        expect(resolvedRuntimes).toBe(0)
+
+        copiesReleased.resolve()
+
+        const [firstRuntime, secondRuntime] = await Promise.all([
+            firstPromise,
+            secondPromise,
+        ])
+
+        expect(firstRuntime.userDataDir).not.toBe(secondRuntime.userDataDir)
+
+        await Promise.all([
+            rm(firstRuntime.userDataDir, {
+                recursive: true,
+                force: true,
+            }),
+            rm(secondRuntime.userDataDir, {
+                recursive: true,
+                force: true,
+            }),
+        ])
+    })
+
+    it('waits for active runtime creation to finish before persisting a runtime', async () => {
+        const persistentUserDataDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-persist-waits-source-')
+        )
+        const runtimesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-persist-waits-runs-')
+        )
+
+        await seedPersistentProfile(persistentUserDataDir)
+        const existingRuntimeUserDataDir = await seedRuntimeProfile(
+            persistentUserDataDir
+        )
+
+        const actualFsPromises =
+            await vi.importActual<typeof import('node:fs/promises')>(
+                'node:fs/promises'
+            )
+
+        const copyReleased = createDeferred()
+        const copyStarted = createDeferred()
+        let persistMaterializationStarted = false
+
+        vi.doMock('node:fs/promises', () => ({
+            ...actualFsPromises,
+            cp: vi.fn(
+                async (
+                    source: string,
+                    destination: string,
+                    options?: Parameters<typeof actualFsPromises.cp>[2]
+                ) => {
+                    if (
+                        source === persistentUserDataDir &&
+                        destination.startsWith(runtimesRootDir)
+                    ) {
+                        copyStarted.resolve()
+                        await copyReleased.promise
+                        return
+                    }
+
+                    return await actualFsPromises.cp(
+                        source,
+                        destination,
+                        options
+                    )
+                }
+            ),
+            copyFile: vi.fn(
+                async (
+                    source: string,
+                    destination: string,
+                    mode?: Parameters<typeof actualFsPromises.copyFile>[2]
+                ) => {
+                    persistMaterializationStarted = true
+                    return await actualFsPromises.copyFile(
+                        source,
+                        destination,
+                        mode
+                    )
+                }
+            ),
+        }))
+
+        const {
+            createIsolatedRuntimeProfile,
+            persistIsolatedRuntimeProfile,
+        } = await import('../../src/browser/persistent-profile.js')
+
+        const creatingRuntimePromise = createIsolatedRuntimeProfile(
+            persistentUserDataDir,
+            runtimesRootDir
+        )
+
+        await copyStarted.promise
+
+        const persistPromise = persistIsolatedRuntimeProfile(
+            existingRuntimeUserDataDir,
+            persistentUserDataDir
+        )
+
+        await sleep(200)
+
+        expect(persistMaterializationStarted).toBe(false)
+
+        copyReleased.resolve()
+
+        const [creatingRuntime] = await Promise.all([
+            creatingRuntimePromise,
+            persistPromise,
+        ])
+
+        await rm(creatingRuntime.userDataDir, {
+            recursive: true,
+            force: true,
+        })
+    })
+
+    it('blocks new runtime copies while a writer is actively publishing', async () => {
+        const persistentUserDataDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-write-blocks-source-')
+        )
+        const runtimesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-write-blocks-runs-')
+        )
+
+        await seedPersistentProfile(persistentUserDataDir)
+        const existingRuntimeUserDataDir = await seedRuntimeProfile(
+            persistentUserDataDir
+        )
+
+        const actualFsPromises =
+            await vi.importActual<typeof import('node:fs/promises')>(
+                'node:fs/promises'
+            )
+        const persistentTempDirPrefix = join(
+            dirname(persistentUserDataDir),
+            `${basename(persistentUserDataDir)}-tmp-`
+        )
+
+        const writerReleased = createDeferred()
+        const writerStarted = createDeferred()
+        let createCopyStarted = false
+
+        vi.doMock('node:fs/promises', () => ({
+            ...actualFsPromises,
+            copyFile: vi.fn(
+                async (
+                    source: string,
+                    destination: string,
+                    mode?: Parameters<typeof actualFsPromises.copyFile>[2]
+                ) => {
+                    if (destination.startsWith(persistentTempDirPrefix)) {
+                        writerStarted.resolve()
+                        await writerReleased.promise
+                    }
+
+                    return await actualFsPromises.copyFile(
+                        source,
+                        destination,
+                        mode
+                    )
+                }
+            ),
+            cp: vi.fn(
+                async (
+                    source: string,
+                    destination: string,
+                    options?: Parameters<typeof actualFsPromises.cp>[2]
+                ) => {
+                    if (
+                        source === persistentUserDataDir &&
+                        destination.startsWith(runtimesRootDir)
+                    ) {
+                        createCopyStarted = true
+                        return
+                    }
+
+                    return await actualFsPromises.cp(
+                        source,
+                        destination,
+                        options
+                    )
+                }
+            ),
+        }))
+
+        const {
+            createIsolatedRuntimeProfile,
+            persistIsolatedRuntimeProfile,
+        } = await import('../../src/browser/persistent-profile.js')
+
+        const persistPromise = persistIsolatedRuntimeProfile(
+            existingRuntimeUserDataDir,
+            persistentUserDataDir
+        )
+
+        await writerStarted.promise
+
+        const creatingRuntimePromise = createIsolatedRuntimeProfile(
+            persistentUserDataDir,
+            runtimesRootDir
+        )
+
+        await sleep(200)
+
+        expect(createCopyStarted).toBe(false)
+
+        writerReleased.resolve()
+
+        const creatingRuntime = await creatingRuntimePromise
+        await persistPromise
+
+        await rm(creatingRuntime.userDataDir, {
+            recursive: true,
+            force: true,
+        })
+    })
 })
 
 async function sleep(ms: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function seedPersistentProfile(
+    persistentUserDataDir: string,
+    profileDirectory = 'Default'
+): Promise<void> {
+    await mkdir(join(persistentUserDataDir, profileDirectory), {
+        recursive: true,
+    })
+    await writeFile(join(persistentUserDataDir, 'Local State'), '{"profile":{}}')
+    await writeFile(
+        join(persistentUserDataDir, OPENSTEER_META_FILE),
+        JSON.stringify({
+            createdAt: new Date().toISOString(),
+            profileDirectory,
+            source: persistentUserDataDir,
+        })
+    )
+    await writeFile(
+        join(persistentUserDataDir, profileDirectory, 'Cookies'),
+        'session-cookie'
+    )
+}
+
+async function seedRuntimeProfile(
+    persistentUserDataDir: string,
+    profileDirectory = 'Default'
+): Promise<string> {
+    const runtimeUserDataDir = await mkdtemp(
+        join(tmpdir(), 'opensteer-ready-runtime-')
+    )
+    await mkdir(join(runtimeUserDataDir, profileDirectory), {
+        recursive: true,
+    })
+    await writeFile(join(runtimeUserDataDir, 'Local State'), '{"profile":{}}')
+    await writeFile(
+        join(runtimeUserDataDir, profileDirectory, 'Cookies'),
+        'runtime-cookie'
+    )
+    await writeFile(
+        join(runtimeUserDataDir, OPENSTEER_RUNTIME_META_FILE),
+        JSON.stringify({
+            baseEntries: {
+                'Local State': {
+                    kind: 'file',
+                    hash: hashText('{"profile":{}}'),
+                },
+                [profileDirectory]: {
+                    kind: 'directory',
+                    hash: null,
+                },
+                [`${profileDirectory}/Cookies`]: {
+                    kind: 'file',
+                    hash: hashText('session-cookie'),
+                },
+            },
+            creator: {
+                pid: process.pid,
+                processStartedAtMs: Math.floor(
+                    Date.now() - process.uptime() * 1_000
+                ),
+            },
+            persistentUserDataDir,
+            profileDirectory,
+        })
+    )
+
+    return runtimeUserDataDir
+}
+
+function hashText(value: string): string {
+    return createHash('sha256').update(value).digest('hex')
 }

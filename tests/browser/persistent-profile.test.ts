@@ -1,8 +1,9 @@
+import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
     createIsolatedRuntimeProfile,
@@ -459,6 +460,184 @@ describe('persistent real-browser profiles', () => {
         })
     })
 
+    it('ignores concurrent Local State telemetry churn when persisting runtimes', async () => {
+        const sourceRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-local-state-telemetry-source-')
+        )
+        const profilesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-local-state-telemetry-cache-')
+        )
+        const runtimesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-local-state-telemetry-runs-')
+        )
+        const profileDirectory = 'Default'
+        const sourceProfileDir = join(sourceRootDir, profileDirectory)
+        await mkdir(sourceProfileDir, { recursive: true })
+        await writeFile(
+            join(sourceRootDir, 'Local State'),
+            JSON.stringify({
+                user_experience_metrics: {
+                    stability: {
+                        browser_last_live_timestamp: '100',
+                    },
+                },
+            })
+        )
+        await writeFile(join(sourceProfileDir, 'Cookies'), 'session-cookie')
+
+        const persistentProfile = await getOrCreatePersistentProfile(
+            sourceRootDir,
+            profileDirectory,
+            profilesRootDir
+        )
+        const [firstRuntime, secondRuntime] = await Promise.all([
+            createIsolatedRuntimeProfile(
+                persistentProfile.userDataDir,
+                runtimesRootDir
+            ),
+            createIsolatedRuntimeProfile(
+                persistentProfile.userDataDir,
+                runtimesRootDir
+            ),
+        ])
+
+        await writeFile(
+            join(firstRuntime.userDataDir, 'Local State'),
+            JSON.stringify({
+                user_experience_metrics: {
+                    stability: {
+                        browser_last_live_timestamp: '101',
+                    },
+                },
+            })
+        )
+        await writeFile(
+            join(secondRuntime.userDataDir, 'Local State'),
+            JSON.stringify({
+                user_experience_metrics: {
+                    stability: {
+                        browser_last_live_timestamp: '102',
+                    },
+                },
+            })
+        )
+
+        await persistIsolatedRuntimeProfile(
+            firstRuntime.userDataDir,
+            persistentProfile.userDataDir
+        )
+        await expect(
+            persistIsolatedRuntimeProfile(
+                secondRuntime.userDataDir,
+                persistentProfile.userDataDir
+            )
+        ).resolves.toBeUndefined()
+
+        const persistedLocalState = JSON.parse(
+            await readFile(join(persistentProfile.userDataDir, 'Local State'), 'utf8')
+        ) as {
+            user_experience_metrics?: {
+                stability?: { browser_last_live_timestamp?: string }
+            }
+        }
+        expect(
+            ['100', '101', '102'].includes(
+                persistedLocalState.user_experience_metrics?.stability
+                    ?.browser_last_live_timestamp ?? ''
+            )
+        ).toBe(true)
+    })
+
+    it('still rejects conflicting meaningful Local State updates', async () => {
+        const sourceRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-local-state-conflict-source-')
+        )
+        const profilesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-local-state-conflict-cache-')
+        )
+        const runtimesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-local-state-conflict-runs-')
+        )
+        const profileDirectory = 'Default'
+        const sourceProfileDir = join(sourceRootDir, profileDirectory)
+        await mkdir(sourceProfileDir, { recursive: true })
+        await writeFile(
+            join(sourceRootDir, 'Local State'),
+            JSON.stringify({
+                browser: {
+                    enabled_labs_experiments: [],
+                },
+                user_experience_metrics: {
+                    stability: {
+                        browser_last_live_timestamp: '100',
+                    },
+                },
+            })
+        )
+        await writeFile(join(sourceProfileDir, 'Cookies'), 'session-cookie')
+
+        const persistentProfile = await getOrCreatePersistentProfile(
+            sourceRootDir,
+            profileDirectory,
+            profilesRootDir
+        )
+        const [firstRuntime, secondRuntime] = await Promise.all([
+            createIsolatedRuntimeProfile(
+                persistentProfile.userDataDir,
+                runtimesRootDir
+            ),
+            createIsolatedRuntimeProfile(
+                persistentProfile.userDataDir,
+                runtimesRootDir
+            ),
+        ])
+
+        await writeFile(
+            join(firstRuntime.userDataDir, 'Local State'),
+            JSON.stringify({
+                browser: {
+                    enabled_labs_experiments: ['runtime-one'],
+                },
+                user_experience_metrics: {
+                    stability: {
+                        browser_last_live_timestamp: '101',
+                    },
+                },
+            })
+        )
+        await writeFile(
+            join(secondRuntime.userDataDir, 'Local State'),
+            JSON.stringify({
+                browser: {
+                    enabled_labs_experiments: ['runtime-two'],
+                },
+                user_experience_metrics: {
+                    stability: {
+                        browser_last_live_timestamp: '102',
+                    },
+                },
+            })
+        )
+
+        await persistIsolatedRuntimeProfile(
+            firstRuntime.userDataDir,
+            persistentProfile.userDataDir
+        )
+        await expect(
+            persistIsolatedRuntimeProfile(
+                secondRuntime.userDataDir,
+                persistentProfile.userDataDir
+            )
+        ).rejects.toThrow(
+            'Concurrent runtime updates changed "Local State" differently'
+        )
+
+        await rm(secondRuntime.userDataDir, {
+            recursive: true,
+            force: true,
+        })
+    })
+
     it('publishes only one clone when the same profile is created concurrently', async () => {
         const sourceRootDir = await mkdtemp(
             join(tmpdir(), 'opensteer-profile-concurrent-source-')
@@ -654,6 +833,80 @@ describe('persistent real-browser profiles', () => {
                 force: true,
             })
         }
+    })
+
+    it('reclaims stale in-progress creation registrations before persisting', async () => {
+        const sourceRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-stale-create-source-')
+        )
+        const profilesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-stale-create-cache-')
+        )
+        const runtimesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-stale-create-runs-')
+        )
+        const profileDirectory = 'Default'
+        const sourceProfileDir = join(sourceRootDir, profileDirectory)
+        await mkdir(sourceProfileDir, { recursive: true })
+        await writeFile(join(sourceRootDir, 'Local State'), '{"profile":{}}')
+        await writeFile(join(sourceProfileDir, 'Cookies'), 'session-cookie')
+
+        const persistentProfile = await getOrCreatePersistentProfile(
+            sourceRootDir,
+            profileDirectory,
+            profilesRootDir
+        )
+        const runtimeProfile = await createIsolatedRuntimeProfile(
+            persistentProfile.userDataDir,
+            runtimesRootDir
+        )
+
+        await writeFile(
+            join(runtimeProfile.userDataDir, profileDirectory, 'Cookies'),
+            'runtime-cookie'
+        )
+
+        const staleRuntimeDir = join(runtimesRootDir, 'stale-creating-runtime')
+        const staleMarker = {
+            creator: {
+                pid: 99999,
+                processStartedAtMs: 1,
+            },
+            persistentUserDataDir: persistentProfile.userDataDir,
+            profileDirectory,
+            runtimeUserDataDir: staleRuntimeDir,
+        }
+        const registryDir = join(
+            dirname(persistentProfile.userDataDir),
+            `${basename(persistentProfile.userDataDir)}.creating`
+        )
+        const registryFile = join(
+            registryDir,
+            `${createHash('sha256').update(staleRuntimeDir).digest('hex').slice(0, 16)}.json`
+        )
+
+        await mkdir(staleRuntimeDir, { recursive: true })
+        await mkdir(registryDir, { recursive: true })
+        await writeFile(
+            join(staleRuntimeDir, '.opensteer-runtime-creating.json'),
+            JSON.stringify(staleMarker)
+        )
+        await writeFile(registryFile, JSON.stringify(staleMarker))
+
+        await persistIsolatedRuntimeProfile(
+            runtimeProfile.userDataDir,
+            persistentProfile.userDataDir
+        )
+
+        expect(existsSync(staleRuntimeDir)).toBe(false)
+        expect(existsSync(registryFile)).toBe(false)
+        expect(existsSync(runtimeProfile.userDataDir)).toBe(false)
+        expect(
+            await readFile(
+                join(persistentProfile.userDataDir, profileDirectory, 'Cookies'),
+                'utf8'
+            )
+        ).toBe('runtime-cookie')
     })
 
     it('removes orphaned temp clone directories before recreating a profile', async () => {
