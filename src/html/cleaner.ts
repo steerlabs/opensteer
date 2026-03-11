@@ -13,6 +13,11 @@ import {
     OS_SHADOW_BOUNDARY_TAG,
     OS_UNAVAILABLE_ATTR,
 } from './serializer.js'
+import {
+    INTERACTIVE_ROLE_TOKENS,
+    NATIVE_INTERACTIVE_TAGS,
+    hasNonNegativeTabIndex,
+} from './interactive-patterns.js'
 
 const STRIP_TAGS = new Set([
     'script',
@@ -121,7 +126,10 @@ function isClickable(
     const tag = ((el[0] as Element | undefined)?.tagName || '').toLowerCase()
     if (!tag || ROOT_TAGS.has(tag)) return false
 
-    if (new Set(['a', 'button', 'input', 'select', 'textarea']).has(tag)) {
+    const isNativeInteractiveTag = NATIVE_INTERACTIVE_TAGS.includes(
+        tag as (typeof NATIVE_INTERACTIVE_TAGS)[number]
+    )
+    if (isNativeInteractiveTag) {
         if (tag === 'input') {
             const inputType = String(el.attr('type') || '').toLowerCase()
             if (inputType === 'hidden') return false
@@ -138,28 +146,15 @@ function isClickable(
     if (attrs['data-click'] !== undefined) return true
     if (attrs['data-toggle'] !== undefined) return true
 
-    if (attrs.tabindex !== undefined) {
-        const tabIndex = Number.parseInt(String(attrs.tabindex), 10)
-        if (!Number.isNaN(tabIndex) && tabIndex >= 0) return true
+    if (hasNonNegativeTabIndex(attrs.tabindex)) {
+        return true
     }
 
     const role = String(attrs.role || '').toLowerCase()
     if (
-        [
-            'button',
-            'link',
-            'menuitem',
-            'option',
-            'radio',
-            'checkbox',
-            'tab',
-            'textbox',
-            'combobox',
-            'slider',
-            'spinbutton',
-            'search',
-            'searchbox',
-        ].includes(role)
+        INTERACTIVE_ROLE_TOKENS.includes(
+            role as (typeof INTERACTIVE_ROLE_TOKENS)[number]
+        )
     ) {
         return true
     }
