@@ -1,4 +1,9 @@
 import type { Frame, Page } from 'playwright'
+import {
+    INTERACTIVE_SELECTOR,
+    INTERACTIVE_ROLE_TOKENS,
+    NON_NEGATIVE_TAB_INDEX_MIN,
+} from './interactive-patterns.js'
 
 export const OPENSTEER_INTERACTIVE_ATTR = 'data-opensteer-interactive'
 export const OPENSTEER_HIDDEN_ATTR = 'data-opensteer-hidden'
@@ -23,41 +28,11 @@ export async function markInteractiveElements(
                 skipIfAlreadyMarked,
                 hiddenAttr,
                 scrollableAttr,
+                interactiveSelector,
+                interactiveRoles,
+                nonNegativeTabIndexMin,
             }) => {
-                const interactiveSelector = [
-                    'a[href]',
-                    'button',
-                    'input',
-                    'textarea',
-                    'select',
-                    '[role="button"]',
-                    '[role="link"]',
-                    '[role="menuitem"]',
-                    '[role="option"]',
-                    '[role="radio"]',
-                    '[role="checkbox"]',
-                    '[role="tab"]',
-                    '[contenteditable="true"]',
-                    '[onclick]',
-                    '[onmousedown]',
-                    '[onmouseup]',
-                    '[tabindex]',
-                ].join(',')
-                const interactiveRoles = new Set([
-                    'button',
-                    'link',
-                    'menuitem',
-                    'option',
-                    'radio',
-                    'checkbox',
-                    'tab',
-                    'textbox',
-                    'combobox',
-                    'slider',
-                    'spinbutton',
-                    'search',
-                    'searchbox',
-                ])
+                const interactiveRolesSet = new Set(interactiveRoles)
 
                 function isExplicitlyHidden(
                     el: HTMLElement,
@@ -123,6 +98,16 @@ export async function markInteractiveElements(
                     return !hasVisibleOutOfFlowChild(el)
                 }
 
+                function hasInteractiveTabIndex(el: HTMLElement): boolean {
+                    const value = el.getAttribute('tabindex')
+                    if (value == null) return false
+                    const parsed = Number.parseInt(value, 10)
+                    return (
+                        Number.isFinite(parsed) &&
+                        parsed >= nonNegativeTabIndexMin
+                    )
+                }
+
                 const roots: Array<Document | ShadowRoot> = [document]
                 while (roots.length) {
                     const root = roots.pop()
@@ -158,13 +143,15 @@ export async function markInteractiveElements(
                             let interactive = false
                             if (el.matches(interactiveSelector)) {
                                 interactive = true
+                            } else if (hasInteractiveTabIndex(el)) {
+                                interactive = true
                             } else if (style.cursor === 'pointer') {
                                 interactive = true
                             } else {
                                 const role = (
                                     el.getAttribute('role') || ''
                                 ).toLowerCase()
-                                if (interactiveRoles.has(role)) {
+                                if (interactiveRolesSet.has(role)) {
                                     interactive = true
                                 }
                             }
@@ -223,6 +210,9 @@ export async function markInteractiveElements(
                 skipIfAlreadyMarked,
                 hiddenAttr: OPENSTEER_HIDDEN_ATTR,
                 scrollableAttr: OPENSTEER_SCROLLABLE_ATTR,
+                interactiveSelector: INTERACTIVE_SELECTOR,
+                interactiveRoles: INTERACTIVE_ROLE_TOKENS,
+                nonNegativeTabIndexMin: NON_NEGATIVE_TAB_INDEX_MIN,
             }
         )
     }
