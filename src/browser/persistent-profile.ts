@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, type Dirent } from 'node:fs'
+import { execFile } from 'node:child_process'
+import { createReadStream, existsSync, type Dirent } from 'node:fs'
 import {
     cp,
     copyFile,
@@ -14,13 +15,20 @@ import {
 } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join, relative, sep } from 'node:path'
+import { promisify } from 'node:util'
 import { expandHome } from './chrome.js'
 
+const execFileAsync = promisify(execFile)
+
 const OPENSTEER_META_FILE = '.opensteer-meta.json'
+const OPENSTEER_RUNTIME_META_FILE = '.opensteer-runtime.json'
 const LOCK_OWNER_FILE = 'owner.json'
+const LOCK_RECLAIMER_DIR = 'reclaimer'
 const PROCESS_STARTED_AT_MS = Math.floor(Date.now() - process.uptime() * 1_000)
 const PROCESS_START_TIME_TOLERANCE_MS = 1_000
 const PROFILE_LOCK_RETRY_DELAY_MS = 50
+const PS_COMMAND_ENV = { ...process.env, LC_ALL: 'C' }
+const LINUX_STAT_START_TIME_FIELD_INDEX = 19
 
 /**
  * Entries that Chrome recreates at runtime and must be cleared before launch.
@@ -40,6 +48,7 @@ const CHROME_SINGLETON_ENTRIES = new Set([
 const COPY_SKIP_ENTRIES = new Set([
     ...CHROME_SINGLETON_ENTRIES,
     OPENSTEER_META_FILE,
+    OPENSTEER_RUNTIME_META_FILE,
 ])
 
 /**
@@ -71,10 +80,24 @@ interface PersistentProfileMetadata {
     source: string
 }
 
+interface RuntimeProfileMetadata {
+    baseEntries: Record<string, SnapshotManifestEntry>
+    profileDirectory: string | null
+}
+
 interface LockOwner {
     pid: number
     processStartedAtMs: number
 }
+
+interface LockParticipantRecord {
+    exists: boolean
+    owner: LockOwner | null
+}
+
+type ProcessLiveness = 'live' | 'dead' | 'unknown'
+type SnapshotEntryKind = 'directory' | 'file'
+type SnapshotEntrySelection = 'current' | 'runtime'
 
 export interface PersistentProfileResult {
     created: boolean
@@ -85,6 +108,22 @@ export interface IsolatedRuntimeProfileResult {
     persistentUserDataDir: string
     userDataDir: string
 }
+
+interface SnapshotManifestEntry {
+    hash: string | null
+    kind: SnapshotEntryKind
+}
+
+interface SnapshotEntry extends SnapshotManifestEntry {
+    sourcePath: string
+}
+
+const CURRENT_PROCESS_LOCK_OWNER: LockOwner = {
+    pid: process.pid,
+    processStartedAtMs: PROCESS_STARTED_AT_MS,
+}
+
+let linuxClockTicksPerSecondPromise: Promise<number | null> | null = null
 
 export async function getOrCreatePersistentProfile(
     sourceUserDataDir: string,
@@ -156,6 +195,9 @@ export async function createIsolatedRuntimeProfile(
     return await withPersistentProfileLock(
         resolvedSourceUserDataDir,
         async () => {
+            const sourceMetadata = await readPersistentProfileMetadata(
+                resolvedSourceUserDataDir
+            )
             await cleanOrphanedOwnedDirs(
                 runtimeRootDir,
                 buildRuntimeProfileDirNamePrefix(resolvedSourceUserDataDir)
@@ -172,6 +214,13 @@ export async function createIsolatedRuntimeProfile(
                 await copyUserDataDirSnapshot(
                     resolvedSourceUserDataDir,
                     runtimeUserDataDir
+                )
+                await writeRuntimeProfileMetadata(
+                    runtimeUserDataDir,
+                    await buildRuntimeProfileMetadata(
+                        runtimeUserDataDir,
+                        sourceMetadata?.profileDirectory ?? null
+                    )
                 )
 
                 return {
@@ -206,11 +255,16 @@ export async function persistIsolatedRuntimeProfile(
         const metadata = await requirePersistentProfileMetadata(
             resolvedPersistentUserDataDir
         )
+        const runtimeMetadata = await requireRuntimeProfileMetadata(
+            resolvedRuntimeUserDataDir,
+            metadata.profileDirectory
+        )
 
-        await publishPersistentProfileSnapshot(
+        await mergePersistentProfileSnapshot(
             resolvedRuntimeUserDataDir,
             resolvedPersistentUserDataDir,
-            metadata
+            metadata,
+            runtimeMetadata
         )
     })
 
@@ -281,7 +335,7 @@ function shouldCopyRuntimeSnapshotEntry(
         return true
     }
 
-    return !CHROME_SINGLETON_ENTRIES.has(segments[0]!)
+    return !COPY_SKIP_ENTRIES.has(segments[0]!)
 }
 
 /**
@@ -419,37 +473,6 @@ async function createPersistentProfileClone(
     }
 }
 
-async function publishPersistentProfileSnapshot(
-    sourceUserDataDir: string,
-    targetUserDataDir: string,
-    metadata: PersistentProfileMetadata
-): Promise<void> {
-    const sourceProfileDir = join(sourceUserDataDir, metadata.profileDirectory)
-    const tempUserDataDir = await mkdtemp(
-        buildPersistentProfileTempDirPrefix(targetUserDataDir)
-    )
-    let published = false
-
-    try {
-        await materializePersistentProfileSnapshot(
-            sourceUserDataDir,
-            sourceProfileDir,
-            tempUserDataDir,
-            metadata.profileDirectory,
-            metadata
-        )
-        await replaceProfileDirectory(targetUserDataDir, tempUserDataDir)
-        published = true
-    } finally {
-        if (!published) {
-            await rm(tempUserDataDir, {
-                recursive: true,
-                force: true,
-            }).catch(() => undefined)
-        }
-    }
-}
-
 async function materializePersistentProfileSnapshot(
     sourceUserDataDir: string,
     sourceProfileDir: string,
@@ -468,6 +491,421 @@ async function materializePersistentProfileSnapshot(
     })
     await copyRootLevelEntries(sourceUserDataDir, targetUserDataDir, profileDirectory)
     await writePersistentProfileMetadata(targetUserDataDir, metadata)
+}
+
+async function mergePersistentProfileSnapshot(
+    runtimeUserDataDir: string,
+    persistentUserDataDir: string,
+    metadata: PersistentProfileMetadata,
+    runtimeMetadata: RuntimeProfileMetadata
+): Promise<void> {
+    const tempUserDataDir = await mkdtemp(
+        buildPersistentProfileTempDirPrefix(persistentUserDataDir)
+    )
+    let published = false
+
+    try {
+        const baseEntries = deserializeSnapshotManifestEntries(
+            runtimeMetadata.baseEntries
+        )
+        const currentEntries = await collectPersistentSnapshotEntries(
+            persistentUserDataDir,
+            metadata.profileDirectory
+        )
+        const runtimeEntries = await collectPersistentSnapshotEntries(
+            runtimeUserDataDir,
+            metadata.profileDirectory
+        )
+        const mergedEntries = resolveMergedSnapshotEntries(
+            baseEntries,
+            currentEntries,
+            runtimeEntries
+        )
+
+        await materializeMergedPersistentProfileSnapshot(
+            tempUserDataDir,
+            currentEntries,
+            runtimeEntries,
+            mergedEntries
+        )
+        await writePersistentProfileMetadata(tempUserDataDir, metadata)
+        await replaceProfileDirectory(persistentUserDataDir, tempUserDataDir)
+        published = true
+    } finally {
+        if (!published) {
+            await rm(tempUserDataDir, {
+                recursive: true,
+                force: true,
+            }).catch(() => undefined)
+        }
+    }
+}
+
+async function buildRuntimeProfileMetadata(
+    runtimeUserDataDir: string,
+    profileDirectory: string | null
+): Promise<RuntimeProfileMetadata> {
+    if (!profileDirectory) {
+        return {
+            baseEntries: {},
+            profileDirectory: null,
+        }
+    }
+
+    const baseEntries = await collectPersistentSnapshotEntries(
+        runtimeUserDataDir,
+        profileDirectory
+    )
+
+    return {
+        baseEntries: serializeSnapshotManifestEntries(baseEntries),
+        profileDirectory,
+    }
+}
+
+async function writeRuntimeProfileMetadata(
+    userDataDir: string,
+    metadata: RuntimeProfileMetadata
+): Promise<void> {
+    await writeFile(
+        join(userDataDir, OPENSTEER_RUNTIME_META_FILE),
+        JSON.stringify(metadata, null, 2)
+    )
+}
+
+async function readRuntimeProfileMetadata(
+    userDataDir: string
+): Promise<RuntimeProfileMetadata | null> {
+    try {
+        const raw = await readFile(
+            join(userDataDir, OPENSTEER_RUNTIME_META_FILE),
+            'utf8'
+        )
+        const parsed = JSON.parse(raw) as Partial<RuntimeProfileMetadata>
+        const profileDirectory =
+            parsed.profileDirectory === null
+                ? null
+                : typeof parsed.profileDirectory === 'string'
+                  ? parsed.profileDirectory
+                  : undefined
+        if (
+            profileDirectory === undefined ||
+            typeof parsed.baseEntries !== 'object' ||
+            parsed.baseEntries === null ||
+            Array.isArray(parsed.baseEntries)
+        ) {
+            return null
+        }
+
+        const baseEntries = deserializeSnapshotManifestEntries(
+            parsed.baseEntries as Record<string, SnapshotManifestEntry>
+        )
+
+        return {
+            baseEntries: Object.fromEntries(baseEntries),
+            profileDirectory,
+        }
+    } catch {
+        return null
+    }
+}
+
+async function requireRuntimeProfileMetadata(
+    userDataDir: string,
+    expectedProfileDirectory: string
+): Promise<RuntimeProfileMetadata> {
+    const metadata = await readRuntimeProfileMetadata(userDataDir)
+    if (!metadata) {
+        throw new Error(
+            `Runtime profile metadata was not found for "${userDataDir}".`
+        )
+    }
+    if (metadata.profileDirectory !== expectedProfileDirectory) {
+        throw new Error(
+            `Runtime profile "${userDataDir}" was created for profile "${metadata.profileDirectory ?? 'unknown'}", expected "${expectedProfileDirectory}".`
+        )
+    }
+
+    return metadata
+}
+
+async function collectPersistentSnapshotEntries(
+    userDataDir: string,
+    profileDirectory: string
+): Promise<Map<string, SnapshotEntry>> {
+    let rootEntries: Dirent<string>[]
+    try {
+        rootEntries = await readdir(userDataDir, {
+            encoding: 'utf8',
+            withFileTypes: true,
+        })
+    } catch {
+        return new Map()
+    }
+
+    rootEntries.sort((left, right) => left.name.localeCompare(right.name))
+
+    const collected = new Map<string, SnapshotEntry>()
+    for (const entry of rootEntries) {
+        if (
+            !shouldIncludePersistentRootEntry(
+                userDataDir,
+                profileDirectory,
+                entry.name
+            )
+        ) {
+            continue
+        }
+
+        await collectSnapshotEntry(
+            join(userDataDir, entry.name),
+            entry.name,
+            collected
+        )
+    }
+
+    return collected
+}
+
+function shouldIncludePersistentRootEntry(
+    userDataDir: string,
+    profileDirectory: string,
+    entry: string
+): boolean {
+    if (entry === profileDirectory) {
+        return true
+    }
+    if (COPY_SKIP_ENTRIES.has(entry)) {
+        return false
+    }
+    if (SKIPPED_ROOT_DIRECTORIES.has(entry)) {
+        return false
+    }
+
+    return !isProfileDirectory(userDataDir, entry)
+}
+
+async function collectSnapshotEntry(
+    sourcePath: string,
+    relativePath: string,
+    collected: Map<string, SnapshotEntry>
+): Promise<void> {
+    let entryStat: Awaited<ReturnType<typeof stat>>
+    try {
+        entryStat = await stat(sourcePath)
+    } catch {
+        return
+    }
+
+    if (entryStat.isDirectory()) {
+        collected.set(relativePath, {
+            kind: 'directory',
+            hash: null,
+            sourcePath,
+        })
+
+        let children: Dirent<string>[]
+        try {
+            children = await readdir(sourcePath, {
+                encoding: 'utf8',
+                withFileTypes: true,
+            })
+        } catch {
+            return
+        }
+        children.sort((left, right) => left.name.localeCompare(right.name))
+
+        for (const child of children) {
+            await collectSnapshotEntry(
+                join(sourcePath, child.name),
+                join(relativePath, child.name),
+                collected
+            )
+        }
+        return
+    }
+
+    if (entryStat.isFile()) {
+        collected.set(relativePath, {
+            kind: 'file',
+            hash: await hashFile(sourcePath),
+            sourcePath,
+        })
+    }
+}
+
+function serializeSnapshotManifestEntries(
+    entries: Map<string, SnapshotManifestEntry | SnapshotEntry>
+): Record<string, SnapshotManifestEntry> {
+    return Object.fromEntries(
+        [...entries.entries()]
+            .sort(([leftPath], [rightPath]) => leftPath.localeCompare(rightPath))
+            .map(([relativePath, entry]) => [
+                relativePath,
+                {
+                    kind: entry.kind,
+                    hash: entry.hash,
+                },
+            ])
+    )
+}
+
+function deserializeSnapshotManifestEntries(
+    entries: Record<string, SnapshotManifestEntry>
+): Map<string, SnapshotManifestEntry> {
+    const manifestEntries = new Map<string, SnapshotManifestEntry>()
+
+    for (const [relativePath, entry] of Object.entries(entries)) {
+        if (
+            !entry ||
+            (entry.kind !== 'directory' && entry.kind !== 'file') ||
+            !(entry.hash === null || typeof entry.hash === 'string')
+        ) {
+            throw new Error(
+                `Runtime profile metadata for "${relativePath}" is invalid.`
+            )
+        }
+
+        manifestEntries.set(relativePath, {
+            kind: entry.kind,
+            hash: entry.hash,
+        })
+    }
+
+    return manifestEntries
+}
+
+function resolveMergedSnapshotEntries(
+    baseEntries: Map<string, SnapshotManifestEntry>,
+    currentEntries: Map<string, SnapshotEntry>,
+    runtimeEntries: Map<string, SnapshotEntry>
+): Map<string, SnapshotEntrySelection | null> {
+    const mergedEntries = new Map<string, SnapshotEntrySelection | null>()
+    const relativePaths = new Set<string>([
+        ...baseEntries.keys(),
+        ...currentEntries.keys(),
+        ...runtimeEntries.keys(),
+    ])
+
+    for (const relativePath of [...relativePaths].sort(compareSnapshotPaths)) {
+        mergedEntries.set(
+            relativePath,
+            resolveMergedSnapshotEntrySelection(
+                relativePath,
+                baseEntries.get(relativePath) ?? null,
+                currentEntries.get(relativePath) ?? null,
+                runtimeEntries.get(relativePath) ?? null
+            )
+        )
+    }
+
+    return mergedEntries
+}
+
+function resolveMergedSnapshotEntrySelection(
+    relativePath: string,
+    baseEntry: SnapshotManifestEntry | null,
+    currentEntry: SnapshotManifestEntry | null,
+    runtimeEntry: SnapshotManifestEntry | null
+): SnapshotEntrySelection | null {
+    if (snapshotEntriesEqual(runtimeEntry, baseEntry)) {
+        return currentEntry ? 'current' : null
+    }
+    if (snapshotEntriesEqual(currentEntry, baseEntry)) {
+        return runtimeEntry ? 'runtime' : null
+    }
+    if (!baseEntry) {
+        if (!currentEntry) {
+            return runtimeEntry ? 'runtime' : null
+        }
+        if (!runtimeEntry) {
+            return 'current'
+        }
+        if (snapshotEntriesEqual(currentEntry, runtimeEntry)) {
+            return 'current'
+        }
+        throw new Error(
+            `Concurrent runtime updates changed "${relativePath}" differently; refusing to overwrite the persistent profile.`
+        )
+    }
+    if (!currentEntry && !runtimeEntry) {
+        return null
+    }
+    if (snapshotEntriesEqual(currentEntry, runtimeEntry)) {
+        return currentEntry ? 'current' : null
+    }
+
+    throw new Error(
+        `Concurrent runtime updates changed "${relativePath}" differently; refusing to overwrite the persistent profile.`
+    )
+}
+
+function snapshotEntriesEqual(
+    left: SnapshotManifestEntry | null,
+    right: SnapshotManifestEntry | null
+): boolean {
+    if (!left || !right) {
+        return left === right
+    }
+
+    return left.kind === right.kind && left.hash === right.hash
+}
+
+async function materializeMergedPersistentProfileSnapshot(
+    targetUserDataDir: string,
+    currentEntries: Map<string, SnapshotEntry>,
+    runtimeEntries: Map<string, SnapshotEntry>,
+    mergedEntries: Map<string, SnapshotEntrySelection | null>
+): Promise<void> {
+    const selectedEntries = [...mergedEntries.entries()]
+        .filter(([, selection]) => selection !== null)
+        .sort(([leftPath], [rightPath]) =>
+            compareSnapshotPaths(leftPath, rightPath)
+        )
+
+    for (const [relativePath, selection] of selectedEntries) {
+        const entry =
+            (selection === 'current'
+                ? currentEntries.get(relativePath)
+                : runtimeEntries.get(relativePath)) ?? null
+        if (!entry) {
+            continue
+        }
+
+        const targetPath = join(targetUserDataDir, relativePath)
+        if (entry.kind === 'directory') {
+            await mkdir(targetPath, { recursive: true })
+            continue
+        }
+
+        await mkdir(dirname(targetPath), { recursive: true })
+        await copyFile(entry.sourcePath, targetPath)
+    }
+}
+
+function compareSnapshotPaths(left: string, right: string): number {
+    const leftDepth = left.split(sep).length
+    const rightDepth = right.split(sep).length
+    if (leftDepth !== rightDepth) {
+        return leftDepth - rightDepth
+    }
+
+    return left.localeCompare(right)
+}
+
+async function hashFile(filePath: string): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+        const hash = createHash('sha256')
+        const stream = createReadStream(filePath)
+
+        stream.on('data', (chunk) => {
+            hash.update(chunk)
+        })
+        stream.on('error', reject)
+        stream.on('end', () => {
+            resolve(hash.digest('hex'))
+        })
+    })
 }
 
 async function ensurePersistentProfileMetadata(
@@ -584,10 +1022,7 @@ async function withPersistentProfileLock<T>(
         const tempLockDirPath = `${lockDirPath}-${process.pid}-${PROCESS_STARTED_AT_MS}-${randomUUID()}`
         try {
             await mkdir(tempLockDirPath)
-            await writeLockOwner(tempLockDirPath, {
-                pid: process.pid,
-                processStartedAtMs: PROCESS_STARTED_AT_MS,
-            })
+            await writeLockOwner(tempLockDirPath, CURRENT_PROCESS_LOCK_OWNER)
 
             try {
                 await rename(tempLockDirPath, lockDirPath)
@@ -605,11 +1040,10 @@ async function withPersistentProfileLock<T>(
         }
 
         const owner = await readLockOwner(lockDirPath)
-        if (!owner || !isOwnerLive(owner)) {
-            await rm(lockDirPath, {
-                recursive: true,
-                force: true,
-            }).catch(() => undefined)
+        if (
+            (!owner || (await getProcessLiveness(owner)) === 'dead') &&
+            (await tryReclaimStaleLock(lockDirPath, owner))
+        ) {
             continue
         }
 
@@ -630,38 +1064,194 @@ async function writeLockOwner(
     lockDirPath: string,
     owner: LockOwner
 ): Promise<void> {
-    await writeFile(join(lockDirPath, LOCK_OWNER_FILE), JSON.stringify(owner))
+    await writeLockParticipant(join(lockDirPath, LOCK_OWNER_FILE), owner)
 }
 
 async function readLockOwner(lockDirPath: string): Promise<LockOwner | null> {
+    return await readLockParticipant(join(lockDirPath, LOCK_OWNER_FILE))
+}
+
+async function writeLockParticipant(
+    filePath: string,
+    owner: LockOwner,
+    options?: { flag?: 'w' | 'wx' }
+): Promise<void> {
+    await writeFile(filePath, JSON.stringify(owner), options)
+}
+
+async function readLockParticipant(filePath: string): Promise<LockOwner | null> {
+    return (await readLockParticipantRecord(filePath)).owner
+}
+
+async function readLockReclaimerRecord(
+    lockDirPath: string
+): Promise<LockParticipantRecord> {
+    return await readLockParticipantRecord(
+        join(buildLockReclaimerDirPath(lockDirPath), LOCK_OWNER_FILE)
+    )
+}
+
+async function readLockParticipantRecord(
+    filePath: string
+): Promise<LockParticipantRecord> {
     try {
-        const raw = await readFile(join(lockDirPath, LOCK_OWNER_FILE), 'utf8')
+        const raw = await readFile(filePath, 'utf8')
         const parsed = JSON.parse(raw) as Partial<LockOwner>
         const pid = Number(parsed.pid)
         const processStartedAtMs = Number(parsed.processStartedAtMs)
         if (!Number.isInteger(pid) || !Number.isInteger(processStartedAtMs)) {
-            return null
+            return {
+                exists: true,
+                owner: null,
+            }
         }
 
         return {
-            pid,
-            processStartedAtMs,
+            exists: true,
+            owner: {
+                pid,
+                processStartedAtMs,
+            },
         }
-    } catch {
-        return null
+    } catch (error) {
+        return {
+            exists: getErrorCode(error) !== 'ENOENT',
+            owner: null,
+        }
     }
 }
 
-function isOwnerLive(owner: LockOwner): boolean {
-    if (
-        owner.pid === process.pid &&
-        Math.abs(owner.processStartedAtMs - PROCESS_STARTED_AT_MS) <=
-            PROCESS_START_TIME_TOLERANCE_MS
-    ) {
-        return true
+async function tryReclaimStaleLock(
+    lockDirPath: string,
+    expectedOwner: LockOwner | null
+): Promise<boolean> {
+    if (!(await tryAcquireLockReclaimer(lockDirPath))) {
+        return false
     }
 
-    return isProcessRunning(owner.pid)
+    let reclaimed = false
+
+    try {
+        const owner = await readLockOwner(lockDirPath)
+        if (!lockOwnersEqual(owner, expectedOwner)) {
+            return false
+        }
+
+        if (owner && (await getProcessLiveness(owner)) !== 'dead') {
+            return false
+        }
+
+        await rm(lockDirPath, {
+            recursive: true,
+            force: true,
+        }).catch(() => undefined)
+        reclaimed = !existsSync(lockDirPath)
+        return reclaimed
+    } finally {
+        if (!reclaimed) {
+            await rm(buildLockReclaimerDirPath(lockDirPath), {
+                recursive: true,
+                force: true,
+            }).catch(() => undefined)
+        }
+    }
+}
+
+async function tryAcquireLockReclaimer(lockDirPath: string): Promise<boolean> {
+    const reclaimerDirPath = buildLockReclaimerDirPath(lockDirPath)
+
+    while (true) {
+        const tempReclaimerDirPath =
+            `${reclaimerDirPath}-${process.pid}-${PROCESS_STARTED_AT_MS}-${randomUUID()}`
+        try {
+            await mkdir(tempReclaimerDirPath)
+            await writeLockOwner(tempReclaimerDirPath, CURRENT_PROCESS_LOCK_OWNER)
+
+            try {
+                await rename(tempReclaimerDirPath, reclaimerDirPath)
+                return true
+            } catch (error) {
+                if (getErrorCode(error) === 'ENOENT') {
+                    return false
+                }
+                if (!wasDirPublishedByAnotherProcess(error, reclaimerDirPath)) {
+                    throw error
+                }
+            }
+        } catch (error) {
+            const code = getErrorCode(error)
+            if (code === 'ENOENT') {
+                return false
+            }
+            throw error
+        } finally {
+            await rm(tempReclaimerDirPath, {
+                recursive: true,
+                force: true,
+            }).catch(() => undefined)
+        }
+
+        const reclaimerRecord = await readLockReclaimerRecord(lockDirPath)
+        if (!reclaimerRecord.exists || !reclaimerRecord.owner) {
+            return false
+        }
+        if ((await getProcessLiveness(reclaimerRecord.owner)) !== 'dead') {
+            return false
+        }
+
+        await rm(reclaimerDirPath, {
+            recursive: true,
+            force: true,
+        }).catch(() => undefined)
+    }
+}
+
+function lockOwnersEqual(
+    left: LockOwner | null,
+    right: LockOwner | null
+): boolean {
+    if (!left || !right) {
+        return left === right
+    }
+
+    return (
+        left.pid === right.pid &&
+        left.processStartedAtMs === right.processStartedAtMs
+    )
+}
+
+async function getProcessLiveness(owner: LockOwner): Promise<ProcessLiveness> {
+    if (
+        owner.pid === process.pid &&
+        hasMatchingProcessStartTime(
+            owner.processStartedAtMs,
+            PROCESS_STARTED_AT_MS
+        )
+    ) {
+        return 'live'
+    }
+
+    const startedAtMs = await readProcessStartedAtMs(owner.pid)
+    if (typeof startedAtMs === 'number') {
+        return hasMatchingProcessStartTime(
+            owner.processStartedAtMs,
+            startedAtMs
+        )
+            ? 'live'
+            : 'dead'
+    }
+
+    return isProcessRunning(owner.pid) ? 'unknown' : 'dead'
+}
+
+function hasMatchingProcessStartTime(
+    expectedStartedAtMs: number,
+    actualStartedAtMs: number
+): boolean {
+    return (
+        Math.abs(expectedStartedAtMs - actualStartedAtMs) <=
+        PROCESS_START_TIME_TOLERANCE_MS
+    )
 }
 
 function buildPersistentProfileTempDirPrefix(targetUserDataDir: string): string {
@@ -686,6 +1276,10 @@ function buildPersistentProfileBackupDirPath(targetUserDataDir: string): string 
 
 function buildPersistentProfileLockDirPath(targetUserDataDir: string): string {
     return join(dirname(targetUserDataDir), `${basename(targetUserDataDir)}.lock`)
+}
+
+function buildLockReclaimerDirPath(lockDirPath: string): string {
+    return join(lockDirPath, LOCK_RECLAIMER_DIR)
 }
 
 function buildRuntimeProfileKey(sourceUserDataDir: string): string {
@@ -734,7 +1328,7 @@ async function cleanOrphanedOwnedDirs(
                 return
             }
 
-            if (isOwnedDirByLiveProcess(entry.name, ownedDirNamePrefix)) {
+            if (await isOwnedDirByLiveProcess(entry.name, ownedDirNamePrefix)) {
                 return
             }
 
@@ -746,12 +1340,12 @@ async function cleanOrphanedOwnedDirs(
     )
 }
 
-function isOwnedDirByLiveProcess(
+async function isOwnedDirByLiveProcess(
     ownedDirName: string,
     ownedDirPrefix: string
-): boolean {
+): Promise<boolean> {
     const owner = parseOwnedDirOwner(ownedDirName, ownedDirPrefix)
-    return owner ? isOwnerLive(owner) : false
+    return owner ? (await getProcessLiveness(owner)) !== 'dead' : false
 }
 
 function parseOwnedDirOwner(
@@ -798,6 +1392,154 @@ function isProcessRunning(pid: number): boolean {
 
         return code !== 'ESRCH'
     }
+}
+
+async function readProcessStartedAtMs(pid: number): Promise<number | null> {
+    if (pid <= 0) {
+        return null
+    }
+
+    if (process.platform === 'linux') {
+        return await readLinuxProcessStartedAtMs(pid)
+    }
+
+    if (process.platform === 'win32') {
+        return await readWindowsProcessStartedAtMs(pid)
+    }
+
+    return await readPsProcessStartedAtMs(pid)
+}
+
+async function readLinuxProcessStartedAtMs(
+    pid: number
+): Promise<number | null> {
+    let statRaw: string
+    try {
+        statRaw = await readFile(`/proc/${pid}/stat`, 'utf8')
+    } catch (error) {
+        return null
+    }
+
+    const startTicks = parseLinuxProcessStartTicks(statRaw)
+    if (startTicks === null) {
+        return null
+    }
+
+    const [bootTimeMs, clockTicksPerSecond] = await Promise.all([
+        readLinuxBootTimeMs(),
+        readLinuxClockTicksPerSecond(),
+    ])
+    if (bootTimeMs === null || clockTicksPerSecond === null) {
+        return null
+    }
+
+    return Math.floor(
+        bootTimeMs + (startTicks * 1_000) / clockTicksPerSecond
+    )
+}
+
+function parseLinuxProcessStartTicks(statRaw: string): number | null {
+    const closingParenIndex = statRaw.lastIndexOf(')')
+    if (closingParenIndex === -1) {
+        return null
+    }
+
+    const fields = statRaw
+        .slice(closingParenIndex + 2)
+        .trim()
+        .split(/\s+/)
+    const startTicks = Number(fields[LINUX_STAT_START_TIME_FIELD_INDEX])
+
+    return Number.isFinite(startTicks) && startTicks >= 0 ? startTicks : null
+}
+
+async function readLinuxBootTimeMs(): Promise<number | null> {
+    try {
+        const statRaw = await readFile('/proc/stat', 'utf8')
+        const bootTimeLine = statRaw
+            .split('\n')
+            .find((line) => line.startsWith('btime '))
+        if (!bootTimeLine) {
+            return null
+        }
+
+        const bootTimeSeconds = Number.parseInt(
+            bootTimeLine.slice('btime '.length),
+            10
+        )
+        return Number.isFinite(bootTimeSeconds)
+            ? bootTimeSeconds * 1_000
+            : null
+    } catch {
+        return null
+    }
+}
+
+async function readLinuxClockTicksPerSecond(): Promise<number | null> {
+    linuxClockTicksPerSecondPromise ??= execFileAsync(
+        'getconf',
+        ['CLK_TCK']
+    ).then(
+        ({ stdout }) => {
+            const value = Number.parseInt(stdout.trim(), 10)
+            return Number.isFinite(value) && value > 0 ? value : null
+        },
+        () => null
+    )
+
+    return await linuxClockTicksPerSecondPromise
+}
+
+async function readPsProcessStartedAtMs(pid: number): Promise<number | null> {
+    try {
+        const { stdout } = await execFileAsync(
+            'ps',
+            ['-p', String(pid), '-o', 'lstart='],
+            { env: PS_COMMAND_ENV }
+        )
+        return parsePsStartedAtMs(stdout)
+    } catch (error) {
+        return null
+    }
+}
+
+function parsePsStartedAtMs(stdout: string): number | null {
+    const raw = stdout.trim()
+    if (!raw) {
+        return null
+    }
+
+    const startedAtMs = Date.parse(raw)
+    return Number.isNaN(startedAtMs) ? null : startedAtMs
+}
+
+async function readWindowsProcessStartedAtMs(
+    pid: number
+): Promise<number | null> {
+    const script = [
+        '$process = Get-Process -Id ' + String(pid) + ' -ErrorAction SilentlyContinue',
+        'if ($null -eq $process) { exit 3 }',
+        '$process.StartTime.ToUniversalTime().ToString("o")',
+    ].join('; ')
+
+    try {
+        const { stdout } = await execFileAsync(
+            'powershell.exe',
+            ['-NoLogo', '-NoProfile', '-Command', script]
+        )
+        return parsePsStartedAtMs(stdout)
+    } catch (error) {
+        return null
+    }
+}
+
+function getErrorCode(error: unknown): string | number | undefined {
+    return typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        (typeof error.code === 'string' || typeof error.code === 'number')
+        ? error.code
+        : undefined
 }
 
 async function sleep(ms: number): Promise<void> {

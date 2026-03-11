@@ -251,4 +251,133 @@ describe('Opensteer real-browser launch', () => {
         expect(existsSync(runtimeUserDataDirs[0])).toBe(false)
         expect(existsSync(runtimeUserDataDirs[1])).toBe(false)
     })
+
+    it('clears SDK browser state even when runtime persistence fails', async () => {
+        const runtimeUserDataDirs = [
+            await mkdtemp(join(tmpdir(), 'opensteer-sdk-retry-runtime-a-')),
+            await mkdtemp(join(tmpdir(), 'opensteer-sdk-retry-runtime-b-')),
+        ]
+        const pageA = {
+            url: () => 'about:blank',
+        }
+        const pageB = {
+            url: () => 'about:blank',
+        }
+        const contextA = {
+            pages: () => [pageA],
+            newPage: vi.fn(async () => pageA),
+        }
+        const contextB = {
+            pages: () => [pageB],
+            newPage: vi.fn(async () => pageB),
+        }
+        const browserA = {
+            close: vi.fn(async () => undefined),
+            contexts: () => [contextA],
+        }
+        const browserB = {
+            close: vi.fn(async () => undefined),
+            contexts: () => [contextB],
+        }
+        playwrightMocks.connectOverCDP
+            .mockResolvedValueOnce(browserA)
+            .mockResolvedValueOnce(browserB)
+        childProcessMocks.spawn
+            .mockReturnValueOnce({
+                pid: 4321,
+                exitCode: null,
+                unref: vi.fn(),
+                kill: vi.fn(),
+            })
+            .mockReturnValueOnce({
+                pid: 4322,
+                exitCode: null,
+                unref: vi.fn(),
+                kill: vi.fn(),
+            })
+        persistentProfileMocks.getOrCreatePersistentProfile.mockResolvedValue({
+            created: false,
+            userDataDir: join(tmpdir(), 'opensteer-persistent-profile'),
+        })
+        persistentProfileMocks.createIsolatedRuntimeProfile
+            .mockResolvedValueOnce({
+                persistentUserDataDir: join(
+                    tmpdir(),
+                    'opensteer-persistent-profile'
+                ),
+                userDataDir: runtimeUserDataDirs[0],
+            })
+            .mockResolvedValueOnce({
+                persistentUserDataDir: join(
+                    tmpdir(),
+                    'opensteer-persistent-profile'
+                ),
+                userDataDir: runtimeUserDataDirs[1],
+            })
+        persistentProfileMocks.persistIsolatedRuntimeProfile
+            .mockRejectedValueOnce(new Error('persist failed'))
+            .mockImplementation(async (runtimeUserDataDir: string) => {
+                await rm(runtimeUserDataDir, {
+                    recursive: true,
+                    force: true,
+                })
+            })
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(async () => ({
+                ok: true,
+                json: async () => ({
+                    webSocketDebuggerUrl:
+                        'ws://127.0.0.1:9222/devtools/browser/root',
+                }),
+            }))
+        )
+
+        const rootDir = await mkdtemp(join(tmpdir(), 'opensteer-sdk-retry-'))
+        const opensteer = new Opensteer({
+            name: 'sdk-real-retry',
+            storage: { rootDir },
+        })
+
+        await opensteer.launch({ mode: 'real', headless: true })
+
+        const processKill = vi
+            .spyOn(process, 'kill')
+            .mockImplementation(() => true)
+
+        await expect(opensteer.close()).rejects.toThrow('persist failed')
+        await opensteer.launch({ mode: 'real', headless: true })
+        await opensteer.close()
+
+        processKill.mockRestore()
+
+        expect(
+            persistentProfileMocks.persistIsolatedRuntimeProfile
+        ).toHaveBeenNthCalledWith(
+            1,
+            runtimeUserDataDirs[0],
+            join(tmpdir(), 'opensteer-persistent-profile')
+        )
+        expect(
+            persistentProfileMocks.persistIsolatedRuntimeProfile
+        ).toHaveBeenNthCalledWith(
+            2,
+            runtimeUserDataDirs[0],
+            join(tmpdir(), 'opensteer-persistent-profile')
+        )
+        expect(
+            persistentProfileMocks.createIsolatedRuntimeProfile
+        ).toHaveBeenNthCalledWith(
+            2,
+            join(tmpdir(), 'opensteer-persistent-profile')
+        )
+        expect(
+            persistentProfileMocks.persistIsolatedRuntimeProfile
+        ).toHaveBeenNthCalledWith(
+            3,
+            runtimeUserDataDirs[1],
+            join(tmpdir(), 'opensteer-persistent-profile')
+        )
+        expect(childProcessMocks.spawn).toHaveBeenCalledTimes(2)
+    })
 })

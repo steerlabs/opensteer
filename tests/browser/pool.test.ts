@@ -198,6 +198,104 @@ describe('BrowserPool', () => {
         expect(existsSync(runtimeUserDataDir)).toBe(false)
     })
 
+    it('retries runtime persistence before a later relaunch', async () => {
+        const rootDir = await mkdtemp(join(tmpdir(), 'opensteer-browser-pool-'))
+        const profileDirectory = 'Default'
+        const profileDir = join(rootDir, profileDirectory)
+        const persistentUserDataDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-persistent-profile-')
+        )
+        const runtimeUserDataDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-runtime-profile-')
+        )
+        await mkdir(profileDir, { recursive: true })
+        await writeFile(join(rootDir, 'Local State'), '{}')
+        await writeFile(join(profileDir, 'Cookies'), '')
+        persistentProfileMocks.getOrCreatePersistentProfile.mockResolvedValue({
+            created: true,
+            userDataDir: persistentUserDataDir,
+        })
+        persistentProfileMocks.createIsolatedRuntimeProfile.mockResolvedValue({
+            persistentUserDataDir,
+            userDataDir: runtimeUserDataDir,
+        })
+
+        const page = {
+            url: () => 'about:blank',
+        }
+        const context = {
+            pages: () => [page],
+        }
+        const realBrowser = {
+            close: vi.fn(async () => undefined),
+            contexts: () => [context],
+        }
+        playwrightMocks.connectOverCDP.mockResolvedValue(realBrowser)
+        childProcessMocks.spawn.mockReturnValue({
+            pid: 4321,
+            exitCode: null,
+            unref: vi.fn(),
+            kill: vi.fn(),
+        })
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(async () => ({
+                ok: true,
+                json: async () => ({
+                    webSocketDebuggerUrl:
+                        'ws://127.0.0.1:9222/devtools/browser/root',
+                }),
+            }))
+        )
+
+        const pool = new BrowserPool()
+        await pool.launch({
+            mode: 'real',
+            userDataDir: rootDir,
+            profileDirectory,
+            executablePath:
+                '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        })
+
+        persistentProfileMocks.persistIsolatedRuntimeProfile.mockRejectedValueOnce(
+            new Error('persist failed')
+        )
+        const processKill = vi
+            .spyOn(process, 'kill')
+            .mockImplementation(() => true)
+
+        await expect(pool.close()).rejects.toThrow('persist failed')
+
+        const sandboxPage = {}
+        const sandboxContext = {
+            newPage: vi.fn(async () => sandboxPage),
+        }
+        const sandboxBrowser = {
+            newContext: vi.fn(async () => sandboxContext),
+            close: vi.fn(async () => undefined),
+        }
+        playwrightMocks.launch.mockResolvedValue(sandboxBrowser)
+
+        const session = await pool.launch({ headless: true })
+        processKill.mockRestore()
+
+        expect(session.page).toBe(sandboxPage)
+        expect(
+            persistentProfileMocks.persistIsolatedRuntimeProfile
+        ).toHaveBeenNthCalledWith(
+            1,
+            runtimeUserDataDir,
+            persistentUserDataDir
+        )
+        expect(
+            persistentProfileMocks.persistIsolatedRuntimeProfile
+        ).toHaveBeenNthCalledWith(
+            2,
+            runtimeUserDataDir,
+            persistentUserDataDir
+        )
+    })
+
     it('keeps chromium launches on browserType.launch', async () => {
         const page = {}
         const context = {
