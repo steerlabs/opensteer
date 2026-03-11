@@ -1,4 +1,4 @@
-import { mkdtemp } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -153,6 +153,23 @@ describe('shared real-browser sessions', () => {
         vi.resetModules()
     })
 
+    it('uses process-group cleanup for all non-Windows owned browsers', async () => {
+        const { getOwnedRealBrowserProcessPolicy } = await import(
+            '../../src/browser/shared-real-browser-session.js'
+        )
+
+        expect(getOwnedRealBrowserProcessPolicy('darwin')).toEqual({
+            detached: true,
+            killStrategy: 'process-group',
+            shouldUnref: true,
+        })
+        expect(getOwnedRealBrowserProcessPolicy('linux')).toEqual({
+            detached: true,
+            killStrategy: 'process-group',
+            shouldUnref: true,
+        })
+    })
+
     it('launches one shared Chrome process for concurrent same-profile sessions', async () => {
         const rootDir = await mkdtemp(join(tmpdir(), 'opensteer-shared-real-'))
         const persistentProfile = {
@@ -240,6 +257,84 @@ describe('shared real-browser sessions', () => {
             'Browser.close',
         ])
         expect(processKill).not.toHaveBeenCalled()
+        processKill.mockRestore()
+    })
+
+    it('waits for persistent-profile writers before starting a shared launch', async () => {
+        const rootDir = await mkdtemp(join(tmpdir(), 'opensteer-shared-write-'))
+        const persistentProfile = {
+            created: false,
+            userDataDir: join(rootDir, 'persistent-profile'),
+        }
+        const writeLockDirPath = `${persistentProfile.userDataDir}.lock`
+        const browserOwner = {
+            pid: 5432,
+            processStartedAtMs: 54_320,
+        }
+        const browserLease = createConnectedBrowser(() => {
+            processOwnerState.setState(browserOwner, 'dead')
+        })
+        const processKill = vi
+            .spyOn(process, 'kill')
+            .mockImplementation((pid: number | NodeJS.Signals) => {
+                if (pid === browserOwner.pid || pid === -browserOwner.pid) {
+                    processOwnerState.setState(browserOwner, 'dead')
+                }
+                return true
+            })
+
+        await mkdir(writeLockDirPath, { recursive: true })
+        await writeFile(
+            join(writeLockDirPath, 'owner.json'),
+            JSON.stringify(processOwnerState.CURRENT_PROCESS_OWNER)
+        )
+
+        processOwnerState.readProcessOwner.mockResolvedValue(browserOwner)
+        childProcessMocks.spawn.mockReturnValue({
+            pid: browserOwner.pid,
+            unref: vi.fn(),
+        })
+        playwrightMocks.connectOverCDP.mockResolvedValue(browserLease.browser)
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(async () => ({
+                ok: true,
+                json: async () => ({
+                    webSocketDebuggerUrl:
+                        'ws://127.0.0.1:9222/devtools/browser/root',
+                }),
+            }))
+        )
+
+        const { acquireSharedRealBrowserSession } = await import(
+            '../../src/browser/shared-real-browser-session.js'
+        )
+
+        let resolved = false
+        const leasePromise = acquireSharedRealBrowserSession({
+            executablePath:
+                '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+            headless: true,
+            persistentProfile,
+            profileDirectory: 'Default',
+            timeoutMs: 5_000,
+        }).then((lease) => {
+            resolved = true
+            return lease
+        })
+
+        await sleep(200)
+
+        expect(childProcessMocks.spawn).not.toHaveBeenCalled()
+        expect(resolved).toBe(false)
+
+        await rm(writeLockDirPath, {
+            force: true,
+            recursive: true,
+        })
+
+        const lease = await leasePromise
+        await lease.close()
         processKill.mockRestore()
     })
 
@@ -683,17 +778,20 @@ describe('shared real-browser sessions', () => {
     })
 })
 
+async function sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+type MockPage = {
+    close: ReturnType<typeof vi.fn>
+    goto?: ReturnType<typeof vi.fn>
+}
+
 function createConnectedBrowser(
     options:
         | {
-              createdPage?: {
-                  close: ReturnType<typeof vi.fn>
-                  goto?: ReturnType<typeof vi.fn>
-              }
-              existingPage?: {
-                  close: ReturnType<typeof vi.fn>
-                  goto?: ReturnType<typeof vi.fn>
-              }
+              createdPage?: MockPage
+              existingPage?: MockPage
               onBrowserClose?: () => void
           }
         | (() => void) = {}
