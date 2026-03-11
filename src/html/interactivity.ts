@@ -1,7 +1,8 @@
 import type { Frame, Page } from 'playwright'
 import {
+    INTERACTIVE_SELECTOR,
     INTERACTIVE_ROLE_TOKENS,
-    INTERACTIVE_SELECTOR_PARTS,
+    NON_NEGATIVE_TAB_INDEX_MIN,
 } from './interactive-patterns.js'
 
 export const OPENSTEER_INTERACTIVE_ATTR = 'data-opensteer-interactive'
@@ -29,6 +30,7 @@ export async function markInteractiveElements(
                 scrollableAttr,
                 interactiveSelector,
                 interactiveRoles,
+                nonNegativeTabIndexMin,
             }) => {
                 const interactiveRolesSet = new Set(interactiveRoles)
 
@@ -100,7 +102,10 @@ export async function markInteractiveElements(
                     const value = el.getAttribute('tabindex')
                     if (value == null) return false
                     const parsed = Number.parseInt(value, 10)
-                    return Number.isFinite(parsed) && parsed >= 0
+                    return (
+                        Number.isFinite(parsed) &&
+                        parsed >= nonNegativeTabIndexMin
+                    )
                 }
 
                 const roots: Array<Document | ShadowRoot> = [document]
@@ -205,8 +210,9 @@ export async function markInteractiveElements(
                 skipIfAlreadyMarked,
                 hiddenAttr: OPENSTEER_HIDDEN_ATTR,
                 scrollableAttr: OPENSTEER_SCROLLABLE_ATTR,
-                interactiveSelector: INTERACTIVE_SELECTOR_PARTS.join(','),
-                interactiveRoles: [...INTERACTIVE_ROLE_TOKENS],
+                interactiveSelector: INTERACTIVE_SELECTOR,
+                interactiveRoles: INTERACTIVE_ROLE_TOKENS,
+                nonNegativeTabIndexMin: NON_NEGATIVE_TAB_INDEX_MIN,
             }
         )
     }
