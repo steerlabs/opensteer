@@ -252,7 +252,7 @@ describe('Opensteer real-browser launch', () => {
         expect(existsSync(runtimeUserDataDirs[1])).toBe(false)
     })
 
-    it('clears SDK browser state even when runtime persistence fails', async () => {
+    it('keeps the SDK closable when runtime persistence fails', async () => {
         const runtimeUserDataDirs = [
             await mkdtemp(join(tmpdir(), 'opensteer-sdk-retry-runtime-a-')),
             await mkdtemp(join(tmpdir(), 'opensteer-sdk-retry-runtime-b-')),
@@ -346,6 +346,7 @@ describe('Opensteer real-browser launch', () => {
             .mockImplementation(() => true)
 
         await expect(opensteer.close()).rejects.toThrow('persist failed')
+        await opensteer.close()
         await opensteer.launch({ mode: 'real', headless: true })
         await opensteer.close()
 
