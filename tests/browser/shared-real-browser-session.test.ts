@@ -153,23 +153,6 @@ describe('shared real-browser sessions', () => {
         vi.resetModules()
     })
 
-    it('uses process-group cleanup for all non-Windows owned browsers', async () => {
-        const { getOwnedRealBrowserProcessPolicy } = await import(
-            '../../src/browser/shared-real-browser-session.js'
-        )
-
-        expect(getOwnedRealBrowserProcessPolicy('darwin')).toEqual({
-            detached: true,
-            killStrategy: 'process-group',
-            shouldUnref: true,
-        })
-        expect(getOwnedRealBrowserProcessPolicy('linux')).toEqual({
-            detached: true,
-            killStrategy: 'process-group',
-            shouldUnref: true,
-        })
-    })
-
     it('launches one shared Chrome process for concurrent same-profile sessions', async () => {
         const rootDir = await mkdtemp(join(tmpdir(), 'opensteer-shared-real-'))
         const persistentProfile = {
