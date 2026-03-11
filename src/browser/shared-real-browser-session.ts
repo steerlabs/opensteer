@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { type Dirent } from 'node:fs'
 import {
     mkdir,
@@ -25,6 +25,7 @@ import {
 import {
     CURRENT_PROCESS_OWNER,
     getProcessLiveness,
+    isProcessRunning,
     parseProcessOwner,
     processOwnersEqual,
     readProcessOwner,
@@ -71,6 +72,7 @@ interface SharedSessionLeaseContext {
 interface SharedSessionReservation {
     client: SharedSessionClientRegistration
     metadata: SharedSessionMetadata
+    reuseExistingPage: boolean
 }
 
 interface SharedSessionLaunchReservation {
@@ -87,6 +89,14 @@ type SharedSessionReservationOutcome =
     | { kind: 'launch'; reservation: SharedSessionLaunchReservation }
     | { kind: 'ready'; reservation: SharedSessionReservation }
     | { kind: 'wait' }
+
+type SharedSessionClosePlan =
+    | { closeBrowser: false; sessionId: string }
+    | {
+          browserOwner: ProcessOwner
+          closeBrowser: true
+          sessionId: string
+      }
 
 interface OwnedRealBrowserProcessPolicy {
     detached: boolean
@@ -258,7 +268,7 @@ async function attachToSharedSession(
             timeout: options.timeoutMs,
         })
         const context = getPrimaryBrowserContext(browser)
-        page = await context.newPage()
+        page = await getSharedSessionPage(context, reservation.reuseExistingPage)
         if (options.initialUrl) {
             await page.goto(options.initialUrl, {
                 timeout: options.timeoutMs,
@@ -294,111 +304,22 @@ async function attachToSharedSession(
 async function releaseSharedSessionClient(
     context: SharedSessionLeaseContext
 ): Promise<void> {
-    const releasePlan = await withSharedSessionLock(
+    const releasePlan = await prepareSharedSessionCloseIfIdle(
         context.persistentUserDataDir,
-        async () => {
-            const metadata = await readSharedSessionMetadata(
-                context.persistentUserDataDir
-            )
-            await removeSharedSessionClientRegistration(
-                context.persistentUserDataDir,
-                context.clientId
-            )
-
-            if (!metadata || metadata.sessionId !== context.sessionId) {
-                return {
-                    browserOwner: context.browserOwner,
-                    closeBrowser: false,
-                    sessionId: context.sessionId,
-                }
-            }
-
-            const liveClients = await listLiveSharedSessionClients(
-                context.persistentUserDataDir
-            )
-            if (liveClients.length > 0) {
-                return {
-                    browserOwner: metadata.browserOwner,
-                    closeBrowser: false,
-                    sessionId: metadata.sessionId,
-                }
-            }
-
-            const closingMetadata: SharedSessionMetadata = {
-                ...metadata,
-                state: 'closing',
-                stateOwner: CURRENT_PROCESS_OWNER,
-            }
-            await writeSharedSessionMetadata(
-                context.persistentUserDataDir,
-                closingMetadata
-            )
-
-            return {
-                browserOwner: closingMetadata.browserOwner,
-                closeBrowser: true,
-                sessionId: closingMetadata.sessionId,
-            }
-        }
+        context.clientId,
+        context.sessionId
     )
 
     if (releasePlan.closeBrowser) {
-        await requestBrowserShutdown(context.browser)
+        await closeSharedSessionBrowser(
+            context.persistentUserDataDir,
+            releasePlan,
+            context.browser
+        )
     }
 
     await context.page.close().catch(() => undefined)
     await context.browser.close().catch(() => undefined)
-
-    if (!releasePlan.closeBrowser) {
-        return
-    }
-
-    await waitForProcessToExit(releasePlan.browserOwner, 1_000)
-    if ((await getProcessLiveness(releasePlan.browserOwner)) !== 'dead') {
-        await killOwnedBrowserProcess(releasePlan.browserOwner)
-        await waitForProcessToExit(releasePlan.browserOwner, 2_000)
-    }
-
-    await withSharedSessionLock(context.persistentUserDataDir, async () => {
-        const metadata = await readSharedSessionMetadata(
-            context.persistentUserDataDir
-        )
-        if (!metadata || metadata.sessionId !== releasePlan.sessionId) {
-            return
-        }
-
-        const liveClients = await listLiveSharedSessionClients(
-            context.persistentUserDataDir
-        )
-        if (liveClients.length > 0) {
-            const readyMetadata: SharedSessionMetadata = {
-                ...metadata,
-                state: 'ready',
-            }
-            await writeSharedSessionMetadata(
-                context.persistentUserDataDir,
-                readyMetadata
-            )
-            return
-        }
-
-        if ((await getProcessLiveness(metadata.browserOwner)) !== 'dead') {
-            const readyMetadata: SharedSessionMetadata = {
-                ...metadata,
-                state: 'ready',
-            }
-            await writeSharedSessionMetadata(
-                context.persistentUserDataDir,
-                readyMetadata
-            )
-            return
-        }
-
-        await rm(buildSharedSessionDirPath(context.persistentUserDataDir), {
-            force: true,
-            recursive: true,
-        }).catch(() => undefined)
-    })
 }
 
 async function inspectSharedSessionState(
@@ -474,25 +395,33 @@ async function launchSharedSession(
     if (processPolicy.shouldUnref) {
         processHandle.unref()
     }
+    try {
+        const browserOwner = await waitForSpawnedProcessOwner(processHandle.pid)
+        const metadata: SharedSessionMetadata = {
+            browserOwner,
+            createdAt: new Date().toISOString(),
+            debugPort,
+            executablePath: options.executablePath,
+            headless: options.headless,
+            persistentUserDataDir,
+            profileDirectory: options.profileDirectory,
+            sessionId: randomUUID(),
+            state: 'launching',
+            stateOwner: CURRENT_PROCESS_OWNER,
+        }
+        await writeSharedSessionMetadata(persistentUserDataDir, metadata)
 
-    const browserOwner = await waitForSpawnedProcessOwner(processHandle.pid)
-    const metadata: SharedSessionMetadata = {
-        browserOwner,
-        createdAt: new Date().toISOString(),
-        debugPort,
-        executablePath: options.executablePath,
-        headless: options.headless,
-        persistentUserDataDir,
-        profileDirectory: options.profileDirectory,
-        sessionId: randomUUID(),
-        state: 'launching',
-        stateOwner: CURRENT_PROCESS_OWNER,
-    }
-    await writeSharedSessionMetadata(persistentUserDataDir, metadata)
-
-    return {
-        launchedBrowserOwner: browserOwner,
-        metadata,
+        return {
+            launchedBrowserOwner: browserOwner,
+            metadata,
+        }
+    } catch (error) {
+        await killSpawnedBrowserProcess(processHandle)
+        await rm(buildSharedSessionDirPath(persistentUserDataDir), {
+            force: true,
+            recursive: true,
+        }).catch(() => undefined)
+        throw error
     }
 }
 
@@ -544,32 +473,16 @@ async function cleanupFailedSharedSessionAttach(options: {
     persistentUserDataDir: string
     sessionId: string
 }): Promise<void> {
-    await withSharedSessionLock(options.persistentUserDataDir, async () => {
-        const metadata = await readSharedSessionMetadata(
-            options.persistentUserDataDir
-        )
-        await removeSharedSessionClientRegistration(
-            options.persistentUserDataDir,
-            options.clientId
-        )
-        if (!metadata || metadata.sessionId !== options.sessionId) {
-            return
-        }
+    const closePlan = await prepareSharedSessionCloseIfIdle(
+        options.persistentUserDataDir,
+        options.clientId,
+        options.sessionId
+    )
+    if (!closePlan.closeBrowser) {
+        return
+    }
 
-        const liveClients = await listLiveSharedSessionClients(
-            options.persistentUserDataDir
-        )
-        if (
-            liveClients.length === 0 &&
-            metadata.state === 'ready' &&
-            (await getProcessLiveness(metadata.browserOwner)) === 'dead'
-        ) {
-            await rm(buildSharedSessionDirPath(options.persistentUserDataDir), {
-                force: true,
-                recursive: true,
-            }).catch(() => undefined)
-        }
-    })
+    await closeSharedSessionBrowser(options.persistentUserDataDir, closePlan)
 }
 
 async function waitForSharedSessionReady(
@@ -619,13 +532,29 @@ async function killOwnedBrowserProcess(owner: ProcessOwner): Promise<void> {
         return
     }
 
+    await killOwnedBrowserProcessByPid(owner.pid)
+}
+
+async function killSpawnedBrowserProcess(
+    processHandle: ChildProcess
+): Promise<void> {
+    const pid = processHandle.pid
+    if (!pid || processHandle.exitCode !== null) {
+        return
+    }
+
+    await killOwnedBrowserProcessByPid(pid)
+    await waitForPidToExit(pid, 2_000)
+}
+
+async function killOwnedBrowserProcessByPid(pid: number): Promise<void> {
     const processPolicy = getOwnedRealBrowserProcessPolicy()
 
     if (processPolicy.killStrategy === 'taskkill') {
         await new Promise<void>((resolve) => {
             const killer = spawn(
                 'taskkill',
-                ['/pid', String(owner.pid), '/t', '/f'],
+                ['/pid', String(pid), '/t', '/f'],
                 {
                     stdio: 'ignore',
                 }
@@ -638,7 +567,7 @@ async function killOwnedBrowserProcess(owner: ProcessOwner): Promise<void> {
 
     if (processPolicy.killStrategy === 'process-group') {
         try {
-            process.kill(-owner.pid, 'SIGKILL')
+            process.kill(-pid, 'SIGKILL')
             return
         } catch {
             // Fall through to a direct kill if the group is already gone.
@@ -646,7 +575,7 @@ async function killOwnedBrowserProcess(owner: ProcessOwner): Promise<void> {
     }
 
     try {
-        process.kill(owner.pid, 'SIGKILL')
+        process.kill(pid, 'SIGKILL')
     } catch {
         // best-effort cleanup
     }
@@ -660,6 +589,18 @@ async function waitForProcessToExit(
 
     while (Date.now() < deadline) {
         if ((await getProcessLiveness(owner)) === 'dead') {
+            return
+        }
+
+        await sleep(50)
+    }
+}
+
+async function waitForPidToExit(pid: number, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+
+    while (Date.now() < deadline) {
+        if (!isProcessRunning(pid)) {
             return
         }
 
@@ -762,6 +703,7 @@ async function registerSharedSessionClient(
     persistentUserDataDir: string,
     metadata: SharedSessionMetadata
 ): Promise<SharedSessionReservation> {
+    const liveClients = await listLiveSharedSessionClients(persistentUserDataDir)
     const client = buildSharedSessionClientRegistration()
     await mkdir(buildSharedSessionClientsDirPath(persistentUserDataDir), {
         recursive: true,
@@ -777,6 +719,7 @@ async function registerSharedSessionClient(
     return {
         client,
         metadata,
+        reuseExistingPage: liveClients.length === 0,
     }
 }
 
@@ -932,6 +875,118 @@ function assertSharedSessionCompatibility(
     }
 }
 
+async function prepareSharedSessionCloseIfIdle(
+    persistentUserDataDir: string,
+    clientId: string,
+    sessionId: string
+): Promise<SharedSessionClosePlan> {
+    return await withSharedSessionLock(persistentUserDataDir, async () => {
+        const metadata = await readSharedSessionMetadata(persistentUserDataDir)
+        await removeSharedSessionClientRegistration(
+            persistentUserDataDir,
+            clientId
+        )
+
+        if (!metadata || metadata.sessionId !== sessionId) {
+            return {
+                closeBrowser: false,
+                sessionId,
+            }
+        }
+
+        const liveClients = await listLiveSharedSessionClients(
+            persistentUserDataDir
+        )
+        if (liveClients.length > 0) {
+            return {
+                closeBrowser: false,
+                sessionId: metadata.sessionId,
+            }
+        }
+
+        const closingMetadata: SharedSessionMetadata = {
+            ...metadata,
+            state: 'closing',
+            stateOwner: CURRENT_PROCESS_OWNER,
+        }
+        await writeSharedSessionMetadata(
+            persistentUserDataDir,
+            closingMetadata
+        )
+
+        return {
+            browserOwner: closingMetadata.browserOwner,
+            closeBrowser: true,
+            sessionId: closingMetadata.sessionId,
+        }
+    })
+}
+
+async function closeSharedSessionBrowser(
+    persistentUserDataDir: string,
+    closePlan: Extract<SharedSessionClosePlan, { closeBrowser: true }>,
+    browser?: Browser
+): Promise<void> {
+    if (browser) {
+        await requestBrowserShutdown(browser)
+        await waitForProcessToExit(closePlan.browserOwner, 1_000)
+    }
+
+    if ((await getProcessLiveness(closePlan.browserOwner)) !== 'dead') {
+        await killOwnedBrowserProcess(closePlan.browserOwner)
+        await waitForProcessToExit(closePlan.browserOwner, 2_000)
+    }
+
+    await finalizeSharedSessionClose(
+        persistentUserDataDir,
+        closePlan.sessionId
+    )
+}
+
+async function finalizeSharedSessionClose(
+    persistentUserDataDir: string,
+    sessionId: string
+): Promise<void> {
+    await withSharedSessionLock(persistentUserDataDir, async () => {
+        const metadata = await readSharedSessionMetadata(persistentUserDataDir)
+        if (!metadata || metadata.sessionId !== sessionId) {
+            return
+        }
+
+        const liveClients = await listLiveSharedSessionClients(
+            persistentUserDataDir
+        )
+        if (liveClients.length > 0) {
+            const readyMetadata: SharedSessionMetadata = {
+                ...metadata,
+                state: 'ready',
+            }
+            await writeSharedSessionMetadata(
+                persistentUserDataDir,
+                readyMetadata
+            )
+            return
+        }
+
+        if ((await getProcessLiveness(metadata.browserOwner)) !== 'dead') {
+            const readyMetadata: SharedSessionMetadata = {
+                ...metadata,
+                state: 'ready',
+            }
+            await writeSharedSessionMetadata(
+                persistentUserDataDir,
+                readyMetadata
+            )
+            return
+        }
+
+        await rm(buildSharedSessionDirPath(persistentUserDataDir), {
+            force: true,
+            recursive: true,
+        }).catch(() => undefined)
+    })
+}
+
 function getPrimaryBrowserContext(browser: Browser): BrowserContext {
     const contexts = browser.contexts()
     if (contexts.length === 0) {
@@ -941,6 +996,28 @@ function getPrimaryBrowserContext(browser: Browser): BrowserContext {
     }
 
     return contexts[0]
+}
+
+async function getSharedSessionPage(
+    context: BrowserContext,
+    reuseExistingPage: boolean
+): Promise<Page> {
+    if (reuseExistingPage) {
+        return await getExistingPageOrCreate(context)
+    }
+
+    return await context.newPage()
+}
+
+async function getExistingPageOrCreate(
+    context: BrowserContext
+): Promise<Page> {
+    const existingPage = context.pages()[0]
+    if (existingPage) {
+        return existingPage
+    }
+
+    return await context.newPage()
 }
 
 function buildSharedSessionDiscoveryUrl(debugPort: number): string {
