@@ -11,7 +11,7 @@ import type { LaunchOptions, OpensteerBrowserConfig } from '../types.js'
 import { CDPProxy, createBlankTarget, discoverTargets } from './cdp-proxy.js'
 import { detectChromePaths, expandHome } from './chrome.js'
 import {
-    clearPersistentProfileSingletons,
+    createIsolatedRuntimeProfile,
     getOrCreatePersistentProfile,
 } from './persistent-profile.js'
 
@@ -180,7 +180,9 @@ export class BrowserPool {
             sourceUserDataDir,
             profileDirectory
         )
-        await clearPersistentProfileSingletons(persistentProfile.userDataDir)
+        const runtimeProfile = await createIsolatedRuntimeProfile(
+            persistentProfile.userDataDir
+        )
         const debugPort = await reserveDebugPort()
         const headless = resolveLaunchHeadless(
             'real',
@@ -188,7 +190,7 @@ export class BrowserPool {
             this.defaults.headless
         )
         const launchArgs = buildRealBrowserLaunchArgs({
-            userDataDir: persistentProfile.userDataDir,
+            userDataDir: runtimeProfile.userDataDir,
             profileDirectory,
             debugPort,
             headless,
@@ -219,13 +221,17 @@ export class BrowserPool {
             }
             this.browser = browser
             this.launchedProcess = processHandle
-            this.managedUserDataDir = persistentProfile.userDataDir
-            this.persistentProfile = true
+            this.managedUserDataDir = runtimeProfile.userDataDir
+            this.persistentProfile = false
 
             return { browser, context, page, isExternal: false }
         } catch (error) {
             await browser?.close().catch(() => undefined)
             await killProcessTree(processHandle)
+            await rm(runtimeProfile.userDataDir, {
+                recursive: true,
+                force: true,
+            }).catch(() => undefined)
             throw error
         }
     }

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
+    createIsolatedRuntimeProfile,
     clearPersistentProfileSingletons,
     getOrCreatePersistentProfile,
 } from '../../src/browser/persistent-profile.js'
@@ -98,6 +99,83 @@ describe('persistent real-browser profiles', () => {
             expect(existsSync(join(userDataDir, entry))).toBe(false)
         }
         expect(existsSync(metadataPath)).toBe(true)
+    })
+
+    it('creates isolated runtime copies for concurrent real-browser launches', async () => {
+        const sourceRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-runtime-source-')
+        )
+        const profilesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-runtime-cache-')
+        )
+        const runtimesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-runtime-runs-')
+        )
+        const profileDirectory = 'Default'
+        const sourceProfileDir = join(sourceRootDir, profileDirectory)
+        await mkdir(sourceProfileDir, { recursive: true })
+        await writeFile(join(sourceRootDir, 'Local State'), '{"profile":{}}')
+        await writeFile(join(sourceProfileDir, 'Cookies'), 'session-cookie')
+
+        const persistentProfile = await getOrCreatePersistentProfile(
+            sourceRootDir,
+            profileDirectory,
+            profilesRootDir
+        )
+
+        await writeFile(
+            join(persistentProfile.userDataDir, 'SingletonLock'),
+            'stale-lock'
+        )
+
+        const [firstRuntime, secondRuntime] = await Promise.all([
+            createIsolatedRuntimeProfile(
+                persistentProfile.userDataDir,
+                runtimesRootDir
+            ),
+            createIsolatedRuntimeProfile(
+                persistentProfile.userDataDir,
+                runtimesRootDir
+            ),
+        ])
+
+        expect(firstRuntime.userDataDir).not.toBe(secondRuntime.userDataDir)
+        expect(
+            await readFile(
+                join(firstRuntime.userDataDir, profileDirectory, 'Cookies'),
+                'utf8'
+            )
+        ).toBe('session-cookie')
+        expect(
+            await readFile(
+                join(secondRuntime.userDataDir, profileDirectory, 'Cookies'),
+                'utf8'
+            )
+        ).toBe('session-cookie')
+        expect(
+            existsSync(join(firstRuntime.userDataDir, 'SingletonLock'))
+        ).toBe(false)
+        expect(
+            existsSync(join(secondRuntime.userDataDir, 'SingletonLock'))
+        ).toBe(false)
+
+        await writeFile(
+            join(firstRuntime.userDataDir, profileDirectory, 'Cookies'),
+            'runtime-cookie'
+        )
+
+        expect(
+            await readFile(
+                join(persistentProfile.userDataDir, profileDirectory, 'Cookies'),
+                'utf8'
+            )
+        ).toBe('session-cookie')
+        expect(
+            await readFile(
+                join(secondRuntime.userDataDir, profileDirectory, 'Cookies'),
+                'utf8'
+            )
+        ).toBe('session-cookie')
     })
 
     it('publishes only one clone when the same profile is created concurrently', async () => {
