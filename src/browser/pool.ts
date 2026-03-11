@@ -117,8 +117,10 @@ export class BrowserPool {
                     managedRuntimeProfile.userDataDir,
                     managedRuntimeProfile.persistentUserDataDir
                 )
+                if (this.managedRuntimeProfile === managedRuntimeProfile) {
+                    this.managedRuntimeProfile = null
+                }
             }
-            this.managedRuntimeProfile = null
         }
     }
 

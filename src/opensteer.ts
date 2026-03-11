@@ -825,16 +825,18 @@ export class Opensteer {
             return
         }
 
-        if (this.ownsBrowser) {
-            await this.pool.close()
-        }
-
-        this.browser = null
-        this.pageRef = null
-        this.contextRef = null
-        this.ownsBrowser = false
-        if (this.cursorController) {
-            await this.cursorController.dispose().catch(() => undefined)
+        try {
+            if (this.ownsBrowser) {
+                await this.pool.close()
+            }
+        } finally {
+            this.browser = null
+            this.pageRef = null
+            this.contextRef = null
+            this.ownsBrowser = false
+            if (this.cursorController) {
+                await this.cursorController.dispose().catch(() => undefined)
+            }
         }
     }
 

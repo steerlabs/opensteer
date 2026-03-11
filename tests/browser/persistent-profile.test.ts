@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -266,6 +267,138 @@ describe('persistent real-browser profiles', () => {
         })
     })
 
+    it('merges non-conflicting concurrent runtime updates into the persistent snapshot', async () => {
+        const sourceRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-merge-source-')
+        )
+        const profilesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-merge-cache-')
+        )
+        const runtimesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-merge-runs-')
+        )
+        const profileDirectory = 'Default'
+        const sourceProfileDir = join(sourceRootDir, profileDirectory)
+        await mkdir(sourceProfileDir, { recursive: true })
+        await writeFile(join(sourceRootDir, 'Local State'), '{"profile":{}}')
+        await writeFile(join(sourceRootDir, 'TransportSecurity'), 'source-state')
+        await writeFile(join(sourceProfileDir, 'Cookies'), 'session-cookie')
+
+        const persistentProfile = await getOrCreatePersistentProfile(
+            sourceRootDir,
+            profileDirectory,
+            profilesRootDir
+        )
+        const [firstRuntime, secondRuntime] = await Promise.all([
+            createIsolatedRuntimeProfile(
+                persistentProfile.userDataDir,
+                runtimesRootDir
+            ),
+            createIsolatedRuntimeProfile(
+                persistentProfile.userDataDir,
+                runtimesRootDir
+            ),
+        ])
+
+        await writeFile(
+            join(firstRuntime.userDataDir, 'TransportSecurity'),
+            'runtime-root-update'
+        )
+        await writeFile(
+            join(secondRuntime.userDataDir, profileDirectory, 'Cookies'),
+            'runtime-profile-update'
+        )
+
+        await persistIsolatedRuntimeProfile(
+            firstRuntime.userDataDir,
+            persistentProfile.userDataDir
+        )
+        await persistIsolatedRuntimeProfile(
+            secondRuntime.userDataDir,
+            persistentProfile.userDataDir
+        )
+
+        expect(
+            await readFile(
+                join(persistentProfile.userDataDir, 'TransportSecurity'),
+                'utf8'
+            )
+        ).toBe('runtime-root-update')
+        expect(
+            await readFile(
+                join(persistentProfile.userDataDir, profileDirectory, 'Cookies'),
+                'utf8'
+            )
+        ).toBe('runtime-profile-update')
+    })
+
+    it('rejects conflicting concurrent runtime updates to the same path', async () => {
+        const sourceRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-conflict-source-')
+        )
+        const profilesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-conflict-cache-')
+        )
+        const runtimesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-conflict-runs-')
+        )
+        const profileDirectory = 'Default'
+        const sourceProfileDir = join(sourceRootDir, profileDirectory)
+        await mkdir(sourceProfileDir, { recursive: true })
+        await writeFile(join(sourceRootDir, 'Local State'), '{"profile":{}}')
+        await writeFile(join(sourceProfileDir, 'Cookies'), 'session-cookie')
+
+        const persistentProfile = await getOrCreatePersistentProfile(
+            sourceRootDir,
+            profileDirectory,
+            profilesRootDir
+        )
+        const [firstRuntime, secondRuntime] = await Promise.all([
+            createIsolatedRuntimeProfile(
+                persistentProfile.userDataDir,
+                runtimesRootDir
+            ),
+            createIsolatedRuntimeProfile(
+                persistentProfile.userDataDir,
+                runtimesRootDir
+            ),
+        ])
+
+        await writeFile(
+            join(firstRuntime.userDataDir, profileDirectory, 'Cookies'),
+            'runtime-one-cookie'
+        )
+        await writeFile(
+            join(secondRuntime.userDataDir, profileDirectory, 'Cookies'),
+            'runtime-two-cookie'
+        )
+
+        await persistIsolatedRuntimeProfile(
+            firstRuntime.userDataDir,
+            persistentProfile.userDataDir
+        )
+        await expect(
+            persistIsolatedRuntimeProfile(
+                secondRuntime.userDataDir,
+                persistentProfile.userDataDir
+            )
+        ).rejects.toThrow(
+            'Concurrent runtime updates changed "Default/Cookies" differently'
+        )
+
+        expect(
+            await readFile(
+                join(persistentProfile.userDataDir, profileDirectory, 'Cookies'),
+                'utf8'
+            )
+        ).toBe('runtime-one-cookie')
+
+        await rm(secondRuntime.userDataDir, {
+            recursive: true,
+            force: true,
+        })
+    })
+
     it('publishes only one clone when the same profile is created concurrently', async () => {
         const sourceRootDir = await mkdtemp(
             join(tmpdir(), 'opensteer-profile-concurrent-source-')
@@ -447,6 +580,65 @@ describe('persistent real-browser profiles', () => {
         )
 
         expect(existsSync(liveTempDir)).toBe(true)
+    })
+
+    it('reclaims stale locks when a live PID has a different start time', async () => {
+        const sourceRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-runtime-locked-')
+        )
+        const runtimesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-runtime-locked-runs-')
+        )
+        const lockDirPath = `${sourceRootDir}.lock`
+        const sleeper = spawn(
+            process.execPath,
+            ['-e', 'setTimeout(() => {}, 10_000)'],
+            {
+                stdio: 'ignore',
+            }
+        )
+        const sleeperPid = sleeper.pid
+
+        if (typeof sleeperPid !== 'number') {
+            throw new Error('failed to spawn lock-holder process')
+        }
+
+        try {
+            await mkdir(lockDirPath, { recursive: true })
+            await writeFile(
+                join(lockDirPath, 'owner.json'),
+                JSON.stringify({
+                    pid: sleeperPid,
+                    processStartedAtMs: 1,
+                })
+            )
+            await writeFile(join(sourceRootDir, 'Local State'), '{"profile":{}}')
+
+            const runtime = await Promise.race([
+                createIsolatedRuntimeProfile(sourceRootDir, runtimesRootDir),
+                new Promise<never>((_, reject) =>
+                    setTimeout(
+                        () =>
+                            reject(
+                                new Error(
+                                    'stale foreign lock was not reclaimed in time'
+                                )
+                            ),
+                        1_000
+                    )
+                ),
+            ])
+
+            expect(existsSync(lockDirPath)).toBe(false)
+            expect(existsSync(runtime.userDataDir)).toBe(true)
+
+            await rm(runtime.userDataDir, {
+                recursive: true,
+                force: true,
+            })
+        } finally {
+            sleeper.kill('SIGKILL')
+        }
     })
 
     it('fails when the source profile directory does not exist', async () => {
