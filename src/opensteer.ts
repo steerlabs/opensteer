@@ -2674,7 +2674,9 @@ export class Opensteer {
         }
     }
 
-    private async resolveCounterHandle(element: number) {
+    private async resolveCounterHandle(
+        element: number
+    ): Promise<ElementHandle<Element>> {
         return resolveCounterElement(this.page, element)
     }
 
@@ -2682,7 +2684,7 @@ export class Opensteer {
         action: string,
         description: string | undefined,
         element: number
-    ): Promise<ElementHandle> {
+    ): Promise<ElementHandle<Element>> {
         try {
             return await this.resolveCounterHandle(element)
         } catch (err) {
