@@ -30,7 +30,7 @@ export async function markInteractiveElements(
                 interactiveSelector,
                 interactiveRoles,
             }) => {
-                const interactiveRolesSet = new Set<string>(interactiveRoles)
+                const interactiveRolesSet = new Set(interactiveRoles)
 
                 function isExplicitlyHidden(
                     el: HTMLElement,
@@ -99,7 +99,6 @@ export async function markInteractiveElements(
                 function hasInteractiveTabIndex(el: HTMLElement): boolean {
                     const value = el.getAttribute('tabindex')
                     if (value == null) return false
-
                     const parsed = Number.parseInt(value, 10)
                     return Number.isFinite(parsed) && parsed >= 0
                 }

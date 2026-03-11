@@ -71,7 +71,7 @@ async function setupShadowInputWrapperFixture(page: Page): Promise<void> {
 
     await page.evaluate(() => {
         const host = document.querySelector('#shadow-host')
-        if (!(host instanceof HTMLElement) || host.shadowRoot) return
+        if (!(host instanceof HTMLElement)) return
 
         const root = host.attachShadow({ mode: 'open' })
         root.innerHTML = `

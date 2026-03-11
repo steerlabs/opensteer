@@ -126,10 +126,7 @@ function isClickable(
     const tag = ((el[0] as Element | undefined)?.tagName || '').toLowerCase()
     if (!tag || ROOT_TAGS.has(tag)) return false
 
-    const isNativeInteractiveTag = NATIVE_INTERACTIVE_TAGS.includes(
-        tag as (typeof NATIVE_INTERACTIVE_TAGS)[number]
-    )
-    if (isNativeInteractiveTag) {
+    if (NATIVE_INTERACTIVE_TAGS.includes(tag)) {
         if (tag === 'input') {
             const inputType = String(el.attr('type') || '').toLowerCase()
             if (inputType === 'hidden') return false
@@ -151,11 +148,7 @@ function isClickable(
     }
 
     const role = String(attrs.role || '').toLowerCase()
-    if (
-        INTERACTIVE_ROLE_TOKENS.includes(
-            role as (typeof INTERACTIVE_ROLE_TOKENS)[number]
-        )
-    ) {
+    if (INTERACTIVE_ROLE_TOKENS.includes(role)) {
         return true
     }
 
