@@ -415,6 +415,70 @@ describe('persistent profile lock races', () => {
         })
     })
 
+    it('waits for a live shared real-browser session to close before publishing', async () => {
+        const persistentUserDataDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-session-waits-source-')
+        )
+
+        await seedPersistentProfile(persistentUserDataDir)
+        const existingRuntimeUserDataDir = await seedRuntimeProfile(
+            persistentUserDataDir
+        )
+        await seedSharedSession(persistentUserDataDir)
+
+        const actualFsPromises =
+            await vi.importActual<typeof import('node:fs/promises')>(
+                'node:fs/promises'
+            )
+        const persistentTempDirPrefix = join(
+            dirname(persistentUserDataDir),
+            `${basename(persistentUserDataDir)}-tmp-`
+        )
+
+        let persistMaterializationStarted = false
+
+        vi.doMock('node:fs/promises', () => ({
+            ...actualFsPromises,
+            copyFile: vi.fn(
+                async (
+                    source: string,
+                    destination: string,
+                    mode?: Parameters<typeof actualFsPromises.copyFile>[2]
+                ) => {
+                    if (destination.startsWith(persistentTempDirPrefix)) {
+                        persistMaterializationStarted = true
+                    }
+
+                    return await actualFsPromises.copyFile(
+                        source,
+                        destination,
+                        mode
+                    )
+                }
+            ),
+        }))
+
+        const { persistIsolatedRuntimeProfile } = await import(
+            '../../src/browser/persistent-profile.js'
+        )
+
+        const persistPromise = persistIsolatedRuntimeProfile(
+            existingRuntimeUserDataDir,
+            persistentUserDataDir
+        )
+
+        await sleep(200)
+
+        expect(persistMaterializationStarted).toBe(false)
+
+        await rm(buildSharedSessionDirPath(persistentUserDataDir), {
+            recursive: true,
+            force: true,
+        })
+
+        await persistPromise
+    })
+
     it('blocks new runtime copies while a writer is actively publishing', async () => {
         const persistentUserDataDir = await mkdtemp(
             join(tmpdir(), 'opensteer-profile-write-blocks-source-')
@@ -591,4 +655,40 @@ async function seedRuntimeProfile(
 
 function hashText(value: string): string {
     return createHash('sha256').update(value).digest('hex')
+}
+
+function buildSharedSessionDirPath(persistentUserDataDir: string): string {
+    return join(
+        dirname(persistentUserDataDir),
+        `${basename(persistentUserDataDir)}.session`
+    )
+}
+
+async function seedSharedSession(
+    persistentUserDataDir: string,
+    profileDirectory = 'Default'
+): Promise<void> {
+    const sessionDirPath = buildSharedSessionDirPath(persistentUserDataDir)
+    const owner = {
+        pid: process.pid,
+        processStartedAtMs: Math.floor(Date.now() - process.uptime() * 1_000),
+    }
+
+    await mkdir(sessionDirPath, { recursive: true })
+    await writeFile(
+        join(sessionDirPath, 'session.json'),
+        JSON.stringify({
+            browserOwner: owner,
+            createdAt: new Date().toISOString(),
+            debugPort: 9222,
+            executablePath:
+                '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+            headless: true,
+            persistentUserDataDir,
+            profileDirectory,
+            sessionId: 'live-shared-session',
+            state: 'ready',
+            stateOwner: owner,
+        })
+    )
 }

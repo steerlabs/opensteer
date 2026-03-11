@@ -18,25 +18,24 @@ import { basename, dirname, join, relative, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { expandHome } from './chrome.js'
 import {
-    acquireDirLock,
-    isDirLockHeld,
-    tryAcquireDirLock,
-    type LockRelease,
-    withDirLock,
-} from './dir-lock.js'
+    acquirePersistentProfileWriteLock,
+    isPersistentProfileWriteLocked,
+    withPersistentProfileControlLock,
+    PERSISTENT_PROFILE_LOCK_RETRY_DELAY_MS,
+} from './persistent-profile-coordination.js'
 import {
     CURRENT_PROCESS_OWNER,
     getProcessLiveness,
     parseProcessOwner,
     type ProcessOwner,
 } from './process-owner.js'
+import { waitForSharedRealBrowserSessionToDrain } from './shared-real-browser-session-state.js'
 
 const execFileAsync = promisify(execFile)
 
 const OPENSTEER_META_FILE = '.opensteer-meta.json'
 const OPENSTEER_RUNTIME_META_FILE = '.opensteer-runtime.json'
 const OPENSTEER_RUNTIME_CREATING_FILE = '.opensteer-runtime-creating.json'
-const PROFILE_LOCK_RETRY_DELAY_MS = 50
 const PROCESS_LIST_MAX_BUFFER_BYTES = 16 * 1024 * 1024
 const PS_COMMAND_ENV = { ...process.env, LC_ALL: 'C' }
 
@@ -1218,16 +1217,6 @@ async function replaceProfileDirectory(
     }
 }
 
-async function withPersistentProfileControlLock<T>(
-    targetUserDataDir: string,
-    action: () => Promise<T>
-): Promise<T> {
-    return await withDirLock(
-        buildPersistentProfileControlLockDirPath(targetUserDataDir),
-        action
-    )
-}
-
 async function withPersistentProfileWriteAccess<T>(
     targetUserDataDir: string,
     action: () => Promise<T>
@@ -1238,45 +1227,11 @@ async function withPersistentProfileWriteAccess<T>(
 
     try {
         await waitForRuntimeProfileCreationsToDrain(targetUserDataDir)
+        await waitForSharedRealBrowserSessionToDrain(targetUserDataDir)
         return await action()
     } finally {
         await releaseWriteLock()
     }
-}
-
-async function acquirePersistentProfileWriteLock(
-    targetUserDataDir: string
-): Promise<LockRelease> {
-    const controlLockDirPath =
-        buildPersistentProfileControlLockDirPath(targetUserDataDir)
-    const writeLockDirPath = buildPersistentProfileWriteLockDirPath(
-        targetUserDataDir
-    )
-
-    while (true) {
-        let releaseWriteLock: LockRelease | null = null
-        const releaseControlLock = await acquireDirLock(controlLockDirPath)
-
-        try {
-            releaseWriteLock = await tryAcquireDirLock(writeLockDirPath)
-        } finally {
-            await releaseControlLock()
-        }
-
-        if (releaseWriteLock) {
-            return releaseWriteLock
-        }
-
-        await sleep(PROFILE_LOCK_RETRY_DELAY_MS)
-    }
-}
-
-async function isPersistentProfileWriteLocked(
-    targetUserDataDir: string
-): Promise<boolean> {
-    return await isDirLockHeld(
-        buildPersistentProfileWriteLockDirPath(targetUserDataDir)
-    )
 }
 
 function buildPersistentProfileTempDirPrefix(targetUserDataDir: string): string {
@@ -1303,19 +1258,6 @@ function buildPersistentProfileBackupDirNamePrefix(
     targetUserDataDir: string
 ): string {
     return `${basename(targetUserDataDir)}-backup-`
-}
-
-function buildPersistentProfileWriteLockDirPath(targetUserDataDir: string): string {
-    return join(dirname(targetUserDataDir), `${basename(targetUserDataDir)}.lock`)
-}
-
-function buildPersistentProfileControlLockDirPath(
-    targetUserDataDir: string
-): string {
-    return join(
-        dirname(targetUserDataDir),
-        `${basename(targetUserDataDir)}.control.lock`
-    )
 }
 
 function buildRuntimeProfileCreationRegistryDirPath(
@@ -1409,7 +1351,7 @@ async function reserveRuntimeProfileCreation(
             }
         }
 
-        await sleep(PROFILE_LOCK_RETRY_DELAY_MS)
+        await sleep(PERSISTENT_PROFILE_LOCK_RETRY_DELAY_MS)
     }
 }
 
@@ -1667,7 +1609,7 @@ async function waitForRuntimeProfileCreationsToDrain(
             return
         }
 
-        await sleep(PROFILE_LOCK_RETRY_DELAY_MS)
+        await sleep(PERSISTENT_PROFILE_LOCK_RETRY_DELAY_MS)
     }
 }
 

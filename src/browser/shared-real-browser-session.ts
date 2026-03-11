@@ -8,7 +8,7 @@ import {
     rm,
     writeFile,
 } from 'node:fs/promises'
-import { basename, dirname, join } from 'node:path'
+import { join } from 'node:path'
 import {
     chromium,
     type Browser,
@@ -23,6 +23,10 @@ import {
     type PersistentProfileResult,
 } from './persistent-profile.js'
 import {
+    isPersistentProfileWriteLocked,
+    withPersistentProfileControlLock,
+} from './persistent-profile-coordination.js'
+import {
     CURRENT_PROCESS_OWNER,
     getProcessLiveness,
     isProcessRunning,
@@ -31,27 +35,20 @@ import {
     readProcessOwner,
     type ProcessOwner,
 } from './process-owner.js'
+import {
+    buildSharedSessionClientPath,
+    buildSharedSessionClientsDirPath,
+    buildSharedSessionDirPath,
+    buildSharedSessionLockPath,
+    readSharedSessionMetadata,
+    writeSharedSessionMetadata,
+    type SharedSessionMetadata,
+} from './shared-real-browser-session-state.js'
 
-const SHARED_SESSION_METADATA_FILE = 'session.json'
-const SHARED_SESSION_CLIENTS_DIR = 'clients'
 const SHARED_SESSION_RETRY_DELAY_MS = 50
 const SHARED_SESSION_READY_TIMEOUT_MS = 5_000
 
-type SharedSessionState = 'launching' | 'ready' | 'closing'
 type OwnedRealBrowserKillStrategy = 'process' | 'process-group' | 'taskkill'
-
-interface SharedSessionMetadata {
-    browserOwner: ProcessOwner
-    createdAt: string
-    debugPort: number
-    executablePath: string
-    headless: boolean
-    persistentUserDataDir: string
-    profileDirectory: string
-    sessionId: string
-    state: SharedSessionState
-    stateOwner: ProcessOwner
-}
 
 interface SharedSessionClientRegistration {
     clientId: string
@@ -61,7 +58,6 @@ interface SharedSessionClientRegistration {
 
 interface SharedSessionLeaseContext {
     browser: Browser
-    browserOwner: ProcessOwner
     clientId: string
     context: BrowserContext
     page: Page
@@ -152,14 +148,6 @@ export function getOwnedRealBrowserProcessPolicy(
         }
     }
 
-    if (platformName === 'darwin') {
-        return {
-            detached: false,
-            killStrategy: 'process',
-            shouldUnref: true,
-        }
-    }
-
     return {
         detached: true,
         killStrategy: 'process-group',
@@ -172,28 +160,41 @@ async function reserveSharedSessionClient(
 ): Promise<SharedSessionReservation> {
     while (true) {
         const outcome: SharedSessionReservationOutcome =
-            await withSharedSessionLock(
+            await withPersistentProfileControlLock(
                 options.persistentProfile.userDataDir,
                 async () => {
-                    const state = await inspectSharedSessionState(options)
-                    if (state.kind === 'wait') {
+                    if (
+                        await isPersistentProfileWriteLocked(
+                            options.persistentProfile.userDataDir
+                        )
+                    ) {
                         return { kind: 'wait' }
                     }
-                    if (state.kind === 'ready') {
-                        return {
-                            kind: 'ready',
-                            reservation: await registerSharedSessionClient(
-                                options.persistentProfile.userDataDir,
-                                state.metadata
-                            ),
-                        }
-                    }
 
-                    const launchReservation = await launchSharedSession(options)
-                    return {
-                        kind: 'launch',
-                        reservation: launchReservation,
-                    }
+                    return await withSharedSessionLock(
+                        options.persistentProfile.userDataDir,
+                        async () => {
+                            const state = await inspectSharedSessionState(options)
+                            if (state.kind === 'wait') {
+                                return { kind: 'wait' }
+                            }
+                            if (state.kind === 'ready') {
+                                return {
+                                    kind: 'ready',
+                                    reservation:
+                                        await registerSharedSessionClient(
+                                            options.persistentProfile.userDataDir,
+                                            state.metadata
+                                        ),
+                                }
+                            }
+
+                            return {
+                                kind: 'launch',
+                                reservation: await launchSharedSession(options),
+                            }
+                        }
+                    )
                 }
             )
 
@@ -278,7 +279,6 @@ async function attachToSharedSession(
 
         return {
             browser,
-            browserOwner: reservation.metadata.browserOwner,
             clientId: reservation.client.clientId,
             context,
             page,
@@ -630,73 +630,11 @@ async function waitForSpawnedProcessOwner(
     )
 }
 
-function buildSharedSessionDirPath(persistentUserDataDir: string): string {
-    return join(
-        dirname(persistentUserDataDir),
-        `${basename(persistentUserDataDir)}.session`
-    )
-}
-
-function buildSharedSessionLockPath(persistentUserDataDir: string): string {
-    return `${buildSharedSessionDirPath(persistentUserDataDir)}.lock`
-}
-
-function buildSharedSessionMetadataPath(persistentUserDataDir: string): string {
-    return join(
-        buildSharedSessionDirPath(persistentUserDataDir),
-        SHARED_SESSION_METADATA_FILE
-    )
-}
-
-function buildSharedSessionClientsDirPath(persistentUserDataDir: string): string {
-    return join(
-        buildSharedSessionDirPath(persistentUserDataDir),
-        SHARED_SESSION_CLIENTS_DIR
-    )
-}
-
-function buildSharedSessionClientPath(
-    persistentUserDataDir: string,
-    clientId: string
-): string {
-    return join(
-        buildSharedSessionClientsDirPath(persistentUserDataDir),
-        `${clientId}.json`
-    )
-}
-
 async function withSharedSessionLock<T>(
     persistentUserDataDir: string,
     action: () => Promise<T>
 ): Promise<T> {
     return await withDirLock(buildSharedSessionLockPath(persistentUserDataDir), action)
-}
-
-async function readSharedSessionMetadata(
-    persistentUserDataDir: string
-): Promise<SharedSessionMetadata | null> {
-    try {
-        const raw = await readFile(
-            buildSharedSessionMetadataPath(persistentUserDataDir),
-            'utf8'
-        )
-        return parseSharedSessionMetadata(JSON.parse(raw))
-    } catch {
-        return null
-    }
-}
-
-async function writeSharedSessionMetadata(
-    persistentUserDataDir: string,
-    metadata: SharedSessionMetadata
-): Promise<void> {
-    await mkdir(buildSharedSessionDirPath(persistentUserDataDir), {
-        recursive: true,
-    })
-    await writeFile(
-        buildSharedSessionMetadataPath(persistentUserDataDir),
-        JSON.stringify(metadata, null, 2)
-    )
 }
 
 async function registerSharedSessionClient(
@@ -788,50 +726,6 @@ function buildSharedSessionClientRegistration(): SharedSessionClientRegistration
         clientId: randomUUID(),
         createdAt: new Date().toISOString(),
         owner: CURRENT_PROCESS_OWNER,
-    }
-}
-
-function parseSharedSessionMetadata(value: unknown): SharedSessionMetadata | null {
-    if (!value || typeof value !== 'object') {
-        return null
-    }
-
-    const parsed = value as Partial<SharedSessionMetadata>
-    const browserOwner = parseProcessOwner(parsed.browserOwner)
-    const stateOwner = parseProcessOwner(parsed.stateOwner)
-    const state =
-        parsed.state === 'launching' ||
-        parsed.state === 'ready' ||
-        parsed.state === 'closing'
-            ? parsed.state
-            : null
-
-    if (
-        !browserOwner ||
-        !stateOwner ||
-        typeof parsed.createdAt !== 'string' ||
-        typeof parsed.debugPort !== 'number' ||
-        typeof parsed.executablePath !== 'string' ||
-        typeof parsed.headless !== 'boolean' ||
-        typeof parsed.persistentUserDataDir !== 'string' ||
-        typeof parsed.profileDirectory !== 'string' ||
-        typeof parsed.sessionId !== 'string' ||
-        !state
-    ) {
-        return null
-    }
-
-    return {
-        browserOwner,
-        createdAt: parsed.createdAt,
-        debugPort: parsed.debugPort,
-        executablePath: parsed.executablePath,
-        headless: parsed.headless,
-        persistentUserDataDir: parsed.persistentUserDataDir,
-        profileDirectory: parsed.profileDirectory,
-        sessionId: parsed.sessionId,
-        state,
-        stateOwner,
     }
 }
 
