@@ -59,6 +59,70 @@ export async function markInteractiveElements(
                     'searchbox',
                 ])
 
+                function isExplicitlyHidden(
+                    el: HTMLElement,
+                    style: CSSStyleDeclaration
+                ): boolean {
+                    if (el.hasAttribute('hidden')) {
+                        return true
+                    }
+
+                    if (el.getAttribute('aria-hidden') === 'true') {
+                        return true
+                    }
+
+                    if (style.display === 'none') {
+                        return true
+                    }
+
+                    if (
+                        style.visibility === 'hidden' ||
+                        style.visibility === 'collapse'
+                    ) {
+                        return true
+                    }
+
+                    const opacity = Number.parseFloat(style.opacity)
+                    return Number.isFinite(opacity) && opacity <= 0
+                }
+
+                function hasVisibleOutOfFlowChild(el: HTMLElement): boolean {
+                    const children = el.children
+                    for (let i = 0; i < children.length; i++) {
+                        const child = children[i] as HTMLElement
+                        const childStyle = window.getComputedStyle(child)
+                        if (
+                            childStyle.position !== 'fixed' &&
+                            childStyle.position !== 'absolute'
+                        ) {
+                            continue
+                        }
+
+                        const childRect = child.getBoundingClientRect()
+                        if (childRect.width > 0 && childRect.height > 0) {
+                            return true
+                        }
+                    }
+
+                    return false
+                }
+
+                function isHiddenByOwnRect(
+                    el: HTMLElement,
+                    style: CSSStyleDeclaration
+                ): boolean {
+                    if (style.display === 'contents') {
+                        return false
+                    }
+
+                    const rect = el.getBoundingClientRect()
+                    if (rect.width > 0 && rect.height > 0) {
+                        return false
+                    }
+
+                    return !hasVisibleOutOfFlowChild(el)
+                }
+
                 const roots: Array<Document | ShadowRoot> = [document]
                 while (roots.length) {
                     const root = roots.pop()
@@ -80,56 +144,9 @@ export async function markInteractiveElements(
                         }
 
                         const style = window.getComputedStyle(el)
-                        let hidden = false
-
-                        if (el.hasAttribute('hidden')) {
-                            hidden = true
-                        } else if (el.getAttribute('aria-hidden') === 'true') {
-                            hidden = true
-                        } else if (style.display === 'none') {
-                            hidden = true
-                        } else if (
-                            style.visibility === 'hidden' ||
-                            style.visibility === 'collapse'
-                        ) {
-                            hidden = true
-                        }
-
-                        if (!hidden) {
-                            const opacity = Number.parseFloat(style.opacity)
-                            if (Number.isFinite(opacity) && opacity <= 0) {
-                                hidden = true
-                            }
-                        }
-
-                        if (!hidden) {
-                            const rect = el.getBoundingClientRect()
-                            if (rect.width <= 0 || rect.height <= 0) {
-                                hidden = true
-                                const children = el.children
-                                for (let i = 0; i < children.length; i++) {
-                                    const childStyle = window.getComputedStyle(
-                                        children[i]
-                                    )
-                                    if (
-                                        childStyle.position !== 'fixed' &&
-                                        childStyle.position !== 'absolute'
-                                    ) {
-                                        continue
-                                    }
-                                    const childRect = (
-                                        children[i] as HTMLElement
-                                    ).getBoundingClientRect()
-                                    if (
-                                        childRect.width > 0 &&
-                                        childRect.height > 0
-                                    ) {
-                                        hidden = false
-                                        break
-                                    }
-                                }
-                            }
-                        }
+                        const hidden =
+                            isExplicitlyHidden(el, style) ||
+                            isHiddenByOwnRect(el, style)
 
                         if (hidden) {
                             el.setAttribute(hiddenAttr, '1')

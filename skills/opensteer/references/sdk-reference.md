@@ -12,6 +12,24 @@ const opensteer = new Opensteer({
 await opensteer.launch({ headless: false });
 await opensteer.close();
 
+// Use the user's local Chrome profile state:
+const opensteer = new Opensteer({
+  name: "my-scraper",
+  browser: {
+    mode: "real",
+    profileDirectory: "Default",
+    headless: false,
+  },
+});
+await opensteer.launch();
+
+// Or pass real-browser mode at launch time:
+await opensteer.launch({
+  mode: "real",
+  profileDirectory: "Default",
+  headless: false,
+});
+
 // Wrap an existing page instance:
 const opensteer = Opensteer.from(existingPage, { name: "my-scraper" });
 ```
