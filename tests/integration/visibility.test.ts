@@ -1,6 +1,8 @@
+import * as cheerio from 'cheerio'
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { BrowserContext, Page } from 'playwright'
 import { markInteractiveElements } from '../../src/html/interactivity.js'
+import { prepareSnapshot } from '../../src/html/pipeline.js'
 import { closeTestBrowser, createTestPage } from '../helpers/browser.js'
 import {
     getHiddenIds,
@@ -41,6 +43,17 @@ describe('integration/visibility', () => {
         expect(interactive).toContain('visible-btn')
         expect(interactive).toContain('display-contents-btn')
         expect(interactive).toContain('behind-overlay-btn')
+    })
+
+    it('keeps action-mode controls nested under display-contents wrappers', async () => {
+        const snapshot = await prepareSnapshot(page, { mode: 'action' })
+        const $ = cheerio.load(snapshot.cleanedHtml)
+        const displayContentsButton = $('button').filter((_, el) => {
+            return $(el).text().trim() === 'Display contents child'
+        })
+
+        expect(displayContentsButton.length).toBe(1)
+        expect(displayContentsButton.attr('c')).toBeTruthy()
     })
 
     describe('current behavior (pinned)', () => {
