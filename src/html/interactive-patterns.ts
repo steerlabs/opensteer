@@ -1,12 +1,12 @@
-export const NATIVE_INTERACTIVE_TAGS = [
+export const NATIVE_INTERACTIVE_TAGS: readonly string[] = [
     'a',
     'button',
     'input',
     'select',
     'textarea',
-] as const
+]
 
-export const INTERACTIVE_SELECTOR_PARTS = [
+export const INTERACTIVE_SELECTOR_PARTS: readonly string[] = [
     'a[href]',
     'button',
     'input',
@@ -23,9 +23,9 @@ export const INTERACTIVE_SELECTOR_PARTS = [
     '[onclick]',
     '[onmousedown]',
     '[onmouseup]',
-] as const
+]
 
-export const INTERACTIVE_ROLE_TOKENS = [
+export const INTERACTIVE_ROLE_TOKENS: readonly string[] = [
     'button',
     'link',
     'menuitem',
@@ -39,12 +39,12 @@ export const INTERACTIVE_ROLE_TOKENS = [
     'spinbutton',
     'search',
     'searchbox',
-] as const
+]
 
 export function hasNonNegativeTabIndex(
     value: string | null | undefined
 ): boolean {
     if (value == null) return false
-    const parsed = Number.parseInt(String(value), 10)
+    const parsed = Number.parseInt(value, 10)
     return Number.isFinite(parsed) && parsed >= 0
 }
