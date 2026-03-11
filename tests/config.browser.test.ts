@@ -3,6 +3,10 @@ import { describe, expect, it } from 'vitest'
 import { resolveConfigWithEnv } from '../src/config.js'
 
 describe('browser config compatibility', () => {
+    it('leaves headless unset until the browser mode is known', () => {
+        expect(resolveConfigWithEnv({}).config.browser?.headless).toBeUndefined()
+    })
+
     it('rejects removed browser config keys', () => {
         expect(() =>
             resolveConfigWithEnv({
