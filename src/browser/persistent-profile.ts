@@ -1859,8 +1859,17 @@ function commandLineIncludesUserDataDir(
     commandLine: string,
     userDataDir: string
 ): boolean {
+    const unquoted = `--user-data-dir=${userDataDir}`
+    const unquotedIndex = commandLine.indexOf(unquoted)
+
+    if (unquotedIndex !== -1) {
+        const after = commandLine[unquotedIndex + unquoted.length]
+        if (after === undefined || after === ' ' || after === '\t') {
+            return true
+        }
+    }
+
     return [
-        `--user-data-dir=${userDataDir}`,
         `--user-data-dir="${userDataDir}"`,
         `--user-data-dir='${userDataDir}'`,
     ].some((candidate) => commandLine.includes(candidate))

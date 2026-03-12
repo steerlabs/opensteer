@@ -231,20 +231,25 @@ describe('shared real-browser sessions', () => {
 
         expect(childProcessMocks.spawn).toHaveBeenCalledTimes(1)
         expect(playwrightMocks.connectOverCDP).toHaveBeenCalledTimes(2)
-        expect(first.context.newPage).not.toHaveBeenCalled()
-        expect(second.context.newPage).toHaveBeenCalledOnce()
+        expect(countMockCalls(first.context.newPage, second.context.newPage)).toBe(
+            1
+        )
 
         await firstLease.close()
         await secondLease.close()
 
-        expect(first.page.close).toHaveBeenCalledOnce()
-        expect(second.createdPage.close).toHaveBeenCalledOnce()
-        expect(first.browser.close).toHaveBeenCalledOnce()
-        expect(second.browser.close).toHaveBeenCalledOnce()
         expect(
-            first.cdpSession.send.mock.calls.length +
-                second.cdpSession.send.mock.calls.length
+            countMockCalls(
+                first.page.close,
+                first.createdPage.close,
+                second.page.close,
+                second.createdPage.close
+            )
         ).toBe(1)
+        expect(countMockCalls(first.browser.close, second.browser.close)).toBe(1)
+        expect(countMockCalls(first.cdpSession.send, second.cdpSession.send)).toBe(
+            1
+        )
         expect(
             first.cdpSession.send.mock.calls[0] ??
                 second.cdpSession.send.mock.calls[0]
@@ -782,6 +787,105 @@ describe('shared real-browser sessions', () => {
         processKill.mockRestore()
     })
 
+    it('kills the launched browser if session metadata changes before launch finalization', async () => {
+        const rootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-shared-finalize-race-')
+        )
+        const persistentProfile = {
+            created: false,
+            userDataDir: join(rootDir, 'persistent-profile'),
+        }
+        const launchedOwner = {
+            pid: 3579,
+            processStartedAtMs: 35_790,
+        }
+        const replacementOwner = {
+            pid: 4680,
+            processStartedAtMs: 46_800,
+        }
+        const processKill = vi
+            .spyOn(process, 'kill')
+            .mockImplementation((pid: number | NodeJS.Signals) => {
+                if (pid === launchedOwner.pid || pid === -launchedOwner.pid) {
+                    processOwnerState.setState(launchedOwner, 'dead')
+                }
+                if (
+                    pid === replacementOwner.pid ||
+                    pid === -replacementOwner.pid
+                ) {
+                    processOwnerState.setState(replacementOwner, 'dead')
+                }
+                return true
+            })
+
+        processOwnerState.setState(launchedOwner, 'live')
+        processOwnerState.setState(replacementOwner, 'live')
+        processOwnerState.readProcessOwner.mockResolvedValue(launchedOwner)
+        childProcessMocks.spawn.mockReturnValue({
+            exitCode: null,
+            pid: launchedOwner.pid,
+            unref: vi.fn(),
+        })
+
+        const {
+            readSharedSessionMetadata,
+            writeSharedSessionMetadata,
+        } = await import('../../src/browser/shared-real-browser-session-state.js')
+
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(async () => {
+                const metadata = await readSharedSessionMetadata(
+                    persistentProfile.userDataDir
+                )
+
+                await writeSharedSessionMetadata(
+                    persistentProfile.userDataDir,
+                    {
+                        ...metadata!,
+                        browserOwner: replacementOwner,
+                        sessionId: 'replaced-session',
+                        state: 'ready',
+                    }
+                )
+
+                return {
+                    ok: true,
+                    json: async () => ({
+                        webSocketDebuggerUrl:
+                            'ws://127.0.0.1:9222/devtools/browser/root',
+                    }),
+                }
+            })
+        )
+
+        const { acquireSharedRealBrowserSession } = await import(
+            '../../src/browser/shared-real-browser-session.js'
+        )
+
+        await expect(
+            acquireSharedRealBrowserSession({
+                executablePath:
+                    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+                headless: true,
+                persistentProfile,
+                profileDirectory: 'Default',
+                timeoutMs: 5_000,
+            })
+        ).rejects.toThrow(
+            'The shared real-browser session changed before launch finalized.'
+        )
+
+        expect(
+            processOwnerState.states.get(processOwnerState.key(launchedOwner))
+        ).toBe('dead')
+        expect(
+            processOwnerState.states.get(processOwnerState.key(replacementOwner))
+        ).toBe('live')
+        expect(playwrightMocks.connectOverCDP).not.toHaveBeenCalled()
+        processKill.mockRestore()
+    })
+
     it('shuts down an idle shared browser when the only attach fails', async () => {
         const rootDir = await mkdtemp(join(tmpdir(), 'opensteer-shared-attach-'))
         const persistentProfile = {
@@ -953,4 +1057,14 @@ function createConnectedBrowser(
         createdPage,
         page: existingPage,
     }
+}
+
+function countMockCalls(
+    ...mocks: Array<{
+        mock: {
+            calls: unknown[]
+        }
+    }>
+): number {
+    return mocks.reduce((total, mock) => total + mock.mock.calls.length, 0)
 }
