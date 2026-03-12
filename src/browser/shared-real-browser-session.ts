@@ -231,40 +231,46 @@ async function reserveSharedSessionClient(
             throw error
         }
 
-        return await withSharedSessionLock(
-            options.persistentProfile.userDataDir,
-            async () => {
-                const metadata = await readSharedSessionMetadata(
-                    options.persistentProfile.userDataDir
-                )
-                if (
-                    !metadata ||
-                    metadata.sessionId !== outcome.reservation.metadata.sessionId ||
-                    !processOwnersEqual(
-                        metadata.browserOwner,
-                        outcome.reservation.launchedBrowserOwner
+        try {
+            return await withSharedSessionLock(
+                options.persistentProfile.userDataDir,
+                async () => {
+                    const metadata = await readSharedSessionMetadata(
+                        options.persistentProfile.userDataDir
                     )
-                ) {
-                    throw new Error(
-                        'The shared real-browser session changed before launch finalized.'
+                    if (
+                        !metadata ||
+                        metadata.sessionId !==
+                            outcome.reservation.metadata.sessionId ||
+                        !processOwnersEqual(
+                            metadata.browserOwner,
+                            outcome.reservation.launchedBrowserOwner
+                        )
+                    ) {
+                        throw new Error(
+                            'The shared real-browser session changed before launch finalized.'
+                        )
+                    }
+
+                    const readyMetadata: SharedSessionMetadata = {
+                        ...metadata,
+                        state: 'ready',
+                    }
+                    await writeSharedSessionMetadata(
+                        options.persistentProfile.userDataDir,
+                        readyMetadata
+                    )
+
+                    return await registerSharedSessionClient(
+                        options.persistentProfile.userDataDir,
+                        readyMetadata
                     )
                 }
-
-                const readyMetadata: SharedSessionMetadata = {
-                    ...metadata,
-                    state: 'ready',
-                }
-                await writeSharedSessionMetadata(
-                    options.persistentProfile.userDataDir,
-                    readyMetadata
-                )
-
-                return await registerSharedSessionClient(
-                    options.persistentProfile.userDataDir,
-                    readyMetadata
-                )
-            }
-        )
+            )
+        } catch (error) {
+            await cleanupFailedSharedSessionLaunch(outcome.reservation)
+            throw error
+        }
     }
 }
 
@@ -331,6 +337,7 @@ async function releaseSharedSessionClient(
             releasePlan,
             context.browser
         )
+        return
     }
 
     await context.page.close().catch(() => undefined)

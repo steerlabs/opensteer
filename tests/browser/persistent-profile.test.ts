@@ -944,6 +944,88 @@ describe('persistent real-browser profiles', () => {
         }
     })
 
+    it('does not treat user-data-dir prefix matches as a live runtime process', async () => {
+        const sourceRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-runtime-prefix-source-')
+        )
+        const profilesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-runtime-prefix-cache-')
+        )
+        const runtimesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-runtime-prefix-runs-')
+        )
+        const profileDirectory = 'Default'
+        const sourceProfileDir = join(sourceRootDir, profileDirectory)
+        await mkdir(sourceProfileDir, { recursive: true })
+        await writeFile(join(sourceRootDir, 'Local State'), '{"profile":{}}')
+        await writeFile(join(sourceProfileDir, 'Cookies'), 'session-cookie')
+
+        const persistentProfile = await getOrCreatePersistentProfile(
+            sourceRootDir,
+            profileDirectory,
+            profilesRootDir
+        )
+        const firstRuntime = await createIsolatedRuntimeProfile(
+            persistentProfile.userDataDir,
+            runtimesRootDir
+        )
+        const firstRuntimeName = basename(firstRuntime.userDataDir)
+        const runtimeMarkerIndex = firstRuntimeName.lastIndexOf('-runtime-')
+        const runtimePrefix = `${firstRuntimeName.slice(
+            0,
+            runtimeMarkerIndex
+        )}-runtime-`
+        await rm(firstRuntime.userDataDir, {
+            recursive: true,
+            force: true,
+        })
+
+        const staleRuntimeDir = join(runtimesRootDir, `${runtimePrefix}prefix`)
+        const liveRuntimeDir = `${staleRuntimeDir}-live`
+        await mkdir(staleRuntimeDir, { recursive: true })
+        await writeFile(join(staleRuntimeDir, 'stale-cookie'), 'stale')
+        await mkdir(liveRuntimeDir, { recursive: true })
+
+        const liveProcess = spawn(
+            process.execPath,
+            [
+                '-e',
+                'setTimeout(() => {}, 10_000)',
+                '--',
+                `--user-data-dir=${liveRuntimeDir}`,
+            ],
+            {
+                stdio: 'ignore',
+            }
+        )
+
+        if (typeof liveProcess.pid !== 'number') {
+            throw new Error('failed to spawn runtime-holder process')
+        }
+
+        try {
+            const recreatedRuntime = await createIsolatedRuntimeProfile(
+                persistentProfile.userDataDir,
+                runtimesRootDir
+            )
+
+            expect(existsSync(staleRuntimeDir)).toBe(false)
+            expect(existsSync(liveRuntimeDir)).toBe(true)
+            expect(existsSync(recreatedRuntime.userDataDir)).toBe(true)
+
+            await rm(recreatedRuntime.userDataDir, {
+                recursive: true,
+                force: true,
+            })
+        } finally {
+            liveProcess.kill('SIGKILL')
+            await rm(liveRuntimeDir, {
+                recursive: true,
+                force: true,
+            })
+        }
+    })
+
     it('reclaims stale in-progress creation registrations before persisting', async () => {
         const sourceRootDir = await mkdtemp(
             join(tmpdir(), 'opensteer-profile-stale-create-source-')
