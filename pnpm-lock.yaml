@@ -19,7 +19,7 @@ importers:
         version: 3.0.24(zod@4.3.6)
       '@ai-sdk/openai':
         specifier: ^3.0.26
-        version: 3.0.27(zod@4.3.6)
+        version: 3.0.41(zod@4.3.6)
       '@ai-sdk/xai':
         specifier: ^3.0.57
         version: 3.0.57(zod@4.3.6)
@@ -111,8 +111,8 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/openai@3.0.27':
-    resolution: {integrity: sha512-pLMxWOypwroXiK9dxNpn60/HGhWWWDEOJ3lo9vZLoxvpJNtKnLKojwVIvlW3yEjlD7ll1+jUO2uzsABNTaP5Yg==}
+  '@ai-sdk/openai@3.0.41':
+    resolution: {integrity: sha512-IZ42A+FO+vuEQCVNqlnAPYQnnUpUfdJIwn1BEDOBywiEHa23fw7PahxVtlX9zm3/zMvTW4JKPzWyvAgDu+SQ2A==}
     engines: {node: '>=18'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -125,6 +125,12 @@ packages:
 
   '@ai-sdk/provider-utils@4.0.15':
     resolution: {integrity: sha512-8XiKWbemmCbvNN0CLR9u3PQiet4gtEVIrX4zzLxnCj06AwsEDJwJVBbKrEI4t6qE8XRSIvU2irka0dcpziKW6w==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/provider-utils@4.0.19':
+    resolution: {integrity: sha512-3eG55CrSWCu2SXlqq2QCsFjo3+E7+Gmg7i/oRVoSZzIodTuDSfLb3MRje67xE9RFea73Zao7Lm4mADIfUETKGg==}
     engines: {node: '>=18'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -1522,10 +1528,10 @@ snapshots:
       '@ai-sdk/provider-utils': 4.0.15(zod@4.3.6)
       zod: 4.3.6
 
-  '@ai-sdk/openai@3.0.27(zod@4.3.6)':
+  '@ai-sdk/openai@3.0.41(zod@4.3.6)':
     dependencies:
       '@ai-sdk/provider': 3.0.8
-      '@ai-sdk/provider-utils': 4.0.14(zod@4.3.6)
+      '@ai-sdk/provider-utils': 4.0.19(zod@4.3.6)
       zod: 4.3.6
 
   '@ai-sdk/provider-utils@4.0.14(zod@4.3.6)':
@@ -1536,6 +1542,13 @@ snapshots:
       zod: 4.3.6
 
   '@ai-sdk/provider-utils@4.0.15(zod@4.3.6)':
+    dependencies:
+      '@ai-sdk/provider': 3.0.8
+      '@standard-schema/spec': 1.1.0
+      eventsource-parser: 3.0.6
+      zod: 4.3.6
+
+  '@ai-sdk/provider-utils@4.0.19(zod@4.3.6)':
     dependencies:
       '@ai-sdk/provider': 3.0.8
       '@standard-schema/spec': 1.1.0
