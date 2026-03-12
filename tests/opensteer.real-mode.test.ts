@@ -71,7 +71,7 @@ describe('Opensteer real-browser launch', () => {
         expect(session.close).toHaveBeenCalledOnce()
     })
 
-    it('acquires shared real-browser leases for concurrent SDK sessions', async () => {
+    it('acquires independent real-browser sessions for concurrent SDK sessions', async () => {
         const persistentProfile = {
             created: false,
             userDataDir: join(tmpdir(), 'opensteer-persistent-profile'),

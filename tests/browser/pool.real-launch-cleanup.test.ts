@@ -18,7 +18,7 @@ describe('BrowserPool real-browser launch cleanup', () => {
         vi.unmock('../../src/browser/shared-real-browser-session.js')
     })
 
-    it('clears failed shared-session launch state so the next launch can succeed', async () => {
+    it('clears failed real-browser launch state so the next launch can succeed', async () => {
         const persistentProfile = {
             created: false,
             userDataDir: join(tmpdir(), 'opensteer-persistent-profile'),
@@ -59,7 +59,7 @@ describe('BrowserPool real-browser launch cleanup', () => {
         expect(session.close).toHaveBeenCalledOnce()
     })
 
-    it('retries a failed shared-session close without losing the releaser', async () => {
+    it('retries a failed real-browser close without losing the releaser', async () => {
         const persistentProfile = {
             created: false,
             userDataDir: join(tmpdir(), 'opensteer-persistent-profile'),
