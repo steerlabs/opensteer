@@ -65,7 +65,7 @@
     "tsup": "^8.0.1",
     "typescript": "^5.6.3",
     "vite": "^7.3.1",
-    "vitest": "^2.1.8"
+    "vitest": "^4.0.18"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
