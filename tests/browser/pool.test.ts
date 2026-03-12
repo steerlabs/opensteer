@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { getOwnedRealBrowserProcessPolicy } from '../../src/browser/pool.js'
 
 describe('owned real browser process policy', () => {
-    it('uses process-group cleanup for macOS real-browser launches', () => {
+    it('keeps macOS real-browser launches in the login session', () => {
         expect(getOwnedRealBrowserProcessPolicy('darwin')).toEqual({
-            detached: true,
-            killStrategy: 'process-group',
+            detached: false,
+            killStrategy: 'process',
             shouldUnref: true,
         })
     })
