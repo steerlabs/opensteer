@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
     BrowserPool,
+    createIsolatedRuntimeProfile,
     clearPersistentProfileSingletons,
     detectChromePaths,
     getOrCreatePersistentProfile,
+    persistIsolatedRuntimeProfile,
 } from '../../src/index.js'
 
 describe('root browser exports', () => {
@@ -11,6 +13,8 @@ describe('root browser exports', () => {
         expect(BrowserPool).toBeTypeOf('function')
         expect(detectChromePaths).toBeTypeOf('function')
         expect(getOrCreatePersistentProfile).toBeTypeOf('function')
+        expect(createIsolatedRuntimeProfile).toBeTypeOf('function')
+        expect(persistIsolatedRuntimeProfile).toBeTypeOf('function')
         expect(clearPersistentProfileSingletons).toBeTypeOf('function')
     })
 })
