@@ -20,6 +20,7 @@ import { createServer } from 'node:net'
 import { withDirLock } from './dir-lock.js'
 import {
     clearPersistentProfileSingletons,
+    hasActiveRuntimeProfileCreations,
     type PersistentProfileResult,
 } from './persistent-profile.js'
 import {
@@ -165,6 +166,13 @@ async function reserveSharedSessionClient(
                 async () => {
                     if (
                         await isPersistentProfileWriteLocked(
+                            options.persistentProfile.userDataDir
+                        )
+                    ) {
+                        return { kind: 'wait' }
+                    }
+                    if (
+                        await hasActiveRuntimeProfileCreations(
                             options.persistentProfile.userDataDir
                         )
                     ) {

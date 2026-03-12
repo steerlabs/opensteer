@@ -29,7 +29,10 @@ import {
     parseProcessOwner,
     type ProcessOwner,
 } from './process-owner.js'
-import { waitForSharedRealBrowserSessionToDrain } from './shared-real-browser-session-state.js'
+import {
+    hasLiveSharedRealBrowserSession,
+    waitForSharedRealBrowserSessionToDrain,
+} from './shared-real-browser-session-state.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -1321,6 +1324,9 @@ async function reserveRuntimeProfileCreation(
                 if (await isPersistentProfileWriteLocked(persistentUserDataDir)) {
                     return
                 }
+                if (await hasLiveSharedRealBrowserSession(persistentUserDataDir)) {
+                    return
+                }
 
                 const createdRuntimeUserDataDir = await mkdtemp(
                     buildRuntimeProfileDirPrefix(
@@ -1554,58 +1560,64 @@ async function isRuntimeProfileDirInUse(
     )
 }
 
+export async function hasActiveRuntimeProfileCreations(
+    persistentUserDataDir: string
+): Promise<boolean> {
+    const registrations = await listRuntimeProfileCreationRegistrations(
+        persistentUserDataDir
+    )
+    let hasLiveCreation = false
+
+    for (const registration of registrations) {
+        const marker = registration.marker
+        if (
+            !marker ||
+            marker.persistentUserDataDir !== persistentUserDataDir
+        ) {
+            await rm(registration.filePath, {
+                force: true,
+            }).catch(() => undefined)
+            continue
+        }
+
+        const runtimeMarker = await readRuntimeProfileCreationMarker(
+            marker.runtimeUserDataDir
+        )
+        if (
+            !runtimeMarker ||
+            runtimeMarker.persistentUserDataDir !== persistentUserDataDir ||
+            runtimeMarker.runtimeUserDataDir !== marker.runtimeUserDataDir
+        ) {
+            await clearRuntimeProfileCreationState(
+                marker.runtimeUserDataDir,
+                persistentUserDataDir
+            )
+            continue
+        }
+
+        if ((await getProcessLiveness(runtimeMarker.creator)) === 'dead') {
+            await clearRuntimeProfileCreationState(
+                marker.runtimeUserDataDir,
+                persistentUserDataDir
+            )
+            await rm(marker.runtimeUserDataDir, {
+                recursive: true,
+                force: true,
+            }).catch(() => undefined)
+            continue
+        }
+
+        hasLiveCreation = true
+    }
+
+    return hasLiveCreation
+}
+
 async function waitForRuntimeProfileCreationsToDrain(
     persistentUserDataDir: string
 ): Promise<void> {
     while (true) {
-        const registrations = await listRuntimeProfileCreationRegistrations(
-            persistentUserDataDir
-        )
-        let hasLiveCreation = false
-
-        for (const registration of registrations) {
-            const marker = registration.marker
-            if (
-                !marker ||
-                marker.persistentUserDataDir !== persistentUserDataDir
-            ) {
-                await rm(registration.filePath, {
-                    force: true,
-                }).catch(() => undefined)
-                continue
-            }
-
-            const runtimeMarker = await readRuntimeProfileCreationMarker(
-                marker.runtimeUserDataDir
-            )
-            if (
-                !runtimeMarker ||
-                runtimeMarker.persistentUserDataDir !== persistentUserDataDir ||
-                runtimeMarker.runtimeUserDataDir !== marker.runtimeUserDataDir
-            ) {
-                await clearRuntimeProfileCreationState(
-                    marker.runtimeUserDataDir,
-                    persistentUserDataDir
-                )
-                continue
-            }
-
-            if ((await getProcessLiveness(runtimeMarker.creator)) === 'dead') {
-                await clearRuntimeProfileCreationState(
-                    marker.runtimeUserDataDir,
-                    persistentUserDataDir
-                )
-                await rm(marker.runtimeUserDataDir, {
-                    recursive: true,
-                    force: true,
-                }).catch(() => undefined)
-                continue
-            }
-
-            hasLiveCreation = true
-        }
-
-        if (!hasLiveCreation) {
+        if (!(await hasActiveRuntimeProfileCreations(persistentUserDataDir))) {
             return
         }
 
