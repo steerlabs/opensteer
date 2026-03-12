@@ -87,6 +87,26 @@ Commands:
 
 Run "opensteer auth --help" after building for full command details.
 `
+const API_HELP_TEXT = `Usage: opensteer api <resource> <action> [options]
+
+Reverse-engineer internal APIs from browser traffic captured in the current Opensteer session.
+
+Commands:
+  capture start
+  capture stop
+  capture status
+  span list
+  span start --label <label>
+  span stop
+  request list [--span <@span1>] [--kind candidates|all] [--limit <n>]
+  request inspect <@request1> [--body summary|full] [--raw true|false]
+  value trace <literal-or-@value1> [--span <@span1>]
+  plan infer --task <task> [--span <@span1>]
+  plan inspect <@plan1>
+  plan validate <@plan1> [--dry-run]
+  plan codegen <@plan1> --lang <ts|py>
+  plan export <@plan1> --format <ir|openapi|curl>
+`
 
 const CONNECT_TIMEOUT = 15000
 const POLL_INTERVAL = 100
@@ -475,6 +495,26 @@ function buildRequest(command, flags, positional) {
 
         case 'cursor':
             args.mode = positional[0] || args.mode || 'status'
+            break
+
+        case 'api-span-start':
+            args.label = positional[0] || args.label
+            break
+
+        case 'api-request-inspect':
+        case 'api-plan-inspect':
+        case 'api-plan-validate':
+        case 'api-plan-codegen':
+        case 'api-plan-export':
+            args.ref = positional[0] || args.ref
+            break
+
+        case 'api-value-trace':
+            args.value = positional[0] || args.value
+            break
+
+        case 'api-plan-infer':
+            args.task = args.task || positional[0]
             break
     }
 
@@ -1169,6 +1209,10 @@ Utility:
   wait-selector <selector>  Wait for selector
   extract <schema-json>     Extract structured data
 
+API Reverse Engineering:
+  api <resource> <action>   Reverse-engineer APIs from browser network traffic
+  api --help                Show API reverse-engineering help
+
 Skills:
   skills install [options]  Install Opensteer skill pack for supported agents
   skills add [options]      Alias for "skills install"
@@ -1215,6 +1259,72 @@ Environment:
   OPENSTEER_USER_DATA_DIR   Browser user-data root for real-browser mode
   OPENSTEER_PROFILE_DIRECTORY Browser profile directory for real-browser mode
 `)
+}
+
+function printApiHelp() {
+    console.log(API_HELP_TEXT)
+}
+
+function normalizeApiCliArgs(rawArgs) {
+    if (rawArgs[0] !== 'api') {
+        return rawArgs
+    }
+
+    const rest = rawArgs.slice(1)
+    if (
+        rest.length === 0 ||
+        rest[0] === '--help' ||
+        rest[0] === '-h' ||
+        rest[0] === 'help'
+    ) {
+        printApiHelp()
+        process.exit(0)
+    }
+
+    if (rest[0] === 'capture' && rest[1] === 'start') {
+        return ['api-capture-start', ...rest.slice(2)]
+    }
+    if (rest[0] === 'capture' && rest[1] === 'stop') {
+        return ['api-capture-stop', ...rest.slice(2)]
+    }
+    if (rest[0] === 'capture' && rest[1] === 'status') {
+        return ['api-capture-status', ...rest.slice(2)]
+    }
+    if (rest[0] === 'span' && rest[1] === 'list') {
+        return ['api-span-list', ...rest.slice(2)]
+    }
+    if (rest[0] === 'span' && rest[1] === 'start') {
+        return ['api-span-start', ...rest.slice(2)]
+    }
+    if (rest[0] === 'span' && rest[1] === 'stop') {
+        return ['api-span-stop', ...rest.slice(2)]
+    }
+    if (rest[0] === 'request' && rest[1] === 'list') {
+        return ['api-request-list', ...rest.slice(2)]
+    }
+    if (rest[0] === 'request' && rest[1] === 'inspect') {
+        return ['api-request-inspect', ...rest.slice(2)]
+    }
+    if (rest[0] === 'value' && rest[1] === 'trace') {
+        return ['api-value-trace', ...rest.slice(2)]
+    }
+    if (rest[0] === 'plan' && rest[1] === 'infer') {
+        return ['api-plan-infer', ...rest.slice(2)]
+    }
+    if (rest[0] === 'plan' && rest[1] === 'inspect') {
+        return ['api-plan-inspect', ...rest.slice(2)]
+    }
+    if (rest[0] === 'plan' && rest[1] === 'validate') {
+        return ['api-plan-validate', ...rest.slice(2)]
+    }
+    if (rest[0] === 'plan' && rest[1] === 'codegen') {
+        return ['api-plan-codegen', ...rest.slice(2)]
+    }
+    if (rest[0] === 'plan' && rest[1] === 'export') {
+        return ['api-plan-export', ...rest.slice(2)]
+    }
+
+    error(`Unknown api command: ${rest.join(' ')}`)
 }
 
 async function main() {
@@ -1290,7 +1400,12 @@ async function main() {
 
     const scopeDir = resolveScopeDir()
 
-    const { command, flags, positional } = parseArgs(process.argv)
+    const normalizedArgs = normalizeApiCliArgs(rawArgs)
+    const { command, flags, positional } = parseArgs([
+        process.argv[0],
+        process.argv[1],
+        ...normalizedArgs,
+    ])
 
     if (
         flags['connect-url'] !== undefined ||
@@ -1366,6 +1481,28 @@ async function main() {
             sessions: listSessions(),
         })
         return
+    }
+
+    if (command === 'api-capture-status') {
+        const serverRunning = await isServerHealthy(runtimeSession)
+        if (!serverRunning) {
+            output({
+                ok: true,
+                active: false,
+                runRef: null,
+                runDir: null,
+                requestCount: 0,
+                spanCount: 0,
+                planCount: 0,
+                validationCount: 0,
+                activeManualSpanRef: null,
+                resolvedSession: logicalSession,
+                runtimeSession,
+                scopeDir,
+                serverRunning: false,
+            })
+            return
+        }
     }
 
     delete flags.name

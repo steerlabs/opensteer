@@ -17,8 +17,10 @@ import {
     type CliOpenCloudAuth,
 } from './open-cloud-auth.js'
 import { resolveCliBrowserRequestConfig } from './open-browser-config.js'
+import { ApiReverseController } from '../api-reverse/controller.js'
 
 let instance: Opensteer | null = null
+let apiController: ApiReverseController | null = null
 let launchPromise: Promise<void> | null = null
 let selectorNamespace: string | null = null
 let cloudProfileBinding: CloudProfileBinding | null = null
@@ -42,6 +44,8 @@ function sanitizeNamespace(value: string): string {
 
 function invalidateInstance() {
     if (!instance) return
+    apiController?.shutdown().catch(() => {})
+    apiController = null
     instance.close().catch(() => {})
     instance = null
     cloudProfileBinding = null
@@ -88,6 +92,16 @@ function attachLifecycleListeners(inst: Opensteer) {
         inst.page.on('close', invalidateInstance)
         inst.context.on('close', invalidateInstance)
     } catch { /* page/context may not be ready yet */ }
+}
+
+function ensureApiController(inst: Opensteer): ApiReverseController {
+    if (!apiController) {
+        apiController = new ApiReverseController(inst, {
+            scopeDir,
+            logicalSession,
+        })
+    }
+    return apiController
 }
 
 const sessionEnv = process.env.OPENSTEER_SESSION?.trim()
@@ -378,6 +392,7 @@ async function handleRequest(
                     cloudProfileBinding = nextCloudProfileBinding
                 } catch (err) {
                     instance = null
+                    apiController = null
                     cloudProfileBinding = null
                     throw err
                 } finally {
@@ -388,6 +403,8 @@ async function handleRequest(
             } else if (requestedCursor !== null) {
                 instance.setCursorEnabled(requestedCursor)
             }
+
+            ensureApiController(instance)
 
             if (url && !shouldLaunchInitialUrl) {
                 await instance.goto(url)
@@ -461,6 +478,8 @@ async function handleRequest(
 
     if (command === 'close') {
         try {
+            await apiController?.shutdown().catch(() => undefined)
+            apiController = null
             if (instance) {
                 await instance.close()
                 instance = null
@@ -482,6 +501,208 @@ async function handleRequest(
 
     if (command === 'ping') {
         sendResponse(socket, { id, ok: true, result: { pong: true } })
+        return
+    }
+
+    if (command.startsWith('api-')) {
+        try {
+            if (command === 'api-capture-status') {
+                sendResponse(socket, {
+                    id,
+                    ok: true,
+                    result: apiController
+                        ? apiController.getStatus()
+                        : {
+                              active: false,
+                              runRef: null,
+                              runDir: null,
+                              requestCount: 0,
+                              spanCount: 0,
+                              planCount: 0,
+                              validationCount: 0,
+                              activeManualSpanRef: null,
+                          },
+                })
+                return
+            }
+
+            if (!instance) {
+                throw new Error(
+                    `No browser session in session '${logicalSession}' (scope '${scopeDir}'). Call 'opensteer open --session ${logicalSession}' first.`
+                )
+            }
+
+            const controller = ensureApiController(instance)
+
+            switch (command) {
+                case 'api-capture-start':
+                    sendResponse(socket, {
+                        id,
+                        ok: true,
+                        result: await controller.startCapture(),
+                    })
+                    return
+                case 'api-capture-stop':
+                    sendResponse(socket, {
+                        id,
+                        ok: true,
+                        result: await controller.stopCapture(),
+                    })
+                    return
+                case 'api-span-list':
+                    sendResponse(socket, {
+                        id,
+                        ok: true,
+                        result: {
+                            spans: controller.listSpans(),
+                        },
+                    })
+                    return
+                case 'api-span-start':
+                    sendResponse(socket, {
+                        id,
+                        ok: true,
+                        result: {
+                            span: await controller.startManualSpan(
+                                String(args.label || '').trim() || 'manual_span'
+                            ),
+                        },
+                    })
+                    return
+                case 'api-span-stop':
+                    sendResponse(socket, {
+                        id,
+                        ok: true,
+                        result: {
+                            span: await controller.stopManualSpan(),
+                        },
+                    })
+                    return
+                case 'api-request-list':
+                    sendResponse(socket, {
+                        id,
+                        ok: true,
+                        result: {
+                            requests: controller.listRequests({
+                                spanRef:
+                                    typeof args.span === 'string'
+                                        ? args.span
+                                        : null,
+                                kind:
+                                    args.kind === 'all' ? 'all' : 'candidates',
+                                limit:
+                                    typeof args.limit === 'number'
+                                        ? args.limit
+                                        : undefined,
+                            }),
+                        },
+                    })
+                    return
+                case 'api-request-inspect':
+                    sendResponse(socket, {
+                        id,
+                        ok: true,
+                        result: {
+                            request: controller.inspectRequest(String(args.ref), {
+                                body:
+                                    args.body === 'full' ? 'full' : 'summary',
+                                raw: args.raw === true,
+                            }),
+                        },
+                    })
+                    return
+                case 'api-value-trace':
+                    sendResponse(socket, {
+                        id,
+                        ok: true,
+                        result: controller.traceValue(String(args.value), {
+                            spanRef:
+                                typeof args.span === 'string'
+                                    ? args.span
+                                    : null,
+                        }),
+                    })
+                    return
+                case 'api-plan-infer':
+                    sendResponse(socket, {
+                        id,
+                        ok: true,
+                        result: {
+                            plan: await controller.inferPlan({
+                                task: String(args.task || '').trim(),
+                                spanRef:
+                                    typeof args.span === 'string'
+                                        ? args.span
+                                        : null,
+                            }),
+                        },
+                    })
+                    return
+                case 'api-plan-inspect':
+                    sendResponse(socket, {
+                        id,
+                        ok: true,
+                        result: {
+                            plan: controller.inspectPlan(String(args.ref)),
+                        },
+                    })
+                    return
+                case 'api-plan-validate': {
+                    sendResponse(socket, {
+                        id,
+                        ok: true,
+                        result: {
+                            validation: await controller.validatePlan({
+                                ref: String(args.ref),
+                                mode:
+                                    args['dry-run'] === true
+                                        ? 'dry-run'
+                                        : 'execute',
+                            }),
+                        },
+                    })
+                    return
+                }
+                case 'api-plan-codegen':
+                    sendResponse(socket, {
+                        id,
+                        ok: true,
+                        result: await controller.codegenPlan({
+                            ref: String(args.ref),
+                            lang: args.lang === 'py' ? 'py' : 'ts',
+                        }),
+                    })
+                    return
+                case 'api-plan-export':
+                    sendResponse(socket, {
+                        id,
+                        ok: true,
+                        result: await controller.exportPlan({
+                            ref: String(args.ref),
+                            format:
+                                args.format === 'openapi'
+                                    ? 'openapi'
+                                    : args.format === 'curl'
+                                      ? 'curl'
+                                      : 'ir',
+                        }),
+                    })
+                    return
+                default:
+                    throw new Error(`Unknown command: ${command}`)
+            }
+        } catch (err) {
+            sendResponse(
+                socket,
+                buildErrorResponse(
+                    id,
+                    err,
+                    `Command "${command}" failed.`,
+                    undefined,
+                    { command }
+                )
+            )
+        }
         return
     }
 
@@ -520,10 +741,16 @@ async function handleRequest(
         return
     }
 
+    let autoSpan = null
     try {
+        autoSpan = apiController?.isMutatingCommand(command)
+            ? await apiController.beginAutomaticSpan(command, args)
+            : null
         const result = await handler(instance, args)
+        await apiController?.endAutomaticSpan(autoSpan ?? null)
         sendResponse(socket, { id, ok: true, result })
     } catch (err) {
+        await apiController?.endAutomaticSpan(autoSpan ?? null).catch(() => undefined)
         sendResponse(
             socket,
             buildErrorResponse(id, err, `Command "${command}" failed.`, undefined, {
@@ -584,6 +811,10 @@ server.on('error', (err) => {
 async function shutdown() {
     if (shuttingDown) return
     shuttingDown = true
+    if (apiController) {
+        try { await apiController.shutdown() } catch { /* best-effort cleanup on shutdown */ }
+        apiController = null
+    }
     if (instance) {
         try { await instance.close() } catch { /* best-effort cleanup on shutdown */ }
         instance = null

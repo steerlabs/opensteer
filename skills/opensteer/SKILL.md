@@ -221,4 +221,43 @@ These two patterns are the complete list.
 
 > **SDK Rule**: Every browser action in a script MUST use an `opensteer.*` method.
 
+## API Reverse Engineering Workflow
+
+Use this when the goal is to turn observed browser traffic into an executable API
+plan instead of just automating the page.
+
+1. Start capture:
+```bash
+opensteer api capture start
+```
+2. Perform the browser action with normal Opensteer commands. Capture
+automatically creates an action span around mutating commands like `click`,
+`input`, `navigate`, and tab changes.
+3. Inspect the recorded spans and candidate requests:
+```bash
+opensteer api span list
+opensteer api request list --kind candidates
+```
+4. Inspect only the top candidates first. Do not dump every request body unless
+you are blocked:
+```bash
+opensteer api request inspect @request1
+opensteer api value trace @value1
+```
+5. Infer a plan, then inspect and validate it:
+```bash
+opensteer api plan infer --task "download latest invoice"
+opensteer api plan inspect @plan1
+opensteer api plan validate @plan1 --dry-run
+opensteer api plan codegen @plan1 --lang ts
+```
+
+Rules for agents:
+1. Prefer `api request list --kind candidates` before `api request inspect`.
+2. Prefer `api value trace` for unresolved parameters instead of manually
+searching huge blobs.
+3. Use `--raw true` only when compact summaries are insufficient.
+4. Treat WebSocket/SSE captures as evidence unless the plan explicitly says the
+HTTP execution path is incomplete.
+
 **Full references:** [cli-reference.md](references/cli-reference.md) | [sdk-reference.md](references/sdk-reference.md)

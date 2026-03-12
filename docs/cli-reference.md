@@ -98,6 +98,28 @@ opensteer close --session agent-a
 - `wait-selector <selector>`
 - `extract <schema-json>`
 
+### API Reverse Engineering
+
+- `api capture start`
+- `api capture stop`
+- `api capture status`
+- `api span list`
+- `api span start --label <label>`
+- `api span stop`
+- `api request list [--span <@span1>] [--kind candidates|all] [--limit <n>]`
+- `api request inspect <@request1> [--body summary|full] [--raw true|false]`
+- `api value trace <literal|@value1> [--span <@span1>]`
+- `api plan infer --task <task> [--span <@span1>]`
+- `api plan inspect <@plan1>`
+- `api plan validate <@plan1> [--dry-run]`
+- `api plan codegen <@plan1> --lang <ts|py>`
+- `api plan export <@plan1> --format <ir|openapi|curl>`
+
+Capture is session-scoped. Once `api capture start` is active, mutating browser
+commands automatically create action spans tied to the request burst they
+trigger. Use `api span start/stop` only when you need to bracket work that did
+not happen through a normal Opensteer action.
+
 `schema-json` describes the output shape, not just selector bindings. Use semantic placeholders like `"string"` with `--description` and `--prompt`, or explicit bindings like `{ "element": 3 }` and `{ "attribute": "href" }` when you want deterministic field mappings.
 
 ```bash

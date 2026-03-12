@@ -133,6 +133,30 @@ opensteer wait-for "Success" --timeout 5000
 opensteer wait-selector "h1"                        # Wait for selector to appear
 ```
 
+## API Reverse Engineering
+
+```bash
+opensteer api capture start
+opensteer api capture stop
+opensteer api capture status
+opensteer api span list
+opensteer api span start --label "manual network burst"
+opensteer api span stop
+opensteer api request list --kind candidates
+opensteer api request inspect @request1
+opensteer api value trace @value1
+opensteer api plan infer --task "download latest invoice"
+opensteer api plan inspect @plan1
+opensteer api plan validate @plan1 --dry-run
+opensteer api plan codegen @plan1 --lang ts
+opensteer api plan export @plan1 --format openapi
+```
+
+When capture is active, mutating Opensteer commands automatically create action
+spans. Agents should start from `api request list --kind candidates`, inspect a
+few top candidates, and only use `--raw true` on `api request inspect` when
+summaries are insufficient.
+
 ## Data Extraction
 
 ### Counter-based (preferred)
