@@ -23,6 +23,7 @@ describe('persistent profile lock races', () => {
     afterEach(() => {
         vi.resetModules()
         vi.restoreAllMocks()
+        vi.unmock('node:child_process')
         vi.unmock('node:fs/promises')
     })
 
@@ -36,7 +37,7 @@ describe('persistent profile lock races', () => {
         const lockDirPath = `${sourceRootDir}.lock`
         const ownerPath = join(lockDirPath, 'owner.json')
 
-        await writeFile(join(sourceRootDir, 'Local State'), '{"profile":{}}')
+        await seedPersistentProfile(sourceRootDir)
         await mkdir(lockDirPath, { recursive: true })
         await writeFile(
             ownerPath,
@@ -137,7 +138,7 @@ describe('persistent profile lock races', () => {
         const reclaimerDirPath = join(lockDirPath, 'reclaimer')
         const reclaimerOwnerPath = join(reclaimerDirPath, 'owner.json')
 
-        await writeFile(join(sourceRootDir, 'Local State'), '{"profile":{}}')
+        await seedPersistentProfile(sourceRootDir)
         await mkdir(lockDirPath, { recursive: true })
         await writeFile(
             ownerPath,

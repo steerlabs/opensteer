@@ -663,7 +663,12 @@ describe('shared real-browser sessions', () => {
         })
         const processKill = vi
             .spyOn(process, 'kill')
-            .mockImplementation(() => true)
+            .mockImplementation((pid: number | NodeJS.Signals) => {
+                if (pid === browserOwner.pid || pid === -browserOwner.pid) {
+                    processOwnerState.setState(browserOwner, 'dead')
+                }
+                return true
+            })
 
         processOwnerState.readProcessOwner.mockResolvedValue(browserOwner)
         childProcessMocks.spawn.mockReturnValue({
@@ -716,6 +721,7 @@ describe('shared real-browser sessions', () => {
 
         expect(childProcessMocks.spawn).toHaveBeenCalledTimes(1)
         expect(playwrightMocks.connectOverCDP).toHaveBeenCalledTimes(1)
+        expect(processKill).not.toHaveBeenCalled()
 
         await recoveredLease.close()
         expect(recoveredBrowser.cdpSession.send).toHaveBeenCalledWith(

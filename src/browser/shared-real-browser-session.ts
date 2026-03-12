@@ -436,44 +436,53 @@ async function launchSharedSession(
 async function cleanupFailedSharedSessionLaunch(
     reservation: SharedSessionLaunchReservation
 ): Promise<void> {
-    await killOwnedBrowserProcess(reservation.launchedBrowserOwner)
-    await waitForProcessToExit(reservation.launchedBrowserOwner, 2_000)
-
-    await withSharedSessionLock(reservation.metadata.persistentUserDataDir, async () => {
-        const metadata = await readSharedSessionMetadata(
-            reservation.metadata.persistentUserDataDir
-        )
-        if (
-            metadata &&
-            metadata.sessionId === reservation.metadata.sessionId &&
-            processOwnersEqual(
-                metadata.browserOwner,
-                reservation.launchedBrowserOwner
+    const shouldPreserveLiveBrowser = await withSharedSessionLock(
+        reservation.metadata.persistentUserDataDir,
+        async () => {
+            const metadata = await readSharedSessionMetadata(
+                reservation.metadata.persistentUserDataDir
             )
-        ) {
-            if ((await getProcessLiveness(metadata.browserOwner)) !== 'dead') {
-                const readyMetadata: SharedSessionMetadata = {
-                    ...metadata,
-                    state: 'ready',
-                }
-                await writeSharedSessionMetadata(
-                    reservation.metadata.persistentUserDataDir,
-                    readyMetadata
+            if (
+                metadata &&
+                metadata.sessionId === reservation.metadata.sessionId &&
+                processOwnersEqual(
+                    metadata.browserOwner,
+                    reservation.launchedBrowserOwner
                 )
-                return
+            ) {
+                if ((await getProcessLiveness(metadata.browserOwner)) !== 'dead') {
+                    const readyMetadata: SharedSessionMetadata = {
+                        ...metadata,
+                        state: 'ready',
+                    }
+                    await writeSharedSessionMetadata(
+                        reservation.metadata.persistentUserDataDir,
+                        readyMetadata
+                    )
+                    return true
+                }
+
+                await rm(
+                    buildSharedSessionDirPath(
+                        reservation.metadata.persistentUserDataDir
+                    ),
+                    {
+                        force: true,
+                        recursive: true,
+                    }
+                ).catch(() => undefined)
             }
 
-            await rm(
-                buildSharedSessionDirPath(
-                    reservation.metadata.persistentUserDataDir
-                ),
-                {
-                    force: true,
-                    recursive: true,
-                }
-            ).catch(() => undefined)
+            return false
         }
-    })
+    )
+
+    if (shouldPreserveLiveBrowser) {
+        return
+    }
+
+    await killOwnedBrowserProcess(reservation.launchedBrowserOwner)
+    await waitForProcessToExit(reservation.launchedBrowserOwner, 2_000)
 }
 
 async function cleanupFailedSharedSessionAttach(options: {
