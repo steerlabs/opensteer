@@ -503,6 +503,55 @@ describe('shared real-browser sessions', () => {
         processKill.mockRestore()
     })
 
+    it('respects the caller timeout while waiting for the spawned process owner', async () => {
+        const rootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-shared-owner-timeout-')
+        )
+        const persistentProfile = {
+            created: false,
+            userDataDir: join(rootDir, 'persistent-profile'),
+        }
+        const failedPid = 7777
+        const processKill = vi
+            .spyOn(process, 'kill')
+            .mockImplementation((pid: number | NodeJS.Signals) => {
+                if (pid === failedPid || pid === -failedPid) {
+                    processOwnerState.setPidRunning(failedPid, false)
+                }
+                return true
+            })
+
+        processOwnerState.setPidRunning(failedPid, true)
+        childProcessMocks.spawn.mockReturnValue({
+            exitCode: null,
+            pid: failedPid,
+            unref: vi.fn(),
+        })
+        processOwnerState.readProcessOwner.mockResolvedValue(null)
+
+        const { acquireSharedRealBrowserSession } = await import(
+            '../../src/browser/shared-real-browser-session.js'
+        )
+
+        const startedAt = Date.now()
+
+        await expect(
+            acquireSharedRealBrowserSession({
+                executablePath:
+                    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+                headless: true,
+                persistentProfile,
+                profileDirectory: 'Default',
+                timeoutMs: 120,
+            })
+        ).rejects.toThrow(
+            `Chrome process ${failedPid} did not report a stable process start time.`
+        )
+        expect(Date.now() - startedAt).toBeLessThan(1_000)
+        expect(processOwnerState.isProcessRunning(failedPid)).toBe(false)
+        processKill.mockRestore()
+    })
+
     it('reuses Chrome startup tab for the first attached client', async () => {
         const rootDir = await mkdtemp(join(tmpdir(), 'opensteer-shared-tab-'))
         const persistentProfile = {
@@ -648,39 +697,62 @@ describe('shared real-browser sessions', () => {
         processKill.mockRestore()
     })
 
-    it('reuses the same Chrome process if the first launcher times out before CDP becomes reachable', async () => {
+    it('clears failed launch state so retries can relaunch with different settings', async () => {
         const rootDir = await mkdtemp(join(tmpdir(), 'opensteer-shared-timeout-'))
         const persistentProfile = {
             created: false,
             userDataDir: join(rootDir, 'persistent-profile'),
         }
-        const browserOwner = {
+        const failedOwner = {
             pid: 2468,
             processStartedAtMs: 24_680,
         }
+        const recoveredOwner = {
+            pid: 3579,
+            processStartedAtMs: 35_790,
+        }
         const recoveredBrowser = createConnectedBrowser(() => {
-            processOwnerState.setState(browserOwner, 'dead')
+            processOwnerState.setState(recoveredOwner, 'dead')
         })
         const processKill = vi
             .spyOn(process, 'kill')
             .mockImplementation((pid: number | NodeJS.Signals) => {
-                if (pid === browserOwner.pid || pid === -browserOwner.pid) {
-                    processOwnerState.setState(browserOwner, 'dead')
+                if (pid === failedOwner.pid || pid === -failedOwner.pid) {
+                    processOwnerState.setState(failedOwner, 'dead')
+                }
+                if (
+                    pid === recoveredOwner.pid ||
+                    pid === -recoveredOwner.pid
+                ) {
+                    processOwnerState.setState(recoveredOwner, 'dead')
                 }
                 return true
             })
 
-        processOwnerState.readProcessOwner.mockResolvedValue(browserOwner)
-        childProcessMocks.spawn.mockReturnValue({
-            pid: browserOwner.pid,
-            unref: vi.fn(),
+        processOwnerState.setState(failedOwner, 'live')
+        processOwnerState.setState(recoveredOwner, 'live')
+        processOwnerState.readProcessOwner
+            .mockResolvedValueOnce(failedOwner)
+            .mockResolvedValueOnce(recoveredOwner)
+        let browserLaunchCount = 0
+        childProcessMocks.spawn.mockImplementation(() => {
+            browserLaunchCount += 1
+            return browserLaunchCount === 1
+                ? {
+                      pid: failedOwner.pid,
+                      unref: vi.fn(),
+                  }
+                : {
+                      pid: recoveredOwner.pid,
+                      unref: vi.fn(),
+                  }
         })
         let fetchAttempt = 0
         vi.stubGlobal(
             'fetch',
             vi.fn(async () => {
                 fetchAttempt += 1
-                if (fetchAttempt === 1) {
+                if (fetchAttempt <= 1) {
                     throw new Error('CDP not ready yet')
                 }
 
@@ -713,15 +785,15 @@ describe('shared real-browser sessions', () => {
         const recoveredLease = await acquireSharedRealBrowserSession({
             executablePath:
                 '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-            headless: true,
+            headless: false,
             persistentProfile,
             profileDirectory: 'Default',
             timeoutMs: 5_000,
         })
 
-        expect(childProcessMocks.spawn).toHaveBeenCalledTimes(1)
+        expect(childProcessMocks.spawn).toHaveBeenCalledTimes(2)
         expect(playwrightMocks.connectOverCDP).toHaveBeenCalledTimes(1)
-        expect(processKill).not.toHaveBeenCalled()
+        expect(processOwnerState.isProcessRunning(failedOwner.pid)).toBe(false)
 
         await recoveredLease.close()
         expect(recoveredBrowser.cdpSession.send).toHaveBeenCalledWith(

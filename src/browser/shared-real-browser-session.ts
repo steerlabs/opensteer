@@ -47,8 +47,6 @@ import {
 } from './shared-real-browser-session-state.js'
 
 const SHARED_SESSION_RETRY_DELAY_MS = 50
-const SHARED_SESSION_READY_TIMEOUT_MS = 5_000
-
 type OwnedRealBrowserKillStrategy = 'process' | 'process-group' | 'taskkill'
 
 interface SharedSessionClientRegistration {
@@ -404,7 +402,10 @@ async function launchSharedSession(
         processHandle.unref()
     }
     try {
-        const browserOwner = await waitForSpawnedProcessOwner(processHandle.pid)
+        const browserOwner = await waitForSpawnedProcessOwner(
+            processHandle.pid,
+            options.timeoutMs
+        )
         const metadata: SharedSessionMetadata = {
             browserOwner,
             createdAt: new Date().toISOString(),
@@ -436,7 +437,7 @@ async function launchSharedSession(
 async function cleanupFailedSharedSessionLaunch(
     reservation: SharedSessionLaunchReservation
 ): Promise<void> {
-    const shouldPreserveLiveBrowser = await withSharedSessionLock(
+    await withSharedSessionLock(
         reservation.metadata.persistentUserDataDir,
         async () => {
             const metadata = await readSharedSessionMetadata(
@@ -450,18 +451,6 @@ async function cleanupFailedSharedSessionLaunch(
                     reservation.launchedBrowserOwner
                 )
             ) {
-                if ((await getProcessLiveness(metadata.browserOwner)) !== 'dead') {
-                    const readyMetadata: SharedSessionMetadata = {
-                        ...metadata,
-                        state: 'ready',
-                    }
-                    await writeSharedSessionMetadata(
-                        reservation.metadata.persistentUserDataDir,
-                        readyMetadata
-                    )
-                    return true
-                }
-
                 await rm(
                     buildSharedSessionDirPath(
                         reservation.metadata.persistentUserDataDir
@@ -472,14 +461,8 @@ async function cleanupFailedSharedSessionLaunch(
                     }
                 ).catch(() => undefined)
             }
-
-            return false
         }
     )
-
-    if (shouldPreserveLiveBrowser) {
-        return
-    }
 
     await killOwnedBrowserProcess(reservation.launchedBrowserOwner)
     await waitForProcessToExit(reservation.launchedBrowserOwner, 2_000)
@@ -626,13 +609,14 @@ async function waitForPidToExit(pid: number, timeoutMs: number): Promise<void> {
 }
 
 async function waitForSpawnedProcessOwner(
-    pid: number | undefined
+    pid: number | undefined,
+    timeoutMs: number
 ): Promise<ProcessOwner> {
     if (!pid || pid <= 0) {
         throw new Error('Chrome did not expose a child process id.')
     }
 
-    const deadline = Date.now() + SHARED_SESSION_READY_TIMEOUT_MS
+    const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
         const owner = await readProcessOwner(pid)
         if (owner) {
