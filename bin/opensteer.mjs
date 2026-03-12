@@ -100,12 +100,20 @@ Commands:
   span stop
   request list [--span <@span1>] [--kind candidates|all] [--limit <n>]
   request inspect <@request1> [--body summary|full] [--raw true|false]
+  slot list [--request <@request1>] [--span <@span1>]
+  slot inspect <@slot1>
+  evidence inspect <@slot1|@evidence1>
   value trace <literal-or-@value1> [--span <@span1>]
-  plan infer --task <task> [--span <@span1>]
+  probe run --span <@span1> --values <json-array|csv>
+  plan infer --task <task> [--span <@span1>] [--request <@request1>]
+  plan list [--operation <name>]
   plan inspect <@plan1>
-  plan validate <@plan1> [--dry-run]
+  plan validate <@plan1> [--dry-run] [--inputs <json>]
+  plan execute <@plan1|operation> [--version <n>] [--inputs <json>] [--refreshSession true|false]
   plan codegen <@plan1> --lang <ts|py>
-  plan export <@plan1> --format <ir|openapi|curl>
+  plan render <@plan1> --format <ir|exec|curl-trace>
+  plan export <@plan1> --format <ir|exec|curl-trace>
+  session ensure <@plan1|operation> [--version <n>] [--interactive true|false]
 `
 
 const CONNECT_TIMEOUT = 15000
@@ -502,19 +510,68 @@ function buildRequest(command, flags, positional) {
             break
 
         case 'api-request-inspect':
+        case 'api-slot-inspect':
+        case 'api-evidence-inspect':
         case 'api-plan-inspect':
-        case 'api-plan-validate':
+        case 'api-plan-execute':
+        case 'api-session-ensure':
         case 'api-plan-codegen':
         case 'api-plan-export':
+        case 'api-plan-render':
             args.ref = positional[0] || args.ref
+            if (
+                args.ref &&
+                typeof args.ref === 'string' &&
+                !String(args.ref).startsWith('@') &&
+                !args.operation
+            ) {
+                args.operation = args.ref
+                delete args.ref
+            }
+            break
+
+        case 'api-plan-list':
+            args.operation = positional[0] || args.operation
+            break
+
+        case 'api-slot-list':
+            args.request = positional[0] || args.request
             break
 
         case 'api-value-trace':
             args.value = positional[0] || args.value
             break
 
+        case 'api-probe-run':
+            args.span = positional[0] || args.span
+            if (args.values == null && positional[1]) {
+                try {
+                    args.values = JSON.parse(positional[1])
+                } catch {
+                    args.values = positional[1]
+                }
+            } else if (typeof args.values === 'string') {
+                try {
+                    args.values = JSON.parse(args.values)
+                } catch {
+                }
+            }
+            break
+
         case 'api-plan-infer':
             args.task = args.task || positional[0]
+            break
+
+        case 'api-plan-validate':
+        case 'api-plan-execute':
+            args.ref = positional[0] || args.ref
+            if (typeof args.inputs === 'string') {
+                try {
+                    args.inputs = JSON.parse(args.inputs)
+                } catch {
+                    error(`Invalid JSON inputs: ${args.inputs}`)
+                }
+            }
             break
     }
 
@@ -824,9 +881,13 @@ async function ensureServer(context) {
         }
 
         const existingPid = readPid(getPidPath(runtimeSession))
-        if (existingPid && isPidAlive(existingPid)) {
+        const startLockExists = existsSync(getLockPath(runtimeSession))
+        if (existingPid && isPidAlive(existingPid) && startLockExists) {
             await sleep(POLL_INTERVAL)
             continue
+        }
+        if (existingPid && isPidAlive(existingPid) && !startLockExists) {
+            cleanStaleFiles(runtimeSession)
         }
 
         recoverStaleStartLock(runtimeSession)
@@ -1305,11 +1366,26 @@ function normalizeApiCliArgs(rawArgs) {
     if (rest[0] === 'request' && rest[1] === 'inspect') {
         return ['api-request-inspect', ...rest.slice(2)]
     }
+    if (rest[0] === 'slot' && rest[1] === 'list') {
+        return ['api-slot-list', ...rest.slice(2)]
+    }
+    if (rest[0] === 'slot' && rest[1] === 'inspect') {
+        return ['api-slot-inspect', ...rest.slice(2)]
+    }
+    if (rest[0] === 'evidence' && rest[1] === 'inspect') {
+        return ['api-evidence-inspect', ...rest.slice(2)]
+    }
     if (rest[0] === 'value' && rest[1] === 'trace') {
         return ['api-value-trace', ...rest.slice(2)]
     }
+    if (rest[0] === 'probe' && rest[1] === 'run') {
+        return ['api-probe-run', ...rest.slice(2)]
+    }
     if (rest[0] === 'plan' && rest[1] === 'infer') {
         return ['api-plan-infer', ...rest.slice(2)]
+    }
+    if (rest[0] === 'plan' && rest[1] === 'list') {
+        return ['api-plan-list', ...rest.slice(2)]
     }
     if (rest[0] === 'plan' && rest[1] === 'inspect') {
         return ['api-plan-inspect', ...rest.slice(2)]
@@ -1317,11 +1393,20 @@ function normalizeApiCliArgs(rawArgs) {
     if (rest[0] === 'plan' && rest[1] === 'validate') {
         return ['api-plan-validate', ...rest.slice(2)]
     }
+    if (rest[0] === 'plan' && rest[1] === 'execute') {
+        return ['api-plan-execute', ...rest.slice(2)]
+    }
     if (rest[0] === 'plan' && rest[1] === 'codegen') {
         return ['api-plan-codegen', ...rest.slice(2)]
     }
     if (rest[0] === 'plan' && rest[1] === 'export') {
         return ['api-plan-export', ...rest.slice(2)]
+    }
+    if (rest[0] === 'plan' && rest[1] === 'render') {
+        return ['api-plan-render', ...rest.slice(2)]
+    }
+    if (rest[0] === 'session' && rest[1] === 'ensure') {
+        return ['api-session-ensure', ...rest.slice(2)]
     }
 
     error(`Unknown api command: ${rest.join(' ')}`)
@@ -1493,8 +1578,10 @@ async function main() {
                 runDir: null,
                 requestCount: 0,
                 spanCount: 0,
+                actionFactCount: 0,
                 planCount: 0,
                 validationCount: 0,
+                probeCount: 0,
                 activeManualSpanRef: null,
                 resolvedSession: logicalSession,
                 runtimeSession,
@@ -1521,12 +1608,6 @@ async function main() {
     }
 
     if (!(await isServerHealthy(runtimeSession))) {
-        if (command !== 'open') {
-            error(
-                `No server running for session '${logicalSession}' in cwd scope '${scopeDir}' (resolved from ${sessionSource}). Run 'opensteer open' first or use 'opensteer sessions' to see active sessions.`
-            )
-        }
-
         try {
             await ensureServer(routingContext)
         } catch (err) {

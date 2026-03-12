@@ -242,20 +242,23 @@ opensteer api request list --kind candidates
 you are blocked:
 ```bash
 opensteer api request inspect @request1
+opensteer api slot list --request @request1
+opensteer api evidence inspect @slot1
 opensteer api value trace @value1
 ```
 5. Infer a plan, then inspect and validate it:
 ```bash
-opensteer api plan infer --task "download latest invoice"
+opensteer api plan infer --task "download latest invoice" --request @request1
 opensteer api plan inspect @plan1
-opensteer api plan validate @plan1 --dry-run
+opensteer api plan validate @plan1 --inputs '{"term":"Ada"}'
+opensteer api plan render @plan1 --format curl-trace
 opensteer api plan codegen @plan1 --lang ts
 ```
 
 Rules for agents:
 1. Prefer `api request list --kind candidates` before `api request inspect`.
-2. Prefer `api value trace` for unresolved parameters instead of manually
-searching huge blobs.
+2. Prefer `api slot list` and `api evidence inspect` before trying to infer
+parameter roles from raw request text.
 3. Use `--raw true` only when compact summaries are insufficient.
 4. Treat WebSocket/SSE captures as evidence unless the plan explicitly says the
 HTTP execution path is incomplete.

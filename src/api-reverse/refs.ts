@@ -1,10 +1,14 @@
 export const API_REF_PREFIXES = {
     run: '@run',
     span: '@span',
+    action: '@action',
     request: '@request',
     download: '@download',
     value: '@value',
+    slot: '@slot',
+    evidence: '@evidence',
     plan: '@plan',
+    probe: '@probe',
     validation: '@validation',
 } as const
 

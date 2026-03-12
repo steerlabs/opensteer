@@ -67,6 +67,21 @@ export class ApiValueRegistry {
         )
     }
 
+    static fromRecords(records: ApiValueRecord[]): ApiValueRegistry {
+        const registry = new ApiValueRegistry()
+        let maxId = 0
+        for (const record of records) {
+            registry.valuesByRaw.set(record.raw, { ...record })
+            registry.valuesByRef.set(record.ref, { ...record })
+            const match = record.ref.match(/(\d+)$/)
+            if (match) {
+                maxId = Math.max(maxId, Number.parseInt(match[1] || '0', 10))
+            }
+        }
+        registry.nextValueId = maxId + 1
+        return registry
+    }
+
     redactString(input: string): {
         value: string
         refs: string[]

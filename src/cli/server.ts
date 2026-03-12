@@ -94,12 +94,14 @@ function attachLifecycleListeners(inst: Opensteer) {
     } catch { /* page/context may not be ready yet */ }
 }
 
-function ensureApiController(inst: Opensteer): ApiReverseController {
+function ensureApiController(inst: Opensteer | null): ApiReverseController {
     if (!apiController) {
         apiController = new ApiReverseController(inst, {
             scopeDir,
             logicalSession,
         })
+    } else {
+        apiController.setOpensteer(inst)
     }
     return apiController
 }
@@ -506,33 +508,28 @@ async function handleRequest(
 
     if (command.startsWith('api-')) {
         try {
+            const controller = ensureApiController(instance)
             if (command === 'api-capture-status') {
                 sendResponse(socket, {
                     id,
                     ok: true,
-                    result: apiController
-                        ? apiController.getStatus()
-                        : {
-                              active: false,
-                              runRef: null,
-                              runDir: null,
-                              requestCount: 0,
-                              spanCount: 0,
-                              planCount: 0,
-                              validationCount: 0,
-                              activeManualSpanRef: null,
-                          },
+                    result: controller.getStatus(),
                 })
                 return
             }
 
-            if (!instance) {
+            if (
+                !instance &&
+                (command === 'api-capture-start' ||
+                    command === 'api-capture-stop' ||
+                    command === 'api-span-start' ||
+                    command === 'api-span-stop' ||
+                    command === 'api-probe-run')
+            ) {
                 throw new Error(
                     `No browser session in session '${logicalSession}' (scope '${scopeDir}'). Call 'opensteer open --session ${logicalSession}' first.`
                 )
             }
-
-            const controller = ensureApiController(instance)
 
             switch (command) {
                 case 'api-capture-start':
@@ -611,6 +608,38 @@ async function handleRequest(
                         },
                     })
                     return
+                case 'api-slot-list':
+                    sendResponse(socket, {
+                        id,
+                        ok: true,
+                        result: {
+                            slots: controller.listSlots({
+                                requestRef:
+                                    typeof args.request === 'string'
+                                        ? args.request
+                                        : null,
+                                spanRef:
+                                    typeof args.span === 'string'
+                                        ? args.span
+                                        : null,
+                            }),
+                        },
+                    })
+                    return
+                case 'api-slot-inspect':
+                    sendResponse(socket, {
+                        id,
+                        ok: true,
+                        result: controller.inspectSlot(String(args.ref)),
+                    })
+                    return
+                case 'api-evidence-inspect':
+                    sendResponse(socket, {
+                        id,
+                        ok: true,
+                        result: controller.inspectEvidence(String(args.ref)),
+                    })
+                    return
                 case 'api-value-trace':
                     sendResponse(socket, {
                         id,
@@ -634,6 +663,38 @@ async function handleRequest(
                                     typeof args.span === 'string'
                                         ? args.span
                                         : null,
+                                requestRef:
+                                    typeof args.request === 'string'
+                                        ? args.request
+                                        : null,
+                            }),
+                        },
+                    })
+                    return
+                case 'api-plan-list':
+                    sendResponse(socket, {
+                        id,
+                        ok: true,
+                        result: {
+                            plans: await controller.listPlans(),
+                        },
+                    })
+                    return
+                case 'api-probe-run':
+                    sendResponse(socket, {
+                        id,
+                        ok: true,
+                        result: {
+                            probe: await controller.runProbe({
+                                spanRef: String(args.span),
+                                values: Array.isArray(args.values)
+                                    ? args.values.map((value) => String(value))
+                                    : typeof args.values === 'string'
+                                      ? args.values
+                                            .split(',')
+                                            .map((value) => value.trim())
+                                            .filter(Boolean)
+                                      : [],
                             }),
                         },
                     })
@@ -658,11 +719,77 @@ async function handleRequest(
                                     args['dry-run'] === true
                                         ? 'dry-run'
                                         : 'execute',
+                                inputs:
+                                    typeof args.inputs === 'string' ||
+                                    (args.inputs &&
+                                        typeof args.inputs === 'object')
+                                        ? (args.inputs as
+                                              | string
+                                              | Record<string, unknown>)
+                                        : null,
                             }),
                         },
                     })
                     return
                 }
+                case 'api-plan-execute':
+                    sendResponse(socket, {
+                        id,
+                        ok: true,
+                        result: {
+                            execution: await controller.executePlan({
+                                ref:
+                                    typeof args.ref === 'string'
+                                        ? args.ref
+                                        : null,
+                                operation:
+                                    typeof args.operation === 'string'
+                                        ? args.operation
+                                        : null,
+                                version:
+                                    typeof args.version === 'number'
+                                        ? args.version
+                                        : typeof args.version === 'string'
+                                          ? Number.parseInt(args.version, 10)
+                                          : null,
+                                inputs:
+                                    typeof args.inputs === 'string' ||
+                                    (args.inputs &&
+                                        typeof args.inputs === 'object')
+                                        ? (args.inputs as
+                                              | string
+                                              | Record<string, unknown>)
+                                        : null,
+                                refreshSession: args.refreshSession !== false,
+                            }),
+                        },
+                    })
+                    return
+                case 'api-session-ensure':
+                    sendResponse(socket, {
+                        id,
+                        ok: true,
+                        result: {
+                            session: await controller.ensureSession({
+                                ref:
+                                    typeof args.ref === 'string'
+                                        ? args.ref
+                                        : null,
+                                operation:
+                                    typeof args.operation === 'string'
+                                        ? args.operation
+                                        : null,
+                                version:
+                                    typeof args.version === 'number'
+                                        ? args.version
+                                        : typeof args.version === 'string'
+                                          ? Number.parseInt(args.version, 10)
+                                          : null,
+                                interactive: args.interactive !== false,
+                            }),
+                        },
+                    })
+                    return
                 case 'api-plan-codegen':
                     sendResponse(socket, {
                         id,
@@ -674,16 +801,18 @@ async function handleRequest(
                     })
                     return
                 case 'api-plan-export':
+                case 'api-plan-render':
                     sendResponse(socket, {
                         id,
                         ok: true,
-                        result: await controller.exportPlan({
+                        result: await controller.renderPlan({
                             ref: String(args.ref),
                             format:
-                                args.format === 'openapi'
-                                    ? 'openapi'
-                                    : args.format === 'curl'
-                                      ? 'curl'
+                                args.format === 'exec'
+                                    ? 'exec'
+                                    : args.format === 'curl' ||
+                                        args.format === 'curl-trace'
+                                      ? 'curl-trace'
                                       : 'ir',
                         }),
                     })
@@ -747,10 +876,12 @@ async function handleRequest(
             ? await apiController.beginAutomaticSpan(command, args)
             : null
         const result = await handler(instance, args)
-        await apiController?.endAutomaticSpan(autoSpan ?? null)
+        await apiController?.endAutomaticSpan(autoSpan ?? null, {})
         sendResponse(socket, { id, ok: true, result })
     } catch (err) {
-        await apiController?.endAutomaticSpan(autoSpan ?? null).catch(() => undefined)
+        await apiController
+            ?.endAutomaticSpan(autoSpan ?? null, { error: err })
+            .catch(() => undefined)
         sendResponse(
             socket,
             buildErrorResponse(id, err, `Command "${command}" failed.`, undefined, {

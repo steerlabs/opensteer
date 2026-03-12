@@ -1,11 +1,23 @@
 export type ApiSpanKind = 'automatic' | 'manual'
-export type ApiPlanFallbackMode =
-    | 'http_only'
-    | 'browser_assisted'
-    | 'browser_fallback_required'
 export type ApiPlanValidationMode = 'execute' | 'dry-run'
-export type ApiExportFormat = 'ir' | 'openapi' | 'curl'
+export type ApiRenderFormat = 'ir' | 'exec' | 'curl-trace'
 export type ApiCodegenLanguage = 'ts' | 'py'
+export type ApiPlanStatus =
+    | 'draft'
+    | 'validated'
+    | 'healthy'
+    | 'needs_session_refresh'
+    | 'stale'
+    | 'archived'
+export type ApiPlanSchemaVersion = 'deterministic-plan.v1'
+export type ApiPlanExecutionMode =
+    | 'direct_http'
+    | 'browser_session'
+    | 'browser_dom'
+export type ApiStepTransport =
+    | 'node_http'
+    | 'browser_fetch'
+    | 'browser_page'
 export type ApiRequestMatchType =
     | 'exact'
     | 'url_decoded'
@@ -24,6 +36,51 @@ export type ApiValueKind =
     | 'number'
     | 'boolean'
     | 'unknown'
+export type ApiSlotSource = 'path' | 'query' | 'body' | 'header' | 'cookie'
+export type ApiSlotRole =
+    | 'user_input'
+    | 'derived'
+    | 'constant'
+    | 'session'
+    | 'unknown'
+export type ApiEvidenceKind =
+    | 'action_argument'
+    | 'action_choice'
+    | 'action_target'
+    | 'dom_field'
+    | 'hidden_input'
+    | 'inline_json'
+    | 'response_value'
+    | 'response_header'
+    | 'request_value'
+    | 'request_header'
+    | 'cookie'
+    | 'storage'
+    | 'storage_event'
+    | 'signature_constant'
+    | 'probe_changed'
+    | 'probe_constant'
+    | 'default_inference'
+    | 'upstream_slot'
+export type ApiBodyFormat = 'json' | 'form' | 'text'
+export type ApiBindingTransformKind = 'trim' | 'lowercase' | 'url_decode'
+export type ApiValidationFailureKind =
+    | 'session_missing'
+    | 'session_expired'
+    | 'auth_redirect'
+    | 'schema_drift'
+    | 'transport_blocked'
+    | 'oracle_failed'
+    | 'unsupported_plan'
+export type ApiOracleCheckKind =
+    | 'status'
+    | 'mime'
+    | 'json_path'
+    | 'text_contains'
+    | 'text_not_contains'
+    | 'redirect_absent'
+    | 'redirect_contains'
+    | 'download'
 
 export interface ApiGraphqlMetadata {
     operationName: string | null
@@ -36,6 +93,8 @@ export interface ApiRequestBodyRecord {
     size: number
     contentType: string | null
     parsedJson?: unknown
+    parsedForm?: Record<string, string | string[]>
+    format?: ApiBodyFormat
 }
 
 export interface ApiResponseBodyRecord {
@@ -44,7 +103,9 @@ export interface ApiResponseBodyRecord {
     size: number
     contentType: string | null
     parsedJson?: unknown
+    parsedForm?: Record<string, string | string[]>
     base64Encoded?: boolean
+    format?: ApiBodyFormat
 }
 
 export interface ApiStorageSnapshot {
@@ -62,12 +123,77 @@ export interface ApiPageSnapshotSummary {
     storage: ApiStorageSnapshot
 }
 
+export interface ApiDomFieldFact {
+    tagName: string
+    type: string | null
+    name: string | null
+    id: string | null
+    formName: string | null
+    formId: string | null
+    formAction: string | null
+    formMethod: string | null
+    placeholder: string | null
+    ariaLabel: string | null
+    title: string | null
+    value: string | null
+    hidden: boolean
+    checked: boolean | null
+}
+
+export interface ApiInlineValueFact {
+    path: string
+    value: string
+    source: string
+}
+
+export interface ApiDomSnapshotFact {
+    url: string
+    fields: ApiDomFieldFact[]
+    inlineValues: ApiInlineValueFact[]
+}
+
+export interface ApiActionTargetFact {
+    description: string | null
+    selector: string | null
+    element: number | null
+    beforeValue: string | null
+    afterValue: string | null
+    beforeText: string | null
+    afterText: string | null
+    attributes: Record<string, string>
+}
+
+export interface ApiActionFact {
+    ref: string
+    spanRef: string
+    command: string
+    startedAt: number
+    completedAt: number | null
+    args: Record<string, unknown>
+    target: ApiActionTargetFact | null
+    beforeDom: ApiDomSnapshotFact | null
+    afterDom: ApiDomSnapshotFact | null
+    error: string | null
+}
+
+export interface ApiStorageEvent {
+    ref: string
+    at: number
+    kind: 'added' | 'updated' | 'removed' | 'cleared'
+    storageType: 'local' | 'session'
+    origin: string | null
+    key: string | null
+    value: string | null
+}
+
 export interface ApiValueLocation {
     requestRef?: string
     responseRef?: string
     spanRef?: string
+    actionRef?: string
     source:
         | 'request.url'
+        | 'request.path'
         | 'request.query'
         | 'request.header'
         | 'request.cookie'
@@ -78,6 +204,8 @@ export interface ApiValueLocation {
         | 'storage.session'
         | 'cookie.jar'
         | 'inline.html'
+        | 'action.arg'
+        | 'dom.field'
     path?: string
 }
 
@@ -107,6 +235,8 @@ export interface ApiRequestRecord {
     failureText: string | null
     requestHeaders: Record<string, string>
     responseHeaders: Record<string, string>
+    requestExtraHeaders: Record<string, string>
+    responseExtraHeaders: Record<string, string>
     requestBody: ApiRequestBodyRecord | null
     responseBody: ApiResponseBodyRecord | null
     responseMime: string | null
@@ -122,6 +252,8 @@ export interface ApiRequestRecord {
     spanRef: string | null
     matchedDownloadRef: string | null
     matchedNavigation: boolean
+    associatedCookies: string[]
+    blockedCookies: string[]
 }
 
 export interface ApiDownloadRecord {
@@ -142,6 +274,7 @@ export interface ApiActionSpan {
     after: ApiPageSnapshotSummary | null
     requestRefs: string[]
     downloadRefs: string[]
+    actionFactRefs: string[]
     effects: string[]
 }
 
@@ -161,6 +294,8 @@ export interface ApiCandidateRow {
     candidateScore: number
     effects: string[]
     initiatorRef: string | null
+    slotCount: number
+    actionFactRefs: string[]
     redactionSummary: {
         requestValues: string[]
         responseValues: string[]
@@ -168,9 +303,41 @@ export interface ApiCandidateRow {
     reasons: ApiCandidateReason[]
 }
 
+export interface ApiRequestSlot {
+    ref: string
+    requestRef: string
+    name: string
+    slotPath: string
+    source: ApiSlotSource
+    rawValue: string
+    shape: string
+    role: ApiSlotRole
+    confidence: number
+    required: boolean
+    evidenceRefs: string[]
+}
+
+export interface ApiSlotEvidence {
+    ref: string
+    slotRef: string
+    requestRef: string
+    role: ApiSlotRole
+    kind: ApiEvidenceKind
+    score: number
+    sourceRef: string | null
+    sourceLabel: string
+    sourceLocation: string | null
+    observedValue: string
+    transformChain: string[]
+    rationale: string
+}
+
 export interface ApiValueTraceCandidate {
-    producerRef: string
-    location: string
+    ref: string
+    role: ApiSlotRole
+    kind: ApiEvidenceKind
+    sourceRef: string | null
+    location: string | null
     matchType: ApiRequestMatchType
     transformChain: string[]
     confidence: number
@@ -178,50 +345,294 @@ export interface ApiValueTraceCandidate {
 }
 
 export interface ApiPlanInput {
+    ref: string
     name: string
+    slotRef: string
     slotPath: string
-    valueRef: string | null
-    source:
-        | 'request'
-        | 'response'
-        | 'cookie'
-        | 'storage'
-        | 'user_input'
-        | 'unresolved'
-    producerRef?: string
+    role: ApiSlotRole
+    required: boolean
+    defaultValue: string | null
+    evidenceRefs: string[]
     sourceLocation?: string
-    transformChain: string[]
 }
+
+export interface ApiPlanRequestTemplate {
+    url: string
+    headers: Record<string, string>
+    bodyFormat: ApiBodyFormat
+    bodyJson?: unknown
+    bodyForm?: Record<string, string | string[]>
+    bodyRaw?: string | null
+}
+
+export interface ApiBindingTransform {
+    kind: ApiBindingTransformKind
+}
+
+export interface ApiBindingResolverBase {
+    transforms?: ApiBindingTransform[]
+}
+
+export type ApiBindingResolver =
+    | ({
+          kind: 'input'
+          inputName: string
+      } & ApiBindingResolverBase)
+    | ({
+          kind: 'constant'
+          value: string
+      } & ApiBindingResolverBase)
+    | ({
+          kind: 'response_json'
+          producerStepId: string
+          producerRef: string
+          responsePath: string
+      } & ApiBindingResolverBase)
+    | ({
+          kind: 'response_header'
+          producerStepId: string
+          producerRef: string
+          headerName: string
+      } & ApiBindingResolverBase)
+    | ({
+          kind: 'cookie_live'
+          cookieName: string
+      } & ApiBindingResolverBase)
+    | ({
+          kind: 'cookie_captured'
+          cookieName: string
+          capturedValue: string
+      } & ApiBindingResolverBase)
+    | ({
+          kind: 'storage_live'
+          storageType: 'local' | 'session'
+          key: string
+      } & ApiBindingResolverBase)
+    | ({
+          kind: 'dom_field'
+          fieldName: string | null
+          fieldId: string | null
+          fieldType: string | null
+          hidden: boolean
+      } & ApiBindingResolverBase)
+    | ({
+          kind: 'script_json'
+          source: string
+          dataPath: string
+      } & ApiBindingResolverBase)
+    | ({
+          kind: 'computed'
+          source:
+              | Exclude<ApiBindingResolver, { kind: 'computed' }>
+              | {
+                    kind: 'input'
+                    inputName: string
+                }
+          transforms: ApiBindingTransform[]
+      })
+    | ({
+          kind: 'unsupported'
+          reason: string
+      } & ApiBindingResolverBase)
+
+export type ApiExecutionBinding =
+    | {
+          kind: 'caller'
+          slotRef: string
+          stepId: string
+          inputName: string
+          resolver?: ApiBindingResolver
+          transforms?: ApiBindingTransform[]
+      }
+    | {
+          kind: 'constant'
+          slotRef: string
+          stepId: string
+          value: string
+          resolver?: ApiBindingResolver
+          transforms?: ApiBindingTransform[]
+      }
+    | {
+          kind: 'derived_response'
+          slotRef: string
+          stepId: string
+          producerStepId: string
+          producerRef: string
+          responsePath: string
+          resolver?: ApiBindingResolver
+          transforms?: ApiBindingTransform[]
+      }
+    | {
+          kind: 'ambient_cookie'
+          slotRef: string
+          stepId: string
+          cookieName: string
+          resolver?: ApiBindingResolver
+          transforms?: ApiBindingTransform[]
+      }
+    | {
+          kind: 'session_cookie'
+          slotRef: string
+          stepId: string
+          cookieName: string
+          resolver?: ApiBindingResolver
+          transforms?: ApiBindingTransform[]
+      }
+    | {
+          kind: 'session_storage'
+          slotRef: string
+          stepId: string
+          storageType: 'local' | 'session'
+          key: string
+          resolver?: ApiBindingResolver
+          transforms?: ApiBindingTransform[]
+      }
+    | {
+          kind: 'dom_field'
+          slotRef: string
+          stepId: string
+          fieldName: string | null
+          fieldId: string | null
+          fieldType: string | null
+          hidden: boolean
+          resolver?: ApiBindingResolver
+          transforms?: ApiBindingTransform[]
+      }
+    | {
+          kind: 'inline_json'
+          slotRef: string
+          stepId: string
+          source: string
+          dataPath: string
+          resolver?: ApiBindingResolver
+          transforms?: ApiBindingTransform[]
+      }
+    | {
+          kind: 'unknown'
+          slotRef: string
+          stepId: string
+          reason: string
+          resolver?: ApiBindingResolver
+          transforms?: ApiBindingTransform[]
+      }
 
 export interface ApiPlanStep {
     id: string
     requestRef: string
     method: string
     urlTemplate: string
-    extracts: string[]
+    requestTemplate?: ApiPlanRequestTemplate
     httpExecutable: boolean
+    prerequisiteStepIds: string[]
+    slotRefs: string[]
+    transport?: ApiStepTransport
+    sessionRequirementRefs?: string[]
+}
+
+export interface ApiSuccessOracleJsonPathCheck {
+    path: string
+    exists?: boolean
+    equals?: string
+}
+
+export interface ApiSuccessOracleDownloadCheck {
+    expectedFilename?: string | null
 }
 
 export interface ApiPlanSuccessOracle {
     status: number | null
     mime: string | null
     expectsDownload: boolean
+    jsonPathChecks?: ApiSuccessOracleJsonPathCheck[]
+    textMustContain?: string[]
+    textMustNotContain?: string[]
+    redirectContains?: string[]
+    requireNoAuthRedirect?: boolean
+    download?: ApiSuccessOracleDownloadCheck | null
 }
+
+export type ApiPlanSessionRequirement =
+    | {
+          ref: string
+          kind: 'cookie_live'
+          label: string
+          cookieName: string
+          required: boolean
+      }
+    | {
+          ref: string
+          kind: 'storage_live'
+          label: string
+          storageType: 'local' | 'session'
+          key: string
+          required: boolean
+      }
+    | {
+          ref: string
+          kind: 'dom_field'
+          label: string
+          fieldName: string | null
+          fieldId: string | null
+          fieldType: string | null
+          hidden: boolean
+          required: boolean
+      }
+    | {
+          ref: string
+          kind: 'script_json'
+          label: string
+          source: string
+          dataPath: string
+          required: boolean
+      }
 
 export interface ApiPlanIr {
     ref: string
     operation: string
     task: string
     createdAt: number
+    schemaVersion?: ApiPlanSchemaVersion
+    version?: number
+    status?: ApiPlanStatus
+    fingerprint?: string
     targetRequestRef: string
+    targetStepId: string
     confidence: number
     transport: 'http'
-    fallbackMode: ApiPlanFallbackMode
-    inputs: ApiPlanInput[]
+    executionMode: ApiPlanExecutionMode
+    callerInputs: ApiPlanInput[]
     steps: ApiPlanStep[]
-    extracts: string[]
+    slots: ApiRequestSlot[]
+    bindings: ApiExecutionBinding[]
+    sessionRequirements: string[]
+    sessionRequirementDetails?: ApiPlanSessionRequirement[]
+    ambiguousSlotRefs: string[]
     successOracle: ApiPlanSuccessOracle
-    unresolvedSlots: string[]
+    sourceRunRef?: string | null
+    sourceRunId?: string | null
+    targetOrigin?: string | null
+}
+
+export interface ApiProbeSlotComparison {
+    slotPath: string
+    values: string[]
+    changed: boolean
+}
+
+export interface ApiProbeVariantResult {
+    label: string
+    requestRef: string | null
+    matchedSignature: string | null
+    slots: ApiProbeSlotComparison[]
+}
+
+export interface ApiProbeRun {
+    ref: string
+    spanRef: string
+    createdAt: number
+    mode: 'read_only'
+    values: string[]
+    variants: ApiProbeVariantResult[]
 }
 
 export interface ApiValidationStepResult {
@@ -230,6 +641,7 @@ export interface ApiValidationStepResult {
     ok: boolean
     status: number | null
     mime: string | null
+    url: string | null
     error: string | null
 }
 
@@ -238,12 +650,14 @@ export interface ApiValidationReport {
     planRef: string
     createdAt: number
     mode: ApiPlanValidationMode
+    inputs: Record<string, string>
     steps: ApiValidationStepResult[]
     oracle: {
         statusMatches: boolean
         mimeMatches: boolean
     }
     notes: string[]
+    failureKind?: ApiValidationFailureKind | null
 }
 
 export interface ApiRuntimeStatus {
@@ -252,7 +666,72 @@ export interface ApiRuntimeStatus {
     runDir: string | null
     requestCount: number
     spanCount: number
+    actionFactCount: number
     planCount: number
     validationCount: number
+    probeCount: number
     activeManualSpanRef: string | null
+}
+
+export interface ApiPlanMeta {
+    operation: string
+    version: number
+    schemaVersion: ApiPlanSchemaVersion
+    status: ApiPlanStatus
+    fingerprint: string
+    createdAt: number
+    updatedAt: number
+    createdFromRunRef: string | null
+    createdFromRunId: string | null
+    targetOrigin: string | null
+    authRequired: boolean
+    lastValidatedAt: number | null
+    lastSuccessAt: number | null
+    lastFailureAt: number | null
+    lastFailureReason: string | null
+}
+
+export interface ApiPlanFixture {
+    name: string
+    createdAt: number
+    inputs: Record<string, string>
+}
+
+export interface ApiExecutionStepReport {
+    stepId: string
+    requestRef: string
+    transport: ApiStepTransport
+    ok: boolean
+    status: number | null
+    mime: string | null
+    url: string | null
+    error: string | null
+}
+
+export interface ApiOracleCheckResult {
+    kind: ApiOracleCheckKind
+    ok: boolean
+    detail: string
+}
+
+export interface ApiPlanExecutionReport {
+    planRef: string
+    operation: string
+    version: number
+    executedAt: number
+    inputs: Record<string, string>
+    ok: boolean
+    failureKind: ApiValidationFailureKind | null
+    steps: ApiExecutionStepReport[]
+    oracleChecks: ApiOracleCheckResult[]
+}
+
+export interface ApiPlanSummary {
+    operation: string
+    version: number
+    status: ApiPlanStatus
+    dir: string
+    ref: string
+    fingerprint: string
+    updatedAt: number
 }

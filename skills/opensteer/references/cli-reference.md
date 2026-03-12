@@ -144,18 +144,21 @@ opensteer api span start --label "manual network burst"
 opensteer api span stop
 opensteer api request list --kind candidates
 opensteer api request inspect @request1
+opensteer api slot list --request @request1
+opensteer api evidence inspect @slot1
 opensteer api value trace @value1
-opensteer api plan infer --task "download latest invoice"
+opensteer api probe run --span @span1 --values '["Ada","Grace"]'
+opensteer api plan infer --task "download latest invoice" --request @request1
 opensteer api plan inspect @plan1
-opensteer api plan validate @plan1 --dry-run
+opensteer api plan validate @plan1 --inputs '{"term":"Ada"}'
 opensteer api plan codegen @plan1 --lang ts
-opensteer api plan export @plan1 --format openapi
+opensteer api plan render @plan1 --format curl-trace
 ```
 
 When capture is active, mutating Opensteer commands automatically create action
 spans. Agents should start from `api request list --kind candidates`, inspect a
-few top candidates, and only use `--raw true` on `api request inspect` when
-summaries are insufficient.
+few top candidates, inspect slots and evidence before inferring a plan, and
+only use `--raw true` on `api request inspect` when summaries are insufficient.
 
 ## Data Extraction
 
