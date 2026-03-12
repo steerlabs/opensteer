@@ -187,6 +187,25 @@ describe('persistent real-browser profiles', () => {
         ).toBe('session-cookie')
     })
 
+    it('rejects creating an isolated runtime from a non-persistent source', async () => {
+        const sourceRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-runtime-nonpersistent-source-')
+        )
+        const runtimesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-runtime-nonpersistent-runs-')
+        )
+        const profileDirectory = 'Default'
+
+        await mkdir(join(sourceRootDir, profileDirectory), { recursive: true })
+        await writeFile(join(sourceRootDir, 'Local State'), '{"profile":{}}')
+
+        await expect(
+            createIsolatedRuntimeProfile(sourceRootDir, runtimesRootDir)
+        ).rejects.toThrow(
+            `Persistent profile metadata was not found for "${sourceRootDir}".`
+        )
+    })
+
     it('publishes runtime profile changes back into the persistent snapshot', async () => {
         const sourceRootDir = await mkdtemp(
             join(tmpdir(), 'opensteer-profile-publish-source-')
@@ -266,6 +285,96 @@ describe('persistent real-browser profiles', () => {
             recursive: true,
             force: true,
         })
+    })
+
+    it('waits for runtime profile processes to exit before persisting', async () => {
+        const sourceRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-persist-live-runtime-source-')
+        )
+        const profilesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-persist-live-runtime-cache-')
+        )
+        const runtimesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-persist-live-runtime-runs-')
+        )
+        const profileDirectory = 'Default'
+        const sourceProfileDir = join(sourceRootDir, profileDirectory)
+        await mkdir(sourceProfileDir, { recursive: true })
+        await writeFile(join(sourceRootDir, 'Local State'), '{"profile":{}}')
+        await writeFile(join(sourceProfileDir, 'Cookies'), 'session-cookie')
+
+        const persistentProfile = await getOrCreatePersistentProfile(
+            sourceRootDir,
+            profileDirectory,
+            profilesRootDir
+        )
+        const runtimeProfile = await createIsolatedRuntimeProfile(
+            persistentProfile.userDataDir,
+            runtimesRootDir
+        )
+
+        await writeFile(
+            join(runtimeProfile.userDataDir, profileDirectory, 'Cookies'),
+            'runtime-cookie'
+        )
+
+        const runtimeHolder = spawn(
+            process.execPath,
+            [
+                '-e',
+                'setTimeout(() => {}, 10_000)',
+                '--',
+                `--user-data-dir=${runtimeProfile.userDataDir}`,
+            ],
+            {
+                stdio: 'ignore',
+            }
+        )
+
+        if (typeof runtimeHolder.pid !== 'number') {
+            throw new Error('failed to spawn runtime-holder process')
+        }
+
+        let persisted = false
+
+        try {
+            const persistPromise = persistIsolatedRuntimeProfile(
+                runtimeProfile.userDataDir,
+                persistentProfile.userDataDir
+            ).then(() => {
+                persisted = true
+            })
+
+            await sleep(500)
+
+            expect(persisted).toBe(false)
+            expect(existsSync(runtimeProfile.userDataDir)).toBe(true)
+            expect(
+                await readFile(
+                    join(persistentProfile.userDataDir, profileDirectory, 'Cookies'),
+                    'utf8'
+                )
+            ).toBe('session-cookie')
+
+            await new Promise<void>((resolve, reject) => {
+                runtimeHolder.once('exit', () => resolve())
+                runtimeHolder.once('error', reject)
+                runtimeHolder.kill('SIGKILL')
+            })
+            await persistPromise
+        } finally {
+            if (runtimeHolder.exitCode === null) {
+                runtimeHolder.kill('SIGKILL')
+            }
+        }
+
+        expect(existsSync(runtimeProfile.userDataDir)).toBe(false)
+        expect(
+            await readFile(
+                join(persistentProfile.userDataDir, profileDirectory, 'Cookies'),
+                'utf8'
+            )
+        ).toBe('runtime-cookie')
     })
 
     it('rejects persisting a runtime into a different persistent profile', async () => {
@@ -1046,10 +1155,14 @@ describe('persistent real-browser profiles', () => {
         const sourceRootDir = await mkdtemp(
             join(tmpdir(), 'opensteer-profile-runtime-locked-')
         )
+        const profilesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-runtime-locked-cache-')
+        )
         const runtimesRootDir = await mkdtemp(
             join(tmpdir(), 'opensteer-profile-runtime-locked-runs-')
         )
-        const lockDirPath = `${sourceRootDir}.lock`
+        const profileDirectory = 'Default'
+        const staleLockDirPath = `${sourceRootDir}.lock`
         const sleeper = spawn(
             process.execPath,
             ['-e', 'setTimeout(() => {}, 10_000)'],
@@ -1064,18 +1177,31 @@ describe('persistent real-browser profiles', () => {
         }
 
         try {
-            await mkdir(lockDirPath, { recursive: true })
+            await mkdir(staleLockDirPath, { recursive: true })
             await writeFile(
-                join(lockDirPath, 'owner.json'),
+                join(staleLockDirPath, 'owner.json'),
                 JSON.stringify({
                     pid: sleeperPid,
                     processStartedAtMs: 1,
                 })
             )
+            await mkdir(join(sourceRootDir, profileDirectory), {
+                recursive: true,
+            })
             await writeFile(join(sourceRootDir, 'Local State'), '{"profile":{}}')
+            const persistentProfile = await getOrCreatePersistentProfile(
+                sourceRootDir,
+                profileDirectory,
+                profilesRootDir
+            )
+            const lockDirPath = `${persistentProfile.userDataDir}.lock`
+            await rename(staleLockDirPath, lockDirPath)
 
             const runtime = await Promise.race([
-                createIsolatedRuntimeProfile(sourceRootDir, runtimesRootDir),
+                createIsolatedRuntimeProfile(
+                    persistentProfile.userDataDir,
+                    runtimesRootDir
+                ),
                 new Promise<never>((_, reject) =>
                     setTimeout(
                         () =>
@@ -1120,3 +1246,7 @@ describe('persistent real-browser profiles', () => {
         )
     })
 })
+
+async function sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms))
+}

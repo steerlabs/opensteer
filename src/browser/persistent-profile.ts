@@ -216,13 +216,13 @@ export async function createIsolatedRuntimeProfile(
     const runtimeRootDir = expandHome(runtimesRootDir)
     await mkdir(runtimeRootDir, { recursive: true })
 
-    const sourceMetadata = await readPersistentProfileMetadata(
+    const sourceMetadata = await requirePersistentProfileMetadata(
         resolvedSourceUserDataDir
     )
     const runtimeProfile = await reserveRuntimeProfileCreation(
         resolvedSourceUserDataDir,
         runtimeRootDir,
-        sourceMetadata?.profileDirectory ?? null
+        sourceMetadata.profileDirectory
     )
 
     try {
@@ -242,7 +242,8 @@ export async function createIsolatedRuntimeProfile(
             await buildRuntimeProfileMetadata(
                 runtimeProfile.userDataDir,
                 resolvedSourceUserDataDir,
-                currentSourceMetadata?.profileDirectory ?? null
+                currentSourceMetadata?.profileDirectory ??
+                    sourceMetadata.profileDirectory
             )
         )
         await clearRuntimeProfileCreationState(
@@ -273,43 +274,68 @@ export async function persistIsolatedRuntimeProfile(
 ): Promise<void> {
     const resolvedRuntimeUserDataDir = expandHome(runtimeUserDataDir)
     const resolvedPersistentUserDataDir = expandHome(persistentUserDataDir)
+    let claimedRuntimeUserDataDir: string | null = null
 
-    await withPersistentProfileWriteAccess(
-        resolvedPersistentUserDataDir,
-        async () => {
-            await mkdir(dirname(resolvedPersistentUserDataDir), {
-                recursive: true,
-            })
-            await recoverPersistentProfileBackup(resolvedPersistentUserDataDir)
-            await cleanOrphanedOwnedDirs(
-                dirname(resolvedPersistentUserDataDir),
-                buildPersistentProfileTempDirNamePrefix(
+    try {
+        await withPersistentProfileWriteAccess(
+            resolvedPersistentUserDataDir,
+            async () => {
+                await mkdir(dirname(resolvedPersistentUserDataDir), {
+                    recursive: true,
+                })
+                await recoverPersistentProfileBackup(resolvedPersistentUserDataDir)
+                await cleanOrphanedOwnedDirs(
+                    dirname(resolvedPersistentUserDataDir),
+                    buildPersistentProfileTempDirNamePrefix(
+                        resolvedPersistentUserDataDir
+                    )
+                )
+
+                const metadata = await requirePersistentProfileMetadata(
                     resolvedPersistentUserDataDir
                 )
-            )
+                claimedRuntimeUserDataDir = await claimRuntimeProfileForPersist(
+                    resolvedRuntimeUserDataDir
+                )
+                const runtimeMetadata = await requireRuntimeProfileMetadata(
+                    claimedRuntimeUserDataDir,
+                    resolvedPersistentUserDataDir,
+                    metadata.profileDirectory,
+                    resolvedRuntimeUserDataDir
+                )
 
-            const metadata = await requirePersistentProfileMetadata(
-                resolvedPersistentUserDataDir
-            )
-            const runtimeMetadata = await requireRuntimeProfileMetadata(
-                resolvedRuntimeUserDataDir,
-                resolvedPersistentUserDataDir,
-                metadata.profileDirectory
-            )
-
-            await mergePersistentProfileSnapshot(
-                resolvedRuntimeUserDataDir,
-                resolvedPersistentUserDataDir,
-                metadata,
-                runtimeMetadata
-            )
+                await mergePersistentProfileSnapshot(
+                    claimedRuntimeUserDataDir,
+                    resolvedPersistentUserDataDir,
+                    metadata,
+                    runtimeMetadata
+                )
+            }
+        )
+    } catch (error) {
+        if (claimedRuntimeUserDataDir) {
+            try {
+                await restoreClaimedRuntimeProfile(
+                    claimedRuntimeUserDataDir,
+                    resolvedRuntimeUserDataDir
+                )
+            } catch (restoreError) {
+                throw new AggregateError(
+                    [error, restoreError],
+                    `Failed to restore runtime profile "${resolvedRuntimeUserDataDir}" after persistence failed.`
+                )
+            }
         }
-    )
 
-    await rm(resolvedRuntimeUserDataDir, {
-        recursive: true,
-        force: true,
-    })
+        throw error
+    }
+
+    if (claimedRuntimeUserDataDir) {
+        await rm(claimedRuntimeUserDataDir, {
+            recursive: true,
+            force: true,
+        }).catch(() => undefined)
+    }
 }
 
 function buildPersistentProfileKey(
@@ -684,22 +710,23 @@ async function readRuntimeProfileCreationMarker(
 async function requireRuntimeProfileMetadata(
     userDataDir: string,
     expectedPersistentUserDataDir: string,
-    expectedProfileDirectory: string
+    expectedProfileDirectory: string,
+    displayUserDataDir = userDataDir
 ): Promise<RuntimeProfileMetadata> {
     const metadata = await readRuntimeProfileMetadata(userDataDir)
     if (!metadata) {
         throw new Error(
-            `Runtime profile metadata was not found for "${userDataDir}".`
+            `Runtime profile metadata was not found for "${displayUserDataDir}".`
         )
     }
     if (metadata.profileDirectory !== expectedProfileDirectory) {
         throw new Error(
-            `Runtime profile "${userDataDir}" was created for profile "${metadata.profileDirectory ?? 'unknown'}", expected "${expectedProfileDirectory}".`
+            `Runtime profile "${displayUserDataDir}" was created for profile "${metadata.profileDirectory ?? 'unknown'}", expected "${expectedProfileDirectory}".`
         )
     }
     if (metadata.persistentUserDataDir !== expectedPersistentUserDataDir) {
         throw new Error(
-            `Runtime profile "${userDataDir}" does not belong to persistent profile "${expectedPersistentUserDataDir}".`
+            `Runtime profile "${displayUserDataDir}" does not belong to persistent profile "${expectedPersistentUserDataDir}".`
         )
     }
 
@@ -1557,6 +1584,84 @@ async function isRuntimeProfileDirInUse(
 
     return liveProcessCommandLines.some((commandLine) =>
         commandLineIncludesUserDataDir(commandLine, runtimeDirPath)
+    )
+}
+
+async function claimRuntimeProfileForPersist(
+    runtimeUserDataDir: string
+): Promise<string> {
+    while (true) {
+        await waitForRuntimeProfileProcessesToDrain(runtimeUserDataDir)
+
+        const claimedRuntimeUserDataDir =
+            buildClaimedRuntimeProfileDirPath(runtimeUserDataDir)
+
+        try {
+            await rename(runtimeUserDataDir, claimedRuntimeUserDataDir)
+        } catch (error) {
+            const code = getErrorCode(error)
+            if (code === 'ENOENT') {
+                throw new Error(
+                    `Runtime profile "${runtimeUserDataDir}" was not found.`
+                )
+            }
+            if (code === 'EACCES' || code === 'EBUSY' || code === 'EPERM') {
+                await sleep(PERSISTENT_PROFILE_LOCK_RETRY_DELAY_MS)
+                continue
+            }
+            throw error
+        }
+
+        if (!(await hasLiveProcessUsingUserDataDir(runtimeUserDataDir))) {
+            return claimedRuntimeUserDataDir
+        }
+
+        await rename(
+            claimedRuntimeUserDataDir,
+            runtimeUserDataDir
+        ).catch(() => undefined)
+        await sleep(PERSISTENT_PROFILE_LOCK_RETRY_DELAY_MS)
+    }
+}
+
+async function restoreClaimedRuntimeProfile(
+    claimedRuntimeUserDataDir: string,
+    runtimeUserDataDir: string
+): Promise<void> {
+    if (!existsSync(claimedRuntimeUserDataDir)) {
+        return
+    }
+    if (existsSync(runtimeUserDataDir)) {
+        throw new Error(
+            `Runtime profile "${runtimeUserDataDir}" was recreated before the failed persist could restore it from "${claimedRuntimeUserDataDir}".`
+        )
+    }
+
+    await rename(claimedRuntimeUserDataDir, runtimeUserDataDir)
+}
+
+function buildClaimedRuntimeProfileDirPath(runtimeUserDataDir: string): string {
+    return join(
+        dirname(runtimeUserDataDir),
+        `${basename(runtimeUserDataDir)}-persisting-${process.pid}-${CURRENT_PROCESS_OWNER.processStartedAtMs}-${randomUUID()}`
+    )
+}
+
+async function waitForRuntimeProfileProcessesToDrain(
+    runtimeUserDataDir: string
+): Promise<void> {
+    while (await hasLiveProcessUsingUserDataDir(runtimeUserDataDir)) {
+        await sleep(PERSISTENT_PROFILE_LOCK_RETRY_DELAY_MS)
+    }
+}
+
+async function hasLiveProcessUsingUserDataDir(
+    userDataDir: string
+): Promise<boolean> {
+    const liveProcessCommandLines = await listProcessCommandLines()
+
+    return liveProcessCommandLines.some((commandLine) =>
+        commandLineIncludesUserDataDir(commandLine, userDataDir)
     )
 }
 
