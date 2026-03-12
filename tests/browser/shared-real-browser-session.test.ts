@@ -13,6 +13,7 @@ const playwrightMocks = vi.hoisted(() => ({
 
 const persistentProfileMocks = vi.hoisted(() => ({
     clearPersistentProfileSingletons: vi.fn(),
+    hasActiveRuntimeProfileCreations: vi.fn(),
 }))
 
 const processOwnerState = vi.hoisted(() => {
@@ -117,6 +118,8 @@ vi.mock('node:child_process', () => ({
 vi.mock('../../src/browser/persistent-profile.js', () => ({
     clearPersistentProfileSingletons:
         persistentProfileMocks.clearPersistentProfileSingletons,
+    hasActiveRuntimeProfileCreations:
+        persistentProfileMocks.hasActiveRuntimeProfileCreations,
 }))
 
 vi.mock('../../src/browser/process-owner.js', () => ({
@@ -133,6 +136,10 @@ describe('shared real-browser sessions', () => {
         childProcessMocks.spawn.mockReset()
         playwrightMocks.connectOverCDP.mockReset()
         persistentProfileMocks.clearPersistentProfileSingletons.mockReset()
+        persistentProfileMocks.hasActiveRuntimeProfileCreations.mockReset()
+        persistentProfileMocks.hasActiveRuntimeProfileCreations.mockResolvedValue(
+            false
+        )
         processOwnerState.getProcessLiveness.mockClear()
         processOwnerState.isProcessRunning.mockClear()
         processOwnerState.readProcessOwner.mockClear()
@@ -315,6 +322,80 @@ describe('shared real-browser sessions', () => {
             force: true,
             recursive: true,
         })
+
+        const lease = await leasePromise
+        await lease.close()
+        processKill.mockRestore()
+    })
+
+    it('waits for active runtime snapshot creation before starting a shared launch', async () => {
+        const rootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-shared-runtime-create-')
+        )
+        const persistentProfile = {
+            created: false,
+            userDataDir: join(rootDir, 'persistent-profile'),
+        }
+        const browserOwner = {
+            pid: 6543,
+            processStartedAtMs: 65_430,
+        }
+        const browserLease = createConnectedBrowser(() => {
+            processOwnerState.setState(browserOwner, 'dead')
+        })
+        const processKill = vi
+            .spyOn(process, 'kill')
+            .mockImplementation((pid: number | NodeJS.Signals) => {
+                if (pid === browserOwner.pid || pid === -browserOwner.pid) {
+                    processOwnerState.setState(browserOwner, 'dead')
+                }
+                return true
+            })
+
+        let runtimeCreationActive = true
+        persistentProfileMocks.hasActiveRuntimeProfileCreations.mockImplementation(
+            async () => runtimeCreationActive
+        )
+        processOwnerState.readProcessOwner.mockResolvedValue(browserOwner)
+        childProcessMocks.spawn.mockReturnValue({
+            pid: browserOwner.pid,
+            unref: vi.fn(),
+        })
+        playwrightMocks.connectOverCDP.mockResolvedValue(browserLease.browser)
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(async () => ({
+                ok: true,
+                json: async () => ({
+                    webSocketDebuggerUrl:
+                        'ws://127.0.0.1:9222/devtools/browser/root',
+                }),
+            }))
+        )
+
+        const { acquireSharedRealBrowserSession } = await import(
+            '../../src/browser/shared-real-browser-session.js'
+        )
+
+        let resolved = false
+        const leasePromise = acquireSharedRealBrowserSession({
+            executablePath:
+                '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+            headless: true,
+            persistentProfile,
+            profileDirectory: 'Default',
+            timeoutMs: 5_000,
+        }).then((lease) => {
+            resolved = true
+            return lease
+        })
+
+        await sleep(200)
+
+        expect(childProcessMocks.spawn).not.toHaveBeenCalled()
+        expect(resolved).toBe(false)
+
+        runtimeCreationActive = false
 
         const lease = await leasePromise
         await lease.close()

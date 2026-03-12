@@ -479,6 +479,224 @@ describe('persistent profile lock races', () => {
         await persistPromise
     })
 
+    it('reclaims a stale partial shared-session publish before writing', async () => {
+        const persistentUserDataDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-session-partial-source-')
+        )
+
+        await seedPersistentProfile(persistentUserDataDir)
+        const existingRuntimeUserDataDir = await seedRuntimeProfile(
+            persistentUserDataDir
+        )
+
+        const actualFsPromises =
+            await vi.importActual<typeof import('node:fs/promises')>(
+                'node:fs/promises'
+            )
+        const persistentTempDirPrefix = join(
+            dirname(persistentUserDataDir),
+            `${basename(persistentUserDataDir)}-tmp-`
+        )
+        const sessionDirPath = buildSharedSessionDirPath(persistentUserDataDir)
+
+        let persistMaterializationStarted = false
+
+        await mkdir(sessionDirPath, { recursive: true })
+        await writeFile(join(sessionDirPath, 'session.json.99999.1.partial.tmp'), '{}')
+
+        vi.doMock('node:fs/promises', () => ({
+            ...actualFsPromises,
+            copyFile: vi.fn(
+                async (
+                    source: string,
+                    destination: string,
+                    mode?: Parameters<typeof actualFsPromises.copyFile>[2]
+                ) => {
+                    if (destination.startsWith(persistentTempDirPrefix)) {
+                        persistMaterializationStarted = true
+                    }
+
+                    return await actualFsPromises.copyFile(
+                        source,
+                        destination,
+                        mode
+                    )
+                }
+            ),
+        }))
+
+        const { persistIsolatedRuntimeProfile } = await import(
+            '../../src/browser/persistent-profile.js'
+        )
+
+        await persistIsolatedRuntimeProfile(
+            existingRuntimeUserDataDir,
+            persistentUserDataDir
+        )
+
+        expect(persistMaterializationStarted).toBe(true)
+        expect(existsSync(sessionDirPath)).toBe(false)
+    })
+
+    it('does not treat a transient shared-session metadata read failure as drained', async () => {
+        const persistentUserDataDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-session-read-race-source-')
+        )
+
+        await seedPersistentProfile(persistentUserDataDir)
+        const existingRuntimeUserDataDir = await seedRuntimeProfile(
+            persistentUserDataDir
+        )
+        await seedSharedSession(persistentUserDataDir)
+
+        const actualFsPromises =
+            await vi.importActual<typeof import('node:fs/promises')>(
+                'node:fs/promises'
+            )
+        const persistentTempDirPrefix = join(
+            dirname(persistentUserDataDir),
+            `${basename(persistentUserDataDir)}-tmp-`
+        )
+        const sessionMetadataPath = join(
+            buildSharedSessionDirPath(persistentUserDataDir),
+            'session.json'
+        )
+
+        let persistMaterializationStarted = false
+        let sessionReadFailed = false
+
+        vi.doMock('node:fs/promises', () => ({
+            ...actualFsPromises,
+            copyFile: vi.fn(
+                async (
+                    source: string,
+                    destination: string,
+                    mode?: Parameters<typeof actualFsPromises.copyFile>[2]
+                ) => {
+                    if (destination.startsWith(persistentTempDirPrefix)) {
+                        persistMaterializationStarted = true
+                    }
+
+                    return await actualFsPromises.copyFile(
+                        source,
+                        destination,
+                        mode
+                    )
+                }
+            ),
+            readFile: vi.fn(
+                async (
+                    path: Parameters<typeof actualFsPromises.readFile>[0],
+                    options?: Parameters<typeof actualFsPromises.readFile>[1]
+                ) => {
+                    if (!sessionReadFailed && path === sessionMetadataPath) {
+                        sessionReadFailed = true
+                        const error = new Error('transient session metadata read failure')
+                        Object.assign(error, { code: 'EIO' })
+                        throw error
+                    }
+
+                    return await actualFsPromises.readFile(path, options)
+                }
+            ),
+        }))
+
+        const { persistIsolatedRuntimeProfile } = await import(
+            '../../src/browser/persistent-profile.js'
+        )
+
+        const persistPromise = persistIsolatedRuntimeProfile(
+            existingRuntimeUserDataDir,
+            persistentUserDataDir
+        )
+
+        await sleep(200)
+
+        expect(sessionReadFailed).toBe(true)
+        expect(persistMaterializationStarted).toBe(false)
+
+        await rm(buildSharedSessionDirPath(persistentUserDataDir), {
+            recursive: true,
+            force: true,
+        })
+
+        await persistPromise
+    })
+
+    it('waits for a live shared real-browser session to close before copying a runtime snapshot', async () => {
+        const persistentUserDataDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-create-session-waits-source-')
+        )
+        const runtimesRootDir = await mkdtemp(
+            join(tmpdir(), 'opensteer-profile-create-session-waits-runs-')
+        )
+
+        await seedPersistentProfile(persistentUserDataDir)
+        await seedSharedSession(persistentUserDataDir)
+
+        const actualFsPromises =
+            await vi.importActual<typeof import('node:fs/promises')>(
+                'node:fs/promises'
+            )
+
+        let createCopyStarted = false
+
+        vi.doMock('node:fs/promises', () => ({
+            ...actualFsPromises,
+            cp: vi.fn(
+                async (
+                    source: string,
+                    destination: string,
+                    options?: Parameters<typeof actualFsPromises.cp>[2]
+                ) => {
+                    if (
+                        source === persistentUserDataDir &&
+                        destination.startsWith(runtimesRootDir)
+                    ) {
+                        createCopyStarted = true
+                    }
+
+                    return await actualFsPromises.cp(
+                        source,
+                        destination,
+                        options
+                    )
+                }
+            ),
+        }))
+
+        const { createIsolatedRuntimeProfile } = await import(
+            '../../src/browser/persistent-profile.js'
+        )
+
+        let resolved = false
+        const createRuntimePromise = createIsolatedRuntimeProfile(
+            persistentUserDataDir,
+            runtimesRootDir
+        ).then((runtime) => {
+            resolved = true
+            return runtime
+        })
+
+        await sleep(200)
+
+        expect(createCopyStarted).toBe(false)
+        expect(resolved).toBe(false)
+
+        await rm(buildSharedSessionDirPath(persistentUserDataDir), {
+            recursive: true,
+            force: true,
+        })
+
+        const runtime = await createRuntimePromise
+        expect(createCopyStarted).toBe(true)
+
+        await rm(runtime.userDataDir, {
+            recursive: true,
+            force: true,
+        })
+    })
+
     it('blocks new runtime copies while a writer is actively publishing', async () => {
         const persistentUserDataDir = await mkdtemp(
             join(tmpdir(), 'opensteer-profile-write-blocks-source-')

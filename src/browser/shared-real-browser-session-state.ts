@@ -1,6 +1,9 @@
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
+import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import {
+    CURRENT_PROCESS_OWNER,
     getProcessLiveness,
     parseProcessOwner,
     type ProcessOwner,
@@ -9,6 +12,14 @@ import {
 const SHARED_SESSION_METADATA_FILE = 'session.json'
 const SHARED_SESSION_CLIENTS_DIR = 'clients'
 const SHARED_SESSION_RETRY_DELAY_MS = 50
+const SHARED_SESSION_METADATA_TEMP_FILE_PREFIX =
+    `${SHARED_SESSION_METADATA_FILE}.`
+const SHARED_SESSION_METADATA_TEMP_FILE_SUFFIX = '.tmp'
+
+interface SharedSessionMetadataRecord {
+    exists: boolean
+    metadata: SharedSessionMetadata | null
+}
 
 export type SharedSessionState = 'launching' | 'ready' | 'closing'
 
@@ -62,49 +73,137 @@ export function buildSharedSessionClientPath(
 export async function readSharedSessionMetadata(
     persistentUserDataDir: string
 ): Promise<SharedSessionMetadata | null> {
-    try {
-        const raw = await readFile(
-            buildSharedSessionMetadataPath(persistentUserDataDir),
-            'utf8'
-        )
-        return parseSharedSessionMetadata(JSON.parse(raw))
-    } catch {
-        return null
-    }
+    return (await readSharedSessionMetadataRecord(persistentUserDataDir)).metadata
 }
 
 export async function writeSharedSessionMetadata(
     persistentUserDataDir: string,
     metadata: SharedSessionMetadata
 ): Promise<void> {
-    await mkdir(buildSharedSessionDirPath(persistentUserDataDir), {
-        recursive: true,
-    })
-    await writeFile(
-        buildSharedSessionMetadataPath(persistentUserDataDir),
-        JSON.stringify(metadata, null, 2)
+    const sessionDirPath = buildSharedSessionDirPath(persistentUserDataDir)
+    const metadataPath = buildSharedSessionMetadataPath(persistentUserDataDir)
+    const tempPath = buildSharedSessionMetadataTempPath(sessionDirPath)
+
+    await mkdir(sessionDirPath, { recursive: true })
+
+    try {
+        await writeFile(tempPath, JSON.stringify(metadata, null, 2))
+        await rename(tempPath, metadataPath)
+    } finally {
+        await rm(tempPath, { force: true }).catch(() => undefined)
+    }
+}
+
+export async function hasLiveSharedRealBrowserSession(
+    persistentUserDataDir: string
+): Promise<boolean> {
+    const sessionDirPath = buildSharedSessionDirPath(persistentUserDataDir)
+    const metadataRecord = await readSharedSessionMetadataRecord(
+        persistentUserDataDir
     )
+
+    if (!metadataRecord.exists) {
+        return await hasLiveSharedSessionPublisherOrClients(sessionDirPath)
+    }
+    if (!metadataRecord.metadata) {
+        return true
+    }
+
+    if (
+        (await getProcessLiveness(metadataRecord.metadata.browserOwner)) ===
+        'dead'
+    ) {
+        await rm(sessionDirPath, {
+            force: true,
+            recursive: true,
+        }).catch(() => undefined)
+        return false
+    }
+
+    return true
 }
 
 export async function waitForSharedRealBrowserSessionToDrain(
     persistentUserDataDir: string
 ): Promise<void> {
     while (true) {
-        const metadata = await readSharedSessionMetadata(persistentUserDataDir)
-        if (!metadata) {
+        if (!(await hasLiveSharedRealBrowserSession(persistentUserDataDir))) {
             return
         }
+        await sleep(SHARED_SESSION_RETRY_DELAY_MS)
+    }
+}
 
-        if ((await getProcessLiveness(metadata.browserOwner)) === 'dead') {
-            await rm(buildSharedSessionDirPath(persistentUserDataDir), {
-                force: true,
-                recursive: true,
-            }).catch(() => undefined)
+async function readSharedSessionMetadataRecord(
+    persistentUserDataDir: string
+): Promise<SharedSessionMetadataRecord> {
+    try {
+        const raw = await readFile(
+            buildSharedSessionMetadataPath(persistentUserDataDir),
+            'utf8'
+        )
+
+        return {
+            exists: true,
+            metadata: parseSharedSessionMetadata(JSON.parse(raw)),
+        }
+    } catch (error) {
+        return {
+            exists: getErrorCode(error) !== 'ENOENT',
+            metadata: null,
+        }
+    }
+}
+
+async function hasLiveSharedSessionPublisherOrClients(
+    sessionDirPath: string
+): Promise<boolean> {
+    if (!existsSync(sessionDirPath)) {
+        return false
+    }
+
+    let entries: string[]
+    try {
+        entries = await readDirNames(sessionDirPath)
+    } catch (error) {
+        return getErrorCode(error) !== 'ENOENT'
+    }
+
+    let hasUnknownEntries = false
+
+    for (const entry of entries) {
+        if (entry === SHARED_SESSION_METADATA_FILE) {
+            return true
+        }
+        if (entry === SHARED_SESSION_CLIENTS_DIR) {
+            if (await hasDirectoryEntries(join(sessionDirPath, entry))) {
+                return true
+            }
             continue
         }
 
-        await sleep(SHARED_SESSION_RETRY_DELAY_MS)
+        const owner = parseSharedSessionMetadataTempOwner(entry)
+        if (!owner) {
+            if (isSharedSessionMetadataTempFile(entry)) {
+                continue
+            }
+            hasUnknownEntries = true
+            continue
+        }
+        if ((await getProcessLiveness(owner)) !== 'dead') {
+            return true
+        }
     }
+
+    if (hasUnknownEntries) {
+        return true
+    }
+
+    await rm(sessionDirPath, {
+        force: true,
+        recursive: true,
+    }).catch(() => undefined)
+    return false
 }
 
 function buildSharedSessionMetadataPath(
@@ -113,6 +212,19 @@ function buildSharedSessionMetadataPath(
     return join(
         buildSharedSessionDirPath(persistentUserDataDir),
         SHARED_SESSION_METADATA_FILE
+    )
+}
+
+function buildSharedSessionMetadataTempPath(sessionDirPath: string): string {
+    return join(
+        sessionDirPath,
+        [
+            SHARED_SESSION_METADATA_FILE,
+            CURRENT_PROCESS_OWNER.pid,
+            CURRENT_PROCESS_OWNER.processStartedAtMs,
+            randomUUID(),
+            'tmp',
+        ].join('.')
     )
 }
 
@@ -160,6 +272,52 @@ function parseSharedSessionMetadata(
         state,
         stateOwner,
     }
+}
+
+function parseSharedSessionMetadataTempOwner(
+    entryName: string
+): ProcessOwner | null {
+    if (!isSharedSessionMetadataTempFile(entryName)) {
+        return null
+    }
+
+    const segments = entryName.split('.')
+    if (segments.length < 5) {
+        return null
+    }
+
+    return parseProcessOwner({
+        pid: Number.parseInt(segments[2] ?? '', 10),
+        processStartedAtMs: Number.parseInt(segments[3] ?? '', 10),
+    })
+}
+
+function isSharedSessionMetadataTempFile(entryName: string): boolean {
+    return (
+        entryName.startsWith(SHARED_SESSION_METADATA_TEMP_FILE_PREFIX) &&
+        entryName.endsWith(SHARED_SESSION_METADATA_TEMP_FILE_SUFFIX)
+    )
+}
+
+function getErrorCode(error: unknown): string | undefined {
+    return typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        typeof error.code === 'string'
+        ? error.code
+        : undefined
+}
+
+async function hasDirectoryEntries(dirPath: string): Promise<boolean> {
+    try {
+        return (await readDirNames(dirPath)).length > 0
+    } catch (error) {
+        return getErrorCode(error) !== 'ENOENT'
+    }
+}
+
+async function readDirNames(dirPath: string): Promise<string[]> {
+    return await readdir(dirPath, { encoding: 'utf8' })
 }
 
 async function sleep(ms: number): Promise<void> {
