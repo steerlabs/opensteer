@@ -1537,8 +1537,6 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     this.pageByPlaywrightPage.set(page, controller);
     session.pageRefs.add(pageRef);
 
-    controller.openerPageRef = forcedOpenerPageRef;
-
     await cdp.send("Page.enable", { enableFileChooserOpenedEvent: true });
     await cdp.send("DOM.enable", { includeWhitespace: "none" });
     await cdp.send("DOM.getDocument", { depth: 0 });
@@ -1605,7 +1603,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       }),
     );
 
-    if (forcedOpenerPageRef) {
+    if (forcedOpenerPageRef !== undefined) {
       controller.openerPageRef = forcedOpenerPageRef;
       this.queueEvent(
         controller.pageRef,
@@ -1618,15 +1616,17 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       );
     } else {
       const pendingOpenerPageRef = this.pendingPopupOpeners.get(page);
-      if (pendingOpenerPageRef) {
+      if (pendingOpenerPageRef !== undefined) {
         this.pendingPopupOpeners.delete(page);
       }
-      const opener = pendingOpenerPageRef ? null : await page.opener().catch(() => null);
-      const openerController = pendingOpenerPageRef
-        ? this.pages.get(pendingOpenerPageRef)
-        : opener
-          ? this.pageByPlaywrightPage.get(opener)
-          : undefined;
+      const opener =
+        pendingOpenerPageRef !== undefined ? null : await page.opener().catch(() => null);
+      const openerController =
+        pendingOpenerPageRef !== undefined
+          ? this.pages.get(pendingOpenerPageRef)
+          : opener
+            ? this.pageByPlaywrightPage.get(opener)
+            : undefined;
       if (openerController) {
         controller.openerPageRef = openerController.pageRef;
       }

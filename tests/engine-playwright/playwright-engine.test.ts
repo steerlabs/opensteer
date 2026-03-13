@@ -37,17 +37,24 @@ function html(body: string, title: string, extraHead = ""): string {
 </html>`;
 }
 
-function domDocument(updated = false): string {
-  const rewrittenDocument = updated ? "" : JSON.stringify(domDocument(true));
+function updatedDomDocument(): string {
   return html(
     `
-      <button id="continue" type="button"${updated ? ' data-state="updated"' : ""}>${updated ? "Updated" : "Continue"}</button>
+      <button id="continue" type="button" data-state="updated">Updated</button>
       <input id="name" type="text" autofocus oninput="document.getElementById('mirror').textContent = this.value" />
       <div id="mirror"></div>
-      ${
-        updated
-          ? ""
-          : `
+    `,
+    "DOM page",
+  );
+}
+
+function domDocument(): string {
+  const rewrittenDocument = JSON.stringify(updatedDomDocument());
+  return html(
+    `
+      <button id="continue" type="button">Continue</button>
+      <input id="name" type="text" autofocus oninput="document.getElementById('mirror').textContent = this.value" />
+      <div id="mirror"></div>
       <script>
         document.getElementById("continue").addEventListener("click", () => {
           document.open();
@@ -55,8 +62,6 @@ function domDocument(updated = false): string {
           document.close();
         });
       </script>
-      `
-      }
     `,
     "DOM page",
   );
