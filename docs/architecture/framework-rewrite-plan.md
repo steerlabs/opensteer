@@ -30,15 +30,46 @@ apps/
   opensteer-cloud/
 ```
 
-Inside `packages/opensteer`, keep these as internal modules for now:
+Inside `packages/opensteer`, organize the product layer like this:
 
-- `dom-runtime`
-- `computer-use`
-- `session-http`
-- `request-plans`
-- `artifact-store`
-- `trace-recorder`
-- `runtime-policy`
+```text
+src/
+  runtimes/
+    dom/
+    computer-use/
+  requests/
+    capture/
+    plans/
+    execution/
+      session-http/
+      direct-http/   # later if needed
+  registry/
+    descriptors/
+    request-plans/
+  traces/
+  artifacts/
+  policy/
+  sdk/
+  cli/
+```
+
+Purpose of each area:
+
+- `runtimes/dom`: selector-aware DOM interaction semantics
+- `runtimes/computer-use`: coordinate and vision-driven interaction semantics
+- `requests/capture`: network evidence collection during interactive runs
+- `requests/plans`: request-plan inference, normalization, and validation
+- `requests/execution/session-http`: request execution inside the live browser
+  session boundary when auth and origin state matter
+- `requests/execution/direct-http`: detached execution for reusable plans later
+- `registry/descriptors`: deterministic local replay records for actions and
+  extraction
+- `registry/request-plans`: versioned local registry of reusable API plans
+- `traces`: normalized timeline of what happened
+- `artifacts`: durable evidence such as screenshots, DOM snapshots, and network
+  captures
+- `policy`: actionability, retry, timeout, approval, and fallback rules
+- `sdk` and `cli`: the agent-facing surfaces over the same Opensteer semantics
 
 ## Original Target Architecture
 
@@ -91,9 +122,9 @@ Owns the ABP backend.
 
 Owns product semantics and developer experience.
 
-- DOM mode
-- computer-use mode
-- session-bound HTTP mode
+- interaction runtimes for DOM and computer-use flows
+- request capture, request-plan compilation, and request execution transports
+- deterministic local registries for descriptor replay and request plans
 - artifacts
 - traces
 - policy
@@ -138,6 +169,15 @@ Owns the Opensteer control plane and remote transport.
 - request-plan creation
 
 These belong in `packages/opensteer`.
+
+### What stays out of `traces` and `artifacts`
+
+- deterministic local replay lookup
+- request-plan version selection
+- cache freshness policy
+- plan lifecycle metadata
+
+These belong in `packages/opensteer/registry`.
 
 ### Additional Rules
 
@@ -232,10 +272,11 @@ Define `packages/protocol`.
 
 ### Phase 3
 
-Define trace and artifact schemas early inside `packages/opensteer`.
+Define trace, artifact, and registry boundaries early inside `packages/opensteer`.
 
-- `artifact-store`
-- `trace-recorder`
+- `artifacts`
+- `traces`
+- `registry`
 
 ### Phase 4
 
@@ -246,7 +287,7 @@ Implement `packages/engine-playwright` first.
 
 ### Phase 5
 
-Move DOM semantics into `packages/opensteer/dom-runtime`.
+Move DOM semantics into `packages/opensteer/src/runtimes/dom`.
 
 - selectors
 - refs
@@ -259,7 +300,7 @@ Add the first agent-facing CLI and SDK surfaces through `packages/opensteer`.
 
 ### Phase 7
 
-Add `runtime-policy`.
+Add `packages/opensteer/src/policy`.
 
 - actionability rules
 - settle rules
@@ -276,7 +317,7 @@ Implement `packages/engine-abp`.
 
 ### Phase 9
 
-Add `computer-use`.
+Add `packages/opensteer/src/runtimes/computer-use`.
 
 - coordinate and vision mode
 - hit-test before click
@@ -284,10 +325,12 @@ Add `computer-use`.
 
 ### Phase 10
 
-Add `session-http` and then `request-plans`.
+Add the request workflow system after the interaction runtimes are proven.
 
-- raw authenticated browser-session requests first
-- reusable plan creation second
+- request capture
+- request-plan creation and validation
+- `session-http` as the browser-session execution transport
+- `direct-http` later if detached execution is needed
 
 ### Phase 11
 
