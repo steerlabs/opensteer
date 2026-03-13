@@ -27,6 +27,7 @@ import {
   staleNodeRefError,
   closedPageError,
   closedSessionError,
+  isBrowserCoreError,
   type BodyPayload,
   type BrowserCapabilities,
   type BrowserCoreEngine,
@@ -202,6 +203,8 @@ interface PageController {
   readonly documentsByRef: Map<DocumentRef, DocumentState>;
   readonly networkByRequest: Map<Request, NetworkRecordState>;
   readonly backgroundTasks: Set<Promise<void>>;
+  domUpdateTask: Promise<void> | undefined;
+  backgroundError: Error | undefined;
   openerPageRef: PageRef | undefined;
   mainFrameRef: FrameRef | undefined;
   lifecycleState: PageLifecycleState;
@@ -230,6 +233,7 @@ interface DocumentState {
   parentDocumentRef: DocumentRef | undefined;
   readonly nodeRefsByBackendNodeId: Map<number, NodeRef>;
   readonly backendNodeIdsByNodeRef: Map<NodeRef, number>;
+  domTreeSignature: string | undefined;
 }
 
 interface FrameDescriptor {
@@ -719,6 +723,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       controller.lastKnownTitle = await this.readTitle(controller.page, controller.lastKnownTitle);
     }
     await this.flushPendingPageTasks(session.sessionRef);
+    await this.flushDomUpdateTask(controller);
 
     const mainFrame = this.requireMainFrame(controller);
     return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
@@ -762,6 +767,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     await controller.page.bringToFront();
     controller.lastKnownTitle = await this.readTitle(controller.page, controller.lastKnownTitle);
     await this.flushPendingPageTasks(controller.sessionRef);
+    await this.flushDomUpdateTask(controller);
     const mainFrame = this.requireMainFrame(controller);
 
     return this.createStepResult(controller.sessionRef, controller.pageRef, startedAt, {
@@ -796,6 +802,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     }
     controller.lastKnownTitle = await this.readTitle(controller.page, controller.lastKnownTitle);
     await this.flushPendingPageTasks(controller.sessionRef);
+    await this.flushDomUpdateTask(controller);
     const mainFrame = this.requireMainFrame(controller);
 
     return this.createStepResult(controller.sessionRef, controller.pageRef, startedAt, {
@@ -827,6 +834,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     }
     controller.lastKnownTitle = await this.readTitle(controller.page, controller.lastKnownTitle);
     await this.flushPendingPageTasks(controller.sessionRef);
+    await this.flushDomUpdateTask(controller);
     const mainFrame = this.requireMainFrame(controller);
 
     return this.createStepResult(controller.sessionRef, controller.pageRef, startedAt, {
@@ -844,7 +852,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   async goBack(input: { readonly pageRef: PageRef }): Promise<StepResult<boolean>> {
     const controller = this.requirePage(input.pageRef);
     const startedAt = Date.now();
-    const beforeUrl = controller.page.url();
+    const beforeHistory = await controller.cdp.send("Page.getNavigationHistory");
     try {
       await controller.page.goBack();
     } catch (error) {
@@ -852,8 +860,10 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     }
     controller.lastKnownTitle = await this.readTitle(controller.page, controller.lastKnownTitle);
     await this.flushPendingPageTasks(controller.sessionRef);
+    await this.flushDomUpdateTask(controller);
     const mainFrame = this.requireMainFrame(controller);
-    const changed = controller.page.url() !== beforeUrl;
+    const afterHistory = await controller.cdp.send("Page.getNavigationHistory");
+    const changed = afterHistory.currentIndex !== beforeHistory.currentIndex;
 
     return this.createStepResult(controller.sessionRef, controller.pageRef, startedAt, {
       frameRef: mainFrame.frameRef,
@@ -867,7 +877,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   async goForward(input: { readonly pageRef: PageRef }): Promise<StepResult<boolean>> {
     const controller = this.requirePage(input.pageRef);
     const startedAt = Date.now();
-    const beforeUrl = controller.page.url();
+    const beforeHistory = await controller.cdp.send("Page.getNavigationHistory");
     try {
       await controller.page.goForward();
     } catch (error) {
@@ -875,8 +885,10 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     }
     controller.lastKnownTitle = await this.readTitle(controller.page, controller.lastKnownTitle);
     await this.flushPendingPageTasks(controller.sessionRef);
+    await this.flushDomUpdateTask(controller);
     const mainFrame = this.requireMainFrame(controller);
-    const changed = controller.page.url() !== beforeUrl;
+    const afterHistory = await controller.cdp.send("Page.getNavigationHistory");
+    const changed = afterHistory.currentIndex !== beforeHistory.currentIndex;
 
     return this.createStepResult(controller.sessionRef, controller.pageRef, startedAt, {
       frameRef: mainFrame.frameRef,
@@ -1163,6 +1175,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
 
   async listFrames(input: { readonly pageRef: PageRef }): Promise<readonly FrameInfo[]> {
     const controller = this.requirePage(input.pageRef);
+    await this.flushDomUpdateTask(controller);
     return Array.from(controller.framesByCdpId.values())
       .map((frame) => this.buildFrameInfo(frame))
       .sort((left, right) => Number(right.isMainFrame) - Number(left.isMainFrame));
@@ -1173,7 +1186,9 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   }
 
   async getFrameInfo(input: { readonly frameRef: FrameRef }): Promise<FrameInfo> {
-    return this.buildFrameInfo(this.requireFrame(input.frameRef));
+    const frame = this.requireFrame(input.frameRef);
+    await this.flushDomUpdateTask(this.requirePage(frame.pageRef));
+    return this.buildFrameInfo(frame);
   }
 
   async getHtmlSnapshot(input: {
@@ -1182,6 +1197,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   }): Promise<HtmlSnapshot> {
     const document = this.resolveDocumentTarget(input);
     const controller = this.requirePage(document.pageRef);
+    await this.flushDomUpdateTask(controller);
     const captured = await this.captureDomSnapshot(controller, document);
     const rootElementBackendNodeId = this.findHtmlBackendNodeId(captured, document);
     if (rootElementBackendNodeId === undefined) {
@@ -1212,42 +1228,27 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   }): Promise<DomSnapshot> {
     const document = this.resolveDocumentTarget(input);
     const controller = this.requirePage(document.pageRef);
+    await this.flushDomUpdateTask(controller);
     const captured = await this.captureDomSnapshot(controller, document);
     return this.buildDomSnapshot(document, captured);
   }
 
   async readText(input: NodeLocator): Promise<string | null> {
-    const { controller, document, backendNodeId } = this.requireLiveNode(input);
-    try {
-      const resolved = await controller.cdp.send("DOM.resolveNode", {
-        backendNodeId,
-      });
-      const objectId = resolved.object.objectId;
-      if (!objectId) {
-        throw staleNodeRefError(input);
-      }
-
-      const result = await controller.cdp.send("Runtime.callFunctionOn", {
-        objectId,
-        functionDeclaration: "function () { return this.textContent; }",
-        returnByValue: true,
-        awaitPromise: true,
-      });
-      await controller.cdp.send("Runtime.releaseObject", { objectId });
-      if ("value" in result.result) {
-        return (result.result.value as string | null | undefined) ?? null;
-      }
-      return null;
-    } catch (error) {
-      this.rethrowNodeLookupError(error, document, input);
-      throw error;
-    }
+    const document = this.requireDocument(input.documentRef);
+    const controller = this.requirePage(document.pageRef);
+    await this.flushDomUpdateTask(controller);
+    const { document: liveDocument, backendNodeId } = this.requireLiveNode(input);
+    const captured = await this.captureDomSnapshot(controller, liveDocument);
+    return this.readTextContent(captured, input, backendNodeId);
   }
 
   async readAttributes(
     input: NodeLocator,
   ): Promise<readonly { readonly name: string; readonly value: string }[]> {
-    const { controller, document, backendNodeId } = this.requireLiveNode(input);
+    const document = this.requireDocument(input.documentRef);
+    const controller = this.requirePage(document.pageRef);
+    await this.flushDomUpdateTask(controller);
+    const { document: liveDocument, backendNodeId } = this.requireLiveNode(input);
     try {
       await controller.cdp.send("DOM.getDocument", { depth: 0 });
       const frontend = await controller.cdp.send("DOM.pushNodesByBackendIdsToFrontend", {
@@ -1264,7 +1265,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       }));
       return normalized;
     } catch (error) {
-      this.rethrowNodeLookupError(error, document, input);
+      this.rethrowNodeLookupError(error, liveDocument, input);
       throw error;
     }
   }
@@ -1277,6 +1278,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     readonly includeUserAgentShadowDom?: boolean;
   }): Promise<HitTestResult> {
     const controller = this.requirePage(input.pageRef);
+    await this.flushDomUpdateTask(controller);
     const metrics = await this.getViewportMetrics({ pageRef: input.pageRef });
     const viewportPoint = this.toViewportPoint(metrics, input.point, input.coordinateSpace);
     const documentPoint = this.toDocumentPoint(metrics, input.point, input.coordinateSpace);
@@ -1341,9 +1343,11 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   async getViewportMetrics(input: { readonly pageRef: PageRef }): Promise<ViewportMetrics> {
     const controller = this.requirePage(input.pageRef);
     const layout = await controller.cdp.send("Page.getLayoutMetrics");
-    const devicePixelRatio = await controller.page.evaluate(() =>
-      Number((globalThis as { devicePixelRatio?: number }).devicePixelRatio ?? 1),
-    );
+    const screenInfos = await controller.cdp.send("Emulation.getScreenInfos");
+    const primaryScreen =
+      screenInfos.screenInfos.find((screen) => screen.isPrimary) ?? screenInfos.screenInfos[0];
+    const pageZoomFactor = layout.cssVisualViewport.zoom ?? 1;
+    const devicePixelRatio = (primaryScreen?.devicePixelRatio ?? 1) * pageZoomFactor;
     return {
       layoutViewport: {
         origin: createPoint(layout.cssLayoutViewport.pageX, layout.cssLayoutViewport.pageY),
@@ -1370,7 +1374,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       contentSize: createSize(layout.cssContentSize.width, layout.cssContentSize.height),
       devicePixelRatio: createDevicePixelRatio(devicePixelRatio),
       pageScaleFactor: createPageScaleFactor(layout.cssVisualViewport.scale),
-      pageZoomFactor: createPageZoomFactor(layout.cssVisualViewport.zoom ?? 1),
+      pageZoomFactor: createPageZoomFactor(pageZoomFactor),
     };
   }
 
@@ -1525,6 +1529,8 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       documentsByRef: new Map(),
       networkByRequest: new Map(),
       backgroundTasks: new Set(),
+      domUpdateTask: undefined,
+      backgroundError: undefined,
       openerPageRef: undefined,
       mainFrameRef: undefined,
       lifecycleState: "open",
@@ -1539,6 +1545,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
 
     await cdp.send("Page.enable", { enableFileChooserOpenedEvent: true });
     await cdp.send("DOM.enable", { includeWhitespace: "none" });
+    await cdp.send("DOMStorage.enable");
     await cdp.send("DOM.getDocument", { depth: 0 });
 
     cdp.on("Page.frameAttached", (payload) =>
@@ -1593,6 +1600,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     const frameTree = await cdp.send("Page.getFrameTree");
     this.syncFrameTree(controller, frameTree.frameTree);
     this.bindPlaywrightFrames(controller, frameTree.frameTree, page.mainFrame());
+    await this.reconcileDocumentEpochs(controller);
     controller.lastKnownTitle = await this.readTitle(page, controller.lastKnownTitle);
     this.queueEvent(
       controller.pageRef,
@@ -1656,6 +1664,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       parentDocumentRef: parent?.currentDocument.documentRef,
       nodeRefsByBackendNodeId: new Map(),
       backendNodeIdsByNodeRef: new Map(),
+      domTreeSignature: undefined,
     };
     const frame: FrameState = {
       pageRef: controller.pageRef,
@@ -1715,6 +1724,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       parentDocumentRef: parent?.currentDocument.documentRef,
       nodeRefsByBackendNodeId: new Map(),
       backendNodeIdsByNodeRef: new Map(),
+      domTreeSignature: undefined,
     };
     this.retireDocument(frameState.currentDocument.documentRef);
     frameState.currentDocument = nextDocument;
@@ -1728,6 +1738,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     this.documents.set(nextDocumentRef, nextDocument);
     this.retiredDocuments.delete(nextDocumentRef);
     this.trackBackgroundTask(controller, this.refreshFrameBindings(controller));
+    this.queueDocumentReconciliation(controller);
   }
 
   private handleNavigatedWithinDocument(
@@ -1743,11 +1754,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   }
 
   private handleDocumentUpdated(controller: PageController): void {
-    for (const frame of controller.framesByCdpId.values()) {
-      frame.currentDocument.documentEpoch = nextDocumentEpoch(frame.currentDocument.documentEpoch);
-      frame.currentDocument.nodeRefsByBackendNodeId.clear();
-      frame.currentDocument.backendNodeIdsByNodeRef.clear();
-    }
+    this.queueDocumentReconciliation(controller);
   }
 
   private syncFrameTree(controller: PageController, tree: FrameTreeNode): void {
@@ -1769,6 +1776,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
               : this.requireFrame(parentFrameRef).currentDocument.documentRef,
           nodeRefsByBackendNodeId: new Map(),
           backendNodeIdsByNodeRef: new Map(),
+          domTreeSignature: undefined,
         };
         const frame: FrameState = {
           pageRef: controller.pageRef,
@@ -2142,8 +2150,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
         };
       }
     })();
-    this.trackBackgroundTask(controller, task);
-    await task;
+    await this.trackBackgroundTask(controller, task);
   }
 
   private async handleRequestFailed(controller: PageController, request: Request): Promise<void> {
@@ -2163,8 +2170,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
           : {}),
       };
     })();
-    this.trackBackgroundTask(controller, task);
-    await task;
+    await this.trackBackgroundTask(controller, task);
   }
 
   private async collectSessionStorageSnapshots(
@@ -2173,12 +2179,8 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     const snapshots: SessionStorageSnapshot[] = [];
     for (const pageRef of session.pageRefs) {
       const controller = this.requirePage(pageRef);
-      await this.refreshFrameBindings(controller);
+      await this.flushDomUpdateTask(controller);
       for (const frame of controller.framesByCdpId.values()) {
-        const playwrightFrame = this.findPlaywrightFrame(controller, frame.frameRef);
-        if (!playwrightFrame) {
-          continue;
-        }
         let origin: string;
         try {
           origin = new URL(frame.currentDocument.url).origin;
@@ -2188,14 +2190,32 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
         if (origin === "null") {
           continue;
         }
-        const entries = await playwrightFrame.evaluate(() =>
-          Object.entries(sessionStorage).map(([key, value]) => ({ key, value })),
-        );
+        let storageKey: string;
+        try {
+          const resolved = await controller.cdp.send("Storage.getStorageKey", {
+            frameId: frame.cdpFrameId,
+          });
+          storageKey = resolved.storageKey;
+        } catch {
+          continue;
+        }
+        const storage = await controller.cdp.send("DOMStorage.getDOMStorageItems", {
+          storageId: {
+            storageKey,
+            isLocalStorage: false,
+          },
+        });
         snapshots.push({
           pageRef: controller.pageRef,
           frameRef: frame.frameRef,
           origin,
-          entries,
+          entries: storage.entries.reduce<StorageEntry[]>((entries, entry) => {
+            const [key, value] = entry;
+            if (key !== undefined && value !== undefined) {
+              entries.push({ key, value });
+            }
+            return entries;
+          }, []),
         });
       }
     }
@@ -2230,29 +2250,112 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     };
   }
 
+  private async capturePageDomSnapshot(
+    controller: PageController,
+    options: {
+      readonly includeLayout: boolean;
+    },
+  ): Promise<{
+    readonly capturedAt: number;
+    readonly documents: readonly DomSnapshotDocument[];
+    readonly strings: readonly string[];
+  }> {
+    const capturedAt = Date.now();
+    const result = await controller.cdp.send("DOMSnapshot.captureSnapshot", {
+      computedStyles: [],
+      includePaintOrder: options.includeLayout,
+      includeDOMRects: options.includeLayout,
+    });
+    return {
+      capturedAt,
+      documents: result.documents as readonly DomSnapshotDocument[],
+      strings: result.strings,
+    };
+  }
+
+  private findCapturedDocument(
+    captured: {
+      readonly documents: readonly DomSnapshotDocument[];
+      readonly strings: readonly string[];
+    },
+    cdpFrameId: string,
+  ): DomSnapshotDocument | undefined {
+    return captured.documents.find(
+      (candidate) => parseStringTable(captured.strings, candidate.frameId) === cdpFrameId,
+    );
+  }
+
+  private updateDocumentTreeSignature(
+    document: DocumentState,
+    rawDocument: DomSnapshotDocument,
+  ): void {
+    const backendNodeIds = (rawDocument.nodes.backendNodeId ?? [])
+      .filter((value): value is number => value !== undefined)
+      .slice()
+      .sort((left, right) => left - right);
+    const signature = `${rawDocument.nodes.nodeType?.length ?? 0}:${backendNodeIds.join(",")}`;
+
+    if (
+      document.domTreeSignature !== undefined &&
+      document.domTreeSignature !== signature &&
+      !this.retiredDocuments.has(document.documentRef)
+    ) {
+      document.documentEpoch = nextDocumentEpoch(document.documentEpoch);
+      document.nodeRefsByBackendNodeId.clear();
+      document.backendNodeIdsByNodeRef.clear();
+    }
+
+    document.domTreeSignature = signature;
+  }
+
+  private async reconcileDocumentEpochs(controller: PageController): Promise<void> {
+    const captured = await this.capturePageDomSnapshot(controller, { includeLayout: false });
+    for (const frame of controller.framesByCdpId.values()) {
+      const rawDocument = this.findCapturedDocument(captured, frame.cdpFrameId);
+      if (!rawDocument) {
+        continue;
+      }
+      this.updateDocumentTreeSignature(frame.currentDocument, rawDocument);
+    }
+  }
+
+  private queueDocumentReconciliation(controller: PageController): void {
+    const queued = (controller.domUpdateTask ?? Promise.resolve()).then(() =>
+      this.reconcileDocumentEpochs(controller),
+    );
+    const tracked = this.trackBackgroundTask(controller, queued);
+    const settled = tracked.finally(() => {
+      if (controller.domUpdateTask === settled) {
+        controller.domUpdateTask = undefined;
+      }
+    });
+    controller.domUpdateTask = settled;
+  }
+
+  private async flushDomUpdateTask(controller: PageController): Promise<void> {
+    while (controller.domUpdateTask) {
+      await controller.domUpdateTask;
+    }
+    this.throwBackgroundError(controller);
+  }
+
   private async captureDomSnapshot(
     controller: PageController,
     document: DocumentState,
   ): Promise<CapturedDomSnapshot> {
-    const capturedAt = Date.now();
-    const result = await controller.cdp.send("DOMSnapshot.captureSnapshot", {
-      computedStyles: [],
-      includePaintOrder: true,
-      includeDOMRects: true,
-    });
-    const rawDocument = result.documents.find(
-      (candidate) => parseStringTable(result.strings, candidate.frameId) === document.cdpFrameId,
-    );
+    const captured = await this.capturePageDomSnapshot(controller, { includeLayout: true });
+    const rawDocument = this.findCapturedDocument(captured, document.cdpFrameId);
     if (!rawDocument) {
       throw createBrowserCoreError(
         "not-found",
         `document ${document.documentRef} was not found in the current page snapshot`,
       );
     }
+    this.updateDocumentTreeSignature(document, rawDocument);
     return {
-      capturedAt,
-      rawDocument: rawDocument as DomSnapshotDocument,
-      strings: result.strings,
+      capturedAt: captured.capturedAt,
+      rawDocument,
+      strings: captured.strings,
     };
   }
 
@@ -2383,6 +2486,51 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     return doc ? doc.backendNodeIdsByNodeRef.values().next().value : undefined;
   }
 
+  private readTextContent(
+    captured: CapturedDomSnapshot,
+    input: NodeLocator,
+    backendNodeId: number,
+  ): string | null {
+    const backendNodeIds = captured.rawDocument.nodes.backendNodeId ?? [];
+    const nodeIndex = backendNodeIds.findIndex((value) => value === backendNodeId);
+    if (nodeIndex === -1) {
+      throw staleNodeRefError(input);
+    }
+
+    const parentIndexes = captured.rawDocument.nodes.parentIndex ?? [];
+    const childIndexes = new Map<number, number[]>();
+    for (let index = 0; index < parentIndexes.length; index += 1) {
+      const parentIndex = parentIndexes[index];
+      if (parentIndex === undefined || parentIndex < 0) {
+        continue;
+      }
+      const children = childIndexes.get(parentIndex) ?? [];
+      children.push(index);
+      childIndexes.set(parentIndex, children);
+    }
+
+    const visit = (index: number): string | null => {
+      const nodeType = captured.rawDocument.nodes.nodeType?.[index] ?? 0;
+      if (nodeType === 9 || nodeType === 10) {
+        return null;
+      }
+      if (nodeType === 3 || nodeType === 4 || nodeType === 7 || nodeType === 8) {
+        return parseStringTable(captured.strings, captured.rawDocument.nodes.nodeValue?.[index]);
+      }
+
+      let text = "";
+      for (const childIndex of childIndexes.get(index) ?? []) {
+        const childText = visit(childIndex);
+        if (childText !== null) {
+          text += childText;
+        }
+      }
+      return text;
+    };
+
+    return visit(nodeIndex);
+  }
+
   private nodeRefForBackendNode(document: DocumentState, backendNodeId: number): NodeRef {
     const existing = document.nodeRefsByBackendNodeId.get(backendNodeId);
     if (existing) {
@@ -2405,13 +2553,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       );
     }
     if (input.documentRef) {
-      const document = this.documents.get(input.documentRef);
-      if (!document) {
-        throw createBrowserCoreError("not-found", `document ${input.documentRef} was not found`, {
-          details: { documentRef: input.documentRef },
-        });
-      }
-      return document;
+      return this.requireDocument(input.documentRef);
     }
     if (input.frameRef) {
       return this.requireFrame(input.frameRef).currentDocument;
@@ -2527,6 +2669,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     if (!page || page.lifecycleState === "closed") {
       throw closedPageError(pageRef);
     }
+    this.throwBackgroundError(page);
     return page;
   }
 
@@ -2538,6 +2681,16 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       });
     }
     return frame;
+  }
+
+  private requireDocument(documentRef: DocumentRef): DocumentState {
+    const document = this.documents.get(documentRef);
+    if (!document) {
+      throw createBrowserCoreError("not-found", `document ${documentRef} was not found`, {
+        details: { documentRef },
+      });
+    }
+    return document;
   }
 
   private cleanupPageController(controller: PageController): void {
@@ -2553,18 +2706,27 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     controller.documentsByRef.clear();
   }
 
-  private trackBackgroundTask(controller: PageController, promise: Promise<void>): void {
-    controller.backgroundTasks.add(promise);
-    void promise.finally(() => {
-      controller.backgroundTasks.delete(promise);
+  private trackBackgroundTask(controller: PageController, promise: Promise<void>): Promise<void> {
+    const tracked = promise.catch((error) => {
+      if (this.shouldIgnoreBackgroundTaskError(controller, error)) {
+        return;
+      }
+      controller.backgroundError ??= this.normalizePlaywrightError(error, controller.pageRef);
     });
+    controller.backgroundTasks.add(tracked);
+    void tracked.finally(() => {
+      controller.backgroundTasks.delete(tracked);
+    });
+    return tracked;
   }
 
   private async flushBackgroundTasks(controller: PageController): Promise<void> {
     if (controller.backgroundTasks.size === 0) {
+      this.throwBackgroundError(controller);
       return;
     }
     await Promise.all(Array.from(controller.backgroundTasks));
+    this.throwBackgroundError(controller);
   }
 
   private async flushPendingPageTasks(sessionRef: SessionRef): Promise<void> {
@@ -2577,6 +2739,12 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       return;
     }
     await Promise.all(Array.from(session.pendingPageTasks));
+  }
+
+  private throwBackgroundError(controller: PageController): void {
+    if (controller.backgroundError) {
+      throw controller.backgroundError;
+    }
   }
 
   private createEvent<TKind extends StepEvent["kind"]>(
@@ -2714,15 +2882,6 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     }
   }
 
-  private findPlaywrightFrame(controller: PageController, frameRef: FrameRef): Frame | undefined {
-    for (const frame of controller.page.frames()) {
-      if (controller.frameBindings.get(frame) === frameRef) {
-        return frame;
-      }
-    }
-    return undefined;
-  }
-
   private retireDocument(documentRef: DocumentRef): void {
     this.documents.delete(documentRef);
     this.retiredDocuments.add(documentRef);
@@ -2744,6 +2903,9 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   }
 
   private normalizePlaywrightError(error: unknown, pageRef: PageRef): Error {
+    if (isBrowserCoreError(error)) {
+      return error;
+    }
     if (error instanceof playwrightErrors.TimeoutError) {
       return createBrowserCoreError("timeout", error.message, { cause: error });
     }
@@ -2763,6 +2925,10 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       cause: error,
       details: { pageRef },
     });
+  }
+
+  private shouldIgnoreBackgroundTaskError(controller: PageController, error: unknown): boolean {
+    return controller.lifecycleState === "closed" || this.isContextClosedError(error);
   }
 
   private assertNotDisposed(): void {
