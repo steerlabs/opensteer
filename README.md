@@ -33,6 +33,24 @@ docs/
   architecture/
 ```
 
+Inside `packages/opensteer`, the current target structure is:
+
+```text
+src/
+  runtimes/
+  requests/
+  registry/
+  traces/
+  artifacts/
+  policy/
+  sdk/
+  cli/
+```
+
+`registry/` is the home for deterministic local replay records and reusable
+request-plan persistence. `traces/` stays a timeline, and `artifacts/` stays the
+durable evidence store.
+
 ## Key Documents
 
 - [Rewrite plan and phased roadmap](docs/architecture/framework-rewrite-plan.md)

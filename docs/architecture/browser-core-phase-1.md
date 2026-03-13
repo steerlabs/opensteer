@@ -383,16 +383,16 @@ The fake engine exists to prove the contract shape, not browser fidelity.
 
 Minimum `Phase 1` fake-engine coverage:
 
-| Surface | Fake engine requirement |
-| --- | --- |
-| Identity | Must model `SessionRef`, `PageRef`, `FrameRef`, `DocumentRef`, `DocumentEpoch`, and deterministic stale `NodeRef` failure. |
-| Enumeration | Must return stable `PageInfo` and `FrameInfo` topology, including opener and parent relationships when present. |
-| Geometry | Must support `Point`, `Size`, `Rect`, `Quad`, and explicit coordinate spaces in fixtures. |
-| DOM | Must return both `HtmlSnapshot` and structured `DomSnapshot` fixtures. |
-| Hit test | Must return normalized `HitTestResult` including coordinate space and target refs. |
-| Network | Must emit `NetworkRecord` fixtures with ordered headers and optional raw bodies. |
-| Session state | Must expose `CookieRecord` and `StorageSnapshot` fixtures. |
-| Step events | Must emit capability-gated `StepEvent` fixtures for non-DOM browser surfaces. |
+| Surface       | Fake engine requirement                                                                                                    |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Identity      | Must model `SessionRef`, `PageRef`, `FrameRef`, `DocumentRef`, `DocumentEpoch`, and deterministic stale `NodeRef` failure. |
+| Enumeration   | Must return stable `PageInfo` and `FrameInfo` topology, including opener and parent relationships when present.            |
+| Geometry      | Must support `Point`, `Size`, `Rect`, `Quad`, and explicit coordinate spaces in fixtures.                                  |
+| DOM           | Must return both `HtmlSnapshot` and structured `DomSnapshot` fixtures.                                                     |
+| Hit test      | Must return normalized `HitTestResult` including coordinate space and target refs.                                         |
+| Network       | Must emit `NetworkRecord` fixtures with ordered headers and optional raw bodies.                                           |
+| Session state | Must expose `CookieRecord` and `StorageSnapshot` fixtures.                                                                 |
+| Step events   | Must emit capability-gated `StepEvent` fixtures for non-DOM browser surfaces.                                              |
 
 The fake engine does not need to emulate real browser timing, rendering, or full
 network stack behavior. It only needs to prove that the contract is coherent and
