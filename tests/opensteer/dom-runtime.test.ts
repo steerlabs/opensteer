@@ -235,6 +235,10 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function dataUrl(document: string): string {
+  return `data:text/html,${encodeURIComponent(document)}`;
+}
+
 beforeAll(async () => {
   const started = await startServer();
   baseUrl = started.url;
@@ -367,9 +371,9 @@ describe("Phase 5 DOM runtime integration", () => {
           target: { kind: "path", path },
         });
 
-        expect(
-          resolved.node.attributes.find((attribute) => attribute.name === "id")?.value,
-        ).toBe("child-shadow-action");
+        expect(resolved.node.attributes.find((attribute) => attribute.name === "id")?.value).toBe(
+          "child-shadow-action",
+        );
       } finally {
         await engine.dispose();
       }
@@ -426,8 +430,229 @@ describe("Phase 5 DOM runtime integration", () => {
         const snapshot = await engine.getDomSnapshot({
           frameRef: requireValue(created.frameRef, "main frame ref missing"),
         });
-        const statusNode = requireValue(findNodeById(snapshot.nodes, "status"), "status node missing");
-        expect(await engine.readText(createLocator(snapshot, statusNode))).toBe("descriptor clicked v2");
+        const statusNode = requireValue(
+          findNodeById(snapshot.nodes, "status"),
+          "status node missing",
+        );
+        expect(await engine.readText(createLocator(snapshot, statusNode))).toBe(
+          "descriptor clicked v2",
+        );
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "resolves explicit selectors directly even when a stored descriptor already exists",
+    { timeout: 60_000 },
+    async () => {
+      const rootPath = await createTemporaryRoot();
+      const root = await createFilesystemOpensteerRoot({ rootPath });
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+
+      try {
+        const runtime = createDomRuntime({
+          engine,
+          root,
+          namespace: "phase5-precedence",
+        });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: dataUrl(
+            html(
+              `
+                <button id="old" type="button" style="position:absolute;left:20px;top:20px;width:160px;height:40px">Old</button>
+                <button id="new" type="button" style="position:absolute;left:20px;top:80px;width:160px;height:40px">New</button>
+              `,
+              "DOM runtime precedence",
+            ),
+          ),
+        });
+
+        await wait(300);
+
+        const first = await runtime.resolveTarget({
+          pageRef: created.data.pageRef,
+          method: "click",
+          target: { kind: "selector", selector: "#old", description: "shared button" },
+        });
+        const second = await runtime.resolveTarget({
+          pageRef: created.data.pageRef,
+          method: "click",
+          target: { kind: "selector", selector: "#new", description: "shared button" },
+        });
+        const replayed = await runtime.resolveTarget({
+          pageRef: created.data.pageRef,
+          method: "click",
+          target: { kind: "descriptor", description: "shared button" },
+        });
+
+        expect(first.node.attributes.find((attribute) => attribute.name === "id")?.value).toBe(
+          "old",
+        );
+        expect(second.node.attributes.find((attribute) => attribute.name === "id")?.value).toBe(
+          "new",
+        );
+        expect(replayed.node.attributes.find((attribute) => attribute.name === "id")?.value).toBe(
+          "new",
+        );
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "rejects ambiguous path replay instead of silently choosing the first match",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+
+      try {
+        const runtime = createDomRuntime({ engine });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: dataUrl(
+            html(
+              `
+                <button class="dup" type="button" style="position:absolute;left:20px;top:20px;width:160px;height:40px">A</button>
+                <button class="dup" type="button" style="position:absolute;left:20px;top:80px;width:160px;height:40px">B</button>
+              `,
+              "DOM runtime ambiguity",
+            ),
+          ),
+        });
+
+        await wait(300);
+
+        const path: ElementPath = {
+          context: [],
+          nodes: [
+            {
+              tag: "button",
+              attrs: { class: "dup" },
+              position: { nthChild: 1, nthOfType: 1 },
+              match: [{ kind: "attr", key: "class", op: "exact", value: "dup" }],
+            },
+          ],
+        };
+
+        await expect(
+          runtime.resolveTarget({
+            pageRef: created.data.pageRef,
+            method: "click",
+            target: { kind: "path", path },
+          }),
+        ).rejects.toMatchObject({
+          name: "ElementPathError",
+          code: "ERR_PATH_TARGET_NOT_UNIQUE",
+        });
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "accepts hit tests that land on descendants inside the target subtree",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+
+      try {
+        const runtime = createDomRuntime({ engine });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: dataUrl(
+            html(
+              `
+                <button id="nested-button" type="button" style="position:absolute;left:20px;top:20px;width:220px;height:80px">
+                  <span id="nested-label" style="display:inline-block;width:180px;height:60px">Nested</span>
+                </button>
+                <div id="status" style="position:absolute;left:20px;top:120px">ready</div>
+                <script>
+                  document.getElementById("nested-button").addEventListener("click", () => {
+                    document.getElementById("status").textContent = "clicked";
+                  });
+                </script>
+              `,
+              "DOM runtime nested target",
+            ),
+          ),
+        });
+
+        await wait(300);
+
+        await runtime.click({
+          pageRef: created.data.pageRef,
+          target: { kind: "selector", selector: "#nested-button" },
+        });
+        await wait(100);
+
+        const snapshot = await engine.getDomSnapshot({
+          frameRef: created.frameRef!,
+        });
+        const statusNode = findNodeById(snapshot.nodes, "status")!;
+        expect(await engine.readText(createLocator(snapshot, statusNode))).toBe("clicked");
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "rejects explicit targets that resolve on a different page than requested",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+
+      try {
+        const runtime = createDomRuntime({ engine });
+        const sessionRef = await engine.createSession();
+        const pageA = await engine.createPage({
+          sessionRef,
+          url: dataUrl(html(`<div id="page-a">A</div>`, "DOM runtime page A")),
+        });
+        const pageB = await engine.createPage({
+          sessionRef,
+          url: dataUrl(
+            html(
+              `<button id="page-b-action" type="button" style="position:absolute;left:20px;top:20px;width:160px;height:40px">B</button>`,
+              "DOM runtime page B",
+            ),
+          ),
+        });
+
+        await wait(300);
+
+        const snapshotB = await engine.getDomSnapshot({
+          frameRef: pageB.frameRef!,
+        });
+
+        await expect(
+          runtime.click({
+            pageRef: pageA.data.pageRef,
+            target: {
+              kind: "selector",
+              selector: "#page-b-action",
+              documentRef: snapshotB.documentRef,
+            },
+          }),
+        ).rejects.toThrow(
+          `DOM target resolved on page ${snapshotB.pageRef} instead of requested page ${pageA.data.pageRef}`,
+        );
       } finally {
         await engine.dispose();
       }
@@ -500,7 +725,9 @@ describe("Phase 5 DOM runtime integration", () => {
           findNodeById(afterInputChildSnapshot.nodes, "mirror"),
           "mirror node missing",
         );
-        expect(await engine.readText(createLocator(afterInputChildSnapshot, mirrorNode))).toBe("Tim");
+        expect(await engine.readText(createLocator(afterInputChildSnapshot, mirrorNode))).toBe(
+          "Tim",
+        );
 
         const extracted = await runtime.extractFields({
           pageRef: created.data.pageRef,

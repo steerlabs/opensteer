@@ -27,12 +27,15 @@ import {
   resolveDomPathInScope,
   resolveFirstWithinNodeBySelectors,
   sanitizeElementPath,
+  throwContextHostNotUnique,
   throwTargetNotFound,
+  throwTargetNotUnique,
 } from "./path.js";
 import {
   findIframeHostNode,
   findNodeByNodeRef,
   hasOpenShadowRoot,
+  isSameNodeOrDescendant,
   normalizeToElementNode,
   querySelectorAllInScope,
   type DomQueryScope,
@@ -144,7 +147,9 @@ class DefaultDomRuntime implements DomRuntime {
       const index = createSnapshotIndex(snapshot);
       const node = findNodeByNodeRef(index, input.locator.nodeRef);
       if (!node) {
-        throw new Error(`node ${input.locator.nodeRef} was not found in ${input.locator.documentRef}`);
+        throw new Error(
+          `node ${input.locator.nodeRef} was not found in ${input.locator.documentRef}`,
+        );
       }
       return this.buildPathFromSnapshotNode(session, snapshot, node);
     });
@@ -172,15 +177,15 @@ class DefaultDomRuntime implements DomRuntime {
         method: "click",
         target: input.target,
       });
-      const point = await this.resolveActionPoint(session, input.pageRef, resolved, input.position);
-      await this.assertHitTarget(input.pageRef, resolved, point);
+      const point = await this.resolveActionPoint(session, resolved, input.position);
+      await this.assertHitTarget(resolved, point);
       await this.engine.mouseMove({
-        pageRef: input.pageRef,
+        pageRef: resolved.pageRef,
         point,
         coordinateSpace: "document-css",
       });
       await this.engine.mouseClick({
-        pageRef: input.pageRef,
+        pageRef: resolved.pageRef,
         point,
         coordinateSpace: "document-css",
         ...(input.button === undefined ? {} : { button: input.button }),
@@ -201,10 +206,10 @@ class DefaultDomRuntime implements DomRuntime {
         method: "hover",
         target: input.target,
       });
-      const point = await this.resolveActionPoint(session, input.pageRef, resolved, input.position);
-      await this.assertHitTarget(input.pageRef, resolved, point);
+      const point = await this.resolveActionPoint(session, resolved, input.position);
+      await this.assertHitTarget(resolved, point);
       await this.engine.mouseMove({
-        pageRef: input.pageRef,
+        pageRef: resolved.pageRef,
         point,
         coordinateSpace: "document-css",
       });
@@ -222,25 +227,25 @@ class DefaultDomRuntime implements DomRuntime {
         method: "input",
         target: input.target,
       });
-      const point = await this.resolveActionPoint(session, input.pageRef, resolved);
-      await this.assertHitTarget(input.pageRef, resolved, point);
+      const point = await this.resolveActionPoint(session, resolved);
+      await this.assertHitTarget(resolved, point);
       await this.engine.mouseMove({
-        pageRef: input.pageRef,
+        pageRef: resolved.pageRef,
         point,
         coordinateSpace: "document-css",
       });
       await this.engine.mouseClick({
-        pageRef: input.pageRef,
+        pageRef: resolved.pageRef,
         point,
         coordinateSpace: "document-css",
       });
       await this.engine.textInput({
-        pageRef: input.pageRef,
+        pageRef: resolved.pageRef,
         text: input.text,
       });
       if (input.pressEnter) {
         await this.engine.keyPress({
-          pageRef: input.pageRef,
+          pageRef: resolved.pageRef,
           key: "Enter",
         });
       }
@@ -255,15 +260,15 @@ class DefaultDomRuntime implements DomRuntime {
         method: "scroll",
         target: input.target,
       });
-      const point = await this.resolveActionPoint(session, input.pageRef, resolved, input.position);
-      await this.assertHitTarget(input.pageRef, resolved, point);
+      const point = await this.resolveActionPoint(session, resolved, input.position);
+      await this.assertHitTarget(resolved, point);
       await this.engine.mouseMove({
-        pageRef: input.pageRef,
+        pageRef: resolved.pageRef,
         point,
         coordinateSpace: "document-css",
       });
       await this.engine.mouseScroll({
-        pageRef: input.pageRef,
+        pageRef: resolved.pageRef,
         point,
         coordinateSpace: "document-css",
         delta: input.delta,
@@ -299,7 +304,11 @@ class DefaultDomRuntime implements DomRuntime {
             method: "extract",
             target: field.target,
           });
-          result[field.key] = await this.readExtractedValue(resolved.snapshot, resolved.node, field.attribute);
+          result[field.key] = await this.readExtractedValue(
+            resolved.snapshot,
+            resolved.node,
+            field.attribute,
+          );
         } catch {
           result[field.key] = null;
         }
@@ -368,7 +377,9 @@ class DefaultDomRuntime implements DomRuntime {
     });
   }
 
-  private async withSnapshotSession<T>(callback: (session: SnapshotSession) => Promise<T>): Promise<T> {
+  private async withSnapshotSession<T>(
+    callback: (session: SnapshotSession) => Promise<T>,
+  ): Promise<T> {
     return callback(new SnapshotSession(this.engine));
   }
 
@@ -376,33 +387,47 @@ class DefaultDomRuntime implements DomRuntime {
     session: SnapshotSession,
     input: DomResolveTargetInput,
   ): Promise<ResolvedDomTarget> {
-    const { description } = input.target;
-    if (description) {
-      const descriptor = await this.descriptors.read({ description });
-      if (descriptor) {
-        return this.resolveStoredDescriptorTarget(session, input.pageRef, descriptor);
-      }
-      if (input.target.kind === "descriptor") {
-        throw new Error(`no stored DOM descriptor found for "${description}"`);
-      }
-    }
-
+    let resolved: ResolvedDomTarget;
     switch (input.target.kind) {
       case "descriptor":
-        throw new Error(`no stored DOM descriptor found for "${input.target.description}"`);
+        resolved = await this.resolveDescriptorTarget(session, input.pageRef, input.target);
+        break;
       case "live":
-        return this.resolveLiveTarget(session, input.target);
+        resolved = await this.resolveLiveTarget(session, input.target);
+        break;
       case "path":
-        return this.resolvePathTarget(
+        resolved = await this.resolvePathTarget(
           session,
           input.pageRef,
           sanitizeElementPath(input.target.path),
           "path",
           input.target.description,
         );
+        break;
       case "selector":
-        return this.resolveSelectorTarget(session, input.pageRef, input.method, input.target);
+        resolved = await this.resolveSelectorTarget(
+          session,
+          input.pageRef,
+          input.method,
+          input.target,
+        );
+        break;
     }
+
+    this.assertTargetPageOwnership(input.pageRef, resolved);
+    return resolved;
+  }
+
+  private async resolveDescriptorTarget(
+    session: SnapshotSession,
+    pageRef: PageRef,
+    target: Extract<DomTargetRef, { readonly kind: "descriptor" }>,
+  ): Promise<ResolvedDomTarget> {
+    const descriptor = await this.descriptors.read({ description: target.description });
+    if (!descriptor) {
+      throw new Error(`no stored DOM descriptor found for "${target.description}"`);
+    }
+    return this.resolveStoredDescriptorTarget(session, pageRef, descriptor);
   }
 
   private async resolveStoredDescriptorTarget(
@@ -426,19 +451,23 @@ class DefaultDomRuntime implements DomRuntime {
   ): Promise<ResolvedDomTarget> {
     const snapshot = await session.getDocument(target.locator.documentRef);
     if (snapshot.documentEpoch !== target.locator.documentEpoch) {
-      throw new Error(`node locator ${target.locator.nodeRef} is stale for ${target.locator.documentRef}`);
+      throw new Error(
+        `node locator ${target.locator.nodeRef} is stale for ${target.locator.documentRef}`,
+      );
     }
     const index = createSnapshotIndex(snapshot);
     const node = findNodeByNodeRef(index, target.locator.nodeRef);
     if (!node) {
-      throw new Error(`node ${target.locator.nodeRef} was not found in ${target.locator.documentRef}`);
+      throw new Error(
+        `node ${target.locator.nodeRef} was not found in ${target.locator.documentRef}`,
+      );
     }
     const elementNode = normalizeToElementNode(index, node);
     if (!elementNode || elementNode.nodeRef === undefined) {
       throw new Error(`node ${target.locator.nodeRef} is not attached to a live element`);
     }
     const path = await this.tryBuildPathFromSnapshotNode(session, snapshot, elementNode);
-    return this.createResolvedTarget("live", snapshot.pageRef, snapshot, elementNode, path, {
+    return this.createResolvedTarget("live", snapshot, elementNode, path, {
       ...(target.description === undefined ? {} : { description: target.description }),
     });
   }
@@ -475,7 +504,7 @@ class DefaultDomRuntime implements DomRuntime {
             path,
             sourceUrl: snapshot.url,
           });
-    return this.createResolvedTarget("selector", snapshot.pageRef, snapshot, node, path, {
+    return this.createResolvedTarget("selector", snapshot, node, path, {
       ...(target.description === undefined ? {} : { description: target.description }),
       selectorUsed: target.selector,
       ...(descriptor === undefined ? {} : { descriptor }),
@@ -496,11 +525,16 @@ class DefaultDomRuntime implements DomRuntime {
     if (!target) {
       throwTargetNotFound(context.index, path.nodes, context.scope);
     }
+    if (target.mode === "ambiguous") {
+      throwTargetNotUnique(context.index, path.nodes, context.scope);
+    }
     if (target.node.nodeRef === undefined) {
-      throw new Error(`resolved path "${buildPathSelectorHint(path)}" does not point to a live element`);
+      throw new Error(
+        `resolved path "${buildPathSelectorHint(path)}" does not point to a live element`,
+      );
     }
 
-    return this.createResolvedTarget(source, context.snapshot.pageRef, context.snapshot, target.node, path, {
+    return this.createResolvedTarget(source, context.snapshot, target.node, path, {
       ...(description === undefined ? {} : { description }),
       ...(source === "path" || source === "descriptor" ? { selectorUsed: target.selector } : {}),
       ...(descriptor === undefined ? {} : { descriptor }),
@@ -515,7 +549,10 @@ class DefaultDomRuntime implements DomRuntime {
     const path = sanitizeElementPath(rawPath);
     const context = await this.resolvePathContext(session, pageRef, path.context);
     return queryAllDomPathInScope(context.index, path.nodes, context.scope)
-      .filter((node): node is DomSnapshotNode & { readonly nodeRef: NodeRef } => node.nodeRef !== undefined)
+      .filter(
+        (node): node is DomSnapshotNode & { readonly nodeRef: NodeRef } =>
+          node.nodeRef !== undefined,
+      )
       .map((node) => this.createSnapshotTarget(context.snapshot, node));
   }
 
@@ -539,6 +576,9 @@ class DefaultDomRuntime implements DomRuntime {
           "ERR_PATH_CONTEXT_HOST_NOT_FOUND",
           "Unable to resolve context host from stored match selectors.",
         );
+      }
+      if (host.mode === "ambiguous") {
+        throwContextHostNotUnique(index, hop.host, scope);
       }
 
       if (hop.kind === "iframe") {
@@ -619,14 +659,17 @@ class DefaultDomRuntime implements DomRuntime {
 
     const hostPath = await this.buildPathFromSnapshotNode(session, parentSnapshot, iframeHost);
     return sanitizeElementPath({
-      context: [...hostPath.context, { kind: "iframe", host: hostPath.nodes }, ...localPath.context],
+      context: [
+        ...hostPath.context,
+        { kind: "iframe", host: hostPath.nodes },
+        ...localPath.context,
+      ],
       nodes: localPath.nodes,
     });
   }
 
   private createResolvedTarget(
     source: ResolvedDomTarget["source"],
-    pageRef: PageRef,
     snapshot: DomSnapshot,
     node: DomSnapshotNode,
     path: ElementPath,
@@ -644,7 +687,7 @@ class DefaultDomRuntime implements DomRuntime {
     const locator = createNodeLocator(snapshot.documentRef, snapshot.documentEpoch, node.nodeRef);
     return {
       source,
-      pageRef,
+      pageRef: snapshot.pageRef,
       frameRef: snapshot.frameRef,
       documentRef: snapshot.documentRef,
       documentEpoch: snapshot.documentEpoch,
@@ -699,10 +742,13 @@ class DefaultDomRuntime implements DomRuntime {
     }
 
     const locator = createNodeLocator(snapshot.documentRef, snapshot.documentEpoch, node.nodeRef);
-    const raw =
-      attribute === undefined
-        ? await this.engine.readText(locator)
-        : (await this.engine.readAttributes(locator)).find((entry) => entry.name === attribute)?.value ?? null;
+    let raw: string | null;
+    if (attribute === undefined) {
+      raw = await this.engine.readText(locator);
+    } else {
+      const attributes = await this.engine.readAttributes(locator);
+      raw = attributes.find((entry) => entry.name === attribute)?.value ?? null;
+    }
 
     const normalized = normalizeExtractedValue(raw, attribute);
     return resolveExtractedValueInContext(normalized, {
@@ -714,7 +760,6 @@ class DefaultDomRuntime implements DomRuntime {
 
   private async resolveActionPoint(
     session: SnapshotSession,
-    pageRef: PageRef,
     resolved: ResolvedDomTarget,
     position?: Point,
   ): Promise<Point> {
@@ -732,16 +777,22 @@ class DefaultDomRuntime implements DomRuntime {
       throw new Error(`target point for ${resolved.nodeRef} falls outside the resolved DOM box`);
     }
 
-    const point = await this.resolvePagePointFromDocumentPoint(session, resolved.snapshot, localPoint);
+    const point = await this.resolvePagePointFromDocumentPoint(
+      session,
+      resolved.snapshot,
+      localPoint,
+    );
 
-    const metrics = await this.engine.getViewportMetrics({ pageRef });
+    const metrics = await this.engine.getViewportMetrics({ pageRef: resolved.pageRef });
     if (
       point.x < 0 ||
       point.y < 0 ||
       point.x > metrics.contentSize.width ||
       point.y > metrics.contentSize.height
     ) {
-      throw new Error(`target point for ${resolved.nodeRef} falls outside the document content bounds`);
+      throw new Error(
+        `target point for ${resolved.nodeRef} falls outside the document content bounds`,
+      );
     }
 
     return point;
@@ -760,7 +811,9 @@ class DefaultDomRuntime implements DomRuntime {
       const parentIndex = createSnapshotIndex(parentSnapshot);
       const iframeHost = findIframeHostNode(parentIndex, currentSnapshot.documentRef);
       if (!iframeHost?.layout?.rect) {
-        throw new Error(`iframe host for ${currentSnapshot.documentRef} does not expose DOM geometry`);
+        throw new Error(
+          `iframe host for ${currentSnapshot.documentRef} does not expose DOM geometry`,
+        );
       }
 
       currentPoint = createPoint(
@@ -773,24 +826,35 @@ class DefaultDomRuntime implements DomRuntime {
     return currentPoint;
   }
 
-  private async assertHitTarget(
-    pageRef: PageRef,
-    resolved: ResolvedDomTarget,
-    point: Point,
-  ): Promise<void> {
+  private async assertHitTarget(resolved: ResolvedDomTarget, point: Point): Promise<void> {
     const hit = await this.engine.hitTest({
-      pageRef,
+      pageRef: resolved.pageRef,
       point,
       coordinateSpace: "document-css",
     });
 
-    if (
-      hit.documentRef !== resolved.documentRef ||
-      hit.documentEpoch !== resolved.documentEpoch ||
-      hit.nodeRef !== resolved.nodeRef
-    ) {
+    if (hit.documentRef !== resolved.documentRef || hit.documentEpoch !== resolved.documentEpoch) {
       throw new Error(
-        `hit test resolved ${hit.nodeRef ?? "no-node"} instead of ${resolved.nodeRef} for ${resolved.source}`,
+        `hit test resolved ${hit.nodeRef ?? "no-node"} outside ${resolved.documentRef}@${String(resolved.documentEpoch)}`,
+      );
+    }
+
+    if (hit.nodeRef === undefined) {
+      throw new Error(`hit test did not resolve a live node for ${resolved.source}`);
+    }
+
+    const index = createSnapshotIndex(resolved.snapshot);
+    if (!isSameNodeOrDescendant(index, hit.nodeRef, resolved.nodeRef)) {
+      throw new Error(
+        `hit test resolved ${hit.nodeRef} outside the target subtree rooted at ${resolved.nodeRef} for ${resolved.source}`,
+      );
+    }
+  }
+
+  private assertTargetPageOwnership(pageRef: PageRef, resolved: ResolvedDomTarget): void {
+    if (resolved.pageRef !== pageRef) {
+      throw new Error(
+        `DOM target resolved on page ${resolved.pageRef} instead of requested page ${pageRef}`,
       );
     }
   }

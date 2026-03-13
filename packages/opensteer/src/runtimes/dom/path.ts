@@ -27,7 +27,7 @@ const MAX_ATTRIBUTE_VALUE_LENGTH = 300;
 interface ResolveMatch {
   readonly node: DomSnapshotNode;
   readonly selector: string;
-  readonly mode: "unique" | "fallback";
+  readonly mode: "unique" | "ambiguous";
   readonly count: number;
 }
 
@@ -74,7 +74,9 @@ export function createSnapshotIndex(snapshot: DomSnapshot) {
 
 export function sanitizeElementPath(path: ElementPath): ElementPath {
   const cleanNodes = (nodes: unknown[]): PathNode[] =>
-    (Array.isArray(nodes) ? nodes : []).map((raw) => normalizePathNode(raw as Record<string, unknown>));
+    (Array.isArray(nodes) ? nodes : []).map((raw) =>
+      normalizePathNode(raw as Record<string, unknown>),
+    );
 
   const context = (Array.isArray(path?.context) ? path.context : [])
     .filter((hop) => hop && (hop.kind === "iframe" || hop.kind === "shadow"))
@@ -89,7 +91,10 @@ export function sanitizeElementPath(path: ElementPath): ElementPath {
   };
 }
 
-export function buildLocalElementPath(index: DomSnapshotIndex, rawTargetNode: DomSnapshotNode): ElementPath {
+export function buildLocalElementPath(
+  index: DomSnapshotIndex,
+  rawTargetNode: DomSnapshotNode,
+): ElementPath {
   const targetNode = requireElementNode(index, rawTargetNode);
   const nodes = finalizeScopedDomPath(index, targetNode);
   const shadowHostNodeRef = targetNode.shadowHostNodeRef;
@@ -102,7 +107,9 @@ export function buildLocalElementPath(index: DomSnapshotIndex, rawTargetNode: Do
 
   const hostNode = findNodeByNodeRef(index, shadowHostNodeRef);
   if (!hostNode) {
-    throw new Error(`shadow host ${shadowHostNodeRef} is missing from snapshot ${index.snapshot.documentRef}`);
+    throw new Error(
+      `shadow host ${shadowHostNodeRef} is missing from snapshot ${index.snapshot.documentRef}`,
+    );
   }
 
   const hostPath = buildLocalElementPath(index, hostNode);
@@ -122,7 +129,7 @@ export function resolveDomPathInScope(
     return null;
   }
 
-  let fallback: ResolveMatch | null = null;
+  let ambiguous: ResolveMatch | null = null;
   for (const selector of candidates) {
     const matches = querySelectorAllInScope(index, selector, scope);
     if (matches.length === 1) {
@@ -133,17 +140,17 @@ export function resolveDomPathInScope(
         count: 1,
       };
     }
-    if (matches.length > 1 && fallback === null) {
-      fallback = {
+    if (matches.length > 1 && ambiguous === null) {
+      ambiguous = {
         node: matches[0]!,
         selector,
-        mode: "fallback",
+        mode: "ambiguous",
         count: matches.length,
       };
     }
   }
 
-  return fallback;
+  return ambiguous;
 }
 
 export function queryAllDomPathInScope(
@@ -212,6 +219,42 @@ export function buildTargetNotFoundMessage(
   return `${base} Target depth ${String(depth)}. Candidate counts: ${sample}.`;
 }
 
+export function buildTargetNotUniqueMessage(
+  domPath: ElementPath["nodes"],
+  diagnostics: readonly CandidateDiagnostic[],
+): string {
+  const depth = Array.isArray(domPath) ? domPath.length : 0;
+  const ambiguous = diagnostics
+    .filter((item) => item.count > 1)
+    .slice(0, 4)
+    .map((item) => `"${item.selector}" => ${String(item.count)}`)
+    .join(", ");
+  const base =
+    "Element path resolution failed (ERR_PATH_TARGET_NOT_UNIQUE): selector candidates matched multiple elements.";
+  if (!ambiguous) {
+    return `${base} Target depth ${String(depth)}.`;
+  }
+  return `${base} Target depth ${String(depth)}. Candidate counts: ${ambiguous}.`;
+}
+
+export function buildContextHostNotUniqueMessage(
+  domPath: ElementPath["nodes"],
+  diagnostics: readonly CandidateDiagnostic[],
+): string {
+  const depth = Array.isArray(domPath) ? domPath.length : 0;
+  const sample = diagnostics
+    .filter((item) => item.count > 1)
+    .slice(0, 4)
+    .map((item) => `"${item.selector}" => ${String(item.count)}`)
+    .join(", ");
+  const base =
+    "Context host resolution failed (ERR_PATH_CONTEXT_HOST_NOT_UNIQUE): stored selectors matched multiple context hosts.";
+  if (!sample) {
+    return `${base} Host depth ${String(depth)}.`;
+  }
+  return `${base} Host depth ${String(depth)}. Candidate counts: ${sample}.`;
+}
+
 export function buildArrayFieldCandidates(path: ElementPath): string[] {
   return buildArrayFieldPathCandidates(path);
 }
@@ -227,12 +270,32 @@ export function throwTargetNotFound(
   );
 }
 
+export function throwTargetNotUnique(
+  index: DomSnapshotIndex,
+  domPath: ElementPath["nodes"],
+  scope: DomQueryScope,
+): never {
+  throw new ElementPathError(
+    "ERR_PATH_TARGET_NOT_UNIQUE",
+    buildTargetNotUniqueMessage(domPath, collectCandidateDiagnostics(index, domPath, scope)),
+  );
+}
+
+export function throwContextHostNotUnique(
+  index: DomSnapshotIndex,
+  domPath: ElementPath["nodes"],
+  scope: DomQueryScope,
+): never {
+  throw new ElementPathError(
+    "ERR_PATH_CONTEXT_HOST_NOT_UNIQUE",
+    buildContextHostNotUniqueMessage(domPath, collectCandidateDiagnostics(index, domPath, scope)),
+  );
+}
+
 function normalizePathNode(raw: Record<string, unknown>): PathNode {
   const tag = String(raw?.tag || "*").toLowerCase();
   const attrsIn =
-    raw?.attrs && typeof raw.attrs === "object"
-      ? (raw.attrs as Record<string, unknown>)
-      : {};
+    raw?.attrs && typeof raw.attrs === "object" ? (raw.attrs as Record<string, unknown>) : {};
   const attrs: Record<string, string> = {};
   for (const [key, value] of Object.entries(attrsIn)) {
     const normalizedKey = String(key);
@@ -327,8 +390,7 @@ function normalizeMatch(
         if (!isValidCssAttributeKey(key)) {
           continue;
         }
-        const op =
-          record.op === "startsWith" || record.op === "contains" ? record.op : "exact";
+        const op = record.op === "startsWith" || record.op === "contains" ? record.op : "exact";
         const value = typeof record.value === "string" ? record.value : undefined;
         if (key === "class" && op === "exact" && attrs.class && !normalizedLegacyClassClause) {
           push({
@@ -365,10 +427,16 @@ function normalizeMatch(
   return out;
 }
 
-function requireElementNode(index: DomSnapshotIndex, rawTargetNode: DomSnapshotNode): DomSnapshotNode {
-  const normalized = rawTargetNode.nodeType === 1 ? rawTargetNode : normalizeNonElementTarget(index, rawTargetNode);
+function requireElementNode(
+  index: DomSnapshotIndex,
+  rawTargetNode: DomSnapshotNode,
+): DomSnapshotNode {
+  const normalized =
+    rawTargetNode.nodeType === 1 ? rawTargetNode : normalizeNonElementTarget(index, rawTargetNode);
   if (!normalized) {
-    throw new Error(`target node ${String(rawTargetNode.snapshotNodeId)} is not attached to an element`);
+    throw new Error(
+      `target node ${String(rawTargetNode.snapshotNodeId)} is not attached to an element`,
+    );
   }
   return normalized;
 }
@@ -394,7 +462,9 @@ function finalizeScopedDomPath(index: DomSnapshotIndex, targetNode: DomSnapshotN
   const scopeHostNodeRef = targetNode.shadowHostNodeRef;
   const chain = buildScopedElementChain(index, targetNode, scopeHostNodeRef);
   if (!chain.length) {
-    throw new Error(`target node ${String(targetNode.snapshotNodeId)} has no scoped ancestor chain`);
+    throw new Error(
+      `target node ${String(targetNode.snapshotNodeId)} has no scoped ancestor chain`,
+    );
   }
 
   const nodes: Array<{
@@ -417,9 +487,7 @@ function finalizeScopedDomPath(index: DomSnapshotIndex, targetNode: DomSnapshotN
 
   for (let indexOfNode = 0; indexOfNode < pools.length; indexOfNode += 1) {
     const pool = pools[indexOfNode]!;
-    const classIndex = pool.findIndex(
-      (clause) => clause.kind === "attr" && clause.key === "class",
-    );
+    const classIndex = pool.findIndex((clause) => clause.kind === "attr" && clause.key === "class");
     if (classIndex < 0) {
       continue;
     }

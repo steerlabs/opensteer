@@ -109,7 +109,9 @@ export function createDomSnapshotIndex(snapshot: DomSnapshot): DomSnapshotIndex 
 
   const rootNode = nodesBySnapshotNodeId.get(snapshot.rootSnapshotNodeId);
   if (!rootNode) {
-    throw new Error(`snapshot ${snapshot.documentRef} is missing root node ${String(snapshot.rootSnapshotNodeId)}`);
+    throw new Error(
+      `snapshot ${snapshot.documentRef} is missing root node ${String(snapshot.rootSnapshotNodeId)}`,
+    );
   }
 
   return {
@@ -168,6 +170,50 @@ export function hasOpenShadowRoot(index: DomSnapshotIndex, hostNode: DomSnapshot
   return index.snapshot.nodes.some(
     (node) => node.shadowHostNodeRef === hostRef && node.shadowRootType === "open",
   );
+}
+
+export function isSameNodeOrDescendant(
+  index: DomSnapshotIndex,
+  nodeRef: NodeRef,
+  ancestorNodeRef: NodeRef,
+): boolean {
+  if (nodeRef === ancestorNodeRef) {
+    return true;
+  }
+
+  const start = findNodeByNodeRef(index, nodeRef);
+  if (!start) {
+    return false;
+  }
+
+  const stack: DomSnapshotNode[] = [start];
+  const visited = new Set<number>();
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (current.nodeRef === ancestorNodeRef) {
+      return true;
+    }
+    if (visited.has(current.snapshotNodeId)) {
+      continue;
+    }
+    visited.add(current.snapshotNodeId);
+
+    if (current.parentSnapshotNodeId !== undefined) {
+      const parent = findNodeBySnapshotNodeId(index, current.parentSnapshotNodeId);
+      if (parent) {
+        stack.push(parent);
+      }
+    }
+
+    if (current.shadowHostNodeRef !== undefined) {
+      const host = findNodeByNodeRef(index, current.shadowHostNodeRef);
+      if (host) {
+        stack.push(host);
+      }
+    }
+  }
+
+  return false;
 }
 
 export function querySelectorAllInScope(
