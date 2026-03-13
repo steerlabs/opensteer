@@ -9,11 +9,17 @@ export type ApiPlanStatus =
     | 'needs_session_refresh'
     | 'stale'
     | 'archived'
-export type ApiPlanSchemaVersion = 'deterministic-plan.v1'
+export type ApiPlanLifecycle = 'draft' | 'validated' | 'stale' | 'archived'
+export type ApiPlanSchemaVersion = 'deterministic-plan.v1' | 'deterministic-plan.v2'
 export type ApiPlanExecutionMode =
     | 'direct_http'
     | 'browser_session'
     | 'browser_dom'
+export type ApiRuntimeCapability =
+    | 'http'
+    | 'browser_fetch'
+    | 'browser_page'
+export type ApiPlanRuntimeMode = 'required' | 'http_only'
 export type ApiStepTransport =
     | 'node_http'
     | 'browser_fetch'
@@ -69,7 +75,7 @@ export type ApiValidationFailureKind =
     | 'session_expired'
     | 'auth_redirect'
     | 'schema_drift'
-    | 'transport_blocked'
+    | 'runtime_unavailable'
     | 'oracle_failed'
     | 'unsupported_plan'
 export type ApiOracleCheckKind =
@@ -435,86 +441,64 @@ export type ApiBindingResolver =
           reason: string
       } & ApiBindingResolverBase)
 
+export interface ApiExecutionBindingBase {
+    slotRef: string
+    stepId: string
+    resolver?: ApiBindingResolver
+    resolverCandidates?: ApiBindingResolver[]
+    transforms?: ApiBindingTransform[]
+}
+
 export type ApiExecutionBinding =
-    | {
+    | (ApiExecutionBindingBase & {
           kind: 'caller'
-          slotRef: string
-          stepId: string
           inputName: string
-          resolver?: ApiBindingResolver
-          transforms?: ApiBindingTransform[]
-      }
-    | {
+      })
+    | (ApiExecutionBindingBase & {
           kind: 'constant'
-          slotRef: string
-          stepId: string
           value: string
-          resolver?: ApiBindingResolver
-          transforms?: ApiBindingTransform[]
-      }
-    | {
+      })
+    | (ApiExecutionBindingBase & {
           kind: 'derived_response'
-          slotRef: string
-          stepId: string
           producerStepId: string
           producerRef: string
           responsePath: string
-          resolver?: ApiBindingResolver
-          transforms?: ApiBindingTransform[]
-      }
-    | {
+      })
+    | (ApiExecutionBindingBase & {
+          kind: 'derived_response_header'
+          producerStepId: string
+          producerRef: string
+          headerName: string
+      })
+    | (ApiExecutionBindingBase & {
           kind: 'ambient_cookie'
-          slotRef: string
-          stepId: string
           cookieName: string
-          resolver?: ApiBindingResolver
-          transforms?: ApiBindingTransform[]
-      }
-    | {
+      })
+    | (ApiExecutionBindingBase & {
           kind: 'session_cookie'
-          slotRef: string
-          stepId: string
           cookieName: string
-          resolver?: ApiBindingResolver
-          transforms?: ApiBindingTransform[]
-      }
-    | {
+      })
+    | (ApiExecutionBindingBase & {
           kind: 'session_storage'
-          slotRef: string
-          stepId: string
           storageType: 'local' | 'session'
           key: string
-          resolver?: ApiBindingResolver
-          transforms?: ApiBindingTransform[]
-      }
-    | {
+      })
+    | (ApiExecutionBindingBase & {
           kind: 'dom_field'
-          slotRef: string
-          stepId: string
           fieldName: string | null
           fieldId: string | null
           fieldType: string | null
           hidden: boolean
-          resolver?: ApiBindingResolver
-          transforms?: ApiBindingTransform[]
-      }
-    | {
+      })
+    | (ApiExecutionBindingBase & {
           kind: 'inline_json'
-          slotRef: string
-          stepId: string
           source: string
           dataPath: string
-          resolver?: ApiBindingResolver
-          transforms?: ApiBindingTransform[]
-      }
-    | {
+      })
+    | (ApiExecutionBindingBase & {
           kind: 'unknown'
-          slotRef: string
-          stepId: string
           reason: string
-          resolver?: ApiBindingResolver
-          transforms?: ApiBindingTransform[]
-      }
+      })
 
 export interface ApiPlanStep {
     id: string
@@ -586,6 +570,12 @@ export type ApiPlanSessionRequirement =
           required: boolean
       }
 
+export interface ApiPlanRuntimeProfile {
+    capability: ApiRuntimeCapability
+    requirements: ApiPlanSessionRequirement[]
+    browserlessReplayable: boolean
+}
+
 export interface ApiPlanIr {
     ref: string
     operation: string
@@ -594,12 +584,14 @@ export interface ApiPlanIr {
     schemaVersion?: ApiPlanSchemaVersion
     version?: number
     status?: ApiPlanStatus
+    lifecycle?: ApiPlanLifecycle
     fingerprint?: string
     targetRequestRef: string
     targetStepId: string
     confidence: number
     transport: 'http'
     executionMode: ApiPlanExecutionMode
+    runtimeProfile?: ApiPlanRuntimeProfile
     callerInputs: ApiPlanInput[]
     steps: ApiPlanStep[]
     slots: ApiRequestSlot[]
@@ -673,22 +665,27 @@ export interface ApiRuntimeStatus {
     activeManualSpanRef: string | null
 }
 
+export interface ApiPlanAttemptMeta {
+    at: number
+    ok: boolean
+    failureKind: ApiValidationFailureKind | null
+    runtimeMode: ApiPlanRuntimeMode
+    capability: ApiRuntimeCapability
+}
+
 export interface ApiPlanMeta {
     operation: string
     version: number
     schemaVersion: ApiPlanSchemaVersion
-    status: ApiPlanStatus
+    lifecycle: ApiPlanLifecycle
     fingerprint: string
     createdAt: number
     updatedAt: number
     createdFromRunRef: string | null
     createdFromRunId: string | null
     targetOrigin: string | null
-    authRequired: boolean
-    lastValidatedAt: number | null
-    lastSuccessAt: number | null
-    lastFailureAt: number | null
-    lastFailureReason: string | null
+    lastValidation: ApiPlanAttemptMeta | null
+    lastExecution: ApiPlanAttemptMeta | null
 }
 
 export interface ApiPlanFixture {
@@ -729,7 +726,7 @@ export interface ApiPlanExecutionReport {
 export interface ApiPlanSummary {
     operation: string
     version: number
-    status: ApiPlanStatus
+    lifecycle: ApiPlanLifecycle
     dir: string
     ref: string
     fingerprint: string

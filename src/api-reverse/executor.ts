@@ -2,6 +2,7 @@ import { parseDataPath } from '../extraction/data-path.js'
 import type { Opensteer } from '../opensteer.js'
 import { summarizeMime, safeJsonParse } from './normalize.js'
 import { normalizeDeterministicPlan } from './compiler.js'
+import type { PreparedPlanRuntime } from './runtime.js'
 import { applyBindingTransforms } from './transforms.js'
 import type {
     ApiBindingResolver,
@@ -46,7 +47,8 @@ const BROWSER_FETCH_HEADER_BLOCKLIST = new Set([
     'user-agent',
     'via',
 ])
-const AUTH_REDIRECT_PATTERN = /(login|sign-in|signin|auth|reauth|session-expired)/i
+const AUTH_REDIRECT_PATTERN =
+    /(^|[/.#?&=_-])(login|sign(?:-|_)?in|auth|reauth|session(?:-|_)?expired)(?=$|[/.#?&=_-])/i
 const DYNAMIC_HEADER_PATTERN = /(authorization|cookie|csrf|xsrf|token|session)/i
 
 interface ExecutedStepState {
@@ -76,6 +78,7 @@ export interface PlanExecutorOptions {
 export interface ExecutePlanOptions {
     inputs?: Record<string, unknown> | string | null
     allowDraft?: boolean
+    runtime?: PreparedPlanRuntime | null
 }
 
 export class PlanExecutor {
@@ -95,11 +98,7 @@ export class PlanExecutor {
     ): Promise<ApiPlanExecutionReport> {
         const normalized = normalizeDeterministicPlan(plan)
         const inputs = normalizeInputMap(options.inputs)
-        if (
-            options.allowDraft !== true &&
-            normalized.status !== 'validated' &&
-            normalized.status !== 'healthy'
-        ) {
+        if (options.allowDraft !== true && normalized.lifecycle !== 'validated') {
             return {
                 planRef: normalized.ref,
                 operation: normalized.operation,
@@ -113,7 +112,7 @@ export class PlanExecutor {
                     {
                         kind: 'status',
                         ok: false,
-                        detail: `Plan status "${normalized.status}" is not executable.`,
+                        detail: `Plan lifecycle "${normalized.lifecycle}" is not executable.`,
                     },
                 ],
             }
@@ -132,13 +131,15 @@ export class PlanExecutor {
                     step,
                     slotByRef,
                     inputs,
-                    executed
+                    executed,
+                    options.runtime ?? null
                 )
                 const state = await this.executeStepTransport(
                     transport,
                     step.method,
                     resolvedRequest,
-                    normalized.targetOrigin
+                    normalized.targetOrigin,
+                    options.runtime ?? null
                 )
                 executed.set(step.id, state)
                 stepReports.push({
@@ -193,12 +194,77 @@ export class PlanExecutor {
         }
     }
 
+    async probeBindingValue(
+        plan: ApiPlanIr,
+        bindingRef: Pick<ApiExecutionBinding, 'stepId' | 'slotRef'>,
+        options: {
+            inputs?: Record<string, unknown> | string | null
+            runtime?: PreparedPlanRuntime | null
+        } = {}
+    ): Promise<unknown> {
+        const normalized = normalizeDeterministicPlan(plan)
+        const inputs = normalizeInputMap(options.inputs)
+        const binding = normalized.bindings.find(
+            (current) =>
+                current.stepId === bindingRef.stepId && current.slotRef === bindingRef.slotRef
+        )
+        if (!binding) {
+            throw new Error(
+                `Binding ${bindingRef.stepId}:${bindingRef.slotRef} was not found in the plan.`
+            )
+        }
+
+        const slotByRef = new Map(normalized.slots.map((slot) => [slot.ref, slot]))
+        const slot = slotByRef.get(binding.slotRef)
+        if (!slot) {
+            throw new Error(
+                `Binding ${binding.stepId}:${binding.slotRef} references an unknown slot.`
+            )
+        }
+
+        const executed = new Map<string, ExecutedStepState>()
+        for (const step of normalized.steps) {
+            if (step.id === binding.stepId) {
+                return this.resolveBindingValue(
+                    binding,
+                    slot,
+                    inputs,
+                    executed,
+                    normalized.targetOrigin,
+                    options.runtime ?? null
+                )
+            }
+
+            const resolvedRequest = await this.buildExecutableRequest(
+                normalized,
+                step,
+                slotByRef,
+                inputs,
+                executed,
+                options.runtime ?? null
+            )
+            const state = await this.executeStepTransport(
+                step.transport ?? 'node_http',
+                step.method,
+                resolvedRequest,
+                normalized.targetOrigin,
+                options.runtime ?? null
+            )
+            executed.set(step.id, state)
+        }
+
+        throw new Error(
+            `Binding ${binding.stepId}:${binding.slotRef} could not be resolved from the plan steps.`
+        )
+    }
+
     private async buildExecutableRequest(
         plan: ApiPlanIr,
         step: ApiPlanIr['steps'][number],
         slotByRef: Map<string, ApiRequestSlot>,
         inputs: Record<string, string>,
-        executed: Map<string, ExecutedStepState>
+        executed: Map<string, ExecutedStepState>,
+        runtime: PreparedPlanRuntime | null
     ): Promise<{
         url: string
         headers: Record<string, string>
@@ -217,7 +283,14 @@ export class PlanExecutor {
             if (!slot) {
                 throw new Error(`Binding ${binding.stepId}:${binding.slotRef} references an unknown slot.`)
             }
-            const value = await this.resolveBindingValue(binding, slot, inputs, executed, plan.targetOrigin)
+            const value = await this.resolveBindingValue(
+                binding,
+                slot,
+                inputs,
+                executed,
+                plan.targetOrigin,
+                runtime
+            )
             applyResolvedSlotValue(template, slot, value)
         }
 
@@ -234,13 +307,14 @@ export class PlanExecutor {
         slot: ApiRequestSlot,
         inputs: Record<string, string>,
         executed: Map<string, ExecutedStepState>,
-        targetOrigin: string | null | undefined
+        targetOrigin: string | null | undefined,
+        runtime: PreparedPlanRuntime | null
     ): Promise<unknown> {
         const resolver = binding.resolver
         if (!resolver) {
             throw new Error(`Binding ${binding.stepId}:${binding.slotRef} is missing a resolver.`)
         }
-        return this.resolveResolverValue(resolver, slot, inputs, executed, targetOrigin)
+        return this.resolveResolverValue(resolver, slot, inputs, executed, targetOrigin, runtime)
     }
 
     private async resolveResolverValue(
@@ -248,7 +322,8 @@ export class PlanExecutor {
         slot: ApiRequestSlot,
         inputs: Record<string, string>,
         executed: Map<string, ExecutedStepState>,
-        targetOrigin: string | null | undefined
+        targetOrigin: string | null | undefined,
+        runtime: PreparedPlanRuntime | null
     ): Promise<unknown> {
         switch (resolver.kind) {
             case 'computed': {
@@ -257,7 +332,8 @@ export class PlanExecutor {
                     slot,
                     inputs,
                     executed,
-                    targetOrigin
+                    targetOrigin,
+                    runtime
                 )
                 return applyBindingTransforms(value, resolver.transforms)
             }
@@ -289,7 +365,7 @@ export class PlanExecutor {
                 return applyBindingTransforms(value, resolver.transforms)
             }
             case 'cookie_live': {
-                const opensteer = this.requireOpensteer()
+                const opensteer = this.requireOpensteer(runtime)
                 const cookies = await opensteer.context.cookies(targetOrigin ? [targetOrigin] : undefined)
                 const match = cookies.find((cookie) => cookie.name === resolver.cookieName)
                 if (!match) {
@@ -300,7 +376,7 @@ export class PlanExecutor {
             case 'cookie_captured':
                 return applyBindingTransforms(resolver.capturedValue, resolver.transforms)
             case 'storage_live': {
-                const opensteer = this.requireOpensteer()
+                const opensteer = this.requireOpensteer(runtime)
                 const value = await opensteer.page.evaluate(
                     ({ storageType, key }) =>
                         storageType === 'local'
@@ -319,7 +395,7 @@ export class PlanExecutor {
                 return applyBindingTransforms(value, resolver.transforms)
             }
             case 'dom_field': {
-                const opensteer = this.requireOpensteer()
+                const opensteer = this.requireOpensteer(runtime)
                 const value = await opensteer.page.evaluate(
                     ({ fieldName, fieldId, fieldType, hidden }) => {
                         const elements = Array.from(
@@ -352,7 +428,7 @@ export class PlanExecutor {
                 return applyBindingTransforms(value, resolver.transforms)
             }
             case 'script_json': {
-                const opensteer = this.requireOpensteer()
+                const opensteer = this.requireOpensteer(runtime)
                 const value = await opensteer.page.evaluate(
                     ({ source, dataPath }) => {
                         const [prefix, selector] = source.split(':', 2)
@@ -404,14 +480,15 @@ export class PlanExecutor {
             body: string | null
             cookieHeader: string | null
         },
-        targetOrigin: string | null | undefined
+        targetOrigin: string | null | undefined,
+        runtime: PreparedPlanRuntime | null
     ): Promise<ExecutedStepState> {
         switch (transport) {
             case 'node_http':
                 return executeDirectHttpStep(method, request)
             case 'browser_fetch':
             case 'browser_page': {
-                const opensteer = this.requireOpensteer()
+                const opensteer = this.requireOpensteer(runtime)
                 if (transport === 'browser_page' && targetOrigin) {
                     const currentUrl = opensteer.page.url()
                     if (!currentUrl.startsWith(targetOrigin)) {
@@ -424,11 +501,12 @@ export class PlanExecutor {
         }
     }
 
-    private requireOpensteer(): Opensteer {
-        if (!this.opensteer) {
-            throw new Error('This plan requires a live browser session, but no Opensteer instance is attached.')
+    private requireOpensteer(runtime: PreparedPlanRuntime | null): Opensteer {
+        const opensteer = runtime?.opensteer ?? this.opensteer
+        if (!opensteer) {
+            throw new Error('Required browser runtime was not prepared for this plan.')
         }
-        return this.opensteer
+        return opensteer
     }
 }
 
@@ -877,7 +955,7 @@ function evaluateOracle(
         const url = state?.url ?? ''
         checks.push({
             kind: 'redirect_absent',
-            ok: !AUTH_REDIRECT_PATTERN.test(url),
+            ok: !isAuthRedirectUrl(url),
             detail: url ? `Final URL ${url}.` : 'No final URL recorded.',
         })
     }
@@ -942,8 +1020,8 @@ function classifyExecutionError(message: string): ApiValidationFailureKind {
     if (/unsupported plan binding|missing an executable request template|missing a resolver/i.test(message)) {
         return 'unsupported_plan'
     }
-    if (/requires a live browser session/i.test(message)) {
-        return 'transport_blocked'
+    if (/browser runtime was not prepared|live browser session/i.test(message)) {
+        return 'runtime_unavailable'
     }
     if (/Session cookie|Storage key|DOM field|Script JSON value/i.test(message)) {
         return 'session_missing'
@@ -964,7 +1042,7 @@ function classifyOracleFailure(
     if (state.status === 401 || state.status === 403) {
         return 'session_expired'
     }
-    if (AUTH_REDIRECT_PATTERN.test(state.url ?? '')) {
+    if (isAuthRedirectUrl(state.url ?? '')) {
         return 'auth_redirect'
     }
     if (
@@ -977,6 +1055,18 @@ function classifyOracleFailure(
         return 'schema_drift'
     }
     return 'oracle_failed'
+}
+
+function isAuthRedirectUrl(url: string): boolean {
+    if (!url) {
+        return false
+    }
+    try {
+        const parsed = new URL(url)
+        return AUTH_REDIRECT_PATTERN.test(`${parsed.pathname}${parsed.hash}`)
+    } catch {
+        return AUTH_REDIRECT_PATTERN.test(url)
+    }
 }
 
 function cloneStructured<T>(value: T): T {

@@ -257,6 +257,122 @@ describe('api-reverse/controller', () => {
         expect(resultCall?.searchParams.limit).toBe('6')
     })
 
+    it('binds upstream response headers as response_header resolvers instead of browser-only state', async () => {
+        const requests: LoggedRequest[] = []
+        const baseUrl = await startServer((req, res, url) => {
+            requests.push(logRequest(req, url))
+            if (url.pathname === '/lookup-header') {
+                respondHtml(
+                    res,
+                    `<!doctype html>
+                    <html>
+                      <body>
+                        <input id="term" name="term" />
+                        <button id="run">Run</button>
+                        <script>
+                          document.getElementById('run').addEventListener('click', async () => {
+                            const term = document.getElementById('term').value;
+                            const bootstrap = await fetch('/api/bootstrap-header?term=' + encodeURIComponent(term));
+                            const id = bootstrap.headers.get('x-result-id');
+                            await fetch('/api/result-header?id=' + encodeURIComponent(id || '') + '&term=' + encodeURIComponent(term));
+                          });
+                        </script>
+                      </body>
+                    </html>`
+                )
+                return
+            }
+            if (url.pathname === '/api/bootstrap-header') {
+                const term = url.searchParams.get('term') || ''
+                res.writeHead(204, {
+                    'x-result-id': `header-${term}`,
+                })
+                res.end()
+                return
+            }
+            if (url.pathname === '/api/result-header') {
+                res.writeHead(200, { 'content-type': 'application/json' })
+                res.end(
+                    JSON.stringify({
+                        ok: true,
+                        id: url.searchParams.get('id'),
+                        term: url.searchParams.get('term'),
+                    })
+                )
+                return
+            }
+            res.writeHead(404)
+            res.end('not found')
+        })
+        server = activeServer
+
+        ;({ context, page } = await createTestPage())
+        const opensteer = Opensteer.from(page, {
+            name: 'api-reverse-response-header',
+            storage: {
+                rootDir: fs.mkdtempSync(path.join(os.tmpdir(), 'api-reverse-response-header-')),
+            },
+        })
+        const controller = new ApiReverseController(opensteer, {
+            scopeDir: process.cwd(),
+            logicalSession: 'test',
+        })
+
+        await page.goto(`${baseUrl}/lookup-header`, { waitUntil: 'networkidle' })
+        await controller.startCapture()
+
+        await runCapturedAction(controller, 'input', { selector: '#term', text: 'OpenAI' }, () =>
+            opensteer.input({ selector: '#term', text: 'OpenAI' })
+        )
+        await runCapturedAction(controller, 'click', { selector: '#run' }, () =>
+            opensteer.click({ selector: '#run' })
+        )
+        await page.waitForTimeout(350)
+
+        const requestRows = controller.listRequests({ kind: 'all' })
+        const resultRequest = requestRows.find((row) =>
+            row.urlTemplate.includes('/api/result-header')
+        )
+        expect(resultRequest).toBeTruthy()
+
+        const plan = await controller.inferPlan({
+            task: 'lookup result from response header',
+            requestRef: resultRequest?.ref || null,
+        })
+
+        expect(plan.steps).toHaveLength(2)
+        expect(findPlanSlot(plan, 'query.term')?.role).toBe('user_input')
+        expect(findPlanSlot(plan, 'query.id')?.role).toBe('derived')
+        expect(
+            plan.bindings.some(
+                (binding) =>
+                    binding.kind === 'derived_response_header' &&
+                    binding.headerName === 'x-result-id'
+            )
+        ).toBe(true)
+
+        requests.length = 0
+        const validation = await controller.validatePlan({
+            ref: plan.ref,
+            mode: 'execute',
+            inputs: { term: 'Ada' },
+        })
+
+        expect(validation.steps).toHaveLength(2)
+        expect(validation.steps.every((step) => step.ok)).toBe(true)
+        expect(validation.oracle.statusMatches).toBe(true)
+
+        const bootstrapCall = requests
+            .filter((entry) => entry.pathname === '/api/bootstrap-header')
+            .at(-1)
+        const resultCall = requests
+            .filter((entry) => entry.pathname === '/api/result-header')
+            .at(-1)
+        expect(bootstrapCall?.searchParams.term).toBe('Ada')
+        expect(resultCall?.searchParams.term).toBe('Ada')
+        expect(resultCall?.searchParams.id).toBe('header-Ada')
+    })
+
     it('treats captured cookies as ambient browser context instead of required caller bindings', async () => {
         const requests: LoggedRequest[] = []
         const baseUrl = await startServer((req, res, url) => {

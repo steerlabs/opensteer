@@ -8,8 +8,10 @@ import {
     normalizeDeterministicPlan,
     Opensteer,
     OpensteerApiPlans,
+    PlanLifecycleService,
     PlanExecutor,
     PlanRegistry,
+    PlanRuntimeManager,
     SessionManager,
     type ApiPlanIr,
 } from '../../src/index.js'
@@ -81,6 +83,37 @@ describe('api-reverse deterministic plans v1', () => {
         expect(plan.sessionRequirementDetails?.[0]?.kind).toBe('storage_live')
     })
 
+    it('upgrades legacy status into v2 lifecycle and runtime profile metadata', () => {
+        const plan = normalizeDeterministicPlan(
+            createPlan({
+                status: 'healthy',
+                bindings: [
+                    {
+                        kind: 'session_storage',
+                        stepId: 'step_1',
+                        slotRef: '@slot1',
+                        storageType: 'local',
+                        key: 'session_token',
+                    },
+                ],
+                slots: [
+                    {
+                        ...createQuerySlot('@slot1', '@request1', 'token', 'captured'),
+                        source: 'header',
+                        slotPath: 'headers.x-session-token',
+                        name: 'x-session-token',
+                        role: 'session',
+                    },
+                ],
+            })
+        )
+
+        expect(plan.schemaVersion).toBe('deterministic-plan.v2')
+        expect(plan.lifecycle).toBe('validated')
+        expect(plan.runtimeProfile?.capability).toBe('browser_fetch')
+        expect(plan.runtimeProfile?.browserlessReplayable).toBe(false)
+    })
+
     it('persists plans and fixtures in the versioned registry', async () => {
         const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-plan-registry-'))
         const registry = new PlanRegistry({ rootDir })
@@ -97,7 +130,7 @@ describe('api-reverse deterministic plans v1', () => {
         const listed = await registry.list(plan.operation)
 
         expect(loaded.plan.version).toBe(1)
-        expect(loaded.meta.status).toBe('draft')
+        expect(loaded.meta.lifecycle).toBe('draft')
         expect(fs.existsSync(path.join(saved.dir, 'fixtures', 'alternate-query.json'))).toBe(true)
         expect(listed).toHaveLength(1)
         expect(listed[0]?.operation).toBe(plan.operation)
@@ -229,9 +262,239 @@ describe('api-reverse deterministic plans v1', () => {
             query: 'Grace',
         })
 
-        expect(validation.meta.status).toBe('validated')
+        expect(validation.meta.lifecycle).toBe('validated')
         expect(validation.promotionIssues).toHaveLength(0)
         expect(execution.ok).toBe(true)
+    })
+
+    it('reduces browser-only constant scaffolding into browserless replay', async () => {
+        const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-api-reduce-'))
+        const requests: Array<Record<string, string>> = []
+        const baseUrl = await startServer((req, res, url) => {
+            requests.push(Object.fromEntries(url.searchParams.entries()))
+            if (url.pathname === '/api/search') {
+                res.writeHead(200, { 'content-type': 'application/json' })
+                res.end(
+                    JSON.stringify({
+                        ok: url.searchParams.get('mode') === 'everything',
+                        q: url.searchParams.get('q'),
+                    })
+                )
+                return
+            }
+            res.writeHead(404)
+            res.end('not found')
+        })
+        server = activeServer
+
+        const client = new OpensteerApiPlans({ rootDir })
+        await client.registry.savePlan(
+            normalizeDeterministicPlan(
+                createPlan({
+                    operation: 'search_open_library_books',
+                    task: 'search open library books',
+                    targetOrigin: baseUrl,
+                    callerInputs: [
+                        {
+                            ref: '@input1',
+                            name: 'q',
+                            slotRef: '@slot1',
+                            slotPath: 'query.q',
+                            role: 'user_input',
+                            required: true,
+                            defaultValue: 'tolkien',
+                            evidenceRefs: [],
+                        },
+                    ],
+                    steps: [
+                        createStep('step_1', `${baseUrl}/api/search?q=tolkien&mode=everything`),
+                    ],
+                    slots: [
+                        createQuerySlot('@slot1', '@request1', 'q', 'tolkien'),
+                        {
+                            ...createQuerySlot('@slot2', '@request1', 'mode', 'everything'),
+                            role: 'derived',
+                            confidence: 0.53,
+                        },
+                    ],
+                    bindings: [
+                        {
+                            kind: 'caller',
+                            stepId: 'step_1',
+                            slotRef: '@slot1',
+                            inputName: 'q',
+                        },
+                        {
+                            kind: 'dom_field',
+                            stepId: 'step_1',
+                            slotRef: '@slot2',
+                            fieldName: 'mode',
+                            fieldId: 'mode',
+                            fieldType: 'hidden',
+                            hidden: true,
+                            resolverCandidates: [
+                                {
+                                    kind: 'constant',
+                                    value: 'everything',
+                                },
+                                {
+                                    kind: 'dom_field',
+                                    fieldName: 'mode',
+                                    fieldId: 'mode',
+                                    fieldType: 'hidden',
+                                    hidden: true,
+                                },
+                            ],
+                        },
+                    ],
+                    successOracle: {
+                        status: 200,
+                        mime: 'application/json',
+                        expectsDownload: false,
+                        jsonPathChecks: [{ path: 'ok', equals: 'true' }],
+                    },
+                })
+            )
+        )
+
+        const validation = await client.plan('search_open_library_books').validate({
+            q: 'asimov',
+        })
+        const saved = await client.registry.loadLatest('search_open_library_books')
+        const execution = await client.plan('search_open_library_books').execute({
+            q: 'ursula',
+        })
+
+        expect(validation.meta.lifecycle).toBe('validated')
+        expect(validation.promotionIssues).toEqual([])
+        expect(saved?.plan.runtimeProfile?.capability).toBe('http')
+        expect(saved?.plan.bindings[1]?.resolver?.kind).toBe('constant')
+        expect(execution.ok).toBe(true)
+        expect(requests.at(-1)?.mode).toBe('everything')
+    })
+
+    it('preserves browser-backed resolvers when cheaper candidates fail validation', async () => {
+        const requests: Array<Record<string, string>> = []
+        const liveToken = 'live-token'
+        const baseUrl = await startServer((req, res, url) => {
+            if (url.pathname === '/') {
+                res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+                res.end(`<!doctype html><html><body><input id="csrf" name="csrf" type="hidden" value="${liveToken}" /></body></html>`)
+                return
+            }
+            if (url.pathname === '/api/search') {
+                requests.push({
+                    q: url.searchParams.get('q') || '',
+                    token: String(req.headers['x-csrf-token'] || ''),
+                })
+                const ok = String(req.headers['x-csrf-token'] || '') === liveToken
+                res.writeHead(200, { 'content-type': 'application/json' })
+                res.end(JSON.stringify({ ok }))
+                return
+            }
+            res.writeHead(404)
+            res.end('not found')
+        })
+        server = activeServer
+
+        ;({ context, page } = await createTestPage())
+        await page.goto(baseUrl, { waitUntil: 'networkidle' })
+        const opensteer = Opensteer.from(page, {
+            name: 'api-reverse-runtime-manager',
+            storage: { rootDir: fs.mkdtempSync(path.join(os.tmpdir(), 'opensteer-runtime-manager-')) },
+        })
+        const runtimeManager = new PlanRuntimeManager()
+        Object.defineProperty(runtimeManager, 'ensureLocalBrowser', {
+            value: async () => opensteer,
+        })
+        const lifecycle = new PlanLifecycleService({
+            executor: new PlanExecutor(),
+            runtimeManager,
+        })
+        const plan = normalizeDeterministicPlan(
+            createPlan({
+                operation: 'browser_backed_search',
+                task: 'browser backed search',
+                targetOrigin: baseUrl,
+                callerInputs: [
+                    {
+                        ref: '@input1',
+                        name: 'q',
+                        slotRef: '@slot1',
+                        slotPath: 'query.q',
+                        role: 'user_input',
+                        required: true,
+                        defaultValue: 'OpenAI',
+                        evidenceRefs: [],
+                    },
+                ],
+                steps: [
+                    createStep('step_1', `${baseUrl}/api/search?q=OpenAI`),
+                ],
+                slots: [
+                    createQuerySlot('@slot1', '@request1', 'q', 'OpenAI'),
+                    {
+                        ref: '@slot2',
+                        requestRef: '@request1',
+                        name: 'x_csrf_token',
+                        slotPath: 'headers.x-csrf-token',
+                        source: 'header',
+                        rawValue: 'stale-token',
+                        shape: 'string',
+                        role: 'session',
+                        confidence: 0.95,
+                        required: true,
+                        evidenceRefs: [],
+                    },
+                ],
+                bindings: [
+                    {
+                        kind: 'caller',
+                        stepId: 'step_1',
+                        slotRef: '@slot1',
+                        inputName: 'q',
+                    },
+                    {
+                        kind: 'dom_field',
+                        stepId: 'step_1',
+                        slotRef: '@slot2',
+                        fieldName: 'csrf',
+                        fieldId: 'csrf',
+                        fieldType: 'hidden',
+                        hidden: true,
+                        resolverCandidates: [
+                            {
+                                kind: 'constant',
+                                value: 'stale-token',
+                            },
+                            {
+                                kind: 'dom_field',
+                                fieldName: 'csrf',
+                                fieldId: 'csrf',
+                                fieldType: 'hidden',
+                                hidden: true,
+                            },
+                        ],
+                    },
+                ],
+                successOracle: {
+                    status: 200,
+                    mime: 'application/json',
+                    expectsDownload: false,
+                    jsonPathChecks: [{ path: 'ok', equals: 'true' }],
+                },
+            })
+        )
+
+        const validation = await lifecycle.validate(plan, {
+            inputs: { q: 'Ada' },
+        })
+
+        expect(validation.lifecycle).toBe('validated')
+        expect(validation.plan.runtimeProfile?.capability).toBe('browser_page')
+        expect(validation.plan.bindings[1]?.resolver?.kind).toBe('dom_field')
+        expect(validation.baseline.ok).toBe(true)
+        expect(requests.at(-1)?.token).toBe(liveToken)
     })
 
     it('reuses an existing browser session when live storage requirements are already satisfied', async () => {
@@ -276,7 +539,7 @@ describe('api-reverse deterministic plans v1', () => {
 
         const result = await sessionManager.ensurePlanSession(plan)
         expect(result.ok).toBe(true)
-        expect(result.mode).toBe('existing')
+        expect(result.runtime.source).toBe('attached')
     })
 })
 
@@ -344,6 +607,7 @@ function createPlan(overrides: Partial<ApiPlanIr> = {}): ApiPlanIr {
             },
         schemaVersion: overrides.schemaVersion,
         version: overrides.version,
+        lifecycle: overrides.lifecycle,
         status: overrides.status,
         fingerprint: overrides.fingerprint,
         sourceRunRef: overrides.sourceRunRef ?? '@run1',

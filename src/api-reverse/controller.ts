@@ -12,22 +12,24 @@ import { parseDataPath } from '../extraction/data-path.js'
 import type { Opensteer } from '../opensteer.js'
 import { parseCapturedBody } from './body-parser.js'
 import {
-    listPlanPromotionIssues,
-    markPlanStatus,
+    getExecutionBindingResolver,
+    getExecutionBindingResolverCandidates,
+    getResolverCapability,
     normalizeDeterministicPlan,
-    stripCapturedCookieBindings,
 } from './compiler.js'
 import { PlanExecutor } from './executor.js'
+import { PlanLifecycleService } from './lifecycle.js'
 import { ApiValueRegistry, redactRecordStrings } from './redact.js'
 import { PlanRegistry } from './registry.js'
 import { buildUrlTemplate, getOrigin, hashText, inferGraphqlMetadata, inferValueShape, normalizePrimitive, normalizeRequestSignature, safeJsonParse, summarizeMime } from './normalize.js'
 import { buildApiRef, isApiRefKind } from './refs.js'
-import { SessionManager } from './session.js'
+import { PlanRuntimeManager } from './runtime.js'
 import { normalizeBindingTransforms } from './transforms.js'
 import type {
     ApiActionFact,
     ApiActionSpan,
     ApiActionTargetFact,
+    ApiBindingResolver,
     ApiCandidateReason,
     ApiCandidateRow,
     ApiCodegenLanguage,
@@ -39,10 +41,12 @@ import type {
     ApiGraphqlMetadata,
     ApiInlineValueFact,
     ApiPageSnapshotSummary,
+    ApiPlanAttemptMeta,
     ApiPlanExecutionReport,
     ApiPlanExecutionMode,
     ApiPlanInput,
     ApiPlanIr,
+    ApiPlanRuntimeMode,
     ApiPlanSummary,
     ApiPlanStep,
     ApiPlanSuccessOracle,
@@ -123,6 +127,18 @@ const BROWSER_FETCH_HEADER_BLOCKLIST = new Set([
 ])
 const TRACEABLE_HEADER_PATTERN =
     /^(authorization|cookie|x-[a-z0-9-]+|csrf|xsrf|origin|referer|content-type|accept)$/i
+const LOW_INFORMATION_HEADER_NAMES = new Set([
+    'accept',
+    'accept-encoding',
+    'accept-language',
+    'connection',
+    'content-length',
+    'content-type',
+    'host',
+    'origin',
+    'referer',
+    'user-agent',
+])
 const SESSION_KEY_PATTERN = /(auth|token|csrf|xsrf|session|cookie|bearer)/i
 const SEMANTIC_NOISE_TOKENS = new Set([
     'input',
@@ -242,57 +258,58 @@ interface EvidenceSeed {
     rationale: string
 }
 
+interface BindingSeedBase {
+    transforms?: string[]
+    resolverCandidates?: ApiBindingResolver[]
+}
+
 type BindingSeed =
-    | {
+    | (BindingSeedBase & {
           kind: 'caller'
-          transforms?: string[]
-      }
-    | {
+      })
+    | (BindingSeedBase & {
           kind: 'constant'
           value: string
-          transforms?: string[]
-      }
-    | {
+      })
+    | (BindingSeedBase & {
           kind: 'derived_response'
           producerRef: string
           responsePath: string
-          transforms?: string[]
-      }
-    | {
+      })
+    | (BindingSeedBase & {
+          kind: 'derived_response_header'
+          producerRef: string
+          headerName: string
+      })
+    | (BindingSeedBase & {
           kind: 'ambient_cookie'
           cookieName: string
-          transforms?: string[]
-      }
-    | {
+      })
+    | (BindingSeedBase & {
           kind: 'session_cookie'
           cookieName: string
-          transforms?: string[]
-      }
-    | {
+      })
+    | (BindingSeedBase & {
           kind: 'session_storage'
           storageType: 'local' | 'session'
           key: string
-          transforms?: string[]
-      }
-    | {
+      })
+    | (BindingSeedBase & {
           kind: 'dom_field'
           fieldName: string | null
           fieldId: string | null
           fieldType: string | null
           hidden: boolean
-          transforms?: string[]
-      }
-    | {
+      })
+    | (BindingSeedBase & {
           kind: 'inline_json'
           source: string
           dataPath: string
-          transforms?: string[]
-      }
-    | {
+      })
+    | (BindingSeedBase & {
           kind: 'unknown'
           reason: string
-          transforms?: string[]
-      }
+      })
 
 interface SlotAnalysis {
     seed: SlotSeed
@@ -348,6 +365,7 @@ interface ExecutedStepState {
     text: string | null
     json: unknown
     url: string | null
+    headers: Record<string, string>
 }
 
 export class ApiReverseController {
@@ -356,7 +374,8 @@ export class ApiReverseController {
     private readonly logicalSession: string
     private readonly registry: PlanRegistry
     private readonly executor: PlanExecutor
-    private readonly sessionManager: SessionManager
+    private readonly runtimeManager: PlanRuntimeManager
+    private readonly lifecycle: PlanLifecycleService
     private runSequence = 0
     private currentRun: InternalRunState | null = null
     private readonly responseListener = (response: Response) => {
@@ -372,13 +391,17 @@ export class ApiReverseController {
         this.logicalSession = options.logicalSession
         this.registry = new PlanRegistry({ rootDir: this.scopeDir })
         this.executor = new PlanExecutor({ opensteer })
-        this.sessionManager = new SessionManager({ opensteer })
+        this.runtimeManager = new PlanRuntimeManager({ opensteer })
+        this.lifecycle = new PlanLifecycleService({
+            executor: this.executor,
+            runtimeManager: this.runtimeManager,
+        })
     }
 
     setOpensteer(opensteer: Opensteer | null): void {
         this.opensteer = opensteer
         this.executor.setOpensteer(opensteer)
-        this.sessionManager.setOpensteer(opensteer)
+        this.runtimeManager.setOpensteer(opensteer)
     }
 
     private requireOpensteer(): Opensteer {
@@ -493,6 +516,7 @@ export class ApiReverseController {
             await this.stopCapture().catch(() => undefined)
         }
         this.currentRun = null
+        await this.runtimeManager.shutdown().catch(() => undefined)
     }
 
     getStatus(): ApiRuntimeStatus {
@@ -977,13 +1001,13 @@ export class ApiReverseController {
         operation?: string | null
         version?: number | null
         interactive?: boolean
+        runtimeMode?: ApiPlanRuntimeMode
     }) {
         const plan = await this.loadDeterministicPlan(args)
-        const result = await this.sessionManager.ensurePlanSession(plan, {
+        return this.runtimeManager.prepare(plan, {
+            mode: args.runtimeMode ?? 'required',
             interactive: args.interactive,
         })
-        this.executor.setOpensteer(this.sessionManager.getOpensteer())
-        return result
     }
 
     async executePlan(args: {
@@ -993,23 +1017,16 @@ export class ApiReverseController {
         inputs?: Record<string, unknown> | string | null
         refreshSession?: boolean
         allowDraft?: boolean
+        runtimeMode?: ApiPlanRuntimeMode
+        interactiveRuntime?: boolean
     }): Promise<ApiPlanExecutionReport> {
         const plan = await this.loadDeterministicPlan(args)
-        let execution = await this.executor.execute(plan, {
-            inputs: args.inputs,
+        return this.lifecycle.execute(plan, {
+            inputs: normalizeInputMap(args.inputs),
             allowDraft: args.allowDraft,
+            runtimeMode: args.runtimeMode,
+            interactiveRuntime: args.interactiveRuntime,
         })
-        if (args.refreshSession !== false && isRefreshableFailure(execution.failureKind)) {
-            const ensured = await this.sessionManager.ensurePlanSession(plan)
-            if (ensured.ok) {
-                this.executor.setOpensteer(this.sessionManager.getOpensteer())
-                execution = await this.executor.execute(plan, {
-                    inputs: args.inputs,
-                    allowDraft: args.allowDraft,
-                })
-            }
-        }
-        return execution
     }
 
     async validatePlan(args: {
@@ -1053,35 +1070,11 @@ export class ApiReverseController {
             report.oracle.mimeMatches = true
             report.notes.push(`Execution mode: ${plan.executionMode}.`)
         } else {
-            let candidatePlan = normalizeDeterministicPlan(plan)
-            let execution = await this.executor.execute(candidatePlan, {
+            const outcome = await this.lifecycle.validate(plan, {
                 inputs,
-                allowDraft: true,
+                runtimeMode: 'required',
             })
-            if (isRefreshableFailure(execution.failureKind)) {
-                const ensured = await this.sessionManager.ensurePlanSession(candidatePlan)
-                if (ensured.ok) {
-                    this.executor.setOpensteer(this.sessionManager.getOpensteer())
-                    execution = await this.executor.execute(candidatePlan, {
-                        inputs,
-                        allowDraft: true,
-                    })
-                    report.notes.push(`Session refresh mode: ${ensured.mode}.`)
-                }
-            }
-
-            if (execution.ok) {
-                const strippedPlan = stripCapturedCookieBindings(candidatePlan)
-                const strippedExecution = await this.executor.execute(strippedPlan, {
-                    inputs,
-                    allowDraft: true,
-                })
-                if (strippedExecution.ok) {
-                    candidatePlan = strippedPlan
-                    execution = strippedExecution
-                    report.notes.push('Removed captured cookies during deterministic promotion.')
-                }
-            }
+            const execution = outcome.baseline
 
             for (const step of execution.steps) {
                 report.steps.push({
@@ -1102,61 +1095,19 @@ export class ApiReverseController {
                 .filter((check) => check.kind === 'mime')
                 .every((check) => check.ok)
 
-            const alternateInputs = buildAlternateValidationInputs(candidatePlan, inputs)
-            const alternateReports: ApiPlanExecutionReport[] = []
-            for (const alternateInput of alternateInputs) {
-                const alternateReport = await this.executor.execute(candidatePlan, {
-                    inputs: alternateInput,
-                    allowDraft: true,
-                })
-                alternateReports.push(alternateReport)
-            }
-
-            const promotionIssues = listPlanPromotionIssues(candidatePlan)
-            if (!execution.ok) {
-                promotionIssues.push(
-                    `Validation failed with ${execution.failureKind ?? 'unknown failure'}.`
-                )
-            }
-            if (alternateInputs.length > 0 && alternateReports.some((item) => !item.ok)) {
-                promotionIssues.push('Alternate validation inputs did not all succeed.')
-            }
-            if (
-                candidatePlan.callerInputs.length > 0 &&
-                alternateInputs.length === 0
-            ) {
-                report.notes.push(
-                    'Promotion requires at least one alternate validation input when caller inputs are present.'
-                )
-            }
-
-            const nextStatus =
-                !promotionIssues.length &&
-                (candidatePlan.callerInputs.length === 0 || alternateInputs.length > 0)
-                    ? 'validated'
-                    : execution.failureKind === 'schema_drift'
-                      ? 'stale'
-                      : isRefreshableFailure(execution.failureKind)
-                        ? 'needs_session_refresh'
-                        : 'draft'
-            const promotedPlan = normalizeDeterministicPlan(
-                markPlanStatus(candidatePlan, nextStatus)
-            )
+            const promotedPlan = outcome.plan
             run.plans[planIndex] = promotedPlan
             await this.writePlanArtifact(run, promotedPlan)
 
             const existingRecord = await this.registry.loadByRef(plan.ref).catch(() => null)
+            const now = Date.now()
             await this.registry.savePlan(promotedPlan, {
                 ...(existingRecord?.meta || {}),
-                status: nextStatus,
-                lastValidatedAt: Date.now(),
-                lastSuccessAt: execution.ok ? Date.now() : existingRecord?.meta.lastSuccessAt ?? null,
-                lastFailureAt: execution.ok ? existingRecord?.meta.lastFailureAt ?? null : Date.now(),
-                lastFailureReason:
-                    promotionIssues.length > 0 ? promotionIssues.join(' ') : null,
+                lifecycle: outcome.lifecycle,
+                lastValidation: buildAttemptMeta(execution, promotedPlan, now, 'required'),
             })
 
-            report.notes.push(...promotionIssues)
+            report.notes.push(...outcome.promotionIssues)
         }
 
         run.validations.push(report)
@@ -1850,6 +1801,7 @@ export class ApiReverseController {
                 case 'constant':
                     return sum
                 case 'derived_response':
+                case 'derived_response_header':
                     return sum + 1
                 case 'ambient_cookie':
                 case 'session_cookie':
@@ -2540,7 +2492,10 @@ export class ApiReverseController {
             const slots = analysis.slotsByRequestRef.get(requestRef) || []
             for (const slot of slots) {
                 const binding = analysis.bindingBySlotRef.get(slot.ref)
-                if (binding?.kind === 'derived_response') {
+                if (
+                    binding?.kind === 'derived_response' ||
+                    binding?.kind === 'derived_response_header'
+                ) {
                     includeRequest(binding.producerRef)
                 }
             }
@@ -2572,8 +2527,12 @@ export class ApiReverseController {
                     .filter(
                         (
                             binding
-                        ): binding is Extract<BindingSeed, { kind: 'derived_response' }> =>
-                            binding?.kind === 'derived_response'
+                        ): binding is Extract<
+                            BindingSeed,
+                            { kind: 'derived_response' | 'derived_response_header' }
+                        > =>
+                            binding?.kind === 'derived_response' ||
+                            binding?.kind === 'derived_response_header'
                     )
                     .map(
                         (binding) => stepIdByRequestRef.get(binding.producerRef) || ''
@@ -2703,6 +2662,7 @@ export class ApiReverseController {
                 text: null,
                 json: null,
                 url: null,
+                headers: {},
                 error:
                     error instanceof Error
                         ? error.message
@@ -2815,6 +2775,16 @@ export class ApiReverseController {
                 if (value == null) {
                     throw new Error(
                         `Unable to resolve derived response value at ${binding.responsePath} for ${binding.producerStepId}.`
+                    )
+                }
+                return value
+            }
+            case 'derived_response_header': {
+                const state = executed.get(binding.producerStepId)
+                const value = state?.headers?.[binding.headerName.toLowerCase()] ?? null
+                if (value == null) {
+                    throw new Error(
+                        `Unable to resolve derived response header ${binding.headerName} for ${binding.producerStepId}.`
                     )
                 }
                 return value
@@ -4148,14 +4118,27 @@ function analyzeResponseHeaderOccurrence(
         seed.source === 'cookie' && cookieName != null && cookieName === occurrence.key
     const sessionMatch =
         sessionCarrier && (cookieMatch || isSessionLikeKey(occurrence.key) || semanticMatch)
-    if (!sessionMatch) {
+    if (sessionMatch) {
+        return {
+            role: 'session',
+            score: 8,
+            rationale: `Value matched prior response header at ${occurrence.location} for a session carrier.`,
+        }
+    }
+    if (
+        isLowInformationHttpHeader(occurrence.key) ||
+        (seed.source === 'header' && isLowInformationHttpHeader(seed.name))
+    ) {
         return null
     }
-    return {
-        role: 'session',
-        score: 8,
-        rationale: `Value matched prior response header at ${occurrence.location} for a session carrier.`,
+    if (semanticMatch) {
+        return {
+            role: 'derived',
+            score: 8,
+            rationale: `Value matched prior response header at ${occurrence.location} with aligned slot semantics.`,
+        }
     }
+    return null
 }
 
 function shouldLinkUpstreamSlot(
@@ -4187,17 +4170,16 @@ function resolveBindingSeed(
 ): BindingSeed {
     const best = evidence[0]
     const transforms = pickBindingTransforms(evidence)
+    let binding: BindingSeed
     if (role === 'user_input') {
-        return { kind: 'caller', transforms }
-    }
-    if (role === 'constant') {
-        return {
+        binding = { kind: 'caller', transforms }
+    } else if (role === 'constant') {
+        binding = {
             kind: 'constant',
             value: seed.rawValue,
             transforms,
         }
-    }
-    if (role === 'derived') {
+    } else if (role === 'derived') {
         const responseEvidence = evidence.find(
             (item) =>
                 item.kind === 'response_value' &&
@@ -4205,76 +4187,124 @@ function resolveBindingSeed(
                 item.sourceLocation?.startsWith('response.body:')
         )
         if (responseEvidence && responseEvidence.sourceRef && responseEvidence.sourceLocation) {
-            return {
+            binding = {
                 kind: 'derived_response',
                 producerRef: responseEvidence.sourceRef,
                 responsePath: responseEvidence.sourceLocation.replace('response.body:', ''),
                 transforms: responseEvidence.transformChain,
             }
-        }
-        const domEvidence = evidence.find(
-            (item) => item.kind === 'hidden_input' || item.kind === 'dom_field'
-        )
-        if (domEvidence) {
-            const match = parseDomFieldLocation(domEvidence.sourceLocation)
-            return {
-                kind: 'dom_field',
-                fieldName: match?.name || null,
-                fieldId: match?.id || null,
-                fieldType: match?.type || null,
-                hidden: domEvidence.kind === 'hidden_input',
-                transforms: domEvidence.transformChain,
+        } else {
+            const responseHeaderEvidence = evidence.find(
+                (item) =>
+                    item.kind === 'response_header' &&
+                    item.sourceRef &&
+                    item.sourceLocation?.startsWith('response.header:')
+            )
+            if (
+                responseHeaderEvidence &&
+                responseHeaderEvidence.sourceRef &&
+                responseHeaderEvidence.sourceLocation
+            ) {
+                binding = {
+                    kind: 'derived_response_header',
+                    producerRef: responseHeaderEvidence.sourceRef,
+                    headerName: responseHeaderEvidence.sourceLocation.replace(
+                        'response.header:',
+                        ''
+                    ),
+                    transforms: responseHeaderEvidence.transformChain,
+                }
+            } else {
+                const domEvidence = evidence.find(
+                    (item) => item.kind === 'hidden_input' || item.kind === 'dom_field'
+                )
+                if (domEvidence) {
+                    const match = parseDomFieldLocation(domEvidence.sourceLocation)
+                    binding = {
+                        kind: 'dom_field',
+                        fieldName: match?.name || null,
+                        fieldId: match?.id || null,
+                        fieldType: match?.type || null,
+                        hidden: domEvidence.kind === 'hidden_input',
+                        transforms: domEvidence.transformChain,
+                    }
+                } else {
+                    const inlineEvidence = evidence.find((item) => item.kind === 'inline_json')
+                    if (inlineEvidence && inlineEvidence.sourceLabel && inlineEvidence.sourceLocation) {
+                        binding = {
+                            kind: 'inline_json',
+                            source: inlineEvidence.sourceLabel,
+                            dataPath: inlineEvidence.sourceLocation,
+                            transforms: inlineEvidence.transformChain,
+                        }
+                    } else {
+                        binding = {
+                            kind: 'unknown',
+                            reason: best?.rationale || `No executable binding for ${seed.slotPath}.`,
+                            transforms,
+                        }
+                    }
+                }
             }
         }
-        const inlineEvidence = evidence.find((item) => item.kind === 'inline_json')
-        if (inlineEvidence && inlineEvidence.sourceLabel && inlineEvidence.sourceLocation) {
-            return {
-                kind: 'inline_json',
-                source: inlineEvidence.sourceLabel,
-                dataPath: inlineEvidence.sourceLocation,
-                transforms: inlineEvidence.transformChain,
-            }
-        }
-    }
-    if (role === 'session') {
+    } else if (role === 'session') {
         if (seed.source === 'cookie') {
-            return {
+            binding = {
                 kind: 'ambient_cookie',
                 cookieName: readCookieNameFromSlotPath(seed.slotPath) || seed.rawValue,
                 transforms,
             }
-        }
-        const storageEvidence = evidence.find(
-            (item) => item.kind === 'storage' || item.kind === 'storage_event'
-        )
-        if (storageEvidence?.sourceLocation) {
-            const [storageType, key] = storageEvidence.sourceLocation.split('.', 2)
-            if (key && (storageType === 'local' || storageType === 'session')) {
-                return {
-                    kind: 'session_storage',
-                    storageType,
-                    key,
-                    transforms: storageEvidence.transformChain,
+        } else {
+            const storageEvidence = evidence.find(
+                (item) => item.kind === 'storage' || item.kind === 'storage_event'
+            )
+            if (storageEvidence?.sourceLocation) {
+                const [storageType, key] = storageEvidence.sourceLocation.split('.', 2)
+                if (key && (storageType === 'local' || storageType === 'session')) {
+                    binding = {
+                        kind: 'session_storage',
+                        storageType,
+                        key,
+                        transforms: storageEvidence.transformChain,
+                    }
+                } else {
+                    binding = {
+                        kind: 'unknown',
+                        reason: best?.rationale || `No executable binding for ${seed.slotPath}.`,
+                        transforms,
+                    }
+                }
+            } else {
+                const domEvidence = evidence.find((item) => item.kind === 'hidden_input')
+                if (domEvidence) {
+                    const match = parseDomFieldLocation(domEvidence.sourceLocation)
+                    binding = {
+                        kind: 'dom_field',
+                        fieldName: match?.name || null,
+                        fieldId: match?.id || null,
+                        fieldType: match?.type || null,
+                        hidden: true,
+                        transforms: domEvidence.transformChain,
+                    }
+                } else {
+                    binding = {
+                        kind: 'unknown',
+                        reason: best?.rationale || `No executable binding for ${seed.slotPath}.`,
+                        transforms,
+                    }
                 }
             }
         }
-        const domEvidence = evidence.find((item) => item.kind === 'hidden_input')
-        if (domEvidence) {
-            const match = parseDomFieldLocation(domEvidence.sourceLocation)
-            return {
-                kind: 'dom_field',
-                fieldName: match?.name || null,
-                fieldId: match?.id || null,
-                fieldType: match?.type || null,
-                hidden: true,
-                transforms: domEvidence.transformChain,
-            }
+    } else {
+        binding = {
+            kind: 'unknown',
+            reason: best?.rationale || `No executable binding for ${seed.slotPath}.`,
+            transforms,
         }
     }
     return {
-        kind: 'unknown',
-        reason: best?.rationale || `No executable binding for ${seed.slotPath}.`,
-        transforms,
+        ...binding,
+        resolverCandidates: collectResolverCandidates(seed, binding, evidence),
     }
 }
 
@@ -4285,6 +4315,163 @@ function pickBindingTransforms(evidence: EvidenceSeed[]): string[] {
         }
     }
     return []
+}
+
+function collectResolverCandidates(
+    seed: SlotSeed,
+    binding: BindingSeed,
+    evidence: EvidenceSeed[]
+): ApiBindingResolver[] {
+    const candidates: ApiBindingResolver[] = []
+    if (binding.kind !== 'caller') {
+        candidates.push({
+            kind: 'constant',
+            value: seed.rawValue,
+        })
+    }
+
+    const responseBodyEvidence = evidence.find(
+        (item) =>
+            item.kind === 'response_value' &&
+            item.sourceRef &&
+            item.sourceLocation?.startsWith('response.body:')
+    )
+    if (responseBodyEvidence?.sourceRef && responseBodyEvidence.sourceLocation) {
+        candidates.push({
+            kind: 'response_json',
+            producerStepId: responseBodyEvidence.sourceRef,
+            producerRef: responseBodyEvidence.sourceRef,
+            responsePath: responseBodyEvidence.sourceLocation.replace('response.body:', ''),
+        })
+    }
+
+    const responseHeaderEvidence = evidence.find(
+        (item) =>
+            item.kind === 'response_header' &&
+            item.sourceRef &&
+            item.sourceLocation?.startsWith('response.header:')
+    )
+    if (responseHeaderEvidence?.sourceRef && responseHeaderEvidence.sourceLocation) {
+        candidates.push({
+            kind: 'response_header',
+            producerStepId: responseHeaderEvidence.sourceRef,
+            producerRef: responseHeaderEvidence.sourceRef,
+            headerName: responseHeaderEvidence.sourceLocation.replace('response.header:', ''),
+        })
+    }
+
+    const cookieName = readCookieNameFromSlotPath(seed.slotPath)
+    if (cookieName) {
+        candidates.push({
+            kind: 'cookie_live',
+            cookieName,
+        })
+    }
+
+    const storageEvidence = evidence.find(
+        (item) => item.kind === 'storage' || item.kind === 'storage_event'
+    )
+    if (storageEvidence?.sourceLocation) {
+        const [storageType, key] = storageEvidence.sourceLocation.split('.', 2)
+        if (key && (storageType === 'local' || storageType === 'session')) {
+            candidates.push({
+                kind: 'storage_live',
+                storageType,
+                key,
+            })
+        }
+    }
+
+    const domEvidence = evidence.find(
+        (item) => item.kind === 'hidden_input' || item.kind === 'dom_field'
+    )
+    if (domEvidence) {
+        const match = parseDomFieldLocation(domEvidence.sourceLocation)
+        candidates.push({
+            kind: 'dom_field',
+            fieldName: match?.name || null,
+            fieldId: match?.id || null,
+            fieldType: match?.type || null,
+            hidden: domEvidence.kind === 'hidden_input',
+        })
+    }
+
+    const inlineEvidence = evidence.find((item) => item.kind === 'inline_json')
+    if (inlineEvidence?.sourceLabel && inlineEvidence.sourceLocation) {
+        candidates.push({
+            kind: 'script_json',
+            source: inlineEvidence.sourceLabel,
+            dataPath: inlineEvidence.sourceLocation,
+        })
+    }
+
+    candidates.push(bindingSeedToResolver(binding, seed.rawValue))
+    return candidates
+}
+
+function bindingSeedToResolver(binding: BindingSeed, slotRawValue: string): ApiBindingResolver {
+    switch (binding.kind) {
+        case 'caller':
+            return {
+                kind: 'input',
+                inputName: sanitizeName(slotRawValue || 'input'),
+            }
+        case 'constant':
+            return {
+                kind: 'constant',
+                value: binding.value,
+            }
+        case 'derived_response':
+            return {
+                kind: 'response_json',
+                producerStepId: binding.producerRef,
+                producerRef: binding.producerRef,
+                responsePath: binding.responsePath,
+            }
+        case 'derived_response_header':
+            return {
+                kind: 'response_header',
+                producerStepId: binding.producerRef,
+                producerRef: binding.producerRef,
+                headerName: binding.headerName,
+            }
+        case 'ambient_cookie':
+            return {
+                kind: 'cookie_captured',
+                cookieName: binding.cookieName,
+                capturedValue: slotRawValue,
+            }
+        case 'session_cookie':
+            return {
+                kind: 'cookie_live',
+                cookieName: binding.cookieName,
+            }
+        case 'session_storage':
+            return {
+                kind: 'storage_live',
+                storageType: binding.storageType,
+                key: binding.key,
+            }
+        case 'dom_field':
+            return {
+                kind: 'dom_field',
+                fieldName: binding.fieldName,
+                fieldId: binding.fieldId,
+                fieldType: binding.fieldType,
+                hidden: binding.hidden,
+            }
+        case 'inline_json':
+            return {
+                kind: 'script_json',
+                source: binding.source,
+                dataPath: binding.dataPath,
+            }
+        case 'unknown':
+            return {
+                kind: 'unsupported',
+                reason: binding.reason,
+            }
+    }
 }
 
 function buildFamilyValueIndex(
@@ -4376,6 +4563,10 @@ function buildExecutionBinding(
     inputNameBySlotRef: Map<string, string>,
     stepIdByRequestRef: Map<string, string>
 ): ApiExecutionBinding {
+    const resolverCandidates = mapResolverCandidates(
+        binding.resolverCandidates,
+        stepIdByRequestRef
+    )
     switch (binding.kind) {
         case 'caller':
             return {
@@ -4383,6 +4574,7 @@ function buildExecutionBinding(
                 slotRef,
                 stepId,
                 inputName: inputNameBySlotRef.get(slotRef) || sanitizeName(slotRef),
+                resolverCandidates,
                 transforms: normalizeBindingTransforms(binding.transforms),
             }
         case 'constant':
@@ -4391,6 +4583,7 @@ function buildExecutionBinding(
                 slotRef,
                 stepId,
                 value: binding.value,
+                resolverCandidates,
                 transforms: normalizeBindingTransforms(binding.transforms),
             }
         case 'derived_response':
@@ -4401,6 +4594,18 @@ function buildExecutionBinding(
                 producerStepId: stepIdByRequestRef.get(binding.producerRef) || 'step_0',
                 producerRef: binding.producerRef,
                 responsePath: binding.responsePath,
+                resolverCandidates,
+                transforms: normalizeBindingTransforms(binding.transforms),
+            }
+        case 'derived_response_header':
+            return {
+                kind: 'derived_response_header',
+                slotRef,
+                stepId,
+                producerStepId: stepIdByRequestRef.get(binding.producerRef) || 'step_0',
+                producerRef: binding.producerRef,
+                headerName: binding.headerName,
+                resolverCandidates,
                 transforms: normalizeBindingTransforms(binding.transforms),
             }
         case 'ambient_cookie':
@@ -4409,6 +4614,7 @@ function buildExecutionBinding(
                 slotRef,
                 stepId,
                 cookieName: binding.cookieName,
+                resolverCandidates,
                 transforms: normalizeBindingTransforms(binding.transforms),
             }
         case 'session_cookie':
@@ -4417,6 +4623,7 @@ function buildExecutionBinding(
                 slotRef,
                 stepId,
                 cookieName: binding.cookieName,
+                resolverCandidates,
                 transforms: normalizeBindingTransforms(binding.transforms),
             }
         case 'session_storage':
@@ -4426,6 +4633,7 @@ function buildExecutionBinding(
                 stepId,
                 storageType: binding.storageType,
                 key: binding.key,
+                resolverCandidates,
                 transforms: normalizeBindingTransforms(binding.transforms),
             }
         case 'dom_field':
@@ -4437,6 +4645,7 @@ function buildExecutionBinding(
                 fieldId: binding.fieldId,
                 fieldType: binding.fieldType,
                 hidden: binding.hidden,
+                resolverCandidates,
                 transforms: normalizeBindingTransforms(binding.transforms),
             }
         case 'inline_json':
@@ -4446,6 +4655,7 @@ function buildExecutionBinding(
                 stepId,
                 source: binding.source,
                 dataPath: binding.dataPath,
+                resolverCandidates,
                 transforms: normalizeBindingTransforms(binding.transforms),
             }
         case 'unknown':
@@ -4454,49 +4664,76 @@ function buildExecutionBinding(
                 slotRef,
                 stepId,
                 reason: binding.reason,
+                resolverCandidates,
                 transforms: normalizeBindingTransforms(binding.transforms),
             }
     }
 }
 
 function resolveExecutionMode(bindings: ApiExecutionBinding[]): ApiPlanExecutionMode {
-    if (
-        bindings.some(
-            (binding) =>
-                binding.kind === 'dom_field' ||
-                binding.kind === 'inline_json' ||
-                binding.kind === 'unknown'
-        )
-    ) {
+    if (bindings.some((binding) => getResolverCapability(getExecutionBindingResolver(binding, '')) === 'browser_page')) {
         return 'browser_dom'
     }
-    if (
-        bindings.some(
-            (binding) =>
-                binding.kind === 'session_cookie' ||
-                binding.kind === 'session_storage'
-        )
-    ) {
+    if (bindings.some((binding) => getResolverCapability(getExecutionBindingResolver(binding, '')) === 'browser_fetch')) {
         return 'browser_session'
     }
     return 'direct_http'
 }
 
 function describeSessionRequirement(binding: ApiExecutionBinding): string | null {
-    switch (binding.kind) {
-        case 'session_cookie':
-            return `cookie:${binding.cookieName}`
-        case 'session_storage':
-            return `${binding.storageType}Storage:${binding.key}`
+    const resolver = getExecutionBindingResolver(binding, '')
+    switch (resolver.kind) {
+        case 'computed':
+            return describeSessionRequirement({
+                ...binding,
+                resolver: resolver.source,
+            })
+        case 'cookie_live':
+            return `cookie:${resolver.cookieName}`
+        case 'storage_live':
+            return `${resolver.storageType}Storage:${resolver.key}`
         case 'dom_field':
-            return `dom:${binding.fieldName || binding.fieldId || binding.fieldType || 'field'}`
-        case 'inline_json':
-            return `inline:${binding.source}:${binding.dataPath}`
-        case 'unknown':
-            return `unknown:${binding.reason}`
+            return `dom:${resolver.fieldName || resolver.fieldId || resolver.fieldType || 'field'}`
+        case 'script_json':
+            return `inline:${resolver.source}:${resolver.dataPath}`
+        case 'unsupported':
+            return `unknown:${resolver.reason}`
         default:
             return null
     }
+}
+
+function mapResolverCandidates(
+    candidates: ApiBindingResolver[] | undefined,
+    stepIdByRequestRef: Map<string, string>
+): ApiBindingResolver[] | undefined {
+    if (!candidates?.length) {
+        return undefined
+    }
+    return candidates.map((candidate) =>
+        mapResolverCandidate(candidate, stepIdByRequestRef)
+    )
+}
+
+function mapResolverCandidate(
+    resolver: ApiBindingResolver,
+    stepIdByRequestRef: Map<string, string>
+): ApiBindingResolver {
+    if (resolver.kind === 'computed') {
+        const source = mapResolverCandidate(resolver.source, stepIdByRequestRef)
+        return {
+            ...resolver,
+            source: source.kind === 'computed' ? source.source : source,
+        }
+    }
+    if (resolver.kind === 'response_json' || resolver.kind === 'response_header') {
+        return {
+            ...resolver,
+            producerStepId:
+                stepIdByRequestRef.get(resolver.producerRef) || resolver.producerStepId,
+        }
+    }
+    return resolver
 }
 
 interface RequestTemplateState {
@@ -4787,13 +5024,15 @@ function isHttpExecutableRequest(request: InternalRequestRecord): boolean {
 
 async function readApiResponse(response: APIResponse): Promise<ExecutedStepState> {
     const text = await response.text()
-    const mime = summarizeMime(response.headers()['content-type'])
+    const headers = normalizeHeaderRecord(response.headers())
+    const mime = summarizeMime(headers['content-type'])
     return {
         status: response.status(),
         mime,
         text,
         json: mime === 'application/json' ? safeJsonParse(text) : null,
         url: response.url(),
+        headers,
     }
 }
 
@@ -4803,13 +5042,15 @@ function readBrowserFetchResponse(response: {
     text: string
     url: string
 }): ExecutedStepState {
-    const mime = summarizeMime(response.headers['content-type'])
+    const headers = normalizeHeaderRecord(response.headers)
+    const mime = summarizeMime(headers['content-type'])
     return {
         status: response.status,
         mime,
         text: response.text,
         json: mime === 'application/json' ? safeJsonParse(response.text) : null,
         url: response.url,
+        headers,
     }
 }
 
@@ -4875,13 +5116,15 @@ function isBrowserFetchHeaderAllowed(name: string): boolean {
 
 async function readFetchResponse(response: globalThis.Response): Promise<ExecutedStepState> {
     const text = await response.text()
-    const mime = summarizeMime(response.headers.get('content-type'))
+    const headers = normalizeHeaderRecord(Object.fromEntries(response.headers.entries()))
+    const mime = summarizeMime(headers['content-type'])
     return {
         status: response.status,
         mime,
         text,
         json: mime === 'application/json' ? safeJsonParse(text) : null,
         url: response.url,
+        headers,
     }
 }
 
@@ -5038,6 +5281,8 @@ function renderBindingShellValue(binding: ApiExecutionBinding | undefined, fallb
             return binding.value
         case 'derived_response':
             return `\${${binding.producerStepId}_${sanitizeName(binding.responsePath)}}`
+        case 'derived_response_header':
+            return `\${${binding.producerStepId}_HEADER_${sanitizeName(binding.headerName)}}`
         case 'ambient_cookie':
             return fallback
         case 'session_cookie':
@@ -5071,6 +5316,12 @@ function parseCookieHeader(value: string): Array<[string, string]> {
         output.push([cookieName, cookieValue])
     }
     return output
+}
+
+function normalizeHeaderRecord(headers: Record<string, string>): Record<string, string> {
+    return Object.fromEntries(
+        Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value])
+    )
 }
 
 function parseSetCookieHeader(value: string): Array<[string, string]> {
@@ -5512,6 +5763,29 @@ function readCookieNameFromSlotPath(slotPath: string): string | null {
     return slotPath.startsWith('cookie.') ? slotPath.replace(/^cookie\./, '') : null
 }
 
+function buildAttemptMeta(
+    report: ApiPlanExecutionReport,
+    plan: ApiPlanIr,
+    at: number,
+    runtimeMode: ApiPlanRuntimeMode
+): ApiPlanAttemptMeta {
+    const normalized = normalizeDeterministicPlan(plan)
+    const capability =
+        normalized.runtimeProfile?.capability ??
+        (normalized.executionMode === 'browser_dom'
+            ? 'browser_page'
+            : normalized.executionMode === 'browser_session'
+              ? 'browser_fetch'
+              : 'http')
+    return {
+        at,
+        ok: report.ok,
+        failureKind: report.failureKind,
+        runtimeMode,
+        capability,
+    }
+}
+
 function isDistinctiveProvenanceValue(
     value: string,
     shape: string,
@@ -5568,6 +5842,17 @@ function buildDomFieldLocation(field: ApiDomFieldFact): string {
 
 function isSessionLikeKey(key: string | null | undefined): boolean {
     return SESSION_KEY_PATTERN.test(String(key || ''))
+}
+
+function isLowInformationHttpHeader(key: string | null | undefined): boolean {
+    const normalized = String(key || '').trim().toLowerCase()
+    if (!normalized) {
+        return false
+    }
+    if (LOW_INFORMATION_HEADER_NAMES.has(normalized)) {
+        return true
+    }
+    return normalized.startsWith('sec-ch-') || normalized.startsWith('sec-fetch-')
 }
 
 function sanitizeName(value: string): string {

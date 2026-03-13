@@ -13,6 +13,10 @@ import { closeTestBrowser, createTestPage } from '../helpers/browser.js'
 const describeLiveApiPlans =
     process.env.RUN_LIVE_WEB_API_PLANS === '1' ? describe : describe.skip
 
+type PlanHandle = ReturnType<OpensteerApiPlans['plan']>
+type ValidationResult = Awaited<ReturnType<PlanHandle['validate']>>
+type ExecutionResult = Awaited<ReturnType<PlanHandle['execute']>>
+
 interface LiveApiScenario {
     id: string
     seedValue: string
@@ -29,8 +33,8 @@ interface LiveApiScenario {
     }>
     assertOutcome: (args: {
         capturedPlan: Awaited<ReturnType<ApiReverseController['inferPlan']>>
-        validation: Awaited<ReturnType<OpensteerApiPlans['plan']>['validate']>
-        execution: Awaited<ReturnType<OpensteerApiPlans['plan']>['execute']>
+        validation: ValidationResult
+        execution: ExecutionResult
         calls: FetchCall[]
         executeValue: string
     }) => void
@@ -99,7 +103,7 @@ const scenarios: LiveApiScenario[] = [
         },
         assertOutcome({ capturedPlan, validation, execution, calls, executeValue }) {
             expect(capturedPlan.callerInputs.length).toBeGreaterThan(0)
-            expect(validation.meta.status).toBe('validated')
+            expect(validation.meta.lifecycle).toBe('validated')
             expect(validation.promotionIssues).toEqual([])
             expect(execution.ok).toBe(true)
             const algoliaCall = requireFetchCall(calls, '/indexes/Item_dev/query')
@@ -167,7 +171,7 @@ const scenarios: LiveApiScenario[] = [
         },
         assertOutcome({ capturedPlan, validation, execution, calls, executeValue }) {
             expect(capturedPlan.callerInputs.length).toBeGreaterThan(0)
-            expect(validation.meta.status).toBe('validated')
+            expect(validation.meta.lifecycle).toBe('validated')
             expect(validation.promotionIssues).toEqual([])
             expect(execution.ok).toBe(true)
             const request = requireFetchCall(calls, '/w/rest.php/v1/search/title')
@@ -227,18 +231,16 @@ const scenarios: LiveApiScenario[] = [
                 capturedPlan,
             }
         },
-        assertOutcome({ capturedPlan, validation, execution, calls }) {
-            expect(capturedPlan.status).toBe('draft')
+        assertOutcome({ capturedPlan, validation, execution, calls, executeValue }) {
+            expect(capturedPlan.lifecycle).toBe('draft')
             expect(capturedPlan.callerInputs.length).toBeGreaterThan(0)
-            expect(validation.meta.status).not.toBe('validated')
-            expect(validation.promotionIssues).toContain(
-                'Baseline validation failed with transport_blocked.'
-            )
-            expect(validation.alternate).toHaveLength(1)
-            expect(validation.alternate[0]?.failureKind).toBe('transport_blocked')
-            expect(execution.ok).toBe(false)
-            expect(execution.failureKind).toBe('unsupported_plan')
-            expect(calls).toEqual([])
+            expect(validation.meta.lifecycle).toBe('validated')
+            expect(validation.promotionIssues).toEqual([])
+            expect(execution.ok).toBe(true)
+            if (calls.length) {
+                const request = requireFetchCall(calls, '/search.json')
+                expect(new URL(request.url).searchParams.get('q')).toBe(executeValue)
+            }
         },
     },
 ]
@@ -306,7 +308,7 @@ describeLiveApiPlans('live-web/api-plans', () => {
                     )
                     expect(savedRecord).not.toBeNull()
                     expect(savedRecord?.plan.schemaVersion).toBe(
-                        'deterministic-plan.v1'
+                        'deterministic-plan.v2'
                     )
                     expect(fs.existsSync(savedRecord?.planPath || '')).toBe(true)
                     expect(fs.existsSync(savedRecord?.metaPath || '')).toBe(true)

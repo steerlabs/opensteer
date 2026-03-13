@@ -9,8 +9,8 @@ import {
 import type {
     ApiPlanFixture,
     ApiPlanIr,
+    ApiPlanLifecycle,
     ApiPlanMeta,
-    ApiPlanStatus,
     ApiPlanSummary,
 } from './types.js'
 
@@ -84,13 +84,13 @@ export class PlanRegistry {
 
     async loadLatest(
         operation: string,
-        statuses?: ApiPlanStatus[]
+        lifecycles?: ApiPlanLifecycle[]
     ): Promise<StoredPlanRecord | null> {
         const versions = await this.listVersions(operation)
         const sorted = versions.sort((left, right) => right - left)
         for (const version of sorted) {
             const record = await this.load(operation, version)
-            if (!statuses?.length || statuses.includes(record.meta.status)) {
+            if (!lifecycles?.length || lifecycles.includes(record.meta.lifecycle)) {
                 return record
             }
         }
