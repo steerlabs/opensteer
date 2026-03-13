@@ -2,10 +2,11 @@
 
 This directory contains the source-of-truth documents for the rewrite.
 
-Current status: `Phase 0` complete, `Phase 1` next.
+Current status: `Phase 0` complete, `Phase 1` complete, `Phase 2` next.
 
 - [Framework rewrite plan](framework-rewrite-plan.md)
-- [Browser-core Phase 1 spec](browser-core-phase-1.md)
+- `packages/browser-core/src/` contains the implemented Phase 1 contract
+- `tests/browser-core/` contains the Phase 1 conformance coverage
 
 Current Opensteer package direction:
 

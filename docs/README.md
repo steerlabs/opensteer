@@ -6,7 +6,6 @@ The documentation set is intentionally small in the rewrite's opening phase.
 
 - [Architecture index](architecture/README.md)
 - [Framework rewrite plan](architecture/framework-rewrite-plan.md)
-- [Browser-core Phase 1 spec](architecture/browser-core-phase-1.md)
 
 ## Scope
 

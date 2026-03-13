@@ -9,14 +9,14 @@ that owns Opensteer's actual semantics.
 
 ## Current Status
 
-`Phase 0` is complete.
+`Phase 0` and `Phase 1` are complete.
 
-The repository is now moving into `Phase 1`, which means:
+The repository is now moving into `Phase 2`, which means:
 
 - the monorepo layout, OSS docs, and shared tooling are in place
-- package boundaries are scaffolded and build cleanly
+- the `packages/browser-core` Phase 1 contract is implemented and tested
 - the rewrite architecture and phased rollout plan are documented
-- the next active work is defining `packages/browser-core`
+- the next active work is defining `packages/protocol`
 
 ## Repository Layout
 
@@ -54,7 +54,6 @@ durable evidence store.
 ## Key Documents
 
 - [Rewrite plan and phased roadmap](docs/architecture/framework-rewrite-plan.md)
-- [Browser-core Phase 1 spec](docs/architecture/browser-core-phase-1.md)
 - [Architecture docs index](docs/architecture/README.md)
 - [Documentation index](docs/README.md)
 
