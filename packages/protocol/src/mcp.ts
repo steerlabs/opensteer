@@ -30,32 +30,41 @@ export interface OpensteerMcpToolResult<TStructured extends JsonObject = JsonObj
 }
 
 const readOnlyOperations = new Set<OpensteerOperationName>([
-  "artifact.captureScreenshot",
-  "inspect.listPages",
-  "inspect.listFrames",
-  "inspect.getPageInfo",
-  "inspect.getFrameInfo",
-  "inspect.getHtmlSnapshot",
-  "inspect.getDomSnapshot",
-  "inspect.readText",
-  "inspect.readAttributes",
-  "inspect.hitTest",
-  "inspect.getViewportMetrics",
-  "inspect.getNetworkRecords",
-  "inspect.getCookies",
-  "inspect.getStorageSnapshot",
+  "artifact.capture-screenshot",
+  "inspect.list-pages",
+  "inspect.list-frames",
+  "inspect.get-page-info",
+  "inspect.get-frame-info",
+  "inspect.get-html-snapshot",
+  "inspect.get-dom-snapshot",
+  "inspect.read-text",
+  "inspect.read-attributes",
+  "inspect.hit-test",
+  "inspect.get-viewport-metrics",
+  "inspect.get-network-records",
+  "inspect.get-cookies",
+  "inspect.get-storage-snapshot",
 ]);
 
 const destructiveOperations = new Set<OpensteerOperationName>(["session.close", "page.close"]);
 
 function toolNameFromOperation(operation: OpensteerOperationName): string {
-  return `opensteer_${operation.replaceAll(".", "_")}`;
+  return `opensteer_${operation.replaceAll(".", "_").replaceAll("-", "_")}`;
 }
 
 function titleFromOperation(operation: OpensteerOperationName): string {
   return operation
-    .split(".")
-    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .split(/[.-]/)
+    .map((segment) => {
+      switch (segment) {
+        case "dom":
+          return "DOM";
+        case "html":
+          return "HTML";
+        default:
+          return segment.charAt(0).toUpperCase() + segment.slice(1);
+      }
+    })
     .join(" ");
 }
 

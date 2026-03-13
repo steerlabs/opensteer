@@ -134,13 +134,17 @@ export function isErrorEnvelope<TOutput>(
   return envelope.status === "error";
 }
 
-export function requestEnvelopeSchema(inputSchema: JsonSchema): JsonSchema {
+function operationFieldSchema(operation: string | undefined): JsonSchema {
+  return operation === undefined ? stringSchema() : literalSchema(operation);
+}
+
+export function requestEnvelopeSchema(inputSchema: JsonSchema, operation?: string): JsonSchema {
   return objectSchema(
     {
       protocol: literalSchema(OPENSTEER_PROTOCOL_NAME),
       version: literalSchema(OPENSTEER_PROTOCOL_VERSION),
       requestId: stringSchema(),
-      operation: stringSchema(),
+      operation: operationFieldSchema(operation),
       sentAt: integerSchema({ minimum: 0 }),
       input: inputSchema,
     },
@@ -151,13 +155,13 @@ export function requestEnvelopeSchema(inputSchema: JsonSchema): JsonSchema {
   );
 }
 
-export function successEnvelopeSchema(dataSchema: JsonSchema): JsonSchema {
+export function successEnvelopeSchema(dataSchema: JsonSchema, operation?: string): JsonSchema {
   return objectSchema(
     {
       protocol: literalSchema(OPENSTEER_PROTOCOL_NAME),
       version: literalSchema(OPENSTEER_PROTOCOL_VERSION),
       requestId: stringSchema(),
-      operation: stringSchema(),
+      operation: operationFieldSchema(operation),
       status: enumSchema(["ok"] as const),
       receivedAt: integerSchema({ minimum: 0 }),
       data: dataSchema,
@@ -172,27 +176,34 @@ export function successEnvelopeSchema(dataSchema: JsonSchema): JsonSchema {
   );
 }
 
-export const opensteerErrorEnvelopeSchema: JsonSchema = objectSchema(
-  {
-    protocol: literalSchema(OPENSTEER_PROTOCOL_NAME),
-    version: literalSchema(OPENSTEER_PROTOCOL_VERSION),
-    requestId: stringSchema(),
-    operation: stringSchema(),
-    status: enumSchema(["error"] as const),
-    receivedAt: integerSchema({ minimum: 0 }),
-    error: opensteerErrorSchema,
-    trace: traceRecordSchema(),
-    artifacts: arraySchema(opensteerArtifactSchema),
-    capabilities: opensteerCapabilitySetSchema,
-  },
-  {
-    title: "OpensteerErrorEnvelope",
-    required: ["protocol", "version", "requestId", "operation", "status", "receivedAt", "error"],
-  },
-);
+function errorEnvelopeSchema(operation?: string): JsonSchema {
+  return objectSchema(
+    {
+      protocol: literalSchema(OPENSTEER_PROTOCOL_NAME),
+      version: literalSchema(OPENSTEER_PROTOCOL_VERSION),
+      requestId: stringSchema(),
+      operation: operationFieldSchema(operation),
+      status: enumSchema(["error"] as const),
+      receivedAt: integerSchema({ minimum: 0 }),
+      error: opensteerErrorSchema,
+      trace: traceRecordSchema(),
+      artifacts: arraySchema(opensteerArtifactSchema),
+      capabilities: opensteerCapabilitySetSchema,
+    },
+    {
+      title: "OpensteerErrorEnvelope",
+      required: ["protocol", "version", "requestId", "operation", "status", "receivedAt", "error"],
+    },
+  );
+}
 
-export function responseEnvelopeSchema(dataSchema: JsonSchema): JsonSchema {
-  return oneOfSchema([successEnvelopeSchema(dataSchema), opensteerErrorEnvelopeSchema], {
-    title: "OpensteerResponseEnvelope",
-  });
+export const opensteerErrorEnvelopeSchema: JsonSchema = errorEnvelopeSchema();
+
+export function responseEnvelopeSchema(dataSchema: JsonSchema, operation?: string): JsonSchema {
+  return oneOfSchema(
+    [successEnvelopeSchema(dataSchema, operation), errorEnvelopeSchema(operation)],
+    {
+      title: "OpensteerResponseEnvelope",
+    },
+  );
 }

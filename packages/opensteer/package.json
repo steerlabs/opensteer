@@ -19,6 +19,9 @@
   "files": [
     "dist"
   ],
+  "dependencies": {
+    "@opensteer/protocol": "workspace:*"
+  },
   "scripts": {
     "build": "tsup",
     "clean": "rimraf dist",

@@ -34,7 +34,11 @@ importers:
 
   packages/engine-playwright: {}
 
-  packages/opensteer: {}
+  packages/opensteer:
+    dependencies:
+      "@opensteer/protocol":
+        specifier: workspace:*
+        version: link:../protocol
 
   packages/protocol: {}
 

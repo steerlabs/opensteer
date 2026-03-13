@@ -1,7 +1,9 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  OPENSTEER_PROTOCOL_COMPATIBILITY_REVISION,
   OPENSTEER_PROTOCOL_NAME,
+  OPENSTEER_PROTOCOL_REST_BASE_PATH,
   OPENSTEER_PROTOCOL_VERSION,
   createDocumentEpoch,
   createErrorEnvelope,
@@ -22,8 +24,10 @@ import {
   opensteerMcpTools,
   opensteerOperationSpecificationMap,
   opensteerOperationSpecifications,
+  opensteerProtocolDescriptor,
   opensteerRestEndpoints,
   parseOpensteerRef,
+  resolveRequiredCapabilities,
   unsupportedCapabilityError,
 } from "../../packages/protocol/src/index.js";
 
@@ -92,7 +96,7 @@ describe("protocol envelopes", () => {
 
   test("builds error envelopes and maps normalized errors to transport status", () => {
     const request = createRequestEnvelope(
-      "inspect.getDomSnapshot",
+      "inspect.get-dom-snapshot",
       {
         documentRef: "document:missing",
       },
@@ -114,9 +118,26 @@ describe("protocol envelopes", () => {
   });
 });
 
+describe("protocol descriptor", () => {
+  test("keeps the public compatibility revision, semver, REST base path, and media type aligned", () => {
+    expect(OPENSTEER_PROTOCOL_VERSION).toBe(
+      `0.${String(OPENSTEER_PROTOCOL_COMPATIBILITY_REVISION)}.0`,
+    );
+    expect(OPENSTEER_PROTOCOL_REST_BASE_PATH).toBe(
+      `/api/v${String(OPENSTEER_PROTOCOL_COMPATIBILITY_REVISION)}`,
+    );
+    expect(opensteerProtocolDescriptor).toMatchObject({
+      protocol: OPENSTEER_PROTOCOL_NAME,
+      version: OPENSTEER_PROTOCOL_VERSION,
+      restBasePath: OPENSTEER_PROTOCOL_REST_BASE_PATH,
+      mediaType: expect.stringContaining(`version=${OPENSTEER_PROTOCOL_VERSION}`),
+    });
+  });
+});
+
 describe("protocol capabilities and errors", () => {
   test("preserves the public capability catalog and supports direct membership checks", () => {
-    const capabilitySet = [...new Set(["inspect.html", "inspect.html", "surface.rest"])] as const;
+    const capabilitySet = ["inspect.html", "surface.rest"] as const;
 
     expect(capabilitySet).toEqual(["inspect.html", "surface.rest"]);
     expect(opensteerCapabilityDescriptors).toHaveLength(opensteerCapabilities.length);
@@ -164,19 +185,78 @@ describe("protocol surface descriptors", () => {
 
     const restVersion = restNavigate?.requestSchema.properties?.version;
     const restOperation = restNavigate?.requestSchema.properties?.operation;
+    const restResponseOperations = restNavigate?.responseSchema.oneOf?.map(
+      (schema) => schema.properties?.operation,
+    );
 
     expect(restNavigate?.method).toBe("POST");
+    expect(restNavigate?.path).toBe(
+      `${OPENSTEER_PROTOCOL_REST_BASE_PATH}/operations/page/navigate`,
+    );
     expect(restVersion).toMatchObject({
       const: OPENSTEER_PROTOCOL_VERSION,
     });
     expect(restOperation).toMatchObject({
-      type: "string",
+      const: "page.navigate",
     });
+    expect(restResponseOperations).toEqual([
+      expect.objectContaining({ const: "page.navigate" }),
+      expect.objectContaining({ const: "page.navigate" }),
+    ]);
     expect(mcpNavigate?.name).toBe("opensteer_page_navigate");
     expect(mcpNavigate?.annotations).toMatchObject({
       readOnlyHint: false,
       openWorldHint: true,
     });
+  });
+
+  test("normalizes public operation names into readable MCP titles", () => {
+    const tool = opensteerMcpTools.find((entry) => entry.operation === "inspect.get-dom-snapshot");
+
+    expect(tool?.name).toBe("opensteer_inspect_get_dom_snapshot");
+    expect(tool?.title).toBe("Inspect Get DOM Snapshot");
+  });
+
+  test("models exclusive targets and input-aware capability requirements", () => {
+    const domSnapshotSpec = opensteerOperationSpecificationMap["inspect.get-dom-snapshot"];
+    const executionStateSpec = opensteerOperationSpecificationMap["execution.set-state"];
+    const networkRecordsSpec = opensteerOperationSpecificationMap["inspect.get-network-records"];
+    const storageSnapshotSpec = opensteerOperationSpecificationMap["inspect.get-storage-snapshot"];
+
+    expect(domSnapshotSpec?.inputSchema.oneOf?.map((branch) => branch.required)).toEqual([
+      ["frameRef"],
+      ["documentRef"],
+    ]);
+    expect(
+      resolveRequiredCapabilities(executionStateSpec!, {
+        pageRef: "page:main",
+        paused: false,
+      }),
+    ).toEqual(["execution.resume"]);
+    expect(
+      resolveRequiredCapabilities(executionStateSpec!, {
+        pageRef: "page:main",
+        frozen: false,
+      }),
+    ).toEqual(["execution.freeze"]);
+    expect(
+      resolveRequiredCapabilities(networkRecordsSpec!, {
+        sessionRef: "session:main",
+        includeBodies: true,
+      }),
+    ).toEqual(["inspect.network", "inspect.networkBodies"]);
+    expect(
+      resolveRequiredCapabilities(storageSnapshotSpec!, {
+        sessionRef: "session:main",
+      }),
+    ).toEqual(["inspect.localStorage", "inspect.sessionStorage", "inspect.indexedDb"]);
+    expect(
+      resolveRequiredCapabilities(storageSnapshotSpec!, {
+        sessionRef: "session:main",
+        includeSessionStorage: false,
+        includeIndexedDb: false,
+      }),
+    ).toEqual(["inspect.localStorage"]);
   });
 });
 

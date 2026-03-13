@@ -9,16 +9,17 @@ that owns Opensteer's actual semantics.
 
 ## Current Status
 
-`Phase 0`, `Phase 1`, and `Phase 2` are complete.
+`Phase 0`, `Phase 1`, `Phase 2`, and `Phase 3` are complete.
 
 The repository now has:
 
 - the monorepo layout, OSS docs, and shared tooling are in place
 - the `packages/browser-core` Phase 1 contract is implemented and tested
 - the `packages/protocol` Phase 2 public wire contract is implemented and tested
+- the `packages/opensteer` Phase 3 filesystem root for traces, artifacts, and registries is
+  implemented and tested
 - the rewrite architecture and phased rollout plan are documented
-- the next active work is defining the initial `packages/opensteer` trace,
-  artifact, and registry boundaries
+- the next active work is implementing `packages/engine-playwright`
 
 ## Repository Layout
 
@@ -52,6 +53,28 @@ src/
 `registry/` is the home for deterministic local replay records and reusable
 request-plan persistence. `traces/` stays a timeline, and `artifacts/` stays the
 durable evidence store.
+
+The current Phase 3 filesystem root created by `packages/opensteer` uses this
+layout:
+
+```text
+opensteer-root.json
+artifacts/
+  manifests/
+  objects/
+    sha256/
+traces/
+  runs/
+registry/
+  descriptors/
+    records/
+    indexes/
+      by-key/
+  request-plans/
+    records/
+    indexes/
+      by-key/
+```
 
 ## Key Documents
 
