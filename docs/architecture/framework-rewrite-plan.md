@@ -6,7 +6,8 @@ working on the rewrite.
 ## Current Status
 
 - `Phase 0` is complete.
-- `Phase 1` is the next active implementation phase.
+- `Phase 1` is complete.
+- `Phase 2` is the next active implementation phase.
 
 ## Goals
 
@@ -193,8 +194,8 @@ These belong in `packages/opensteer/registry`.
 - Never expose raw Playwright handles, raw ABP endpoints, or raw CDP concepts in
   `packages/protocol`.
 
-For the detailed `Phase 1` contract, see
-[Browser-Core Phase 1 Spec](browser-core-phase-1.md).
+The implemented `Phase 1` browser-core contract now lives in
+`packages/browser-core/src/` and is covered by `tests/browser-core/`.
 
 ## Why ABP Is A Backend, Not The Architecture
 
@@ -261,6 +262,8 @@ Freeze `packages/browser-core`.
 - raw DOM snapshots
 - richer network and session-state inspection
 - normalized browser-surface events
+
+Status: complete.
 
 ### Phase 2
 
