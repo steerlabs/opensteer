@@ -281,6 +281,10 @@ describe("FakeBrowserCoreEngine", () => {
   test("filters cookies by origin semantics and can omit storage surfaces", async () => {
     const engine = createFakeBrowserCoreEngine();
     const sessionRef = await engine.createSession();
+    await engine.createPage({
+      sessionRef,
+      url: "https://example.com",
+    });
 
     engine.seedCookies(sessionRef, [
       {
@@ -322,13 +326,23 @@ describe("FakeBrowserCoreEngine", () => {
       includeSessionStorage: false,
       includeIndexedDb: false,
     });
+    const storageWithSessionData = await engine.getStorageSnapshot({
+      sessionRef,
+      includeIndexedDb: false,
+    });
 
     expect(httpsCookies.map((cookie) => cookie.name)).toEqual(["secureCookie"]);
     expect(httpCookies).toEqual([]);
     expect(localhostCookies.map((cookie) => cookie.name)).toEqual(["httpCookie"]);
-    expect(storage.origins[0]?.sessionStorage).toBeUndefined();
     expect(storage.origins[0]?.indexedDb).toBeUndefined();
     expect(storage.origins[0]?.localStorage).toHaveLength(2);
+    expect(storage.sessionStorage).toBeUndefined();
+    expect(storageWithSessionData.sessionStorage?.[0]).toMatchObject({
+      pageRef: expect.stringMatching(/^page:/),
+      frameRef: expect.stringMatching(/^frame:/),
+      origin: "https://example.com",
+      entries: [{ key: "csrf", value: "token-123" }],
+    });
   });
 
   test("executes session-bound transport requests and records execution-state events", async () => {

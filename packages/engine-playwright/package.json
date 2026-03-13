@@ -19,6 +19,10 @@
   "files": [
     "dist"
   ],
+  "dependencies": {
+    "@opensteer/browser-core": "workspace:*",
+    "playwright": "1.58.2"
+  },
   "scripts": {
     "build": "tsup",
     "clean": "rimraf dist",

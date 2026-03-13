@@ -6,6 +6,7 @@
     "moduleResolution": "NodeNext",
     "lib": ["ES2022"],
     "paths": {
+      "@opensteer/browser-core": ["packages/browser-core/src/index.ts"],
       "@opensteer/protocol": ["packages/protocol/src/index.ts"]
     },
     "strict": true,

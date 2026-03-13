@@ -9,7 +9,8 @@ working on the rewrite.
 - `Phase 1` is complete.
 - `Phase 2` is complete.
 - `Phase 3` is complete.
-- `Phase 4` is the next active implementation phase.
+- `Phase 4` is complete.
+- `Phase 5` is the next active implementation phase.
 
 ## Goals
 
@@ -205,6 +206,10 @@ The implemented `Phase 2` public protocol contract now lives in
 The implemented `Phase 3` Opensteer filesystem root now lives in
 `packages/opensteer/src/` and is covered by `tests/opensteer/`.
 
+The implemented `Phase 4` Chromium-first Playwright backend now lives in
+`packages/engine-playwright/src/` and is covered by
+`tests/engine-playwright/`.
+
 ## Why ABP Is A Backend, Not The Architecture
 
 ABP is useful because it is agent-oriented today:
@@ -281,6 +286,8 @@ Define `packages/protocol`.
 - public schema shapes
 - trace and artifact schemas that cross process boundaries
 
+Status: complete.
+
 ### Phase 3
 
 Define trace, artifact, and registry boundaries early inside `packages/opensteer`.
@@ -297,6 +304,35 @@ Implement `packages/engine-playwright` first.
 
 - smallest viable backend
 - prove the abstraction before introducing ABP
+
+Status: complete.
+
+Phase 4 completion scope:
+
+- Chromium-first Playwright backend with a read-only CDP inspection sidecar
+- one `BrowserContext` per `SessionRef`
+- stable `FrameRef`, rotating `DocumentRef` on new-document commits, and
+  `DocumentEpoch` invalidation for stale node bindings
+- HTML snapshots, DOM snapshots, text reads, attribute reads, hit-test, and
+  viewport metrics
+- navigation, pointer input, keyboard input, text input, screenshots, and
+  freeze control
+- network records with bounded request and response body capture
+- cookie inspection plus storage snapshots with shared origin
+  `localStorage`/`indexedDb` and page-or-frame-scoped `sessionStorage`
+- page lifecycle, dialog, chooser, download, console, and page-error events
+- reusable browser-core conformance coverage shared by fake and Playwright
+  engines
+
+Phase 4 intentionally excludes:
+
+- touch input
+- pause and resume
+- worker, websocket, event-stream, and execution-state events
+- session HTTP transport
+- `screen` and `window` coordinate input
+- screenshot cursor inclusion
+- non-Chromium browsers
 
 ### Phase 5
 

@@ -27,7 +27,8 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "esbuild"
+      "esbuild",
+      "playwright"
     ]
   }
 }

@@ -1,5 +1,5 @@
-import type { SessionRef } from "./identity.js";
-import { sessionRefSchema } from "./identity.js";
+import type { FrameRef, PageRef, SessionRef } from "./identity.js";
+import { frameRefSchema, pageRefSchema, sessionRefSchema } from "./identity.js";
 import {
   arraySchema,
   enumSchema,
@@ -55,14 +55,21 @@ export interface IndexedDbDatabaseSnapshot {
 export interface StorageOriginSnapshot {
   readonly origin: string;
   readonly localStorage: readonly StorageEntry[];
-  readonly sessionStorage?: readonly StorageEntry[];
   readonly indexedDb?: readonly IndexedDbDatabaseSnapshot[];
+}
+
+export interface SessionStorageSnapshot {
+  readonly pageRef: PageRef;
+  readonly frameRef: FrameRef;
+  readonly origin: string;
+  readonly entries: readonly StorageEntry[];
 }
 
 export interface StorageSnapshot {
   readonly sessionRef: SessionRef;
   readonly capturedAt: number;
   readonly origins: readonly StorageOriginSnapshot[];
+  readonly sessionStorage?: readonly SessionStorageSnapshot[];
 }
 
 const jsonUnknownSchema: JsonSchema = {};
@@ -160,7 +167,6 @@ export const storageOriginSnapshotSchema: JsonSchema = objectSchema(
   {
     origin: stringSchema(),
     localStorage: arraySchema(storageEntrySchema),
-    sessionStorage: arraySchema(storageEntrySchema),
     indexedDb: arraySchema(indexedDbDatabaseSnapshotSchema),
   },
   {
@@ -169,11 +175,25 @@ export const storageOriginSnapshotSchema: JsonSchema = objectSchema(
   },
 );
 
+export const sessionStorageSnapshotSchema: JsonSchema = objectSchema(
+  {
+    pageRef: pageRefSchema,
+    frameRef: frameRefSchema,
+    origin: stringSchema(),
+    entries: arraySchema(storageEntrySchema),
+  },
+  {
+    title: "SessionStorageSnapshot",
+    required: ["pageRef", "frameRef", "origin", "entries"],
+  },
+);
+
 export const storageSnapshotSchema: JsonSchema = objectSchema(
   {
     sessionRef: sessionRefSchema,
     capturedAt: integerSchema({ minimum: 0 }),
     origins: arraySchema(storageOriginSnapshotSchema),
+    sessionStorage: arraySchema(sessionStorageSnapshotSchema),
   },
   {
     title: "StorageSnapshot",
