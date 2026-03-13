@@ -1,10 +1,9 @@
 # Dependencies
 node_modules/
 .pnpm-store/
+.pnpm-debug.log*
 package-lock.json
 bun.lock
-tests/test-app/package-lock.json
-tests/test-app/bun.lock
 
 # Build artifacts
 dist/
@@ -13,23 +12,25 @@ coverage/
 *.tgz
 *.log
 
-# Environment
+# Environment and local overrides
 .env
 .env.*
 !.env.example
+*.local
 
-# Local framework/runtime state
+# Local runtime state
 .opensteer/
 $HOME/
 
-# Local agent/editor state
+# Local editor and agent state
 .codex/
 .claude/
 .vscode/
 .idea/
 
+# Test artifacts
+playwright-report/
+test-results/
+
 # OS files
 .DS_Store
-
-# Test runtime artifacts
-tests/.test-app-url
