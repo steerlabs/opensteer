@@ -1,11 +1,20 @@
-# Opensteer Docs
+# Documentation
 
-- [Getting Started](getting-started.md)
-- [API Reference](api-reference.md)
-- [CLI Reference](cli-reference.md)
-- [Cloud Integration](cloud-integration.md)
-- [Selectors and Storage](selectors.md)
-- [HTML Cleaning and Snapshot Modes](html-cleaning.md)
-- [Live Web Validation Suite](live-web-tests.md)
-- [Skills](skills.md)
-- [Releasing](releasing.md)
+The documentation set is intentionally small in the rewrite's opening phase.
+
+## Architecture
+
+- [Architecture index](architecture/README.md)
+- [Framework rewrite plan](architecture/framework-rewrite-plan.md)
+- [Browser-core Phase 1 spec](architecture/browser-core-phase-1.md)
+
+## Scope
+
+Documentation in this repository should explain:
+
+- package boundaries
+- public contracts
+- runtime semantics
+- contributor workflows
+
+Avoid duplicating implementation details that belong in source code or tests.
