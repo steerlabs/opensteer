@@ -1,4 +1,4 @@
-import type { SessionRef } from "./identity.js";
+import type { FrameRef, PageRef, SessionRef } from "./identity.js";
 
 export type CookieSameSite = "strict" | "lax" | "none";
 export type CookiePriority = "low" | "medium" | "high";
@@ -45,14 +45,21 @@ export interface IndexedDbDatabaseSnapshot {
 export interface StorageOriginSnapshot {
   readonly origin: string;
   readonly localStorage: readonly StorageEntry[];
-  readonly sessionStorage?: readonly StorageEntry[];
   readonly indexedDb?: readonly IndexedDbDatabaseSnapshot[];
+}
+
+export interface SessionStorageSnapshot {
+  readonly pageRef: PageRef;
+  readonly frameRef: FrameRef;
+  readonly origin: string;
+  readonly entries: readonly StorageEntry[];
 }
 
 export interface StorageSnapshot {
   readonly sessionRef: SessionRef;
   readonly capturedAt: number;
   readonly origins: readonly StorageOriginSnapshot[];
+  readonly sessionStorage?: readonly SessionStorageSnapshot[];
 }
 
 function parseUrl(value: string): URL | null {

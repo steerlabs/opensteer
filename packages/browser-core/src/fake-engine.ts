@@ -128,6 +128,14 @@ function stripFragment(url: string): string {
   return hashIndex === -1 ? url : url.slice(0, hashIndex);
 }
 
+function originFromUrl(url: string): string | undefined {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return undefined;
+  }
+}
+
 export class FakeBrowserCoreEngine implements BrowserCoreEngine {
   readonly capabilities: Readonly<BrowserCapabilities>;
 
@@ -792,17 +800,18 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
 
     const snapshot = clone(session.storage);
     return {
-      ...snapshot,
+      sessionRef: snapshot.sessionRef,
+      capturedAt: snapshot.capturedAt,
       origins: snapshot.origins.map((origin) => ({
         origin: origin.origin,
         localStorage: origin.localStorage,
-        ...((input.includeSessionStorage ?? true) && origin.sessionStorage
-          ? { sessionStorage: origin.sessionStorage }
-          : {}),
         ...((input.includeIndexedDb ?? true) && origin.indexedDb
           ? { indexedDb: origin.indexedDb }
           : {}),
       })),
+      ...((input.includeSessionStorage ?? true)
+        ? { sessionStorage: snapshot.sessionStorage ?? [] }
+        : {}),
     };
   }
 
@@ -919,6 +928,7 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
       url,
       title,
     });
+    session.storage = this.seedDefaultSessionStorage(session.storage, pageRef, frameRef, url);
 
     return {
       pageInfo: this.pageInfoFromState(page, url, title),
@@ -949,7 +959,6 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
             { key: "theme", value: "dark" },
             { key: "draft", value: "hello" },
           ],
-          sessionStorage: [{ key: "csrf", value: "token-123" }],
           indexedDb: [
             {
               name: "app-db",
@@ -969,6 +978,43 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
               ],
             },
           ],
+        },
+      ],
+      sessionStorage: [],
+    };
+  }
+
+  private seedDefaultSessionStorage(
+    storage: StorageSnapshot,
+    pageRef: PageRef,
+    frameRef: FrameRef,
+    url: string,
+  ): StorageSnapshot {
+    const origin = originFromUrl(url);
+    if (origin === undefined) {
+      return storage;
+    }
+
+    if (
+      storage.sessionStorage?.some(
+        (snapshot) =>
+          snapshot.pageRef === pageRef &&
+          snapshot.frameRef === frameRef &&
+          snapshot.origin === origin,
+      )
+    ) {
+      return storage;
+    }
+
+    return {
+      ...storage,
+      sessionStorage: [
+        ...(storage.sessionStorage ?? []),
+        {
+          pageRef,
+          frameRef,
+          origin,
+          entries: [{ key: "csrf", value: "token-123" }],
         },
       ],
     };
