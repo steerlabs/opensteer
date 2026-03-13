@@ -67,6 +67,32 @@ function domDocument(): string {
   );
 }
 
+function domDocumentWithChild(): string {
+  const rewrittenDocument = JSON.stringify(
+    html(
+      `
+        <button id="rewrite" type="button" data-state="updated">Updated main</button>
+        <iframe id="child-frame" src="/dom-child"></iframe>
+      `,
+      "DOM page with child",
+    ),
+  );
+  return html(
+    `
+      <button id="rewrite" type="button">Rewrite main</button>
+      <iframe id="child-frame" src="/dom-child"></iframe>
+      <script>
+        document.getElementById("rewrite").addEventListener("click", () => {
+          document.open();
+          document.write(${rewrittenDocument});
+          document.close();
+        });
+      </script>
+    `,
+    "DOM page with child",
+  );
+}
+
 function findNodeById(nodes: readonly DomSnapshotNode[], id: string) {
   return nodes.find((node) =>
     node.attributes.some((attribute) => attribute.name === "id" && attribute.value === id),
@@ -105,6 +131,18 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   if (url.pathname === "/dom") {
     response.setHeader("content-type", "text/html; charset=utf-8");
     response.end(domDocument());
+    return;
+  }
+
+  if (url.pathname === "/dom-with-child") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(domDocumentWithChild());
+    return;
+  }
+
+  if (url.pathname === "/dom-child") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(html('<div id="child-text">Child stable</div>', "Child DOM page"));
     return;
   }
 
@@ -209,6 +247,65 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       large: "x".repeat(1_100_000),
     });
     response.end(payload);
+    return;
+  }
+
+  if (url.pathname === "/same-url-history") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(
+      html(
+        `
+          <button id="push" type="button" style="position:absolute;left:20px;top:20px;width:160px;height:48px">Push state</button>
+          <script>
+            let count = 0;
+            const render = (value) => {
+              document.title = "count:" + value;
+              document.getElementById("push").textContent = "count:" + value;
+            };
+            document.getElementById("push").addEventListener("click", () => {
+              count += 1;
+              history.pushState({ count }, "", window.location.href);
+              render(count);
+            });
+            window.addEventListener("popstate", (event) => {
+              render((event.state && event.state.count) || 0);
+            });
+            render(0);
+          </script>
+        `,
+        "count:0",
+      ),
+    );
+    return;
+  }
+
+  if (url.pathname === "/network-on-close") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(
+      html(
+        `
+          <button id="fetch" type="button" style="position:absolute;left:20px;top:20px;width:160px;height:48px">Fetch and close</button>
+          <script>
+            document.getElementById("fetch").addEventListener("click", () => {
+              void fetch("/slow-echo", {
+                method: "POST",
+                headers: { "content-type": "text/plain; charset=utf-8" },
+                body: "close-body"
+              });
+            });
+          </script>
+        `,
+        "Network close page",
+      ),
+    );
+    return;
+  }
+
+  if (url.pathname === "/slow-echo") {
+    const body = await readRequestBody(request);
+    await wait(300);
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    response.end(JSON.stringify({ echoed: body.toString("utf8") }));
     return;
   }
 
@@ -390,6 +487,107 @@ test(
   },
 );
 
+test(
+  "keeps iframe locators live when only the main document is rewritten",
+  { timeout: 60_000 },
+  async () => {
+    const engine = await createPlaywrightBrowserCoreEngine({
+      launch: { headless: true },
+    });
+    try {
+      const sessionRef = await engine.createSession();
+      const created = await engine.createPage({
+        sessionRef,
+        url: `${baseUrl}/dom-with-child`,
+      });
+
+      await wait(300);
+
+      const frames = await engine.listFrames({ pageRef: created.data.pageRef });
+      const childFrame = frames.find((frame) => !frame.isMainFrame)!;
+      const childSnapshot = await engine.getDomSnapshot({
+        frameRef: childFrame.frameRef,
+      });
+      const childNode = findNodeById(childSnapshot.nodes, "child-text");
+      const childLocator = {
+        documentRef: childSnapshot.documentRef,
+        documentEpoch: childSnapshot.documentEpoch,
+        nodeRef: childNode?.nodeRef!,
+      };
+
+      await engine.mouseClick({
+        pageRef: created.data.pageRef,
+        point: createPoint(40, 40),
+        coordinateSpace: "layout-viewport-css",
+      });
+      await wait(150);
+
+      const updatedChildFrame = await engine.getFrameInfo({
+        frameRef: childFrame.frameRef,
+      });
+
+      expect(updatedChildFrame.documentEpoch).toBe(childSnapshot.documentEpoch);
+      expect(await engine.readText(childLocator)).toBe("Child stable");
+    } finally {
+      await engine.dispose();
+    }
+  },
+);
+
+test("reports history traversal even when the URL string stays the same", async () => {
+  const engine = await createPlaywrightBrowserCoreEngine({
+    launch: { headless: true },
+  });
+  try {
+    const sessionRef = await engine.createSession();
+    const created = await engine.createPage({
+      sessionRef,
+      url: `${baseUrl}/same-url-history`,
+    });
+
+    const initialFrame = await engine.getFrameInfo({
+      frameRef: created.frameRef!,
+    });
+
+    await engine.mouseClick({
+      pageRef: created.data.pageRef,
+      point: createPoint(40, 40),
+      coordinateSpace: "layout-viewport-css",
+    });
+
+    const back = await engine.goBack({ pageRef: created.data.pageRef });
+    const afterBackSnapshot = await engine.getDomSnapshot({
+      frameRef: created.frameRef!,
+    });
+    const afterBackNode = findNodeById(afterBackSnapshot.nodes, "push");
+    const afterBackText = await engine.readText({
+      documentRef: afterBackSnapshot.documentRef,
+      documentEpoch: afterBackSnapshot.documentEpoch,
+      nodeRef: afterBackNode?.nodeRef!,
+    });
+
+    const forward = await engine.goForward({ pageRef: created.data.pageRef });
+    const afterForwardSnapshot = await engine.getDomSnapshot({
+      frameRef: created.frameRef!,
+    });
+    const afterForwardNode = findNodeById(afterForwardSnapshot.nodes, "push");
+    const afterForwardText = await engine.readText({
+      documentRef: afterForwardSnapshot.documentRef,
+      documentEpoch: afterForwardSnapshot.documentEpoch,
+      nodeRef: afterForwardNode?.nodeRef!,
+    });
+
+    expect(back.data).toBe(true);
+    expect(forward.data).toBe(true);
+    expect(afterBackText).toBe("count:0");
+    expect(afterForwardText).toBe("count:1");
+    expect(back.documentRef).toBe(initialFrame.documentRef);
+    expect(forward.documentRef).toBe(initialFrame.documentRef);
+  } finally {
+    await engine.dispose();
+  }
+});
+
 test("captures network, cookies, storage, and async page events", { timeout: 60_000 }, async () => {
   const engine = await createPlaywrightBrowserCoreEngine({
     launch: { headless: true },
@@ -513,6 +711,36 @@ test("captures network, cookies, storage, and async page events", { timeout: 60_
         "page-error",
       ]),
     );
+  } finally {
+    await engine.dispose();
+  }
+});
+
+test("does not crash when a page closes with network capture work still in flight", async () => {
+  const engine = await createPlaywrightBrowserCoreEngine({
+    launch: { headless: true },
+  });
+  try {
+    const sessionRef = await engine.createSession();
+    const created = await engine.createPage({
+      sessionRef,
+      url: `${baseUrl}/network-on-close`,
+    });
+
+    await engine.mouseClick({
+      pageRef: created.data.pageRef,
+      point: createPoint(40, 40),
+      coordinateSpace: "layout-viewport-css",
+    });
+    await wait(150);
+    await engine.closePage({ pageRef: created.data.pageRef });
+    await wait(500);
+
+    const records = await engine.getNetworkRecords({
+      sessionRef,
+      includeBodies: true,
+    });
+    expect(records.some((record) => record.url.endsWith("/slow-echo"))).toBe(true);
   } finally {
     await engine.dispose();
   }
