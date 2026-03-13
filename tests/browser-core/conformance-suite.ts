@@ -117,7 +117,9 @@ export function defineBrowserCoreConformanceSuite(options: BrowserCoreConformanc
         const continueNode = findNodeById(dom.nodes, "continue");
 
         expect(html.html).toContain("continue");
-        expect(dom.shadowDomMode).toBe("flattened");
+        expect(dom.shadowDomMode === "flattened" || dom.shadowDomMode === "preserved").toBe(
+          true,
+        );
         expect(continueNode?.attributes).toEqual([
           { name: "id", value: "continue" },
           { name: "type", value: "button" },

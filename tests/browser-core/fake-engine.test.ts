@@ -1,10 +1,17 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  createDocumentEpoch,
+  createDocumentRef,
   createFakeBrowserCoreEngine,
+  createFrameRef,
+  createNodeRef,
+  createPageRef,
   createPoint,
+  findDomSnapshotNode,
   mergeBrowserCapabilities,
   noBrowserCapabilities,
+  type DomSnapshot,
   type DomSnapshotNode,
 } from "../../packages/browser-core/src/index.js";
 
@@ -169,6 +176,49 @@ describe("FakeBrowserCoreEngine", () => {
       { name: "id", value: "continue" },
       { name: "type", value: "button" },
     ]);
+  });
+
+  test("supports preserved shadow and iframe metadata in the browser-core DOM snapshot model", () => {
+    const hostRef = createNodeRef("host");
+    const snapshot: DomSnapshot = {
+      pageRef: createPageRef("page-meta"),
+      frameRef: createFrameRef("frame-meta"),
+      documentRef: createDocumentRef("document-meta"),
+      documentEpoch: createDocumentEpoch(0),
+      url: "https://example.com",
+      capturedAt: 100,
+      rootSnapshotNodeId: 1,
+      shadowDomMode: "preserved",
+      nodes: [
+        {
+          snapshotNodeId: 1,
+          nodeType: 9,
+          nodeName: "#document",
+          nodeValue: "",
+          childSnapshotNodeIds: [2],
+          attributes: [],
+        },
+        {
+          snapshotNodeId: 2,
+          nodeRef: createNodeRef("child"),
+          parentSnapshotNodeId: 1,
+          childSnapshotNodeIds: [],
+          shadowRootType: "open",
+          shadowHostNodeRef: hostRef,
+          contentDocumentRef: createDocumentRef("document-child"),
+          nodeType: 1,
+          nodeName: "BUTTON",
+          nodeValue: "",
+          attributes: [{ name: "id", value: "child" }],
+        },
+      ],
+    };
+
+    expect(findDomSnapshotNode(snapshot, 2)).toMatchObject({
+      shadowRootType: "open",
+      shadowHostNodeRef: hostRef,
+      contentDocumentRef: "document:document-child",
+    });
   });
 
   test("hit tests in viewport coordinates using the current scroll offset", async () => {

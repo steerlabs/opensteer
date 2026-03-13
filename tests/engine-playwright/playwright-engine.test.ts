@@ -534,6 +534,63 @@ test(
   },
 );
 
+test(
+  "preserves shadow and iframe boundary metadata in DOM snapshots",
+  { timeout: 60_000 },
+  async () => {
+    const engine = await createPlaywrightBrowserCoreEngine({
+      launch: { headless: true },
+    });
+    try {
+      const sessionRef = await engine.createSession();
+      const html = `<!doctype html>
+<html>
+  <body>
+    <div id="host"></div>
+    <iframe id="child-frame" src="${baseUrl}/dom-child"></iframe>
+    <script>
+      const host = document.getElementById("host");
+      const root = host.attachShadow({ mode: "open" });
+      root.innerHTML = '<button id="shadow-action" type="button">Shadow</button><div id="nested-host"></div>';
+      const nestedHost = root.getElementById("nested-host");
+      const nestedRoot = nestedHost.attachShadow({ mode: "open" });
+      nestedRoot.innerHTML = '<button id="nested-leaf" type="button">Leaf</button>';
+    </script>
+  </body>
+</html>`;
+      const created = await engine.createPage({
+        sessionRef,
+        url: `data:text/html,${encodeURIComponent(html)}`,
+      });
+
+      await wait(400);
+
+      const mainSnapshot = await engine.getDomSnapshot({
+        frameRef: created.frameRef!,
+      });
+      const hostNode = findNodeById(mainSnapshot.nodes, "host")!;
+      const shadowNode = findNodeById(mainSnapshot.nodes, "shadow-action")!;
+      const nestedHostNode = findNodeById(mainSnapshot.nodes, "nested-host")!;
+      const nestedLeafNode = findNodeById(mainSnapshot.nodes, "nested-leaf")!;
+      const iframeNode = findNodeById(mainSnapshot.nodes, "child-frame")!;
+
+      expect(mainSnapshot.shadowDomMode).toBe("preserved");
+      expect(shadowNode.shadowRootType).toBe("open");
+      expect(shadowNode.shadowHostNodeRef).toBe(hostNode.nodeRef);
+      expect(nestedHostNode.shadowHostNodeRef).toBe(hostNode.nodeRef);
+      expect(nestedLeafNode.shadowHostNodeRef).toBe(nestedHostNode.nodeRef);
+      expect(iframeNode.contentDocumentRef).toBeDefined();
+
+      const childSnapshot = await engine.getDomSnapshot({
+        documentRef: iframeNode.contentDocumentRef!,
+      });
+      expect(childSnapshot.parentDocumentRef).toBe(mainSnapshot.documentRef);
+    } finally {
+      await engine.dispose();
+    }
+  },
+);
+
 test("reports history traversal even when the URL string stays the same", async () => {
   const engine = await createPlaywrightBrowserCoreEngine({
     launch: { headless: true },

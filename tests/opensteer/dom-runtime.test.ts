@@ -1,0 +1,561 @@
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { once } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import {
+  createNodeLocator,
+  createPoint,
+  type DomSnapshot,
+  type DomSnapshotNode,
+} from "../../packages/browser-core/src/index.js";
+import { createPlaywrightBrowserCoreEngine } from "../../packages/engine-playwright/src/index.js";
+import {
+  buildArrayFieldPathCandidates,
+  createDomRuntime,
+  createFilesystemOpensteerRoot,
+  normalizeExtractedValue,
+  resolveExtractedValueInContext,
+  sanitizeElementPath,
+  type ElementPath,
+} from "../../packages/opensteer/src/index.js";
+
+let baseUrl = "";
+let closeServer: (() => Promise<void>) | undefined;
+const temporaryRoots: string[] = [];
+
+function html(body: string, title: string): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>${title}</title>
+    <style>
+      body { margin: 0; font: 16px/1.4 sans-serif; height: 2400px; }
+      button, input, a, div { font: inherit; }
+      #main-action, #hover-target, #rewrite, #descriptor-button {
+        position: absolute;
+        left: 20px;
+        width: 180px;
+        height: 42px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid #111;
+        background: #f5f5f5;
+      }
+      #main-action { top: 20px; }
+      #hover-target { top: 80px; }
+      #rewrite { top: 140px; }
+      #descriptor-slot { position: absolute; left: 20px; top: 200px; }
+      #status { position: absolute; left: 20px; top: 260px; min-width: 220px; }
+      #shadow-host { position: absolute; left: 260px; top: 20px; }
+      iframe { position: absolute; left: 520px; top: 20px; width: 420px; height: 360px; border: 0; }
+    </style>
+  </head>
+  <body>${body}</body>
+</html>`;
+}
+
+function mainDocument(): string {
+  return html(
+    `
+      <button id="main-action" type="button">Main Action</button>
+      <div id="hover-target" role="button" tabindex="0">Hover Target</div>
+      <button id="rewrite" type="button">Rewrite Descriptor</button>
+      <div id="descriptor-slot">
+        <button id="descriptor-button" data-testid="descriptor-button" type="button">Descriptor V1</button>
+      </div>
+      <div id="status">ready</div>
+      <div id="shadow-host"></div>
+      <iframe id="child-frame" src="/runtime/child"></iframe>
+      <script>
+        const status = document.getElementById("status");
+        document.getElementById("main-action").addEventListener("click", () => {
+          status.textContent = "main clicked";
+        });
+        document.getElementById("hover-target").addEventListener("mouseenter", () => {
+          status.textContent = "hovered";
+        });
+        const wireDescriptorButton = (label) => {
+          document.getElementById("descriptor-button").addEventListener("click", () => {
+            status.textContent = "descriptor clicked " + label;
+          });
+        };
+        wireDescriptorButton("v1");
+        document.getElementById("rewrite").addEventListener("click", () => {
+          document.getElementById("descriptor-slot").innerHTML =
+            '<div class="wrapper"><button id="descriptor-button" data-testid="descriptor-button" type="button">Descriptor V2</button></div>';
+          wireDescriptorButton("v2");
+        });
+
+        const shadowHost = document.getElementById("shadow-host");
+        const shadowRoot = shadowHost.attachShadow({ mode: "open" });
+        shadowRoot.innerHTML =
+          '<button id="shadow-action" data-testid="shadow-action" type="button" style="width:180px;height:42px">Shadow Action</button><div id="nested-shadow-host"></div>';
+        shadowRoot.getElementById("shadow-action").addEventListener("click", () => {
+          status.textContent = "shadow clicked";
+        });
+        const nestedHost = shadowRoot.getElementById("nested-shadow-host");
+        const nestedRoot = nestedHost.attachShadow({ mode: "open" });
+        nestedRoot.innerHTML =
+          '<button id="nested-shadow-action" type="button" style="width:180px;height:42px">Nested Shadow</button>';
+        nestedRoot.getElementById("nested-shadow-action").addEventListener("click", () => {
+          status.textContent = "nested shadow clicked";
+        });
+      </script>
+    `,
+    "DOM runtime main",
+  );
+}
+
+function childDocument(): string {
+  return html(
+    `
+      <button id="child-action" type="button" style="position:absolute;left:20px;top:20px;width:160px;height:40px">Child Action</button>
+      <input id="child-input" type="text" style="position:absolute;left:20px;top:80px;width:220px;height:36px" />
+      <div id="mirror" style="position:absolute;left:20px;top:130px"></div>
+      <a id="child-link" href="/child-relative" style="position:absolute;left:20px;top:170px">Child Link</a>
+      <img id="child-image" srcset="/small.png 320w, /large.png 1280w" alt="image" style="position:absolute;left:20px;top:210px;width:120px;height:80px" />
+      <a id="child-ping" href="#noop" ping="/ping-one /ping-two" style="position:absolute;left:20px;top:310px">Ping</a>
+      <ul id="child-list" style="position:absolute;left:220px;top:20px;margin:0;padding:0;list-style:none">
+        <li class="card"><a class="title" href="/item-1">One</a></li>
+        <li class="card"><a class="title" href="/item-2">Two</a></li>
+      </ul>
+      <div id="child-status" style="position:absolute;left:20px;top:340px">child ready</div>
+      <div id="child-shadow-host" style="position:absolute;left:220px;top:120px"></div>
+      <script>
+        const childStatus = document.getElementById("child-status");
+        document.getElementById("child-action").addEventListener("click", () => {
+          childStatus.textContent = "child clicked";
+        });
+        document.getElementById("child-input").addEventListener("input", (event) => {
+          document.getElementById("mirror").textContent = event.target.value;
+        });
+        const childHost = document.getElementById("child-shadow-host");
+        const childRoot = childHost.attachShadow({ mode: "open" });
+        childRoot.innerHTML =
+          '<button id="child-shadow-action" type="button" style="width:180px;height:42px">Child Shadow</button>';
+        childRoot.getElementById("child-shadow-action").addEventListener("click", () => {
+          childStatus.textContent = "child shadow clicked";
+        });
+      </script>
+    `,
+    "DOM runtime child",
+  );
+}
+
+function findNodeById(nodes: readonly DomSnapshotNode[], id: string): DomSnapshotNode | undefined {
+  return nodes.find((node) =>
+    node.attributes.some((attribute) => attribute.name === "id" && attribute.value === id),
+  );
+}
+
+function createLocator(snapshot: DomSnapshot, node: DomSnapshotNode) {
+  return createNodeLocator(
+    snapshot.documentRef,
+    snapshot.documentEpoch,
+    requireValue(node.nodeRef, `node ${String(node.snapshotNodeId)} is missing a live node ref`),
+  );
+}
+
+function requireValue<T>(value: T | null | undefined, message: string): T {
+  if (value == null) {
+    throw new Error(message);
+  }
+  return value;
+}
+
+async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const url = new URL(request.url ?? "/", "http://127.0.0.1");
+
+  if (url.pathname === "/runtime/main") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(mainDocument());
+    return;
+  }
+
+  if (url.pathname === "/runtime/child") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(childDocument());
+    return;
+  }
+
+  if (
+    url.pathname === "/child-relative" ||
+    url.pathname === "/item-1" ||
+    url.pathname === "/item-2" ||
+    url.pathname === "/ping-one" ||
+    url.pathname === "/ping-two"
+  ) {
+    response.setHeader("content-type", "text/plain; charset=utf-8");
+    response.end(url.pathname);
+    return;
+  }
+
+  if (url.pathname === "/small.png" || url.pathname === "/large.png") {
+    response.setHeader("content-type", "image/png");
+    response.end(Buffer.from([137, 80, 78, 71]));
+    return;
+  }
+
+  response.statusCode = 404;
+  response.end("not found");
+}
+
+async function startServer(): Promise<{ url: string; close: () => Promise<void> }> {
+  const nextServer = createServer((request, response) => {
+    void handleRequest(request, response);
+  });
+  nextServer.listen(0, "127.0.0.1");
+  await once(nextServer, "listening");
+  const address = nextServer.address();
+  if (!address || typeof address === "string") {
+    throw new Error("failed to start test server");
+  }
+
+  return {
+    url: `http://127.0.0.1:${String(address.port)}`,
+    close: async () => {
+      nextServer.close();
+      await once(nextServer, "close");
+    },
+  };
+}
+
+async function createTemporaryRoot(): Promise<string> {
+  const rootPath = await mkdtemp(path.join(tmpdir(), "opensteer-phase5-"));
+  temporaryRoots.push(rootPath);
+  return rootPath;
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+beforeAll(async () => {
+  const started = await startServer();
+  baseUrl = started.url;
+  closeServer = started.close;
+}, 30_000);
+
+afterEach(async () => {
+  await Promise.all(
+    temporaryRoots.splice(0).map((rootPath) => rm(rootPath, { recursive: true, force: true })),
+  );
+});
+
+afterAll(async () => {
+  if (closeServer) {
+    await closeServer();
+  }
+});
+
+describe("Phase 5 DOM runtime utilities", () => {
+  test("normalizes extracted values and relaxed array candidates with old semantics", () => {
+    expect(normalizeExtractedValue(" /one 320w, /two 1280w ", "srcset")).toBe("/two");
+    expect(normalizeExtractedValue(" /ping-one /ping-two ", "ping")).toBe("/ping-one");
+    expect(
+      resolveExtractedValueInContext("/child-relative", {
+        attribute: "href",
+        baseURI: `${baseUrl}/runtime/child`,
+        insideIframe: true,
+      }),
+    ).toBe(`${baseUrl}/child-relative`);
+
+    const fieldPath: ElementPath = {
+      context: [],
+      nodes: [
+        {
+          tag: "a",
+          attrs: { class: "title" },
+          position: { nthChild: 3, nthOfType: 1 },
+          match: [
+            { kind: "attr", key: "class", op: "exact", value: "title" },
+            { kind: "position", axis: "nthChild" },
+          ],
+        },
+      ],
+    };
+
+    expect(buildArrayFieldPathCandidates(fieldPath)).toEqual([
+      'a[class~="title"]:nth-child(3)',
+      'a[class~="title"]',
+    ]);
+  });
+
+  test("sanitizes element paths with the old match-seeding rules", () => {
+    const sanitized = sanitizeElementPath({
+      context: [],
+      nodes: [
+        {
+          tag: "button",
+          attrs: {
+            class: "primary action",
+            id: "main-button",
+            style: "display:none",
+          },
+          position: {
+            nthChild: 0,
+            nthOfType: 0,
+          },
+        },
+      ],
+    });
+
+    expect(sanitized.nodes[0]).toEqual({
+      tag: "button",
+      attrs: {
+        class: "primary action",
+        id: "main-button",
+      },
+      position: {
+        nthChild: 1,
+        nthOfType: 1,
+      },
+      match: [
+        { kind: "attr", key: "class", op: "exact", value: "primary action" },
+        { kind: "position", axis: "nthOfType" },
+        { kind: "position", axis: "nthChild" },
+      ],
+    });
+  });
+});
+
+describe("Phase 5 DOM runtime integration", () => {
+  test(
+    "builds and resolves iframe plus shadow paths exactly enough for replay",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+      try {
+        const runtime = createDomRuntime({ engine });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: `${baseUrl}/runtime/main`,
+        });
+
+        await wait(500);
+
+        const frames = await engine.listFrames({ pageRef: created.data.pageRef });
+        const childFrame = requireValue(
+          frames.find((frame) => !frame.isMainFrame),
+          "child frame not found",
+        );
+        const childSnapshot = await engine.getDomSnapshot({
+          frameRef: childFrame.frameRef,
+        });
+        const childShadowNode = requireValue(
+          findNodeById(childSnapshot.nodes, "child-shadow-action"),
+          "child shadow action not found",
+        );
+
+        const path = await runtime.buildPath({
+          locator: createLocator(childSnapshot, childShadowNode),
+        });
+
+        expect(path.context.map((hop) => hop.kind)).toEqual(["iframe", "shadow"]);
+
+        const resolved = await runtime.resolveTarget({
+          pageRef: created.data.pageRef,
+          method: "click",
+          target: { kind: "path", path },
+        });
+
+        expect(
+          resolved.node.attributes.find((attribute) => attribute.name === "id")?.value,
+        ).toBe("child-shadow-action");
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "persists selector descriptors and replays them after a same-document rewrite",
+    { timeout: 60_000 },
+    async () => {
+      const rootPath = await createTemporaryRoot();
+      const root = await createFilesystemOpensteerRoot({ rootPath });
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+
+      try {
+        const runtime = createDomRuntime({
+          engine,
+          root,
+          namespace: "phase5-runtime",
+        });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: `${baseUrl}/runtime/main`,
+        });
+
+        await wait(400);
+
+        await runtime.resolveTarget({
+          pageRef: created.data.pageRef,
+          method: "click",
+          target: {
+            kind: "selector",
+            selector: '[data-testid="descriptor-button"]',
+            description: "descriptor button",
+          },
+        });
+        const stored = await runtime.readDescriptor({ description: "descriptor button" });
+        expect(stored?.payload.description).toBe("descriptor button");
+
+        await runtime.click({
+          pageRef: created.data.pageRef,
+          target: { kind: "selector", selector: "#rewrite" },
+        });
+        await wait(150);
+
+        await runtime.click({
+          pageRef: created.data.pageRef,
+          target: { kind: "descriptor", description: "descriptor button" },
+        });
+
+        const snapshot = await engine.getDomSnapshot({
+          frameRef: requireValue(created.frameRef, "main frame ref missing"),
+        });
+        const statusNode = requireValue(findNodeById(snapshot.nodes, "status"), "status node missing");
+        expect(await engine.readText(createLocator(snapshot, statusNode))).toBe("descriptor clicked v2");
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "executes click, hover, input, scroll, and extraction with Playwright",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+
+      try {
+        const runtime = createDomRuntime({ engine });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: `${baseUrl}/runtime/main`,
+        });
+
+        await wait(500);
+
+        await runtime.hover({
+          pageRef: created.data.pageRef,
+          target: { kind: "selector", selector: "#hover-target" },
+        });
+        await wait(100);
+
+        await runtime.click({
+          pageRef: created.data.pageRef,
+          target: { kind: "selector", selector: "#main-action" },
+        });
+        await wait(100);
+
+        const mainSnapshot = await engine.getDomSnapshot({
+          frameRef: requireValue(created.frameRef, "main frame ref missing"),
+        });
+        const statusNode = requireValue(
+          findNodeById(mainSnapshot.nodes, "status"),
+          "status node missing",
+        );
+        expect(await engine.readText(createLocator(mainSnapshot, statusNode))).toBe("main clicked");
+
+        const frames = await engine.listFrames({ pageRef: created.data.pageRef });
+        const childFrame = requireValue(
+          frames.find((frame) => !frame.isMainFrame),
+          "child frame not found",
+        );
+        const childSnapshot = await engine.getDomSnapshot({
+          frameRef: childFrame.frameRef,
+        });
+
+        await runtime.input({
+          pageRef: created.data.pageRef,
+          target: {
+            kind: "selector",
+            selector: "#child-input",
+            documentRef: childSnapshot.documentRef,
+          },
+          text: "Tim",
+        });
+        await wait(100);
+
+        const afterInputChildSnapshot = await engine.getDomSnapshot({
+          frameRef: childFrame.frameRef,
+        });
+        const mirrorNode = requireValue(
+          findNodeById(afterInputChildSnapshot.nodes, "mirror"),
+          "mirror node missing",
+        );
+        expect(await engine.readText(createLocator(afterInputChildSnapshot, mirrorNode))).toBe("Tim");
+
+        const extracted = await runtime.extractFields({
+          pageRef: created.data.pageRef,
+          fields: [
+            {
+              key: "link",
+              target: {
+                kind: "selector",
+                selector: "#child-link",
+                documentRef: afterInputChildSnapshot.documentRef,
+              },
+              attribute: "href",
+            },
+            {
+              key: "image",
+              target: {
+                kind: "selector",
+                selector: "#child-image",
+                documentRef: afterInputChildSnapshot.documentRef,
+              },
+              attribute: "srcset",
+            },
+            {
+              key: "ping",
+              target: {
+                kind: "selector",
+                selector: "#child-ping",
+                documentRef: afterInputChildSnapshot.documentRef,
+              },
+              attribute: "ping",
+            },
+            {
+              key: "currentUrl",
+              source: "current_url",
+            },
+          ],
+        });
+
+        expect(extracted).toEqual({
+          link: `${baseUrl}/child-relative`,
+          image: `${baseUrl}/large.png`,
+          ping: `${baseUrl}/ping-one`,
+          currentUrl: `${baseUrl}/runtime/main`,
+        });
+
+        const scrollOutcome = await runtime.scroll({
+          pageRef: created.data.pageRef,
+          target: { kind: "selector", selector: "body" },
+          delta: createPoint(0, 400),
+          position: createPoint(400, 500),
+        });
+        expect(scrollOutcome.resolved.node.nodeName).toBe("BODY");
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+});

@@ -10,7 +10,8 @@ working on the rewrite.
 - `Phase 2` is complete.
 - `Phase 3` is complete.
 - `Phase 4` is complete.
-- `Phase 5` is the next active implementation phase.
+- `Phase 5` is complete.
+- `Phase 6` is the next active implementation phase.
 
 ## Goals
 
@@ -342,6 +343,8 @@ Move DOM semantics into `packages/opensteer/src/runtimes/dom`. (think about how 
 - refs
 - extraction
 - DOM-backed actions
+
+Status: complete.
 
 ### Phase 6
 

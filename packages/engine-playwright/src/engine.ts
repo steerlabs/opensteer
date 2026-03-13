@@ -275,7 +275,9 @@ interface NetworkRecordState {
 
 interface CapturedDomSnapshot {
   readonly capturedAt: number;
+  readonly documents: readonly DomSnapshotDocument[];
   readonly rawDocument: DomSnapshotDocument;
+  readonly shadowBoundariesByBackendNodeId: ReadonlyMap<number, ShadowBoundaryInfo>;
   readonly strings: readonly string[];
 }
 
@@ -284,12 +286,14 @@ interface DomSnapshotDocument {
   readonly nodes: {
     readonly parentIndex?: readonly number[];
     readonly nodeType?: readonly number[];
+    readonly shadowRootType?: RareStringData;
     readonly nodeName?: readonly number[];
     readonly nodeValue?: readonly number[];
     readonly backendNodeId?: readonly number[];
     readonly attributes?: ReadonlyArray<readonly number[]>;
     readonly textValue?: RareStringData;
     readonly inputValue?: RareStringData;
+    readonly contentDocumentIndex?: RareIntegerData;
   };
   readonly layout: {
     readonly nodeIndex: readonly number[];
@@ -302,6 +306,24 @@ interface DomSnapshotDocument {
 interface RareStringData {
   readonly index: readonly number[];
   readonly value: readonly number[];
+}
+
+interface RareIntegerData {
+  readonly index: readonly number[];
+  readonly value: readonly number[];
+}
+
+interface ShadowBoundaryInfo {
+  readonly shadowRootType?: "open" | "closed" | "user-agent";
+  readonly shadowHostBackendNodeId?: number;
+}
+
+interface DomTreeNode {
+  readonly backendNodeId?: number;
+  readonly children?: readonly DomTreeNode[];
+  readonly shadowRoots?: readonly DomTreeNode[];
+  readonly contentDocument?: DomTreeNode;
+  readonly shadowRootType?: "open" | "closed" | "user-agent";
 }
 
 interface NormalizedIndexedDbRecord {
@@ -482,6 +504,62 @@ function rareStringValue(
   }
   const stringIndex = data.value[rareIndex];
   return parseStringTable(strings, stringIndex);
+}
+
+function rareIntegerValue(data: RareIntegerData | undefined, index: number): number | undefined {
+  if (!data) {
+    return undefined;
+  }
+  const rareIndex = data.index.indexOf(index);
+  if (rareIndex === -1) {
+    return undefined;
+  }
+  return data.value[rareIndex];
+}
+
+function normalizeShadowRootType(
+  value: string | undefined,
+): "open" | "closed" | "user-agent" | undefined {
+  if (value === "open" || value === "closed" || value === "user-agent") {
+    return value;
+  }
+  return undefined;
+}
+
+function buildShadowBoundaryIndex(root: DomTreeNode): ReadonlyMap<number, ShadowBoundaryInfo> {
+  const byBackendNodeId = new Map<number, ShadowBoundaryInfo>();
+
+  const visit = (node: DomTreeNode, boundary: ShadowBoundaryInfo): void => {
+    if (node.backendNodeId !== undefined) {
+      byBackendNodeId.set(node.backendNodeId, boundary);
+    }
+
+    for (const child of node.children ?? []) {
+      visit(child, boundary);
+    }
+
+    for (const shadowRoot of node.shadowRoots ?? []) {
+      const shadowBoundary: ShadowBoundaryInfo = {
+        ...(node.backendNodeId === undefined
+          ? {}
+          : { shadowHostBackendNodeId: node.backendNodeId }),
+        ...(shadowRoot.shadowRootType === undefined
+          ? {}
+          : { shadowRootType: shadowRoot.shadowRootType }),
+      };
+
+      for (const child of shadowRoot.children ?? []) {
+        visit(child, shadowBoundary);
+      }
+    }
+
+    if (node.contentDocument) {
+      visit(node.contentDocument, {});
+    }
+  };
+
+  visit(root, {});
+  return byBackendNodeId;
 }
 
 function interleavedAttributesToEntries(values: readonly string[]): StorageEntry[] {
@@ -1230,7 +1308,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     const controller = this.requirePage(document.pageRef);
     await this.flushDomUpdateTask(controller);
     const captured = await this.captureDomSnapshot(controller, document);
-    return this.buildDomSnapshot(document, captured);
+    return this.buildDomSnapshot(controller, document, captured);
   }
 
   async readText(input: NodeLocator): Promise<string | null> {
@@ -2258,18 +2336,26 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   ): Promise<{
     readonly capturedAt: number;
     readonly documents: readonly DomSnapshotDocument[];
+    readonly shadowBoundariesByBackendNodeId: ReadonlyMap<number, ShadowBoundaryInfo>;
     readonly strings: readonly string[];
   }> {
     const capturedAt = Date.now();
-    const result = await controller.cdp.send("DOMSnapshot.captureSnapshot", {
-      computedStyles: [],
-      includePaintOrder: options.includeLayout,
-      includeDOMRects: options.includeLayout,
-    });
+    const [snapshotResult, domTreeResult] = await Promise.all([
+      controller.cdp.send("DOMSnapshot.captureSnapshot", {
+        computedStyles: [],
+        includePaintOrder: options.includeLayout,
+        includeDOMRects: options.includeLayout,
+      }),
+      controller.cdp.send("DOM.getDocument", {
+        depth: -1,
+        pierce: true,
+      }),
+    ]);
     return {
       capturedAt,
-      documents: result.documents as readonly DomSnapshotDocument[],
-      strings: result.strings,
+      documents: snapshotResult.documents as readonly DomSnapshotDocument[],
+      shadowBoundariesByBackendNodeId: buildShadowBoundaryIndex(domTreeResult.root as DomTreeNode),
+      strings: snapshotResult.strings,
     };
   }
 
@@ -2354,12 +2440,18 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     this.updateDocumentTreeSignature(document, rawDocument);
     return {
       capturedAt: captured.capturedAt,
+      documents: captured.documents,
       rawDocument,
+      shadowBoundariesByBackendNodeId: captured.shadowBoundariesByBackendNodeId,
       strings: captured.strings,
     };
   }
 
-  private buildDomSnapshot(document: DocumentState, captured: CapturedDomSnapshot): DomSnapshot {
+  private buildDomSnapshot(
+    controller: PageController,
+    document: DocumentState,
+    captured: CapturedDomSnapshot,
+  ): DomSnapshot {
     const parentIndexes = captured.rawDocument.nodes.parentIndex ?? [];
     const childIndexes = new Map<number, number[]>();
     for (let index = 0; index < parentIndexes.length; index += 1) {
@@ -2419,6 +2511,28 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
         });
       }
       const layout = layoutByNodeIndex.get(index);
+      const shadowRootType = rareStringValue(
+        captured.strings,
+        captured.rawDocument.nodes.shadowRootType,
+        index,
+      );
+      const normalizedShadowRootType = normalizeShadowRootType(shadowRootType);
+      const shadowBoundary =
+        backendNodeId === undefined
+          ? undefined
+          : captured.shadowBoundariesByBackendNodeId.get(backendNodeId);
+      const shadowHostNodeRef =
+        shadowBoundary?.shadowHostBackendNodeId === undefined
+          ? undefined
+          : this.nodeRefForBackendNode(document, shadowBoundary.shadowHostBackendNodeId);
+      const contentDocumentIndex = rareIntegerValue(
+        captured.rawDocument.nodes.contentDocumentIndex,
+        index,
+      );
+      const contentDocumentRef =
+        contentDocumentIndex === undefined
+          ? undefined
+          : this.resolveCapturedContentDocumentRef(controller, captured, contentDocumentIndex);
       const textContent =
         parseStringTable(captured.strings, captured.rawDocument.layout.text[index]) ||
         rareStringValue(captured.strings, captured.rawDocument.nodes.textValue, index) ||
@@ -2433,6 +2547,11 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
           ? {}
           : { parentSnapshotNodeId: parentIndexes[index]! + 1 }),
         childSnapshotNodeIds: (childIndexes.get(index) ?? []).map((childIndex) => childIndex + 1),
+        ...(normalizedShadowRootType === undefined
+          ? {}
+          : { shadowRootType: normalizedShadowRootType }),
+        ...(shadowHostNodeRef === undefined ? {} : { shadowHostNodeRef }),
+        ...(contentDocumentRef === undefined ? {} : { contentDocumentRef }),
         nodeType: captured.rawDocument.nodes.nodeType?.[index] ?? 0,
         nodeName: parseStringTable(captured.strings, captured.rawDocument.nodes.nodeName?.[index]),
         nodeValue: parseStringTable(
@@ -2464,10 +2583,28 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       url: document.url,
       capturedAt: captured.capturedAt,
       rootSnapshotNodeId: 1,
-      shadowDomMode: "flattened",
+      shadowDomMode: "preserved",
       geometryCoordinateSpace: "document-css",
       nodes,
     };
+  }
+
+  private resolveCapturedContentDocumentRef(
+    controller: PageController,
+    captured: CapturedDomSnapshot,
+    contentDocumentIndex: number,
+  ): DocumentRef | undefined {
+    const contentDocument = captured.documents[contentDocumentIndex];
+    if (!contentDocument) {
+      return undefined;
+    }
+
+    const cdpFrameId = parseStringTable(captured.strings, contentDocument.frameId);
+    if (cdpFrameId.length === 0) {
+      return undefined;
+    }
+
+    return controller.framesByCdpId.get(cdpFrameId)?.currentDocument.documentRef;
   }
 
   private findHtmlBackendNodeId(
