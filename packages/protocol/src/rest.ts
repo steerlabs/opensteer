@@ -19,9 +19,9 @@ export const opensteerRestEndpoints: readonly OpensteerRestEndpointDescriptor[] 
   opensteerOperationSpecifications.map((spec) => ({
     name: spec.name,
     method: "POST",
-    path: `${OPENSTEER_PROTOCOL_REST_BASE_PATH}/operations/${spec.name}`,
+    path: `${OPENSTEER_PROTOCOL_REST_BASE_PATH}/operations/${spec.name.replaceAll(".", "/")}`,
     description: spec.description,
     mediaType: OPENSTEER_PROTOCOL_MEDIA_TYPE,
-    requestSchema: requestEnvelopeSchema(spec.inputSchema),
-    responseSchema: responseEnvelopeSchema(spec.outputSchema),
+    requestSchema: requestEnvelopeSchema(spec.inputSchema, spec.name),
+    responseSchema: responseEnvelopeSchema(spec.outputSchema, spec.name),
   }));

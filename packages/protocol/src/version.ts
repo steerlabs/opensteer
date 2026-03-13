@@ -7,10 +7,11 @@ import {
 } from "./json.js";
 
 export const OPENSTEER_PROTOCOL_NAME = "opensteer";
-export const OPENSTEER_PROTOCOL_VERSION = "0.1.0";
+export const OPENSTEER_PROTOCOL_COMPATIBILITY_REVISION = 2 as const;
+export const OPENSTEER_PROTOCOL_VERSION = `0.${OPENSTEER_PROTOCOL_COMPATIBILITY_REVISION}.0`;
 export const OPENSTEER_PROTOCOL_REVISION_DATE = "2026-03-13";
 export const OPENSTEER_PROTOCOL_MEDIA_TYPE = `application/vnd.${OPENSTEER_PROTOCOL_NAME}+json;version=${OPENSTEER_PROTOCOL_VERSION}`;
-export const OPENSTEER_PROTOCOL_REST_BASE_PATH = "/api/v1";
+export const OPENSTEER_PROTOCOL_REST_BASE_PATH = `/api/v${OPENSTEER_PROTOCOL_COMPATIBILITY_REVISION}`;
 
 export type OpensteerProtocolName = typeof OPENSTEER_PROTOCOL_NAME;
 export type OpensteerProtocolVersion = typeof OPENSTEER_PROTOCOL_VERSION;

@@ -8,7 +8,8 @@ working on the rewrite.
 - `Phase 0` is complete.
 - `Phase 1` is complete.
 - `Phase 2` is complete.
-- `Phase 3` is the next active implementation phase.
+- `Phase 3` is complete.
+- `Phase 4` is the next active implementation phase.
 
 ## Goals
 
@@ -201,6 +202,9 @@ The implemented `Phase 1` browser-core contract now lives in
 The implemented `Phase 2` public protocol contract now lives in
 `packages/protocol/src/` and is covered by `tests/protocol/`.
 
+The implemented `Phase 3` Opensteer filesystem root now lives in
+`packages/opensteer/src/` and is covered by `tests/opensteer/`.
+
 ## Why ABP Is A Backend, Not The Architecture
 
 ABP is useful because it is agent-oriented today:
@@ -285,6 +289,8 @@ Define trace, artifact, and registry boundaries early inside `packages/opensteer
 - `traces`
 - `registry`
 
+Status: complete.
+
 ### Phase 4
 
 Implement `packages/engine-playwright` first.
@@ -294,7 +300,7 @@ Implement `packages/engine-playwright` first.
 
 ### Phase 5
 
-Move DOM semantics into `packages/opensteer/src/runtimes/dom`.
+Move DOM semantics into `packages/opensteer/src/runtimes/dom`. (think about how this will be the layer that works with both abp and playwright and any other future engines and make it flexible and compatible)
 
 - selectors
 - refs

@@ -1,9 +1,13 @@
 {
   "compilerOptions": {
+    "baseUrl": ".",
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "lib": ["ES2022"],
+    "paths": {
+      "@opensteer/protocol": ["packages/protocol/src/index.ts"]
+    },
     "strict": true,
     "noImplicitOverride": true,
     "noUncheckedIndexedAccess": true,
