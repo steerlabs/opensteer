@@ -54,6 +54,9 @@ export interface DomSnapshotNode {
   readonly nodeRef?: NodeRef;
   readonly parentSnapshotNodeId?: number;
   readonly childSnapshotNodeIds: readonly number[];
+  readonly shadowRootType?: "open" | "closed" | "user-agent";
+  readonly shadowHostNodeRef?: NodeRef;
+  readonly contentDocumentRef?: DocumentRef;
   readonly nodeType: number;
   readonly nodeName: string;
   readonly nodeValue: string;
@@ -144,6 +147,9 @@ export const domSnapshotNodeSchema: JsonSchema = objectSchema(
     nodeRef: nodeRefSchema,
     parentSnapshotNodeId: integerSchema({ minimum: 0 }),
     childSnapshotNodeIds: arraySchema(integerSchema({ minimum: 0 })),
+    shadowRootType: enumSchema(["open", "closed", "user-agent"] as const),
+    shadowHostNodeRef: nodeRefSchema,
+    contentDocumentRef: documentRefSchema,
     nodeType: integerSchema({ minimum: 0 }),
     nodeName: stringSchema(),
     nodeValue: stringSchema(),

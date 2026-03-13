@@ -9,7 +9,7 @@ that owns Opensteer's actual semantics.
 
 ## Current Status
 
-`Phase 0`, `Phase 1`, `Phase 2`, and `Phase 3` are complete.
+`Phase 0`, `Phase 1`, `Phase 2`, `Phase 3`, `Phase 4`, and `Phase 5` are complete.
 
 The repository now has:
 
@@ -18,8 +18,10 @@ The repository now has:
 - the `packages/protocol` Phase 2 public wire contract is implemented and tested
 - the `packages/opensteer` Phase 3 filesystem root for traces, artifacts, and registries is
   implemented and tested
+- the `packages/engine-playwright` Phase 4 Chromium-first backend is implemented and tested
+- the `packages/opensteer/src/runtimes/dom` Phase 5 DOM runtime is implemented and tested
 - the rewrite architecture and phased rollout plan are documented
-- the next active work is implementing `packages/engine-playwright`
+- the next active work is Phase 6 CLI and SDK surfaces through `packages/opensteer`
 
 ## Repository Layout
 

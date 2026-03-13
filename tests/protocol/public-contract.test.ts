@@ -17,6 +17,8 @@ import {
   httpStatusForOpensteerError,
   isErrorEnvelope,
   nextDocumentEpoch,
+  domSnapshotNodeSchema,
+  domSnapshotSchema,
   opensteerArtifactSchema,
   opensteerCapabilities,
   opensteerCapabilityDescriptors,
@@ -264,5 +266,16 @@ describe("protocol trace and artifact schemas", () => {
   test("exports discriminated unions for public events and artifacts", () => {
     expect(opensteerEventSchema.oneOf).toHaveLength(18);
     expect(opensteerArtifactSchema.oneOf).toHaveLength(6);
+  });
+
+  test("preserves shadow and iframe metadata in the public DOM snapshot schema", () => {
+    expect(domSnapshotNodeSchema.properties?.shadowRootType).toMatchObject({
+      enum: ["open", "closed", "user-agent"],
+    });
+    expect(domSnapshotNodeSchema.properties?.shadowHostNodeRef).toBeDefined();
+    expect(domSnapshotNodeSchema.properties?.contentDocumentRef).toBeDefined();
+    expect(domSnapshotSchema.properties?.shadowDomMode).toMatchObject({
+      enum: ["flattened", "preserved", "unsupported"],
+    });
   });
 });

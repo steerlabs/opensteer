@@ -31,6 +31,9 @@ export interface DomSnapshotNode {
   readonly nodeRef?: NodeRef;
   readonly parentSnapshotNodeId?: number;
   readonly childSnapshotNodeIds: readonly number[];
+  readonly shadowRootType?: "open" | "closed" | "user-agent";
+  readonly shadowHostNodeRef?: NodeRef;
+  readonly contentDocumentRef?: DocumentRef;
   readonly nodeType: number;
   readonly nodeName: string;
   readonly nodeValue: string;
