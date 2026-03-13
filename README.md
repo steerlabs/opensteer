@@ -9,14 +9,16 @@ that owns Opensteer's actual semantics.
 
 ## Current Status
 
-`Phase 0` and `Phase 1` are complete.
+`Phase 0`, `Phase 1`, and `Phase 2` are complete.
 
-The repository is now moving into `Phase 2`, which means:
+The repository now has:
 
 - the monorepo layout, OSS docs, and shared tooling are in place
 - the `packages/browser-core` Phase 1 contract is implemented and tested
+- the `packages/protocol` Phase 2 public wire contract is implemented and tested
 - the rewrite architecture and phased rollout plan are documented
-- the next active work is defining `packages/protocol`
+- the next active work is defining the initial `packages/opensteer` trace,
+  artifact, and registry boundaries
 
 ## Repository Layout
 

@@ -1,6 +1,7 @@
 # Documentation
 
-The documentation set is intentionally small in the rewrite's opening phase.
+The documentation set is intentionally small while the rewrite foundation is
+still being established.
 
 ## Architecture
 

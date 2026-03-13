@@ -7,7 +7,8 @@ working on the rewrite.
 
 - `Phase 0` is complete.
 - `Phase 1` is complete.
-- `Phase 2` is the next active implementation phase.
+- `Phase 2` is complete.
+- `Phase 3` is the next active implementation phase.
 
 ## Goals
 
@@ -196,6 +197,9 @@ These belong in `packages/opensteer/registry`.
 
 The implemented `Phase 1` browser-core contract now lives in
 `packages/browser-core/src/` and is covered by `tests/browser-core/`.
+
+The implemented `Phase 2` public protocol contract now lives in
+`packages/protocol/src/` and is covered by `tests/protocol/`.
 
 ## Why ABP Is A Backend, Not The Architecture
 
