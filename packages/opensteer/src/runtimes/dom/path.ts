@@ -52,6 +52,35 @@ export function buildPathSelectorHint(path: ElementPath): string {
   if (!last) {
     return "*";
   }
+  const tag = String(last.tag || "*").toLowerCase();
+  const id = last.attrs?.id?.trim();
+  if (id) {
+    return `${tag}#${sanitizeHintToken(id)}`;
+  }
+
+  const testId = firstDefinedAttribute(last, ["data-testid", "data-test", "data-qa", "data-cy"]);
+  if (testId) {
+    return `${tag}[data-testid="${sanitizeHintToken(testId)}"]`;
+  }
+
+  const name = last.attrs?.name?.trim();
+  if (name) {
+    return `${tag}[name="${sanitizeHintToken(name)}"]`;
+  }
+
+  const role = last.attrs?.role?.trim();
+  if (role) {
+    return `${tag}[role="${sanitizeHintToken(role)}"]`;
+  }
+
+  const classToken = last.attrs?.class
+    ?.split(/\s+/)
+    .map((token) => token.trim())
+    .find((token) => token.length > 0);
+  if (classToken) {
+    return `${tag}.${sanitizeHintToken(classToken)}`;
+  }
+
   return buildSegmentSelector(last);
 }
 
@@ -259,6 +288,20 @@ export function buildArrayFieldCandidates(path: ElementPath): string[] {
   return buildArrayFieldPathCandidates(path);
 }
 
+function firstDefinedAttribute(node: PathNode, keys: readonly string[]): string | undefined {
+  for (const key of keys) {
+    const value = node.attrs?.[key]?.trim();
+    if (value) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function sanitizeHintToken(value: string): string {
+  return value.replace(/"/g, '\\"').trim();
+}
+
 export function throwTargetNotFound(
   index: DomSnapshotIndex,
   domPath: ElementPath["nodes"],
@@ -432,7 +475,9 @@ function requireElementNode(
   rawTargetNode: DomSnapshotNode,
 ): DomSnapshotNode {
   const normalized =
-    rawTargetNode.nodeType === 1 ? rawTargetNode : normalizeNonElementTarget(index, rawTargetNode);
+    rawTargetNode.nodeType === 1 && !isPseudoElementNodeName(rawTargetNode.nodeName)
+      ? rawTargetNode
+      : normalizeNonElementTarget(index, rawTargetNode);
   if (!normalized) {
     throw new Error(
       `target node ${String(rawTargetNode.snapshotNodeId)} is not attached to an element`,
@@ -447,7 +492,7 @@ function normalizeNonElementTarget(
 ): DomSnapshotNode | undefined {
   let current: DomSnapshotNode | undefined = rawTargetNode;
   while (current) {
-    if (current.nodeType === 1) {
+    if (current.nodeType === 1 && !isPseudoElementNodeName(current.nodeName)) {
       return current;
     }
     current =
@@ -456,6 +501,10 @@ function normalizeNonElementTarget(
         : findNodeBySnapshotNodeId(index, current.parentSnapshotNodeId);
   }
   return undefined;
+}
+
+function isPseudoElementNodeName(nodeName: string): boolean {
+  return String(nodeName || "").startsWith("::");
 }
 
 function finalizeScopedDomPath(index: DomSnapshotIndex, targetNode: DomSnapshotNode): PathNode[] {

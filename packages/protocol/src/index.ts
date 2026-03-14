@@ -15,3 +15,4 @@ export * from "./envelopes.js";
 export * from "./operations.js";
 export * from "./rest.js";
 export * from "./mcp.js";
+export * from "./semantic.js";

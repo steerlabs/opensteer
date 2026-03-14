@@ -1,6 +1,5 @@
 {
   "name": "opensteer",
-  "private": true,
   "version": "0.0.0",
   "description": "Opensteer product semantics, CLI, and SDK package for the rewrite.",
   "license": "MIT",
@@ -9,6 +8,9 @@
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "opensteer": "./dist/cli/bin.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -21,7 +23,9 @@
   ],
   "dependencies": {
     "@opensteer/browser-core": "workspace:*",
+    "@opensteer/engine-playwright": "workspace:*",
     "@opensteer/protocol": "workspace:*",
+    "cheerio": "^1.1.2",
     "css-select": "^6.0.0",
     "domhandler": "^5.0.3"
   },

@@ -28,8 +28,12 @@ import {
   opensteerOperationSpecifications,
   opensteerProtocolDescriptor,
   opensteerRestEndpoints,
+  opensteerSemanticOperationSpecificationMap,
+  opensteerSemanticOperationSpecifications,
+  opensteerSemanticRestEndpoints,
   parseOpensteerRef,
   resolveRequiredCapabilities,
+  resolveSemanticRequiredCapabilities,
   unsupportedCapabilityError,
 } from "../../packages/protocol/src/index.js";
 
@@ -259,6 +263,53 @@ describe("protocol surface descriptors", () => {
         includeIndexedDb: false,
       }),
     ).toEqual(["inspect.localStorage"]);
+  });
+});
+
+describe("semantic protocol descriptors", () => {
+  test("keeps semantic operation and REST catalogs aligned", () => {
+    const operationNames = opensteerSemanticOperationSpecifications.map((spec) => spec.name);
+    const restNames = opensteerSemanticRestEndpoints.map((endpoint) => endpoint.name);
+    const uniquePaths = new Set(opensteerSemanticRestEndpoints.map((endpoint) => endpoint.path));
+
+    expect(restNames).toEqual(operationNames);
+    expect(uniquePaths.size).toBe(opensteerSemanticRestEndpoints.length);
+    expect(opensteerSemanticOperationSpecificationMap["session.open"]?.requiredCapabilities).toEqual([
+      "sessions.manage",
+      "pages.manage",
+    ]);
+  });
+
+  test("uses the dedicated semantic REST namespace and capability resolution rules", () => {
+    const openEndpoint = opensteerSemanticRestEndpoints.find(
+      (endpoint) => endpoint.name === "session.open",
+    );
+    const extractEndpoint = opensteerSemanticRestEndpoints.find(
+      (endpoint) => endpoint.name === "dom.extract",
+    );
+
+    expect(openEndpoint?.path).toBe(
+      `${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/session/open`,
+    );
+    expect(extractEndpoint?.path).toBe(
+      `${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/dom/extract`,
+    );
+    expect(
+      resolveSemanticRequiredCapabilities(
+        opensteerSemanticOperationSpecificationMap["session.open"]!,
+        {
+          url: "https://example.com",
+        },
+      ),
+    ).toEqual(["sessions.manage", "pages.manage", "pages.navigate"]);
+    expect(
+      resolveSemanticRequiredCapabilities(
+        opensteerSemanticOperationSpecificationMap["dom.extract"]!,
+        {
+          description: "product cards",
+        },
+      ),
+    ).toEqual(["inspect.domSnapshot", "inspect.text", "inspect.attributes"]);
   });
 });
 

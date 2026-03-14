@@ -9,7 +9,7 @@ that owns Opensteer's actual semantics.
 
 ## Current Status
 
-`Phase 0`, `Phase 1`, `Phase 2`, `Phase 3`, `Phase 4`, and `Phase 5` are complete.
+`Phase 0`, `Phase 1`, `Phase 2`, `Phase 3`, `Phase 4`, `Phase 5`, and `Phase 6` are complete.
 
 The repository now has:
 
@@ -20,8 +20,10 @@ The repository now has:
   implemented and tested
 - the `packages/engine-playwright` Phase 4 Chromium-first backend is implemented and tested
 - the `packages/opensteer/src/runtimes/dom` Phase 5 DOM runtime is implemented and tested
+- the `packages/opensteer` Phase 6 semantic SDK, HTML-first snapshot compiler, and thin CLI
+  service boundary are implemented and tested
 - the rewrite architecture and phased rollout plan are documented
-- the next active work is Phase 6 CLI and SDK surfaces through `packages/opensteer`
+- the next active work is Phase 7 settle policy and actionability behavior
 
 ## Repository Layout
 
@@ -43,21 +45,18 @@ Inside `packages/opensteer`, the current target structure is:
 ```text
 src/
   runtimes/
-  requests/
+  sdk/
+  cli/
   registry/
   traces/
   artifacts/
-  policy/
-  sdk/
-  cli/
 ```
 
 `registry/` is the home for deterministic local replay records and reusable
 request-plan persistence. `traces/` stays a timeline, and `artifacts/` stays the
 durable evidence store.
 
-The current Phase 3 filesystem root created by `packages/opensteer` uses this
-layout:
+The local Opensteer root created by `packages/opensteer` uses this layout:
 
 ```text
 opensteer-root.json
@@ -76,6 +75,8 @@ registry/
     records/
     indexes/
       by-key/
+runtime/
+  sessions/
 ```
 
 ## Key Documents
@@ -92,6 +93,21 @@ pnpm build
 pnpm typecheck
 pnpm test
 ```
+
+## Phase 6 Surface
+
+The Phase 6 public surface lives in `packages/opensteer`:
+
+- SDK: `new Opensteer({ ... }).open()`, `goto()`, `snapshot()`, `click()`, `hover()`, `input()`,
+  `scroll()`, `extract()`, `close()`
+- CLI: `opensteer open`, `goto`, `snapshot`, `click`, `hover`, `input`, `scroll`, `extract`,
+  `close`
+- Session continuity: the CLI now talks to a local per-session service under
+  `.opensteer/runtime/sessions/<name>/service.json`
+- Snapshot mode: HTML-first action and extraction snapshots with in-memory element counters
+
+See [packages/opensteer/README.md](packages/opensteer/README.md) and
+[`examples/phase6-sdk.ts`](examples/phase6-sdk.ts) for the public usage flow.
 
 ## Principles
 

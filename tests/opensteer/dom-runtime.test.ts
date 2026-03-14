@@ -14,6 +14,7 @@ import {
 import { createPlaywrightBrowserCoreEngine } from "../../packages/engine-playwright/src/index.js";
 import {
   buildArrayFieldPathCandidates,
+  buildPathSelectorHint,
   createDomRuntime,
   createFilesystemOpensteerRoot,
   normalizeExtractedValue,
@@ -290,7 +291,7 @@ describe("Phase 5 DOM runtime utilities", () => {
     ]);
   });
 
-  test("sanitizes element paths with the old match-seeding rules", () => {
+  test("sanitizes element paths with stable deferred id clauses preserved", () => {
     const sanitized = sanitizeElementPath({
       context: [],
       nodes: [
@@ -323,6 +324,7 @@ describe("Phase 5 DOM runtime utilities", () => {
         { kind: "attr", key: "class", op: "exact", value: "primary action" },
         { kind: "position", axis: "nthOfType" },
         { kind: "position", axis: "nthChild" },
+        { kind: "attr", key: "id", op: "exact" },
       ],
     });
   });
@@ -374,6 +376,58 @@ describe("Phase 5 DOM runtime integration", () => {
         expect(resolved.node.attributes.find((attribute) => attribute.name === "id")?.value).toBe(
           "child-shadow-action",
         );
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "buildPath falls back to id-like attributes when weaker primary attributes are not unique",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+      try {
+        const runtime = createDomRuntime({ engine });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: `${baseUrl}/runtime/main`,
+        });
+
+        await wait(400);
+
+        const frames = await engine.listFrames({ pageRef: created.data.pageRef });
+        const mainFrame = requireValue(
+          frames.find((frame) => frame.isMainFrame),
+          "main frame not found",
+        );
+        const snapshot = await engine.getDomSnapshot({
+          frameRef: mainFrame.frameRef,
+        });
+        const mainAction = requireValue(
+          findNodeById(snapshot.nodes, "main-action"),
+          "main action not found",
+        );
+
+        const path = await runtime.buildPath({
+          locator: createLocator(snapshot, mainAction),
+        });
+
+        expect(buildPathSelectorHint(path)).toBe("button#main-action");
+
+        const resolved = await runtime.resolveTarget({
+          pageRef: created.data.pageRef,
+          method: "click",
+          target: { kind: "path", path },
+        });
+
+        expect(resolved.node.attributes).toContainEqual({
+          name: "id",
+          value: "main-action",
+        });
       } finally {
         await engine.dispose();
       }

@@ -86,3 +86,16 @@ export type {
   TraceEntryRecord,
   TraceRunManifest,
 } from "./traces.js";
+export type {
+  OpensteerExtractOptions,
+  OpensteerInputOptions,
+  OpensteerScrollOptions,
+  OpensteerTargetOptions,
+} from "./sdk/opensteer.js";
+export { Opensteer } from "./sdk/opensteer.js";
+export type {
+  OpensteerEngineFactory,
+  OpensteerEngineFactoryOptions,
+  OpensteerRuntimeOptions,
+} from "./sdk/runtime.js";
+export { OpensteerSessionRuntime } from "./sdk/runtime.js";

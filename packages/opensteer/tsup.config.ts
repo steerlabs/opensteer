@@ -1,3 +1,11 @@
-import { createPackageConfig } from "../../tsup.base";
+import { defineConfig } from "tsup";
 
-export default createPackageConfig();
+export default defineConfig({
+  clean: true,
+  dts: true,
+  entry: ["src/index.ts", "src/cli/bin.ts"],
+  format: ["esm", "cjs"],
+  sourcemap: true,
+  target: "node20",
+  treeshake: true,
+});
