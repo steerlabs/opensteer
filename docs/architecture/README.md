@@ -3,7 +3,8 @@
 This directory contains the source-of-truth documents for the rewrite.
 
 Current status: `Phase 0` complete, `Phase 1` complete, `Phase 2` complete,
-`Phase 3` complete, `Phase 4` complete, `Phase 5` complete, `Phase 6` next.
+`Phase 3` complete, `Phase 4` complete, `Phase 5` complete, `Phase 6` complete,
+`Phase 7` next.
 
 - [Framework rewrite plan](framework-rewrite-plan.md)
 - `packages/browser-core/src/` contains the implemented Phase 1 contract
@@ -20,6 +21,11 @@ Current status: `Phase 0` complete, `Phase 1` complete, `Phase 2` complete,
   deterministic DOM runtime
 - `tests/opensteer/dom-runtime.test.ts` contains the Phase 5 DOM runtime
   coverage
+- `packages/opensteer/src/sdk/` and `packages/opensteer/src/cli/` contain the
+  implemented Phase 6 SDK, HTML-first snapshot runtime, and thin CLI service
+  boundary
+- `tests/opensteer/phase6-sdk-cli.test.ts` contains the Phase 6 SDK and CLI
+  integration coverage
 
 Current Opensteer package direction:
 

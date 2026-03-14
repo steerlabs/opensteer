@@ -1,4 +1,15 @@
-import type { DocumentEpoch, DocumentRef, FrameRef, NodeRef, PageRef } from "./identity.js";
+export type {
+  ScreenshotFormat,
+  HtmlSnapshot,
+  DomSnapshotNode,
+  ShadowDomSnapshotMode,
+  DomSnapshot,
+  HitTestResult,
+} from "@opensteer/browser-core";
+
+export { findDomSnapshotNode, findDomSnapshotNodeByRef } from "@opensteer/browser-core";
+
+import type { DocumentEpoch, DocumentRef, FrameRef, PageRef } from "./identity.js";
 import {
   documentEpochSchema,
   documentRefSchema,
@@ -8,7 +19,7 @@ import {
 } from "./identity.js";
 import type { BodyPayload } from "./network.js";
 import { bodyPayloadSchema } from "./network.js";
-import type { CoordinateSpace, Point, Quad, Rect, Size } from "./geometry.js";
+import type { CoordinateSpace, Rect, Size } from "./geometry.js";
 import {
   coordinateSpaceSchema,
   pointSchema,
@@ -25,82 +36,16 @@ import {
   type JsonSchema,
 } from "./json.js";
 
-export type ScreenshotFormat = "png" | "jpeg" | "webp";
-
 export interface ScreenshotArtifact {
   readonly pageRef: PageRef;
   readonly frameRef?: FrameRef;
   readonly documentRef?: DocumentRef;
   readonly documentEpoch?: DocumentEpoch;
   readonly payload: BodyPayload;
-  readonly format: ScreenshotFormat;
+  readonly format: "png" | "jpeg" | "webp";
   readonly size: Size;
   readonly coordinateSpace: CoordinateSpace;
   readonly clip?: Rect;
-}
-
-export interface HtmlSnapshot {
-  readonly pageRef: PageRef;
-  readonly frameRef: FrameRef;
-  readonly documentRef: DocumentRef;
-  readonly documentEpoch: DocumentEpoch;
-  readonly url: string;
-  readonly capturedAt: number;
-  readonly html: string;
-}
-
-export interface DomSnapshotNode {
-  readonly snapshotNodeId: number;
-  readonly nodeRef?: NodeRef;
-  readonly parentSnapshotNodeId?: number;
-  readonly childSnapshotNodeIds: readonly number[];
-  readonly shadowRootType?: "open" | "closed" | "user-agent";
-  readonly shadowHostNodeRef?: NodeRef;
-  readonly contentDocumentRef?: DocumentRef;
-  readonly nodeType: number;
-  readonly nodeName: string;
-  readonly nodeValue: string;
-  readonly textContent?: string;
-  readonly attributes: readonly {
-    readonly name: string;
-    readonly value: string;
-  }[];
-  readonly layout?: {
-    readonly rect?: Rect;
-    readonly quad?: Quad;
-    readonly paintOrder?: number;
-  };
-}
-
-export type ShadowDomSnapshotMode = "flattened" | "preserved" | "unsupported";
-
-export interface DomSnapshot {
-  readonly pageRef: PageRef;
-  readonly frameRef: FrameRef;
-  readonly documentRef: DocumentRef;
-  readonly parentDocumentRef?: DocumentRef;
-  readonly documentEpoch: DocumentEpoch;
-  readonly url: string;
-  readonly capturedAt: number;
-  readonly rootSnapshotNodeId: number;
-  readonly shadowDomMode: ShadowDomSnapshotMode;
-  readonly geometryCoordinateSpace?: CoordinateSpace;
-  readonly nodes: readonly DomSnapshotNode[];
-}
-
-export interface HitTestResult {
-  readonly inputPoint: Point;
-  readonly inputCoordinateSpace: CoordinateSpace;
-  readonly resolvedPoint: Point;
-  readonly resolvedCoordinateSpace: CoordinateSpace;
-  readonly pageRef: PageRef;
-  readonly frameRef: FrameRef;
-  readonly documentRef: DocumentRef;
-  readonly documentEpoch: DocumentEpoch;
-  readonly nodeRef?: NodeRef;
-  readonly targetQuad?: Quad;
-  readonly obscured: boolean;
-  readonly pointerEventsSkipped: boolean;
 }
 
 export const screenshotFormatSchema: JsonSchema = enumSchema(["png", "jpeg", "webp"] as const, {

@@ -10,13 +10,6 @@ import type {
   TraceOutcome,
   TraceRecord,
 } from "@opensteer/protocol";
-import {
-  createDocumentEpoch,
-  createDocumentRef,
-  createFrameRef,
-  createPageRef,
-  createSessionRef,
-} from "@opensteer/protocol";
 
 import type { OpensteerArtifactStore, ProtocolArtifactDelivery } from "./artifacts.js";
 import {
@@ -101,17 +94,11 @@ export interface OpensteerTraceStore {
 
 function normalizeContext(context: TraceContext | undefined): TraceContext {
   return {
-    ...(context?.sessionRef === undefined
-      ? {}
-      : { sessionRef: createSessionRef(context.sessionRef) }),
-    ...(context?.pageRef === undefined ? {} : { pageRef: createPageRef(context.pageRef) }),
-    ...(context?.frameRef === undefined ? {} : { frameRef: createFrameRef(context.frameRef) }),
-    ...(context?.documentRef === undefined
-      ? {}
-      : { documentRef: createDocumentRef(context.documentRef) }),
-    ...(context?.documentEpoch === undefined
-      ? {}
-      : { documentEpoch: createDocumentEpoch(context.documentEpoch) }),
+    ...(context?.sessionRef === undefined ? {} : { sessionRef: context.sessionRef }),
+    ...(context?.pageRef === undefined ? {} : { pageRef: context.pageRef }),
+    ...(context?.frameRef === undefined ? {} : { frameRef: context.frameRef }),
+    ...(context?.documentRef === undefined ? {} : { documentRef: context.documentRef }),
+    ...(context?.documentEpoch === undefined ? {} : { documentEpoch: context.documentEpoch }),
   };
 }
 

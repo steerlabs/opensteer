@@ -10,11 +10,13 @@ import {
   stringSchema,
   numberSchema,
 } from "./json.js";
+import { OpensteerProtocolError } from "./errors.js";
 import type { OpensteerCapability } from "./capabilities.js";
 import { documentEpochSchema, documentRefSchema, frameRefSchema, nodeRefSchema, pageRefSchema, sessionRefSchema } from "./identity.js";
 import type { DocumentEpoch, DocumentRef, FrameRef, NodeRef, PageRef, SessionRef } from "./identity.js";
 import { pointSchema } from "./geometry.js";
 import { requestEnvelopeSchema, responseEnvelopeSchema } from "./envelopes.js";
+import { validateJsonSchema } from "./validation.js";
 import { OPENSTEER_PROTOCOL_REST_BASE_PATH } from "./version.js";
 
 export type OpensteerSnapshotMode = "action" | "extraction";
@@ -572,6 +574,29 @@ export function resolveSemanticRequiredCapabilities<TInput>(
   input: TInput,
 ): readonly OpensteerCapability[] {
   return spec.resolveRequiredCapabilities?.(input) ?? spec.requiredCapabilities;
+}
+
+export function assertValidSemanticOperationInput(
+  name: OpensteerSemanticOperationName,
+  input: unknown,
+): void {
+  const spec = opensteerSemanticOperationSpecificationMap[name];
+  const issues = validateJsonSchema(spec.inputSchema, input);
+  if (issues.length === 0) {
+    return;
+  }
+
+  const firstIssue = issues[0]!;
+  throw new OpensteerProtocolError(
+    "invalid-request",
+    `invalid ${name} input at ${firstIssue.path}: ${firstIssue.message}`,
+    {
+      details: {
+        operation: name,
+        issues,
+      },
+    },
+  );
 }
 
 export const opensteerSemanticOperationSpecifications = [

@@ -11,6 +11,7 @@ import {
   type PageRef,
   type Point,
 } from "@opensteer/browser-core";
+import { OpensteerProtocolError } from "@opensteer/protocol";
 
 import type { FilesystemOpensteerRoot } from "../../root.js";
 import { createDomDescriptorStore } from "./descriptors.js";
@@ -425,7 +426,16 @@ class DefaultDomRuntime implements DomRuntime {
   ): Promise<ResolvedDomTarget> {
     const descriptor = await this.descriptors.read({ description: target.description });
     if (!descriptor) {
-      throw new Error(`no stored DOM descriptor found for "${target.description}"`);
+      throw new OpensteerProtocolError(
+        "not-found",
+        `no stored DOM descriptor found for "${target.description}"`,
+        {
+          details: {
+            description: target.description,
+            kind: "dom-descriptor",
+          },
+        },
+      );
     }
     return this.resolveStoredDescriptorTarget(session, pageRef, descriptor);
   }

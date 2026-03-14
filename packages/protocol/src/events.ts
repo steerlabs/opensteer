@@ -1,14 +1,25 @@
-import type {
-  ChooserRef,
-  DialogRef,
-  DocumentEpoch,
-  DocumentRef,
-  DownloadRef,
-  FrameRef,
-  PageRef,
-  SessionRef,
-  WorkerRef,
-} from "./identity.js";
+export type { ConsoleLevel } from "@opensteer/browser-core";
+
+export type { PageCreatedStepEvent as PageCreatedEvent } from "@opensteer/browser-core";
+export type { PopupOpenedStepEvent as PopupOpenedEvent } from "@opensteer/browser-core";
+export type { PageClosedStepEvent as PageClosedEvent } from "@opensteer/browser-core";
+export type { DialogOpenedStepEvent as DialogOpenedEvent } from "@opensteer/browser-core";
+export type { DownloadStartedStepEvent as DownloadStartedEvent } from "@opensteer/browser-core";
+export type { DownloadFinishedStepEvent as DownloadFinishedEvent } from "@opensteer/browser-core";
+export type { ChooserOpenedStepEvent as ChooserOpenedEvent } from "@opensteer/browser-core";
+export type { WorkerCreatedStepEvent as WorkerCreatedEvent } from "@opensteer/browser-core";
+export type { WorkerDestroyedStepEvent as WorkerDestroyedEvent } from "@opensteer/browser-core";
+export type { ConsoleStepEvent as ConsoleEvent } from "@opensteer/browser-core";
+export type { PageErrorStepEvent as PageErrorEvent } from "@opensteer/browser-core";
+export type { WebSocketOpenedStepEvent as WebSocketOpenedEvent } from "@opensteer/browser-core";
+export type { WebSocketFrameStepEvent as WebSocketFrameEvent } from "@opensteer/browser-core";
+export type { WebSocketClosedStepEvent as WebSocketClosedEvent } from "@opensteer/browser-core";
+export type { EventStreamMessageStepEvent as EventStreamMessageEvent } from "@opensteer/browser-core";
+export type { PausedStepEvent as PausedEvent } from "@opensteer/browser-core";
+export type { ResumedStepEvent as ResumedEvent } from "@opensteer/browser-core";
+export type { FrozenStepEvent as FrozenEvent } from "@opensteer/browser-core";
+export type { StepEvent as OpensteerEvent } from "@opensteer/browser-core";
+
 import {
   chooserRefSchema,
   dialogRefSchema,
@@ -29,164 +40,6 @@ import {
   stringSchema,
   type JsonSchema,
 } from "./json.js";
-
-export type ConsoleLevel = "debug" | "log" | "info" | "warn" | "error" | "trace";
-
-interface OpensteerEventBase {
-  readonly eventId: string;
-  readonly kind: string;
-  readonly timestamp: number;
-  readonly sessionRef: SessionRef;
-  readonly pageRef?: PageRef;
-  readonly frameRef?: FrameRef;
-  readonly documentRef?: DocumentRef;
-  readonly documentEpoch?: DocumentEpoch;
-}
-
-export interface PageCreatedEvent extends OpensteerEventBase {
-  readonly kind: "page-created";
-  readonly pageRef: PageRef;
-}
-
-export interface PopupOpenedEvent extends OpensteerEventBase {
-  readonly kind: "popup-opened";
-  readonly pageRef: PageRef;
-  readonly openerPageRef: PageRef;
-}
-
-export interface PageClosedEvent extends OpensteerEventBase {
-  readonly kind: "page-closed";
-  readonly pageRef: PageRef;
-}
-
-export interface DialogOpenedEvent extends OpensteerEventBase {
-  readonly kind: "dialog-opened";
-  readonly dialogRef: DialogRef;
-  readonly dialogType: "alert" | "beforeunload" | "confirm" | "prompt";
-  readonly message: string;
-  readonly defaultValue?: string;
-}
-
-export interface DownloadStartedEvent extends OpensteerEventBase {
-  readonly kind: "download-started";
-  readonly downloadRef: DownloadRef;
-  readonly url: string;
-  readonly suggestedFilename?: string;
-}
-
-export interface DownloadFinishedEvent extends OpensteerEventBase {
-  readonly kind: "download-finished";
-  readonly downloadRef: DownloadRef;
-  readonly state: "completed" | "canceled" | "failed";
-  readonly filePath?: string;
-}
-
-export interface ChooserOpenedEvent extends OpensteerEventBase {
-  readonly kind: "chooser-opened";
-  readonly chooserRef: ChooserRef;
-  readonly chooserType: "file" | "select";
-  readonly multiple: boolean;
-  readonly options?: readonly {
-    readonly index: number;
-    readonly label: string;
-    readonly value: string;
-    readonly selected: boolean;
-  }[];
-}
-
-export interface WorkerCreatedEvent extends OpensteerEventBase {
-  readonly kind: "worker-created";
-  readonly workerRef: WorkerRef;
-  readonly workerType: "dedicated" | "shared" | "service";
-  readonly url: string;
-}
-
-export interface WorkerDestroyedEvent extends OpensteerEventBase {
-  readonly kind: "worker-destroyed";
-  readonly workerRef: WorkerRef;
-  readonly workerType: "dedicated" | "shared" | "service";
-  readonly url: string;
-}
-
-export interface ConsoleEvent extends OpensteerEventBase {
-  readonly kind: "console";
-  readonly level: ConsoleLevel;
-  readonly text: string;
-  readonly location?: {
-    readonly url?: string;
-    readonly lineNumber?: number;
-    readonly columnNumber?: number;
-  };
-}
-
-export interface PageErrorEvent extends OpensteerEventBase {
-  readonly kind: "page-error";
-  readonly message: string;
-  readonly stack?: string;
-}
-
-export interface WebSocketOpenedEvent extends OpensteerEventBase {
-  readonly kind: "websocket-opened";
-  readonly socketId: string;
-  readonly url: string;
-}
-
-export interface WebSocketFrameEvent extends OpensteerEventBase {
-  readonly kind: "websocket-frame";
-  readonly socketId: string;
-  readonly direction: "sent" | "received";
-  readonly opcode?: number;
-  readonly payloadPreview?: string;
-}
-
-export interface WebSocketClosedEvent extends OpensteerEventBase {
-  readonly kind: "websocket-closed";
-  readonly socketId: string;
-  readonly code?: number;
-  readonly reason?: string;
-}
-
-export interface EventStreamMessageEvent extends OpensteerEventBase {
-  readonly kind: "event-stream-message";
-  readonly streamId: string;
-  readonly eventName?: string;
-  readonly dataPreview?: string;
-}
-
-export interface PausedEvent extends OpensteerEventBase {
-  readonly kind: "paused";
-  readonly reason?: string;
-}
-
-export interface ResumedEvent extends OpensteerEventBase {
-  readonly kind: "resumed";
-  readonly reason?: string;
-}
-
-export interface FrozenEvent extends OpensteerEventBase {
-  readonly kind: "frozen";
-  readonly reason?: string;
-}
-
-export type OpensteerEvent =
-  | PageCreatedEvent
-  | PopupOpenedEvent
-  | PageClosedEvent
-  | DialogOpenedEvent
-  | DownloadStartedEvent
-  | DownloadFinishedEvent
-  | ChooserOpenedEvent
-  | WorkerCreatedEvent
-  | WorkerDestroyedEvent
-  | ConsoleEvent
-  | PageErrorEvent
-  | WebSocketOpenedEvent
-  | WebSocketFrameEvent
-  | WebSocketClosedEvent
-  | EventStreamMessageEvent
-  | PausedEvent
-  | ResumedEvent
-  | FrozenEvent;
 
 function eventBaseSchema(kind: string): Record<string, JsonSchema> {
   return {

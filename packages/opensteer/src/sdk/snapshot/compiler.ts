@@ -12,16 +12,7 @@ import {
   type NodeRef,
   type PageRef,
 } from "@opensteer/browser-core";
-import type {
-  OpensteerSnapshotCounter,
-  OpensteerSnapshotMode,
-} from "@opensteer/protocol";
-import {
-  createDocumentRef,
-  createFrameRef,
-  createNodeRef,
-  createPageRef,
-} from "@opensteer/protocol";
+import type { OpensteerSnapshotCounter, OpensteerSnapshotMode } from "@opensteer/protocol";
 
 import type { ElementPath } from "../../runtimes/dom/index.js";
 import {
@@ -29,10 +20,7 @@ import {
   createSnapshotIndex,
   sanitizeElementPath,
 } from "../../runtimes/dom/path.js";
-import {
-  findIframeHostNode,
-  type DomSnapshotIndex,
-} from "../../runtimes/dom/selectors.js";
+import { findIframeHostNode, type DomSnapshotIndex } from "../../runtimes/dom/selectors.js";
 import { cleanForAction, cleanForExtraction } from "./cleaner.js";
 import {
   OPENSTEER_BOUNDARY_ATTR,
@@ -48,9 +36,11 @@ import {
   isVoidHtmlTag,
 } from "./constants.js";
 
-export interface CompiledOpensteerSnapshotCounterRecord
-  extends Omit<OpensteerSnapshotCounter, "nodeRef"> {
-  readonly nodeRef: ReturnType<typeof createNodeRef>;
+export interface CompiledOpensteerSnapshotCounterRecord extends Omit<
+  OpensteerSnapshotCounter,
+  "nodeRef"
+> {
+  readonly nodeRef: NodeRef;
   readonly locator: NodeLocator;
   readonly path: ElementPath;
 }
@@ -158,7 +148,10 @@ async function collectDocumentSnapshots(
   while (queue.length > 0) {
     const current = queue.shift()!;
     for (const node of current.nodes) {
-      if (node.contentDocumentRef === undefined || snapshotsByDocumentRef.has(node.contentDocumentRef)) {
+      if (
+        node.contentDocumentRef === undefined ||
+        snapshotsByDocumentRef.has(node.contentDocumentRef)
+      ) {
         continue;
       }
 
@@ -186,7 +179,9 @@ function renderDocumentSnapshot(
   const nodesById = new Map(snapshot.nodes.map((node) => [node.snapshotNodeId, node]));
   const rootNode = nodesById.get(snapshot.rootSnapshotNodeId);
   if (!rootNode) {
-    throw new Error(`snapshot ${snapshot.documentRef} is missing root node ${String(snapshot.rootSnapshotNodeId)}`);
+    throw new Error(
+      `snapshot ${snapshot.documentRef} is missing root node ${String(snapshot.rootSnapshotNodeId)}`,
+    );
   }
 
   return renderNode(
@@ -400,11 +395,11 @@ function assignCounters(
     el.attr("c", String(counter));
     counterRecords.set(counter, {
       element: counter,
-      pageRef: createPageRef(rendered.pageRef),
-      frameRef: createFrameRef(rendered.frameRef),
-      documentRef: createDocumentRef(rendered.documentRef),
+      pageRef: rendered.pageRef,
+      frameRef: rendered.frameRef,
+      documentRef: rendered.documentRef,
       documentEpoch: rendered.documentEpoch,
-      nodeRef: createNodeRef(rendered.nodeRef),
+      nodeRef: rendered.nodeRef,
       tagName: rendered.tagName,
       pathHint: rendered.pathHint,
       ...(rendered.text === undefined ? {} : { text: rendered.text }),
@@ -469,7 +464,9 @@ function toPublicCounterRecord(
 }
 
 function normalizeTagName(value: string): string {
-  const tagName = String(value || "").trim().toLowerCase();
+  const tagName = String(value || "")
+    .trim()
+    .toLowerCase();
   return tagName.length === 0 ? "div" : tagName;
 }
 
@@ -614,7 +611,9 @@ function findAttributeValue(
   return attributes.find((attribute) => attribute.name.toLowerCase() === normalizedName)?.value;
 }
 
-function attributesToHtml(attributes: readonly { readonly name: string; readonly value: string }[]): string {
+function attributesToHtml(
+  attributes: readonly { readonly name: string; readonly value: string }[],
+): string {
   if (attributes.length === 0) {
     return "";
   }
@@ -679,11 +678,7 @@ function prefixIframeContext(
     snapshotIndices,
   );
   return sanitizeElementPath({
-    context: [
-      ...hostPath.context,
-      { kind: "iframe", host: hostPath.nodes },
-      ...localPath.context,
-    ],
+    context: [...hostPath.context, { kind: "iframe", host: hostPath.nodes }, ...localPath.context],
     nodes: localPath.nodes,
   });
 }

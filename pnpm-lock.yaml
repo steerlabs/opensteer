@@ -66,7 +66,11 @@ importers:
         specifier: ^5.0.3
         version: 5.0.3
 
-  packages/protocol: {}
+  packages/protocol:
+    dependencies:
+      '@opensteer/browser-core':
+        specifier: workspace:*
+        version: link:../browser-core
 
 packages:
 
