@@ -33,14 +33,37 @@ export interface OpensteerError {
   readonly details?: Readonly<Record<string, unknown>>;
 }
 
+export interface OpensteerErrorOptions {
+  readonly cause?: unknown;
+  readonly retriable?: boolean;
+  readonly capability?: OpensteerCapability;
+  readonly details?: Readonly<Record<string, unknown>>;
+}
+
+export class OpensteerProtocolError extends Error {
+  readonly code: OpensteerErrorCode;
+  readonly retriable: boolean;
+  readonly capability: OpensteerCapability | undefined;
+  readonly details: Readonly<Record<string, unknown>> | undefined;
+
+  constructor(
+    code: OpensteerErrorCode,
+    message: string,
+    options: OpensteerErrorOptions = {},
+  ) {
+    super(message, { cause: options.cause });
+    this.name = "OpensteerProtocolError";
+    this.code = code;
+    this.retriable = options.retriable ?? false;
+    this.capability = options.capability;
+    this.details = options.details;
+  }
+}
+
 export function createOpensteerError(
   code: OpensteerErrorCode,
   message: string,
-  options: {
-    readonly retriable?: boolean;
-    readonly capability?: OpensteerCapability;
-    readonly details?: Readonly<Record<string, unknown>>;
-  } = {},
+  options: Omit<OpensteerErrorOptions, "cause"> = {},
 ): OpensteerError {
   return {
     code,
@@ -60,6 +83,23 @@ export function unsupportedCapabilityError(capability: OpensteerCapability): Ope
       details: { capability },
     },
   );
+}
+
+export function isOpensteerProtocolError(value: unknown): value is OpensteerProtocolError {
+  return value instanceof OpensteerProtocolError;
+}
+
+export function toOpensteerError(
+  error: Pick<
+    OpensteerProtocolError | OpensteerError,
+    "code" | "message" | "retriable" | "capability" | "details"
+  >,
+): OpensteerError {
+  return createOpensteerError(error.code, error.message, {
+    retriable: error.retriable,
+    ...(error.capability === undefined ? {} : { capability: error.capability }),
+    ...(error.details === undefined ? {} : { details: error.details }),
+  });
 }
 
 export function unsupportedVersionError(version: string): OpensteerError {

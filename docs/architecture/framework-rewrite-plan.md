@@ -11,7 +11,8 @@ working on the rewrite.
 - `Phase 3` is complete.
 - `Phase 4` is complete.
 - `Phase 5` is complete.
-- `Phase 6` is the next active implementation phase.
+- `Phase 6` is complete.
+- `Phase 7` is the next active implementation phase.
 
 ## Goals
 
@@ -349,6 +350,8 @@ Status: complete.
 ### Phase 6
 
 Add the first agent-facing CLI and SDK surfaces through `packages/opensteer`.
+
+Status: complete.
 
 ### Phase 7
 

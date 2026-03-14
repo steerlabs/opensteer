@@ -2,20 +2,22 @@ import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { once } from "node:events";
 
-import { isBrowserCoreError } from "@opensteer/browser-core";
 import {
   OPENSTEER_PROTOCOL_NAME,
   OPENSTEER_PROTOCOL_VERSION,
+  assertValidSemanticOperationInput,
   createErrorEnvelope,
   createOpensteerError,
   createSuccessEnvelope,
   httpStatusForOpensteerError,
   opensteerSemanticRestEndpoints,
+  OpensteerProtocolError,
   unsupportedVersionError,
   type OpensteerRequestEnvelope,
   type OpensteerSemanticOperationName,
 } from "@opensteer/protocol";
 
+import { normalizeThrownOpensteerError } from "../internal/errors.js";
 import { OpensteerSessionRuntime } from "../sdk/runtime.js";
 import {
   isProcessAlive,
@@ -62,9 +64,10 @@ export async function runOpensteerServiceHost(options: {
         });
       })
       .catch((error) => {
+        const normalized = normalizeOpensteerError(error);
         if (!response.headersSent) {
-          writeJson(response, 500, {
-            error: normalizeOpensteerError(error),
+          writeJson(response, httpStatusForOpensteerError(normalized), {
+            error: normalized,
           });
         } else {
           response.end();
@@ -193,6 +196,7 @@ async function handleRequest(
   }
 
   try {
+    assertValidSemanticOperationInput(endpoint.name, envelope.input);
     const data = await dispatchOperation(options.runtime, endpoint.name, envelope.input);
     const result = createSuccessEnvelope(envelope, data);
     writeJson(response, 200, result);
@@ -236,24 +240,24 @@ async function dispatchOperation(
 
 function parseRequestEnvelope(value: unknown): OpensteerRequestEnvelope<unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("request body must be a JSON object");
+    throw invalidRequest("request body must be a JSON object");
   }
 
   const record = value as Record<string, unknown>;
   if (record.protocol !== OPENSTEER_PROTOCOL_NAME) {
-    throw new Error(`request protocol must be ${OPENSTEER_PROTOCOL_NAME}`);
+    throw invalidRequest(`request protocol must be ${OPENSTEER_PROTOCOL_NAME}`);
   }
   if (typeof record.version !== "string") {
-    throw new Error("request version must be a string");
+    throw invalidRequest("request version must be a string");
   }
   if (typeof record.requestId !== "string" || record.requestId.trim().length === 0) {
-    throw new Error("requestId must be a non-empty string");
+    throw invalidRequest("requestId must be a non-empty string");
   }
   if (typeof record.operation !== "string" || record.operation.trim().length === 0) {
-    throw new Error("operation must be a non-empty string");
+    throw invalidRequest("operation must be a non-empty string");
   }
   if (typeof record.sentAt !== "number" || !Number.isInteger(record.sentAt) || record.sentAt < 0) {
-    throw new Error("sentAt must be a non-negative integer");
+    throw invalidRequest("sentAt must be a non-negative integer");
   }
 
   return {
@@ -276,7 +280,17 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   if (raw.length === 0) {
     return {};
   }
-  return JSON.parse(raw) as unknown;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch (error) {
+    throw invalidRequest("request body must contain valid JSON", error);
+  }
+}
+
+function invalidRequest(message: string, cause?: unknown): OpensteerProtocolError {
+  return new OpensteerProtocolError("invalid-request", message, {
+    ...(cause === undefined ? {} : { cause }),
+  });
 }
 
 function isAuthorized(request: IncomingMessage, token: string): boolean {
@@ -299,24 +313,5 @@ function writeJson(response: ServerResponse, statusCode: number, body: unknown):
 }
 
 function normalizeOpensteerError(error: unknown) {
-  if (isBrowserCoreError(error)) {
-    return createOpensteerError(error.code, error.message, {
-      retriable: error.retriable,
-      ...(error.details === undefined ? {} : { details: error.details }),
-    });
-  }
-
-  if (error instanceof Error) {
-    return createOpensteerError("operation-failed", error.message, {
-      details: {
-        name: error.name,
-      },
-    });
-  }
-
-  return createOpensteerError("internal", "Unknown Opensteer service failure", {
-    details: {
-      value: error,
-    },
-  });
+  return normalizeThrownOpensteerError(error, "Unknown Opensteer service failure");
 }

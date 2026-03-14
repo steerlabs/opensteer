@@ -1,4 +1,16 @@
-import type { FrameRef, PageRef, SessionRef } from "./identity.js";
+export type {
+  CookieSameSite,
+  CookiePriority,
+  CookieRecord,
+  StorageEntry,
+  IndexedDbRecord,
+  IndexedDbObjectStoreSnapshot,
+  IndexedDbDatabaseSnapshot,
+  StorageOriginSnapshot,
+  SessionStorageSnapshot,
+  StorageSnapshot,
+} from "@opensteer/browser-core";
+
 import { frameRefSchema, pageRefSchema, sessionRefSchema } from "./identity.js";
 import {
   arraySchema,
@@ -9,68 +21,6 @@ import {
   stringSchema,
   type JsonSchema,
 } from "./json.js";
-
-export type CookieSameSite = "strict" | "lax" | "none";
-export type CookiePriority = "low" | "medium" | "high";
-
-export interface CookieRecord {
-  readonly sessionRef: SessionRef;
-  readonly name: string;
-  readonly value: string;
-  readonly domain: string;
-  readonly path: string;
-  readonly secure: boolean;
-  readonly httpOnly: boolean;
-  readonly sameSite?: CookieSameSite;
-  readonly priority?: CookiePriority;
-  readonly partitionKey?: string;
-  readonly session: boolean;
-  readonly expiresAt?: number | null;
-}
-
-export interface StorageEntry {
-  readonly key: string;
-  readonly value: string;
-}
-
-export interface IndexedDbRecord {
-  readonly key: unknown;
-  readonly primaryKey?: unknown;
-  readonly value: unknown;
-}
-
-export interface IndexedDbObjectStoreSnapshot {
-  readonly name: string;
-  readonly keyPath?: string | readonly string[];
-  readonly autoIncrement: boolean;
-  readonly records: readonly IndexedDbRecord[];
-}
-
-export interface IndexedDbDatabaseSnapshot {
-  readonly name: string;
-  readonly version: number;
-  readonly objectStores: readonly IndexedDbObjectStoreSnapshot[];
-}
-
-export interface StorageOriginSnapshot {
-  readonly origin: string;
-  readonly localStorage: readonly StorageEntry[];
-  readonly indexedDb?: readonly IndexedDbDatabaseSnapshot[];
-}
-
-export interface SessionStorageSnapshot {
-  readonly pageRef: PageRef;
-  readonly frameRef: FrameRef;
-  readonly origin: string;
-  readonly entries: readonly StorageEntry[];
-}
-
-export interface StorageSnapshot {
-  readonly sessionRef: SessionRef;
-  readonly capturedAt: number;
-  readonly origins: readonly StorageOriginSnapshot[];
-  readonly sessionStorage?: readonly SessionStorageSnapshot[];
-}
 
 const jsonUnknownSchema: JsonSchema = {};
 

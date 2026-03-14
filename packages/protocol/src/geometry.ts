@@ -1,61 +1,19 @@
+export type {
+  Point,
+  Size,
+  Rect,
+  Quad,
+  ScrollOffset,
+  CoordinateSpace,
+  LayoutViewport,
+  VisualViewport,
+  DevicePixelRatio,
+  PageScaleFactor,
+  PageZoomFactor,
+  ViewportMetrics,
+} from "@opensteer/browser-core";
+
 import { arraySchema, enumSchema, numberSchema, objectSchema, type JsonSchema } from "./json.js";
-
-export interface Point {
-  readonly x: number;
-  readonly y: number;
-}
-
-export interface Size {
-  readonly width: number;
-  readonly height: number;
-}
-
-export interface Rect {
-  readonly x: number;
-  readonly y: number;
-  readonly width: number;
-  readonly height: number;
-}
-
-export type Quad = readonly [Point, Point, Point, Point];
-
-export interface ScrollOffset {
-  readonly x: number;
-  readonly y: number;
-}
-
-export type CoordinateSpace =
-  | "document-css"
-  | "layout-viewport-css"
-  | "visual-viewport-css"
-  | "window"
-  | "screen"
-  | "device-pixel";
-
-export interface LayoutViewport {
-  readonly origin: Point;
-  readonly size: Size;
-}
-
-export interface VisualViewport {
-  readonly origin: Point;
-  readonly offsetWithinLayoutViewport: ScrollOffset;
-  readonly size: Size;
-}
-
-export type DevicePixelRatio = number;
-export type PageScaleFactor = number;
-export type PageZoomFactor = number;
-
-export interface ViewportMetrics {
-  readonly layoutViewport: LayoutViewport;
-  readonly visualViewport: VisualViewport;
-  readonly scrollOffset: ScrollOffset;
-  readonly contentSize: Size;
-  readonly devicePixelRatio: DevicePixelRatio;
-  readonly pageScaleFactor: PageScaleFactor;
-  readonly pageZoomFactor: PageZoomFactor;
-}
 
 export const pointSchema: JsonSchema = objectSchema(
   {

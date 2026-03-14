@@ -13,13 +13,6 @@ import type {
   StorageSnapshot,
   TraceContext,
 } from "@opensteer/protocol";
-import {
-  createDocumentEpoch,
-  createDocumentRef,
-  createFrameRef,
-  createPageRef,
-  createSessionRef,
-} from "@opensteer/protocol";
 
 import {
   encodePathSegment,
@@ -137,15 +130,11 @@ function normalizeScope(scope: ArtifactScope | undefined): ArtifactScope {
   }
 
   return {
-    ...(scope.sessionRef === undefined ? {} : { sessionRef: createSessionRef(scope.sessionRef) }),
-    ...(scope.pageRef === undefined ? {} : { pageRef: createPageRef(scope.pageRef) }),
-    ...(scope.frameRef === undefined ? {} : { frameRef: createFrameRef(scope.frameRef) }),
-    ...(scope.documentRef === undefined
-      ? {}
-      : { documentRef: createDocumentRef(scope.documentRef) }),
-    ...(scope.documentEpoch === undefined
-      ? {}
-      : { documentEpoch: createDocumentEpoch(scope.documentEpoch) }),
+    ...(scope.sessionRef === undefined ? {} : { sessionRef: scope.sessionRef }),
+    ...(scope.pageRef === undefined ? {} : { pageRef: scope.pageRef }),
+    ...(scope.frameRef === undefined ? {} : { frameRef: scope.frameRef }),
+    ...(scope.documentRef === undefined ? {} : { documentRef: scope.documentRef }),
+    ...(scope.documentEpoch === undefined ? {} : { documentEpoch: scope.documentEpoch }),
   };
 }
 

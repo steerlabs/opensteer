@@ -1,28 +1,19 @@
 import path from "node:path";
 
 import {
-  isBrowserCoreError,
   type BrowserCoreEngine,
   type DocumentEpoch,
   type DocumentRef,
-  type DomSnapshot as BrowserCoreDomSnapshot,
   type FrameRef,
-  type HtmlSnapshot as BrowserCoreHtmlSnapshot,
   type PageRef,
   type SessionRef,
 } from "@opensteer/browser-core";
 import {
-  createDocumentRef,
-  createFrameRef,
-  createNodeRef,
-  createOpensteerError,
-  createPageRef,
-  createSessionRef,
+  OpensteerProtocolError,
+  assertValidSemanticOperationInput,
   type OpensteerActionResult,
   type OpensteerBrowserContextOptions,
   type OpensteerBrowserLaunchOptions,
-  type DomSnapshot as ProtocolDomSnapshot,
-  type HtmlSnapshot as ProtocolHtmlSnapshot,
   type OpensteerDomClickInput,
   type OpensteerDomExtractInput,
   type OpensteerDomExtractOutput,
@@ -42,9 +33,8 @@ import {
   type TraceContext,
 } from "@opensteer/protocol";
 
-import {
-  type ArtifactManifest,
-} from "../artifacts.js";
+import { type ArtifactManifest } from "../artifacts.js";
+import { normalizeThrownOpensteerError } from "../internal/errors.js";
 import { canonicalJsonString, toCanonicalJsonValue } from "../json.js";
 import { createFilesystemOpensteerRoot, type FilesystemOpensteerRoot } from "../root.js";
 import {
@@ -63,10 +53,7 @@ import {
   replayOpensteerExtractionPayload,
   type OpensteerExtractionDescriptorRecord,
 } from "./extraction.js";
-import {
-  compileOpensteerSnapshot,
-  type CompiledOpensteerSnapshot,
-} from "./snapshot/compiler.js";
+import { compileOpensteerSnapshot, type CompiledOpensteerSnapshot } from "./snapshot/compiler.js";
 
 type DisposableBrowserCoreEngine = BrowserCoreEngine & {
   dispose?: () => Promise<void>;
@@ -136,6 +123,8 @@ export class OpensteerSessionRuntime {
   }
 
   async open(input: OpensteerSessionOpenInput = {}): Promise<OpensteerSessionOpenOutput> {
+    assertValidSemanticOperationInput("session.open", input);
+
     if (input.name !== undefined && normalizeNamespace(input.name) !== this.name) {
       throw new Error(
         `session.open requested namespace "${input.name}" but runtime is bound to "${this.name}"`,
@@ -201,6 +190,8 @@ export class OpensteerSessionRuntime {
   }
 
   async goto(input: OpensteerPageGotoInput): Promise<OpensteerPageGotoOutput> {
+    assertValidSemanticOperationInput("page.goto", input);
+
     const pageRef = await this.ensurePageRef();
     const startedAt = Date.now();
 
@@ -244,6 +235,8 @@ export class OpensteerSessionRuntime {
   }
 
   async snapshot(input: OpensteerPageSnapshotInput = {}): Promise<OpensteerPageSnapshotOutput> {
+    assertValidSemanticOperationInput("page.snapshot", input);
+
     const pageRef = await this.ensurePageRef();
     const root = await this.ensureRoot();
     const mode: OpensteerSnapshotMode = input.mode ?? "action";
@@ -304,6 +297,8 @@ export class OpensteerSessionRuntime {
   }
 
   async click(input: OpensteerDomClickInput): Promise<OpensteerActionResult> {
+    assertValidSemanticOperationInput("dom.click", input);
+
     return this.runDomAction("dom.click", input, async (pageRef, target) => {
       const result = await this.requireDom().click({
         pageRef,
@@ -316,6 +311,8 @@ export class OpensteerSessionRuntime {
   }
 
   async hover(input: OpensteerDomHoverInput): Promise<OpensteerActionResult> {
+    assertValidSemanticOperationInput("dom.hover", input);
+
     return this.runDomAction("dom.hover", input, async (pageRef, target) => {
       const result = await this.requireDom().hover({
         pageRef,
@@ -328,6 +325,8 @@ export class OpensteerSessionRuntime {
   }
 
   async input(input: OpensteerDomInputInput): Promise<OpensteerActionResult> {
+    assertValidSemanticOperationInput("dom.input", input);
+
     return this.runDomAction("dom.input", input, async (pageRef, target) => {
       const resolved = await this.requireDom().input({
         pageRef,
@@ -345,6 +344,8 @@ export class OpensteerSessionRuntime {
   }
 
   async scroll(input: OpensteerDomScrollInput): Promise<OpensteerActionResult> {
+    assertValidSemanticOperationInput("dom.scroll", input);
+
     return this.runDomAction("dom.scroll", input, async (pageRef, target) => {
       const result = await this.requireDom().scroll({
         pageRef,
@@ -358,6 +359,8 @@ export class OpensteerSessionRuntime {
   }
 
   async extract(input: OpensteerDomExtractInput): Promise<OpensteerDomExtractOutput> {
+    assertValidSemanticOperationInput("dom.extract", input);
+
     const pageRef = await this.ensurePageRef();
     const descriptors = this.requireExtractionDescriptors();
     const startedAt = Date.now();
@@ -385,7 +388,17 @@ export class OpensteerSessionRuntime {
           description: input.description,
         });
         if (!descriptor) {
-          throw new Error(`no stored extraction descriptor found for "${input.description}"`);
+          throw new OpensteerProtocolError(
+            "not-found",
+            `no stored extraction descriptor found for "${input.description}"`,
+            {
+              details: {
+                description: input.description,
+                namespace: this.name,
+                kind: "extraction-descriptor",
+              },
+            },
+          );
         }
       }
 
@@ -496,7 +509,10 @@ export class OpensteerSessionRuntime {
   }
 
   private async runDomAction<
-    TInput extends { readonly target: OpensteerTargetInput; readonly persistAsDescription?: string },
+    TInput extends {
+      readonly target: OpensteerTargetInput;
+      readonly persistAsDescription?: string;
+    },
   >(
     operation: "dom.click" | "dom.hover" | "dom.input" | "dom.scroll",
     input: TInput,
@@ -765,8 +781,8 @@ export class OpensteerSessionRuntime {
     }
 
     return {
-      sessionRef: createSessionRef(sessionRef),
-      pageRef: createPageRef(pageRef),
+      sessionRef,
+      pageRef,
       url: pageInfo.url,
       title: pageInfo.title,
     };
@@ -795,7 +811,7 @@ export class OpensteerSessionRuntime {
           documentRef: domSnapshot.documentRef,
           documentEpoch: domSnapshot.documentEpoch,
         }),
-        data: toProtocolDomSnapshot(domSnapshot),
+        data: domSnapshot,
       }),
     );
 
@@ -813,7 +829,7 @@ export class OpensteerSessionRuntime {
             documentRef: htmlSnapshot.documentRef,
             documentEpoch: htmlSnapshot.documentEpoch,
           }),
-          data: toProtocolHtmlSnapshot(htmlSnapshot),
+          data: htmlSnapshot,
         }),
       );
     }
@@ -862,9 +878,7 @@ export class OpensteerSessionRuntime {
     });
   }
 
-  private async resetRuntimeState(options: {
-    readonly disposeEngine: boolean;
-  }): Promise<void> {
+  private async resetRuntimeState(options: { readonly disposeEngine: boolean }): Promise<void> {
     const engine = this.engine;
 
     this.sessionRef = undefined;
@@ -890,12 +904,10 @@ function buildRuntimeTraceContext(input: {
   readonly documentEpoch?: DocumentEpoch | undefined;
 }): TraceContext {
   return {
-    ...(input.sessionRef === undefined ? {} : { sessionRef: createSessionRef(input.sessionRef) }),
-    ...(input.pageRef === undefined ? {} : { pageRef: createPageRef(input.pageRef) }),
-    ...(input.frameRef === undefined ? {} : { frameRef: createFrameRef(input.frameRef) }),
-    ...(input.documentRef === undefined
-      ? {}
-      : { documentRef: createDocumentRef(input.documentRef) }),
+    ...(input.sessionRef === undefined ? {} : { sessionRef: input.sessionRef }),
+    ...(input.pageRef === undefined ? {} : { pageRef: input.pageRef }),
+    ...(input.frameRef === undefined ? {} : { frameRef: input.frameRef }),
+    ...(input.documentRef === undefined ? {} : { documentRef: input.documentRef }),
     ...(input.documentEpoch === undefined ? {} : { documentEpoch: input.documentEpoch }),
   };
 }
@@ -908,71 +920,6 @@ function buildArtifactScope(input: {
   readonly documentEpoch?: DocumentEpoch | undefined;
 }): TraceContext {
   return buildRuntimeTraceContext(input);
-}
-
-function toProtocolDomSnapshot(snapshot: BrowserCoreDomSnapshot): ProtocolDomSnapshot {
-  return {
-    pageRef: createPageRef(snapshot.pageRef),
-    frameRef: createFrameRef(snapshot.frameRef),
-    documentRef: createDocumentRef(snapshot.documentRef),
-    ...(snapshot.parentDocumentRef === undefined
-      ? {}
-      : { parentDocumentRef: createDocumentRef(snapshot.parentDocumentRef) }),
-    documentEpoch: snapshot.documentEpoch,
-    url: snapshot.url,
-    capturedAt: snapshot.capturedAt,
-    rootSnapshotNodeId: snapshot.rootSnapshotNodeId,
-    shadowDomMode: snapshot.shadowDomMode,
-    ...(snapshot.geometryCoordinateSpace === undefined
-      ? {}
-      : { geometryCoordinateSpace: snapshot.geometryCoordinateSpace }),
-    nodes: snapshot.nodes.map((node) => ({
-      snapshotNodeId: node.snapshotNodeId,
-      ...(node.nodeRef === undefined ? {} : { nodeRef: createNodeRef(node.nodeRef) }),
-      ...(node.parentSnapshotNodeId === undefined
-        ? {}
-        : { parentSnapshotNodeId: node.parentSnapshotNodeId }),
-      childSnapshotNodeIds: [...node.childSnapshotNodeIds],
-      ...(node.shadowRootType === undefined ? {} : { shadowRootType: node.shadowRootType }),
-      ...(node.shadowHostNodeRef === undefined
-        ? {}
-        : { shadowHostNodeRef: createNodeRef(node.shadowHostNodeRef) }),
-      ...(node.contentDocumentRef === undefined
-        ? {}
-        : { contentDocumentRef: createDocumentRef(node.contentDocumentRef) }),
-      nodeType: node.nodeType,
-      nodeName: node.nodeName,
-      nodeValue: node.nodeValue,
-      ...(node.textContent === undefined ? {} : { textContent: node.textContent }),
-      attributes: node.attributes.map((attribute) => ({
-        name: attribute.name,
-        value: attribute.value,
-      })),
-      ...(node.layout === undefined
-        ? {}
-        : {
-            layout: {
-              ...(node.layout.rect === undefined ? {} : { rect: node.layout.rect }),
-              ...(node.layout.quad === undefined ? {} : { quad: node.layout.quad }),
-              ...(node.layout.paintOrder === undefined
-                ? {}
-                : { paintOrder: node.layout.paintOrder }),
-            },
-          }),
-    })),
-  };
-}
-
-function toProtocolHtmlSnapshot(snapshot: BrowserCoreHtmlSnapshot): ProtocolHtmlSnapshot {
-  return {
-    pageRef: createPageRef(snapshot.pageRef),
-    frameRef: createFrameRef(snapshot.frameRef),
-    documentRef: createDocumentRef(snapshot.documentRef),
-    documentEpoch: snapshot.documentEpoch,
-    url: snapshot.url,
-    capturedAt: snapshot.capturedAt,
-    html: snapshot.html,
-  };
 }
 
 async function defaultEngineFactory(
@@ -1038,19 +985,17 @@ function toOpensteerActionResult(
             y: result.point.y,
           },
         }),
-    ...(persistedDescription === undefined
-      ? {}
-      : { persistedDescription }),
+    ...(persistedDescription === undefined ? {} : { persistedDescription }),
   };
 }
 
 function toOpensteerResolvedTarget(target: ResolvedDomTarget): OpensteerResolvedTarget {
   return {
-    pageRef: createPageRef(target.pageRef),
-    frameRef: createFrameRef(target.frameRef),
-    documentRef: createDocumentRef(target.documentRef),
+    pageRef: target.pageRef,
+    frameRef: target.frameRef,
+    documentRef: target.documentRef,
     documentEpoch: target.documentEpoch,
-    nodeRef: createNodeRef(target.nodeRef),
+    nodeRef: target.nodeRef,
     tagName: target.node.nodeName.toUpperCase(),
     pathHint: buildPathSelectorHint(target.path),
     ...(target.description === undefined ? {} : { description: target.description }),
@@ -1059,24 +1004,5 @@ function toOpensteerResolvedTarget(target: ResolvedDomTarget): OpensteerResolved
 }
 
 function normalizeOpensteerError(error: unknown) {
-  if (isBrowserCoreError(error)) {
-    return createOpensteerError(error.code, error.message, {
-      retriable: error.retriable,
-      ...(error.details === undefined ? {} : { details: error.details }),
-    });
-  }
-
-  if (error instanceof Error) {
-    return createOpensteerError("operation-failed", error.message, {
-      details: {
-        name: error.name,
-      },
-    });
-  }
-
-  return createOpensteerError("internal", "Unknown Opensteer runtime failure", {
-    details: {
-      value: error,
-    },
-  });
+  return normalizeThrownOpensteerError(error, "Unknown Opensteer runtime failure");
 }

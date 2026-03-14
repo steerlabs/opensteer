@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 
 import type { OpensteerPageSnapshotOutput, OpensteerSnapshotCounter } from "../../packages/protocol/src/index.js";
 import { Opensteer } from "../../packages/opensteer/src/index.js";
+import { ensureOpensteerService } from "../../packages/opensteer/src/cli/client.js";
 import {
   cleanupPhase6TemporaryRoots,
   createPhase6TemporaryRoot,
@@ -299,6 +300,96 @@ describe("Phase 6 SDK and CLI surfaces", () => {
         "service.json",
       );
       expect((await readdir(path.dirname(metadataPath))).includes("service.json")).toBe(false);
+    },
+    60_000,
+  );
+
+  test("SDK rejects invalid semantic input at the runtime boundary", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const opensteer = new Opensteer({
+      name: "phase6-invalid-runtime",
+      rootDir,
+      browser: {
+        headless: true,
+      },
+    });
+
+    try {
+      await opensteer.open(`${baseUrl}/phase6/main`);
+      const opensteerJs = opensteer as unknown as {
+        snapshot(input: unknown): Promise<unknown>;
+      };
+      await expect(opensteerJs.snapshot("bogus")).rejects.toMatchObject({
+        code: "invalid-request",
+      });
+    } finally {
+      await opensteer.close();
+    }
+  });
+
+  test(
+    "service returns invalid-request for invalid payloads and not-found for missing descriptors",
+    async () => {
+      const rootDir = await createPhase6TemporaryRoot();
+      const baseUrl = requireFixtureServer().url;
+      const sessionName = "phase6-service-validation";
+      const client = await ensureOpensteerService({
+        name: sessionName,
+        rootDir,
+        launchContext: {
+          execPath: process.execPath,
+          execArgv: process.execArgv,
+          scriptPath: CLI_SCRIPT,
+          cwd: process.cwd(),
+        },
+      });
+
+      try {
+        await client.invoke("session.open", {
+          url: `${baseUrl}/phase6/main`,
+          name: sessionName,
+          browser: { headless: true },
+        });
+
+        await expect(
+          client.invoke("page.snapshot", {
+            mode: "bogus",
+          }),
+        ).rejects.toMatchObject({
+          statusCode: 400,
+          opensteerError: {
+            code: "invalid-request",
+          },
+        });
+
+        await expect(
+          client.invoke("dom.extract", {
+            description: "missing extraction descriptor",
+          }),
+        ).rejects.toMatchObject({
+          statusCode: 404,
+          opensteerError: {
+            code: "not-found",
+          },
+        });
+
+        await expect(
+          client.invoke("dom.click", {
+            target: {
+              kind: "description",
+              description: "missing dom descriptor",
+            },
+          }),
+        ).rejects.toMatchObject({
+          statusCode: 404,
+          opensteerError: {
+            code: "not-found",
+          },
+        });
+      } finally {
+        await client.invoke("session.close", {}).catch(() => undefined);
+      }
     },
     60_000,
   );
