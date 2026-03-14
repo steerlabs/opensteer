@@ -12,13 +12,33 @@ import {
 } from "./json.js";
 import { OpensteerProtocolError } from "./errors.js";
 import type { OpensteerCapability } from "./capabilities.js";
-import { documentEpochSchema, documentRefSchema, frameRefSchema, nodeRefSchema, pageRefSchema, sessionRefSchema } from "./identity.js";
-import type { DocumentEpoch, DocumentRef, FrameRef, NodeRef, PageRef, SessionRef } from "./identity.js";
+import {
+  documentEpochSchema,
+  documentRefSchema,
+  frameRefSchema,
+  nodeRefSchema,
+  pageRefSchema,
+  sessionRefSchema,
+} from "./identity.js";
+import type {
+  DocumentEpoch,
+  DocumentRef,
+  FrameRef,
+  NodeRef,
+  PageRef,
+  SessionRef,
+} from "./identity.js";
 import { pointSchema, viewportMetricsSchema } from "./geometry.js";
 import type { Point, ViewportMetrics } from "./geometry.js";
 import { opensteerEventSchema, type OpensteerEvent } from "./events.js";
 import { requestEnvelopeSchema, responseEnvelopeSchema } from "./envelopes.js";
-import { hitTestResultSchema, screenshotArtifactSchema, type HitTestResult, type ScreenshotArtifact, type ScreenshotFormat } from "./snapshots.js";
+import {
+  hitTestResultSchema,
+  screenshotArtifactSchema,
+  type HitTestResult,
+  type ScreenshotArtifact,
+  type ScreenshotFormat,
+} from "./snapshots.js";
 import { validateJsonSchema } from "./validation.js";
 import { OPENSTEER_PROTOCOL_REST_BASE_PATH } from "./version.js";
 
@@ -41,12 +61,10 @@ export interface OpensteerBrowserContextOptions {
   readonly locale?: string;
   readonly timezoneId?: string;
   readonly userAgent?: string;
-  readonly viewport?:
-    | {
-        readonly width: number;
-        readonly height: number;
-      }
-    | null;
+  readonly viewport?: {
+    readonly width: number;
+    readonly height: number;
+  } | null;
   readonly javaScriptEnabled?: boolean;
   readonly bypassCSP?: boolean;
   readonly reducedMotion?: "reduce" | "no-preference";
@@ -979,7 +997,8 @@ export const opensteerSemanticOperationSpecifications = [
   }),
   defineSemanticOperationSpec<OpensteerDomScrollInput, OpensteerActionResult>({
     name: "dom.scroll",
-    description: "Resolve a DOM target and dispatch directional scrolling through Opensteer semantics.",
+    description:
+      "Resolve a DOM target and dispatch directional scrolling through Opensteer semantics.",
     inputSchema: opensteerDomScrollInputSchema,
     outputSchema: opensteerActionResultSchema,
     requiredCapabilities: ["input.pointer", "inspect.domSnapshot", "inspect.hitTest"],
@@ -993,7 +1012,8 @@ export const opensteerSemanticOperationSpecifications = [
   }),
   defineSemanticOperationSpec<OpensteerComputerExecuteInput, OpensteerComputerExecuteOutput>({
     name: "computer.execute",
-    description: "Execute a computer-use action in viewport pixels and return the post-action screenshot.",
+    description:
+      "Execute a computer-use action in viewport pixels and return the post-action screenshot.",
     inputSchema: opensteerComputerExecuteInputSchema,
     outputSchema: opensteerComputerExecuteOutputSchema,
     requiredCapabilities: ["artifacts.screenshot", "inspect.viewportMetrics"],
@@ -1001,6 +1021,11 @@ export const opensteerSemanticOperationSpecifications = [
       const base: OpensteerCapability[] = ["artifacts.screenshot", "inspect.viewportMetrics"];
       switch (input.action.type) {
         case "click":
+          if ((input.action.modifiers?.length ?? 0) > 0) {
+            base.unshift("input.keyboard");
+          }
+          base.unshift("input.pointer");
+          break;
         case "move":
         case "scroll":
         case "drag":

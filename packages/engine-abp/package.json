@@ -21,6 +21,7 @@
   ],
   "dependencies": {
     "@opensteer/browser-core": "workspace:*",
+    "@opensteer/protocol": "workspace:*",
     "ws": "^8.18.3"
   },
   "devDependencies": {

@@ -5,6 +5,8 @@ import {
   OPENSTEER_PROTOCOL_NAME,
   OPENSTEER_PROTOCOL_REST_BASE_PATH,
   OPENSTEER_PROTOCOL_VERSION,
+  OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL,
+  type ComputerUseBridge,
   createDocumentEpoch,
   createErrorEnvelope,
   createNodeRef,
@@ -33,6 +35,7 @@ import {
   opensteerSemanticRestEndpoints,
   assertValidSemanticOperationInput,
   parseOpensteerRef,
+  resolveComputerUseBridge,
   resolveRequiredCapabilities,
   resolveSemanticRequiredCapabilities,
   unsupportedCapabilityError,
@@ -58,6 +61,23 @@ describe("protocol refs and epochs", () => {
 
     expect(nextDocumentEpoch(epoch)).toBe(3);
     expect(() => createDocumentEpoch(-1)).toThrow(/non-negative integer/i);
+  });
+});
+
+describe("computer-use bridge contract", () => {
+  test("resolves shared bridge providers through the canonical symbol", () => {
+    const bridge: ComputerUseBridge = {
+      async execute() {
+        throw new Error("not called");
+      },
+    };
+    const provider = {
+      [OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL]() {
+        return bridge;
+      },
+    };
+
+    expect(resolveComputerUseBridge(provider)).toBe(bridge);
   });
 });
 
@@ -164,6 +184,36 @@ describe("protocol capabilities and errors", () => {
       },
     });
     expect(httpStatusForOpensteerError(error)).toBe(501);
+  });
+
+  test("requires keyboard capability for clicks that press modifiers", () => {
+    const mouseClickSpec = opensteerOperationSpecificationMap["input.mouse-click"];
+    const semanticComputerSpec = opensteerSemanticOperationSpecificationMap["computer.execute"];
+
+    expect(
+      resolveRequiredCapabilities(mouseClickSpec, {
+        pageRef: createPageRef("page-main"),
+        point: { x: 10, y: 20 },
+        coordinateSpace: "layout-viewport-css",
+        modifiers: ["Shift"],
+      }),
+    ).toEqual(["input.pointer", "input.keyboard"]);
+
+    expect(
+      resolveSemanticRequiredCapabilities(semanticComputerSpec, {
+        action: {
+          type: "click",
+          x: 10,
+          y: 20,
+          modifiers: ["Shift"],
+        },
+      }),
+    ).toEqual([
+      "input.pointer",
+      "input.keyboard",
+      "artifacts.screenshot",
+      "inspect.viewportMetrics",
+    ]);
   });
 });
 
@@ -275,14 +325,12 @@ describe("semantic protocol descriptors", () => {
 
     expect(restNames).toEqual(operationNames);
     expect(uniquePaths.size).toBe(opensteerSemanticRestEndpoints.length);
-    expect(opensteerSemanticOperationSpecificationMap["session.open"]?.requiredCapabilities).toEqual([
-      "sessions.manage",
-      "pages.manage",
-    ]);
-    expect(opensteerSemanticOperationSpecificationMap["computer.execute"]?.requiredCapabilities).toEqual([
-      "artifacts.screenshot",
-      "inspect.viewportMetrics",
-    ]);
+    expect(
+      opensteerSemanticOperationSpecificationMap["session.open"]?.requiredCapabilities,
+    ).toEqual(["sessions.manage", "pages.manage"]);
+    expect(
+      opensteerSemanticOperationSpecificationMap["computer.execute"]?.requiredCapabilities,
+    ).toEqual(["artifacts.screenshot", "inspect.viewportMetrics"]);
   });
 
   test("uses the dedicated semantic REST namespace and capability resolution rules", () => {

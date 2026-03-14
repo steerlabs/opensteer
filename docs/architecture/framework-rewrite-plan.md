@@ -110,6 +110,8 @@ Owns the public wire contract, separate from the engine contract.
 - trace and event schemas
 - capability descriptors
 - public artifact and request-plan schemas when they cross process boundaries
+- shared TypeScript semantic fulfillment contracts when multiple packages must
+  implement the same Opensteer semantic operation boundary
 
 ### `packages/engine-playwright`
 

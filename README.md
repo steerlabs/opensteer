@@ -9,7 +9,7 @@ that owns Opensteer's actual semantics.
 
 ## Current Status
 
-`Phase 0`, `Phase 1`, `Phase 2`, `Phase 3`, `Phase 4`, `Phase 5`, `Phase 6`, `Phase 7`, and `Phase 8` are complete.
+`Phase 0`, `Phase 1`, `Phase 2`, `Phase 3`, `Phase 4`, `Phase 5`, `Phase 6`, `Phase 7`, `Phase 8`, and `Phase 9` are complete. `Phase 10` is next.
 
 The repository now has:
 
@@ -25,8 +25,10 @@ The repository now has:
 - the `packages/opensteer/src/policy` Phase 7 policy layer is implemented and tested
 - the `packages/engine-abp` Phase 8 ABP backend is implemented, with ABP execution and a
   read-only CDP inspection sidecar
+- the `packages/opensteer/src/runtimes/computer-use` Phase 9 computer-use runtime is
+  implemented and tested, with engine-specific adapters for Playwright and ABP
 - the rewrite architecture and phased rollout plan are documented
-- the next active work is Phase 9 computer-use runtime behavior
+- the next active work is Phase 10 request workflow behavior
 
 ## Repository Layout
 
@@ -97,17 +99,18 @@ pnpm typecheck
 pnpm test
 ```
 
-## Phase 6 Surface
+## Public Surface
 
-The Phase 6 public surface lives in `packages/opensteer`:
+The current public surface lives in `packages/opensteer`:
 
 - SDK: `new Opensteer({ ... }).open()`, `goto()`, `snapshot()`, `click()`, `hover()`, `input()`,
-  `scroll()`, `extract()`, `close()`
+  `scroll()`, `extract()`, `computerExecute()`, `close()`
 - CLI: `opensteer open`, `goto`, `snapshot`, `click`, `hover`, `input`, `scroll`, `extract`,
-  `close`
+  `computer`, `close`
 - Session continuity: the CLI now talks to a local per-session service under
   `.opensteer/runtime/sessions/<name>/service.json`
 - Snapshot mode: HTML-first action and extraction snapshots with in-memory element counters
+- Computer-use mode: pixel-space actions with automatic post-action screenshots and trace data
 
 See [packages/opensteer/README.md](packages/opensteer/README.md) and
 [`examples/phase6-sdk.ts`](examples/phase6-sdk.ts) for the public usage flow.

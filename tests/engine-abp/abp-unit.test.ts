@@ -20,14 +20,22 @@ import {
 import { createAbpComputerUseBridge } from "../../packages/engine-abp/src/computer-use.js";
 import { AbpApiError, normalizeAbpError } from "../../packages/engine-abp/src/errors.js";
 import { buildAbpLaunchCommand } from "../../packages/engine-abp/src/launcher.js";
-import { AbpRestClient, assertUtf8RequestBody } from "../../packages/engine-abp/src/rest-client.js";
+import {
+  AbpRestClient,
+  assertUtf8RequestBody,
+  buildInputActionRequest,
+} from "../../packages/engine-abp/src/rest-client.js";
 import {
   chooseNextActivePageRef,
   resolveTabOpeners,
   shouldClaimBootstrapTab,
   shouldParkPageAsBootstrap,
 } from "../../packages/engine-abp/src/session-model.js";
-import type { AbpActionResponse, PageController, SessionState } from "../../packages/engine-abp/src/types.js";
+import type {
+  AbpActionResponse,
+  PageController,
+  SessionState,
+} from "../../packages/engine-abp/src/types.js";
 
 function expectThrownCode(fn: () => unknown, code: string): void {
   let error: unknown;
@@ -140,6 +148,32 @@ describe("engine-abp internals", () => {
     const client = new AbpRestClient("http://127.0.0.1:9222/api/v1");
     await expect(client.queryNetwork({ includeBodies: false })).rejects.toMatchObject({
       code: "operation-failed",
+    });
+  });
+
+  test("can omit the default ABP action-complete timeout when the caller owns budgeting", () => {
+    expect(buildInputActionRequest({ omitDefaultTimeout: true })).toEqual({
+      wait_until: {
+        type: "action_complete",
+      },
+      network: {
+        types: ["Document", "XHR", "Fetch"],
+      },
+    });
+
+    expect(
+      buildInputActionRequest({
+        omitDefaultTimeout: true,
+        timeoutMs: 4_321,
+      }),
+    ).toEqual({
+      wait_until: {
+        type: "action_complete",
+        timeout_ms: 4_321,
+      },
+      network: {
+        types: ["Document", "XHR", "Fetch"],
+      },
     });
   });
 
@@ -283,6 +317,7 @@ describe("engine-abp internals", () => {
 
   test("computer-use bridge translates drag requests without extra screenshots", async () => {
     const bridge = createAbpComputerUseBridge(createComputerBridgeContext());
+    const signal = new AbortController().signal;
 
     const output = await bridge.execute({
       pageRef: createPageRef("main"),
@@ -297,7 +332,7 @@ describe("engine-abp internals", () => {
         includeCursor: true,
         annotations: ["clickable", "grid"],
       },
-      signal: new AbortController().signal,
+      signal,
       remainingMs: () => 10_000,
       settle: async () => {},
     });
@@ -318,17 +353,21 @@ describe("engine-abp internals", () => {
           markup: ["clickable", "grid"],
         },
       }),
+      {
+        signal,
+      },
     );
     expect(rest.screenshotTab).not.toHaveBeenCalled();
     expect(output.timing.totalMs).toBe(80);
   });
 
-  test("computer-use bridge hands off tab_changed responses and reuses native screenshots", async () => {
+  test("computer-use bridge hands off tab_changed responses discovered after the action", async () => {
     const popupPageRef = createPageRef("popup");
     const bridge = createAbpComputerUseBridge(
       createComputerBridgeContext({
         popupPageRef,
         tabChanged: true,
+        discoveredPopupPageRef: popupPageRef,
       }),
     );
 
@@ -355,8 +394,44 @@ describe("engine-abp internals", () => {
     expect(rest.screenshotTab).not.toHaveBeenCalled();
   });
 
+  test("computer-use bridge threads semantic timeout budgets and abort signals into ABP actions", async () => {
+    const bridge = createAbpComputerUseBridge(createComputerBridgeContext());
+    const controller = new AbortController();
+
+    await bridge.execute({
+      pageRef: createPageRef("main"),
+      action: {
+        type: "click",
+        x: 40,
+        y: 30,
+      },
+      screenshot: {
+        format: "png",
+        includeCursor: false,
+        annotations: [],
+      },
+      signal: controller.signal,
+      remainingMs: () => 4_321,
+      settle: async () => {},
+    });
+
+    expect(outputTestState.rest.clickTab).toHaveBeenCalledWith(
+      "tab-main",
+      expect.objectContaining({
+        wait_until: {
+          type: "action_complete",
+          timeout_ms: 4_321,
+        },
+      }),
+      {
+        signal: controller.signal,
+      },
+    );
+  });
+
   test("computer-use bridge translates wait requests to the native wait endpoint", async () => {
     const bridge = createAbpComputerUseBridge(createComputerBridgeContext());
+    const signal = new AbortController().signal;
 
     await bridge.execute({
       pageRef: createPageRef("main"),
@@ -369,7 +444,7 @@ describe("engine-abp internals", () => {
         includeCursor: false,
         annotations: ["selected"],
       },
-      signal: new AbortController().signal,
+      signal,
       remainingMs: () => 10_000,
       settle: async () => {},
     });
@@ -384,6 +459,9 @@ describe("engine-abp internals", () => {
           markup: ["selected"],
         },
       }),
+      {
+        signal,
+      },
     );
   });
 });
@@ -392,10 +470,13 @@ const outputTestState = {
   rest: createRestStubs(),
 };
 
-function createComputerBridgeContext(options: {
-  readonly popupPageRef?: ReturnType<typeof createPageRef>;
-  readonly tabChanged?: boolean;
-} = {}) {
+function createComputerBridgeContext(
+  options: {
+    readonly popupPageRef?: ReturnType<typeof createPageRef>;
+    readonly tabChanged?: boolean;
+    readonly discoveredPopupPageRef?: ReturnType<typeof createPageRef>;
+  } = {},
+) {
   outputTestState.rest = createRestStubs({
     tabChanged: options.tabChanged ?? false,
   });
@@ -409,7 +490,7 @@ function createComputerBridgeContext(options: {
   ]);
   const session = {
     sessionRef,
-    activePageRef: options.tabChanged ? popupPageRef : mainPageRef,
+    activePageRef: mainPageRef,
     rest: outputTestState.rest,
   } as SessionState;
 
@@ -423,7 +504,7 @@ function createComputerBridgeContext(options: {
     },
     resolveSession: () => session,
     normalizeActionEvents: async () =>
-      options.tabChanged
+      options.tabChanged && options.discoveredPopupPageRef === undefined
         ? [
             {
               kind: "popup-opened",
@@ -435,7 +516,24 @@ function createComputerBridgeContext(options: {
             },
           ]
         : [],
-    detectNewTabs: async () => [],
+    detectNewTabs: async () => ({
+      events:
+        options.discoveredPopupPageRef === undefined
+          ? []
+          : [
+              {
+                kind: "popup-opened",
+                sessionRef,
+                pageRef: options.discoveredPopupPageRef,
+                openerPageRef: mainPageRef,
+                eventId: "event:detected-popup",
+                timestamp: 3,
+              },
+            ],
+      ...(options.discoveredPopupPageRef === undefined
+        ? {}
+        : { activePageRef: options.discoveredPopupPageRef }),
+    }),
     executeInputAction: async (
       _session: SessionState,
       _controller: PageController,
@@ -447,7 +545,8 @@ function createComputerBridgeContext(options: {
     flushDomUpdateTask: async () => {},
     requireMainFrame: (controller: ReturnType<typeof createPageController>) => controller.mainFrame,
     drainQueuedEvents: (pageRef: ReturnType<typeof createPageRef>) =>
-      pageRef === popupPageRef && options.tabChanged
+      pageRef === popupPageRef &&
+      (options.tabChanged || options.discoveredPopupPageRef === popupPageRef)
         ? [
             {
               kind: "page-created",

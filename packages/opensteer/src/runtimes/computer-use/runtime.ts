@@ -12,7 +12,11 @@ import {
   type ScreenshotArtifact as ProtocolScreenshotArtifact,
 } from "@opensteer/protocol";
 
-import { settleWithPolicy, type OpensteerPolicy, type TimeoutExecutionContext } from "../../policy/index.js";
+import {
+  settleWithPolicy,
+  type OpensteerPolicy,
+  type TimeoutExecutionContext,
+} from "../../policy/index.js";
 import type { DomRuntime } from "../dom/index.js";
 import {
   resolveComputerUseBridge,
@@ -57,7 +61,6 @@ class DefaultComputerUseRuntime implements ComputerUseRuntime {
   }): Promise<OpensteerComputerExecuteOutput> {
     const bridge = this.requireBridge();
     const screenshot = normalizeScreenshotOptions(input.input.screenshot);
-    validateWaitBudget(input.input, input.timeout);
 
     const executed = await input.timeout.runStep(() =>
       bridge.execute({
@@ -124,7 +127,9 @@ class DefaultComputerUseRuntime implements ComputerUseRuntime {
 function normalizeScreenshotArtifact(
   screenshot: BrowserCoreScreenshotArtifact | ProtocolScreenshotArtifact,
 ): ProtocolScreenshotArtifact {
-  const payload = screenshot.payload as BrowserCoreBodyPayload | ProtocolScreenshotArtifact["payload"];
+  const payload = screenshot.payload as
+    | BrowserCoreBodyPayload
+    | ProtocolScreenshotArtifact["payload"];
   if ("data" in payload && typeof payload.data === "string") {
     return screenshot as ProtocolScreenshotArtifact;
   }
@@ -162,30 +167,4 @@ function normalizeScreenshotOptions(
     includeCursor: input?.includeCursor ?? false,
     annotations: [...(input?.annotations ?? [])],
   };
-}
-
-function validateWaitBudget(
-  input: OpensteerComputerExecuteInput,
-  timeout: TimeoutExecutionContext,
-): void {
-  if (input.action.type !== "wait") {
-    return;
-  }
-
-  const remainingMs = timeout.remainingMs();
-  if (remainingMs === undefined || input.action.durationMs <= remainingMs) {
-    return;
-  }
-
-  throw new OpensteerProtocolError(
-    "timeout",
-    `computer wait of ${String(input.action.durationMs)}ms exceeds remaining timeout budget of ${String(remainingMs)}ms`,
-    {
-      details: {
-        operation: "computer.execute",
-        waitMs: input.action.durationMs,
-        remainingMs,
-      },
-    },
-  );
 }
