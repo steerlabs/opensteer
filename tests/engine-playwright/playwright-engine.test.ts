@@ -67,6 +67,17 @@ function domDocument(): string {
   );
 }
 
+function domFractionalHitDocument(): string {
+  return html(
+    `
+      <button id="fractional-hit" type="button" style="position:absolute;left:20px;top:200px;width:96.75px;height:21px">
+        Fractional Hit
+      </button>
+    `,
+    "Fractional hit page",
+  );
+}
+
 function domDocumentWithChild(): string {
   const rewrittenDocument = JSON.stringify(
     html(
@@ -131,6 +142,12 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   if (url.pathname === "/dom") {
     response.setHeader("content-type", "text/html; charset=utf-8");
     response.end(domDocument());
+    return;
+  }
+
+  if (url.pathname === "/dom-fractional-hit") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(domFractionalHitDocument());
     return;
   }
 
@@ -486,6 +503,37 @@ test(
     }
   },
 );
+
+test("hitTest rounds fractional CSS coordinates before calling CDP", async () => {
+  const engine = await createPlaywrightBrowserCoreEngine({
+    launch: { headless: true },
+  });
+  try {
+    const sessionRef = await engine.createSession();
+    const created = await engine.createPage({
+      sessionRef,
+      url: `${baseUrl}/dom-fractional-hit`,
+    });
+
+    const hit = await engine.hitTest({
+      pageRef: created.data.pageRef,
+      point: createPoint(68.375, 210.5),
+      coordinateSpace: "layout-viewport-css",
+    });
+    const hitAttributes = await engine.readAttributes({
+      documentRef: hit.documentRef,
+      documentEpoch: hit.documentEpoch,
+      nodeRef: hit.nodeRef!,
+    });
+
+    expect(hitAttributes).toContainEqual({
+      name: "id",
+      value: "fractional-hit",
+    });
+  } finally {
+    await engine.dispose();
+  }
+});
 
 test(
   "keeps iframe locators live when only the main document is rewritten",

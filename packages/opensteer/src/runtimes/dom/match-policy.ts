@@ -209,11 +209,7 @@ export function buildLocalClausePool(node: PathNode): MatchClause[] {
 
   pool.push({ kind: "position", axis: "nthOfType" });
   pool.push({ kind: "position", axis: "nthChild" });
-
-  const hasPrimary = pool.some((clause) => clause.kind === "attr");
-  if (!hasPrimary) {
-    pool.push(...deferred);
-  }
+  pool.push(...deferred);
 
   return pool;
 }

@@ -7,6 +7,7 @@
     "lib": ["ES2022"],
     "paths": {
       "@opensteer/browser-core": ["packages/browser-core/src/index.ts"],
+      "@opensteer/engine-playwright": ["packages/engine-playwright/src/index.ts"],
       "@opensteer/protocol": ["packages/protocol/src/index.ts"]
     },
     "strict": true,

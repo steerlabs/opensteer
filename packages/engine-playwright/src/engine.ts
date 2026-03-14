@@ -12,47 +12,31 @@ import {
   createNodeRef,
   createPageRef,
   createPoint,
-  createRect,
   createScrollOffset,
   createSessionRef,
   createSize,
   createPageScaleFactor,
   createPageZoomFactor,
   createDialogRef,
-  nextDocumentEpoch,
-  noBrowserCapabilities,
-  mergeBrowserCapabilities,
-  rectToQuad,
   unsupportedCapabilityError,
   staleNodeRefError,
   closedPageError,
   closedSessionError,
-  isBrowserCoreError,
-  type BodyPayload,
-  type BrowserCapabilities,
   type BrowserCoreEngine,
   type CoordinateSpace,
-  type CookieRecord,
   type DocumentEpoch,
   type DocumentRef,
   type DomSnapshot,
-  type DomSnapshotNode,
   type FrameInfo,
   type FrameRef,
-  type HeaderEntry,
   type HitTestResult,
   type HtmlSnapshot,
   type KeyModifier,
   type MouseButton,
   type NetworkRecord,
-  type NetworkResourceType,
-  type NetworkSourceMetadata,
-  type NetworkTiming,
-  type NetworkTransferSizes,
   type NodeLocator,
   type NodeRef,
   type PageInfo,
-  type PageLifecycleState,
   type PageRef,
   type Point,
   type Rect,
@@ -67,17 +51,16 @@ import {
   type StorageEntry,
   type StorageSnapshot,
   type ViewportMetrics,
+  type CookieRecord,
 } from "@opensteer/browser-core";
 import {
   chromium,
-  errors as playwrightErrors,
   type Browser,
   type BrowserContext,
 } from "playwright";
 import type {
   CDPSession,
   ConsoleMessage,
-  Cookie,
   Dialog,
   Download,
   Frame,
@@ -86,571 +69,66 @@ import type {
   Response,
 } from "playwright";
 
-const DEFAULT_BODY_CAPTURE_LIMIT_BYTES = 1024 * 1024;
+import type {
+  SessionState,
+  PendingPageRegistration,
+  PageController,
+  FrameState,
+  DocumentState,
+  FrameDescriptor,
+  FrameTreeNode,
+  NetworkRecordState,
+  CapturedDomSnapshot,
+  ExtendedStorageState,
+} from "./types.js";
+import {
+  PLAYWRIGHT_BROWSER_CORE_CAPABILITIES,
+  DEFAULT_BODY_CAPTURE_LIMIT_BYTES,
+  asChromiumBrowser,
+  buildContextOptions,
+  buildLaunchOptions,
+  type PlaywrightBrowserContextOptions,
+  type PlaywrightBrowserCoreEngineOptions,
+} from "./options.js";
+import {
+  clone,
+  normalizeSameSite,
+  normalizeResourceType,
+  normalizeDialogType,
+  normalizeConsoleLevel,
+  captureBodyPayload,
+  combineFrameUrl,
+  interleavedAttributesToEntries,
+  mapScreenshotFormat,
+} from "./normalize.js";
+import {
+  toDocumentPoint,
+  toViewportPoint,
+  toViewportRect,
+} from "./coordinate.js";
+import {
+  capturePageDomSnapshot,
+  findCapturedDocument,
+  updateDocumentTreeSignature,
+  buildDomSnapshot as buildDomSnapshotFromCapture,
+  resolveCapturedContentDocumentRef,
+  findHtmlBackendNodeId,
+  readTextContent,
+} from "./dom.js";
+import {
+  unsupportedCursorCapture,
+  normalizePlaywrightError,
+  isContextClosedError,
+  shouldIgnoreBackgroundTaskError,
+  rethrowNodeLookupError,
+} from "./errors.js";
 
-const PLAYWRIGHT_BROWSER_CORE_CAPABILITIES: BrowserCapabilities = mergeBrowserCapabilities(
-  noBrowserCapabilities(),
-  {
-    executor: {
-      sessionLifecycle: true,
-      pageLifecycle: true,
-      navigation: true,
-      pointerInput: true,
-      keyboardInput: true,
-      screenshots: true,
-      executionControl: {
-        freeze: true,
-      },
-    },
-    inspector: {
-      pageEnumeration: true,
-      frameEnumeration: true,
-      html: true,
-      domSnapshot: true,
-      text: true,
-      attributes: true,
-      hitTest: true,
-      viewportMetrics: true,
-      network: true,
-      networkBodies: true,
-      cookies: true,
-      localStorage: true,
-      sessionStorage: true,
-      indexedDb: true,
-    },
-    events: {
-      pageLifecycle: true,
-      dialog: true,
-      download: true,
-      chooser: true,
-      console: true,
-      pageError: true,
-    },
-  },
-);
-
-export interface PlaywrightChromiumLaunchOptions {
-  readonly headless?: boolean;
-  readonly executablePath?: string;
-  readonly channel?: string;
-  readonly args?: readonly string[];
-  readonly chromiumSandbox?: boolean;
-  readonly devtools?: boolean;
-  readonly downloadsPath?: string;
-  readonly proxy?: {
-    readonly server: string;
-    readonly bypass?: string;
-    readonly username?: string;
-    readonly password?: string;
-  };
-  readonly slowMo?: number;
-  readonly timeoutMs?: number;
-}
-
-export interface PlaywrightBrowserContextOptions {
-  readonly ignoreHTTPSErrors?: boolean;
-  readonly locale?: string;
-  readonly timezoneId?: string;
-  readonly userAgent?: string;
-  readonly viewport?: {
-    readonly width: number;
-    readonly height: number;
-  } | null;
-  readonly javaScriptEnabled?: boolean;
-  readonly bypassCSP?: boolean;
-  readonly reducedMotion?: "reduce" | "no-preference";
-  readonly colorScheme?: "light" | "dark" | "no-preference";
-  readonly extraHTTPHeaders?: readonly HeaderEntry[];
-}
-
-export interface AdoptedChromiumBrowser {
-  readonly browserType: () => { readonly name: () => string };
-  readonly close: () => Promise<void>;
-  readonly newContext: (options?: Record<string, unknown>) => Promise<unknown>;
-}
-
-export interface PlaywrightBrowserCoreEngineOptions {
-  readonly browser?: AdoptedChromiumBrowser;
-  readonly closeBrowserOnDispose?: boolean;
-  readonly launch?: PlaywrightChromiumLaunchOptions;
-  readonly context?: PlaywrightBrowserContextOptions;
-  readonly bodyCaptureLimitBytes?: number;
-}
-
-interface SessionState {
-  readonly sessionRef: SessionRef;
-  readonly context: BrowserContext;
-  readonly pageRefs: Set<PageRef>;
-  readonly networkRecords: NetworkRecordState[];
-  readonly pendingRegistrations: PendingPageRegistration[];
-  readonly pendingPageTasks: Set<Promise<void>>;
-}
-
-interface PendingPageRegistration {
-  readonly openerPageRef?: PageRef;
-  readonly resolve: (controller: PageController) => void;
-  readonly reject: (reason: unknown) => void;
-}
-
-interface PageController {
-  readonly pageRef: PageRef;
-  readonly sessionRef: SessionRef;
-  readonly page: Page;
-  readonly cdp: CDPSession;
-  readonly queuedEvents: StepEvent[];
-  readonly framesByCdpId: Map<string, FrameState>;
-  readonly frameBindings: WeakMap<Frame, FrameRef>;
-  readonly documentsByRef: Map<DocumentRef, DocumentState>;
-  readonly networkByRequest: Map<Request, NetworkRecordState>;
-  readonly backgroundTasks: Set<Promise<void>>;
-  domUpdateTask: Promise<void> | undefined;
-  backgroundError: Error | undefined;
-  openerPageRef: PageRef | undefined;
-  mainFrameRef: FrameRef | undefined;
-  lifecycleState: PageLifecycleState;
-  frozen: boolean;
-  explicitCloseInFlight: boolean;
-  lastKnownTitle: string;
-}
-
-interface FrameState {
-  readonly pageRef: PageRef;
-  readonly frameRef: FrameRef;
-  readonly cdpFrameId: string;
-  parentFrameRef: FrameRef | undefined;
-  name: string | undefined;
-  isMainFrame: boolean;
-  currentDocument: DocumentState;
-}
-
-interface DocumentState {
-  readonly pageRef: PageRef;
-  readonly frameRef: FrameRef;
-  readonly cdpFrameId: string;
-  readonly documentRef: DocumentRef;
-  documentEpoch: DocumentEpoch;
-  url: string;
-  parentDocumentRef: DocumentRef | undefined;
-  readonly nodeRefsByBackendNodeId: Map<number, NodeRef>;
-  readonly backendNodeIdsByNodeRef: Map<NodeRef, number>;
-  domTreeSignature: string | undefined;
-}
-
-interface FrameDescriptor {
-  readonly id: string;
-  readonly parentId?: string;
-  readonly name?: string;
-  readonly url: string;
-  readonly urlFragment?: string;
-}
-
-interface FrameTreeNode {
-  readonly frame: FrameDescriptor;
-  readonly childFrames?: readonly FrameTreeNode[];
-}
-
-interface NetworkRecordState {
-  readonly kind: "http";
-  readonly requestId: ReturnType<typeof createNetworkRequestId>;
-  readonly sessionRef: SessionRef;
-  pageRef?: PageRef;
-  frameRef?: FrameRef;
-  documentRef?: DocumentRef;
-  method: string;
-  url: string;
-  requestHeaders: HeaderEntry[];
-  responseHeaders: HeaderEntry[];
-  status?: number;
-  statusText?: string;
-  resourceType: NetworkResourceType;
-  redirectFromRequestId?: ReturnType<typeof createNetworkRequestId>;
-  redirectToRequestId?: ReturnType<typeof createNetworkRequestId>;
-  navigationRequest: boolean;
-  timing?: NetworkTiming;
-  transfer?: NetworkTransferSizes;
-  source?: NetworkSourceMetadata;
-  requestBody?: BodyPayload;
-  responseBody?: BodyPayload;
-}
-
-interface CapturedDomSnapshot {
-  readonly capturedAt: number;
-  readonly documents: readonly DomSnapshotDocument[];
-  readonly rawDocument: DomSnapshotDocument;
-  readonly shadowBoundariesByBackendNodeId: ReadonlyMap<number, ShadowBoundaryInfo>;
-  readonly strings: readonly string[];
-}
-
-interface DomSnapshotDocument {
-  readonly frameId: number;
-  readonly nodes: {
-    readonly parentIndex?: readonly number[];
-    readonly nodeType?: readonly number[];
-    readonly shadowRootType?: RareStringData;
-    readonly nodeName?: readonly number[];
-    readonly nodeValue?: readonly number[];
-    readonly backendNodeId?: readonly number[];
-    readonly attributes?: ReadonlyArray<readonly number[]>;
-    readonly textValue?: RareStringData;
-    readonly inputValue?: RareStringData;
-    readonly contentDocumentIndex?: RareIntegerData;
-  };
-  readonly layout: {
-    readonly nodeIndex: readonly number[];
-    readonly bounds: ReadonlyArray<readonly number[]>;
-    readonly text: readonly number[];
-    readonly paintOrders?: readonly number[];
-  };
-}
-
-interface RareStringData {
-  readonly index: readonly number[];
-  readonly value: readonly number[];
-}
-
-interface RareIntegerData {
-  readonly index: readonly number[];
-  readonly value: readonly number[];
-}
-
-interface ShadowBoundaryInfo {
-  readonly shadowRootType?: "open" | "closed" | "user-agent";
-  readonly shadowHostBackendNodeId?: number;
-}
-
-interface DomTreeNode {
-  readonly backendNodeId?: number;
-  readonly children?: readonly DomTreeNode[];
-  readonly shadowRoots?: readonly DomTreeNode[];
-  readonly contentDocument?: DomTreeNode;
-  readonly shadowRootType?: "open" | "closed" | "user-agent";
-}
-
-interface NormalizedIndexedDbRecord {
-  readonly key?: unknown;
-  readonly keyEncoded?: unknown;
-  readonly value?: unknown;
-  readonly valueEncoded?: unknown;
-}
-
-interface NormalizedIndexedDbStore {
-  readonly name: string;
-  readonly keyPath?: string;
-  readonly keyPathArray?: readonly string[];
-  readonly autoIncrement: boolean;
-  readonly records: readonly NormalizedIndexedDbRecord[];
-}
-
-interface NormalizedIndexedDbDatabase {
-  readonly name: string;
-  readonly version: number;
-  readonly stores: readonly NormalizedIndexedDbStore[];
-}
-
-interface ExtendedStorageStateOrigin {
-  readonly origin: string;
-  readonly localStorage: ReadonlyArray<{
-    readonly name: string;
-    readonly value: string;
-  }>;
-  readonly indexedDB?: readonly NormalizedIndexedDbDatabase[];
-}
-
-interface ExtendedStorageState {
-  readonly cookies: readonly {
-    readonly name: string;
-    readonly value: string;
-    readonly domain: string;
-    readonly path: string;
-    readonly expires: number;
-    readonly httpOnly: boolean;
-    readonly secure: boolean;
-    readonly sameSite: "Strict" | "Lax" | "None";
-  }[];
-  readonly origins: readonly ExtendedStorageStateOrigin[];
-}
-
-function clone<T>(value: T): T {
-  return structuredClone(value);
-}
-
-function normalizeSameSite(value: Cookie["sameSite"]): CookieRecord["sameSite"] {
-  switch (value) {
-    case "Strict":
-      return "strict";
-    case "Lax":
-      return "lax";
-    case "None":
-      return "none";
-  }
-}
-
-function normalizeResourceType(value: string): NetworkResourceType {
-  switch (value) {
-    case "document":
-    case "stylesheet":
-    case "image":
-    case "media":
-    case "font":
-    case "script":
-    case "texttrack":
-    case "xhr":
-    case "fetch":
-    case "websocket":
-    case "manifest":
-      return value;
-    case "eventsource":
-      return "event-stream";
-    default:
-      return "other";
-  }
-}
-
-function normalizeDialogType(
-  value: string,
-): Extract<StepEvent, { readonly kind: "dialog-opened" }>["dialogType"] {
-  switch (value) {
-    case "alert":
-    case "beforeunload":
-    case "confirm":
-    case "prompt":
-      return value;
-    default:
-      return "alert";
-  }
-}
-
-function normalizeConsoleLevel(
-  value: ReturnType<ConsoleMessage["type"]>,
-): Extract<StepEvent, { readonly kind: "console" }>["level"] {
-  switch (value) {
-    case "warning":
-      return "warn";
-    case "debug":
-    case "info":
-    case "error":
-    case "trace":
-      return value;
-    default:
-      return "log";
-  }
-}
-
-function parseMimeType(value: string | undefined): {
-  readonly mimeType?: string;
-  readonly charset?: string;
-} {
-  if (value === undefined) {
-    return {};
-  }
-  const [mimeTypePart, ...parts] = value.split(";");
-  const mimeType = mimeTypePart?.trim();
-  let charset: string | undefined;
-  for (const part of parts) {
-    const [name, rawValue] = part.split("=");
-    if (name?.trim().toLowerCase() === "charset" && rawValue) {
-      charset = rawValue.trim();
-    }
-  }
-  return {
-    ...(mimeType ? { mimeType } : {}),
-    ...(charset ? { charset } : {}),
-  };
-}
-
-function captureBodyPayload(
-  bytes: Buffer | Uint8Array | null,
-  contentType: string | undefined,
-  limit: number,
-): BodyPayload | undefined {
-  if (bytes === null) {
-    return undefined;
-  }
-
-  const buffer = bytes instanceof Buffer ? bytes : Buffer.from(bytes);
-  const truncated = buffer.byteLength > limit;
-  const captured = truncated ? buffer.subarray(0, limit) : buffer;
-  const { mimeType, charset } = parseMimeType(contentType);
-  return createBodyPayload(new Uint8Array(captured), {
-    ...(mimeType === undefined ? {} : { mimeType }),
-    ...(charset === undefined ? {} : { charset }),
-    truncated,
-    ...(truncated ? { originalByteLength: buffer.byteLength } : {}),
-  });
-}
-
-function combineFrameUrl(url: string, fragment?: string): string {
-  return `${url}${fragment ?? ""}`;
-}
-
-function parseStringTable(strings: readonly string[], index: number | undefined): string {
-  if (index === undefined) {
-    return "";
-  }
-  return strings[index] ?? "";
-}
-
-function rareStringValue(
-  strings: readonly string[],
-  data: RareStringData | undefined,
-  index: number,
-): string | undefined {
-  if (!data) {
-    return undefined;
-  }
-  const rareIndex = data.index.indexOf(index);
-  if (rareIndex === -1) {
-    return undefined;
-  }
-  const stringIndex = data.value[rareIndex];
-  return parseStringTable(strings, stringIndex);
-}
-
-function rareIntegerValue(data: RareIntegerData | undefined, index: number): number | undefined {
-  if (!data) {
-    return undefined;
-  }
-  const rareIndex = data.index.indexOf(index);
-  if (rareIndex === -1) {
-    return undefined;
-  }
-  return data.value[rareIndex];
-}
-
-function normalizeShadowRootType(
-  value: string | undefined,
-): "open" | "closed" | "user-agent" | undefined {
-  if (value === "open" || value === "closed" || value === "user-agent") {
-    return value;
-  }
-  return undefined;
-}
-
-function buildShadowBoundaryIndex(root: DomTreeNode): ReadonlyMap<number, ShadowBoundaryInfo> {
-  const byBackendNodeId = new Map<number, ShadowBoundaryInfo>();
-
-  const visit = (node: DomTreeNode, boundary: ShadowBoundaryInfo): void => {
-    if (node.backendNodeId !== undefined) {
-      byBackendNodeId.set(node.backendNodeId, boundary);
-    }
-
-    for (const child of node.children ?? []) {
-      visit(child, boundary);
-    }
-
-    for (const shadowRoot of node.shadowRoots ?? []) {
-      const shadowBoundary: ShadowBoundaryInfo = {
-        ...(node.backendNodeId === undefined
-          ? {}
-          : { shadowHostBackendNodeId: node.backendNodeId }),
-        ...(shadowRoot.shadowRootType === undefined
-          ? {}
-          : { shadowRootType: shadowRoot.shadowRootType }),
-      };
-
-      for (const child of shadowRoot.children ?? []) {
-        visit(child, shadowBoundary);
-      }
-    }
-
-    if (node.contentDocument) {
-      visit(node.contentDocument, {});
-    }
-  };
-
-  visit(root, {});
-  return byBackendNodeId;
-}
-
-function interleavedAttributesToEntries(values: readonly string[]): StorageEntry[] {
-  const entries: StorageEntry[] = [];
-  for (let index = 0; index < values.length; index += 2) {
-    const key = values[index];
-    const value = values[index + 1];
-    if (key !== undefined && value !== undefined) {
-      entries.push({ key, value });
-    }
-  }
-  return entries;
-}
-
-function mapScreenshotFormat(format: ScreenshotFormat | undefined): ScreenshotFormat {
-  return format ?? "png";
-}
-
-function unsupportedCoordinateSpace(coordinateSpace: CoordinateSpace): never {
-  throw createBrowserCoreError(
-    "unsupported-capability",
-    `coordinate space ${coordinateSpace} is not supported by this backend`,
-    { details: { coordinateSpace } },
-  );
-}
-
-function unsupportedCursorCapture(): never {
-  throw createBrowserCoreError(
-    "unsupported-capability",
-    "capturing the cursor in screenshots is not supported by this backend",
-  );
-}
-
-function asChromiumBrowser(browser: AdoptedChromiumBrowser): Browser {
-  return browser as unknown as Browser;
-}
-
-function buildContextOptions(
-  options: PlaywrightBrowserContextOptions | undefined,
-): Record<string, unknown> {
-  if (!options) {
-    return {
-      acceptDownloads: true,
-    };
-  }
-
-  return {
-    acceptDownloads: true,
-    ...(options.ignoreHTTPSErrors === undefined
-      ? {}
-      : { ignoreHTTPSErrors: options.ignoreHTTPSErrors }),
-    ...(options.locale === undefined ? {} : { locale: options.locale }),
-    ...(options.timezoneId === undefined ? {} : { timezoneId: options.timezoneId }),
-    ...(options.userAgent === undefined ? {} : { userAgent: options.userAgent }),
-    ...(options.viewport === undefined ? {} : { viewport: options.viewport }),
-    ...(options.javaScriptEnabled === undefined
-      ? {}
-      : { javaScriptEnabled: options.javaScriptEnabled }),
-    ...(options.bypassCSP === undefined ? {} : { bypassCSP: options.bypassCSP }),
-    ...(options.reducedMotion === undefined ? {} : { reducedMotion: options.reducedMotion }),
-    ...(options.colorScheme === undefined ? {} : { colorScheme: options.colorScheme }),
-    ...(options.extraHTTPHeaders === undefined
-      ? {}
-      : {
-          extraHTTPHeaders: Object.fromEntries(
-            options.extraHTTPHeaders.map((header) => [header.name, header.value]),
-          ),
-        }),
-  };
-}
-
-function buildLaunchOptions(
-  options: PlaywrightChromiumLaunchOptions | undefined,
-): Record<string, unknown> {
-  if (!options) {
-    return {};
-  }
-
-  return {
-    ...(options.headless === undefined ? {} : { headless: options.headless }),
-    ...(options.executablePath === undefined ? {} : { executablePath: options.executablePath }),
-    ...(options.channel === undefined ? {} : { channel: options.channel }),
-    ...(options.args === undefined ? {} : { args: [...options.args] }),
-    ...(options.chromiumSandbox === undefined ? {} : { chromiumSandbox: options.chromiumSandbox }),
-    ...(options.devtools === undefined ? {} : { devtools: options.devtools }),
-    ...(options.downloadsPath === undefined ? {} : { downloadsPath: options.downloadsPath }),
-    ...(options.proxy === undefined ? {} : { proxy: options.proxy }),
-    ...(options.slowMo === undefined ? {} : { slowMo: options.slowMo }),
-    ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),
-  };
-}
+export type {
+  PlaywrightChromiumLaunchOptions,
+  PlaywrightBrowserContextOptions,
+  AdoptedChromiumBrowser,
+  PlaywrightBrowserCoreEngineOptions,
+} from "./options.js";
 
 export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   readonly capabilities = PLAYWRIGHT_BROWSER_CORE_CAPABILITIES;
@@ -744,7 +222,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
 
     context.on("page", (page) => {
       const task = this.handleContextPage(session, page).catch((error) => {
-        if (this.isContextClosedError(error)) {
+        if (isContextClosedError(error)) {
           return;
         }
         throw error;
@@ -876,7 +354,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
         ...(input.timeoutMs === undefined ? {} : { timeout: input.timeoutMs }),
       });
     } catch (error) {
-      throw this.normalizePlaywrightError(error, input.pageRef);
+      throw normalizePlaywrightError(error, input.pageRef);
     }
     controller.lastKnownTitle = await this.readTitle(controller.page, controller.lastKnownTitle);
     await this.flushPendingPageTasks(controller.sessionRef);
@@ -908,7 +386,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
         ...(input.timeoutMs === undefined ? {} : { timeout: input.timeoutMs }),
       });
     } catch (error) {
-      throw this.normalizePlaywrightError(error, input.pageRef);
+      throw normalizePlaywrightError(error, input.pageRef);
     }
     controller.lastKnownTitle = await this.readTitle(controller.page, controller.lastKnownTitle);
     await this.flushPendingPageTasks(controller.sessionRef);
@@ -934,7 +412,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     try {
       await controller.page.goBack();
     } catch (error) {
-      throw this.normalizePlaywrightError(error, input.pageRef);
+      throw normalizePlaywrightError(error, input.pageRef);
     }
     controller.lastKnownTitle = await this.readTitle(controller.page, controller.lastKnownTitle);
     await this.flushPendingPageTasks(controller.sessionRef);
@@ -959,7 +437,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     try {
       await controller.page.goForward();
     } catch (error) {
-      throw this.normalizePlaywrightError(error, input.pageRef);
+      throw normalizePlaywrightError(error, input.pageRef);
     }
     controller.lastKnownTitle = await this.readTitle(controller.page, controller.lastKnownTitle);
     await this.flushPendingPageTasks(controller.sessionRef);
@@ -1001,7 +479,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     const controller = this.requirePage(input.pageRef);
     const startedAt = Date.now();
     const metrics = await this.getViewportMetrics({ pageRef: input.pageRef });
-    const point = this.toViewportPoint(metrics, input.point, input.coordinateSpace);
+    const point = toViewportPoint(metrics, input.point, input.coordinateSpace);
     await controller.page.mouse.move(point.x, point.y);
     await this.flushPendingPageTasks(controller.sessionRef);
     const mainFrame = this.requireMainFrame(controller);
@@ -1031,7 +509,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       coordinateSpace: input.coordinateSpace,
     });
     const metrics = await this.getViewportMetrics({ pageRef: input.pageRef });
-    const point = this.toViewportPoint(metrics, input.point, input.coordinateSpace);
+    const point = toViewportPoint(metrics, input.point, input.coordinateSpace);
     await this.withModifiers(controller.page, input.modifiers, async () => {
       await controller.page.mouse.click(point.x, point.y, {
         ...(input.button === undefined ? {} : { button: input.button }),
@@ -1059,10 +537,22 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     const controller = this.requirePage(input.pageRef);
     const startedAt = Date.now();
     const metrics = await this.getViewportMetrics({ pageRef: input.pageRef });
-    const point = this.toViewportPoint(metrics, input.point, input.coordinateSpace);
+    const point = toViewportPoint(metrics, input.point, input.coordinateSpace);
     await controller.page.mouse.move(point.x, point.y);
     await controller.page.mouse.wheel(input.delta.x, input.delta.y);
+    await controller.page.evaluate(
+      () =>
+        new Promise<void>((resolve) => {
+          const raf = (
+            globalThis as typeof globalThis & {
+              requestAnimationFrame: (callback: () => void) => number;
+            }
+          ).requestAnimationFrame;
+          raf(() => resolve());
+        }),
+    );
     await this.flushPendingPageTasks(controller.sessionRef);
+    await this.flushDomUpdateTask(controller);
     const mainFrame = this.requireMainFrame(controller);
 
     return this.createStepResult(controller.sessionRef, controller.pageRef, startedAt, {
@@ -1144,7 +634,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     let coordinateSpace: CoordinateSpace = input.clipSpace ?? "layout-viewport-css";
 
     if (input.clip) {
-      const viewportRect = this.toViewportRect(
+      const viewportRect = toViewportRect(
         metrics,
         input.clip,
         input.clipSpace ?? "layout-viewport-css",
@@ -1277,7 +767,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     const controller = this.requirePage(document.pageRef);
     await this.flushDomUpdateTask(controller);
     const captured = await this.captureDomSnapshot(controller, document);
-    const rootElementBackendNodeId = this.findHtmlBackendNodeId(captured, document);
+    const rootElementBackendNodeId = findHtmlBackendNodeId(captured, document);
     if (rootElementBackendNodeId === undefined) {
       throw createBrowserCoreError(
         "operation-failed",
@@ -1308,7 +798,13 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     const controller = this.requirePage(document.pageRef);
     await this.flushDomUpdateTask(controller);
     const captured = await this.captureDomSnapshot(controller, document);
-    return this.buildDomSnapshot(controller, document, captured);
+    return buildDomSnapshotFromCapture(
+      document,
+      captured,
+      (doc, backendNodeId) => this.nodeRefForBackendNode(doc, backendNodeId),
+      (contentDocIndex) =>
+        resolveCapturedContentDocumentRef(controller.framesByCdpId, captured, contentDocIndex),
+    );
   }
 
   async readText(input: NodeLocator): Promise<string | null> {
@@ -1317,7 +813,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     await this.flushDomUpdateTask(controller);
     const { document: liveDocument, backendNodeId } = this.requireLiveNode(input);
     const captured = await this.captureDomSnapshot(controller, liveDocument);
-    return this.readTextContent(captured, input, backendNodeId);
+    return readTextContent(captured, input, backendNodeId);
   }
 
   async readAttributes(
@@ -1343,8 +839,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       }));
       return normalized;
     } catch (error) {
-      this.rethrowNodeLookupError(error, liveDocument, input);
-      throw error;
+      rethrowNodeLookupError(error, liveDocument, input);
     }
   }
 
@@ -1358,11 +853,15 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     const controller = this.requirePage(input.pageRef);
     await this.flushDomUpdateTask(controller);
     const metrics = await this.getViewportMetrics({ pageRef: input.pageRef });
-    const viewportPoint = this.toViewportPoint(metrics, input.point, input.coordinateSpace);
-    const documentPoint = this.toDocumentPoint(metrics, input.point, input.coordinateSpace);
+    const viewportPoint = toViewportPoint(metrics, input.point, input.coordinateSpace);
+    const documentPoint = toDocumentPoint(metrics, input.point, input.coordinateSpace);
+    const hitTestPoint = {
+      x: Math.round(viewportPoint.x),
+      y: Math.round(viewportPoint.y),
+    };
     const raw = await controller.cdp.send("DOM.getNodeForLocation", {
-      x: viewportPoint.x,
-      y: viewportPoint.y,
+      x: hitTestPoint.x,
+      y: hitTestPoint.y,
       ...(input.includeUserAgentShadowDom === undefined
         ? {}
         : { includeUserAgentShadowDOM: input.includeUserAgentShadowDom }),
@@ -2328,80 +1827,14 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     };
   }
 
-  private async capturePageDomSnapshot(
-    controller: PageController,
-    options: {
-      readonly includeLayout: boolean;
-    },
-  ): Promise<{
-    readonly capturedAt: number;
-    readonly documents: readonly DomSnapshotDocument[];
-    readonly shadowBoundariesByBackendNodeId: ReadonlyMap<number, ShadowBoundaryInfo>;
-    readonly strings: readonly string[];
-  }> {
-    const capturedAt = Date.now();
-    const [snapshotResult, domTreeResult] = await Promise.all([
-      controller.cdp.send("DOMSnapshot.captureSnapshot", {
-        computedStyles: [],
-        includePaintOrder: options.includeLayout,
-        includeDOMRects: options.includeLayout,
-      }),
-      controller.cdp.send("DOM.getDocument", {
-        depth: -1,
-        pierce: true,
-      }),
-    ]);
-    return {
-      capturedAt,
-      documents: snapshotResult.documents as readonly DomSnapshotDocument[],
-      shadowBoundariesByBackendNodeId: buildShadowBoundaryIndex(domTreeResult.root as DomTreeNode),
-      strings: snapshotResult.strings,
-    };
-  }
-
-  private findCapturedDocument(
-    captured: {
-      readonly documents: readonly DomSnapshotDocument[];
-      readonly strings: readonly string[];
-    },
-    cdpFrameId: string,
-  ): DomSnapshotDocument | undefined {
-    return captured.documents.find(
-      (candidate) => parseStringTable(captured.strings, candidate.frameId) === cdpFrameId,
-    );
-  }
-
-  private updateDocumentTreeSignature(
-    document: DocumentState,
-    rawDocument: DomSnapshotDocument,
-  ): void {
-    const backendNodeIds = (rawDocument.nodes.backendNodeId ?? [])
-      .filter((value): value is number => value !== undefined)
-      .slice()
-      .sort((left, right) => left - right);
-    const signature = `${rawDocument.nodes.nodeType?.length ?? 0}:${backendNodeIds.join(",")}`;
-
-    if (
-      document.domTreeSignature !== undefined &&
-      document.domTreeSignature !== signature &&
-      !this.retiredDocuments.has(document.documentRef)
-    ) {
-      document.documentEpoch = nextDocumentEpoch(document.documentEpoch);
-      document.nodeRefsByBackendNodeId.clear();
-      document.backendNodeIdsByNodeRef.clear();
-    }
-
-    document.domTreeSignature = signature;
-  }
-
   private async reconcileDocumentEpochs(controller: PageController): Promise<void> {
-    const captured = await this.capturePageDomSnapshot(controller, { includeLayout: false });
+    const captured = await capturePageDomSnapshot(controller.cdp, { includeLayout: false });
     for (const frame of controller.framesByCdpId.values()) {
-      const rawDocument = this.findCapturedDocument(captured, frame.cdpFrameId);
+      const rawDocument = findCapturedDocument(captured, frame.cdpFrameId);
       if (!rawDocument) {
         continue;
       }
-      this.updateDocumentTreeSignature(frame.currentDocument, rawDocument);
+      updateDocumentTreeSignature(frame.currentDocument, rawDocument, this.retiredDocuments);
     }
   }
 
@@ -2429,15 +1862,15 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     controller: PageController,
     document: DocumentState,
   ): Promise<CapturedDomSnapshot> {
-    const captured = await this.capturePageDomSnapshot(controller, { includeLayout: true });
-    const rawDocument = this.findCapturedDocument(captured, document.cdpFrameId);
+    const captured = await capturePageDomSnapshot(controller.cdp, { includeLayout: true });
+    const rawDocument = findCapturedDocument(captured, document.cdpFrameId);
     if (!rawDocument) {
       throw createBrowserCoreError(
         "not-found",
         `document ${document.documentRef} was not found in the current page snapshot`,
       );
     }
-    this.updateDocumentTreeSignature(document, rawDocument);
+    updateDocumentTreeSignature(document, rawDocument, this.retiredDocuments);
     return {
       capturedAt: captured.capturedAt,
       documents: captured.documents,
@@ -2445,227 +1878,6 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       shadowBoundariesByBackendNodeId: captured.shadowBoundariesByBackendNodeId,
       strings: captured.strings,
     };
-  }
-
-  private buildDomSnapshot(
-    controller: PageController,
-    document: DocumentState,
-    captured: CapturedDomSnapshot,
-  ): DomSnapshot {
-    const parentIndexes = captured.rawDocument.nodes.parentIndex ?? [];
-    const childIndexes = new Map<number, number[]>();
-    for (let index = 0; index < parentIndexes.length; index += 1) {
-      const parentIndex = parentIndexes[index];
-      if (parentIndex === undefined || parentIndex < 0) {
-        continue;
-      }
-      const children = childIndexes.get(parentIndex) ?? [];
-      children.push(index);
-      childIndexes.set(parentIndex, children);
-    }
-
-    const layoutByNodeIndex = new Map<
-      number,
-      {
-        readonly rect?: Rect;
-        readonly paintOrder?: number;
-      }
-    >();
-    for (let index = 0; index < captured.rawDocument.layout.nodeIndex.length; index += 1) {
-      const nodeIndex = captured.rawDocument.layout.nodeIndex[index];
-      if (nodeIndex === undefined) {
-        continue;
-      }
-      const bounds = captured.rawDocument.layout.bounds[index];
-      layoutByNodeIndex.set(nodeIndex, {
-        ...(bounds === undefined
-          ? {}
-          : {
-              rect: createRect(bounds[0] ?? 0, bounds[1] ?? 0, bounds[2] ?? 0, bounds[3] ?? 0),
-            }),
-        ...(captured.rawDocument.layout.paintOrders?.[index] === undefined
-          ? {}
-          : { paintOrder: captured.rawDocument.layout.paintOrders[index] }),
-      });
-    }
-
-    const nodes: DomSnapshotNode[] = [];
-    const nodeCount = captured.rawDocument.nodes.nodeType?.length ?? 0;
-    for (let index = 0; index < nodeCount; index += 1) {
-      const backendNodeId = captured.rawDocument.nodes.backendNodeId?.[index];
-      const nodeRef =
-        backendNodeId === undefined
-          ? undefined
-          : this.nodeRefForBackendNode(document, backendNodeId);
-      const rawAttributes = captured.rawDocument.nodes.attributes?.[index] ?? [];
-      const attributes: { name: string; value: string }[] = [];
-      for (let pairIndex = 0; pairIndex < rawAttributes.length; pairIndex += 2) {
-        const nameIndex = rawAttributes[pairIndex];
-        const valueIndex = rawAttributes[pairIndex + 1];
-        if (nameIndex === undefined || valueIndex === undefined) {
-          continue;
-        }
-        attributes.push({
-          name: parseStringTable(captured.strings, nameIndex),
-          value: parseStringTable(captured.strings, valueIndex),
-        });
-      }
-      const layout = layoutByNodeIndex.get(index);
-      const shadowRootType = rareStringValue(
-        captured.strings,
-        captured.rawDocument.nodes.shadowRootType,
-        index,
-      );
-      const normalizedShadowRootType = normalizeShadowRootType(shadowRootType);
-      const shadowBoundary =
-        backendNodeId === undefined
-          ? undefined
-          : captured.shadowBoundariesByBackendNodeId.get(backendNodeId);
-      const shadowHostNodeRef =
-        shadowBoundary?.shadowHostBackendNodeId === undefined
-          ? undefined
-          : this.nodeRefForBackendNode(document, shadowBoundary.shadowHostBackendNodeId);
-      const contentDocumentIndex = rareIntegerValue(
-        captured.rawDocument.nodes.contentDocumentIndex,
-        index,
-      );
-      const contentDocumentRef =
-        contentDocumentIndex === undefined
-          ? undefined
-          : this.resolveCapturedContentDocumentRef(controller, captured, contentDocumentIndex);
-      const textContent =
-        parseStringTable(captured.strings, captured.rawDocument.layout.text[index]) ||
-        rareStringValue(captured.strings, captured.rawDocument.nodes.textValue, index) ||
-        rareStringValue(captured.strings, captured.rawDocument.nodes.inputValue, index) ||
-        (captured.rawDocument.nodes.nodeType?.[index] === 3
-          ? parseStringTable(captured.strings, captured.rawDocument.nodes.nodeValue?.[index])
-          : undefined);
-      nodes.push({
-        snapshotNodeId: index + 1,
-        ...(nodeRef === undefined ? {} : { nodeRef }),
-        ...(parentIndexes[index] === undefined || parentIndexes[index]! < 0
-          ? {}
-          : { parentSnapshotNodeId: parentIndexes[index]! + 1 }),
-        childSnapshotNodeIds: (childIndexes.get(index) ?? []).map((childIndex) => childIndex + 1),
-        ...(normalizedShadowRootType === undefined
-          ? {}
-          : { shadowRootType: normalizedShadowRootType }),
-        ...(shadowHostNodeRef === undefined ? {} : { shadowHostNodeRef }),
-        ...(contentDocumentRef === undefined ? {} : { contentDocumentRef }),
-        nodeType: captured.rawDocument.nodes.nodeType?.[index] ?? 0,
-        nodeName: parseStringTable(captured.strings, captured.rawDocument.nodes.nodeName?.[index]),
-        nodeValue: parseStringTable(
-          captured.strings,
-          captured.rawDocument.nodes.nodeValue?.[index],
-        ),
-        ...(textContent === undefined || textContent.length === 0 ? {} : { textContent }),
-        attributes,
-        ...(layout?.rect === undefined
-          ? {}
-          : {
-              layout: {
-                rect: layout.rect,
-                quad: rectToQuad(layout.rect),
-                ...(layout.paintOrder === undefined ? {} : { paintOrder: layout.paintOrder }),
-              },
-            }),
-      });
-    }
-
-    return {
-      pageRef: document.pageRef,
-      frameRef: document.frameRef,
-      documentRef: document.documentRef,
-      ...(document.parentDocumentRef === undefined
-        ? {}
-        : { parentDocumentRef: document.parentDocumentRef }),
-      documentEpoch: document.documentEpoch,
-      url: document.url,
-      capturedAt: captured.capturedAt,
-      rootSnapshotNodeId: 1,
-      shadowDomMode: "preserved",
-      geometryCoordinateSpace: "document-css",
-      nodes,
-    };
-  }
-
-  private resolveCapturedContentDocumentRef(
-    controller: PageController,
-    captured: CapturedDomSnapshot,
-    contentDocumentIndex: number,
-  ): DocumentRef | undefined {
-    const contentDocument = captured.documents[contentDocumentIndex];
-    if (!contentDocument) {
-      return undefined;
-    }
-
-    const cdpFrameId = parseStringTable(captured.strings, contentDocument.frameId);
-    if (cdpFrameId.length === 0) {
-      return undefined;
-    }
-
-    return controller.framesByCdpId.get(cdpFrameId)?.currentDocument.documentRef;
-  }
-
-  private findHtmlBackendNodeId(
-    captured: CapturedDomSnapshot,
-    document: DocumentState,
-  ): number | undefined {
-    const nodeNames = captured.rawDocument.nodes.nodeName ?? [];
-    const backendNodeIds = captured.rawDocument.nodes.backendNodeId ?? [];
-    for (let index = 0; index < nodeNames.length; index += 1) {
-      const nodeName = parseStringTable(captured.strings, nodeNames[index]);
-      if (nodeName === "HTML") {
-        return backendNodeIds[index];
-      }
-    }
-    const doc = this.documents.get(document.documentRef);
-    return doc ? doc.backendNodeIdsByNodeRef.values().next().value : undefined;
-  }
-
-  private readTextContent(
-    captured: CapturedDomSnapshot,
-    input: NodeLocator,
-    backendNodeId: number,
-  ): string | null {
-    const backendNodeIds = captured.rawDocument.nodes.backendNodeId ?? [];
-    const nodeIndex = backendNodeIds.findIndex((value) => value === backendNodeId);
-    if (nodeIndex === -1) {
-      throw staleNodeRefError(input);
-    }
-
-    const parentIndexes = captured.rawDocument.nodes.parentIndex ?? [];
-    const childIndexes = new Map<number, number[]>();
-    for (let index = 0; index < parentIndexes.length; index += 1) {
-      const parentIndex = parentIndexes[index];
-      if (parentIndex === undefined || parentIndex < 0) {
-        continue;
-      }
-      const children = childIndexes.get(parentIndex) ?? [];
-      children.push(index);
-      childIndexes.set(parentIndex, children);
-    }
-
-    const visit = (index: number): string | null => {
-      const nodeType = captured.rawDocument.nodes.nodeType?.[index] ?? 0;
-      if (nodeType === 9 || nodeType === 10) {
-        return null;
-      }
-      if (nodeType === 3 || nodeType === 4 || nodeType === 7 || nodeType === 8) {
-        return parseStringTable(captured.strings, captured.rawDocument.nodes.nodeValue?.[index]);
-      }
-
-      let text = "";
-      for (const childIndex of childIndexes.get(index) ?? []) {
-        const childText = visit(childIndex);
-        if (childText !== null) {
-          text += childText;
-        }
-      }
-      return text;
-    };
-
-    return visit(nodeIndex);
   }
 
   private nodeRefForBackendNode(document: DocumentState, backendNodeId: number): NodeRef {
@@ -2724,30 +1936,6 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       document,
       backendNodeId,
     };
-  }
-
-  private rethrowNodeLookupError(
-    error: unknown,
-    document: DocumentState,
-    input: NodeLocator,
-  ): never {
-    if (this.isNodeLookupFailure(error)) {
-      throw staleNodeRefError({
-        documentRef: document.documentRef,
-        documentEpoch: input.documentEpoch,
-        nodeRef: input.nodeRef,
-      });
-    }
-    throw error;
-  }
-
-  private isNodeLookupFailure(error: unknown): boolean {
-    if (!(error instanceof Error)) {
-      return false;
-    }
-    return /No node with given id found|Could not find node with given id|Cannot find context/i.test(
-      error.message,
-    );
   }
 
   private resolveRequestFrameContext(
@@ -2845,10 +2033,10 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
 
   private trackBackgroundTask(controller: PageController, promise: Promise<void>): Promise<void> {
     const tracked = promise.catch((error) => {
-      if (this.shouldIgnoreBackgroundTaskError(controller, error)) {
+      if (shouldIgnoreBackgroundTaskError(controller, error)) {
         return;
       }
-      controller.backgroundError ??= this.normalizePlaywrightError(error, controller.pageRef);
+      controller.backgroundError ??= normalizePlaywrightError(error, controller.pageRef);
     });
     controller.backgroundTasks.add(tracked);
     void tracked.finally(() => {
@@ -2936,60 +2124,6 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     };
   }
 
-  private toDocumentPoint(
-    metrics: ViewportMetrics,
-    point: Point,
-    coordinateSpace: CoordinateSpace,
-  ): Point {
-    switch (coordinateSpace) {
-      case "document-css":
-        return point;
-      case "layout-viewport-css":
-        return createPoint(point.x + metrics.scrollOffset.x, point.y + metrics.scrollOffset.y);
-      case "visual-viewport-css":
-        return createPoint(
-          point.x + metrics.visualViewport.origin.x,
-          point.y + metrics.visualViewport.origin.y,
-        );
-      case "device-pixel":
-        return createPoint(
-          point.x / metrics.devicePixelRatio + metrics.scrollOffset.x,
-          point.y / metrics.devicePixelRatio + metrics.scrollOffset.y,
-        );
-      case "screen":
-      case "window":
-        unsupportedCoordinateSpace(coordinateSpace);
-    }
-  }
-
-  private toViewportPoint(
-    metrics: ViewportMetrics,
-    point: Point,
-    coordinateSpace: CoordinateSpace,
-  ): Point {
-    switch (coordinateSpace) {
-      case "layout-viewport-css":
-      case "visual-viewport-css":
-        return point;
-      case "document-css":
-        return createPoint(point.x - metrics.scrollOffset.x, point.y - metrics.scrollOffset.y);
-      case "device-pixel":
-        return createPoint(point.x / metrics.devicePixelRatio, point.y / metrics.devicePixelRatio);
-      case "screen":
-      case "window":
-        unsupportedCoordinateSpace(coordinateSpace);
-    }
-  }
-
-  private toViewportRect(
-    metrics: ViewportMetrics,
-    rect: Rect,
-    coordinateSpace: CoordinateSpace,
-  ): Rect {
-    const origin = this.toViewportPoint(metrics, createPoint(rect.x, rect.y), coordinateSpace);
-    return createRect(origin.x, origin.y, rect.width, rect.height);
-  }
-
   private async withModifiers(
     page: Page,
     modifiers: readonly KeyModifier[] | undefined,
@@ -3039,46 +2173,10 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     return false;
   }
 
-  private normalizePlaywrightError(error: unknown, pageRef: PageRef): Error {
-    if (isBrowserCoreError(error)) {
-      return error;
-    }
-    if (error instanceof playwrightErrors.TimeoutError) {
-      return createBrowserCoreError("timeout", error.message, { cause: error });
-    }
-    if (error instanceof Error && /Navigation failed/i.test(error.message)) {
-      return createBrowserCoreError("navigation-failed", error.message, {
-        cause: error,
-        details: { pageRef },
-      });
-    }
-    if (error instanceof Error) {
-      return createBrowserCoreError("operation-failed", error.message, {
-        cause: error,
-        details: { pageRef },
-      });
-    }
-    return createBrowserCoreError("operation-failed", "Playwright operation failed", {
-      cause: error,
-      details: { pageRef },
-    });
-  }
-
-  private shouldIgnoreBackgroundTaskError(controller: PageController, error: unknown): boolean {
-    return controller.lifecycleState === "closed" || this.isContextClosedError(error);
-  }
-
   private assertNotDisposed(): void {
     if (this.disposed) {
       throw createBrowserCoreError("operation-failed", "engine has been disposed");
     }
-  }
-
-  private isContextClosedError(error: unknown): boolean {
-    return (
-      error instanceof Error &&
-      /Target page, context or browser has been closed/i.test(error.message)
-    );
   }
 }
 

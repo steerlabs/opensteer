@@ -478,22 +478,8 @@ class DefaultDomRuntime implements DomRuntime {
     method: string,
     target: Extract<DomTargetRef, { readonly kind: "selector" }>,
   ): Promise<ResolvedDomTarget> {
-    const snapshot =
-      target.documentRef !== undefined
-        ? await session.getDocument(target.documentRef)
-        : target.frameRef !== undefined
-          ? await session.getFrame(target.frameRef)
-          : await session.getMainDocument(pageRef);
-    const index = createSnapshotIndex(snapshot);
-    const matches = querySelectorAllInScope(index, target.selector, createExplicitSelectorScope());
-    const firstMatch = matches[0];
-    if (!firstMatch) {
-      throw new Error(`selector "${target.selector}" did not match any elements`);
-    }
-    const node = normalizeToElementNode(index, firstMatch);
-    if (!node || node.nodeRef === undefined) {
-      throw new Error(`selector "${target.selector}" did not resolve to a live element`);
-    }
+    const resolved = await this.resolveSelectorMatch(session, pageRef, target);
+    const { snapshot, node } = resolved;
     const path = await this.tryBuildPathFromSnapshotNode(session, snapshot, node);
     const descriptor =
       target.description === undefined || path.nodes.length === 0
@@ -509,6 +495,111 @@ class DefaultDomRuntime implements DomRuntime {
       selectorUsed: target.selector,
       ...(descriptor === undefined ? {} : { descriptor }),
     });
+  }
+
+  private async resolveSelectorMatch(
+    session: SnapshotSession,
+    pageRef: PageRef,
+    target: Extract<DomTargetRef, { readonly kind: "selector" }>,
+  ): Promise<{
+    readonly snapshot: DomSnapshot;
+    readonly node: DomSnapshotNode & { readonly nodeRef: NodeRef };
+  }> {
+    if (target.documentRef !== undefined) {
+      return this.resolveSelectorMatchWithinSnapshots(
+        [await session.getDocument(target.documentRef)],
+        target.selector,
+      );
+    }
+
+    if (target.frameRef !== undefined) {
+      return this.resolveSelectorMatchWithinSnapshots(
+        [await session.getFrame(target.frameRef)],
+        target.selector,
+      );
+    }
+
+    const mainSnapshot = await session.getMainDocument(pageRef);
+    const mainMatch = await this.findSelectorMatchWithinSnapshots(
+      [mainSnapshot],
+      target.selector,
+    );
+    if (mainMatch !== undefined) {
+      return mainMatch;
+    }
+
+    const frameSnapshots = await this.listSelectorSearchSnapshots(session, pageRef);
+    return this.resolveSelectorMatchWithinSnapshots(
+      frameSnapshots.filter((snapshot) => snapshot.documentRef !== mainSnapshot.documentRef),
+      target.selector,
+    );
+  }
+
+  private async listSelectorSearchSnapshots(
+    session: SnapshotSession,
+    pageRef: PageRef,
+  ): Promise<readonly DomSnapshot[]> {
+    const frames = await this.engine.listFrames({ pageRef });
+    return Promise.all(
+      [...frames]
+        .sort((left, right) => Number(right.isMainFrame) - Number(left.isMainFrame))
+        .map((frame) => session.getFrame(frame.frameRef)),
+    );
+  }
+
+  private async resolveSelectorMatchWithinSnapshots(
+    snapshots: readonly DomSnapshot[],
+    selector: string,
+  ): Promise<{
+    readonly snapshot: DomSnapshot;
+    readonly node: DomSnapshotNode & { readonly nodeRef: NodeRef };
+  }> {
+    const match = await this.findSelectorMatchWithinSnapshots(snapshots, selector);
+    if (!match) {
+      throw new Error(`selector "${selector}" did not match any elements`);
+    }
+
+    return match;
+  }
+
+  private async findSelectorMatchWithinSnapshots(
+    snapshots: readonly DomSnapshot[],
+    selector: string,
+  ): Promise<
+    | {
+        readonly snapshot: DomSnapshot;
+        readonly node: DomSnapshotNode & { readonly nodeRef: NodeRef };
+      }
+    | undefined
+  > {
+    let match:
+      | {
+          readonly snapshot: DomSnapshot;
+          readonly node: DomSnapshotNode & { readonly nodeRef: NodeRef };
+        }
+      | undefined;
+
+    for (const snapshot of snapshots) {
+      const index = createSnapshotIndex(snapshot);
+      const matches = querySelectorAllInScope(index, selector, createExplicitSelectorScope());
+      for (const candidate of matches) {
+        const node = toLiveElementNode(index, candidate);
+        if (!node) {
+          continue;
+        }
+
+        if (match !== undefined) {
+          throw new Error(`selector "${selector}" matched multiple elements`);
+        }
+
+        match = {
+          snapshot,
+          node,
+        };
+      }
+    }
+
+    return match;
   }
 
   private async resolvePathTarget(
@@ -866,4 +957,19 @@ export function createDomRuntime(options: {
   readonly namespace?: string;
 }): DomRuntime {
   return new DefaultDomRuntime(options);
+}
+
+function toLiveElementNode(
+  index: DomSnapshotIndex,
+  node: DomSnapshotNode,
+): (DomSnapshotNode & { readonly nodeRef: NodeRef }) | undefined {
+  const normalized = normalizeToElementNode(index, node);
+  if (!normalized || !hasNodeRef(normalized)) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function hasNodeRef(node: DomSnapshotNode): node is DomSnapshotNode & { readonly nodeRef: NodeRef } {
+  return node.nodeRef !== undefined;
 }
