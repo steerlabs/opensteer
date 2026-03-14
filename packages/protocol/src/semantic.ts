@@ -39,6 +39,28 @@ import {
   type ScreenshotArtifact,
   type ScreenshotFormat,
 } from "./snapshots.js";
+import {
+  opensteerGetRequestPlanInputSchema,
+  opensteerListRequestPlansInputSchema,
+  opensteerListRequestPlansOutputSchema,
+  opensteerRequestCaptureStartInputSchema,
+  opensteerRequestCaptureStartOutputSchema,
+  opensteerRequestCaptureStopOutputSchema,
+  opensteerRequestExecuteInputSchema,
+  opensteerRequestExecuteOutputSchema,
+  opensteerRequestPlanRecordSchema,
+  opensteerWriteRequestPlanInputSchema,
+  type OpensteerGetRequestPlanInput,
+  type OpensteerListRequestPlansInput,
+  type OpensteerListRequestPlansOutput,
+  type OpensteerRequestCaptureStartInput,
+  type OpensteerRequestCaptureStartOutput,
+  type OpensteerRequestCaptureStopOutput,
+  type OpensteerRequestExecuteInput,
+  type OpensteerRequestExecuteOutput,
+  type OpensteerRequestPlanRecord,
+  type OpensteerWriteRequestPlanInput,
+} from "./requests.js";
 import { validateJsonSchema } from "./validation.js";
 import { OPENSTEER_PROTOCOL_REST_BASE_PATH } from "./version.js";
 
@@ -324,6 +346,12 @@ export const opensteerSemanticOperationNames = [
   "dom.input",
   "dom.scroll",
   "dom.extract",
+  "request-capture.start",
+  "request-capture.stop",
+  "request-plan.write",
+  "request-plan.get",
+  "request-plan.list",
+  "request.execute",
   "computer.execute",
   "session.close",
 ] as const;
@@ -1009,6 +1037,56 @@ export const opensteerSemanticOperationSpecifications = [
     inputSchema: opensteerDomExtractInputSchema,
     outputSchema: opensteerDomExtractOutputSchema,
     requiredCapabilities: ["inspect.domSnapshot", "inspect.text", "inspect.attributes"],
+  }),
+  defineSemanticOperationSpec<
+    OpensteerRequestCaptureStartInput,
+    OpensteerRequestCaptureStartOutput
+  >({
+    name: "request-capture.start",
+    description: "Begin capturing newly observed network records for the current session or page.",
+    inputSchema: opensteerRequestCaptureStartInputSchema,
+    outputSchema: opensteerRequestCaptureStartOutputSchema,
+    requiredCapabilities: ["inspect.network"],
+  }),
+  defineSemanticOperationSpec<unknown, OpensteerRequestCaptureStopOutput>({
+    name: "request-capture.stop",
+    description: "Stop the active request capture, persist the network artifact, and return records.",
+    inputSchema: objectSchema(
+      {},
+      {
+        title: "OpensteerRequestCaptureStopInput",
+      },
+    ),
+    outputSchema: opensteerRequestCaptureStopOutputSchema,
+    requiredCapabilities: ["inspect.network", "inspect.networkBodies"],
+  }),
+  defineSemanticOperationSpec<OpensteerWriteRequestPlanInput, OpensteerRequestPlanRecord>({
+    name: "request-plan.write",
+    description: "Validate and persist a reusable request plan in the local registry.",
+    inputSchema: opensteerWriteRequestPlanInputSchema,
+    outputSchema: opensteerRequestPlanRecordSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerGetRequestPlanInput, OpensteerRequestPlanRecord>({
+    name: "request-plan.get",
+    description: "Resolve a request plan by key and optional version.",
+    inputSchema: opensteerGetRequestPlanInputSchema,
+    outputSchema: opensteerRequestPlanRecordSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerListRequestPlansInput, OpensteerListRequestPlansOutput>({
+    name: "request-plan.list",
+    description: "List request plans from the local registry.",
+    inputSchema: opensteerListRequestPlansInputSchema,
+    outputSchema: opensteerListRequestPlansOutputSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerRequestExecuteInput, OpensteerRequestExecuteOutput>({
+    name: "request.execute",
+    description: "Execute a request plan through the current browser session boundary.",
+    inputSchema: opensteerRequestExecuteInputSchema,
+    outputSchema: opensteerRequestExecuteOutputSchema,
+    requiredCapabilities: ["transport.sessionHttp"],
   }),
   defineSemanticOperationSpec<OpensteerComputerExecuteInput, OpensteerComputerExecuteOutput>({
     name: "computer.execute",

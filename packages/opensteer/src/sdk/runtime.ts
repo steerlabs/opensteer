@@ -22,10 +22,18 @@ import {
   type OpensteerDomHoverInput,
   type OpensteerDomInputInput,
   type OpensteerDomScrollInput,
+  type OpensteerGetRequestPlanInput,
   type OpensteerPageGotoInput,
   type OpensteerPageGotoOutput,
   type OpensteerPageSnapshotInput,
   type OpensteerPageSnapshotOutput,
+  type OpensteerListRequestPlansInput,
+  type OpensteerListRequestPlansOutput,
+  type OpensteerRequestCaptureStartInput,
+  type OpensteerRequestCaptureStartOutput,
+  type OpensteerRequestCaptureStopOutput,
+  type OpensteerRequestExecuteInput,
+  type OpensteerRequestExecuteOutput,
   type OpensteerResolvedTarget,
   type OpensteerSemanticOperationName,
   type OpensteerSessionCloseOutput,
@@ -35,6 +43,7 @@ import {
   type OpensteerTargetInput,
   type OpensteerEvent,
   type TraceContext,
+  type OpensteerWriteRequestPlanInput,
 } from "@opensteer/protocol";
 
 import { type ArtifactManifest } from "../artifacts.js";
@@ -48,6 +57,7 @@ import {
   type TimeoutExecutionContext,
 } from "../policy/index.js";
 import { createFilesystemOpensteerRoot, type FilesystemOpensteerRoot } from "../root.js";
+import type { RequestPlanRecord } from "../registry.js";
 import {
   buildPathSelectorHint,
   createDomRuntime,
@@ -61,6 +71,9 @@ import {
   createComputerUseRuntime,
   type ComputerUseRuntime,
 } from "../runtimes/computer-use/index.js";
+import { OpensteerRequestCaptureRuntime } from "../requests/capture/index.js";
+import { executeSessionHttpRequest } from "../requests/execution/session-http/index.js";
+import { normalizeRequestPlanPayload } from "../requests/plans/index.js";
 import {
   assertValidOpensteerExtractionSchemaRoot,
   compileOpensteerExtractionPayload,
@@ -123,6 +136,7 @@ export class OpensteerSessionRuntime {
   private engine: DisposableBrowserCoreEngine | undefined;
   private dom: DomRuntime | undefined;
   private computer: ComputerUseRuntime | undefined;
+  private readonly requestCapture = new OpensteerRequestCaptureRuntime();
   private extractionDescriptors:
     | ReturnType<typeof createOpensteerExtractionDescriptorStore>
     | undefined;
@@ -558,6 +572,290 @@ export class OpensteerSessionRuntime {
         error,
         context: buildRuntimeTraceContext({
           sessionRef: this.sessionRef,
+          pageRef,
+        }),
+      });
+      throw error;
+    }
+  }
+
+  async startRequestCapture(
+    input: OpensteerRequestCaptureStartInput = {},
+  ): Promise<OpensteerRequestCaptureStartOutput> {
+    assertValidSemanticOperationInput("request-capture.start", input);
+
+    const pageRef = await this.ensurePageRef();
+    const sessionRef = this.sessionRef;
+    if (!sessionRef) {
+      throw new Error("Opensteer session is not initialized");
+    }
+    const startedAt = Date.now();
+
+    try {
+      const output = await this.runWithOperationTimeout("request-capture.start", async () =>
+        this.requestCapture.start({
+          engine: this.requireEngine(),
+          artifacts: this.requireRoot().artifacts,
+          sessionRef,
+          pageRef,
+          request: input,
+        }),
+      );
+
+      await this.appendTrace({
+        operation: "request-capture.start",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: output,
+        context: buildRuntimeTraceContext({
+          sessionRef,
+          pageRef,
+        }),
+      });
+
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "request-capture.start",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+        context: buildRuntimeTraceContext({
+          sessionRef,
+          pageRef,
+        }),
+      });
+      throw error;
+    }
+  }
+
+  async stopRequestCapture(): Promise<OpensteerRequestCaptureStopOutput> {
+    assertValidSemanticOperationInput("request-capture.stop", {});
+
+    const startedAt = Date.now();
+    try {
+      const { artifactManifest, output } = await this.runWithOperationTimeout(
+        "request-capture.stop",
+        async () =>
+          this.requestCapture.stop({
+            engine: this.requireEngine(),
+            artifacts: this.requireRoot().artifacts,
+          }),
+      );
+
+      await this.appendTrace({
+        operation: "request-capture.stop",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        artifacts: {
+          manifests: [artifactManifest],
+        },
+        data: {
+          scope: output.scope,
+          baselineCount: output.baselineCount,
+          recordCount: output.recordCount,
+          artifactId: output.artifactId,
+        },
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "request-capture.stop",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+      throw error;
+    }
+  }
+
+  async writeRequestPlan(input: OpensteerWriteRequestPlanInput): Promise<RequestPlanRecord> {
+    assertValidSemanticOperationInput("request-plan.write", input);
+
+    const startedAt = Date.now();
+    try {
+      const payload = normalizeRequestPlanPayload(input.payload);
+      const record = await (await this.ensureRoot()).registry.requestPlans.write({
+        ...input,
+        payload,
+      });
+
+      await this.appendTrace({
+        operation: "request-plan.write",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          id: record.id,
+          key: record.key,
+          version: record.version,
+          lifecycle: record.lifecycle,
+        },
+      });
+
+      return record;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "request-plan.write",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+      });
+      throw error;
+    }
+  }
+
+  async getRequestPlan(input: OpensteerGetRequestPlanInput): Promise<RequestPlanRecord> {
+    assertValidSemanticOperationInput("request-plan.get", input);
+
+    const startedAt = Date.now();
+    try {
+      const record = await (await this.ensureRoot()).registry.requestPlans.resolve(input);
+      if (record === undefined) {
+        throw new OpensteerProtocolError(
+          "not-found",
+          input.version === undefined
+            ? `no request plan found for "${input.key}"`
+            : `no request plan found for "${input.key}" version "${input.version}"`,
+          {
+            details: {
+              key: input.key,
+              ...(input.version === undefined ? {} : { version: input.version }),
+              kind: "request-plan",
+            },
+          },
+        );
+      }
+
+      await this.appendTrace({
+        operation: "request-plan.get",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          id: record.id,
+          key: record.key,
+          version: record.version,
+          lifecycle: record.lifecycle,
+        },
+      });
+
+      return record;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "request-plan.get",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+      });
+      throw error;
+    }
+  }
+
+  async listRequestPlans(
+    input: OpensteerListRequestPlansInput = {},
+  ): Promise<OpensteerListRequestPlansOutput> {
+    assertValidSemanticOperationInput("request-plan.list", input);
+
+    const startedAt = Date.now();
+    try {
+      const plans = await (await this.ensureRoot()).registry.requestPlans.list(input);
+      const output = {
+        plans,
+      } satisfies OpensteerListRequestPlansOutput;
+
+      await this.appendTrace({
+        operation: "request-plan.list",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          ...(input.key === undefined ? {} : { key: input.key }),
+          count: plans.length,
+        },
+      });
+
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "request-plan.list",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+      });
+      throw error;
+    }
+  }
+
+  async request(input: OpensteerRequestExecuteInput): Promise<OpensteerRequestExecuteOutput> {
+    assertValidSemanticOperationInput("request.execute", input);
+
+    const pageRef = await this.ensurePageRef();
+    const sessionRef = this.sessionRef;
+    if (!sessionRef) {
+      throw new Error("Opensteer session is not initialized");
+    }
+    const startedAt = Date.now();
+
+    try {
+      const output = await this.runWithOperationTimeout("request.execute", async () =>
+        executeSessionHttpRequest({
+          engine: this.requireEngine(),
+          registry: this.requireRoot().registry.requestPlans,
+          sessionRef,
+          request: input,
+        }),
+      );
+
+      await this.appendTrace({
+        operation: "request.execute",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          plan: output.plan,
+          request: {
+            method: output.request.method,
+            url: output.request.url,
+          },
+          response: {
+            url: output.response.url,
+            status: output.response.status,
+            redirected: output.response.redirected,
+          },
+        },
+        context: buildRuntimeTraceContext({
+          sessionRef,
+          pageRef,
+        }),
+      });
+
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "request.execute",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+        context: buildRuntimeTraceContext({
+          sessionRef,
           pageRef,
         }),
       });
@@ -1149,6 +1447,7 @@ export class OpensteerSessionRuntime {
   private async resetRuntimeState(options: { readonly disposeEngine: boolean }): Promise<void> {
     const engine = this.engine;
 
+    this.requestCapture.clear();
     this.sessionRef = undefined;
     this.pageRef = undefined;
     this.latestSnapshot = undefined;

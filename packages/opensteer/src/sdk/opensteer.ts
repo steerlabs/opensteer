@@ -3,14 +3,24 @@ import type {
   OpensteerComputerExecuteInput,
   OpensteerComputerExecuteOutput,
   OpensteerDomExtractOutput,
+  OpensteerGetRequestPlanInput,
   OpensteerPageGotoOutput,
   OpensteerPageSnapshotOutput,
+  OpensteerListRequestPlansInput,
+  OpensteerListRequestPlansOutput,
+  OpensteerRequestCaptureStartInput,
+  OpensteerRequestCaptureStartOutput,
+  OpensteerRequestCaptureStopOutput,
+  OpensteerRequestExecuteInput,
+  OpensteerRequestExecuteOutput,
   OpensteerSessionCloseOutput,
   OpensteerSessionOpenOutput,
   OpensteerSnapshotMode,
   OpensteerTargetInput,
+  OpensteerWriteRequestPlanInput,
 } from "@opensteer/protocol";
 
+import type { RequestPlanRecord } from "../registry.js";
 import { OpensteerSessionRuntime, type OpensteerRuntimeOptions } from "./runtime.js";
 
 export interface OpensteerTargetOptions {
@@ -36,6 +46,11 @@ export interface OpensteerExtractOptions {
 
 export type OpensteerComputerExecuteOptions = OpensteerComputerExecuteInput;
 export type OpensteerComputerExecuteResult = OpensteerComputerExecuteOutput;
+export type OpensteerRequestCaptureOptions = OpensteerRequestCaptureStartInput;
+export type OpensteerRequestCaptureResult = OpensteerRequestCaptureStartOutput;
+export type OpensteerRequestCaptureStopResult = OpensteerRequestCaptureStopOutput;
+export type OpensteerRequestOptions = Omit<OpensteerRequestExecuteInput, "key">;
+export type OpensteerRequestResult = OpensteerRequestExecuteOutput;
 
 export class Opensteer {
   private readonly runtime: OpensteerSessionRuntime;
@@ -90,6 +105,37 @@ export class Opensteer {
   async extract(input: OpensteerExtractOptions): Promise<OpensteerDomExtractOutput["data"]> {
     const result = await this.runtime.extract(input);
     return result.data;
+  }
+
+  async startRequestCapture(
+    input: OpensteerRequestCaptureOptions = {},
+  ): Promise<OpensteerRequestCaptureResult> {
+    return this.runtime.startRequestCapture(input);
+  }
+
+  async stopRequestCapture(): Promise<OpensteerRequestCaptureStopResult> {
+    return this.runtime.stopRequestCapture();
+  }
+
+  async writeRequestPlan(input: OpensteerWriteRequestPlanInput): Promise<RequestPlanRecord> {
+    return this.runtime.writeRequestPlan(input);
+  }
+
+  async getRequestPlan(input: OpensteerGetRequestPlanInput): Promise<RequestPlanRecord> {
+    return this.runtime.getRequestPlan(input);
+  }
+
+  async listRequestPlans(
+    input: OpensteerListRequestPlansInput = {},
+  ): Promise<OpensteerListRequestPlansOutput> {
+    return this.runtime.listRequestPlans(input);
+  }
+
+  async request(key: string, input: OpensteerRequestOptions = {}): Promise<OpensteerRequestResult> {
+    return this.runtime.request({
+      key,
+      ...input,
+    });
   }
 
   async computerExecute(

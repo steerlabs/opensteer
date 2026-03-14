@@ -8,7 +8,11 @@ import type {
 } from "../../packages/protocol/src/index.js";
 import { OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL } from "../../packages/protocol/src/index.js";
 import { createPlaywrightBrowserCoreEngine } from "../../packages/engine-playwright/src/index.js";
-import { createPoint, type DomSnapshotNode } from "../../packages/browser-core/src/index.js";
+import {
+  bodyPayloadFromUtf8,
+  createPoint,
+  type DomSnapshotNode,
+} from "../../packages/browser-core/src/index.js";
 import { defineBrowserCoreConformanceSuite } from "../browser-core/conformance-suite.js";
 
 let baseUrl = "";
@@ -285,6 +289,19 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       large: "x".repeat(1_100_000),
     });
     response.end(payload);
+    return;
+  }
+
+  if (url.pathname === "/api/session-transport") {
+    const body = await readRequestBody(request);
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    response.end(
+      JSON.stringify({
+        method: request.method,
+        cookie: request.headers.cookie ?? "",
+        body: body.toString("utf8"),
+      }),
+    );
     return;
   }
 
@@ -775,6 +792,35 @@ test("captures network, cookies, storage, and async page events", { timeout: 60_
       urls: [`${baseUrl}/integration`],
     });
     expect(cookies.map((cookie) => cookie.name).sort()).toEqual(["server-session", "theme"]);
+
+    const transport = await engine.executeRequest({
+      sessionRef,
+      request: {
+        method: "POST",
+        url: `${baseUrl}/api/session-transport`,
+        headers: [{ name: "x-test-header", value: "session-http" }],
+        body: bodyPayloadFromUtf8("transport-body", {
+          mimeType: "text/plain",
+        }),
+      },
+    });
+    expect(transport.data.status).toBe(200);
+    expect(JSON.parse(new TextDecoder().decode(transport.data.body!.bytes))).toMatchObject({
+      method: "POST",
+      body: "transport-body",
+    });
+    expect(JSON.parse(new TextDecoder().decode(transport.data.body!.bytes)).cookie).toContain(
+      "server-session=abc",
+    );
+
+    const transportRecords = await engine.getNetworkRecords({
+      sessionRef,
+      pageRef: created.data.pageRef,
+      includeBodies: true,
+    });
+    expect(
+      transportRecords.some((record) => record.url.endsWith("/api/session-transport")),
+    ).toBe(true);
 
     const storage = await engine.getStorageSnapshot({
       sessionRef,

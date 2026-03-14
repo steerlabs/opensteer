@@ -38,6 +38,9 @@ export const PLAYWRIGHT_BROWSER_CORE_CAPABILITIES: BrowserCapabilities = mergeBr
       sessionStorage: true,
       indexedDb: true,
     },
+    transport: {
+      sessionHttp: true,
+    },
     events: {
       pageLifecycle: true,
       dialog: true,

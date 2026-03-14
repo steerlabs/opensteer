@@ -233,6 +233,22 @@ async function dispatchOperation(
       return runtime.scroll(input as Parameters<OpensteerSessionRuntime["scroll"]>[0]);
     case "dom.extract":
       return runtime.extract(input as Parameters<OpensteerSessionRuntime["extract"]>[0]);
+    case "request-capture.start":
+      return runtime.startRequestCapture(
+        (input ?? {}) as Parameters<OpensteerSessionRuntime["startRequestCapture"]>[0],
+      );
+    case "request-capture.stop":
+      return runtime.stopRequestCapture();
+    case "request-plan.write":
+      return runtime.writeRequestPlan(input as Parameters<OpensteerSessionRuntime["writeRequestPlan"]>[0]);
+    case "request-plan.get":
+      return runtime.getRequestPlan(input as Parameters<OpensteerSessionRuntime["getRequestPlan"]>[0]);
+    case "request-plan.list":
+      return runtime.listRequestPlans(
+        (input ?? {}) as Parameters<OpensteerSessionRuntime["listRequestPlans"]>[0],
+      );
+    case "request.execute":
+      return runtime.request(input as Parameters<OpensteerSessionRuntime["request"]>[0]);
     case "computer.execute":
       return runtime.computerExecute(input as Parameters<OpensteerSessionRuntime["computerExecute"]>[0]);
     case "session.close":

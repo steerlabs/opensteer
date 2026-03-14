@@ -238,6 +238,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       networkRecords: [],
       pendingRegistrations: [],
       pendingPageTasks: new Set(),
+      activePageRef: undefined,
     };
     this.sessions.set(sessionRef, session);
 
@@ -299,6 +300,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       await controller.page.goto(input.url);
       controller.lastKnownTitle = await this.readTitle(controller.page, controller.lastKnownTitle);
     }
+    session.activePageRef = controller.pageRef;
     await this.flushPendingPageTasks(session.sessionRef);
     await this.flushDomUpdateTask(controller);
 
@@ -340,6 +342,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
 
   async activatePage(input: { readonly pageRef: PageRef }): Promise<StepResult<PageInfo>> {
     const controller = this.requirePage(input.pageRef);
+    this.requireSession(controller.sessionRef).activePageRef = controller.pageRef;
     const startedAt = Date.now();
     await controller.page.bringToFront();
     controller.lastKnownTitle = await this.readTitle(controller.page, controller.lastKnownTitle);
@@ -1088,8 +1091,87 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     readonly sessionRef: SessionRef;
     readonly request: SessionTransportRequest;
   }): Promise<StepResult<SessionTransportResponse>> {
-    void input;
-    throw unsupportedCapabilityError("transport.sessionHttp");
+    const session = this.requireSession(input.sessionRef);
+    const startedAt = Date.now();
+    const pageRef = session.activePageRef ?? Array.from(session.pageRefs)[0];
+    const controller = pageRef === undefined ? undefined : this.pages.get(pageRef);
+    const mainFrame = controller === undefined ? undefined : this.requireMainFrame(controller);
+
+    const headersObject = Object.fromEntries(
+      (input.request.headers ?? []).map((header) => [header.name, header.value]),
+    );
+    const requestBodyBytes =
+      input.request.body === undefined ? undefined : Buffer.from(input.request.body.bytes);
+
+    let response: Awaited<ReturnType<BrowserContext["request"]["fetch"]>>;
+    try {
+      response = await session.context.request.fetch(input.request.url, {
+        method: input.request.method,
+        headers: headersObject,
+        ...(requestBodyBytes === undefined ? {} : { data: requestBodyBytes }),
+        failOnStatusCode: false,
+        ...(input.request.timeoutMs === undefined ? {} : { timeout: input.request.timeoutMs }),
+        ...(input.request.followRedirects === false ? { maxRedirects: 0 } : {}),
+      });
+    } catch (error) {
+      if (pageRef !== undefined) {
+        throw normalizePlaywrightError(error, pageRef);
+      }
+      throw createBrowserCoreError(
+        "operation-failed",
+        `session ${input.sessionRef} failed to execute a session HTTP request`,
+      );
+    }
+
+    const responseHeaders = (await response.headersArray()).map((header) =>
+      createHeaderEntry(header.name, header.value),
+    );
+    const responseContentType = responseHeaders.find(
+      (header) => header.name.toLowerCase() === "content-type",
+    )?.value;
+    const responseBody = captureBodyPayload(
+      await response.body(),
+      responseContentType ?? undefined,
+      this.bodyCaptureLimitBytes,
+    );
+
+    const requestId = createNetworkRequestId(`transport-${++this.requestCounter}`);
+    const record: NetworkRecordState = {
+      kind: "http",
+      requestId,
+      sessionRef: input.sessionRef,
+      ...(pageRef === undefined ? {} : { pageRef }),
+      ...(mainFrame === undefined ? {} : { frameRef: mainFrame.frameRef }),
+      ...(mainFrame === undefined ? {} : { documentRef: mainFrame.currentDocument.documentRef }),
+      method: input.request.method.toUpperCase(),
+      url: input.request.url,
+      requestHeaders: (input.request.headers ?? []).map((header) =>
+        createHeaderEntry(header.name, header.value),
+      ),
+      responseHeaders,
+      status: response.status(),
+      statusText: response.statusText(),
+      resourceType: "fetch",
+      navigationRequest: false,
+      ...(input.request.body === undefined ? {} : { requestBody: clone(input.request.body) }),
+      ...(responseBody === undefined ? {} : { responseBody }),
+    };
+    session.networkRecords.push(record);
+
+    return this.createStepResult(input.sessionRef, pageRef, startedAt, {
+      ...(mainFrame === undefined ? {} : { frameRef: mainFrame.frameRef }),
+      ...(mainFrame === undefined ? {} : { documentRef: mainFrame.currentDocument.documentRef }),
+      ...(mainFrame === undefined ? {} : { documentEpoch: mainFrame.currentDocument.documentEpoch }),
+      events: controller === undefined ? [] : this.drainQueuedEvents(controller.pageRef),
+      data: {
+        url: response.url(),
+        status: response.status(),
+        statusText: response.statusText(),
+        headers: responseHeaders,
+        ...(responseBody === undefined ? {} : { body: responseBody }),
+        redirected: response.url() !== input.request.url,
+      },
+    });
   }
 
   private async handleContextPage(session: SessionState, page: Page): Promise<void> {
@@ -1140,6 +1222,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     this.pages.set(pageRef, controller);
     this.pageByPlaywrightPage.set(page, controller);
     session.pageRefs.add(pageRef);
+    session.activePageRef = pageRef;
 
     await cdp.send("Page.enable", { enableFileChooserOpenedEvent: true });
     await cdp.send("DOM.enable", { includeWhitespace: "none" });
@@ -2042,7 +2125,11 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   private cleanupPageController(controller: PageController): void {
     controller.lifecycleState = "closed";
     this.pages.delete(controller.pageRef);
-    this.requireSession(controller.sessionRef).pageRefs.delete(controller.pageRef);
+    const session = this.requireSession(controller.sessionRef);
+    session.pageRefs.delete(controller.pageRef);
+    if (session.activePageRef === controller.pageRef) {
+      session.activePageRef = Array.from(session.pageRefs)[0];
+    }
     for (const frame of controller.framesByCdpId.values()) {
       this.frames.delete(frame.frameRef);
       this.documents.delete(frame.currentDocument.documentRef);
