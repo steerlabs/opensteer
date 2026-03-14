@@ -122,18 +122,45 @@ export interface AbpNetworkCall {
   readonly virtual_time_ms?: number;
 }
 
-export interface AbpNetworkQueryResponse {
-  readonly calls: readonly AbpNetworkCall[];
-  readonly total: number;
+export interface AbpNetworkQueryWireResponse {
+  readonly requests: readonly AbpNetworkCall[];
+}
+
+export interface AbpCurlWireResponse {
+  readonly status_code: number;
+  readonly headers: Record<string, string>;
+  readonly body?: string;
+  readonly body_is_base64: boolean;
+  readonly final_url: string;
+  readonly redirected: boolean;
 }
 
 export interface AbpCurlResponse {
   readonly status: number;
   readonly headers: Record<string, string>;
   readonly body?: string;
-  readonly body_encoding?: "text" | "base64";
+  readonly bodyEncoding?: "text" | "base64";
   readonly url: string;
   readonly redirected: boolean;
+}
+
+export interface AbpDialogInfo {
+  readonly dialogType: string;
+  readonly message: string;
+  readonly defaultPrompt?: string | undefined;
+}
+
+export interface AbpExecuteResult {
+  readonly result: unknown;
+}
+
+export interface AbpSelectPopupItem {
+  readonly index: number;
+  readonly type: string;
+  readonly label?: string;
+  readonly tool_tip?: string;
+  readonly enabled?: boolean;
+  readonly checked?: boolean;
 }
 
 export interface AbpCdpTargetInfo {
@@ -409,6 +436,7 @@ export interface AbpRestClientLike {
     } & AbpActionRequest,
   ): Promise<AbpActionResponse>;
   screenshotTab(tabId: string, body: AbpActionRequest): Promise<AbpActionResponse>;
+  executeScript(tabId: string, script: string): Promise<AbpExecuteResult>;
   getExecutionState(tabId: string): Promise<AbpExecutionState>;
   setExecutionState(
     tabId: string,
@@ -419,7 +447,7 @@ export interface AbpRestClientLike {
   queryNetwork(input: {
     readonly tabId?: string;
     readonly includeBodies: boolean;
-  }): Promise<AbpNetworkQueryResponse>;
+  }): Promise<readonly AbpNetworkCall[]>;
   curlTab(
     tabId: string,
     body: {
@@ -429,4 +457,7 @@ export interface AbpRestClientLike {
       readonly body?: string;
     },
   ): Promise<AbpCurlResponse>;
+  getDialog(tabId: string): Promise<AbpDialogInfo | undefined>;
+  acceptDialog(tabId: string): Promise<void>;
+  dismissDialog(tabId: string): Promise<void>;
 }

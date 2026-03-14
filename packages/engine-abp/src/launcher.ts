@@ -13,6 +13,11 @@ export interface LaunchedAbpProcess {
   readonly remoteDebuggingUrl: string;
 }
 
+interface AbpLaunchCommand {
+  readonly executablePath: string;
+  readonly args: readonly string[];
+}
+
 export async function allocatePort(): Promise<number> {
   const server = createServer();
   await new Promise<void>((resolve, reject) => {
@@ -28,25 +33,51 @@ export async function allocatePort(): Promise<number> {
   return address.port;
 }
 
+function normalizeBrowserArgs(args: readonly string[]): readonly string[] {
+  return args.map((arg) => (arg === "--headless" ? "--headless=new" : arg));
+}
+
+export function buildAbpLaunchCommand(options: LaunchRequestOptions): AbpLaunchCommand {
+  const browserArgs = normalizeBrowserArgs(options.args);
+
+  if (options.executablePath !== undefined) {
+    return {
+      executablePath: options.executablePath,
+      args: [
+        `--abp-port=${String(options.port)}`,
+        "--use-mock-keychain",
+        ...(options.headless ? ["--headless=new"] : []),
+        `--user-data-dir=${options.userDataDir}`,
+        `--abp-session-dir=${options.sessionDir}`,
+        ...browserArgs,
+      ],
+    };
+  }
+
+  return {
+    executablePath: "agent-browser-protocol",
+    args: [
+      "--port",
+      String(options.port),
+      ...(options.headless ? ["--headless"] : []),
+      "--user-data-dir",
+      options.userDataDir,
+      "--session-dir",
+      options.sessionDir,
+      ...(browserArgs.length === 0 ? [] : ["--", ...browserArgs]),
+    ],
+  };
+}
+
 export async function launchAbpProcess(options: LaunchRequestOptions): Promise<LaunchedAbpProcess> {
   await Promise.all([
     fs.mkdir(options.userDataDir, { recursive: true }),
     fs.mkdir(options.sessionDir, { recursive: true }),
   ]);
 
-  const executablePath = options.executablePath ?? "agent-browser-protocol";
-  const args = [
-    "--port",
-    String(options.port),
-    ...(options.headless ? ["--headless"] : []),
-    "--user-data-dir",
-    options.userDataDir,
-    "--session-dir",
-    options.sessionDir,
-    ...(options.args.length === 0 ? [] : ["--", ...options.args]),
-  ];
+  const command = buildAbpLaunchCommand(options);
 
-  const child = spawn(executablePath, args, {
+  const child = spawn(command.executablePath, command.args, {
     stdio: options.verbose ? ["ignore", "pipe", "pipe"] : "ignore",
   });
 
@@ -55,7 +86,7 @@ export async function launchAbpProcess(options: LaunchRequestOptions): Promise<L
       reject(
         createBrowserCoreError(
           "operation-failed",
-          `failed to launch ABP executable ${executablePath}: ${error.message}`,
+          `failed to launch ABP executable ${command.executablePath}: ${error.message}`,
           {
             cause: error,
           },

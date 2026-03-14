@@ -91,20 +91,24 @@ import {
 } from "./dom.js";
 import {
   AbpApiError,
+  isActionTimeoutError,
   isPageClosedApiError,
   normalizeAbpError,
   rethrowNodeLookupError,
 } from "./errors.js";
 import { allocatePort, launchAbpProcess } from "./launcher.js";
+import { normalizeSelectChooserEventData } from "./action-events.js";
 import {
   AbpRestClient,
   assertUtf8RequestBody,
   buildImmediateActionRequest,
   buildImmediateScreenshotRequest,
+  buildInputActionRequest,
   encodeHeaders,
 } from "./rest-client.js";
 import {
   chooseNextActivePageRef,
+  resolveTabOpeners,
   shouldClaimBootstrapTab,
   shouldParkPageAsBootstrap,
 } from "./session-model.js";
@@ -120,6 +124,7 @@ import type {
   AbpIndexedDbDatabaseResult,
   AbpNetworkCall,
   AbpStorageKeyResult,
+  AbpTab,
   CapturedDomSnapshot,
   DocumentState,
   FrameDescriptor,
@@ -858,20 +863,22 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     const metrics = await this.getViewportMetrics({ pageRef: input.pageRef });
     const point = toViewportPoint(metrics, input.point, input.coordinateSpace);
 
-    let response: AbpActionResponse;
-    try {
-      response = await session.rest.clickTab(controller.tabId, {
-        x: point.x,
-        y: point.y,
-        ...(input.button === undefined ? {} : { button: input.button }),
-        ...(input.clickCount === undefined ? {} : { click_count: input.clickCount }),
-        ...(input.modifiers === undefined ? {} : { modifiers: [...input.modifiers] }),
-        ...buildImmediateActionRequest(),
-      });
-    } catch (error) {
-      throw normalizeAbpError(error, controller.pageRef);
-    }
+    const { response, dialogEvents } = await this.executeInputAction(
+      session,
+      controller,
+      () =>
+        session.rest.clickTab(controller.tabId, {
+          x: point.x,
+          y: point.y,
+          ...(input.button === undefined ? {} : { button: input.button }),
+          ...(input.clickCount === undefined ? {} : { click_count: input.clickCount }),
+          ...(input.modifiers === undefined ? {} : { modifiers: [...input.modifiers] }),
+          ...buildInputActionRequest(),
+        }),
+    );
 
+    const actionEvents = await this.normalizeActionEvents(controller, response);
+    const newTabEvents = await this.detectNewTabs(session, controller);
     await this.flushDomUpdateTask(controller);
     const mainFrame = this.requireMainFrame(controller);
     return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
@@ -880,7 +887,9 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       documentEpoch: mainFrame.currentDocument.documentEpoch,
       events: [
         ...this.drainQueuedEvents(controller.pageRef),
-        ...(await this.normalizeActionEvents(controller, response)),
+        ...actionEvents,
+        ...newTabEvents,
+        ...dialogEvents,
       ],
       data: hit,
     });
@@ -905,7 +914,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
         y: point.y,
         delta_x: input.delta.x,
         delta_y: input.delta.y,
-        ...buildImmediateActionRequest(),
+        ...buildInputActionRequest(),
       });
     } catch (error) {
       throw normalizeAbpError(error, controller.pageRef);
@@ -934,17 +943,19 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     const session = this.requireSession(controller.sessionRef);
     const startedAt = Date.now();
 
-    let response: AbpActionResponse;
-    try {
-      response = await session.rest.keyPressTab(controller.tabId, {
-        key: input.key,
-        ...(input.modifiers === undefined ? {} : { modifiers: [...input.modifiers] }),
-        ...buildImmediateActionRequest(),
-      });
-    } catch (error) {
-      throw normalizeAbpError(error, controller.pageRef);
-    }
+    const { response, dialogEvents } = await this.executeInputAction(
+      session,
+      controller,
+      () =>
+        session.rest.keyPressTab(controller.tabId, {
+          key: input.key,
+          ...(input.modifiers === undefined ? {} : { modifiers: [...input.modifiers] }),
+          ...buildInputActionRequest(),
+        }),
+    );
 
+    const actionEvents = await this.normalizeActionEvents(controller, response);
+    const newTabEvents = await this.detectNewTabs(session, controller);
     await this.flushDomUpdateTask(controller);
     const mainFrame = this.requireMainFrame(controller);
     return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
@@ -953,7 +964,9 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       documentEpoch: mainFrame.currentDocument.documentEpoch,
       events: [
         ...this.drainQueuedEvents(controller.pageRef),
-        ...(await this.normalizeActionEvents(controller, response)),
+        ...actionEvents,
+        ...newTabEvents,
+        ...dialogEvents,
       ],
       data: undefined,
     });
@@ -971,12 +984,13 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     try {
       response = await session.rest.typeTab(controller.tabId, {
         text: input.text,
-        ...buildImmediateActionRequest(),
+        ...buildInputActionRequest(),
       });
     } catch (error) {
       throw normalizeAbpError(error, controller.pageRef);
     }
 
+    const actionEvents = await this.normalizeActionEvents(controller, response);
     await this.flushDomUpdateTask(controller);
     const mainFrame = this.requireMainFrame(controller);
     return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
@@ -985,7 +999,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       documentEpoch: mainFrame.currentDocument.documentEpoch,
       events: [
         ...this.drainQueuedEvents(controller.pageRef),
-        ...(await this.normalizeActionEvents(controller, response)),
+        ...actionEvents,
       ],
       data: undefined,
     });
@@ -1431,11 +1445,11 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
           `page ${input.pageRef} does not belong to session ${input.sessionRef}`,
         );
       }
-      const response = await session.rest.queryNetwork({
+      const calls = await session.rest.queryNetwork({
         tabId: controller.tabId,
         includeBodies,
       });
-      return response.calls.map((call) =>
+      return calls.map((call) =>
         this.normalizeNetworkRecord(session, controller.pageRef, call),
       );
     }
@@ -1443,11 +1457,11 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     const records = await Promise.all(
       Array.from(session.pageRefs, async (pageRef) => {
         const controller = this.requirePage(pageRef);
-        const response = await session.rest.queryNetwork({
+        const calls = await session.rest.queryNetwork({
           tabId: controller.tabId,
           includeBodies,
         });
-        return response.calls.map((call) => this.normalizeNetworkRecord(session, pageRef, call));
+        return calls.map((call) => this.normalizeNetworkRecord(session, pageRef, call));
       }),
     );
     return records.flat();
@@ -1580,12 +1594,12 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       throw normalizeAbpError(error, controller.pageRef);
     }
 
-    const headers = headersFromCurlResponse(response);
-    const contentType = headerValue(headers, "content-type");
+    const responseHeaders = headersFromCurlResponse(response);
+    const contentType = headerValue(responseHeaders, "content-type");
     const payload =
       response.body === undefined
         ? undefined
-        : response.body_encoding === "base64"
+        : response.bodyEncoding === "base64"
           ? createBodyPayload(new Uint8Array(Buffer.from(response.body, "base64")), {
               encoding: "base64",
               ...parseMimeType(contentType),
@@ -1602,7 +1616,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
         url: response.url,
         status: response.status,
         statusText: STATUS_CODES[response.status] ?? "",
-        headers,
+        headers: responseHeaders,
         ...(payload === undefined ? {} : { body: payload }),
         redirected: response.redirected,
       },
@@ -1724,28 +1738,21 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
         "Target.getTargets",
       ),
     ]);
-    const openerByTabId = new Map<string, PageRef>();
 
     for (const tab of tabs) {
-      const target = targets.targetInfos.find((candidate) => candidate.targetId === tab.id);
-      if (!target?.openerId) {
-        continue;
-      }
-      const openerPageRef = session.pageRefByTabId.get(target.openerId);
-      if (openerPageRef) {
-        openerByTabId.set(tab.id, openerPageRef);
-      }
-    }
-
-    for (const tab of tabs) {
-      const controller = await this.initializePageController(
-        session,
-        tab.id,
-        openerByTabId.get(tab.id),
-      );
+      const controller = await this.initializePageController(session, tab.id);
       if (tab.active) {
         session.activePageRef = controller.pageRef;
       }
+    }
+
+    const openerByTabId = resolveTabOpeners(targets.targetInfos, session.pageRefByTabId);
+    for (const [tabId, openerPageRef] of openerByTabId) {
+      const pageRef = session.pageRefByTabId.get(tabId);
+      if (pageRef === undefined) {
+        continue;
+      }
+      this.requirePage(pageRef).openerPageRef = openerPageRef;
     }
 
     session.activePageRef ??= chooseNextActivePageRef(Array.from(session.pageRefs));
@@ -2225,6 +2232,27 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
           );
           break;
         }
+        case "select_open": {
+          const chooser = normalizeSelectChooserEventData(event.data);
+          if (chooser === undefined) {
+            break;
+          }
+          events.push(
+            this.createEvent({
+              kind: "chooser-opened",
+              sessionRef: session.sessionRef,
+              pageRef: controller.pageRef,
+              ...(mainFrame === undefined ? {} : { frameRef: mainFrame.frameRef }),
+              ...(document === undefined ? {} : { documentRef: document.documentRef }),
+              ...(document === undefined ? {} : { documentEpoch: document.documentEpoch }),
+              chooserRef: createChooserRef(`abp-${++this.chooserCounter}`),
+              chooserType: "select",
+              multiple: chooser.multiple,
+              ...(chooser.options === undefined ? {} : { options: chooser.options }),
+            }),
+          );
+          break;
+        }
         case "download_started": {
           const downloadId =
             this.readString(event.data.downloadId) ??
@@ -2278,6 +2306,89 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
           break;
         }
       }
+    }
+
+    return events;
+  }
+
+  private async executeInputAction(
+    session: SessionState,
+    controller: PageController,
+    execute: () => Promise<AbpActionResponse>,
+  ): Promise<{ readonly response: AbpActionResponse; readonly dialogEvents: readonly StepEvent[] }> {
+    try {
+      const response = await execute();
+      return { response, dialogEvents: [] };
+    } catch (error) {
+      if (!isActionTimeoutError(error)) {
+        throw normalizeAbpError(error, controller.pageRef);
+      }
+      const dialogInfo = await session.rest.getDialog(controller.tabId).catch(() => undefined);
+      if (!dialogInfo) {
+        throw normalizeAbpError(error, controller.pageRef);
+      }
+      await session.rest.acceptDialog(controller.tabId).catch(() => undefined);
+      const mainFrame = controller.mainFrameRef
+        ? this.frames.get(controller.mainFrameRef)
+        : undefined;
+      const document = mainFrame?.currentDocument;
+      const dialogEvents: StepEvent[] = [
+        this.createEvent({
+          kind: "dialog-opened",
+          sessionRef: session.sessionRef,
+          pageRef: controller.pageRef,
+          ...(mainFrame === undefined ? {} : { frameRef: mainFrame.frameRef }),
+          ...(document === undefined ? {} : { documentRef: document.documentRef }),
+          ...(document === undefined ? {} : { documentEpoch: document.documentEpoch }),
+          dialogRef: createDialogRef(`abp-${++this.dialogCounter}`),
+          dialogType: normalizeDialogType(dialogInfo.dialogType),
+          message: dialogInfo.message,
+          ...(dialogInfo.defaultPrompt === undefined
+            ? {}
+            : { defaultPrompt: dialogInfo.defaultPrompt }),
+        }),
+      ];
+      return { response: { events: [], result: {} }, dialogEvents };
+    }
+  }
+
+  private async detectNewTabs(
+    session: SessionState,
+    openerController: PageController,
+  ): Promise<readonly StepEvent[]> {
+    const events: StepEvent[] = [];
+    let tabs: readonly AbpTab[];
+    try {
+      tabs = await session.rest.listTabs();
+    } catch {
+      return events;
+    }
+
+    for (const tab of tabs) {
+      if (session.pageRefByTabId.has(tab.id)) {
+        continue;
+      }
+      const popupController = await this.initializePageController(
+        session,
+        tab.id,
+        openerController.pageRef,
+      );
+      this.queueEvent(
+        popupController.pageRef,
+        this.createEvent({
+          kind: "page-created",
+          sessionRef: session.sessionRef,
+          pageRef: popupController.pageRef,
+        }),
+      );
+      events.push(
+        this.createEvent({
+          kind: "popup-opened",
+          sessionRef: session.sessionRef,
+          pageRef: popupController.pageRef,
+          openerPageRef: openerController.pageRef,
+        }),
+      );
     }
 
     return events;

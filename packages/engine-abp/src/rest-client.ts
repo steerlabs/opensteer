@@ -6,11 +6,86 @@ import type {
   AbpActionResponse,
   AbpBrowserStatus,
   AbpCurlResponse,
+  AbpCurlWireResponse,
+  AbpDialogInfo,
+  AbpExecuteResult,
   AbpExecutionState,
-  AbpNetworkQueryResponse,
+  AbpNetworkCall,
+  AbpNetworkQueryWireResponse,
   AbpRestClientLike,
+  AbpWaitUntil,
   AbpTab,
 } from "./types.js";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function invalidAbpResponse(path: string): never {
+  throw createBrowserCoreError(
+    "operation-failed",
+    `ABP ${path} returned an invalid response shape`,
+  );
+}
+
+function readStringRecord(value: unknown): Record<string, string> | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const entries = Object.entries(value);
+  if (entries.some(([, entryValue]) => typeof entryValue !== "string")) {
+    return undefined;
+  }
+
+  return Object.fromEntries(entries) as Record<string, string>;
+}
+
+function normalizeNetworkQueryResponse(value: unknown): readonly AbpNetworkCall[] {
+  if (!isRecord(value)) {
+    invalidAbpResponse("/network");
+  }
+
+  const response = value as Partial<AbpNetworkQueryWireResponse>;
+  if (!Array.isArray(response.requests)) {
+    invalidAbpResponse("/network");
+  }
+
+  return response.requests as readonly AbpNetworkCall[];
+}
+
+function normalizeCurlResponse(value: unknown): AbpCurlResponse {
+  if (!isRecord(value)) {
+    invalidAbpResponse("/tabs/{tabId}/curl");
+  }
+
+  const response = value as Partial<AbpCurlWireResponse>;
+  const status = response.status_code;
+  const headers = readStringRecord(response.headers);
+  const body = response.body;
+  const bodyIsBase64 = response.body_is_base64;
+  const url = response.final_url;
+  const redirected = response.redirected;
+  if (
+    !Number.isInteger(status) ||
+    headers === undefined ||
+    typeof bodyIsBase64 !== "boolean" ||
+    typeof url !== "string" ||
+    typeof redirected !== "boolean" ||
+    (body !== undefined && typeof body !== "string")
+  ) {
+    invalidAbpResponse("/tabs/{tabId}/curl");
+  }
+
+  return {
+    status: status!,
+    headers,
+    ...(body === undefined ? {} : { body }),
+    ...(body === undefined ? {} : { bodyEncoding: bodyIsBase64 ? "base64" : "text" }),
+    url: url!,
+    redirected: redirected!,
+  };
+}
 
 export class AbpRestClient implements AbpRestClientLike {
   private readonly baseUrl: string;
@@ -177,6 +252,13 @@ export class AbpRestClient implements AbpRestClientLike {
     });
   }
 
+  executeScript(tabId: string, script: string): Promise<AbpExecuteResult> {
+    return this.requestJson(`/tabs/${tabId}/execute`, {
+      method: "POST",
+      body: { script },
+    });
+  }
+
   getExecutionState(tabId: string): Promise<AbpExecutionState> {
     return this.requestJson(`/tabs/${tabId}/execution`);
   }
@@ -193,10 +275,36 @@ export class AbpRestClient implements AbpRestClientLike {
     });
   }
 
+  async getDialog(tabId: string): Promise<AbpDialogInfo | undefined> {
+    const result = await this.requestJson<Record<string, unknown>>(`/tabs/${tabId}/dialog`);
+    if (!result || result.present !== true) {
+      return undefined;
+    }
+    return {
+      dialogType: String(result.dialog_type ?? result.dialogType ?? "alert"),
+      message: String(result.message ?? ""),
+      defaultPrompt: typeof result.default_prompt === "string" ? result.default_prompt : undefined,
+    };
+  }
+
+  acceptDialog(tabId: string): Promise<void> {
+    return this.requestJson(`/tabs/${tabId}/dialog/accept`, {
+      method: "POST",
+      body: {},
+    });
+  }
+
+  dismissDialog(tabId: string): Promise<void> {
+    return this.requestJson(`/tabs/${tabId}/dialog/dismiss`, {
+      method: "POST",
+      body: {},
+    });
+  }
+
   queryNetwork(input: {
     readonly tabId?: string;
     readonly includeBodies: boolean;
-  }): Promise<AbpNetworkQueryResponse> {
+  }): Promise<readonly AbpNetworkCall[]> {
     const params = new URLSearchParams();
     if (input.tabId !== undefined) {
       params.set("tab_id", input.tabId);
@@ -204,7 +312,7 @@ export class AbpRestClient implements AbpRestClientLike {
     if (input.includeBodies) {
       params.set("include_body", "true");
     }
-    return this.requestJson(`/network?${params.toString()}`);
+    return this.requestJson(`/network?${params.toString()}`, {}, normalizeNetworkQueryResponse);
   }
 
   curlTab(
@@ -216,10 +324,14 @@ export class AbpRestClient implements AbpRestClientLike {
       readonly body?: string;
     },
   ): Promise<AbpCurlResponse> {
-    return this.requestJson(`/tabs/${tabId}/curl`, {
-      method: "POST",
-      body,
-    });
+    return this.requestJson(
+      `/tabs/${tabId}/curl`,
+      {
+        method: "POST",
+        body,
+      },
+      normalizeCurlResponse,
+    );
   }
 
   private async requestJson<T>(
@@ -228,6 +340,7 @@ export class AbpRestClient implements AbpRestClientLike {
       readonly method?: string;
       readonly body?: unknown;
     } = {},
+    normalize?: (value: unknown) => T,
   ): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: options.method ?? "GET",
@@ -255,13 +368,14 @@ export class AbpRestClient implements AbpRestClientLike {
       throw new AbpApiError(response.status, message, parsed);
     }
 
-    return parsed as T;
+    return normalize ? normalize(parsed) : (parsed as T);
   }
 }
 
 export function buildImmediateActionRequest(
   options: {
     readonly captureNetwork?: boolean;
+    readonly waitUntil?: AbpWaitUntil;
     readonly screenshot?: {
       readonly cursor?: boolean;
       readonly format?: string;
@@ -269,7 +383,7 @@ export function buildImmediateActionRequest(
   } = {},
 ): AbpActionRequest {
   return {
-    wait_until: {
+    wait_until: options.waitUntil ?? {
       type: "immediate",
     },
     ...(options.screenshot === undefined
@@ -293,6 +407,12 @@ export function buildImmediateActionRequest(
           },
         }),
   };
+}
+
+export function buildInputActionRequest(): AbpActionRequest {
+  return buildImmediateActionRequest({
+    waitUntil: { type: "action_complete", timeout_ms: 10_000 },
+  });
 }
 
 export function buildImmediateScreenshotRequest(
