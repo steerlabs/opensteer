@@ -159,6 +159,10 @@ export interface AbpCurlResponse {
   readonly redirected: boolean;
 }
 
+export interface AbpRequestOptions {
+  readonly signal?: AbortSignal;
+}
+
 export interface AbpDialogInfo {
   readonly dialogType: string;
   readonly message: string;
@@ -420,6 +424,7 @@ export interface AbpRestClientLike {
       readonly click_count?: number;
       readonly modifiers?: readonly string[];
     } & AbpActionRequest,
+    options?: AbpRequestOptions,
   ): Promise<AbpActionResponse>;
   moveTab(
     tabId: string,
@@ -427,6 +432,7 @@ export interface AbpRestClientLike {
       readonly x: number;
       readonly y: number;
     } & AbpActionRequest,
+    options?: AbpRequestOptions,
   ): Promise<AbpActionResponse>;
   scrollTab(
     tabId: string,
@@ -436,6 +442,7 @@ export interface AbpRestClientLike {
       readonly delta_x?: number;
       readonly delta_y?: number;
     } & AbpActionRequest,
+    options?: AbpRequestOptions,
   ): Promise<AbpActionResponse>;
   dragTab(
     tabId: string,
@@ -446,6 +453,7 @@ export interface AbpRestClientLike {
       readonly end_y: number;
       readonly steps?: number;
     } & AbpActionRequest,
+    options?: AbpRequestOptions,
   ): Promise<AbpActionResponse>;
   keyPressTab(
     tabId: string,
@@ -453,20 +461,27 @@ export interface AbpRestClientLike {
       readonly key: string;
       readonly modifiers?: readonly string[];
     } & AbpActionRequest,
+    options?: AbpRequestOptions,
   ): Promise<AbpActionResponse>;
   typeTab(
     tabId: string,
     body: {
       readonly text: string;
     } & AbpActionRequest,
+    options?: AbpRequestOptions,
   ): Promise<AbpActionResponse>;
   waitTab(
     tabId: string,
     body: {
       readonly duration_ms: number;
     } & AbpActionRequest,
+    options?: AbpRequestOptions,
   ): Promise<AbpActionResponse>;
-  screenshotTab(tabId: string, body: AbpActionRequest): Promise<AbpActionResponse>;
+  screenshotTab(
+    tabId: string,
+    body: AbpActionRequest,
+    options?: AbpRequestOptions,
+  ): Promise<AbpActionResponse>;
   executeScript(tabId: string, script: string): Promise<AbpExecuteResult>;
   getExecutionState(tabId: string): Promise<AbpExecutionState>;
   setExecutionState(

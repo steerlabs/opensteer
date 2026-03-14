@@ -2,8 +2,12 @@ import { afterAll, beforeAll, expect, test } from "vitest";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { once } from "node:events";
 
+import type {
+  ComputerUseBridge,
+  ComputerUseBridgeInput,
+} from "../../packages/protocol/src/index.js";
+import { OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL } from "../../packages/protocol/src/index.js";
 import { createPlaywrightBrowserCoreEngine } from "../../packages/engine-playwright/src/index.js";
-import { opensteerComputerUseBridgeSymbol } from "../../packages/engine-playwright/src/computer-use.js";
 import { createPoint, type DomSnapshotNode } from "../../packages/browser-core/src/index.js";
 import { defineBrowserCoreConformanceSuite } from "../browser-core/conformance-suite.js";
 
@@ -22,8 +26,8 @@ interface ComputerUseBridgeResult {
   }[];
 }
 
-interface ComputerUseBridge {
-  execute(input: unknown): Promise<ComputerUseBridgeResult>;
+interface BrowserCoreComputerUseBridge {
+  execute(input: ComputerUseBridgeInput): Promise<ComputerUseBridgeResult>;
 }
 
 function html(body: string, title: string, extraHead = ""): string {
@@ -977,8 +981,8 @@ test("computer-use bridge hands off popup pages", async () => {
   }
 });
 
-function requireComputerUseBridge(engine: object): ComputerUseBridge {
-  const factory = Reflect.get(engine, opensteerComputerUseBridgeSymbol);
+function requireComputerUseBridge(engine: object): BrowserCoreComputerUseBridge {
+  const factory = Reflect.get(engine, OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL);
   if (typeof factory !== "function") {
     throw new Error("engine does not expose a computer-use bridge");
   }

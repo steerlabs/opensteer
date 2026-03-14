@@ -59,6 +59,10 @@ import {
   type StorageSnapshot,
   type ViewportMetrics,
 } from "@opensteer/browser-core";
+import {
+  OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL,
+  type ComputerUseBridge,
+} from "@opensteer/protocol";
 import { STATUS_CODES } from "node:http";
 import type { ChildProcess } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -106,16 +110,14 @@ import {
   buildInputActionRequest,
   encodeHeaders,
 } from "./rest-client.js";
-import {
-  createAbpComputerUseBridge,
-  opensteerComputerUseBridgeSymbol,
-} from "./computer-use.js";
+import { createAbpComputerUseBridge } from "./computer-use.js";
 import {
   chooseNextActivePageRef,
   resolveTabOpeners,
   shouldClaimBootstrapTab,
   shouldParkPageAsBootstrap,
 } from "./session-model.js";
+import { type DiscoveredTabEffects, resolveTabChangePageRef } from "./tab-change.js";
 import type {
   AbpActionEvent,
   AbpActionResponse,
@@ -362,7 +364,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
   private nodeCounter = 0;
   private requestCounter = 0;
   private sessionCounter = 0;
-  private computerUseBridge: unknown;
+  private computerUseBridge: ComputerUseBridge | undefined;
   private eventCounter = 0;
   private stepCounter = 0;
   private dialogCounter = 0;
@@ -421,11 +423,12 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     await this.dispose();
   }
 
-  [opensteerComputerUseBridgeSymbol](): unknown {
+  [OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL](): ComputerUseBridge {
     this.computerUseBridge ??= createAbpComputerUseBridge({
       resolveController: (pageRef) => this.requirePage(pageRef),
       resolveSession: (sessionRef) => this.requireSession(sessionRef),
-      normalizeActionEvents: (controller, response) => this.normalizeActionEvents(controller, response),
+      normalizeActionEvents: (controller, response) =>
+        this.normalizeActionEvents(controller, response),
       detectNewTabs: (session, openerController) => this.detectNewTabs(session, openerController),
       executeInputAction: (session, controller, execute) =>
         this.executeInputAction(session, controller, execute),
@@ -884,22 +887,20 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     const metrics = await this.getViewportMetrics({ pageRef: input.pageRef });
     const point = toViewportPoint(metrics, input.point, input.coordinateSpace);
 
-    const { response, dialogEvents } = await this.executeInputAction(
-      session,
-      controller,
-      () =>
-        session.rest.clickTab(controller.tabId, {
-          x: point.x,
-          y: point.y,
-          ...(input.button === undefined ? {} : { button: input.button }),
-          ...(input.clickCount === undefined ? {} : { click_count: input.clickCount }),
-          ...(input.modifiers === undefined ? {} : { modifiers: [...input.modifiers] }),
-          ...buildInputActionRequest(),
-        }),
+    const { response, dialogEvents } = await this.executeInputAction(session, controller, () =>
+      session.rest.clickTab(controller.tabId, {
+        x: point.x,
+        y: point.y,
+        ...(input.button === undefined ? {} : { button: input.button }),
+        ...(input.clickCount === undefined ? {} : { click_count: input.clickCount }),
+        ...(input.modifiers === undefined ? {} : { modifiers: [...input.modifiers] }),
+        ...buildInputActionRequest(),
+      }),
     );
 
     const actionEvents = await this.normalizeActionEvents(controller, response);
-    const newTabEvents = await this.detectNewTabs(session, controller);
+    const discoveredTabs = await this.detectNewTabs(session, controller);
+    this.applyActionTabChange(session, controller.pageRef, response, actionEvents, discoveredTabs);
     await this.flushDomUpdateTask(controller);
     const mainFrame = this.requireMainFrame(controller);
     return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
@@ -909,7 +910,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       events: [
         ...this.drainQueuedEvents(controller.pageRef),
         ...actionEvents,
-        ...newTabEvents,
+        ...discoveredTabs.events,
         ...dialogEvents,
       ],
       data: hit,
@@ -928,21 +929,19 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     const metrics = await this.getViewportMetrics({ pageRef: input.pageRef });
     const point = toViewportPoint(metrics, input.point, input.coordinateSpace);
 
-    const { response, dialogEvents } = await this.executeInputAction(
-      session,
-      controller,
-      () =>
-        session.rest.scrollTab(controller.tabId, {
-          x: point.x,
-          y: point.y,
-          delta_x: input.delta.x,
-          delta_y: input.delta.y,
-          ...buildInputActionRequest(),
-        }),
+    const { response, dialogEvents } = await this.executeInputAction(session, controller, () =>
+      session.rest.scrollTab(controller.tabId, {
+        x: point.x,
+        y: point.y,
+        delta_x: input.delta.x,
+        delta_y: input.delta.y,
+        ...buildInputActionRequest(),
+      }),
     );
 
     const actionEvents = await this.normalizeActionEvents(controller, response);
-    const newTabEvents = await this.detectNewTabs(session, controller);
+    const discoveredTabs = await this.detectNewTabs(session, controller);
+    this.applyActionTabChange(session, controller.pageRef, response, actionEvents, discoveredTabs);
     await this.flushDomUpdateTask(controller);
     const mainFrame = this.requireMainFrame(controller);
     return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
@@ -952,7 +951,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       events: [
         ...this.drainQueuedEvents(controller.pageRef),
         ...actionEvents,
-        ...newTabEvents,
+        ...discoveredTabs.events,
         ...dialogEvents,
       ],
       data: undefined,
@@ -968,19 +967,17 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     const session = this.requireSession(controller.sessionRef);
     const startedAt = Date.now();
 
-    const { response, dialogEvents } = await this.executeInputAction(
-      session,
-      controller,
-      () =>
-        session.rest.keyPressTab(controller.tabId, {
-          key: input.key,
-          ...(input.modifiers === undefined ? {} : { modifiers: [...input.modifiers] }),
-          ...buildInputActionRequest(),
-        }),
+    const { response, dialogEvents } = await this.executeInputAction(session, controller, () =>
+      session.rest.keyPressTab(controller.tabId, {
+        key: input.key,
+        ...(input.modifiers === undefined ? {} : { modifiers: [...input.modifiers] }),
+        ...buildInputActionRequest(),
+      }),
     );
 
     const actionEvents = await this.normalizeActionEvents(controller, response);
-    const newTabEvents = await this.detectNewTabs(session, controller);
+    const discoveredTabs = await this.detectNewTabs(session, controller);
+    this.applyActionTabChange(session, controller.pageRef, response, actionEvents, discoveredTabs);
     await this.flushDomUpdateTask(controller);
     const mainFrame = this.requireMainFrame(controller);
     return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
@@ -990,7 +987,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       events: [
         ...this.drainQueuedEvents(controller.pageRef),
         ...actionEvents,
-        ...newTabEvents,
+        ...discoveredTabs.events,
         ...dialogEvents,
       ],
       data: undefined,
@@ -1005,18 +1002,16 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     const session = this.requireSession(controller.sessionRef);
     const startedAt = Date.now();
 
-    const { response, dialogEvents } = await this.executeInputAction(
-      session,
-      controller,
-      () =>
-        session.rest.typeTab(controller.tabId, {
-          text: input.text,
-          ...buildInputActionRequest(),
-        }),
+    const { response, dialogEvents } = await this.executeInputAction(session, controller, () =>
+      session.rest.typeTab(controller.tabId, {
+        text: input.text,
+        ...buildInputActionRequest(),
+      }),
     );
 
     const actionEvents = await this.normalizeActionEvents(controller, response);
-    const newTabEvents = await this.detectNewTabs(session, controller);
+    const discoveredTabs = await this.detectNewTabs(session, controller);
+    this.applyActionTabChange(session, controller.pageRef, response, actionEvents, discoveredTabs);
     await this.flushDomUpdateTask(controller);
     const mainFrame = this.requireMainFrame(controller);
     return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
@@ -1026,7 +1021,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       events: [
         ...this.drainQueuedEvents(controller.pageRef),
         ...actionEvents,
-        ...newTabEvents,
+        ...discoveredTabs.events,
         ...dialogEvents,
       ],
       data: undefined,
@@ -1477,9 +1472,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
         tabId: controller.tabId,
         includeBodies,
       });
-      return calls.map((call) =>
-        this.normalizeNetworkRecord(session, controller.pageRef, call),
-      );
+      return calls.map((call) => this.normalizeNetworkRecord(session, controller.pageRef, call));
     }
 
     const records = await Promise.all(
@@ -2206,9 +2199,6 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
               pageRef: popupController.pageRef,
             }),
           );
-          if (response.tab_changed) {
-            session.activePageRef = popupController.pageRef;
-          }
           events.push(
             this.createEvent({
               kind: "popup-opened",
@@ -2343,7 +2333,10 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     session: SessionState,
     controller: PageController,
     execute: () => Promise<AbpActionResponse>,
-  ): Promise<{ readonly response: AbpActionResponse; readonly dialogEvents: readonly StepEvent[] }> {
+  ): Promise<{
+    readonly response: AbpActionResponse;
+    readonly dialogEvents: readonly StepEvent[];
+  }> {
     try {
       const response = await execute();
       return { response, dialogEvents: [] };
@@ -2383,13 +2376,16 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
   private async detectNewTabs(
     session: SessionState,
     openerController: PageController,
-  ): Promise<readonly StepEvent[]> {
+  ): Promise<DiscoveredTabEffects> {
     const events: StepEvent[] = [];
+    let activePageRef: PageRef | undefined;
     let tabs: readonly AbpTab[];
     try {
       tabs = await session.rest.listTabs();
     } catch {
-      return events;
+      return {
+        events,
+      };
     }
 
     for (const tab of tabs) {
@@ -2417,9 +2413,34 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
           openerPageRef: openerController.pageRef,
         }),
       );
+      if (tab.active) {
+        activePageRef = popupController.pageRef;
+      }
     }
 
-    return events;
+    return {
+      events,
+      ...(activePageRef === undefined ? {} : { activePageRef }),
+    };
+  }
+
+  private applyActionTabChange(
+    session: SessionState,
+    controllerPageRef: PageRef,
+    response: AbpActionResponse,
+    actionEvents: readonly StepEvent[],
+    discoveredTabs: DiscoveredTabEffects,
+  ): void {
+    const pageRef = resolveTabChangePageRef({
+      controllerPageRef,
+      response,
+      actionEvents,
+      discoveredTabs,
+      activePageRef: session.activePageRef,
+    });
+    if (response.tab_changed) {
+      session.activePageRef = pageRef;
+    }
   }
 
   private normalizeNetworkRecord(

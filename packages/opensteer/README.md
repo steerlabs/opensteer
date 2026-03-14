@@ -1,11 +1,12 @@
 # Opensteer Package
 
-`opensteer` is the Phase 6 product surface for the rewrite. It exposes:
+`opensteer` is the product surface for the rewrite. It exposes:
 
 - a semantic SDK with session continuity inside one process
 - a thin JSON-first CLI
 - a local per-session service so CLI commands can share one live browser session
-- HTML-first snapshots, DOM action replay, descriptor persistence, traces, and artifacts
+- HTML-first snapshots, DOM action replay, computer-use actions, descriptor persistence, traces,
+  and artifacts
 
 ## Install
 
@@ -59,6 +60,7 @@ opensteer snapshot action --name docs-example
 opensteer click 3 --name docs-example --description "primary button"
 opensteer extract --name docs-example --description "page summary" \
   --schema '{"url":{"source":"current_url"},"title":{"selector":"title"}}'
+opensteer computer '{"type":"screenshot"}' --name docs-example
 opensteer close --name docs-example
 ```
 
@@ -94,6 +96,7 @@ Important subtrees:
 - `input({ element | selector | description, text })`
 - `scroll({ element | selector | description, direction, amount })`
 - `extract({ description, schema? })`
+- `computerExecute({ action, screenshot? })`
 - `close()`
 
 `element` targets use counters from the latest snapshot. `description` replays a stored descriptor.

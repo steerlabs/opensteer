@@ -58,6 +58,10 @@ import {
   type Browser,
   type BrowserContext,
 } from "playwright";
+import {
+  OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL,
+  type ComputerUseBridge,
+} from "@opensteer/protocol";
 import type {
   CDPSession,
   ConsoleMessage,
@@ -124,7 +128,6 @@ import {
 } from "./errors.js";
 import {
   createPlaywrightComputerUseBridge,
-  opensteerComputerUseBridgeSymbol,
 } from "./computer-use.js";
 
 export type {
@@ -157,7 +160,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   private sessionCounter = 0;
   private eventCounter = 0;
   private stepCounter = 0;
-  private computerUseBridge: unknown;
+  private computerUseBridge: ComputerUseBridge | undefined;
   private disposed = false;
 
   private constructor(
@@ -211,7 +214,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     await this.dispose();
   }
 
-  [opensteerComputerUseBridgeSymbol](): unknown {
+  [OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL](): ComputerUseBridge {
     this.computerUseBridge ??= createPlaywrightComputerUseBridge({
       resolveController: (pageRef) => this.requirePage(pageRef),
       flushPendingPageTasks: (sessionRef) => this.flushPendingPageTasks(sessionRef),

@@ -6,100 +6,28 @@ import {
   createPageZoomFactor,
   createScrollOffset,
   type FrameRef,
-  type KeyModifier,
   type PageRef,
-  type Point,
   type ScreenshotArtifact,
-  type ScreenshotFormat,
   type StepEvent,
   type ViewportMetrics,
 } from "@opensteer/browser-core";
+import type {
+  ComputerUseBridge,
+  ComputerUseBridgeOutput,
+  NormalizedComputerScreenshotOptions,
+} from "@opensteer/protocol";
 
 import {
   buildImmediateActionRequest,
   buildImmediateScreenshotRequest,
   buildInputActionRequest,
 } from "./rest-client.js";
+import {
+  collectPopupPageRefs,
+  type DiscoveredTabEffects,
+  resolveTabChangePageRef,
+} from "./tab-change.js";
 import type { AbpActionResponse, PageController, SessionState } from "./types.js";
-
-export const opensteerComputerUseBridgeSymbol = Symbol.for("@opensteer/computer-use-bridge");
-
-type ComputerAnnotation = "clickable" | "typeable" | "scrollable" | "grid" | "selected";
-type ComputerMouseButton = "left" | "middle" | "right";
-type ComputerAction =
-  | {
-      readonly type: "click";
-      readonly x: number;
-      readonly y: number;
-      readonly button?: ComputerMouseButton;
-      readonly clickCount?: number;
-      readonly modifiers?: readonly KeyModifier[];
-    }
-  | {
-      readonly type: "move";
-      readonly x: number;
-      readonly y: number;
-    }
-  | {
-      readonly type: "scroll";
-      readonly x: number;
-      readonly y: number;
-      readonly deltaX: number;
-      readonly deltaY: number;
-    }
-  | {
-      readonly type: "type";
-      readonly text: string;
-    }
-  | {
-      readonly type: "key";
-      readonly key: string;
-      readonly modifiers?: readonly KeyModifier[];
-    }
-  | {
-      readonly type: "drag";
-      readonly start: Point;
-      readonly end: Point;
-      readonly steps?: number;
-    }
-  | {
-      readonly type: "screenshot";
-    }
-  | {
-      readonly type: "wait";
-      readonly durationMs: number;
-    };
-
-interface ComputerUseScreenshotOptions {
-  readonly format: ScreenshotFormat;
-  readonly includeCursor: boolean;
-  readonly annotations: readonly ComputerAnnotation[];
-}
-
-interface ComputerUseBridgeInput {
-  readonly pageRef: PageRef;
-  readonly action: ComputerAction;
-  readonly screenshot: ComputerUseScreenshotOptions;
-  readonly signal: AbortSignal;
-  remainingMs(): number | undefined;
-  settle(pageRef: PageRef): Promise<void>;
-}
-
-interface ComputerUseBridgeOutput {
-  readonly pageRef: PageRef;
-  readonly screenshot: ScreenshotArtifact;
-  readonly viewport: ViewportMetrics;
-  readonly events: readonly StepEvent[];
-  readonly timing: {
-    readonly actionMs: number;
-    readonly waitMs: number;
-    readonly totalMs: number;
-  };
-}
-
-interface AbpComputerUseBridge {
-  execute(input: ComputerUseBridgeInput): Promise<ComputerUseBridgeOutput>;
-}
 
 export function createAbpComputerUseBridge(context: {
   resolveController(pageRef: PageRef): PageController;
@@ -111,7 +39,7 @@ export function createAbpComputerUseBridge(context: {
   detectNewTabs(
     session: SessionState,
     openerController: PageController,
-  ): Promise<readonly StepEvent[]>;
+  ): Promise<DiscoveredTabEffects>;
   executeInputAction(
     session: SessionState,
     controller: PageController,
@@ -127,7 +55,7 @@ export function createAbpComputerUseBridge(context: {
   };
   drainQueuedEvents(pageRef: PageRef): readonly StepEvent[];
   getViewportMetrics(pageRef: PageRef): Promise<ViewportMetrics>;
-}): AbpComputerUseBridge {
+}): ComputerUseBridge {
   return {
     async execute(input) {
       const startedAt = Date.now();
@@ -135,6 +63,16 @@ export function createAbpComputerUseBridge(context: {
       const session = context.resolveSession(controller.sessionRef);
       const action = input.action;
       const screenshot = toAbpScreenshotOptions(input.screenshot);
+      const remainingMs = input.remainingMs();
+      const requestOptions = {
+        signal: input.signal,
+      };
+      const inputActionRequest = buildInputActionRequest({
+        captureNetwork: false,
+        omitDefaultTimeout: true,
+        ...(remainingMs === undefined ? {} : { timeoutMs: remainingMs }),
+        screenshot,
+      });
 
       let response: AbpActionResponse;
       let dialogEvents: readonly StepEvent[] = [];
@@ -142,109 +80,125 @@ export function createAbpComputerUseBridge(context: {
       switch (action.type) {
         case "click": {
           const executed = await context.executeInputAction(session, controller, () =>
-            session.rest.clickTab(controller.tabId, {
-              x: action.x,
-              y: action.y,
-              ...(action.button === undefined ? {} : { button: action.button }),
-              ...(action.clickCount === undefined
-                ? {}
-                : { click_count: action.clickCount }),
-              ...(action.modifiers === undefined
-                ? {}
-                : { modifiers: [...action.modifiers] }),
-              ...buildInputActionRequest({
-                captureNetwork: false,
-                screenshot,
-              }),
-            }),
+            session.rest.clickTab(
+              controller.tabId,
+              {
+                x: action.x,
+                y: action.y,
+                ...(action.button === undefined ? {} : { button: action.button }),
+                ...(action.clickCount === undefined ? {} : { click_count: action.clickCount }),
+                ...(action.modifiers === undefined ? {} : { modifiers: [...action.modifiers] }),
+                ...inputActionRequest,
+              },
+              requestOptions,
+            ),
           );
           response = executed.response;
           dialogEvents = executed.dialogEvents;
           break;
         }
         case "move":
-          response = await session.rest.moveTab(controller.tabId, {
-            x: action.x,
-            y: action.y,
-            ...buildImmediateActionRequest({
-              captureNetwork: false,
-              screenshot,
-            }),
-          });
-          break;
-        case "scroll":
-          response = await session.rest.scrollTab(controller.tabId, {
-            x: action.x,
-            y: action.y,
-            delta_x: action.deltaX,
-            delta_y: action.deltaY,
-            ...buildInputActionRequest({
-              captureNetwork: false,
-              screenshot,
-            }),
-          });
-          break;
-        case "type":
-          response = await session.rest.typeTab(controller.tabId, {
-            text: action.text,
-            ...buildInputActionRequest({
-              captureNetwork: false,
-              screenshot,
-            }),
-          });
-          break;
-        case "key": {
-          const executed = await context.executeInputAction(session, controller, () =>
-            session.rest.keyPressTab(controller.tabId, {
-              key: action.key,
-              ...(action.modifiers === undefined
-                ? {}
-                : { modifiers: [...action.modifiers] }),
-              ...buildInputActionRequest({
+          response = await session.rest.moveTab(
+            controller.tabId,
+            {
+              x: action.x,
+              y: action.y,
+              ...buildImmediateActionRequest({
                 captureNetwork: false,
                 screenshot,
               }),
-            }),
+            },
+            requestOptions,
+          );
+          break;
+        case "scroll":
+          response = await session.rest.scrollTab(
+            controller.tabId,
+            {
+              x: action.x,
+              y: action.y,
+              delta_x: action.deltaX,
+              delta_y: action.deltaY,
+              ...inputActionRequest,
+            },
+            requestOptions,
+          );
+          break;
+        case "type":
+          response = await session.rest.typeTab(
+            controller.tabId,
+            {
+              text: action.text,
+              ...inputActionRequest,
+            },
+            requestOptions,
+          );
+          break;
+        case "key": {
+          const executed = await context.executeInputAction(session, controller, () =>
+            session.rest.keyPressTab(
+              controller.tabId,
+              {
+                key: action.key,
+                ...(action.modifiers === undefined ? {} : { modifiers: [...action.modifiers] }),
+                ...inputActionRequest,
+              },
+              requestOptions,
+            ),
           );
           response = executed.response;
           dialogEvents = executed.dialogEvents;
           break;
         }
         case "drag":
-          response = await session.rest.dragTab(controller.tabId, {
-            start_x: action.start.x,
-            start_y: action.start.y,
-            end_x: action.end.x,
-            end_y: action.end.y,
-            ...(action.steps === undefined ? {} : { steps: action.steps }),
-            ...buildInputActionRequest({
-              captureNetwork: false,
-              screenshot,
-            }),
-          });
+          response = await session.rest.dragTab(
+            controller.tabId,
+            {
+              start_x: action.start.x,
+              start_y: action.start.y,
+              end_x: action.end.x,
+              end_y: action.end.y,
+              ...(action.steps === undefined ? {} : { steps: action.steps }),
+              ...inputActionRequest,
+            },
+            requestOptions,
+          );
           break;
         case "screenshot":
           response = await session.rest.screenshotTab(
             controller.tabId,
             buildImmediateScreenshotRequest(screenshot),
+            requestOptions,
           );
           break;
         case "wait":
-          response = await session.rest.waitTab(controller.tabId, {
-            duration_ms: action.durationMs,
-            ...buildImmediateActionRequest({
-              captureNetwork: false,
-              screenshot,
-            }),
-          });
+          response = await session.rest.waitTab(
+            controller.tabId,
+            {
+              duration_ms: action.durationMs,
+              ...buildImmediateActionRequest({
+                captureNetwork: false,
+                screenshot,
+              }),
+            },
+            requestOptions,
+          );
           break;
       }
 
       const actionEvents = await context.normalizeActionEvents(controller, response);
-      const newTabEvents = await context.detectNewTabs(session, controller);
-      const popupPageRefs = collectPopupPageRefs([...actionEvents, ...newTabEvents]);
-      const resultPageRef =
-        response.tab_changed === true ? session.activePageRef ?? controller.pageRef : controller.pageRef;
+      const discoveredTabs = await context.detectNewTabs(session, controller);
+      const popupPageRefs = collectPopupPageRefs([...actionEvents, ...discoveredTabs.events]);
+      const resultPageRef = resolveTabChangePageRef({
+        controllerPageRef: controller.pageRef,
+        response,
+        actionEvents,
+        discoveredTabs,
+        activePageRef: session.activePageRef,
+      });
+      if (response.tab_changed) {
+        session.activePageRef = resultPageRef;
+      }
       const resultController = context.resolveController(resultPageRef);
       await context.flushDomUpdateTask(resultController);
 
@@ -254,6 +208,7 @@ export function createAbpComputerUseBridge(context: {
         controller: resultController,
         response,
         fallback: screenshot,
+        signal: input.signal,
       });
 
       let viewport: ViewportMetrics;
@@ -289,7 +244,7 @@ export function createAbpComputerUseBridge(context: {
         events: [
           ...context.drainQueuedEvents(controller.pageRef),
           ...actionEvents,
-          ...newTabEvents,
+          ...discoveredTabs.events,
           ...dialogEvents,
           ...popupQueuedEvents,
         ],
@@ -299,9 +254,7 @@ export function createAbpComputerUseBridge(context: {
   };
 }
 
-function toAbpScreenshotOptions(
-  screenshot: ComputerUseScreenshotOptions,
-): {
+function toAbpScreenshotOptions(screenshot: NormalizedComputerScreenshotOptions): {
   readonly cursor?: boolean;
   readonly format?: string;
   readonly markup?: readonly string[];
@@ -319,22 +272,28 @@ async function materializeScreenshotArtifact(input: {
   readonly controller: PageController;
   readonly response: AbpActionResponse;
   readonly fallback: ReturnType<typeof toAbpScreenshotOptions>;
+  readonly signal: AbortSignal;
 }): Promise<ScreenshotArtifact> {
   let response = input.response;
   if (response.screenshot_after === undefined) {
     response = await input.session.rest.screenshotTab(
       input.controller.tabId,
       buildImmediateScreenshotRequest(input.fallback),
+      {
+        signal: input.signal,
+      },
     );
   }
 
   const screenshot = response.screenshot_after;
   if (screenshot === undefined) {
-    throw new Error(`ABP action response for ${input.controller.pageRef} did not include screenshot_after`);
+    throw new Error(
+      `ABP action response for ${input.controller.pageRef} did not include screenshot_after`,
+    );
   }
 
   const mainFrame = input.context.requireMainFrame(input.controller);
-  const format = (screenshot.format as ScreenshotFormat | undefined) ?? "png";
+  const format = (screenshot.format as NormalizedComputerScreenshotOptions["format"] | undefined) ?? "png";
   return {
     pageRef: input.controller.pageRef,
     frameRef: mainFrame.frameRef,
@@ -347,19 +306,6 @@ async function materializeScreenshotArtifact(input: {
     size: createSize(screenshot.width, screenshot.height),
     coordinateSpace: "layout-viewport-css",
   };
-}
-
-function collectPopupPageRefs(events: readonly StepEvent[]): readonly PageRef[] {
-  const seen = new Set<PageRef>();
-  const pageRefs: PageRef[] = [];
-  for (const event of events) {
-    if (event.kind !== "popup-opened" || seen.has(event.pageRef)) {
-      continue;
-    }
-    seen.add(event.pageRef);
-    pageRefs.push(event.pageRef);
-  }
-  return pageRefs;
 }
 
 function timingFromResponse(

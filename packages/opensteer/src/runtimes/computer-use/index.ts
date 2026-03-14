@@ -2,6 +2,7 @@ export type {
   ComputerUseBridge,
   ComputerUseBridgeInput,
   ComputerUseBridgeOutput,
+  ComputerUseBridgeProvider,
   NormalizedComputerScreenshotOptions,
 } from "./bridge.js";
 export { OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL, resolveComputerUseBridge } from "./bridge.js";

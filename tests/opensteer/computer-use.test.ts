@@ -5,8 +5,25 @@ import path from "node:path";
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 
-import { createPageRef } from "../../packages/browser-core/src/index.js";
-import { OpensteerSessionRuntime } from "../../packages/opensteer/src/index.js";
+import {
+  createBodyPayload,
+  createDevicePixelRatio,
+  createPageRef,
+  createPageScaleFactor,
+  createPageZoomFactor,
+  createScrollOffset,
+  createSize,
+} from "../../packages/browser-core/src/index.js";
+import {
+  Opensteer,
+  OpensteerSessionRuntime,
+  defaultPolicy,
+  runWithPolicyTimeout,
+} from "../../packages/opensteer/src/index.js";
+import {
+  OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL,
+  createComputerUseRuntime,
+} from "../../packages/opensteer/src/runtimes/computer-use/index.js";
 import { enrichComputerUseTrace } from "../../packages/opensteer/src/runtimes/computer-use/trace-enrichment.js";
 import {
   cleanupPhase6TemporaryRoots,
@@ -139,18 +156,65 @@ describe("Phase 9 computer-use runtime", () => {
           annotations: ["clickable", "grid"],
         },
       });
-      expect(annotatedScreenshot.screenshot.payload.data).not.toBe(plainScreenshot.screenshot.payload.data);
+      expect(annotatedScreenshot.screenshot.payload.data).not.toBe(
+        plainScreenshot.screenshot.payload.data,
+      );
 
       const manifests = await readArtifactManifests(rootDir);
       expect(manifests.some((manifest) => manifest.kind === "screenshot")).toBe(true);
 
       const traceEntries = await readTraceEntries(rootDir);
-      const computerEntries = traceEntries.filter((entry) => entry.operation === "computer.execute");
+      const computerEntries = traceEntries.filter(
+        (entry) => entry.operation === "computer.execute",
+      );
       expect(computerEntries.length).toBeGreaterThan(0);
       expect(computerEntries.some((entry) => (entry.artifacts?.length ?? 0) > 0)).toBe(true);
       expect(computerEntries.every((entry) => Array.isArray(entry.events))).toBe(true);
     } finally {
       await runtime.close().catch(() => undefined);
+    }
+  }, 60_000);
+
+  test("exposes computerExecute through the public Opensteer SDK wrapper", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const opensteer = new Opensteer({
+      name: "phase9-opensteer-wrapper",
+      rootDir,
+      browser: {
+        headless: true,
+      },
+      context: {
+        viewport: {
+          width: 800,
+          height: 600,
+        },
+      },
+    });
+
+    try {
+      await opensteer.open(`${baseUrl}/computer/main`);
+      const output = await opensteer.computerExecute({
+        action: {
+          type: "click",
+          x: 90,
+          y: 42,
+        },
+      });
+      expect(output.action.type).toBe("click");
+
+      const extracted = await opensteer.extract({
+        description: "computer status through sdk wrapper",
+        schema: {
+          status: {
+            selector: "#status",
+          },
+        },
+      });
+      expect(extracted).toEqual({
+        status: "clicked",
+      });
+    } finally {
+      await opensteer.close().catch(() => undefined);
     }
   }, 60_000);
 
@@ -276,6 +340,94 @@ describe("Phase 9 computer-use runtime", () => {
       ],
     });
   });
+
+  test("routes wait timing through the shared timeout controller instead of a preflight budget check", async () => {
+    let bridgeInvoked = false;
+    let abortedBySignal = false;
+    const runtime = createComputerUseRuntime({
+      engine: {
+        [OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL]() {
+          return {
+            async execute(input: { readonly pageRef: string; readonly signal: AbortSignal }) {
+              bridgeInvoked = true;
+              try {
+                await waitForAbortableDelay(100, input.signal);
+              } catch (error) {
+                abortedBySignal = input.signal.aborted;
+                throw error;
+              }
+
+              return {
+                pageRef: input.pageRef,
+                screenshot: {
+                  pageRef: input.pageRef,
+                  payload: createBodyPayload(new Uint8Array([1, 2, 3]), {
+                    mimeType: "image/png",
+                  }),
+                  format: "png",
+                  size: createSize(32, 24),
+                  coordinateSpace: "layout-viewport-css",
+                },
+                viewport: {
+                  layoutViewport: {
+                    origin: { x: 0, y: 0 },
+                    size: createSize(32, 24),
+                  },
+                  visualViewport: {
+                    origin: { x: 0, y: 0 },
+                    offsetWithinLayoutViewport: createScrollOffset(0, 0),
+                    size: createSize(32, 24),
+                  },
+                  scrollOffset: createScrollOffset(0, 0),
+                  contentSize: createSize(32, 24),
+                  devicePixelRatio: createDevicePixelRatio(1),
+                  pageScaleFactor: createPageScaleFactor(1),
+                  pageZoomFactor: createPageZoomFactor(1),
+                },
+                events: [],
+                timing: {
+                  actionMs: 100,
+                  waitMs: 0,
+                  totalMs: 100,
+                },
+              };
+            },
+          };
+        },
+      } as never,
+      dom: {} as never,
+      policy: defaultPolicy(),
+    });
+
+    await expect(
+      runWithPolicyTimeout(
+        {
+          resolveTimeoutMs() {
+            return 25;
+          },
+        },
+        {
+          operation: "computer.execute",
+        },
+        (timeout) =>
+          runtime.execute({
+            pageRef: createPageRef("wait-timeout"),
+            input: {
+              action: {
+                type: "wait",
+                durationMs: 100,
+              },
+            },
+            timeout,
+          }),
+      ),
+    ).rejects.toMatchObject({
+      code: "timeout",
+    });
+
+    expect(bridgeInvoked).toBe(true);
+    expect(abortedBySignal).toBe(true);
+  });
 });
 
 async function extractStatus(runtime: OpensteerSessionRuntime): Promise<string> {
@@ -318,8 +470,12 @@ async function readArtifactManifests(rootDir: string): Promise<readonly Record<s
   const manifestsDir = path.join(rootDir, ".opensteer", "artifacts", "manifests");
   const fileNames = await readdir(manifestsDir);
   return Promise.all(
-    fileNames.map(async (fileName) =>
-      JSON.parse(await readFile(path.join(manifestsDir, fileName), "utf8")) as Record<string, unknown>,
+    fileNames.map(
+      async (fileName) =>
+        JSON.parse(await readFile(path.join(manifestsDir, fileName), "utf8")) as Record<
+          string,
+          unknown
+        >,
     ),
   );
 }
@@ -340,7 +496,10 @@ async function readTraceEntries(rootDir: string): Promise<readonly Record<string
   return entries;
 }
 
-async function startServer(): Promise<{ readonly url: string; readonly close: () => Promise<void> }> {
+async function startServer(): Promise<{
+  readonly url: string;
+  readonly close: () => Promise<void>;
+}> {
   const server = createServer((request, response) => {
     void handleRequest(request, response);
   });
@@ -498,4 +657,23 @@ function html(body: string, title: string): string {
   </head>
   <body>${body}</body>
 </html>`;
+}
+
+function waitForAbortableDelay(durationMs: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(signal.reason);
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, durationMs);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }

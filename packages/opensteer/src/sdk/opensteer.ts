@@ -1,5 +1,7 @@
 import type {
   OpensteerActionResult,
+  OpensteerComputerExecuteInput,
+  OpensteerComputerExecuteOutput,
   OpensteerDomExtractOutput,
   OpensteerPageGotoOutput,
   OpensteerPageSnapshotOutput,
@@ -31,6 +33,9 @@ export interface OpensteerExtractOptions {
   readonly description: string;
   readonly schema?: Record<string, unknown>;
 }
+
+export type OpensteerComputerExecuteOptions = OpensteerComputerExecuteInput;
+export type OpensteerComputerExecuteResult = OpensteerComputerExecuteOutput;
 
 export class Opensteer {
   private readonly runtime: OpensteerSessionRuntime;
@@ -85,6 +90,12 @@ export class Opensteer {
   async extract(input: OpensteerExtractOptions): Promise<OpensteerDomExtractOutput["data"]> {
     const result = await this.runtime.extract(input);
     return result.data;
+  }
+
+  async computerExecute(
+    input: OpensteerComputerExecuteOptions,
+  ): Promise<OpensteerComputerExecuteResult> {
+    return this.runtime.computerExecute(input);
   }
 
   async close(): Promise<OpensteerSessionCloseOutput> {

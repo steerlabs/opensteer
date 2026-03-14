@@ -5,97 +5,22 @@ import {
   createPageZoomFactor,
   createSize,
   createScrollOffset,
-  type KeyModifier,
   type PageRef,
   type Point,
   type ScreenshotArtifact,
-  type ScreenshotFormat,
   type StepEvent,
   type ViewportMetrics,
 } from "@opensteer/browser-core";
+import type {
+  ComputerUseBridge,
+  ComputerUseBridgeInput,
+  NormalizedComputerScreenshotOptions,
+  OpensteerComputerKeyModifier,
+} from "@opensteer/protocol";
 import type { Frame } from "playwright";
 
 import { mapScreenshotFormat } from "./normalize.js";
 import type { FrameState, PageController } from "./types.js";
-
-export const opensteerComputerUseBridgeSymbol = Symbol.for("@opensteer/computer-use-bridge");
-
-type ComputerAnnotation = "clickable" | "typeable" | "scrollable" | "grid" | "selected";
-type ComputerMouseButton = "left" | "middle" | "right";
-type ComputerAction =
-  | {
-      readonly type: "click";
-      readonly x: number;
-      readonly y: number;
-      readonly button?: ComputerMouseButton;
-      readonly clickCount?: number;
-      readonly modifiers?: readonly KeyModifier[];
-    }
-  | {
-      readonly type: "move";
-      readonly x: number;
-      readonly y: number;
-    }
-  | {
-      readonly type: "scroll";
-      readonly x: number;
-      readonly y: number;
-      readonly deltaX: number;
-      readonly deltaY: number;
-    }
-  | {
-      readonly type: "type";
-      readonly text: string;
-    }
-  | {
-      readonly type: "key";
-      readonly key: string;
-      readonly modifiers?: readonly KeyModifier[];
-    }
-  | {
-      readonly type: "drag";
-      readonly start: Point;
-      readonly end: Point;
-      readonly steps?: number;
-    }
-  | {
-      readonly type: "screenshot";
-    }
-  | {
-      readonly type: "wait";
-      readonly durationMs: number;
-    };
-
-interface ComputerUseScreenshotOptions {
-  readonly format: ScreenshotFormat;
-  readonly includeCursor: boolean;
-  readonly annotations: readonly ComputerAnnotation[];
-}
-
-interface ComputerUseBridgeInput {
-  readonly pageRef: PageRef;
-  readonly action: ComputerAction;
-  readonly screenshot: ComputerUseScreenshotOptions;
-  readonly signal: AbortSignal;
-  remainingMs(): number | undefined;
-  settle(pageRef: PageRef): Promise<void>;
-}
-
-interface ComputerUseBridgeOutput {
-  readonly pageRef: PageRef;
-  readonly screenshot: ScreenshotArtifact;
-  readonly viewport: ViewportMetrics;
-  readonly events: readonly StepEvent[];
-  readonly timing: {
-    readonly actionMs: number;
-    readonly waitMs: number;
-    readonly totalMs: number;
-  };
-}
-
-interface PlaywrightComputerUseBridge {
-  execute(input: ComputerUseBridgeInput): Promise<ComputerUseBridgeOutput>;
-}
 
 const DECORATION_NAMESPACE = "opensteer-computer-use";
 
@@ -108,10 +33,10 @@ export function createPlaywrightComputerUseBridge(context: {
   getViewportMetrics(pageRef: PageRef): Promise<ViewportMetrics>;
   withModifiers(
     page: PageController["page"],
-    modifiers: readonly KeyModifier[] | undefined,
+    modifiers: readonly OpensteerComputerKeyModifier[] | undefined,
     action: () => Promise<void>,
   ): Promise<void>;
-}): PlaywrightComputerUseBridge {
+}): ComputerUseBridge {
   const cursorByPageRef = new Map<PageRef, Point>();
 
   return {
@@ -231,7 +156,7 @@ export function createPlaywrightComputerUseBridge(context: {
   };
 }
 
-function pointForAction(action: ComputerAction): Point | undefined {
+function pointForAction(action: ComputerUseBridgeInput["action"]): Point | undefined {
   switch (action.type) {
     case "click":
     case "move":
@@ -276,7 +201,7 @@ async function waitForAnimationFrame(controller: PageController): Promise<void> 
 async function captureScreenshotWithDecorations(
   controller: PageController,
   options: {
-    readonly screenshot: ComputerUseScreenshotOptions;
+    readonly screenshot: NormalizedComputerScreenshotOptions;
     readonly cursorPoint?: Point;
   },
 ): Promise<ScreenshotArtifact> {
@@ -377,7 +302,7 @@ function requireMainFrameState(controller: PageController): FrameState {
 async function injectDecorations(
   controller: PageController,
   options: {
-    readonly annotations: readonly ComputerAnnotation[];
+    readonly annotations: NormalizedComputerScreenshotOptions["annotations"];
     readonly cursorPoint?: Point;
   },
 ): Promise<void> {
@@ -401,7 +326,7 @@ async function cleanupDecorations(controller: PageController): Promise<void> {
 async function runFrameScript(
   frame: Frame,
   options: {
-    readonly annotations: readonly ComputerAnnotation[];
+    readonly annotations: NormalizedComputerScreenshotOptions["annotations"];
     readonly cursorPoint?: Point;
   },
   rootOverlay: boolean,
@@ -416,7 +341,7 @@ async function runFrameScript(
         rootOverlay,
         mode,
       }: {
-        readonly annotations: readonly ComputerAnnotation[];
+        readonly annotations: NormalizedComputerScreenshotOptions["annotations"];
         readonly cursorPoint?: Point;
         readonly namespace: string;
         readonly rootOverlay: boolean;

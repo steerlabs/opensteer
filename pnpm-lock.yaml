@@ -39,6 +39,9 @@ importers:
       '@opensteer/browser-core':
         specifier: workspace:*
         version: link:../browser-core
+      '@opensteer/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       ws:
         specifier: ^8.18.3
         version: 8.19.0
@@ -55,6 +58,9 @@ importers:
       '@opensteer/browser-core':
         specifier: workspace:*
         version: link:../browser-core
+      '@opensteer/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       playwright:
         specifier: 1.58.2
         version: 1.58.2

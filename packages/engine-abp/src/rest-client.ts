@@ -12,6 +12,7 @@ import type {
   AbpExecutionState,
   AbpNetworkCall,
   AbpNetworkQueryWireResponse,
+  AbpRequestOptions,
   AbpRestClientLike,
   AbpWaitUntil,
   AbpTab,
@@ -86,6 +87,8 @@ function normalizeCurlResponse(value: unknown): AbpCurlResponse {
     redirected: redirected!,
   };
 }
+
+const DEFAULT_ACTION_COMPLETE_TIMEOUT_MS = 10_000;
 
 export class AbpRestClient implements AbpRestClientLike {
   private readonly baseUrl: string;
@@ -185,10 +188,12 @@ export class AbpRestClient implements AbpRestClientLike {
       readonly click_count?: number;
       readonly modifiers?: readonly string[];
     } & AbpActionRequest,
+    options?: AbpRequestOptions,
   ): Promise<AbpActionResponse> {
     return this.requestJson(`/tabs/${tabId}/click`, {
       method: "POST",
       body,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
     });
   }
 
@@ -198,10 +203,12 @@ export class AbpRestClient implements AbpRestClientLike {
       readonly x: number;
       readonly y: number;
     } & AbpActionRequest,
+    options?: AbpRequestOptions,
   ): Promise<AbpActionResponse> {
     return this.requestJson(`/tabs/${tabId}/move`, {
       method: "POST",
       body,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
     });
   }
 
@@ -213,10 +220,12 @@ export class AbpRestClient implements AbpRestClientLike {
       readonly delta_x?: number;
       readonly delta_y?: number;
     } & AbpActionRequest,
+    options?: AbpRequestOptions,
   ): Promise<AbpActionResponse> {
     return this.requestJson(`/tabs/${tabId}/scroll`, {
       method: "POST",
       body,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
     });
   }
 
@@ -229,10 +238,12 @@ export class AbpRestClient implements AbpRestClientLike {
       readonly end_y: number;
       readonly steps?: number;
     } & AbpActionRequest,
+    options?: AbpRequestOptions,
   ): Promise<AbpActionResponse> {
     return this.requestJson(`/tabs/${tabId}/drag`, {
       method: "POST",
       body,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
     });
   }
 
@@ -242,10 +253,12 @@ export class AbpRestClient implements AbpRestClientLike {
       readonly key: string;
       readonly modifiers?: readonly string[];
     } & AbpActionRequest,
+    options?: AbpRequestOptions,
   ): Promise<AbpActionResponse> {
     return this.requestJson(`/tabs/${tabId}/keyboard/press`, {
       method: "POST",
       body,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
     });
   }
 
@@ -254,10 +267,12 @@ export class AbpRestClient implements AbpRestClientLike {
     body: {
       readonly text: string;
     } & AbpActionRequest,
+    options?: AbpRequestOptions,
   ): Promise<AbpActionResponse> {
     return this.requestJson(`/tabs/${tabId}/type`, {
       method: "POST",
       body,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
     });
   }
 
@@ -266,17 +281,24 @@ export class AbpRestClient implements AbpRestClientLike {
     body: {
       readonly duration_ms: number;
     } & AbpActionRequest,
+    options?: AbpRequestOptions,
   ): Promise<AbpActionResponse> {
     return this.requestJson(`/tabs/${tabId}/wait`, {
       method: "POST",
       body,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
     });
   }
 
-  screenshotTab(tabId: string, body: AbpActionRequest): Promise<AbpActionResponse> {
+  screenshotTab(
+    tabId: string,
+    body: AbpActionRequest,
+    options?: AbpRequestOptions,
+  ): Promise<AbpActionResponse> {
     return this.requestJson(`/tabs/${tabId}/screenshot`, {
       method: "POST",
       body,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
     });
   }
 
@@ -367,6 +389,7 @@ export class AbpRestClient implements AbpRestClientLike {
     options: {
       readonly method?: string;
       readonly body?: unknown;
+      readonly signal?: AbortSignal;
     } = {},
     normalize?: (value: unknown) => T,
   ): Promise<T> {
@@ -378,6 +401,7 @@ export class AbpRestClient implements AbpRestClientLike {
         ...Object.fromEntries(this.extraHeaders.map((header) => [header.name, header.value])),
       },
       ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
     });
 
     const contentType = response.headers.get("content-type") ?? "";
@@ -444,6 +468,8 @@ export function buildImmediateActionRequest(
 export function buildInputActionRequest(
   options: {
     readonly captureNetwork?: boolean;
+    readonly timeoutMs?: number;
+    readonly omitDefaultTimeout?: boolean;
     readonly screenshot?: {
       readonly cursor?: boolean;
       readonly format?: string;
@@ -453,7 +479,12 @@ export function buildInputActionRequest(
 ): AbpActionRequest {
   return buildImmediateActionRequest({
     ...(options.captureNetwork === undefined ? {} : { captureNetwork: options.captureNetwork }),
-    waitUntil: { type: "action_complete", timeout_ms: 10_000 },
+    waitUntil: buildActionCompleteWaitUntil({
+      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      ...(options.omitDefaultTimeout === undefined
+        ? {}
+        : { omitDefaultTimeout: options.omitDefaultTimeout }),
+    }),
     ...(options.screenshot === undefined ? {} : { screenshot: options.screenshot }),
   });
 }
@@ -491,4 +522,32 @@ export function assertUtf8RequestBody(input: Uint8Array): string {
       },
     );
   }
+}
+
+function buildActionCompleteWaitUntil(options: {
+  readonly timeoutMs?: number;
+  readonly omitDefaultTimeout?: boolean;
+}): AbpWaitUntil {
+  const timeoutMs =
+    options.timeoutMs === undefined
+      ? options.omitDefaultTimeout
+        ? undefined
+        : DEFAULT_ACTION_COMPLETE_TIMEOUT_MS
+      : normalizeActionTimeoutMs(options.timeoutMs);
+
+  return {
+    type: "action_complete",
+    ...(timeoutMs === undefined ? {} : { timeout_ms: timeoutMs }),
+  };
+}
+
+function normalizeActionTimeoutMs(timeoutMs: number): number {
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+    throw createBrowserCoreError(
+      "invalid-argument",
+      `ABP action timeout must be a non-negative finite number, received ${String(timeoutMs)}`,
+    );
+  }
+
+  return Math.max(1, Math.ceil(timeoutMs));
 }

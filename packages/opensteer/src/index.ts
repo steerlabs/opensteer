@@ -124,6 +124,8 @@ export type {
   TraceRunManifest,
 } from "./traces.js";
 export type {
+  OpensteerComputerExecuteOptions,
+  OpensteerComputerExecuteResult,
   OpensteerExtractOptions,
   OpensteerInputOptions,
   OpensteerScrollOptions,

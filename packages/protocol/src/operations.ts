@@ -986,6 +986,8 @@ export const opensteerOperationSpecifications = [
     inputSchema: mouseClickInputSchema,
     outputSchema: mouseClickOutputSchema,
     requiredCapabilities: ["input.pointer"],
+    resolveRequiredCapabilities: (input) =>
+      (input.modifiers?.length ?? 0) > 0 ? ["input.pointer", "input.keyboard"] : ["input.pointer"],
   }),
   defineOperationSpec<MouseScrollInput, MouseScrollOutput>({
     name: "input.mouse-scroll",
