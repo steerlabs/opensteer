@@ -128,6 +128,11 @@ export type {
   OpensteerComputerExecuteResult,
   OpensteerExtractOptions,
   OpensteerInputOptions,
+  OpensteerRequestCaptureOptions,
+  OpensteerRequestCaptureResult,
+  OpensteerRequestCaptureStopResult,
+  OpensteerRequestOptions,
+  OpensteerRequestResult,
   OpensteerScrollOptions,
   OpensteerTargetOptions,
 } from "./sdk/opensteer.js";

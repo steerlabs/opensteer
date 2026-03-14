@@ -43,6 +43,19 @@ afterEach(async () => {
   );
 });
 
+function requestPlanPayload(urlTemplate: string) {
+  return {
+    transport: {
+      kind: "session-http",
+      requiresBrowser: true,
+    },
+    endpoint: {
+      method: "GET",
+      urlTemplate,
+    },
+  } as const;
+}
+
 describe("Phase 3 filesystem root", () => {
   test("initializes the root layout idempotently and only creates the expected tree", async () => {
     const rootPath = await createTemporaryRoot();
@@ -443,9 +456,7 @@ describe("Phase 3 filesystem root", () => {
       version: "1.0.0",
       createdAt: 400,
       tags: ["auth", "login"],
-      payload: {
-        method: "POST",
-      },
+      payload: requestPlanPayload("https://example.com/login"),
       freshness: {
         lastValidatedAt: 405,
         staleAt: 500,
@@ -456,9 +467,7 @@ describe("Phase 3 filesystem root", () => {
       key: "request.login",
       version: "2.0.0",
       createdAt: 450,
-      payload: {
-        method: "POST",
-      },
+      payload: requestPlanPayload("https://example.com/login"),
       lifecycle: "active",
     });
     await root.registry.requestPlans.write({
@@ -466,9 +475,7 @@ describe("Phase 3 filesystem root", () => {
       key: "request.login",
       version: "3.0.0",
       createdAt: 500,
-      payload: {
-        method: "POST",
-      },
+      payload: requestPlanPayload("https://example.com/login"),
       lifecycle: "draft",
     });
 
@@ -501,9 +508,7 @@ describe("Phase 3 filesystem root", () => {
         key: "request.login",
         version: "2.0.0",
         createdAt: 451,
-        payload: {
-          method: "POST",
-        },
+        payload: requestPlanPayload("https://example.com/login"),
       }),
     ).rejects.toThrow(/already exists/i);
   });
@@ -518,18 +523,14 @@ describe("Phase 3 filesystem root", () => {
         key: "request.parallel",
         version: "1.0.0",
         createdAt: 1,
-        payload: {
-          branch: "a",
-        },
+        payload: requestPlanPayload("https://example.com/parallel"),
       }),
       root.registry.requestPlans.write({
         id: "request-plan:parallel-b",
         key: "request.parallel",
         version: "1.0.0",
         createdAt: 2,
-        payload: {
-          branch: "b",
-        },
+        payload: requestPlanPayload("https://example.com/parallel"),
       }),
     ]);
 
@@ -547,6 +548,49 @@ describe("Phase 3 filesystem root", () => {
     expect(resolved?.id).toBe(
       successful[0]?.status === "fulfilled" ? successful[0].value.id : undefined,
     );
+  });
+
+  test("lists request plans and updates lifecycle and freshness without changing the content hash", async () => {
+    const rootPath = await createTemporaryRoot();
+    const root = await createFilesystemOpensteerRoot({ rootPath });
+
+    const active = await root.registry.requestPlans.write({
+      id: "request-plan:list-a",
+      key: "request.list",
+      version: "1.0.0",
+      createdAt: 100,
+      payload: requestPlanPayload("https://example.com/list"),
+      lifecycle: "active",
+    });
+    await root.registry.requestPlans.write({
+      id: "request-plan:list-b",
+      key: "request.list",
+      version: "2.0.0",
+      createdAt: 200,
+      payload: requestPlanPayload("https://example.com/list"),
+      lifecycle: "draft",
+    });
+
+    expect(await root.registry.requestPlans.list()).toHaveLength(2);
+    expect(await root.registry.requestPlans.list({ key: "request.list" })).toHaveLength(2);
+
+    const updated = await root.registry.requestPlans.updateMetadata({
+      id: active.id,
+      lifecycle: "deprecated",
+      freshness: {
+        lastValidatedAt: 250,
+        staleAt: 500,
+      },
+      updatedAt: 260,
+    });
+
+    expect(updated.lifecycle).toBe("deprecated");
+    expect(updated.freshness).toEqual({
+      lastValidatedAt: 250,
+      staleAt: 500,
+    });
+    expect(updated.contentHash).toBe(active.contentHash);
+    expect(updated.payload).toEqual(active.payload);
   });
 
   test("rejects concurrent duplicate artifact ids without overwriting the winner", async () => {
@@ -620,9 +664,7 @@ describe("Phase 3 filesystem root", () => {
       key: "request.boundary",
       version: "1.0.0",
       createdAt: 120,
-      payload: {
-        url: "https://example.com",
-      },
+      payload: requestPlanPayload("https://example.com/boundary"),
       lifecycle: "active",
       freshness: {
         lastValidatedAt: 121,

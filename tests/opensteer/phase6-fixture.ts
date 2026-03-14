@@ -74,8 +74,100 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
+  if (url.pathname === "/phase10/session") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.setHeader("set-cookie", "phase10-session=abc123; Path=/; SameSite=Lax");
+    response.end(
+      html(
+        `
+          <div id="phase10-session">phase10 session ready</div>
+        `,
+        "Phase 10 session",
+      ),
+    );
+    return;
+  }
+
+  if (url.pathname === "/phase10/capture") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(
+      html(
+        `
+          <div id="phase10-capture">phase10 capture</div>
+          <script>
+            window.addEventListener("load", () => {
+              void fetch("/phase10/api/capture?step=load", {
+                method: "POST",
+                headers: {
+                  "authorization": "Bearer hidden-token",
+                  "content-type": "application/json; charset=utf-8",
+                  "x-csrf-token": "csrf-visible"
+                },
+                body: JSON.stringify({ hello: "capture" })
+              });
+            });
+          </script>
+        `,
+        "Phase 10 capture",
+      ),
+    );
+    return;
+  }
+
+  if (url.pathname === "/phase10/api/capture") {
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    response.setHeader("set-cookie", "phase10-capture=server; Path=/; SameSite=Lax");
+    response.end(
+      JSON.stringify({
+        ok: true,
+        step: url.searchParams.get("step"),
+      }),
+    );
+    return;
+  }
+
+  if (url.pathname === "/phase10/api/session-http") {
+    const body = await readRequestBody(request);
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    response.end(
+      JSON.stringify({
+        cookie: request.headers.cookie ?? "",
+        csrf: request.headers["x-csrf-token"] ?? "",
+        source: url.searchParams.get("source"),
+        body: body.length === 0 ? null : JSON.parse(body.toString("utf8")),
+      }),
+    );
+    return;
+  }
+
+  const userOrderMatch = url.pathname.match(/^\/phase10\/api\/users\/([^/]+)\/orders$/);
+  if (userOrderMatch) {
+    const body = await readRequestBody(request);
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    response.end(
+      JSON.stringify({
+        userId: decodeURIComponent(userOrderMatch[1]!),
+        cookie: request.headers.cookie ?? "",
+        csrf: request.headers["x-csrf-token"] ?? "",
+        staticHeader: request.headers["x-static"] ?? "",
+        page: url.searchParams.get("page"),
+        debug: url.searchParams.get("debug"),
+        body: body.length === 0 ? null : JSON.parse(body.toString("utf8")),
+      }),
+    );
+    return;
+  }
+
   response.statusCode = 404;
   response.end("not found");
+}
+
+async function readRequestBody(request: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
 }
 
 function mainDocumentHtml(): string {

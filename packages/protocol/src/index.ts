@@ -5,6 +5,7 @@ export * from "./identity.js";
 export * from "./geometry.js";
 export * from "./metadata.js";
 export * from "./network.js";
+export * from "./requests.js";
 export * from "./storage.js";
 export * from "./snapshots.js";
 export * from "./capabilities.js";

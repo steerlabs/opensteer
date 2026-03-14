@@ -2,6 +2,12 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import {
+  type OpensteerRequestPlanFreshness,
+  type OpensteerRequestPlanLifecycle,
+  type OpensteerRequestPlanPayload,
+} from "@opensteer/protocol";
+
+import {
   encodePathSegment,
   ensureDirectory,
   isAlreadyExistsError,
@@ -12,6 +18,7 @@ import {
   readJsonFile,
   sha256Hex,
   withFilesystemLock,
+  writeJsonFileAtomic,
   writeJsonFileExclusive,
 } from "./internal/filesystem.js";
 import { canonicalJsonString, type JsonValue } from "./json.js";
@@ -23,7 +30,7 @@ export interface RegistryProvenance {
   readonly notes?: string;
 }
 
-export interface RegistryRecord {
+export interface RegistryRecord<TPayload = JsonValue> {
   readonly id: string;
   readonly key: string;
   readonly version: string;
@@ -32,20 +39,16 @@ export interface RegistryRecord {
   readonly contentHash: string;
   readonly tags: readonly string[];
   readonly provenance?: RegistryProvenance;
-  readonly payload: JsonValue;
+  readonly payload: TPayload;
 }
 
 export type DescriptorRecord = RegistryRecord;
 
-export type RequestPlanLifecycle = "draft" | "active" | "deprecated" | "retired";
+export type RequestPlanLifecycle = OpensteerRequestPlanLifecycle;
 
-export interface RequestPlanFreshness {
-  readonly lastValidatedAt?: number;
-  readonly staleAt?: number;
-  readonly expiresAt?: number;
-}
+export type RequestPlanFreshness = OpensteerRequestPlanFreshness;
 
-export interface RequestPlanRecord extends RegistryRecord {
+export interface RequestPlanRecord extends RegistryRecord<OpensteerRequestPlanPayload> {
   readonly lifecycle: RequestPlanLifecycle;
   readonly freshness?: RequestPlanFreshness;
 }
@@ -55,7 +58,7 @@ export interface ResolveRegistryRecordInput {
   readonly version?: string;
 }
 
-export interface WriteDescriptorInput {
+export interface WriteDescriptorInput<TPayload = JsonValue> {
   readonly id?: string;
   readonly key: string;
   readonly version: string;
@@ -63,10 +66,21 @@ export interface WriteDescriptorInput {
   readonly updatedAt?: number;
   readonly tags?: readonly string[];
   readonly provenance?: RegistryProvenance;
-  readonly payload: JsonValue;
+  readonly payload: TPayload;
 }
 
-export interface WriteRequestPlanInput extends WriteDescriptorInput {
+export interface WriteRequestPlanInput extends WriteDescriptorInput<OpensteerRequestPlanPayload> {
+  readonly lifecycle?: RequestPlanLifecycle;
+  readonly freshness?: RequestPlanFreshness;
+}
+
+export interface ListRegistryRecordsInput {
+  readonly key?: string;
+}
+
+export interface UpdateRequestPlanMetadataInput {
+  readonly id: string;
+  readonly updatedAt?: number;
   readonly lifecycle?: RequestPlanLifecycle;
   readonly freshness?: RequestPlanFreshness;
 }
@@ -86,7 +100,9 @@ export interface RequestPlanRegistryStore {
 
   write(input: WriteRequestPlanInput): Promise<RequestPlanRecord>;
   getById(id: string): Promise<RequestPlanRecord | undefined>;
+  list(input?: ListRegistryRecordsInput): Promise<readonly RequestPlanRecord[]>;
   resolve(input: ResolveRegistryRecordInput): Promise<RequestPlanRecord | undefined>;
+  updateMetadata(input: UpdateRequestPlanMetadataInput): Promise<RequestPlanRecord>;
 }
 
 function normalizeTags(tags: readonly string[] | undefined): readonly string[] {
@@ -146,8 +162,8 @@ function normalizeFreshness(
 }
 
 function compareByCreatedAtAndId(
-  left: Pick<RegistryRecord, "createdAt" | "id">,
-  right: Pick<RegistryRecord, "createdAt" | "id">,
+  left: Pick<RegistryRecord<unknown>, "createdAt" | "id">,
+  right: Pick<RegistryRecord<unknown>, "createdAt" | "id">,
 ): number {
   if (left.createdAt !== right.createdAt) {
     return right.createdAt - left.createdAt;
@@ -156,7 +172,7 @@ function compareByCreatedAtAndId(
   return left.id.localeCompare(right.id);
 }
 
-abstract class FilesystemRegistryStore<TRecord extends RegistryRecord> {
+abstract class FilesystemRegistryStore<TRecord extends RegistryRecord<unknown>> {
   readonly recordsDirectory: string;
   readonly indexesDirectory: string;
 
@@ -249,7 +265,7 @@ abstract class FilesystemRegistryStore<TRecord extends RegistryRecord> {
 
   protected abstract isActive(record: TRecord): boolean;
 
-  private async readRecordsFromDirectory(): Promise<readonly TRecord[]> {
+  protected async readRecordsFromDirectory(): Promise<readonly TRecord[]> {
     const files = await listJsonFiles(this.recordsDirectory);
     const records = await Promise.all(
       files.map((fileName) => readJsonFile<TRecord>(path.join(this.recordsDirectory, fileName))),
@@ -289,11 +305,11 @@ abstract class FilesystemRegistryStore<TRecord extends RegistryRecord> {
     return record;
   }
 
-  private recordPath(id: string): string {
+  protected recordPath(id: string): string {
     return path.join(this.recordsDirectory, `${encodePathSegment(id)}.json`);
   }
 
-  private indexPath(key: string, version: string): string {
+  protected indexPath(key: string, version: string): string {
     return path.join(
       this.indexesDirectory,
       encodePathSegment(key),
@@ -301,7 +317,7 @@ abstract class FilesystemRegistryStore<TRecord extends RegistryRecord> {
     );
   }
 
-  private writeLockPath(): string {
+  protected writeLockPath(): string {
     return path.join(path.dirname(this.recordsDirectory), ".write.lock");
   }
 }
@@ -386,6 +402,42 @@ export class FilesystemRequestPlanRegistry
     };
 
     return this.writeRecord(record);
+  }
+
+  async list(input: ListRegistryRecordsInput = {}): Promise<readonly RequestPlanRecord[]> {
+    const key = input.key === undefined ? undefined : normalizeNonEmptyString("key", input.key);
+    const records = await this.readAllRecords();
+    return key === undefined ? records : records.filter((record) => record.key === key);
+  }
+
+  async updateMetadata(input: UpdateRequestPlanMetadataInput): Promise<RequestPlanRecord> {
+    const id = normalizeNonEmptyString("id", input.id);
+
+    return withFilesystemLock(this.writeLockPath(), async () => {
+      const existing = await this.getById(id);
+      if (existing === undefined) {
+        throw new Error(`registry record ${id} was not found`);
+      }
+
+      const nextFreshness = normalizeFreshness(input.freshness ?? existing.freshness);
+      const nextUpdatedAt = normalizeTimestamp(
+        "updatedAt",
+        input.updatedAt ?? Math.max(Date.now(), existing.updatedAt),
+      );
+      if (nextUpdatedAt < existing.createdAt) {
+        throw new RangeError("updatedAt must be greater than or equal to createdAt");
+      }
+
+      const nextRecord: RequestPlanRecord = {
+        ...existing,
+        updatedAt: nextUpdatedAt,
+        lifecycle: input.lifecycle ?? existing.lifecycle,
+        ...(nextFreshness === undefined ? {} : { freshness: nextFreshness }),
+      };
+
+      await writeJsonFileAtomic(this.recordPath(id), nextRecord);
+      return nextRecord;
+    });
   }
 
   protected isActive(record: RequestPlanRecord): boolean {

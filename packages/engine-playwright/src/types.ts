@@ -24,6 +24,7 @@ export interface SessionState {
   readonly networkRecords: NetworkRecordState[];
   readonly pendingRegistrations: PendingPageRegistration[];
   readonly pendingPageTasks: Set<Promise<void>>;
+  activePageRef: PageRef | undefined;
 }
 
 export interface PendingPageRegistration {

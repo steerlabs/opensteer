@@ -29,6 +29,8 @@ import {
   opensteerOperationSpecificationMap,
   opensteerOperationSpecifications,
   opensteerProtocolDescriptor,
+  opensteerRequestPlanPayloadSchema,
+  opensteerRequestPlanRecordSchema,
   opensteerRestEndpoints,
   opensteerSemanticOperationSpecificationMap,
   opensteerSemanticOperationSpecifications,
@@ -331,6 +333,9 @@ describe("semantic protocol descriptors", () => {
     expect(
       opensteerSemanticOperationSpecificationMap["computer.execute"]?.requiredCapabilities,
     ).toEqual(["artifacts.screenshot", "inspect.viewportMetrics"]);
+    expect(opensteerSemanticOperationSpecificationMap["request.execute"]?.requiredCapabilities).toEqual([
+      "transport.sessionHttp",
+    ]);
   });
 
   test("uses the dedicated semantic REST namespace and capability resolution rules", () => {
@@ -343,6 +348,9 @@ describe("semantic protocol descriptors", () => {
     const computerEndpoint = opensteerSemanticRestEndpoints.find(
       (endpoint) => endpoint.name === "computer.execute",
     );
+    const requestEndpoint = opensteerSemanticRestEndpoints.find(
+      (endpoint) => endpoint.name === "request.execute",
+    );
 
     expect(openEndpoint?.path).toBe(
       `${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/session/open`,
@@ -352,6 +360,9 @@ describe("semantic protocol descriptors", () => {
     );
     expect(computerEndpoint?.path).toBe(
       `${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/computer/execute`,
+    );
+    expect(requestEndpoint?.path).toBe(
+      `${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/request/execute`,
     );
     expect(
       resolveSemanticRequiredCapabilities(
@@ -418,6 +429,43 @@ describe("semantic protocol descriptors", () => {
       }),
     ).toThrow(/invalid computer\.execute input/i);
   });
+
+  test("validates request workflow shapes at the semantic boundary", () => {
+    expect(() =>
+      assertValidSemanticOperationInput("request-plan.write", {
+        key: "get-user",
+        version: "1.0.0",
+        payload: {
+          transport: {
+            kind: "session-http",
+            requiresBrowser: true,
+          },
+          endpoint: {
+            method: "GET",
+            urlTemplate: "https://example.com/users/{userId}",
+          },
+          parameters: [
+            {
+              name: "userId",
+              in: "path",
+            },
+          ],
+        },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      assertValidSemanticOperationInput("request.execute", {
+        key: "get-user",
+        params: {
+          userId: "abc",
+        },
+        headers: {
+          csrf: "token",
+        },
+      }),
+    ).not.toThrow();
+  });
 });
 
 describe("protocol trace and artifact schemas", () => {
@@ -435,5 +483,10 @@ describe("protocol trace and artifact schemas", () => {
     expect(domSnapshotSchema.properties?.shadowDomMode).toMatchObject({
       enum: ["flattened", "preserved", "unsupported"],
     });
+  });
+
+  test("exports request plan schemas for public request workflow records", () => {
+    expect(opensteerRequestPlanPayloadSchema.properties?.transport).toBeDefined();
+    expect(opensteerRequestPlanRecordSchema.properties?.payload).toBeDefined();
   });
 });
