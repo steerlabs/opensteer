@@ -1,6 +1,7 @@
 import type {
   OpensteerActionResult,
   OpensteerDomExtractOutput,
+  OpensteerPageGotoOutput,
   OpensteerPageSnapshotOutput,
   OpensteerSessionCloseOutput,
   OpensteerSessionOpenOutput,
@@ -8,10 +9,7 @@ import type {
   OpensteerTargetInput,
 } from "@opensteer/protocol";
 
-import {
-  OpensteerSessionRuntime,
-  type OpensteerRuntimeOptions,
-} from "./runtime.js";
+import { OpensteerSessionRuntime, type OpensteerRuntimeOptions } from "./runtime.js";
 
 export interface OpensteerTargetOptions {
   readonly element?: number;
@@ -45,17 +43,14 @@ export class Opensteer {
     return this.runtime.open(url === undefined ? {} : { url });
   }
 
-  async goto(url: string): Promise<OpensteerSessionOpenOutput> {
+  async goto(url: string): Promise<OpensteerPageGotoOutput> {
     return this.runtime.goto({ url });
   }
 
   async snapshot(
     input: OpensteerSnapshotMode | { readonly mode?: OpensteerSnapshotMode } = {},
   ): Promise<OpensteerPageSnapshotOutput> {
-    const mode =
-      typeof input === "string"
-        ? input
-        : input.mode;
+    const mode = typeof input === "string" ? input : input.mode;
     return this.runtime.snapshot(mode === undefined ? {} : { mode });
   }
 
@@ -113,9 +108,7 @@ function normalizeTargetOptions(input: OpensteerTargetOptions): {
         kind: "element",
         element: input.element!,
       },
-      ...(input.description === undefined
-        ? {}
-        : { persistAsDescription: input.description }),
+      ...(input.description === undefined ? {} : { persistAsDescription: input.description }),
     };
   }
 
@@ -125,9 +118,7 @@ function normalizeTargetOptions(input: OpensteerTargetOptions): {
         kind: "selector",
         selector: input.selector!,
       },
-      ...(input.description === undefined
-        ? {}
-        : { persistAsDescription: input.description }),
+      ...(input.description === undefined ? {} : { persistAsDescription: input.description }),
     };
   }
 

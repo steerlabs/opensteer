@@ -1,7 +1,5 @@
 import {
   createNodeLocator,
-  createPoint,
-  rectContainsPoint,
   type BrowserCoreEngine,
   type DocumentRef,
   type DomSnapshot,
@@ -13,6 +11,15 @@ import {
 } from "@opensteer/browser-core";
 import { OpensteerProtocolError } from "@opensteer/protocol";
 
+import {
+  assertValidActionPosition,
+  defaultPolicy,
+  runWithPolicyTimeout,
+  settleWithPolicy,
+  toActionabilityError,
+  type DomActionPolicyOperation,
+  type OpensteerPolicy,
+} from "../../policy/index.js";
 import type { FilesystemOpensteerRoot } from "../../root.js";
 import { createDomDescriptorStore } from "./descriptors.js";
 import { normalizeExtractedValue, resolveExtractedValueInContext } from "./extraction.js";
@@ -36,7 +43,6 @@ import {
   findIframeHostNode,
   findNodeByNodeRef,
   hasOpenShadowRoot,
-  isSameNodeOrDescendant,
   normalizeToElementNode,
   querySelectorAllInScope,
   type DomQueryScope,
@@ -124,17 +130,20 @@ class SnapshotSession {
 class DefaultDomRuntime implements DomRuntime {
   readonly engine: BrowserCoreEngine;
   private readonly descriptors: ReturnType<typeof createDomDescriptorStore>;
+  private readonly policy: OpensteerPolicy;
 
   constructor(options: {
     readonly engine: BrowserCoreEngine;
     readonly root?: FilesystemOpensteerRoot;
     readonly namespace?: string;
+    readonly policy?: OpensteerPolicy;
   }) {
     this.engine = options.engine;
     this.descriptors = createDomDescriptorStore({
       ...(options.root === undefined ? {} : { root: options.root }),
       ...(options.namespace === undefined ? {} : { namespace: options.namespace }),
     });
+    this.policy = options.policy ?? defaultPolicy();
   }
 
   async buildPath(input: DomBuildPathInput): Promise<ElementPath> {
@@ -173,111 +182,114 @@ class DefaultDomRuntime implements DomRuntime {
 
   async click(input: DomClickInput): Promise<DomActionOutcome> {
     return this.withSnapshotSession(async (session) => {
-      const resolved = await this.resolveTargetWithSession(session, {
+      return this.executeActionWithPolicy(session, {
+        operation: "dom.click",
         pageRef: input.pageRef,
-        method: "click",
         target: input.target,
+        ...(input.position === undefined ? {} : { position: input.position }),
+        execute: async (resolved, point) => {
+          await this.engine.mouseMove({
+            pageRef: resolved.pageRef,
+            point,
+            coordinateSpace: "document-css",
+          });
+          await this.engine.mouseClick({
+            pageRef: resolved.pageRef,
+            point,
+            coordinateSpace: "document-css",
+            ...(input.button === undefined ? {} : { button: input.button }),
+            ...(input.clickCount === undefined ? {} : { clickCount: input.clickCount }),
+            ...(input.modifiers === undefined ? {} : { modifiers: input.modifiers }),
+          });
+          return {
+            resolved,
+            point,
+          };
+        },
       });
-      const point = await this.resolveActionPoint(session, resolved, input.position);
-      await this.assertHitTarget(resolved, point);
-      await this.engine.mouseMove({
-        pageRef: resolved.pageRef,
-        point,
-        coordinateSpace: "document-css",
-      });
-      await this.engine.mouseClick({
-        pageRef: resolved.pageRef,
-        point,
-        coordinateSpace: "document-css",
-        ...(input.button === undefined ? {} : { button: input.button }),
-        ...(input.clickCount === undefined ? {} : { clickCount: input.clickCount }),
-        ...(input.modifiers === undefined ? {} : { modifiers: input.modifiers }),
-      });
-      return {
-        resolved,
-        point,
-      };
     });
   }
 
   async hover(input: DomHoverInput): Promise<DomActionOutcome> {
     return this.withSnapshotSession(async (session) => {
-      const resolved = await this.resolveTargetWithSession(session, {
+      return this.executeActionWithPolicy(session, {
+        operation: "dom.hover",
         pageRef: input.pageRef,
-        method: "hover",
         target: input.target,
+        ...(input.position === undefined ? {} : { position: input.position }),
+        execute: async (resolved, point) => {
+          await this.engine.mouseMove({
+            pageRef: resolved.pageRef,
+            point,
+            coordinateSpace: "document-css",
+          });
+          return {
+            resolved,
+            point,
+          };
+        },
       });
-      const point = await this.resolveActionPoint(session, resolved, input.position);
-      await this.assertHitTarget(resolved, point);
-      await this.engine.mouseMove({
-        pageRef: resolved.pageRef,
-        point,
-        coordinateSpace: "document-css",
-      });
-      return {
-        resolved,
-        point,
-      };
     });
   }
 
   async input(input: DomInputInput): Promise<ResolvedDomTarget> {
     return this.withSnapshotSession(async (session) => {
-      const resolved = await this.resolveTargetWithSession(session, {
+      return this.executeActionWithPolicy(session, {
+        operation: "dom.input",
         pageRef: input.pageRef,
-        method: "input",
         target: input.target,
+        execute: async (resolved, point) => {
+          await this.engine.mouseMove({
+            pageRef: resolved.pageRef,
+            point,
+            coordinateSpace: "document-css",
+          });
+          await this.engine.mouseClick({
+            pageRef: resolved.pageRef,
+            point,
+            coordinateSpace: "document-css",
+          });
+          await this.engine.textInput({
+            pageRef: resolved.pageRef,
+            text: input.text,
+          });
+          if (input.pressEnter) {
+            await this.engine.keyPress({
+              pageRef: resolved.pageRef,
+              key: "Enter",
+            });
+          }
+          return resolved;
+        },
       });
-      const point = await this.resolveActionPoint(session, resolved);
-      await this.assertHitTarget(resolved, point);
-      await this.engine.mouseMove({
-        pageRef: resolved.pageRef,
-        point,
-        coordinateSpace: "document-css",
-      });
-      await this.engine.mouseClick({
-        pageRef: resolved.pageRef,
-        point,
-        coordinateSpace: "document-css",
-      });
-      await this.engine.textInput({
-        pageRef: resolved.pageRef,
-        text: input.text,
-      });
-      if (input.pressEnter) {
-        await this.engine.keyPress({
-          pageRef: resolved.pageRef,
-          key: "Enter",
-        });
-      }
-      return resolved;
     });
   }
 
   async scroll(input: DomScrollInput): Promise<DomActionOutcome> {
     return this.withSnapshotSession(async (session) => {
-      const resolved = await this.resolveTargetWithSession(session, {
+      return this.executeActionWithPolicy(session, {
+        operation: "dom.scroll",
         pageRef: input.pageRef,
-        method: "scroll",
         target: input.target,
+        ...(input.position === undefined ? {} : { position: input.position }),
+        execute: async (resolved, point) => {
+          await this.engine.mouseMove({
+            pageRef: resolved.pageRef,
+            point,
+            coordinateSpace: "document-css",
+          });
+          await this.engine.mouseScroll({
+            pageRef: resolved.pageRef,
+            point,
+            coordinateSpace: "document-css",
+            delta: input.delta,
+          });
+          return {
+            resolved,
+            point,
+          };
+        },
       });
-      const point = await this.resolveActionPoint(session, resolved, input.position);
-      await this.assertHitTarget(resolved, point);
-      await this.engine.mouseMove({
-        pageRef: resolved.pageRef,
-        point,
-        coordinateSpace: "document-css",
-      });
-      await this.engine.mouseScroll({
-        pageRef: resolved.pageRef,
-        point,
-        coordinateSpace: "document-css",
-        delta: input.delta,
-      });
-      return {
-        resolved,
-        point,
-      };
     });
   }
 
@@ -382,6 +394,55 @@ class DefaultDomRuntime implements DomRuntime {
     callback: (session: SnapshotSession) => Promise<T>,
   ): Promise<T> {
     return callback(new SnapshotSession(this.engine));
+  }
+
+  private async executeActionWithPolicy<T>(
+    session: SnapshotSession,
+    input: {
+      readonly operation: DomActionPolicyOperation;
+      readonly pageRef: PageRef;
+      readonly target: DomTargetRef;
+      readonly position?: Point;
+      readonly execute: (resolved: ResolvedDomTarget, point: Point) => Promise<T>;
+    },
+  ): Promise<T> {
+    const resolved = await this.resolveTargetWithSession(session, {
+      pageRef: input.pageRef,
+      method: input.operation,
+      target: input.target,
+    });
+    if (input.position !== undefined) {
+      assertValidActionPosition(resolved, input.position);
+    }
+
+    return runWithPolicyTimeout(
+      this.policy.timeout,
+      {
+        operation: input.operation,
+      },
+      async ({ signal }) => {
+        const actionability = await this.policy.actionability.check({
+          engine: this.engine,
+          operation: input.operation,
+          resolved,
+          ...(input.position === undefined ? {} : { position: input.position }),
+          loadDocumentSnapshot: (documentRef) => session.getDocument(documentRef),
+        });
+        if (!actionability.actionable) {
+          throw toActionabilityError(input.operation, actionability);
+        }
+
+        const result = await input.execute(resolved, actionability.point);
+        await settleWithPolicy(this.policy.settle, {
+          operation: input.operation,
+          trigger: "dom-action",
+          engine: this.engine,
+          pageRef: resolved.pageRef,
+          signal,
+        });
+        return result;
+      },
+    );
   }
 
   private async resolveTargetWithSession(
@@ -530,10 +591,7 @@ class DefaultDomRuntime implements DomRuntime {
     }
 
     const mainSnapshot = await session.getMainDocument(pageRef);
-    const mainMatch = await this.findSelectorMatchWithinSnapshots(
-      [mainSnapshot],
-      target.selector,
-    );
+    const mainMatch = await this.findSelectorMatchWithinSnapshots([mainSnapshot], target.selector);
     if (mainMatch !== undefined) {
       return mainMatch;
     }
@@ -859,99 +917,6 @@ class DefaultDomRuntime implements DomRuntime {
     });
   }
 
-  private async resolveActionPoint(
-    session: SnapshotSession,
-    resolved: ResolvedDomTarget,
-    position?: Point,
-  ): Promise<Point> {
-    const rect = resolved.node.layout?.rect;
-    if (!rect) {
-      throw new Error(`target ${resolved.nodeRef} does not expose DOM geometry`);
-    }
-
-    const localPoint =
-      position === undefined
-        ? createPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)
-        : createPoint(rect.x + position.x, rect.y + position.y);
-
-    if (!rectContainsPoint(rect, localPoint)) {
-      throw new Error(`target point for ${resolved.nodeRef} falls outside the resolved DOM box`);
-    }
-
-    const point = await this.resolvePagePointFromDocumentPoint(
-      session,
-      resolved.snapshot,
-      localPoint,
-    );
-
-    const metrics = await this.engine.getViewportMetrics({ pageRef: resolved.pageRef });
-    if (
-      point.x < 0 ||
-      point.y < 0 ||
-      point.x > metrics.contentSize.width ||
-      point.y > metrics.contentSize.height
-    ) {
-      throw new Error(
-        `target point for ${resolved.nodeRef} falls outside the document content bounds`,
-      );
-    }
-
-    return point;
-  }
-
-  private async resolvePagePointFromDocumentPoint(
-    session: SnapshotSession,
-    snapshot: DomSnapshot,
-    point: Point,
-  ): Promise<Point> {
-    let currentSnapshot = snapshot;
-    let currentPoint = point;
-
-    while (currentSnapshot.parentDocumentRef !== undefined) {
-      const parentSnapshot = await session.getDocument(currentSnapshot.parentDocumentRef);
-      const parentIndex = createSnapshotIndex(parentSnapshot);
-      const iframeHost = findIframeHostNode(parentIndex, currentSnapshot.documentRef);
-      if (!iframeHost?.layout?.rect) {
-        throw new Error(
-          `iframe host for ${currentSnapshot.documentRef} does not expose DOM geometry`,
-        );
-      }
-
-      currentPoint = createPoint(
-        iframeHost.layout.rect.x + currentPoint.x,
-        iframeHost.layout.rect.y + currentPoint.y,
-      );
-      currentSnapshot = parentSnapshot;
-    }
-
-    return currentPoint;
-  }
-
-  private async assertHitTarget(resolved: ResolvedDomTarget, point: Point): Promise<void> {
-    const hit = await this.engine.hitTest({
-      pageRef: resolved.pageRef,
-      point,
-      coordinateSpace: "document-css",
-    });
-
-    if (hit.documentRef !== resolved.documentRef || hit.documentEpoch !== resolved.documentEpoch) {
-      throw new Error(
-        `hit test resolved ${hit.nodeRef ?? "no-node"} outside ${resolved.documentRef}@${String(resolved.documentEpoch)}`,
-      );
-    }
-
-    if (hit.nodeRef === undefined) {
-      throw new Error(`hit test did not resolve a live node for ${resolved.source}`);
-    }
-
-    const index = createSnapshotIndex(resolved.snapshot);
-    if (!isSameNodeOrDescendant(index, hit.nodeRef, resolved.nodeRef)) {
-      throw new Error(
-        `hit test resolved ${hit.nodeRef} outside the target subtree rooted at ${resolved.nodeRef} for ${resolved.source}`,
-      );
-    }
-  }
-
   private assertTargetPageOwnership(pageRef: PageRef, resolved: ResolvedDomTarget): void {
     if (resolved.pageRef !== pageRef) {
       throw new Error(
@@ -965,6 +930,7 @@ export function createDomRuntime(options: {
   readonly engine: BrowserCoreEngine;
   readonly root?: FilesystemOpensteerRoot;
   readonly namespace?: string;
+  readonly policy?: OpensteerPolicy;
 }): DomRuntime {
   return new DefaultDomRuntime(options);
 }
@@ -980,6 +946,8 @@ function toLiveElementNode(
   return normalized;
 }
 
-function hasNodeRef(node: DomSnapshotNode): node is DomSnapshotNode & { readonly nodeRef: NodeRef } {
+function hasNodeRef(
+  node: DomSnapshotNode,
+): node is DomSnapshotNode & { readonly nodeRef: NodeRef } {
   return node.nodeRef !== undefined;
 }
