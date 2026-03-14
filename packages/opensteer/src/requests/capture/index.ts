@@ -30,13 +30,10 @@ export class OpensteerRequestCaptureRuntime {
 
   async start(input: {
     readonly engine: BrowserCoreEngine;
-    readonly artifacts: OpensteerArtifactStore;
     readonly sessionRef: SessionRef;
     readonly pageRef: PageRef;
     readonly request?: OpensteerRequestCaptureStartInput;
   }): Promise<OpensteerRequestCaptureStartOutput> {
-    void input.artifacts;
-
     if (this.activeCapture) {
       throw new Error("a request capture is already active for this runtime");
     }

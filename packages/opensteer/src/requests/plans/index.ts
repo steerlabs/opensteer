@@ -221,10 +221,7 @@ function assertAbsoluteUrlTemplate(
     urlTemplate,
   );
 
-  try {
-    // eslint-disable-next-line no-new
-    new URL(sampleUrl);
-  } catch {
+  if (!URL.canParse(sampleUrl)) {
     throw new Error(`request plan endpoint.urlTemplate must be an absolute URL, received ${urlTemplate}`);
   }
 }
