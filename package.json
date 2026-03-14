@@ -28,6 +28,7 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
+      "agent-browser-protocol",
       "esbuild",
       "playwright"
     ]

@@ -66,6 +66,10 @@ export function normalizeAbpError(error: unknown, pageRef?: PageRef): Error {
   });
 }
 
+export function isActionTimeoutError(error: unknown): boolean {
+  return error instanceof AbpApiError && error.status === 504;
+}
+
 export function isPageClosedApiError(error: unknown): boolean {
   return error instanceof AbpApiError && error.status === 404;
 }
