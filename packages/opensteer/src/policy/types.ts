@@ -63,9 +63,11 @@ export interface TimeoutResolutionInput {
 
 export interface TimeoutExecutionContext extends TimeoutResolutionInput {
   readonly signal: AbortSignal;
-  readonly budgetMs?: number;
-  readonly deadlineAt?: number;
+  readonly budgetMs: number | undefined;
+  readonly deadlineAt: number | undefined;
   remainingMs(): number | undefined;
+  throwIfAborted(): void;
+  runStep<T>(step: () => Promise<T>): Promise<T>;
 }
 
 export interface TimeoutPolicy {

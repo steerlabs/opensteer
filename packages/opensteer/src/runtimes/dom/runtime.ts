@@ -19,6 +19,7 @@ import {
   toActionabilityError,
   type DomActionPolicyOperation,
   type OpensteerPolicy,
+  type TimeoutExecutionContext,
 } from "../../policy/index.js";
 import type { FilesystemOpensteerRoot } from "../../root.js";
 import { createDomDescriptorStore } from "./descriptors.js";
@@ -187,20 +188,25 @@ class DefaultDomRuntime implements DomRuntime {
         pageRef: input.pageRef,
         target: input.target,
         ...(input.position === undefined ? {} : { position: input.position }),
-        execute: async (resolved, point) => {
-          await this.engine.mouseMove({
-            pageRef: resolved.pageRef,
-            point,
-            coordinateSpace: "document-css",
-          });
-          await this.engine.mouseClick({
-            pageRef: resolved.pageRef,
-            point,
-            coordinateSpace: "document-css",
-            ...(input.button === undefined ? {} : { button: input.button }),
-            ...(input.clickCount === undefined ? {} : { clickCount: input.clickCount }),
-            ...(input.modifiers === undefined ? {} : { modifiers: input.modifiers }),
-          });
+        ...(input.timeout === undefined ? {} : { timeout: input.timeout }),
+        execute: async (resolved, point, timeout) => {
+          await timeout.runStep(() =>
+            this.engine.mouseMove({
+              pageRef: resolved.pageRef,
+              point,
+              coordinateSpace: "document-css",
+            }),
+          );
+          await timeout.runStep(() =>
+            this.engine.mouseClick({
+              pageRef: resolved.pageRef,
+              point,
+              coordinateSpace: "document-css",
+              ...(input.button === undefined ? {} : { button: input.button }),
+              ...(input.clickCount === undefined ? {} : { clickCount: input.clickCount }),
+              ...(input.modifiers === undefined ? {} : { modifiers: input.modifiers }),
+            }),
+          );
           return {
             resolved,
             point,
@@ -217,12 +223,15 @@ class DefaultDomRuntime implements DomRuntime {
         pageRef: input.pageRef,
         target: input.target,
         ...(input.position === undefined ? {} : { position: input.position }),
-        execute: async (resolved, point) => {
-          await this.engine.mouseMove({
-            pageRef: resolved.pageRef,
-            point,
-            coordinateSpace: "document-css",
-          });
+        ...(input.timeout === undefined ? {} : { timeout: input.timeout }),
+        execute: async (resolved, point, timeout) => {
+          await timeout.runStep(() =>
+            this.engine.mouseMove({
+              pageRef: resolved.pageRef,
+              point,
+              coordinateSpace: "document-css",
+            }),
+          );
           return {
             resolved,
             point,
@@ -238,26 +247,35 @@ class DefaultDomRuntime implements DomRuntime {
         operation: "dom.input",
         pageRef: input.pageRef,
         target: input.target,
-        execute: async (resolved, point) => {
-          await this.engine.mouseMove({
-            pageRef: resolved.pageRef,
-            point,
-            coordinateSpace: "document-css",
-          });
-          await this.engine.mouseClick({
-            pageRef: resolved.pageRef,
-            point,
-            coordinateSpace: "document-css",
-          });
-          await this.engine.textInput({
-            pageRef: resolved.pageRef,
-            text: input.text,
-          });
-          if (input.pressEnter) {
-            await this.engine.keyPress({
+        ...(input.timeout === undefined ? {} : { timeout: input.timeout }),
+        execute: async (resolved, point, timeout) => {
+          await timeout.runStep(() =>
+            this.engine.mouseMove({
               pageRef: resolved.pageRef,
-              key: "Enter",
-            });
+              point,
+              coordinateSpace: "document-css",
+            }),
+          );
+          await timeout.runStep(() =>
+            this.engine.mouseClick({
+              pageRef: resolved.pageRef,
+              point,
+              coordinateSpace: "document-css",
+            }),
+          );
+          await timeout.runStep(() =>
+            this.engine.textInput({
+              pageRef: resolved.pageRef,
+              text: input.text,
+            }),
+          );
+          if (input.pressEnter) {
+            await timeout.runStep(() =>
+              this.engine.keyPress({
+                pageRef: resolved.pageRef,
+                key: "Enter",
+              }),
+            );
           }
           return resolved;
         },
@@ -272,18 +290,23 @@ class DefaultDomRuntime implements DomRuntime {
         pageRef: input.pageRef,
         target: input.target,
         ...(input.position === undefined ? {} : { position: input.position }),
-        execute: async (resolved, point) => {
-          await this.engine.mouseMove({
-            pageRef: resolved.pageRef,
-            point,
-            coordinateSpace: "document-css",
-          });
-          await this.engine.mouseScroll({
-            pageRef: resolved.pageRef,
-            point,
-            coordinateSpace: "document-css",
-            delta: input.delta,
-          });
+        ...(input.timeout === undefined ? {} : { timeout: input.timeout }),
+        execute: async (resolved, point, timeout) => {
+          await timeout.runStep(() =>
+            this.engine.mouseMove({
+              pageRef: resolved.pageRef,
+              point,
+              coordinateSpace: "document-css",
+            }),
+          );
+          await timeout.runStep(() =>
+            this.engine.mouseScroll({
+              pageRef: resolved.pageRef,
+              point,
+              coordinateSpace: "document-css",
+              delta: input.delta,
+            }),
+          );
           return {
             resolved,
             point,
@@ -403,51 +426,70 @@ class DefaultDomRuntime implements DomRuntime {
       readonly pageRef: PageRef;
       readonly target: DomTargetRef;
       readonly position?: Point;
-      readonly execute: (resolved: ResolvedDomTarget, point: Point) => Promise<T>;
+      readonly timeout?: TimeoutExecutionContext;
+      readonly execute: (
+        resolved: ResolvedDomTarget,
+        point: Point,
+        timeout: TimeoutExecutionContext,
+      ) => Promise<T>;
     },
   ): Promise<T> {
-    const resolved = await this.resolveTargetWithSession(session, {
-      pageRef: input.pageRef,
-      method: input.operation,
-      target: input.target,
-    });
-    if (input.position !== undefined) {
-      assertValidActionPosition(resolved, input.position);
-    }
+    const executeWithinBudget = async (timeout: TimeoutExecutionContext) => {
+      const resolved = await timeout.runStep(() =>
+        this.resolveTargetWithSession(session, {
+          pageRef: input.pageRef,
+          method: input.operation,
+          target: input.target,
+          descriptorWriter: (writeInput) =>
+            timeout.runStep(() => this.descriptors.write(writeInput)),
+        }),
+      );
+      if (input.position !== undefined) {
+        assertValidActionPosition(resolved, input.position);
+      }
 
-    return runWithPolicyTimeout(
-      this.policy.timeout,
-      {
-        operation: input.operation,
-      },
-      async ({ signal }) => {
-        const actionability = await this.policy.actionability.check({
+      const actionability = await timeout.runStep(() =>
+        this.policy.actionability.check({
           engine: this.engine,
           operation: input.operation,
           resolved,
           ...(input.position === undefined ? {} : { position: input.position }),
           loadDocumentSnapshot: (documentRef) => session.getDocument(documentRef),
-        });
-        if (!actionability.actionable) {
-          throw toActionabilityError(input.operation, actionability);
-        }
+        }),
+      );
+      if (!actionability.actionable) {
+        throw toActionabilityError(input.operation, actionability);
+      }
 
-        const result = await input.execute(resolved, actionability.point);
-        await settleWithPolicy(this.policy.settle, {
+      const result = await input.execute(resolved, actionability.point, timeout);
+      await timeout.runStep(() =>
+        settleWithPolicy(this.policy.settle, {
           operation: input.operation,
           trigger: "dom-action",
           engine: this.engine,
           pageRef: resolved.pageRef,
-          signal,
-        });
-        return result;
-      },
+          signal: timeout.signal,
+        }),
+      );
+      return result;
+    };
+
+    if (input.timeout !== undefined) {
+      return executeWithinBudget(input.timeout);
+    }
+
+    return runWithPolicyTimeout(
+      this.policy.timeout,
+      { operation: input.operation },
+      executeWithinBudget,
     );
   }
 
   private async resolveTargetWithSession(
     session: SnapshotSession,
-    input: DomResolveTargetInput,
+    input: DomResolveTargetInput & {
+      readonly descriptorWriter?: (input: DomWriteDescriptorInput) => Promise<DomDescriptorRecord>;
+    },
   ): Promise<ResolvedDomTarget> {
     let resolved: ResolvedDomTarget;
     switch (input.target.kind) {
@@ -472,6 +514,7 @@ class DefaultDomRuntime implements DomRuntime {
           input.pageRef,
           input.method,
           input.target,
+          input.descriptorWriter,
         );
         break;
     }
@@ -548,14 +591,19 @@ class DefaultDomRuntime implements DomRuntime {
     pageRef: PageRef,
     method: string,
     target: Extract<DomTargetRef, { readonly kind: "selector" }>,
+    descriptorWriter:
+      | ((input: DomWriteDescriptorInput) => Promise<DomDescriptorRecord>)
+      | undefined,
   ): Promise<ResolvedDomTarget> {
     const resolved = await this.resolveSelectorMatch(session, pageRef, target);
     const { snapshot, node } = resolved;
     const path = await this.tryBuildPathFromSnapshotNode(session, snapshot, node);
+    const writeDescriptor =
+      descriptorWriter ?? ((input: DomWriteDescriptorInput) => this.descriptors.write(input));
     const descriptor =
       target.description === undefined || path.nodes.length === 0
         ? undefined
-        : await this.descriptors.write({
+        : await writeDescriptor({
             method,
             description: target.description,
             path,

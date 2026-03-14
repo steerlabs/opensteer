@@ -27,37 +27,46 @@ const DEFAULT_SETTLE_DELAYS: Readonly<Record<string, number>> = {
   snapshot: 0,
 };
 
+const EMPTY_SETTLE_OBSERVERS: NonNullable<SettlePolicy["observers"]> = Object.freeze([]);
+
 export const defaultTimeoutPolicy: TimeoutPolicy = {
   resolveTimeoutMs(input) {
     return DEFAULT_TIMEOUTS[input.operation];
   },
 };
+Object.freeze(defaultTimeoutPolicy);
 
 export const defaultSettlePolicy: SettlePolicy = {
-  observers: [],
+  observers: EMPTY_SETTLE_OBSERVERS,
   resolveDelayMs(input) {
     return DEFAULT_SETTLE_DELAYS[input.trigger] ?? 0;
   },
 };
+Object.freeze(defaultSettlePolicy);
 
 export const defaultRetryPolicy: RetryPolicy = {
   evaluate() {
     return { retry: false } satisfies RetryDecision;
   },
 };
+Object.freeze(defaultRetryPolicy);
 
 export const defaultFallbackPolicy: FallbackPolicy = {
   evaluate() {
     return { fallback: false } satisfies FallbackDecision;
   },
 };
+Object.freeze(defaultFallbackPolicy);
+
+const DEFAULT_POLICY: OpensteerPolicy = {
+  actionability: defaultActionabilityPolicy,
+  timeout: defaultTimeoutPolicy,
+  settle: defaultSettlePolicy,
+  retry: defaultRetryPolicy,
+  fallback: defaultFallbackPolicy,
+};
+Object.freeze(DEFAULT_POLICY);
 
 export function defaultPolicy(): OpensteerPolicy {
-  return {
-    actionability: defaultActionabilityPolicy,
-    timeout: defaultTimeoutPolicy,
-    settle: defaultSettlePolicy,
-    retry: defaultRetryPolicy,
-    fallback: defaultFallbackPolicy,
-  };
+  return DEFAULT_POLICY;
 }

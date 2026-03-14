@@ -14,6 +14,8 @@ import type {
 import {
   Opensteer,
   OpensteerSessionRuntime,
+  createDomRuntime,
+  createFilesystemOpensteerRoot,
   defaultPolicy,
   type OpensteerPolicy,
 } from "../../packages/opensteer/src/index.js";
@@ -419,6 +421,75 @@ describe("Phase 6 SDK and CLI surfaces", () => {
         details: {
           policy: "timeout",
           operation: "dom.extract",
+        },
+      });
+    } finally {
+      await runtime.close().catch(() => undefined);
+      await engine.dispose?.();
+    }
+  }, 60_000);
+
+  test("dom action timeouts cover SDK target preparation and do not persist late descriptors", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const engine = await createDelayedPlaywrightEngine(25);
+    const runtime = new OpensteerSessionRuntime({
+      name: "phase7-dom-action-timeout",
+      rootDir,
+      engine,
+      policy: createPolicy({
+        operationTimeouts: {
+          "dom.click": 1,
+        },
+      }),
+    });
+
+    try {
+      await runtime.open({
+        url: `${baseUrl}/phase6/main`,
+      });
+
+      await expect(
+        runtime.click({
+          target: {
+            kind: "selector",
+            selector: "#main-action",
+          },
+          persistAsDescription: "slow action button",
+        }),
+      ).rejects.toMatchObject({
+        code: "timeout",
+        details: {
+          policy: "timeout",
+          operation: "dom.click",
+        },
+      });
+
+      await wait(80);
+      const root = await createFilesystemOpensteerRoot({
+        rootPath: path.join(rootDir, ".opensteer"),
+      });
+      const dom = createDomRuntime({
+        engine,
+        root,
+        namespace: "phase7-dom-action-timeout",
+      });
+      await expect(
+        dom.readDescriptor({
+          description: "slow action button",
+        }),
+      ).resolves.toBeUndefined();
+
+      await expect(
+        runtime.extract({
+          description: "status text",
+          schema: {
+            status: { selector: "#status" },
+          },
+        }),
+      ).resolves.toEqual({
+        data: {
+          status: "ready",
         },
       });
     } finally {

@@ -159,20 +159,27 @@ export class OpensteerSessionRuntime {
     });
     const run = await root.traces.createRun();
     this.runId = run.runId;
+    let openedSessionRef: SessionRef | undefined;
+    let openedPageRef: PageRef | undefined;
 
     try {
       const { state, frameRef } = await this.runWithOperationTimeout(
         "session.open",
         async (timeout) => {
-          const sessionRef = await engine.createSession();
-          const createdPage = await engine.createPage({
-            sessionRef,
-          });
+          const sessionRef = await timeout.runStep(() => engine.createSession());
+          openedSessionRef = sessionRef;
+          const createdPage = await timeout.runStep(() =>
+            engine.createPage({
+              sessionRef,
+            }),
+          );
+          openedPageRef = createdPage.data.pageRef;
 
+          timeout.throwIfAborted();
           this.sessionRef = sessionRef;
           this.pageRef = createdPage.data.pageRef;
           this.latestSnapshot = undefined;
-          await this.ensureSemantics();
+          await timeout.runStep(() => this.ensureSemantics());
 
           let frameRef = createdPage.frameRef;
           if (input.url !== undefined) {
@@ -188,7 +195,7 @@ export class OpensteerSessionRuntime {
           }
 
           return {
-            state: await this.readSessionState(),
+            state: await timeout.runStep(() => this.readSessionState()),
             frameRef,
           };
         },
@@ -214,6 +221,7 @@ export class OpensteerSessionRuntime {
         outcome: "error",
         error,
       });
+      await this.cleanupSessionResources(engine, openedPageRef, openedSessionRef);
       await this.resetRuntimeState({
         disposeEngine: true,
       });
@@ -239,10 +247,11 @@ export class OpensteerSessionRuntime {
             },
             timeout,
           );
+          timeout.throwIfAborted();
           this.latestSnapshot = undefined;
           return {
             navigation,
-            state: await this.readSessionState(),
+            state: await timeout.runStep(() => this.readSessionState()),
           };
         },
       );
@@ -288,16 +297,32 @@ export class OpensteerSessionRuntime {
     try {
       const { artifacts, output } = await this.runWithOperationTimeout(
         "page.snapshot",
-        async () => {
-          const compiled = await compileOpensteerSnapshot({
-            engine: this.requireEngine(),
-            pageRef,
-            mode,
-          });
+        async (timeout) => {
+          await timeout.runStep(() =>
+            settleWithPolicy(this.policy.settle, {
+              operation: "page.snapshot",
+              trigger: "snapshot",
+              engine: this.requireEngine(),
+              pageRef,
+              signal: timeout.signal,
+            }),
+          );
+          const compiled = await timeout.runStep(() =>
+            compileOpensteerSnapshot({
+              engine: this.requireEngine(),
+              pageRef,
+              mode,
+            }),
+          );
+          timeout.throwIfAborted();
           this.latestSnapshot = compiled;
-          const artifacts = await this.captureSnapshotArtifacts(pageRef, {
-            includeHtmlSnapshot: true,
-          });
+          const artifacts = await this.captureSnapshotArtifacts(
+            pageRef,
+            {
+              includeHtmlSnapshot: true,
+            },
+            timeout,
+          );
 
           const output: OpensteerPageSnapshotOutput = {
             url: compiled.url,
@@ -352,10 +377,11 @@ export class OpensteerSessionRuntime {
   async click(input: OpensteerDomClickInput): Promise<OpensteerActionResult> {
     assertValidSemanticOperationInput("dom.click", input);
 
-    return this.runDomAction("dom.click", input, async (pageRef, target) => {
+    return this.runDomAction("dom.click", input, async (pageRef, target, timeout) => {
       const result = await this.requireDom().click({
         pageRef,
         target,
+        timeout,
       });
       return {
         result,
@@ -366,10 +392,11 @@ export class OpensteerSessionRuntime {
   async hover(input: OpensteerDomHoverInput): Promise<OpensteerActionResult> {
     assertValidSemanticOperationInput("dom.hover", input);
 
-    return this.runDomAction("dom.hover", input, async (pageRef, target) => {
+    return this.runDomAction("dom.hover", input, async (pageRef, target, timeout) => {
       const result = await this.requireDom().hover({
         pageRef,
         target,
+        timeout,
       });
       return {
         result,
@@ -380,12 +407,13 @@ export class OpensteerSessionRuntime {
   async input(input: OpensteerDomInputInput): Promise<OpensteerActionResult> {
     assertValidSemanticOperationInput("dom.input", input);
 
-    return this.runDomAction("dom.input", input, async (pageRef, target) => {
+    return this.runDomAction("dom.input", input, async (pageRef, target, timeout) => {
       const resolved = await this.requireDom().input({
         pageRef,
         target,
         text: input.text,
         ...(input.pressEnter === undefined ? {} : { pressEnter: input.pressEnter }),
+        timeout,
       });
       return {
         result: {
@@ -399,11 +427,12 @@ export class OpensteerSessionRuntime {
   async scroll(input: OpensteerDomScrollInput): Promise<OpensteerActionResult> {
     assertValidSemanticOperationInput("dom.scroll", input);
 
-    return this.runDomAction("dom.scroll", input, async (pageRef, target) => {
+    return this.runDomAction("dom.scroll", input, async (pageRef, target, timeout) => {
       const result = await this.requireDom().scroll({
         pageRef,
         target,
         delta: directionToDelta(input.direction, input.amount),
+        timeout,
       });
       return {
         result,
@@ -421,28 +450,37 @@ export class OpensteerSessionRuntime {
     try {
       const { artifacts, descriptor, output } = await this.runWithOperationTimeout(
         "dom.extract",
-        async () => {
+        async (timeout) => {
           let descriptor: OpensteerExtractionDescriptorRecord | undefined;
           if (input.schema !== undefined) {
             assertValidOpensteerExtractionSchemaRoot(input.schema);
-            const payload = await compileOpensteerExtractionPayload({
-              pageRef,
-              schema: input.schema as Record<string, unknown>,
-              dom: this.requireDom(),
-              ...(this.latestSnapshot?.counterRecords === undefined
-                ? {}
-                : { latestSnapshotCounters: this.latestSnapshot.counterRecords }),
-            });
-            descriptor = await descriptors.write({
-              description: input.description,
-              root: payload,
-              schemaHash: canonicalJsonString(input.schema),
-              sourceUrl: (await this.requireEngine().getPageInfo({ pageRef })).url,
-            });
+            const payload = await timeout.runStep(() =>
+              compileOpensteerExtractionPayload({
+                pageRef,
+                schema: input.schema as Record<string, unknown>,
+                dom: this.requireDom(),
+                ...(this.latestSnapshot?.counterRecords === undefined
+                  ? {}
+                  : { latestSnapshotCounters: this.latestSnapshot.counterRecords }),
+              }),
+            );
+            const pageInfo = await timeout.runStep(() =>
+              this.requireEngine().getPageInfo({ pageRef }),
+            );
+            descriptor = await timeout.runStep(() =>
+              descriptors.write({
+                description: input.description,
+                root: payload,
+                schemaHash: canonicalJsonString(input.schema),
+                sourceUrl: pageInfo.url,
+              }),
+            );
           } else {
-            descriptor = await descriptors.read({
-              description: input.description,
-            });
+            descriptor = await timeout.runStep(() =>
+              descriptors.read({
+                description: input.description,
+              }),
+            );
             if (!descriptor) {
               throw new OpensteerProtocolError(
                 "not-found",
@@ -458,14 +496,20 @@ export class OpensteerSessionRuntime {
             }
           }
 
-          const data = await replayOpensteerExtractionPayload({
+          const data = await timeout.runStep(() =>
+            replayOpensteerExtractionPayload({
+              pageRef,
+              dom: this.requireDom(),
+              payload: descriptor.payload.root,
+            }),
+          );
+          const artifacts = await this.captureSnapshotArtifacts(
             pageRef,
-            dom: this.requireDom(),
-            payload: descriptor.payload.root,
-          });
-          const artifacts = await this.captureSnapshotArtifacts(pageRef, {
-            includeHtmlSnapshot: false,
-          });
+            {
+              includeHtmlSnapshot: false,
+            },
+            timeout,
+          );
           return {
             artifacts,
             descriptor,
@@ -513,22 +557,27 @@ export class OpensteerSessionRuntime {
   }
 
   async close(): Promise<OpensteerSessionCloseOutput> {
+    const engine = this.engine;
     const pageRef = this.pageRef;
     const sessionRef = this.sessionRef;
     const startedAt = Date.now();
     let closeError: unknown;
 
     try {
-      await this.runWithOperationTimeout("session.close", async () => {
+      await this.runWithOperationTimeout("session.close", async (timeout) => {
         if (pageRef !== undefined) {
-          await this.requireEngine().closePage({
-            pageRef,
-          });
+          await timeout.runStep(() =>
+            this.requireEngine().closePage({
+              pageRef,
+            }),
+          );
         }
         if (sessionRef !== undefined) {
-          await this.requireEngine().closeSession({
-            sessionRef,
-          });
+          await timeout.runStep(() =>
+            this.requireEngine().closeSession({
+              sessionRef,
+            }),
+          );
         }
       });
     } catch (error) {
@@ -549,6 +598,9 @@ export class OpensteerSessionRuntime {
         }),
       });
     } finally {
+      if (closeError !== undefined && engine !== undefined) {
+        await this.cleanupSessionResources(engine, pageRef, sessionRef);
+      }
       await this.resetRuntimeState({
         disposeEngine: true,
       });
@@ -578,6 +630,7 @@ export class OpensteerSessionRuntime {
     executor: (
       pageRef: PageRef,
       target: DomTargetRef,
+      timeout: TimeoutExecutionContext,
     ) => Promise<{
       readonly result:
         | DomActionOutcome
@@ -591,13 +644,22 @@ export class OpensteerSessionRuntime {
     const startedAt = Date.now();
 
     try {
-      const preparedTarget = await this.prepareDomTarget(
-        pageRef,
+      const { executed, preparedTarget } = await this.runWithOperationTimeout(
         operation,
-        input.target,
-        input.persistAsDescription,
+        async (timeout) => {
+          const preparedTarget = await this.prepareDomTarget(
+            pageRef,
+            operation,
+            input.target,
+            input.persistAsDescription,
+            timeout,
+          );
+          return {
+            executed: await executor(pageRef, preparedTarget.target, timeout),
+            preparedTarget,
+          };
+        },
       );
-      const executed = await executor(pageRef, preparedTarget.target);
       const output = toOpensteerActionResult(executed.result, preparedTarget.persistedDescription);
 
       await this.appendTrace({
@@ -643,6 +705,7 @@ export class OpensteerSessionRuntime {
     method: string,
     target: OpensteerTargetInput,
     persistAsDescription: string | undefined,
+    timeout: TimeoutExecutionContext,
   ): Promise<{
     readonly target: DomTargetRef;
     readonly persistedDescription?: string;
@@ -673,12 +736,14 @@ export class OpensteerSessionRuntime {
         );
       }
 
-      await this.requireDom().writeDescriptor({
-        method,
-        description: persistAsDescription,
-        path: stablePath,
-        ...(this.latestSnapshot?.url === undefined ? {} : { sourceUrl: this.latestSnapshot.url }),
-      });
+      await timeout.runStep(() =>
+        this.requireDom().writeDescriptor({
+          method,
+          description: persistAsDescription,
+          path: stablePath,
+          ...(this.latestSnapshot?.url === undefined ? {} : { sourceUrl: this.latestSnapshot.url }),
+        }),
+      );
       return {
         target: {
           kind: "descriptor",
@@ -688,23 +753,27 @@ export class OpensteerSessionRuntime {
       };
     }
 
-    const resolved = await this.requireDom().resolveTarget({
-      pageRef,
-      method,
-      target: domTarget,
-    });
+    const resolved = await timeout.runStep(() =>
+      this.requireDom().resolveTarget({
+        pageRef,
+        method,
+        target: domTarget,
+      }),
+    );
     if (resolved.path.nodes.length === 0) {
       throw new Error(
         `unable to persist "${persistAsDescription}" because no stable DOM path could be built for ${method}`,
       );
     }
 
-    await this.requireDom().writeDescriptor({
-      method,
-      description: persistAsDescription,
-      path: resolved.path,
-      sourceUrl: resolved.snapshot.url,
-    });
+    await timeout.runStep(() =>
+      this.requireDom().writeDescriptor({
+        method,
+        description: persistAsDescription,
+        path: resolved.path,
+        sourceUrl: resolved.snapshot.url,
+      }),
+    );
 
     return {
       target: {
@@ -853,44 +922,53 @@ export class OpensteerSessionRuntime {
     options: {
       readonly includeHtmlSnapshot: boolean;
     },
+    timeout: TimeoutExecutionContext,
   ): Promise<OpensteerTraceArtifacts> {
     const root = this.requireRoot();
-    const mainFrame = await getMainFrame(this.requireEngine(), pageRef);
-    const domSnapshot = await this.requireEngine().getDomSnapshot({
-      frameRef: mainFrame.frameRef,
-    });
+    const mainFrame = await timeout.runStep(() => getMainFrame(this.requireEngine(), pageRef));
+    const domSnapshot = await timeout.runStep(() =>
+      this.requireEngine().getDomSnapshot({
+        frameRef: mainFrame.frameRef,
+      }),
+    );
     const manifests: ArtifactManifest[] = [];
 
     manifests.push(
-      await root.artifacts.writeStructured({
-        kind: "dom-snapshot",
-        scope: buildArtifactScope({
-          sessionRef: this.sessionRef,
-          pageRef,
-          frameRef: domSnapshot.frameRef,
-          documentRef: domSnapshot.documentRef,
-          documentEpoch: domSnapshot.documentEpoch,
-        }),
-        data: domSnapshot,
-      }),
-    );
-
-    if (options.includeHtmlSnapshot) {
-      const htmlSnapshot = await this.requireEngine().getHtmlSnapshot({
-        frameRef: mainFrame.frameRef,
-      });
-      manifests.push(
-        await root.artifacts.writeStructured({
-          kind: "html-snapshot",
+      await timeout.runStep(() =>
+        root.artifacts.writeStructured({
+          kind: "dom-snapshot",
           scope: buildArtifactScope({
             sessionRef: this.sessionRef,
             pageRef,
-            frameRef: htmlSnapshot.frameRef,
-            documentRef: htmlSnapshot.documentRef,
-            documentEpoch: htmlSnapshot.documentEpoch,
+            frameRef: domSnapshot.frameRef,
+            documentRef: domSnapshot.documentRef,
+            documentEpoch: domSnapshot.documentEpoch,
           }),
-          data: htmlSnapshot,
+          data: domSnapshot,
         }),
+      ),
+    );
+
+    if (options.includeHtmlSnapshot) {
+      const htmlSnapshot = await timeout.runStep(() =>
+        this.requireEngine().getHtmlSnapshot({
+          frameRef: mainFrame.frameRef,
+        }),
+      );
+      manifests.push(
+        await timeout.runStep(() =>
+          root.artifacts.writeStructured({
+            kind: "html-snapshot",
+            scope: buildArtifactScope({
+              sessionRef: this.sessionRef,
+              pageRef,
+              frameRef: htmlSnapshot.frameRef,
+              documentRef: htmlSnapshot.documentRef,
+              documentEpoch: htmlSnapshot.documentEpoch,
+            }),
+            data: htmlSnapshot,
+          }),
+        ),
       );
     }
 
@@ -938,6 +1016,19 @@ export class OpensteerSessionRuntime {
     });
   }
 
+  private async cleanupSessionResources(
+    engine: BrowserCoreEngine,
+    pageRef: PageRef | undefined,
+    sessionRef: SessionRef | undefined,
+  ): Promise<void> {
+    if (pageRef !== undefined) {
+      await engine.closePage({ pageRef }).catch(() => undefined);
+    }
+    if (sessionRef !== undefined) {
+      await engine.closeSession({ sessionRef }).catch(() => undefined);
+    }
+  }
+
   private async resetRuntimeState(options: { readonly disposeEngine: boolean }): Promise<void> {
     const engine = this.engine;
 
@@ -977,18 +1068,22 @@ export class OpensteerSessionRuntime {
     timeout: TimeoutExecutionContext,
   ) {
     const remainingMs = timeout.remainingMs();
-    const navigation = await this.requireEngine().navigate({
-      pageRef: input.pageRef,
-      url: input.url,
-      ...(remainingMs === undefined ? {} : { timeoutMs: remainingMs }),
-    });
-    await settleWithPolicy(this.policy.settle, {
-      operation: input.operation,
-      trigger: "navigation",
-      engine: this.requireEngine(),
-      pageRef: input.pageRef,
-      signal: timeout.signal,
-    });
+    const navigation = await timeout.runStep(() =>
+      this.requireEngine().navigate({
+        pageRef: input.pageRef,
+        url: input.url,
+        ...(remainingMs === undefined ? {} : { timeoutMs: remainingMs }),
+      }),
+    );
+    await timeout.runStep(() =>
+      settleWithPolicy(this.policy.settle, {
+        operation: input.operation,
+        trigger: "navigation",
+        engine: this.requireEngine(),
+        pageRef: input.pageRef,
+        signal: timeout.signal,
+      }),
+    );
     return navigation;
   }
 }

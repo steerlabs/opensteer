@@ -13,6 +13,8 @@ import type {
   DomSnapshotNode,
 } from "@opensteer/browser-core";
 
+import type { TimeoutExecutionContext } from "../../policy/index.js";
+
 export type MatchOperator = "exact" | "startsWith" | "contains";
 
 export interface AttributeMatchClause {
@@ -148,12 +150,14 @@ export interface DomClickInput {
   readonly clickCount?: number;
   readonly modifiers?: readonly KeyModifier[];
   readonly position?: Point;
+  readonly timeout?: TimeoutExecutionContext;
 }
 
 export interface DomHoverInput {
   readonly pageRef: PageRef;
   readonly target: DomTargetRef;
   readonly position?: Point;
+  readonly timeout?: TimeoutExecutionContext;
 }
 
 export interface DomInputInput {
@@ -161,6 +165,7 @@ export interface DomInputInput {
   readonly target: DomTargetRef;
   readonly text: string;
   readonly pressEnter?: boolean;
+  readonly timeout?: TimeoutExecutionContext;
 }
 
 export interface DomScrollInput {
@@ -168,6 +173,7 @@ export interface DomScrollInput {
   readonly target: DomTargetRef;
   readonly delta: Point;
   readonly position?: Point;
+  readonly timeout?: TimeoutExecutionContext;
 }
 
 export interface DomExtractFieldSelector {
