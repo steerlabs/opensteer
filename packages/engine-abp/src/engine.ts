@@ -90,10 +90,10 @@ import {
   updateDocumentTreeSignature,
 } from "./dom.js";
 import {
+  AbpApiError,
   isPageClosedApiError,
   normalizeAbpError,
   rethrowNodeLookupError,
-  type AbpApiError,
 } from "./errors.js";
 import { allocatePort, launchAbpProcess } from "./launcher.js";
 import {
@@ -302,6 +302,14 @@ function parseFrameDescriptor(value: unknown): FrameDescriptor | undefined {
   };
 }
 
+function parseOrigin(value: string): string | undefined {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return undefined;
+  }
+}
+
 function headersFromCurlResponse(
   response: AbpCurlResponse,
 ): readonly { readonly name: string; readonly value: string }[] {
@@ -428,20 +436,14 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     }
 
     for (const controller of Array.from(session.controllersByPageRef.values())) {
-      try {
-        await controller.cdp.close();
-      } catch {}
+      await controller.cdp.close().catch(() => undefined);
       this.cleanupPageController(controller);
     }
 
-    try {
-      await session.browserCdp.close();
-    } catch {}
+    await session.browserCdp.close().catch(() => undefined);
 
     if (session.closeBrowserOnDispose) {
-      try {
-        await session.rest.shutdownBrowser();
-      } catch {}
+      await session.rest.shutdownBrowser().catch(() => undefined);
       await waitForProcessExit(session.process);
     }
 
@@ -567,9 +569,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       }
     }
 
-    try {
-      await controller.cdp.close();
-    } catch {}
+    await controller.cdp.close().catch(() => undefined);
     this.cleanupPageController(controller);
     session.activePageRef = chooseNextActivePageRef(Array.from(session.pageRefs));
 
@@ -1499,10 +1499,8 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       const controller = this.requirePage(pageRef);
       await this.flushDomUpdateTask(controller);
       for (const frame of controller.framesByCdpId.values()) {
-        let origin: string;
-        try {
-          origin = new URL(frame.currentDocument.url).origin;
-        } catch {
+        const origin = parseOrigin(frame.currentDocument.url);
+        if (origin === undefined) {
           continue;
         }
         if (origin === "null" || origins.has(origin)) {
@@ -1671,9 +1669,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       }
       return sessionRef;
     } catch (error) {
-      try {
-        launched.process.kill("SIGKILL");
-      } catch {}
+      launched.process.kill("SIGKILL");
       await waitForProcessExit(launched.process);
       if (this.launchOptions?.userDataDir === undefined) {
         await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
@@ -1854,9 +1850,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       controller.executionPaused = executionState?.paused ?? false;
       return controller;
     } catch (error) {
-      try {
-        await cdp.close();
-      } catch {}
+      await cdp.close().catch(() => undefined);
       this.cleanupPageController(controller);
       throw normalizeAbpError(error, pageRef);
     }
@@ -2456,10 +2450,8 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       const controller = this.requirePage(pageRef);
       await this.flushDomUpdateTask(controller);
       for (const frame of controller.framesByCdpId.values()) {
-        let origin: string;
-        try {
-          origin = new URL(frame.currentDocument.url).origin;
-        } catch {
+        const origin = parseOrigin(frame.currentDocument.url);
+        if (origin === undefined) {
           continue;
         }
         if (origin === "null") {
@@ -2795,15 +2787,9 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
 
   private isHistoryBoundaryError(error: unknown, direction: "back" | "forward"): boolean {
     return (
-      typeof error === "object" &&
-      error !== null &&
-      "status" in error &&
-      (error as AbpApiError).status === 400 &&
-      "message" in error &&
-      typeof (error as { readonly message?: unknown }).message === "string" &&
-      new RegExp(`Cannot go ${direction}`, "i").test(
-        (error as { readonly message: string }).message,
-      )
+      error instanceof AbpApiError &&
+      error.status === 400 &&
+      new RegExp(`Cannot go ${direction}`, "i").test(error.message)
     );
   }
 

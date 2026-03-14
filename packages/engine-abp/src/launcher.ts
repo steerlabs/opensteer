@@ -65,7 +65,7 @@ export async function launchAbpProcess(options: LaunchRequestOptions): Promise<L
   });
 
   if (options.verbose && child.stdout) {
-    child.stdout.pipe(process.stderr);
+    child.stdout.pipe(process.stdout);
   }
   if (options.verbose && child.stderr) {
     child.stderr.pipe(process.stderr);
