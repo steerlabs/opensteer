@@ -25,6 +25,7 @@ import {
   type OpensteerPageSnapshotInput,
   type OpensteerPageSnapshotOutput,
   type OpensteerResolvedTarget,
+  type OpensteerSemanticOperationName,
   type OpensteerSessionCloseOutput,
   type OpensteerSessionOpenInput,
   type OpensteerSessionOpenOutput,
@@ -36,6 +37,13 @@ import {
 import { type ArtifactManifest } from "../artifacts.js";
 import { normalizeThrownOpensteerError } from "../internal/errors.js";
 import { canonicalJsonString, toCanonicalJsonValue } from "../json.js";
+import {
+  defaultPolicy,
+  runWithPolicyTimeout,
+  settleWithPolicy,
+  type OpensteerPolicy,
+  type TimeoutExecutionContext,
+} from "../policy/index.js";
 import { createFilesystemOpensteerRoot, type FilesystemOpensteerRoot } from "../root.js";
 import {
   buildPathSelectorHint,
@@ -75,6 +83,7 @@ export interface OpensteerRuntimeOptions {
   readonly context?: OpensteerBrowserContextOptions;
   readonly engine?: BrowserCoreEngine;
   readonly engineFactory?: OpensteerEngineFactory;
+  readonly policy?: OpensteerPolicy;
 }
 
 interface OpensteerTraceArtifacts {
@@ -100,6 +109,7 @@ export class OpensteerSessionRuntime {
   private readonly configuredContext: OpensteerBrowserContextOptions | undefined;
   private readonly injectedEngine: BrowserCoreEngine | undefined;
   private readonly engineFactory: OpensteerEngineFactory;
+  private readonly policy: OpensteerPolicy;
 
   private root: FilesystemOpensteerRoot | undefined;
   private engine: DisposableBrowserCoreEngine | undefined;
@@ -120,6 +130,7 @@ export class OpensteerSessionRuntime {
     this.configuredContext = options.context;
     this.injectedEngine = options.engine;
     this.engineFactory = options.engineFactory ?? defaultEngineFactory;
+    this.policy = options.policy ?? defaultPolicy();
   }
 
   async open(input: OpensteerSessionOpenInput = {}): Promise<OpensteerSessionOpenOutput> {
@@ -150,18 +161,38 @@ export class OpensteerSessionRuntime {
     this.runId = run.runId;
 
     try {
-      const sessionRef = await engine.createSession();
-      const createdPage = await engine.createPage({
-        sessionRef,
-        ...(input.url === undefined ? {} : { url: input.url }),
-      });
+      const { state, frameRef } = await this.runWithOperationTimeout(
+        "session.open",
+        async (timeout) => {
+          const sessionRef = await engine.createSession();
+          const createdPage = await engine.createPage({
+            sessionRef,
+          });
 
-      this.sessionRef = sessionRef;
-      this.pageRef = createdPage.data.pageRef;
-      this.latestSnapshot = undefined;
-      await this.ensureSemantics();
+          this.sessionRef = sessionRef;
+          this.pageRef = createdPage.data.pageRef;
+          this.latestSnapshot = undefined;
+          await this.ensureSemantics();
 
-      const state = await this.readSessionState();
+          let frameRef = createdPage.frameRef;
+          if (input.url !== undefined) {
+            const navigation = await this.navigatePage(
+              {
+                operation: "session.open",
+                pageRef: createdPage.data.pageRef,
+                url: input.url,
+              },
+              timeout,
+            );
+            frameRef = navigation.data.mainFrame.frameRef;
+          }
+
+          return {
+            state: await this.readSessionState(),
+            frameRef,
+          };
+        },
+      );
       await this.appendTrace({
         operation: "session.open",
         startedAt,
@@ -169,8 +200,9 @@ export class OpensteerSessionRuntime {
         outcome: "ok",
         data: state,
         context: buildRuntimeTraceContext({
-          sessionRef,
+          sessionRef: this.sessionRef,
           pageRef: this.pageRef,
+          ...(frameRef === undefined ? {} : { frameRef }),
         }),
       });
       return state;
@@ -196,12 +228,24 @@ export class OpensteerSessionRuntime {
     const startedAt = Date.now();
 
     try {
-      const navigation = await this.requireEngine().navigate({
-        pageRef,
-        url: input.url,
-      });
-      this.latestSnapshot = undefined;
-      const state = await this.readSessionState();
+      const { navigation, state } = await this.runWithOperationTimeout(
+        "page.goto",
+        async (timeout) => {
+          const navigation = await this.navigatePage(
+            {
+              operation: "page.goto",
+              pageRef,
+              url: input.url,
+            },
+            timeout,
+          );
+          this.latestSnapshot = undefined;
+          return {
+            navigation,
+            state: await this.readSessionState(),
+          };
+        },
+      );
       await this.appendTrace({
         operation: "page.goto",
         startedAt,
@@ -238,28 +282,37 @@ export class OpensteerSessionRuntime {
     assertValidSemanticOperationInput("page.snapshot", input);
 
     const pageRef = await this.ensurePageRef();
-    const root = await this.ensureRoot();
     const mode: OpensteerSnapshotMode = input.mode ?? "action";
     const startedAt = Date.now();
 
     try {
-      const compiled = await compileOpensteerSnapshot({
-        engine: this.requireEngine(),
-        pageRef,
-        mode,
-      });
-      this.latestSnapshot = compiled;
-      const artifacts = await this.captureSnapshotArtifacts(pageRef, {
-        includeHtmlSnapshot: true,
-      });
+      const { artifacts, output } = await this.runWithOperationTimeout(
+        "page.snapshot",
+        async () => {
+          const compiled = await compileOpensteerSnapshot({
+            engine: this.requireEngine(),
+            pageRef,
+            mode,
+          });
+          this.latestSnapshot = compiled;
+          const artifacts = await this.captureSnapshotArtifacts(pageRef, {
+            includeHtmlSnapshot: true,
+          });
 
-      const output: OpensteerPageSnapshotOutput = {
-        url: compiled.url,
-        title: compiled.title,
-        mode,
-        html: compiled.html,
-        counters: compiled.counters,
-      };
+          const output: OpensteerPageSnapshotOutput = {
+            url: compiled.url,
+            title: compiled.title,
+            mode,
+            html: compiled.html,
+            counters: compiled.counters,
+          };
+
+          return {
+            artifacts,
+            output,
+          };
+        },
+      );
 
       await this.appendTrace({
         operation: "page.snapshot",
@@ -269,9 +322,9 @@ export class OpensteerSessionRuntime {
         artifacts,
         data: {
           mode,
-          url: compiled.url,
-          title: compiled.title,
-          counterCount: compiled.counters.length,
+          url: output.url,
+          title: output.title,
+          counterCount: output.counters.length,
         },
         context: buildRuntimeTraceContext({
           sessionRef: this.sessionRef,
@@ -366,53 +419,62 @@ export class OpensteerSessionRuntime {
     const startedAt = Date.now();
 
     try {
-      let descriptor: OpensteerExtractionDescriptorRecord | undefined;
-      if (input.schema !== undefined) {
-        assertValidOpensteerExtractionSchemaRoot(input.schema);
-        const payload = await compileOpensteerExtractionPayload({
-          pageRef,
-          schema: input.schema as Record<string, unknown>,
-          dom: this.requireDom(),
-          ...(this.latestSnapshot?.counterRecords === undefined
-            ? {}
-            : { latestSnapshotCounters: this.latestSnapshot.counterRecords }),
-        });
-        descriptor = await descriptors.write({
-          description: input.description,
-          root: payload,
-          schemaHash: canonicalJsonString(input.schema),
-          sourceUrl: (await this.requireEngine().getPageInfo({ pageRef })).url,
-        });
-      } else {
-        descriptor = await descriptors.read({
-          description: input.description,
-        });
-        if (!descriptor) {
-          throw new OpensteerProtocolError(
-            "not-found",
-            `no stored extraction descriptor found for "${input.description}"`,
-            {
-              details: {
-                description: input.description,
-                namespace: this.name,
-                kind: "extraction-descriptor",
-              },
-            },
-          );
-        }
-      }
+      const { artifacts, descriptor, output } = await this.runWithOperationTimeout(
+        "dom.extract",
+        async () => {
+          let descriptor: OpensteerExtractionDescriptorRecord | undefined;
+          if (input.schema !== undefined) {
+            assertValidOpensteerExtractionSchemaRoot(input.schema);
+            const payload = await compileOpensteerExtractionPayload({
+              pageRef,
+              schema: input.schema as Record<string, unknown>,
+              dom: this.requireDom(),
+              ...(this.latestSnapshot?.counterRecords === undefined
+                ? {}
+                : { latestSnapshotCounters: this.latestSnapshot.counterRecords }),
+            });
+            descriptor = await descriptors.write({
+              description: input.description,
+              root: payload,
+              schemaHash: canonicalJsonString(input.schema),
+              sourceUrl: (await this.requireEngine().getPageInfo({ pageRef })).url,
+            });
+          } else {
+            descriptor = await descriptors.read({
+              description: input.description,
+            });
+            if (!descriptor) {
+              throw new OpensteerProtocolError(
+                "not-found",
+                `no stored extraction descriptor found for "${input.description}"`,
+                {
+                  details: {
+                    description: input.description,
+                    namespace: this.name,
+                    kind: "extraction-descriptor",
+                  },
+                },
+              );
+            }
+          }
 
-      const data = await replayOpensteerExtractionPayload({
-        pageRef,
-        dom: this.requireDom(),
-        payload: descriptor.payload.root,
-      });
-      const artifacts = await this.captureSnapshotArtifacts(pageRef, {
-        includeHtmlSnapshot: false,
-      });
-      const output: OpensteerDomExtractOutput = {
-        data,
-      };
+          const data = await replayOpensteerExtractionPayload({
+            pageRef,
+            dom: this.requireDom(),
+            payload: descriptor.payload.root,
+          });
+          const artifacts = await this.captureSnapshotArtifacts(pageRef, {
+            includeHtmlSnapshot: false,
+          });
+          return {
+            artifacts,
+            descriptor,
+            output: {
+              data,
+            } satisfies OpensteerDomExtractOutput,
+          };
+        },
+      );
 
       await this.appendTrace({
         operation: "dom.extract",
@@ -425,7 +487,7 @@ export class OpensteerSessionRuntime {
           ...(descriptor.payload.schemaHash === undefined
             ? {}
             : { schemaHash: descriptor.payload.schemaHash }),
-          data,
+          data: output.data,
         },
         context: buildRuntimeTraceContext({
           sessionRef: this.sessionRef,
@@ -457,23 +519,20 @@ export class OpensteerSessionRuntime {
     let closeError: unknown;
 
     try {
-      if (pageRef !== undefined) {
-        await this.requireEngine().closePage({
-          pageRef,
-        });
-      }
+      await this.runWithOperationTimeout("session.close", async () => {
+        if (pageRef !== undefined) {
+          await this.requireEngine().closePage({
+            pageRef,
+          });
+        }
+        if (sessionRef !== undefined) {
+          await this.requireEngine().closeSession({
+            sessionRef,
+          });
+        }
+      });
     } catch (error) {
       closeError = error;
-    }
-
-    try {
-      if (sessionRef !== undefined) {
-        await this.requireEngine().closeSession({
-          sessionRef,
-        });
-      }
-    } catch (error) {
-      closeError ??= error;
     }
 
     const completedAt = Date.now();
@@ -727,6 +786,7 @@ export class OpensteerSessionRuntime {
       engine,
       root,
       namespace: this.name,
+      policy: this.policy,
     });
     this.extractionDescriptors = createOpensteerExtractionDescriptorStore({
       root,
@@ -893,6 +953,43 @@ export class OpensteerSessionRuntime {
       await engine.dispose();
     }
     this.ownsEngine = false;
+  }
+
+  private runWithOperationTimeout<T>(
+    operation: OpensteerSemanticOperationName,
+    callback: (context: TimeoutExecutionContext) => Promise<T>,
+  ): Promise<T> {
+    return runWithPolicyTimeout(
+      this.policy.timeout,
+      {
+        operation,
+      },
+      callback,
+    );
+  }
+
+  private async navigatePage(
+    input: {
+      readonly operation: "session.open" | "page.goto";
+      readonly pageRef: PageRef;
+      readonly url: string;
+    },
+    timeout: TimeoutExecutionContext,
+  ) {
+    const remainingMs = timeout.remainingMs();
+    const navigation = await this.requireEngine().navigate({
+      pageRef: input.pageRef,
+      url: input.url,
+      ...(remainingMs === undefined ? {} : { timeoutMs: remainingMs }),
+    });
+    await settleWithPolicy(this.policy.settle, {
+      operation: input.operation,
+      trigger: "navigation",
+      engine: this.requireEngine(),
+      pageRef: input.pageRef,
+      signal: timeout.signal,
+    });
+    return navigation;
   }
 }
 

@@ -34,6 +34,43 @@ export type {
 } from "./registry.js";
 export type { JsonArray, JsonObject, JsonPrimitive, JsonValue } from "./json.js";
 export type {
+  ActionabilityCheckInput,
+  ActionabilityCheckResult,
+  ActionabilityFailureDetails,
+  ActionabilityFailureReason,
+  ActionabilityPolicy,
+  DomActionPolicyOperation,
+  FallbackDecision,
+  FallbackEvaluationInput,
+  FallbackPolicy,
+  OpensteerPolicy,
+  RetryDecision,
+  RetryEvaluationInput,
+  RetryPolicy,
+  SettleContext,
+  SettleDelayInput,
+  SettleObserver,
+  SettlePolicy,
+  SettleTrigger,
+  TimeoutExecutionContext,
+  TimeoutPolicy,
+  TimeoutResolutionInput,
+} from "./policy/index.js";
+export {
+  assertValidActionPosition,
+  checkActionability,
+  defaultActionabilityPolicy,
+  defaultFallbackPolicy,
+  defaultPolicy,
+  defaultRetryPolicy,
+  defaultSettlePolicy,
+  defaultTimeoutPolicy,
+  delayWithSignal,
+  runWithPolicyTimeout,
+  settleWithPolicy,
+  toActionabilityError,
+} from "./policy/index.js";
+export type {
   ContextHop,
   DomActionOutcome,
   DomArrayFieldSelector,

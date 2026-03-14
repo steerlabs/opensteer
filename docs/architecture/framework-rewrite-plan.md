@@ -12,7 +12,8 @@ working on the rewrite.
 - `Phase 4` is complete.
 - `Phase 5` is complete.
 - `Phase 6` is complete.
-- `Phase 7` is the next active implementation phase.
+- `Phase 7` is complete.
+- `Phase 8` is the next active implementation phase.
 
 ## Goals
 
@@ -362,6 +363,8 @@ Add `packages/opensteer/src/policy`.
 - retry rules
 - timeout tiers
 - fallback thresholds
+
+Status: complete.
 
 ### Phase 8
 

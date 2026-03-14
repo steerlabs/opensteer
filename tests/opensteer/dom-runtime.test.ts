@@ -17,6 +17,7 @@ import {
   buildPathSelectorHint,
   createDomRuntime,
   createFilesystemOpensteerRoot,
+  defaultPolicy,
   normalizeExtractedValue,
   resolveExtractedValueInContext,
   sanitizeElementPath,
@@ -834,6 +835,167 @@ describe("Phase 5 DOM runtime integration", () => {
           position: createPoint(400, 500),
         });
         expect(scrollOutcome.resolved.node.nodeName).toBe("BODY");
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "returns structured actionability errors for hidden targets",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+
+      try {
+        const runtime = createDomRuntime({ engine });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: dataUrl(
+            html(
+              `
+                <button id="hidden-action" hidden type="button" style="position:absolute;left:20px;top:20px;width:160px;height:40px">Hidden</button>
+              `,
+              "DOM runtime hidden target",
+            ),
+          ),
+        });
+
+        await wait(300);
+
+        await expect(
+          runtime.click({
+            pageRef: created.data.pageRef,
+            target: { kind: "selector", selector: "#hidden-action" },
+          }),
+        ).rejects.toMatchObject({
+          name: "OpensteerProtocolError",
+          code: "operation-failed",
+          details: {
+            policy: "actionability",
+            reason: "not-visible",
+            attribute: "hidden",
+          },
+        });
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "waits for post-click settle by default and allows overriding settle policy on createDomRuntime",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+
+      try {
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: dataUrl(
+            html(
+              `
+                <button id="delayed-action" type="button" style="position:absolute;left:20px;top:20px;width:160px;height:40px">Delayed</button>
+                <div id="status" style="position:absolute;left:20px;top:80px">ready</div>
+                <script>
+                  document.getElementById("delayed-action").addEventListener("click", () => {
+                    setTimeout(() => {
+                      document.getElementById("status").textContent = "clicked";
+                    }, 60);
+                  });
+                </script>
+              `,
+              "DOM runtime settle",
+            ),
+          ),
+        });
+
+        await wait(300);
+
+        const runtime = createDomRuntime({ engine });
+        await runtime.click({
+          pageRef: created.data.pageRef,
+          target: { kind: "selector", selector: "#delayed-action" },
+        });
+
+        const settledSnapshot = await engine.getDomSnapshot({
+          frameRef: created.frameRef!,
+        });
+        const settledStatusNode = requireValue(
+          findNodeById(settledSnapshot.nodes, "status"),
+          "status node missing",
+        );
+        expect(await engine.readText(createLocator(settledSnapshot, settledStatusNode))).toBe(
+          "clicked",
+        );
+
+        const noSettleRuntime = createDomRuntime({
+          engine,
+          policy: {
+            ...defaultPolicy(),
+            settle: {
+              observers: [],
+              resolveDelayMs() {
+                return 0;
+              },
+            },
+          },
+        });
+        const resetPage = await engine.createPage({
+          sessionRef,
+          url: dataUrl(
+            html(
+              `
+                <button id="delayed-action" type="button" style="position:absolute;left:20px;top:20px;width:160px;height:40px">Delayed</button>
+                <div id="status" style="position:absolute;left:20px;top:80px">ready</div>
+                <script>
+                  document.getElementById("delayed-action").addEventListener("click", () => {
+                    setTimeout(() => {
+                      document.getElementById("status").textContent = "clicked";
+                    }, 60);
+                  });
+                </script>
+              `,
+              "DOM runtime no settle",
+            ),
+          ),
+        });
+
+        await wait(300);
+
+        await noSettleRuntime.click({
+          pageRef: resetPage.data.pageRef,
+          target: { kind: "selector", selector: "#delayed-action" },
+        });
+
+        const immediateSnapshot = await engine.getDomSnapshot({
+          frameRef: resetPage.frameRef!,
+        });
+        const immediateStatusNode = requireValue(
+          findNodeById(immediateSnapshot.nodes, "status"),
+          "status node missing",
+        );
+        expect(await engine.readText(createLocator(immediateSnapshot, immediateStatusNode))).toBe(
+          "ready",
+        );
+
+        await wait(80);
+        const eventualSnapshot = await engine.getDomSnapshot({
+          frameRef: resetPage.frameRef!,
+        });
+        const eventualStatusNode = requireValue(
+          findNodeById(eventualSnapshot.nodes, "status"),
+          "status node missing",
+        );
+        expect(await engine.readText(createLocator(eventualSnapshot, eventualStatusNode))).toBe(
+          "clicked",
+        );
       } finally {
         await engine.dispose();
       }
