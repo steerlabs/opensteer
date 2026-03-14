@@ -586,9 +586,7 @@ async function runFrameScript(
         mode,
       },
     );
-  } catch {
-    // Ignore detached or transient frame failures. Screenshot capture should remain best-effort.
-  }
+  } catch {}
 }
 
 function delayWithSignal(durationMs: number, signal: AbortSignal): Promise<void> {
