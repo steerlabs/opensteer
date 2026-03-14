@@ -156,6 +156,21 @@ async function main(argv: readonly string[]): Promise<void> {
       return;
     }
 
+    case "computer": {
+      const client = await requireOpensteerService(sessionOptions);
+      const actionRaw = readStringOption(parsed.options, "action") ?? parsed.positionals[0];
+      if (!actionRaw) {
+        throw new Error("computer requires an action JSON object");
+      }
+      const screenshot = parseComputerScreenshotOptions(parsed.options);
+      const result = await client.invoke("computer.execute", {
+        action: parseJsonObject(actionRaw, "action"),
+        ...(screenshot === undefined ? {} : { screenshot }),
+      });
+      writeJson(result);
+      return;
+    }
+
     case "close": {
       const client = await connectOpensteerService(sessionOptions);
       if (!client) {
@@ -173,7 +188,7 @@ async function main(argv: readonly string[]): Promise<void> {
     case "-h":
     default:
       throw new Error(
-        `unsupported command "${parsed.command}". Supported commands: open, goto, snapshot, click, hover, input, scroll, extract, close.`,
+        `unsupported command "${parsed.command}". Supported commands: open, goto, snapshot, click, hover, input, scroll, extract, computer, close.`,
       );
   }
 }
@@ -363,6 +378,36 @@ function parseJsonObject(value: string, label: string): Record<string, unknown> 
   return parsed as Record<string, unknown>;
 }
 
+function parseComputerScreenshotOptions(
+  options: Readonly<Record<string, string | boolean>>,
+): Record<string, unknown> | undefined {
+  const screenshotJson = readStringOption(options, "screenshot-json");
+  const format = readStringOption(options, "format");
+  const includeCursor = readBooleanOption(options, "include-cursor");
+  const annotations = parseCsvOption(readStringOption(options, "annotations"));
+
+  if (
+    screenshotJson !== undefined &&
+    (format !== undefined || includeCursor !== undefined || annotations !== undefined)
+  ) {
+    throw new Error(
+      "Specify either --screenshot-json or individual screenshot flags (--format, --include-cursor, --annotations).",
+    );
+  }
+
+  if (screenshotJson !== undefined) {
+    return parseJsonObject(screenshotJson, "screenshot-json");
+  }
+
+  const parsed = {
+    ...(format === undefined ? {} : { format }),
+    ...(includeCursor === undefined ? {} : { includeCursor }),
+    ...(annotations === undefined ? {} : { annotations }),
+  };
+
+  return Object.keys(parsed).length === 0 ? undefined : parsed;
+}
+
 function readStringOption(
   options: Readonly<Record<string, string | boolean>>,
   key: string,
@@ -416,6 +461,19 @@ function readNumericPositional(value: string | undefined): number | undefined {
     return undefined;
   }
   return Number.parseInt(value, 10);
+}
+
+function parseCsvOption(value: string | undefined): readonly string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const entries = value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+
+  return entries;
 }
 
 function consumeTextPositional(positionals: readonly string[]): string | undefined {

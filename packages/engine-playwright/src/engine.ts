@@ -122,6 +122,10 @@ import {
   shouldIgnoreBackgroundTaskError,
   rethrowNodeLookupError,
 } from "./errors.js";
+import {
+  createPlaywrightComputerUseBridge,
+  opensteerComputerUseBridgeSymbol,
+} from "./computer-use.js";
 
 export type {
   PlaywrightChromiumLaunchOptions,
@@ -153,6 +157,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   private sessionCounter = 0;
   private eventCounter = 0;
   private stepCounter = 0;
+  private computerUseBridge: unknown;
   private disposed = false;
 
   private constructor(
@@ -204,6 +209,19 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
 
   async [Symbol.asyncDispose](): Promise<void> {
     await this.dispose();
+  }
+
+  [opensteerComputerUseBridgeSymbol](): unknown {
+    this.computerUseBridge ??= createPlaywrightComputerUseBridge({
+      resolveController: (pageRef) => this.requirePage(pageRef),
+      flushPendingPageTasks: (sessionRef) => this.flushPendingPageTasks(sessionRef),
+      flushDomUpdateTask: (controller) => this.flushDomUpdateTask(controller),
+      requireMainFrame: (controller) => this.requireMainFrame(controller),
+      drainQueuedEvents: (pageRef) => this.drainQueuedEvents(pageRef),
+      getViewportMetrics: (pageRef) => this.getViewportMetrics({ pageRef }),
+      withModifiers: (page, modifiers, action) => this.withModifiers(page, modifiers, action),
+    });
+    return this.computerUseBridge;
   }
 
   async createSession(): Promise<SessionRef> {
@@ -2059,11 +2077,14 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     if (!session) {
       return;
     }
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    if (session.pendingPageTasks.size === 0) {
-      return;
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const pending = Array.from(session.pendingPageTasks);
+      if (pending.length === 0) {
+        return;
+      }
+      await Promise.all(pending);
     }
-    await Promise.all(Array.from(session.pendingPageTasks));
   }
 
   private throwBackgroundError(controller: PageController): void {

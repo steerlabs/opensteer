@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { once } from "node:events";
 
 import { createPlaywrightBrowserCoreEngine } from "../../packages/engine-playwright/src/index.js";
+import { opensteerComputerUseBridgeSymbol } from "../../packages/engine-playwright/src/computer-use.js";
 import { createPoint, type DomSnapshotNode } from "../../packages/browser-core/src/index.js";
 import { defineBrowserCoreConformanceSuite } from "../browser-core/conformance-suite.js";
 
@@ -846,6 +847,114 @@ test("does not crash when a page closes with network capture work still in fligh
       includeBodies: true,
     });
     expect(records.some((record) => record.url.endsWith("/slow-echo"))).toBe(true);
+  } finally {
+    await engine.dispose();
+  }
+});
+
+test("computer-use bridge renders annotation and cursor overlays", async () => {
+  const engine = await createPlaywrightBrowserCoreEngine({
+    launch: { headless: true },
+  });
+  try {
+    const sessionRef = await engine.createSession();
+    const created = await engine.createPage({
+      sessionRef,
+      url: `${baseUrl}/integration`,
+    });
+    const bridge = (engine as Record<PropertyKey, () => { execute(input: unknown): Promise<any> }>) [
+      opensteerComputerUseBridgeSymbol
+    ]();
+
+    await bridge.execute({
+      pageRef: created.data.pageRef,
+      action: {
+        type: "move",
+        x: 60,
+        y: 40,
+      },
+      screenshot: {
+        format: "png",
+        includeCursor: false,
+        annotations: [],
+      },
+      signal: new AbortController().signal,
+      remainingMs: () => 10_000,
+      settle: async () => {},
+    });
+
+    const plain = await bridge.execute({
+      pageRef: created.data.pageRef,
+      action: {
+        type: "screenshot",
+      },
+      screenshot: {
+        format: "png",
+        includeCursor: false,
+        annotations: [],
+      },
+      signal: new AbortController().signal,
+      remainingMs: () => 10_000,
+      settle: async () => {},
+    });
+
+    const decorated = await bridge.execute({
+      pageRef: created.data.pageRef,
+      action: {
+        type: "screenshot",
+      },
+      screenshot: {
+        format: "png",
+        includeCursor: true,
+        annotations: ["clickable", "grid"],
+      },
+      signal: new AbortController().signal,
+      remainingMs: () => 10_000,
+      settle: async () => {},
+    });
+
+    expect(Buffer.compare(Buffer.from(plain.screenshot.payload.bytes), Buffer.from(decorated.screenshot.payload.bytes))).not.toBe(0);
+  } finally {
+    await engine.dispose();
+  }
+});
+
+test("computer-use bridge hands off popup pages", async () => {
+  const engine = await createPlaywrightBrowserCoreEngine({
+    launch: { headless: true },
+  });
+  try {
+    const sessionRef = await engine.createSession();
+    const created = await engine.createPage({
+      sessionRef,
+      url: `${baseUrl}/integration`,
+    });
+    const bridge = (engine as Record<PropertyKey, () => { execute(input: unknown): Promise<any> }>) [
+      opensteerComputerUseBridgeSymbol
+    ]();
+
+    const popup = await bridge.execute({
+      pageRef: created.data.pageRef,
+      action: {
+        type: "click",
+        x: 60,
+        y: 40,
+      },
+      screenshot: {
+        format: "png",
+        includeCursor: false,
+        annotations: [],
+      },
+      signal: new AbortController().signal,
+      remainingMs: () => 10_000,
+      settle: async () => {
+        await wait(150);
+      },
+    });
+
+    expect(popup.pageRef).not.toBe(created.data.pageRef);
+    expect(popup.events.map((event: { readonly kind: string }) => event.kind)).toContain("popup-opened");
+    expect((await engine.getPageInfo({ pageRef: popup.pageRef })).url).toBe(`${baseUrl}/popup`);
   } finally {
     await engine.dispose();
   }

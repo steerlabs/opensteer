@@ -4,7 +4,7 @@ This directory contains the source-of-truth documents for the rewrite.
 
 Current status: `Phase 0` complete, `Phase 1` complete, `Phase 2` complete,
 `Phase 3` complete, `Phase 4` complete, `Phase 5` complete, `Phase 6` complete,
-`Phase 7` next.
+`Phase 7` complete, `Phase 8` complete, `Phase 9` complete, `Phase 10` next.
 
 - [Framework rewrite plan](framework-rewrite-plan.md)
 - `packages/browser-core/src/` contains the implemented Phase 1 contract
@@ -26,6 +26,16 @@ Current status: `Phase 0` complete, `Phase 1` complete, `Phase 2` complete,
   boundary
 - `tests/opensteer/phase6-sdk-cli.test.ts` contains the Phase 6 SDK and CLI
   integration coverage
+- `packages/opensteer/src/policy/` contains the implemented Phase 7 policy
+  layer for actionability, settle, retry, timeout, and fallback rules
+- `packages/engine-abp/src/` contains the implemented Phase 8 ABP backend
+- `tests/engine-abp/` contains the Phase 8 backend coverage
+- `packages/opensteer/src/runtimes/computer-use/` contains the implemented
+  Phase 9 computer-use runtime
+- `packages/engine-playwright/src/computer-use.ts` and
+  `packages/engine-abp/src/computer-use.ts` contain the Phase 9
+  engine-specific computer-use adapters
+- `tests/opensteer/computer-use.test.ts` contains the Phase 9 runtime coverage
 
 Current Opensteer package direction:
 

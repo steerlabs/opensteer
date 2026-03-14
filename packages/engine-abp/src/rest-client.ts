@@ -220,6 +220,22 @@ export class AbpRestClient implements AbpRestClientLike {
     });
   }
 
+  dragTab(
+    tabId: string,
+    body: {
+      readonly start_x: number;
+      readonly start_y: number;
+      readonly end_x: number;
+      readonly end_y: number;
+      readonly steps?: number;
+    } & AbpActionRequest,
+  ): Promise<AbpActionResponse> {
+    return this.requestJson(`/tabs/${tabId}/drag`, {
+      method: "POST",
+      body,
+    });
+  }
+
   keyPressTab(
     tabId: string,
     body: {
@@ -240,6 +256,18 @@ export class AbpRestClient implements AbpRestClientLike {
     } & AbpActionRequest,
   ): Promise<AbpActionResponse> {
     return this.requestJson(`/tabs/${tabId}/type`, {
+      method: "POST",
+      body,
+    });
+  }
+
+  waitTab(
+    tabId: string,
+    body: {
+      readonly duration_ms: number;
+    } & AbpActionRequest,
+  ): Promise<AbpActionResponse> {
+    return this.requestJson(`/tabs/${tabId}/wait`, {
       method: "POST",
       body,
     });
@@ -379,6 +407,7 @@ export function buildImmediateActionRequest(
     readonly screenshot?: {
       readonly cursor?: boolean;
       readonly format?: string;
+      readonly markup?: readonly string[];
     };
   } = {},
 ): AbpActionRequest {
@@ -397,6 +426,9 @@ export function buildImmediateActionRequest(
             ...(options.screenshot.format === undefined
               ? {}
               : { format: options.screenshot.format }),
+            ...(options.screenshot.markup === undefined
+              ? {}
+              : { markup: [...options.screenshot.markup] }),
           },
         }),
     ...(options.captureNetwork === false
@@ -409,9 +441,20 @@ export function buildImmediateActionRequest(
   };
 }
 
-export function buildInputActionRequest(): AbpActionRequest {
+export function buildInputActionRequest(
+  options: {
+    readonly captureNetwork?: boolean;
+    readonly screenshot?: {
+      readonly cursor?: boolean;
+      readonly format?: string;
+      readonly markup?: readonly string[];
+    };
+  } = {},
+): AbpActionRequest {
   return buildImmediateActionRequest({
+    ...(options.captureNetwork === undefined ? {} : { captureNetwork: options.captureNetwork }),
     waitUntil: { type: "action_complete", timeout_ms: 10_000 },
+    ...(options.screenshot === undefined ? {} : { screenshot: options.screenshot }),
   });
 }
 
@@ -419,6 +462,7 @@ export function buildImmediateScreenshotRequest(
   screenshot: {
     readonly cursor?: boolean;
     readonly format?: string;
+    readonly markup?: readonly string[];
   } = {},
 ): AbpActionRequest {
   return buildImmediateActionRequest({

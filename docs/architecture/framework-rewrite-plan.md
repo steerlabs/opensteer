@@ -13,7 +13,9 @@ working on the rewrite.
 - `Phase 5` is complete.
 - `Phase 6` is complete.
 - `Phase 7` is complete.
-- `Phase 8` is the next active implementation phase.
+- `Phase 8` is complete.
+- `Phase 9` is complete.
+- `Phase 10` is the next active implementation phase.
 
 ## Goals
 
@@ -373,13 +375,33 @@ Implement `packages/engine-abp`.
 - ABP execution
 - read-only CDP sidecar for inspection
 
+Status: complete.
+
 ### Phase 9
 
 Add `packages/opensteer/src/runtimes/computer-use`.
 
 - coordinate and vision mode
-- hit-test before click
-- traces record both DOM target and coordinates
+- public `computer.execute` semantic surface in `packages/protocol`
+- product-layer engine bridge discovery without widening `browser-core`
+- pixel-only `layout-viewport-css` action union:
+  - click
+  - move
+  - scroll
+  - type
+  - key
+  - drag
+  - screenshot
+  - wait
+- automatic post-action screenshot capture with default `png` output
+- Playwright-native computer-use adapter with policy-driven settle and
+  temporary screenshot annotations rendered through engine internals
+- ABP-native computer-use adapter with native screenshot/timing reuse and
+  trusted ABP settle
+- best-effort post-action trace enrichment for coordinates and DOM context
+  instead of a pre-action hit-test gate
+
+Status: complete.
 
 ### Phase 10
 

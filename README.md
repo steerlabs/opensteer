@@ -9,7 +9,7 @@ that owns Opensteer's actual semantics.
 
 ## Current Status
 
-`Phase 0`, `Phase 1`, `Phase 2`, `Phase 3`, `Phase 4`, `Phase 5`, and `Phase 6` are complete.
+`Phase 0`, `Phase 1`, `Phase 2`, `Phase 3`, `Phase 4`, `Phase 5`, `Phase 6`, `Phase 7`, and `Phase 8` are complete.
 
 The repository now has:
 
@@ -22,8 +22,11 @@ The repository now has:
 - the `packages/opensteer/src/runtimes/dom` Phase 5 DOM runtime is implemented and tested
 - the `packages/opensteer` Phase 6 semantic SDK, HTML-first snapshot compiler, and thin CLI
   service boundary are implemented and tested
+- the `packages/opensteer/src/policy` Phase 7 policy layer is implemented and tested
+- the `packages/engine-abp` Phase 8 ABP backend is implemented, with ABP execution and a
+  read-only CDP inspection sidecar
 - the rewrite architecture and phased rollout plan are documented
-- the next active work is Phase 7 settle policy and actionability behavior
+- the next active work is Phase 9 computer-use runtime behavior
 
 ## Repository Layout
 
