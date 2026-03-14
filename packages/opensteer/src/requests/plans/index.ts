@@ -3,8 +3,11 @@ import {
   opensteerRequestPlanPayloadSchema,
   validateJsonSchema,
   type OpensteerRequestPlanParameter,
+  type OpensteerRequestEntry,
   type OpensteerRequestPlanPayload,
 } from "@opensteer/protocol";
+
+import { invalidRequestPlanError } from "../errors.js";
 
 const HTTP_METHOD_PATTERN = /^[A-Za-z]+$/;
 const URL_TEMPLATE_PLACEHOLDER_PATTERN = /\{([A-Za-z][A-Za-z0-9_-]*)\}/g;
@@ -34,12 +37,20 @@ export function normalizeRequestPlanPayload(
 
   const method = payload.endpoint.method.trim().toUpperCase();
   if (!HTTP_METHOD_PATTERN.test(method)) {
-    throw new Error(`request plan endpoint.method must be an HTTP method, received ${payload.endpoint.method}`);
+    throw invalidRequestPlanError(
+      `request plan endpoint.method must be an HTTP method, received ${payload.endpoint.method}`,
+      {
+        field: "endpoint.method",
+        value: payload.endpoint.method,
+      },
+    );
   }
 
   const urlTemplate = payload.endpoint.urlTemplate.trim();
   if (urlTemplate.length === 0) {
-    throw new Error("request plan endpoint.urlTemplate must be a non-empty string");
+    throw invalidRequestPlanError("request plan endpoint.urlTemplate must be a non-empty string", {
+      field: "endpoint.urlTemplate",
+    });
   }
 
   const placeholders = extractUrlTemplatePlaceholders(urlTemplate);
@@ -49,18 +60,34 @@ export function normalizeRequestPlanPayload(
   const pathParameters = normalizedParameters.filter((parameter) => parameter.in === "path");
   const pathParameterNames = new Set(pathParameters.map((parameter) => parameter.name));
   if (placeholders.length !== pathParameterNames.size) {
-    throw new Error(
+    throw invalidRequestPlanError(
       `request plan path parameters must exactly match urlTemplate placeholders: ${placeholders.join(", ")}`,
+      {
+        field: "parameters",
+        placeholders,
+      },
     );
   }
   for (const placeholder of placeholders) {
     if (!pathParameterNames.has(placeholder)) {
-      throw new Error(`request plan urlTemplate placeholder {${placeholder}} is missing a path parameter`);
+      throw invalidRequestPlanError(
+        `request plan urlTemplate placeholder {${placeholder}} is missing a path parameter`,
+        {
+          field: "parameters",
+          placeholder,
+        },
+      );
     }
   }
   for (const parameter of pathParameters) {
     if (!placeholders.includes(parameter.name)) {
-      throw new Error(`request plan path parameter ${parameter.name} is not present in the urlTemplate`);
+      throw invalidRequestPlanError(
+        `request plan path parameter ${parameter.name} is not present in the urlTemplate`,
+        {
+          field: "parameters",
+          parameter: parameter.name,
+        },
+      );
     }
   }
 
@@ -71,22 +98,20 @@ export function normalizeRequestPlanPayload(
     ...(payload.endpoint.defaultQuery === undefined || payload.endpoint.defaultQuery.length === 0
       ? {}
       : {
-          defaultQuery: payload.endpoint.defaultQuery.map((entry) => ({
-            name: entry.name.trim(),
-            value: entry.value,
-          })),
+          defaultQuery: payload.endpoint.defaultQuery.map((entry, index) =>
+            normalizeRequestEntry(entry, `endpoint.defaultQuery[${index}]`),
+          ),
         }),
     ...(payload.endpoint.defaultHeaders === undefined || payload.endpoint.defaultHeaders.length === 0
       ? {}
       : {
-          defaultHeaders: payload.endpoint.defaultHeaders.map((entry) => ({
-            name: entry.name.trim(),
-            value: entry.value,
-          })),
+          defaultHeaders: payload.endpoint.defaultHeaders.map((entry, index) =>
+            normalizeRequestEntry(entry, `endpoint.defaultHeaders[${index}]`),
+          ),
         }),
   } satisfies OpensteerRequestPlanPayload["endpoint"];
 
-  return {
+  const normalizedPayload = {
     transport,
     endpoint,
     ...(normalizedParameters.length === 0 ? {} : { parameters: normalizedParameters }),
@@ -96,11 +121,21 @@ export function normalizeRequestPlanPayload(
           body: {
             ...(payload.body.contentType === undefined
               ? {}
-              : { contentType: payload.body.contentType.trim() }),
+              : {
+                  contentType: normalizeTrimmedString(
+                    "body.contentType",
+                    payload.body.contentType,
+                  ),
+                }),
             ...(payload.body.required === undefined ? {} : { required: payload.body.required }),
             ...(payload.body.description === undefined
               ? {}
-              : { description: payload.body.description.trim() }),
+              : {
+                  description: normalizeTrimmedString(
+                    "body.description",
+                    payload.body.description,
+                  ),
+                }),
           },
         }),
     ...(payload.response === undefined
@@ -110,7 +145,12 @@ export function normalizeRequestPlanPayload(
             status: payload.response.status,
             ...(payload.response.contentType === undefined
               ? {}
-              : { contentType: payload.response.contentType.trim().toLowerCase() }),
+              : {
+                  contentType: normalizeTrimmedString(
+                    "response.contentType",
+                    payload.response.contentType,
+                  ).toLowerCase(),
+                }),
           },
         }),
     ...(payload.auth === undefined
@@ -120,13 +160,26 @@ export function normalizeRequestPlanPayload(
             strategy: payload.auth.strategy,
             ...(payload.auth.recipeRef === undefined
               ? {}
-              : { recipeRef: payload.auth.recipeRef.trim() }),
+              : {
+                  recipeRef: normalizeTrimmedString(
+                    "auth.recipeRef",
+                    payload.auth.recipeRef,
+                  ),
+                }),
             ...(payload.auth.description === undefined
               ? {}
-              : { description: payload.auth.description.trim() }),
+              : {
+                  description: normalizeTrimmedString(
+                    "auth.description",
+                    payload.auth.description,
+                  ),
+                }),
           },
         }),
-  };
+  } satisfies OpensteerRequestPlanPayload;
+
+  assertValidRequestPlanPayload(normalizedPayload);
+  return normalizedPayload;
 }
 
 export function extractUrlTemplatePlaceholders(urlTemplate: string): readonly string[] {
@@ -146,26 +199,43 @@ function normalizeParameters(
   const seenByLocation = new Set<string>();
 
   return parameters.map((parameter) => {
-    const name = parameter.name.trim();
-    if (name.length === 0) {
-      throw new Error("request plan parameter.name must be a non-empty string");
-    }
+    const name = normalizeTrimmedString("parameter.name", parameter.name);
 
     const seenKey = `${parameter.in}:${name}`;
     if (seenByLocation.has(seenKey)) {
-      throw new Error(`duplicate request plan parameter ${name} in ${parameter.in}`);
+      throw invalidRequestPlanError(`duplicate request plan parameter ${name} in ${parameter.in}`, {
+        field: "parameters",
+        parameter: name,
+        location: parameter.in,
+      });
     }
     seenByLocation.add(seenKey);
 
     if (parameter.in === "path") {
-      if (parameter.wireName !== undefined && parameter.wireName.trim() !== name) {
-        throw new Error(`path parameter ${name} cannot define a wireName different from its placeholder`);
+      if (parameter.wireName !== undefined) {
+        const wireName = normalizeTrimmedString("parameter.wireName", parameter.wireName);
+        if (wireName !== name) {
+          throw invalidRequestPlanError(
+            `path parameter ${name} cannot define a wireName different from its placeholder`,
+            {
+              field: "parameters",
+              parameter: name,
+              wireName,
+            },
+          );
+        }
       }
       if (parameter.defaultValue !== undefined) {
-        throw new Error(`path parameter ${name} cannot define a defaultValue`);
+        throw invalidRequestPlanError(`path parameter ${name} cannot define a defaultValue`, {
+          field: "parameters",
+          parameter: name,
+        });
       }
       if (parameter.required === false) {
-        throw new Error(`path parameter ${name} cannot be optional`);
+        throw invalidRequestPlanError(`path parameter ${name} cannot be optional`, {
+          field: "parameters",
+          parameter: name,
+        });
       }
       return {
         name,
@@ -173,18 +243,30 @@ function normalizeParameters(
         required: true,
         ...(parameter.description === undefined
           ? {}
-          : { description: parameter.description.trim() }),
+          : {
+              description: normalizeTrimmedString(
+                "parameter.description",
+                parameter.description,
+              ),
+            }),
       };
     }
 
     return {
       name,
       in: parameter.in,
-      ...(parameter.wireName === undefined ? {} : { wireName: parameter.wireName.trim() }),
+      ...(parameter.wireName === undefined
+        ? {}
+        : { wireName: normalizeTrimmedString("parameter.wireName", parameter.wireName) }),
       ...(parameter.required === undefined ? {} : { required: parameter.required }),
       ...(parameter.description === undefined
         ? {}
-        : { description: parameter.description.trim() }),
+        : {
+            description: normalizeTrimmedString(
+              "parameter.description",
+              parameter.description,
+            ),
+          }),
       ...(parameter.defaultValue === undefined ? {} : { defaultValue: parameter.defaultValue }),
     };
   });
@@ -196,7 +278,10 @@ function normalizeTransport(
   switch (transport.kind) {
     case "session-http":
       if (transport.requiresBrowser === false) {
-        throw new Error("session-http transport always requiresBrowser");
+        throw invalidRequestPlanError("session-http transport always requiresBrowser", {
+          field: "transport.requiresBrowser",
+          transport: transport.kind,
+        });
       }
       return {
         kind: "session-http",
@@ -222,6 +307,32 @@ function assertAbsoluteUrlTemplate(
   );
 
   if (!URL.canParse(sampleUrl)) {
-    throw new Error(`request plan endpoint.urlTemplate must be an absolute URL, received ${urlTemplate}`);
+    throw invalidRequestPlanError(
+      `request plan endpoint.urlTemplate must be an absolute URL, received ${urlTemplate}`,
+      {
+        field: "endpoint.urlTemplate",
+        value: urlTemplate,
+      },
+    );
   }
+}
+
+function normalizeRequestEntry(
+  entry: OpensteerRequestEntry,
+  fieldPath: string,
+): OpensteerRequestEntry {
+  return {
+    name: normalizeTrimmedString(`${fieldPath}.name`, entry.name),
+    value: entry.value,
+  };
+}
+
+function normalizeTrimmedString(field: string, value: string): string {
+  const normalized = value.trim();
+  if (normalized.length === 0) {
+    throw invalidRequestPlanError(`${field} must be a non-empty string`, {
+      field,
+    });
+  }
+  return normalized;
 }

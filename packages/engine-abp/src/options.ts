@@ -51,7 +51,8 @@ export const ABP_BROWSER_CORE_CAPABILITIES: BrowserCapabilities = mergeBrowserCa
 );
 
 export interface AbpLaunchOptions {
-  readonly executablePath?: string;
+  readonly abpExecutablePath?: string;
+  readonly browserExecutablePath?: string;
   readonly headless?: boolean;
   readonly userDataDir?: string;
   readonly sessionDir?: string;
@@ -74,7 +75,8 @@ export interface LaunchRequestOptions {
   readonly port: number;
   readonly userDataDir: string;
   readonly sessionDir: string;
-  readonly executablePath?: string;
+  readonly abpExecutablePath?: string;
+  readonly browserExecutablePath?: string;
   readonly headless: boolean;
   readonly args: readonly string[];
   readonly verbose: boolean;

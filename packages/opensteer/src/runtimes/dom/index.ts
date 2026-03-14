@@ -1,4 +1,5 @@
 export type {
+  AnchorTargetRef,
   ContextHop,
   DomActionOutcome,
   DomArrayFieldSelector,
@@ -24,7 +25,9 @@ export type {
   ElementPath,
   MatchClause,
   PathNode,
+  ReplayElementPath,
   ResolvedDomTarget,
+  StructuralElementAnchor,
 } from "./types.js";
 export {
   buildArrayFieldPathCandidates,
@@ -48,6 +51,10 @@ export {
 export {
   buildPathSelectorHint,
   cloneElementPath,
+  cloneReplayElementPath,
+  cloneStructuralElementAnchor,
   sanitizeElementPath,
+  sanitizeReplayElementPath,
+  sanitizeStructuralElementAnchor,
 } from "./path.js";
 export { createDomRuntime } from "./runtime.js";

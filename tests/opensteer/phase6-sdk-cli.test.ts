@@ -206,6 +206,132 @@ describe("Phase 6 SDK and CLI surfaces", () => {
     }
   }, 60_000);
 
+  test("SDK resolves stale counters session-locally and promotes the recovered live node on description writes", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const opensteer = new Opensteer({
+      name: "phase6-stale-counter",
+      rootDir,
+      browser: {
+        headless: true,
+      },
+    });
+
+    try {
+      await opensteer.open(
+        htmlDataUrl(
+          `
+            <button id="swap" type="button">Swap</button>
+            <div id="slot">
+              <button id="target" type="button">Target V1</button>
+            </div>
+            <div id="status">ready</div>
+            <script>
+              const status = document.getElementById("status");
+              const wire = (label) => {
+                document.getElementById("target").addEventListener("click", () => {
+                  status.textContent = "clicked " + label;
+                });
+              };
+              wire("v1");
+              document.getElementById("swap").addEventListener("click", () => {
+                document.getElementById("slot").innerHTML =
+                  '<button id="target" type="button">Target V2</button>';
+                wire("v2");
+                status.textContent = "swapped";
+              });
+            </script>
+          `,
+          "Phase 6 stale counter",
+        ),
+      );
+
+      const snapshot = await opensteer.snapshot("action");
+      const swapButton = requireCounter(snapshot, (counter) => counter.pathHint.includes("#swap"));
+      const targetButton = requireCounter(snapshot, (counter) => counter.pathHint.includes("#target"));
+
+      await opensteer.click({
+        element: swapButton.element,
+      });
+      await opensteer.click({
+        element: targetButton.element,
+      });
+
+      expect(
+        await opensteer.extract({
+          schema: {
+            status: { selector: "#status" },
+          },
+          description: "stale counter status",
+        }),
+      ).toEqual({
+        status: "clicked v2",
+      });
+
+      await opensteer.click({
+        element: targetButton.element,
+        description: "swapped target button",
+      });
+      await opensteer.click({
+        description: "swapped target button",
+      });
+
+      expect(await opensteer.extract({ description: "stale counter status" })).toEqual({
+        status: "clicked v2",
+      });
+    } finally {
+      await opensteer.close();
+    }
+  }, 60_000);
+
+  test("SDK extraction authoring fails cleanly when a counter can no longer be promoted", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const opensteer = new Opensteer({
+      name: "phase6-extract-drift",
+      rootDir,
+      browser: {
+        headless: true,
+      },
+    });
+
+    try {
+      await opensteer.open(
+        htmlDataUrl(
+          `
+            <button id="drift" type="button">Drift</button>
+            <div id="slot">
+              <button class="choice" type="button">Only choice</button>
+            </div>
+            <script>
+              document.getElementById("drift").addEventListener("click", () => {
+                document.getElementById("slot").innerHTML =
+                  '<div class="wrapper"><button class="choice" type="button">Wrapped choice</button></div>';
+              });
+            </script>
+          `,
+          "Phase 6 extraction drift",
+        ),
+      );
+
+      const snapshot = await opensteer.snapshot("extraction");
+      const choice = requireCounter(snapshot, (counter) => counter.pathHint.includes(".choice"));
+
+      await opensteer.click({
+        selector: "#drift",
+      });
+
+      await expect(
+        opensteer.extract({
+          description: "drifted choice",
+          schema: {
+            value: { element: choice.element },
+          },
+        }),
+      ).rejects.toThrow(/structural anchor|stale|not found|unable/i);
+    } finally {
+      await opensteer.close();
+    }
+  }, 60_000);
+
   test("CLI preserves browser continuity across processes and tears down the session service on close", async () => {
     const rootDir = await createPhase6TemporaryRoot();
     const baseUrl = requireFixtureServer().url;
@@ -707,6 +833,17 @@ function delayedTitleUrl(initialTitle: string, settledTitle: string, delayMs: nu
       }, ${String(delayMs)});
     </script>
   </body>
+</html>`)}`;
+}
+
+function htmlDataUrl(body: string, title: string): string {
+  return `data:text/html,${encodeURIComponent(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>${title}</title>
+  </head>
+  <body>${body}</body>
 </html>`)}`;
 }
 

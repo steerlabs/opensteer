@@ -88,6 +88,15 @@ function normalizeCurlResponse(value: unknown): AbpCurlResponse {
   };
 }
 
+function normalizeExecuteResponse(value: unknown): unknown {
+  if (!isRecord(value) || !isRecord(value.result) || !("value" in value.result)) {
+    invalidAbpResponse("/tabs/{tabId}/execute");
+  }
+
+  const result = value.result as unknown as AbpExecuteResult;
+  return result.value;
+}
+
 const DEFAULT_ACTION_COMPLETE_TIMEOUT_MS = 10_000;
 
 export class AbpRestClient implements AbpRestClientLike {
@@ -302,11 +311,19 @@ export class AbpRestClient implements AbpRestClientLike {
     });
   }
 
-  executeScript(tabId: string, script: string): Promise<AbpExecuteResult> {
-    return this.requestJson(`/tabs/${tabId}/execute`, {
-      method: "POST",
-      body: { script },
-    });
+  executeScript<TResult = unknown>(
+    tabId: string,
+    script: string,
+    options: AbpActionRequest = {},
+  ): Promise<TResult> {
+    return this.requestJson(
+      `/tabs/${tabId}/execute`,
+      {
+        method: "POST",
+        body: { script, ...options },
+      },
+      normalizeExecuteResponse as (value: unknown) => TResult,
+    );
   }
 
   getExecutionState(tabId: string): Promise<AbpExecutionState> {
@@ -429,6 +446,7 @@ export function buildImmediateActionRequest(
     readonly captureNetwork?: boolean;
     readonly waitUntil?: AbpWaitUntil;
     readonly screenshot?: {
+      readonly area?: "none" | "viewport";
       readonly cursor?: boolean;
       readonly format?: string;
       readonly markup?: readonly string[];
@@ -443,7 +461,7 @@ export function buildImmediateActionRequest(
       ? {}
       : {
           screenshot: {
-            area: "viewport",
+            area: options.screenshot.area ?? "viewport",
             ...(options.screenshot.cursor === undefined
               ? {}
               : { cursor: options.screenshot.cursor }),
@@ -500,28 +518,6 @@ export function buildImmediateScreenshotRequest(
     captureNetwork: false,
     screenshot,
   });
-}
-
-export function encodeHeaders(entries: readonly HeaderEntry[] | undefined): Record<string, string> {
-  const headers: Record<string, string> = {};
-  for (const entry of entries ?? []) {
-    headers[entry.name] = entry.value;
-  }
-  return headers;
-}
-
-export function assertUtf8RequestBody(input: Uint8Array): string {
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(input);
-  } catch (error) {
-    throw createBrowserCoreError(
-      "unsupported-capability",
-      "binary request bodies are not supported by ABP session HTTP",
-      {
-        cause: error,
-      },
-    );
-  }
 }
 
 function buildActionCompleteWaitUntil(options: {

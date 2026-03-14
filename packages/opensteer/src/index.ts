@@ -71,6 +71,7 @@ export {
   toActionabilityError,
 } from "./policy/index.js";
 export type {
+  AnchorTargetRef,
   ContextHop,
   DomActionOutcome,
   DomArrayFieldSelector,
@@ -96,7 +97,9 @@ export type {
   ElementPath,
   MatchClause,
   PathNode,
+  ReplayElementPath,
   ResolvedDomTarget,
+  StructuralElementAnchor,
 } from "./runtimes/dom/index.js";
 export {
   buildArrayFieldPathCandidates,
@@ -104,6 +107,8 @@ export {
   buildPathSelectorHint,
   buildSegmentSelector,
   cloneElementPath,
+  cloneReplayElementPath,
+  cloneStructuralElementAnchor,
   createDomRuntime,
   DEFERRED_MATCH_ATTR_KEYS,
   ElementPathError,
@@ -113,6 +118,8 @@ export {
   normalizeExtractedValue,
   resolveExtractedValueInContext,
   sanitizeElementPath,
+  sanitizeReplayElementPath,
+  sanitizeStructuralElementAnchor,
   shouldKeepAttributeForPath,
   STABLE_PRIMARY_ATTR_KEYS,
 } from "./runtimes/dom/index.js";

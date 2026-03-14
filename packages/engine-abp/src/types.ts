@@ -170,7 +170,8 @@ export interface AbpDialogInfo {
 }
 
 export interface AbpExecuteResult {
-  readonly result: unknown;
+  readonly type?: string;
+  readonly value: unknown;
 }
 
 export interface AbpSelectPopupItem {
@@ -482,7 +483,11 @@ export interface AbpRestClientLike {
     body: AbpActionRequest,
     options?: AbpRequestOptions,
   ): Promise<AbpActionResponse>;
-  executeScript(tabId: string, script: string): Promise<AbpExecuteResult>;
+  executeScript<TResult = unknown>(
+    tabId: string,
+    script: string,
+    options?: AbpActionRequest,
+  ): Promise<TResult>;
   getExecutionState(tabId: string): Promise<AbpExecutionState>;
   setExecutionState(
     tabId: string,

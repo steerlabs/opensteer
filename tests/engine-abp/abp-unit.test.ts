@@ -22,7 +22,6 @@ import { AbpApiError, normalizeAbpError } from "../../packages/engine-abp/src/er
 import { buildAbpLaunchCommand } from "../../packages/engine-abp/src/launcher.js";
 import {
   AbpRestClient,
-  assertUtf8RequestBody,
   buildInputActionRequest,
 } from "../../packages/engine-abp/src/rest-client.js";
 import {
@@ -76,14 +75,6 @@ describe("engine-abp internals", () => {
     });
   });
 
-  test("rejects binary session HTTP request bodies", () => {
-    expectThrownCode(
-      () => assertUtf8RequestBody(new Uint8Array([0xff, 0xfe, 0xfd])),
-      "unsupported-capability",
-    );
-    expect(assertUtf8RequestBody(new TextEncoder().encode("hello"))).toBe("hello");
-  });
-
   test("normalizes ABP wire responses at the REST boundary", async () => {
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(
@@ -112,6 +103,22 @@ describe("engine-abp internals", () => {
             headers: { "content-type": "application/json" },
           },
         ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            result: {
+              type: "object",
+              value: {
+                ok: true,
+              },
+            },
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
       );
 
     const client = new AbpRestClient("http://127.0.0.1:9222/api/v1");
@@ -134,6 +141,18 @@ describe("engine-abp internals", () => {
       bodyEncoding: "base64",
       url: "https://example.com/final",
       redirected: true,
+    });
+    await expect(
+      client.executeScript("tab-1", "({ ok: true })", {
+        wait_until: {
+          type: "immediate",
+        },
+        screenshot: {
+          area: "none",
+        },
+      }),
+    ).resolves.toEqual({
+      ok: true,
     });
   });
 
@@ -273,12 +292,13 @@ describe("engine-abp internals", () => {
         port: 8222,
         userDataDir: "/tmp/opensteer-user-data",
         sessionDir: "/tmp/opensteer-session",
+        abpExecutablePath: "/usr/local/bin/abp",
         headless: true,
         args: ["--remote-debugging-port=0"],
         verbose: false,
       }),
     ).toEqual({
-      executablePath: "agent-browser-protocol",
+      executablePath: "/usr/local/bin/abp",
       args: [
         "--port",
         "8222",
@@ -297,7 +317,7 @@ describe("engine-abp internals", () => {
         port: 8222,
         userDataDir: "/tmp/opensteer-user-data",
         sessionDir: "/tmp/opensteer-session",
-        executablePath: "/Applications/ABP.app/Contents/MacOS/ABP",
+        browserExecutablePath: "/Applications/ABP.app/Contents/MacOS/ABP",
         headless: true,
         args: ["--remote-debugging-port=0"],
         verbose: false,
@@ -313,6 +333,23 @@ describe("engine-abp internals", () => {
         "--remote-debugging-port=0",
       ],
     });
+  });
+
+  test("rejects ambiguous launch configuration that mixes wrapper and browser paths", () => {
+    expectThrownCode(
+      () =>
+        buildAbpLaunchCommand({
+          port: 8222,
+          userDataDir: "/tmp/opensteer-user-data",
+          sessionDir: "/tmp/opensteer-session",
+          abpExecutablePath: "/usr/local/bin/abp",
+          browserExecutablePath: "/Applications/ABP.app/Contents/MacOS/ABP",
+          headless: true,
+          args: ["--remote-debugging-port=0"],
+          verbose: false,
+        }),
+      "invalid-argument",
+    );
   });
 
   test("computer-use bridge translates drag requests without extra screenshots", async () => {

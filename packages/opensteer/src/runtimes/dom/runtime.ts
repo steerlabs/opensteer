@@ -27,15 +27,19 @@ import { normalizeExtractedValue, resolveExtractedValueInContext } from "./extra
 import { ElementPathError } from "./errors.js";
 import {
   buildArrayFieldCandidates,
-  buildLocalElementPath,
+  buildLocalReplayElementPath,
+  buildLocalStructuralElementAnchor,
   buildPathSelectorHint,
   createExplicitSelectorScope,
   createPathScope,
   createSnapshotIndex,
   queryAllDomPathInScope,
+  resolveStructuralAnchorInScope,
   resolveDomPathInScope,
   resolveFirstWithinNodeBySelectors,
   sanitizeElementPath,
+  sanitizeReplayElementPath,
+  sanitizeStructuralElementAnchor,
   throwContextHostNotUnique,
   throwTargetNotFound,
   throwTargetNotUnique,
@@ -65,8 +69,9 @@ import type {
   DomScrollInput,
   DomTargetRef,
   DomWriteDescriptorInput,
-  ElementPath,
+  ReplayElementPath,
   ResolvedDomTarget,
+  StructuralElementAnchor,
 } from "./types.js";
 
 interface SnapshotTarget {
@@ -147,7 +152,26 @@ class DefaultDomRuntime implements DomRuntime {
     this.policy = options.policy ?? defaultPolicy();
   }
 
-  async buildPath(input: DomBuildPathInput): Promise<ElementPath> {
+  async buildAnchor(input: DomBuildPathInput): Promise<StructuralElementAnchor> {
+    return this.withSnapshotSession(async (session) => {
+      const snapshot = await session.getDocument(input.locator.documentRef);
+      if (snapshot.documentEpoch !== input.locator.documentEpoch) {
+        throw new Error(
+          `node locator ${input.locator.nodeRef} is stale for ${input.locator.documentRef}`,
+        );
+      }
+      const index = createSnapshotIndex(snapshot);
+      const node = findNodeByNodeRef(index, input.locator.nodeRef);
+      if (!node) {
+        throw new Error(
+          `node ${input.locator.nodeRef} was not found in ${input.locator.documentRef}`,
+        );
+      }
+      return this.buildAnchorFromSnapshotNode(session, snapshot, node);
+    });
+  }
+
+  async buildPath(input: DomBuildPathInput): Promise<ReplayElementPath> {
     return this.withSnapshotSession(async (session) => {
       const snapshot = await session.getDocument(input.locator.documentRef);
       if (snapshot.documentEpoch !== input.locator.documentEpoch) {
@@ -497,7 +521,16 @@ class DefaultDomRuntime implements DomRuntime {
         resolved = await this.resolveDescriptorTarget(session, input.pageRef, input.target);
         break;
       case "live":
-        resolved = await this.resolveLiveTarget(session, input.target);
+        resolved = await this.resolveLiveTarget(session, input.pageRef, input.target);
+        break;
+      case "anchor":
+        resolved = await this.resolveAnchorTarget(
+          session,
+          input.pageRef,
+          input.target.anchor,
+          "anchor",
+          input.target.description,
+        );
         break;
       case "path":
         resolved = await this.resolvePathTarget(
@@ -561,29 +594,33 @@ class DefaultDomRuntime implements DomRuntime {
 
   private async resolveLiveTarget(
     session: SnapshotSession,
+    pageRef: PageRef,
     target: Extract<DomTargetRef, { readonly kind: "live" }>,
   ): Promise<ResolvedDomTarget> {
-    const snapshot = await session.getDocument(target.locator.documentRef);
-    if (snapshot.documentEpoch !== target.locator.documentEpoch) {
-      throw new Error(
-        `node locator ${target.locator.nodeRef} is stale for ${target.locator.documentRef}`,
+    const resolvedByLocator = await this.tryResolveLiveTargetByLocator(session, target);
+    if (resolvedByLocator) {
+      const { snapshot, node } = resolvedByLocator;
+      const anchor = await this.buildAnchorFromSnapshotNode(session, snapshot, node);
+      const replayPath = await this.tryBuildPathFromSnapshotNode(session, snapshot, node);
+      return this.createResolvedTarget("live", snapshot, node, anchor, {
+        ...(target.description === undefined ? {} : { description: target.description }),
+        ...(replayPath === undefined ? {} : { replayPath }),
+      });
+    }
+
+    if (target.anchor) {
+      return this.resolveAnchorTarget(
+        session,
+        pageRef,
+        target.anchor,
+        "live",
+        target.description,
       );
     }
-    const index = createSnapshotIndex(snapshot);
-    const node = findNodeByNodeRef(index, target.locator.nodeRef);
-    if (!node) {
-      throw new Error(
-        `node ${target.locator.nodeRef} was not found in ${target.locator.documentRef}`,
-      );
-    }
-    const elementNode = normalizeToElementNode(index, node);
-    if (!elementNode || elementNode.nodeRef === undefined) {
-      throw new Error(`node ${target.locator.nodeRef} is not attached to a live element`);
-    }
-    const path = await this.tryBuildPathFromSnapshotNode(session, snapshot, elementNode);
-    return this.createResolvedTarget("live", snapshot, elementNode, path, {
-      ...(target.description === undefined ? {} : { description: target.description }),
-    });
+
+    throw new Error(
+      `node locator ${target.locator.nodeRef} is stale for ${target.locator.documentRef}`,
+    );
   }
 
   private async resolveSelectorTarget(
@@ -597,21 +634,25 @@ class DefaultDomRuntime implements DomRuntime {
   ): Promise<ResolvedDomTarget> {
     const resolved = await this.resolveSelectorMatch(session, pageRef, target);
     const { snapshot, node } = resolved;
-    const path = await this.tryBuildPathFromSnapshotNode(session, snapshot, node);
+    const anchor = await this.buildAnchorFromSnapshotNode(session, snapshot, node);
     const writeDescriptor =
       descriptorWriter ?? ((input: DomWriteDescriptorInput) => this.descriptors.write(input));
+    const replayPath = await this.tryBuildPathFromSnapshotNode(session, snapshot, node);
     const descriptor =
-      target.description === undefined || path.nodes.length === 0
+      target.description === undefined
         ? undefined
         : await writeDescriptor({
             method,
             description: target.description,
-            path,
+            path:
+              replayPath ??
+              (await this.buildPathFromSnapshotNode(session, snapshot, node)),
             sourceUrl: snapshot.url,
           });
-    return this.createResolvedTarget("selector", snapshot, node, path, {
+    return this.createResolvedTarget("selector", snapshot, node, anchor, {
       ...(target.description === undefined ? {} : { description: target.description }),
       selectorUsed: target.selector,
+      ...(replayPath === undefined ? {} : { replayPath }),
       ...(descriptor === undefined ? {} : { descriptor }),
     });
   }
@@ -721,12 +762,12 @@ class DefaultDomRuntime implements DomRuntime {
   private async resolvePathTarget(
     session: SnapshotSession,
     pageRef: PageRef,
-    rawPath: ElementPath,
+    rawPath: ReplayElementPath,
     source: ResolvedDomTarget["source"],
     description?: string,
     descriptor?: DomDescriptorRecord,
   ): Promise<ResolvedDomTarget> {
-    const path = sanitizeElementPath(rawPath);
+    const path = sanitizeReplayElementPath(rawPath);
     const context = await this.resolvePathContext(session, pageRef, path.context);
     const target = resolveDomPathInScope(context.index, path.nodes, context.scope);
     if (!target) {
@@ -741,19 +782,44 @@ class DefaultDomRuntime implements DomRuntime {
       );
     }
 
-    return this.createResolvedTarget(source, context.snapshot, target.node, path, {
+    const anchor = await this.buildAnchorFromSnapshotNode(session, context.snapshot, target.node);
+    return this.createResolvedTarget(source, context.snapshot, target.node, anchor, {
       ...(description === undefined ? {} : { description }),
+      replayPath: path,
       ...(source === "path" || source === "descriptor" ? { selectorUsed: target.selector } : {}),
       ...(descriptor === undefined ? {} : { descriptor }),
+    });
+  }
+
+  private async resolveAnchorTarget(
+    session: SnapshotSession,
+    pageRef: PageRef,
+    rawAnchor: StructuralElementAnchor,
+    source: Extract<ResolvedDomTarget["source"], "anchor" | "live">,
+    description?: string,
+  ): Promise<ResolvedDomTarget> {
+    const anchor = sanitizeStructuralElementAnchor(rawAnchor);
+    const context = await this.resolveAnchorContext(session, pageRef, anchor.context);
+    const target = resolveStructuralAnchorInScope(context.index, anchor.nodes, context.scope);
+    if (!target || target.node.nodeRef === undefined) {
+      throw new Error(
+        `Unable to resolve structural anchor "${buildPathSelectorHint(anchor)}" in the current session`,
+      );
+    }
+
+    const replayPath = await this.tryBuildPathFromSnapshotNode(session, context.snapshot, target.node);
+    return this.createResolvedTarget(source, context.snapshot, target.node, anchor, {
+      ...(description === undefined ? {} : { description }),
+      ...(replayPath === undefined ? {} : { replayPath }),
     });
   }
 
   private async queryAllByElementPath(
     session: SnapshotSession,
     pageRef: PageRef,
-    rawPath: ElementPath,
+    rawPath: ReplayElementPath,
   ): Promise<readonly SnapshotTarget[]> {
-    const path = sanitizeElementPath(rawPath);
+    const path = sanitizeReplayElementPath(rawPath);
     const context = await this.resolvePathContext(session, pageRef, path.context);
     return queryAllDomPathInScope(context.index, path.nodes, context.scope)
       .filter(
@@ -766,7 +832,7 @@ class DefaultDomRuntime implements DomRuntime {
   private async resolvePathContext(
     session: SnapshotSession,
     pageRef: PageRef,
-    contextPath: readonly ElementPath["context"][number][],
+    contextPath: readonly ReplayElementPath["context"][number][],
   ): Promise<{
     readonly snapshot: DomSnapshot;
     readonly index: DomSnapshotIndex;
@@ -821,13 +887,69 @@ class DefaultDomRuntime implements DomRuntime {
     };
   }
 
+  private async resolveAnchorContext(
+    session: SnapshotSession,
+    pageRef: PageRef,
+    contextPath: readonly StructuralElementAnchor["context"][number][],
+  ): Promise<{
+    readonly snapshot: DomSnapshot;
+    readonly index: DomSnapshotIndex;
+    readonly scope: DomQueryScope;
+  }> {
+    let snapshot = await session.getMainDocument(pageRef);
+    let index = createSnapshotIndex(snapshot);
+    let scope = createPathScope();
+
+    for (const hop of contextPath) {
+      const host = resolveStructuralAnchorInScope(index, hop.host, scope);
+      if (!host) {
+        throw new Error("Unable to resolve structural context host in the current session.");
+      }
+
+      if (hop.kind === "iframe") {
+        const nextDocumentRef = host.node.contentDocumentRef;
+        if (!nextDocumentRef) {
+          throw new Error("Iframe is unavailable or inaccessible for this structural anchor.");
+        }
+
+        snapshot = await session.getDocument(nextDocumentRef);
+        index = createSnapshotIndex(snapshot);
+        scope = createPathScope();
+        continue;
+      }
+
+      const hostRef = host.node.nodeRef;
+      if (hostRef === undefined || !hasOpenShadowRoot(index, host.node)) {
+        throw new Error("Shadow root is unavailable for this structural anchor.");
+      }
+
+      scope = createPathScope(hostRef);
+    }
+
+    return {
+      snapshot,
+      index,
+      scope,
+    };
+  }
+
+  private async buildAnchorFromSnapshotNode(
+    session: SnapshotSession,
+    snapshot: DomSnapshot,
+    node: DomSnapshotNode,
+  ): Promise<StructuralElementAnchor> {
+    const index = createSnapshotIndex(snapshot);
+    const localAnchor = buildLocalStructuralElementAnchor(index, node);
+    return this.prefixIframeContext(session, snapshot, localAnchor);
+  }
+
   private async buildPathFromSnapshotNode(
     session: SnapshotSession,
     snapshot: DomSnapshot,
     node: DomSnapshotNode,
-  ): Promise<ElementPath> {
+  ): Promise<ReplayElementPath> {
     const index = createSnapshotIndex(snapshot);
-    const localPath = buildLocalElementPath(index, node);
+    const localPath = buildLocalReplayElementPath(index, node);
     return this.prefixIframeContext(session, snapshot, localPath);
   }
 
@@ -835,24 +957,33 @@ class DefaultDomRuntime implements DomRuntime {
     session: SnapshotSession,
     snapshot: DomSnapshot,
     node: DomSnapshotNode,
-  ): Promise<ElementPath> {
+  ): Promise<ReplayElementPath | undefined> {
     try {
       return await this.buildPathFromSnapshotNode(session, snapshot, node);
     } catch {
-      return sanitizeElementPath({
-        context: [],
-        nodes: [],
-      });
+      return undefined;
     }
   }
 
   private async prefixIframeContext(
     session: SnapshotSession,
     snapshot: DomSnapshot,
-    localPath: ElementPath,
-  ): Promise<ElementPath> {
+    localPath: StructuralElementAnchor,
+  ): Promise<StructuralElementAnchor>;
+  private async prefixIframeContext(
+    session: SnapshotSession,
+    snapshot: DomSnapshot,
+    localPath: ReplayElementPath,
+  ): Promise<ReplayElementPath>;
+  private async prefixIframeContext(
+    session: SnapshotSession,
+    snapshot: DomSnapshot,
+    localPath: ReplayElementPath | StructuralElementAnchor,
+  ): Promise<ReplayElementPath | StructuralElementAnchor> {
     if (snapshot.parentDocumentRef === undefined) {
-      return sanitizeElementPath(localPath);
+      return localPath.resolution === "structural"
+        ? sanitizeStructuralElementAnchor(localPath)
+        : sanitizeReplayElementPath(localPath);
     }
 
     const parentSnapshot = await session.getDocument(snapshot.parentDocumentRef);
@@ -864,24 +995,67 @@ class DefaultDomRuntime implements DomRuntime {
       );
     }
 
+    if (localPath.resolution === "structural") {
+      const hostPath = await this.buildAnchorFromSnapshotNode(session, parentSnapshot, iframeHost);
+      return sanitizeStructuralElementAnchor({
+        resolution: "structural",
+        context: [
+          ...hostPath.context,
+          { kind: "iframe", host: hostPath.nodes },
+          ...localPath.context,
+        ],
+        nodes: localPath.nodes,
+      });
+    }
+
     const hostPath = await this.buildPathFromSnapshotNode(session, parentSnapshot, iframeHost);
-    return sanitizeElementPath({
-      context: [
-        ...hostPath.context,
-        { kind: "iframe", host: hostPath.nodes },
-        ...localPath.context,
-      ],
+    return sanitizeReplayElementPath({
+      resolution: "deterministic",
+      context: [...hostPath.context, { kind: "iframe", host: hostPath.nodes }, ...localPath.context],
       nodes: localPath.nodes,
     });
+  }
+
+  private async tryResolveLiveTargetByLocator(
+    session: SnapshotSession,
+    target: Extract<DomTargetRef, { readonly kind: "live" }>,
+  ): Promise<
+    | {
+        readonly snapshot: DomSnapshot;
+        readonly node: DomSnapshotNode & { readonly nodeRef: NodeRef };
+      }
+    | undefined
+  > {
+    const snapshot = await session.getDocument(target.locator.documentRef);
+    if (snapshot.documentEpoch !== target.locator.documentEpoch) {
+      return undefined;
+    }
+
+    const index = createSnapshotIndex(snapshot);
+    const node = findNodeByNodeRef(index, target.locator.nodeRef);
+    if (!node) {
+      return undefined;
+    }
+
+    const elementNode = normalizeToElementNode(index, node);
+    if (!elementNode || elementNode.nodeRef === undefined) {
+      throw new Error(`node ${target.locator.nodeRef} is not attached to a live element`);
+    }
+
+    return {
+      snapshot,
+      node: elementNode as DomSnapshotNode & { readonly nodeRef: NodeRef },
+    };
   }
 
   private createResolvedTarget(
     source: ResolvedDomTarget["source"],
     snapshot: DomSnapshot,
     node: DomSnapshotNode,
-    path: ElementPath,
+    anchor: StructuralElementAnchor,
     options: {
       readonly description?: string;
+      readonly replayPath?: ReplayElementPath;
       readonly selectorUsed?: string;
       readonly descriptor?: DomDescriptorRecord;
     } = {},
@@ -902,7 +1076,10 @@ class DefaultDomRuntime implements DomRuntime {
       locator,
       snapshot,
       node,
-      path: sanitizeElementPath(path),
+      anchor: sanitizeStructuralElementAnchor(anchor),
+      ...(options.replayPath === undefined
+        ? {}
+        : { replayPath: sanitizeReplayElementPath(options.replayPath) }),
       ...(options.description === undefined ? {} : { description: options.description }),
       ...(options.selectorUsed === undefined ? {} : { selectorUsed: options.selectorUsed }),
       ...(options.descriptor === undefined ? {} : { descriptor: options.descriptor }),

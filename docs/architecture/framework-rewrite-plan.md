@@ -15,7 +15,9 @@ working on the rewrite.
 - `Phase 7` is complete.
 - `Phase 8` is complete.
 - `Phase 9` is complete.
-- `Phase 10` is the next active implementation phase.
+- `Phase 10` is complete.
+- `Phase 11` is not started. Cloud work is deferred while the rewrite stays
+  local-only.
 
 ## Goals
 
@@ -409,16 +411,39 @@ Status: complete.
 
 Add the request workflow system after the interaction runtimes are proven.
 
-- request capture
-- request-plan creation and validation
-- `session-http` as the browser-session execution transport
+- local request capture with baseline-diff filtering over normalized network
+  records
+- typed request-plan creation, normalization, validation, and local registry
+  persistence
+- `session-http` as the browser-session execution transport for local SDK, CLI,
+  and service-host flows
+- Playwright and ABP parity for local browser-session HTTP execution
+- trace and artifact persistence for local request captures and request runs
+- explicit header/query/path/body modeling in plans instead of replaying raw
+  captured requests
 - `direct-http` later if detached execution is needed
+
+Status: complete.
+
+Phase 10 intentionally stops at the local product boundary:
+
+- request workflows live in `packages/opensteer`
+- plans, traces, and artifacts persist under the local `.opensteer/` root
+- SDK, CLI, and local service-host are the only supported execution surfaces
+- no cloud control plane or remote worker transport is introduced here
 
 ### Phase 11
 
 Add `apps/opensteer-cloud`.
 
 - workers host engines behind Opensteer contracts
+
+Status: deferred.
+
+Phase 11 is not being implemented yet. The current rewrite only ships the local
+surfaces and local persistence model; cloud orchestration, remote workers, and
+remote control-plane concerns stay out of scope until the local request and
+interaction architecture has settled.
 
 ## Phase 0 Done Criteria
 

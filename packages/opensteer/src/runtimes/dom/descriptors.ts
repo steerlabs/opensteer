@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { DescriptorRecord, DescriptorRegistryStore } from "../../registry.js";
 import type { FilesystemOpensteerRoot } from "../../root.js";
 import { canonicalJsonString, toCanonicalJsonValue } from "../../json.js";
-import { sanitizeElementPath } from "./path.js";
+import { sanitizeReplayElementPath } from "./path.js";
 import type {
   DomDescriptorPayload,
   DomDescriptorRecord,
@@ -45,7 +45,7 @@ function buildPayload(input: DomWriteDescriptorInput): DomDescriptorPayload {
     kind: "dom-target",
     method: input.method,
     description: input.description,
-    path: sanitizeElementPath(input.path),
+    path: sanitizeReplayElementPath(input.path),
     ...(input.sourceUrl === undefined ? {} : { sourceUrl: input.sourceUrl }),
   };
 }
@@ -66,12 +66,15 @@ function parseDomDescriptorRecord(record: DescriptorRecord): DomDescriptorRecord
   if (!raw.path || typeof raw.path !== "object" || Array.isArray(raw.path)) {
     return undefined;
   }
+  if ((raw.path as { readonly resolution?: unknown }).resolution !== "deterministic") {
+    return undefined;
+  }
 
   const normalizedPayload: DomDescriptorPayload = {
     kind: "dom-target",
     method: raw.method,
     description: raw.description,
-    path: sanitizeElementPath(raw.path as DomDescriptorPayload["path"]),
+    path: sanitizeReplayElementPath(raw.path as DomDescriptorPayload["path"]),
     ...(typeof raw.sourceUrl === "string" ? { sourceUrl: raw.sourceUrl } : {}),
   };
 

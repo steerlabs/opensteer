@@ -441,7 +441,7 @@ function createActionabilityFixture(options: {
         locator: createNodeLocator(documentRef, documentEpoch, targetNodeRef),
         snapshot,
         node: targetNode,
-        path: { context: [], nodes: [] },
+        anchor: { resolution: "structural", context: [], nodes: [] },
         selectorUsed: "#target",
       } satisfies ResolvedDomTarget,
       loadDocumentSnapshot: async () => snapshot,

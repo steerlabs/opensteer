@@ -1101,19 +1101,31 @@ export class OpensteerSessionRuntime {
         throw new Error(`no counter ${String(target.element)} is available in the latest snapshot`);
       }
 
-      const stablePath = sanitizeElementPath(counter.path);
-      if (stablePath.nodes.length === 0) {
-        throw new Error(
-          `unable to persist "${persistAsDescription}" because no stable DOM path could be built for ${method}`,
-        );
-      }
+      const resolved = await timeout.runStep(() =>
+        this.requireDom().resolveTarget({
+          pageRef,
+          method,
+          target: {
+            kind: "live",
+            locator: counter.locator,
+            anchor: counter.anchor,
+          },
+        }),
+      );
+      const stablePath =
+        resolved.replayPath ??
+        (await timeout.runStep(() =>
+          this.requireDom().buildPath({
+            locator: resolved.locator,
+          }),
+        ));
 
       await timeout.runStep(() =>
         this.requireDom().writeDescriptor({
           method,
           description: persistAsDescription,
           path: stablePath,
-          ...(this.latestSnapshot?.url === undefined ? {} : { sourceUrl: this.latestSnapshot.url }),
+          sourceUrl: resolved.snapshot.url,
         }),
       );
       return {
@@ -1132,7 +1144,14 @@ export class OpensteerSessionRuntime {
         target: domTarget,
       }),
     );
-    if (resolved.path.nodes.length === 0) {
+    const stablePath =
+      resolved.replayPath ??
+      (await timeout.runStep(() =>
+        this.requireDom().buildPath({
+          locator: resolved.locator,
+        }),
+      ));
+    if (!stablePath) {
       throw new Error(
         `unable to persist "${persistAsDescription}" because no stable DOM path could be built for ${method}`,
       );
@@ -1142,7 +1161,7 @@ export class OpensteerSessionRuntime {
       this.requireDom().writeDescriptor({
         method,
         description: persistAsDescription,
-        path: resolved.path,
+        path: stablePath,
         sourceUrl: resolved.snapshot.url,
       }),
     );
@@ -1176,16 +1195,10 @@ export class OpensteerSessionRuntime {
       throw new Error(`no counter ${String(target.element)} is available in the latest snapshot`);
     }
 
-    if (counter.path.nodes.length > 0) {
-      return {
-        kind: "path",
-        path: sanitizeElementPath(counter.path),
-      };
-    }
-
     return {
       kind: "live",
       locator: counter.locator,
+      anchor: counter.anchor,
     };
   }
 
@@ -1605,7 +1618,7 @@ function toOpensteerResolvedTarget(target: ResolvedDomTarget): OpensteerResolved
     documentEpoch: target.documentEpoch,
     nodeRef: target.nodeRef,
     tagName: target.node.nodeName.toUpperCase(),
-    pathHint: buildPathSelectorHint(target.path),
+    pathHint: buildPathSelectorHint(target.replayPath ?? target.anchor),
     ...(target.description === undefined ? {} : { description: target.description }),
     ...(target.selectorUsed === undefined ? {} : { selectorUsed: target.selectorUsed }),
   };

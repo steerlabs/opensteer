@@ -1,6 +1,8 @@
 import { createBrowserCoreError } from "@opensteer/browser-core";
 import { promises as fs } from "node:fs";
-import { join } from "node:path";
+import { accessSync, constants as fsConstants } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 
@@ -16,6 +18,27 @@ export interface LaunchedAbpProcess {
 interface AbpLaunchCommand {
   readonly executablePath: string;
   readonly args: readonly string[];
+}
+
+const require = createRequire(import.meta.url);
+
+function resolveAgentBrowserProtocolRoot(): string | undefined {
+  try {
+    return join(dirname(require.resolve("agent-browser-protocol")), "..");
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveExecutablePath(candidates: readonly string[]): string | undefined {
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate, fsConstants.X_OK);
+      return candidate;
+    } catch {}
+  }
+
+  return undefined;
 }
 
 export async function allocatePort(): Promise<number> {
@@ -37,25 +60,70 @@ function normalizeBrowserArgs(args: readonly string[]): readonly string[] {
   return args.map((arg) => (arg === "--headless" ? "--headless=new" : arg));
 }
 
-export function buildAbpLaunchCommand(options: LaunchRequestOptions): AbpLaunchCommand {
-  const browserArgs = normalizeBrowserArgs(options.args);
+function ensureRemoteDebuggingPortArg(args: readonly string[]): readonly string[] {
+  if (args.some((arg) => arg.startsWith("--remote-debugging-port="))) {
+    return args;
+  }
 
-  if (options.executablePath !== undefined) {
+  return ["--remote-debugging-port=0", ...args];
+}
+
+export function resolveDefaultAbpBrowserExecutablePath(): string | undefined {
+  const root = resolveAgentBrowserProtocolRoot();
+  if (root === undefined) {
+    return undefined;
+  }
+
+  return resolveExecutablePath([join(root, "browsers", "ABP.app", "Contents", "MacOS", "ABP")]);
+}
+
+export function resolveDefaultAbpWrapperExecutablePath(): string | undefined {
+  const root = resolveAgentBrowserProtocolRoot();
+  if (root === undefined) {
+    return undefined;
+  }
+
+  return resolveExecutablePath([join(root, "dist", "bin", "abp.js")]);
+}
+
+export function resolveDefaultAbpExecutablePath(): string | undefined {
+  return resolveDefaultAbpBrowserExecutablePath() ?? resolveDefaultAbpWrapperExecutablePath();
+}
+
+export function buildAbpLaunchCommand(options: LaunchRequestOptions): AbpLaunchCommand {
+  if (options.abpExecutablePath !== undefined && options.browserExecutablePath !== undefined) {
+    throw createBrowserCoreError(
+      "invalid-argument",
+      "provide either an ABP wrapper executable path or a browser executable path, not both",
+    );
+  }
+
+  const browserArgs = normalizeBrowserArgs(options.args);
+  const browserExecutablePath =
+    options.browserExecutablePath ??
+    (options.abpExecutablePath === undefined
+      ? resolveDefaultAbpBrowserExecutablePath()
+      : undefined);
+
+  if (browserExecutablePath !== undefined) {
     return {
-      executablePath: options.executablePath,
+      executablePath: browserExecutablePath,
       args: [
         `--abp-port=${String(options.port)}`,
         "--use-mock-keychain",
         ...(options.headless ? ["--headless=new"] : []),
         `--user-data-dir=${options.userDataDir}`,
         `--abp-session-dir=${options.sessionDir}`,
-        ...browserArgs,
+        ...ensureRemoteDebuggingPortArg(browserArgs),
       ],
     };
   }
 
   return {
-    executablePath: "agent-browser-protocol",
+    executablePath:
+      options.abpExecutablePath ??
+      resolveDefaultAbpWrapperExecutablePath() ??
+      "agent-browser-protocol",
     args: [
       "--port",
       String(options.port),
@@ -64,7 +132,8 @@ export function buildAbpLaunchCommand(options: LaunchRequestOptions): AbpLaunchC
       options.userDataDir,
       "--session-dir",
       options.sessionDir,
-      ...(browserArgs.length === 0 ? [] : ["--", ...browserArgs]),
+      "--",
+      ...ensureRemoteDebuggingPortArg(browserArgs),
     ],
   };
 }
@@ -78,8 +147,16 @@ export async function launchAbpProcess(options: LaunchRequestOptions): Promise<L
   const command = buildAbpLaunchCommand(options);
 
   const child = spawn(command.executablePath, command.args, {
-    stdio: options.verbose ? ["ignore", "pipe", "pipe"] : "ignore",
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  const outputBuffer: string[] = [];
+  const appendOutput = (chunk: Buffer | string): void => {
+    const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    outputBuffer.push(text);
+    if (outputBuffer.length > 20) {
+      outputBuffer.shift();
+    }
+  };
 
   const spawnError = new Promise<never>((_, reject) => {
     child.once("error", (error) => {
@@ -94,6 +171,26 @@ export async function launchAbpProcess(options: LaunchRequestOptions): Promise<L
       );
     });
   });
+  const exitError = new Promise<never>((_, reject) => {
+    child.once("exit", (code, signal) => {
+      if (code === 0 || signal === "SIGTERM" || signal === "SIGKILL") {
+        return;
+      }
+      const details =
+        outputBuffer.length === 0
+          ? undefined
+          : {
+              output: outputBuffer.join(""),
+            };
+      reject(
+        createBrowserCoreError(
+          "operation-failed",
+          `ABP exited before becoming ready (code=${String(code)}, signal=${String(signal)})`,
+          details === undefined ? {} : { details },
+        ),
+      );
+    });
+  });
 
   if (options.verbose && child.stdout) {
     child.stdout.pipe(process.stdout);
@@ -101,9 +198,11 @@ export async function launchAbpProcess(options: LaunchRequestOptions): Promise<L
   if (options.verbose && child.stderr) {
     child.stderr.pipe(process.stderr);
   }
+  child.stdout?.on("data", appendOutput);
+  child.stderr?.on("data", appendOutput);
 
   const baseUrl = `http://127.0.0.1:${String(options.port)}/api/v1`;
-  await Promise.race([waitForReady(baseUrl), spawnError]);
+  await Promise.race([waitForReady(baseUrl), spawnError, exitError]);
   const remoteDebuggingPort = await waitForDevToolsPort(options.userDataDir);
   return {
     process: child,
