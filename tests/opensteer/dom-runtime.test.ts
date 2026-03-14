@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
+  type BrowserCoreEngine,
   createNodeLocator,
   createPoint,
   type DomSnapshot,
@@ -239,6 +240,28 @@ function wait(ms: number): Promise<void> {
 
 function dataUrl(document: string): string {
   return `data:text/html,${encodeURIComponent(document)}`;
+}
+
+async function createDelayedDomSnapshotEngine(delayMs: number) {
+  const engine = await createPlaywrightBrowserCoreEngine({
+    launch: { headless: true },
+  });
+
+  return new Proxy(engine, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (property !== "getDomSnapshot" || typeof value !== "function") {
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+
+      return async (...args: unknown[]) => {
+        await wait(delayMs);
+        return value.apply(target, args);
+      };
+    },
+  }) as BrowserCoreEngine & {
+    dispose?: () => Promise<void>;
+  };
 }
 
 beforeAll(async () => {
@@ -882,6 +905,64 @@ describe("Phase 5 DOM runtime integration", () => {
         });
       } finally {
         await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "starts DOM action time budgets before target resolution so timed-out actions never dispatch",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createDelayedDomSnapshotEngine(25);
+
+      try {
+        const base = defaultPolicy();
+        const runtime = createDomRuntime({
+          engine,
+          policy: {
+            ...base,
+            timeout: {
+              resolveTimeoutMs(input) {
+                if (input.operation === "dom.click") {
+                  return 1;
+                }
+                return base.timeout.resolveTimeoutMs(input);
+              },
+            },
+          },
+        });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: `${baseUrl}/runtime/main`,
+        });
+
+        await wait(300);
+
+        await expect(
+          runtime.click({
+            pageRef: created.data.pageRef,
+            target: { kind: "selector", selector: "#main-action" },
+          }),
+        ).rejects.toMatchObject({
+          code: "timeout",
+          details: {
+            operation: "dom.click",
+            policy: "timeout",
+          },
+        });
+
+        await wait(80);
+        const snapshot = await engine.getDomSnapshot({
+          frameRef: requireValue(created.frameRef, "main frame ref missing"),
+        });
+        const statusNode = requireValue(
+          findNodeById(snapshot.nodes, "status"),
+          "status node missing",
+        );
+        expect(await engine.readText(createLocator(snapshot, statusNode))).toBe("ready");
+      } finally {
+        await engine.dispose?.();
       }
     },
   );

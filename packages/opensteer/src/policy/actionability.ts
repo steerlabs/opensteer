@@ -22,6 +22,7 @@ import type {
 export const defaultActionabilityPolicy: ActionabilityPolicy = {
   check: checkActionability,
 };
+Object.freeze(defaultActionabilityPolicy);
 
 export async function checkActionability(
   input: ActionabilityCheckInput,

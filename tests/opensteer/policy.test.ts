@@ -178,6 +178,35 @@ describe("Phase 7 policy timeout", () => {
     await expect(promise).resolves.toBe("ok");
   });
 
+  test("prevents post-timeout continuation when steps use the timeout context", async () => {
+    vi.useFakeTimers();
+    let sideEffect = false;
+    const policy: TimeoutPolicy = {
+      resolveTimeoutMs() {
+        return 50;
+      },
+    };
+
+    const promise = runWithPolicyTimeout(policy, { operation: "dom.click" }, async (timeout) => {
+      await timeout.runStep(
+        () =>
+          new Promise<void>((resolve) => {
+            setTimeout(resolve, 60);
+          }),
+      );
+      sideEffect = true;
+      return "late";
+    });
+
+    const assertion = expect(promise).rejects.toMatchObject({
+      code: "timeout",
+    });
+    await vi.advanceTimersByTimeAsync(50);
+    await assertion;
+    await vi.advanceTimersByTimeAsync(20);
+    expect(sideEffect).toBe(false);
+  });
+
   test("throws timeout errors with operation details", async () => {
     vi.useFakeTimers();
     const policy: TimeoutPolicy = {
@@ -206,6 +235,20 @@ describe("Phase 7 policy timeout", () => {
 });
 
 describe("Phase 7 policy settle", () => {
+  test("exports immutable default policy objects", () => {
+    const policy = defaultPolicy();
+
+    expect(Object.isFrozen(policy)).toBe(true);
+    expect(Object.isFrozen(policy.settle)).toBe(true);
+    expect(Object.isFrozen(policy.settle.observers)).toBe(true);
+    expect(() =>
+      Array.prototype.push.call(policy.settle.observers, {
+        settle: async () => true,
+      }),
+    ).toThrow(TypeError);
+    expect(defaultPolicy().settle.observers).toHaveLength(0);
+  });
+
   test("skips fixed delays when configured as zero", async () => {
     vi.useFakeTimers();
     const policy: SettlePolicy = {
