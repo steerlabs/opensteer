@@ -14,6 +14,8 @@ import {
   type OpensteerActionResult,
   type OpensteerBrowserContextOptions,
   type OpensteerBrowserLaunchOptions,
+  type OpensteerComputerExecuteInput,
+  type OpensteerComputerExecuteOutput,
   type OpensteerDomClickInput,
   type OpensteerDomExtractInput,
   type OpensteerDomExtractOutput,
@@ -31,6 +33,7 @@ import {
   type OpensteerSessionOpenOutput,
   type OpensteerSnapshotMode,
   type OpensteerTargetInput,
+  type OpensteerEvent,
   type TraceContext,
 } from "@opensteer/protocol";
 
@@ -54,6 +57,10 @@ import {
   type DomTargetRef,
   type ResolvedDomTarget,
 } from "../runtimes/dom/index.js";
+import {
+  createComputerUseRuntime,
+  type ComputerUseRuntime,
+} from "../runtimes/computer-use/index.js";
 import {
   assertValidOpensteerExtractionSchemaRoot,
   compileOpensteerExtractionPayload,
@@ -95,6 +102,7 @@ interface OpensteerSessionTraceInput {
   readonly startedAt: number;
   readonly completedAt: number;
   readonly outcome: "ok" | "error";
+  readonly events?: readonly OpensteerEvent[];
   readonly data?: unknown;
   readonly error?: unknown;
   readonly artifacts?: OpensteerTraceArtifacts;
@@ -114,6 +122,7 @@ export class OpensteerSessionRuntime {
   private root: FilesystemOpensteerRoot | undefined;
   private engine: DisposableBrowserCoreEngine | undefined;
   private dom: DomRuntime | undefined;
+  private computer: ComputerUseRuntime | undefined;
   private extractionDescriptors:
     | ReturnType<typeof createOpensteerExtractionDescriptorStore>
     | undefined;
@@ -556,6 +565,72 @@ export class OpensteerSessionRuntime {
     }
   }
 
+  async computerExecute(input: OpensteerComputerExecuteInput): Promise<OpensteerComputerExecuteOutput> {
+    assertValidSemanticOperationInput("computer.execute", input);
+
+    const pageRef = await this.ensurePageRef();
+    const startedAt = Date.now();
+
+    try {
+      const { artifacts, output } = await this.runWithOperationTimeout(
+        "computer.execute",
+        async (timeout) => {
+          const output = await this.requireComputer().execute({
+            pageRef,
+            input,
+            timeout,
+          });
+          timeout.throwIfAborted();
+          this.pageRef = output.pageRef;
+          this.latestSnapshot = undefined;
+          const artifacts = await this.persistComputerArtifacts(output, timeout);
+          return {
+            artifacts,
+            output,
+          };
+        },
+      );
+
+      await this.appendTrace({
+        operation: "computer.execute",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        artifacts,
+        events: output.events,
+        data: {
+          action: output.action,
+          pageRef: output.pageRef,
+          viewport: output.viewport,
+          timing: output.timing,
+          ...(output.trace === undefined ? {} : { trace: output.trace }),
+        },
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: output.pageRef,
+          frameRef: output.screenshot.frameRef,
+          documentRef: output.screenshot.documentRef,
+          documentEpoch: output.screenshot.documentEpoch,
+        }),
+      });
+
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "computer.execute",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+      throw error;
+    }
+  }
+
   async close(): Promise<OpensteerSessionCloseOutput> {
     const engine = this.engine;
     const pageRef = this.pageRef;
@@ -857,6 +932,11 @@ export class OpensteerSessionRuntime {
       namespace: this.name,
       policy: this.policy,
     });
+    this.computer = createComputerUseRuntime({
+      engine,
+      dom: this.dom,
+      policy: this.policy,
+    });
     this.extractionDescriptors = createOpensteerExtractionDescriptorStore({
       root,
       namespace: this.name,
@@ -892,6 +972,13 @@ export class OpensteerSessionRuntime {
       throw new Error("Opensteer DOM runtime is not initialized");
     }
     return this.dom;
+  }
+
+  private requireComputer(): ComputerUseRuntime {
+    if (!this.computer) {
+      throw new Error("Opensteer computer-use runtime is not initialized");
+    }
+    return this.computer;
   }
 
   private requireExtractionDescriptors() {
@@ -977,6 +1064,35 @@ export class OpensteerSessionRuntime {
     };
   }
 
+  private async persistComputerArtifacts(
+    output: OpensteerComputerExecuteOutput,
+    timeout: TimeoutExecutionContext,
+  ): Promise<OpensteerTraceArtifacts> {
+    const root = this.requireRoot();
+    const manifests: ArtifactManifest[] = [];
+
+    manifests.push(
+      await timeout.runStep(() =>
+        root.artifacts.writeBinary({
+          kind: "screenshot",
+          scope: buildArtifactScope({
+            sessionRef: this.sessionRef,
+            pageRef: output.pageRef,
+            frameRef: output.screenshot.frameRef,
+            documentRef: output.screenshot.documentRef,
+            documentEpoch: output.screenshot.documentEpoch,
+          }),
+          mediaType: screenshotMediaType(output.screenshot.format),
+          data: new Uint8Array(Buffer.from(output.screenshot.payload.data, "base64")),
+        }),
+      ),
+    );
+
+    return {
+      manifests,
+    };
+  }
+
   private async appendTrace(input: OpensteerSessionTraceInput): Promise<void> {
     const runId = this.runId;
     if (runId === undefined) {
@@ -1006,6 +1122,7 @@ export class OpensteerSessionRuntime {
       startedAt: input.startedAt,
       completedAt: input.completedAt,
       ...(input.context === undefined ? {} : { context: input.context }),
+      ...(input.events === undefined ? {} : { events: input.events }),
       ...(artifacts === undefined ? {} : { artifacts }),
       ...(input.data === undefined ? {} : { data: toCanonicalJsonValue(input.data) }),
       ...(input.error === undefined
@@ -1037,6 +1154,7 @@ export class OpensteerSessionRuntime {
     this.latestSnapshot = undefined;
     this.runId = undefined;
     this.dom = undefined;
+    this.computer = undefined;
     this.extractionDescriptors = undefined;
     this.engine = undefined;
 
@@ -1197,4 +1315,15 @@ function toOpensteerResolvedTarget(target: ResolvedDomTarget): OpensteerResolved
 
 function normalizeOpensteerError(error: unknown) {
   return normalizeThrownOpensteerError(error, "Unknown Opensteer runtime failure");
+}
+
+function screenshotMediaType(format: "png" | "jpeg" | "webp"): string {
+  switch (format) {
+    case "png":
+      return "image/png";
+    case "jpeg":
+      return "image/jpeg";
+    case "webp":
+      return "image/webp";
+  }
 }

@@ -23,6 +23,7 @@ export interface AbpWaitUntil {
 
 export interface AbpScreenshotOptions {
   readonly area?: "none" | "viewport";
+  readonly markup?: readonly string[];
   readonly disable_markup?: readonly string[];
   readonly cursor?: boolean;
   readonly format?: string;
@@ -65,6 +66,20 @@ export interface AbpActionResponse<TResult = Record<string, unknown>> {
   readonly result: TResult;
   readonly screenshot_before?: AbpScreenshotData;
   readonly screenshot_after?: AbpScreenshotData;
+  readonly scroll?: {
+    readonly scrollX?: number;
+    readonly scrollY?: number;
+    readonly pageWidth?: number;
+    readonly pageHeight?: number;
+    readonly viewportWidth?: number;
+    readonly viewportHeight?: number;
+    readonly horizontal_px?: number;
+    readonly vertical_px?: number;
+    readonly page_width?: number;
+    readonly page_height?: number;
+    readonly viewport_width?: number;
+    readonly viewport_height?: number;
+  };
   readonly events?: readonly AbpActionEvent[];
   readonly timing?: AbpActionTiming;
 }
@@ -422,6 +437,16 @@ export interface AbpRestClientLike {
       readonly delta_y?: number;
     } & AbpActionRequest,
   ): Promise<AbpActionResponse>;
+  dragTab(
+    tabId: string,
+    body: {
+      readonly start_x: number;
+      readonly start_y: number;
+      readonly end_x: number;
+      readonly end_y: number;
+      readonly steps?: number;
+    } & AbpActionRequest,
+  ): Promise<AbpActionResponse>;
   keyPressTab(
     tabId: string,
     body: {
@@ -433,6 +458,12 @@ export interface AbpRestClientLike {
     tabId: string,
     body: {
       readonly text: string;
+    } & AbpActionRequest,
+  ): Promise<AbpActionResponse>;
+  waitTab(
+    tabId: string,
+    body: {
+      readonly duration_ms: number;
     } & AbpActionRequest,
   ): Promise<AbpActionResponse>;
   screenshotTab(tabId: string, body: AbpActionRequest): Promise<AbpActionResponse>;

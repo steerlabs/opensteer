@@ -1,11 +1,23 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { createPageRef } from "../../packages/browser-core/src/index.js";
+import {
+  createDevicePixelRatio,
+  createDocumentEpoch,
+  createDocumentRef,
+  createFrameRef,
+  createPageRef,
+  createPageScaleFactor,
+  createPageZoomFactor,
+  createScrollOffset,
+  createSessionRef,
+  createSize,
+} from "../../packages/browser-core/src/index.js";
 import { buildSelectChooserOptions } from "../../packages/engine-abp/src/action-events.js";
 import {
   assertAllowedCdpMethod,
   PAGE_CDP_METHOD_ALLOWLIST,
 } from "../../packages/engine-abp/src/cdp-transport.js";
+import { createAbpComputerUseBridge } from "../../packages/engine-abp/src/computer-use.js";
 import { AbpApiError, normalizeAbpError } from "../../packages/engine-abp/src/errors.js";
 import { buildAbpLaunchCommand } from "../../packages/engine-abp/src/launcher.js";
 import { AbpRestClient, assertUtf8RequestBody } from "../../packages/engine-abp/src/rest-client.js";
@@ -267,4 +279,250 @@ describe("engine-abp internals", () => {
       ],
     });
   });
+
+  test("computer-use bridge translates drag requests without extra screenshots", async () => {
+    const bridge = createAbpComputerUseBridge(createComputerBridgeContext());
+
+    const output = await bridge.execute({
+      pageRef: createPageRef("main"),
+      action: {
+        type: "drag",
+        start: { x: 10, y: 20 },
+        end: { x: 200, y: 180 },
+        steps: 12,
+      },
+      screenshot: {
+        format: "png",
+        includeCursor: true,
+        annotations: ["clickable", "grid"],
+      },
+      signal: new AbortController().signal,
+      remainingMs: () => 10_000,
+      settle: async () => {},
+    });
+
+    const rest = outputTestState.rest;
+    expect(rest.dragTab).toHaveBeenCalledWith(
+      "tab-main",
+      expect.objectContaining({
+        start_x: 10,
+        start_y: 20,
+        end_x: 200,
+        end_y: 180,
+        steps: 12,
+        screenshot: {
+          area: "viewport",
+          cursor: true,
+          format: "png",
+          markup: ["clickable", "grid"],
+        },
+      }),
+    );
+    expect(rest.screenshotTab).not.toHaveBeenCalled();
+    expect(output.timing.totalMs).toBe(80);
+  });
+
+  test("computer-use bridge hands off tab_changed responses and reuses native screenshots", async () => {
+    const popupPageRef = createPageRef("popup");
+    const bridge = createAbpComputerUseBridge(
+      createComputerBridgeContext({
+        popupPageRef,
+        tabChanged: true,
+      }),
+    );
+
+    const output = await bridge.execute({
+      pageRef: createPageRef("main"),
+      action: {
+        type: "click",
+        x: 40,
+        y: 30,
+      },
+      screenshot: {
+        format: "png",
+        includeCursor: false,
+        annotations: [],
+      },
+      signal: new AbortController().signal,
+      remainingMs: () => 10_000,
+      settle: async () => {},
+    });
+
+    const rest = outputTestState.rest;
+    expect(output.pageRef).toBe(popupPageRef);
+    expect(output.events.map((event) => event.kind)).toContain("page-created");
+    expect(rest.screenshotTab).not.toHaveBeenCalled();
+  });
+
+  test("computer-use bridge translates wait requests to the native wait endpoint", async () => {
+    const bridge = createAbpComputerUseBridge(createComputerBridgeContext());
+
+    await bridge.execute({
+      pageRef: createPageRef("main"),
+      action: {
+        type: "wait",
+        durationMs: 250,
+      },
+      screenshot: {
+        format: "jpeg",
+        includeCursor: false,
+        annotations: ["selected"],
+      },
+      signal: new AbortController().signal,
+      remainingMs: () => 10_000,
+      settle: async () => {},
+    });
+
+    expect(outputTestState.rest.waitTab).toHaveBeenCalledWith(
+      "tab-main",
+      expect.objectContaining({
+        duration_ms: 250,
+        screenshot: {
+          area: "viewport",
+          format: "jpeg",
+          markup: ["selected"],
+        },
+      }),
+    );
+  });
 });
+
+const outputTestState = {
+  rest: createRestStubs(),
+};
+
+function createComputerBridgeContext(options: {
+  readonly popupPageRef?: ReturnType<typeof createPageRef>;
+  readonly tabChanged?: boolean;
+} = {}) {
+  outputTestState.rest = createRestStubs({
+    tabChanged: options.tabChanged ?? false,
+  });
+
+  const sessionRef = createSessionRef("abp-computer");
+  const mainPageRef = createPageRef("main");
+  const popupPageRef = options.popupPageRef ?? createPageRef("popup");
+  const pageControllerByRef = new Map([
+    [mainPageRef, createPageController(sessionRef, mainPageRef, "tab-main")],
+    [popupPageRef, createPageController(sessionRef, popupPageRef, "tab-popup")],
+  ]);
+  const session = {
+    sessionRef,
+    activePageRef: options.tabChanged ? popupPageRef : mainPageRef,
+    rest: outputTestState.rest,
+  } as any;
+
+  return {
+    resolveController: (pageRef: ReturnType<typeof createPageRef>) => {
+      const controller = pageControllerByRef.get(pageRef);
+      if (!controller) {
+        throw new Error(`missing controller for ${pageRef}`);
+      }
+      return controller as any;
+    },
+    resolveSession: () => session,
+    normalizeActionEvents: async () =>
+      options.tabChanged
+        ? [
+            {
+              kind: "popup-opened",
+              sessionRef,
+              pageRef: popupPageRef,
+              openerPageRef: mainPageRef,
+              eventId: "event:popup",
+              timestamp: 1,
+            },
+          ]
+        : [],
+    detectNewTabs: async () => [],
+    executeInputAction: async (_session: unknown, _controller: unknown, execute: () => Promise<any>) => ({
+      response: await execute(),
+      dialogEvents: [],
+    }),
+    flushDomUpdateTask: async () => {},
+    requireMainFrame: (controller: ReturnType<typeof createPageController>) => controller.mainFrame,
+    drainQueuedEvents: (pageRef: ReturnType<typeof createPageRef>) =>
+      pageRef === popupPageRef && options.tabChanged
+        ? [
+            {
+              kind: "page-created",
+              sessionRef,
+              pageRef,
+              eventId: "event:created",
+              timestamp: 2,
+            },
+          ]
+        : [],
+    getViewportMetrics: async () => createViewportMetrics(),
+  };
+}
+
+function createPageController(
+  sessionRef: ReturnType<typeof createSessionRef>,
+  pageRef: ReturnType<typeof createPageRef>,
+  tabId: string,
+) {
+  const frameRef = createFrameRef(`frame-${tabId}`);
+  return {
+    sessionRef,
+    pageRef,
+    tabId,
+    mainFrame: {
+      frameRef,
+      currentDocument: {
+        documentRef: createDocumentRef(`document-${tabId}`),
+        documentEpoch: createDocumentEpoch(0),
+      },
+    },
+  };
+}
+
+function createRestStubs(options: { readonly tabChanged?: boolean } = {}) {
+  const actionResponse = {
+    result: {},
+    tab_changed: options.tabChanged ?? false,
+    screenshot_after: {
+      data: Buffer.from("computer-use").toString("base64"),
+      width: 800,
+      height: 600,
+      virtual_time_ms: 0,
+      format: "png",
+    },
+    timing: {
+      action_started_ms: 10,
+      action_completed_ms: 40,
+      wait_completed_ms: 80,
+      duration_ms: 80,
+    },
+  };
+
+  return {
+    clickTab: vi.fn().mockResolvedValue(actionResponse),
+    moveTab: vi.fn().mockResolvedValue(actionResponse),
+    scrollTab: vi.fn().mockResolvedValue(actionResponse),
+    dragTab: vi.fn().mockResolvedValue(actionResponse),
+    keyPressTab: vi.fn().mockResolvedValue(actionResponse),
+    typeTab: vi.fn().mockResolvedValue(actionResponse),
+    waitTab: vi.fn().mockResolvedValue(actionResponse),
+    screenshotTab: vi.fn().mockResolvedValue(actionResponse),
+  };
+}
+
+function createViewportMetrics() {
+  return {
+    layoutViewport: {
+      origin: { x: 0, y: 0 },
+      size: createSize(800, 600),
+    },
+    visualViewport: {
+      origin: { x: 0, y: 0 },
+      offsetWithinLayoutViewport: createScrollOffset(0, 0),
+      size: createSize(800, 600),
+    },
+    scrollOffset: createScrollOffset(0, 0),
+    contentSize: createSize(800, 1200),
+    devicePixelRatio: createDevicePixelRatio(1),
+    pageScaleFactor: createPageScaleFactor(1),
+    pageZoomFactor: createPageZoomFactor(1),
+  };
+}

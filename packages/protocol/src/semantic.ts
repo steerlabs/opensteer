@@ -14,8 +14,11 @@ import { OpensteerProtocolError } from "./errors.js";
 import type { OpensteerCapability } from "./capabilities.js";
 import { documentEpochSchema, documentRefSchema, frameRefSchema, nodeRefSchema, pageRefSchema, sessionRefSchema } from "./identity.js";
 import type { DocumentEpoch, DocumentRef, FrameRef, NodeRef, PageRef, SessionRef } from "./identity.js";
-import { pointSchema } from "./geometry.js";
+import { pointSchema, viewportMetricsSchema } from "./geometry.js";
+import type { Point, ViewportMetrics } from "./geometry.js";
+import { opensteerEventSchema, type OpensteerEvent } from "./events.js";
 import { requestEnvelopeSchema, responseEnvelopeSchema } from "./envelopes.js";
+import { hitTestResultSchema, screenshotArtifactSchema, type HitTestResult, type ScreenshotArtifact, type ScreenshotFormat } from "./snapshots.js";
 import { validateJsonSchema } from "./validation.js";
 import { OPENSTEER_PROTOCOL_REST_BASE_PATH } from "./version.js";
 
@@ -183,6 +186,117 @@ export interface OpensteerSessionCloseOutput {
   readonly closed: true;
 }
 
+export const opensteerComputerAnnotationNames = [
+  "clickable",
+  "typeable",
+  "scrollable",
+  "grid",
+  "selected",
+] as const;
+
+export type OpensteerComputerAnnotation = (typeof opensteerComputerAnnotationNames)[number];
+
+export type OpensteerComputerMouseButton = "left" | "middle" | "right";
+export type OpensteerComputerKeyModifier = "Shift" | "Control" | "Alt" | "Meta";
+
+export interface OpensteerComputerClickAction {
+  readonly type: "click";
+  readonly x: number;
+  readonly y: number;
+  readonly button?: OpensteerComputerMouseButton;
+  readonly clickCount?: number;
+  readonly modifiers?: readonly OpensteerComputerKeyModifier[];
+}
+
+export interface OpensteerComputerMoveAction {
+  readonly type: "move";
+  readonly x: number;
+  readonly y: number;
+}
+
+export interface OpensteerComputerScrollAction {
+  readonly type: "scroll";
+  readonly x: number;
+  readonly y: number;
+  readonly deltaX: number;
+  readonly deltaY: number;
+}
+
+export interface OpensteerComputerTypeAction {
+  readonly type: "type";
+  readonly text: string;
+}
+
+export interface OpensteerComputerKeyAction {
+  readonly type: "key";
+  readonly key: string;
+  readonly modifiers?: readonly OpensteerComputerKeyModifier[];
+}
+
+export interface OpensteerComputerDragAction {
+  readonly type: "drag";
+  readonly start: Point;
+  readonly end: Point;
+  readonly steps?: number;
+}
+
+export interface OpensteerComputerScreenshotAction {
+  readonly type: "screenshot";
+}
+
+export interface OpensteerComputerWaitAction {
+  readonly type: "wait";
+  readonly durationMs: number;
+}
+
+export type OpensteerComputerAction =
+  | OpensteerComputerClickAction
+  | OpensteerComputerMoveAction
+  | OpensteerComputerScrollAction
+  | OpensteerComputerTypeAction
+  | OpensteerComputerKeyAction
+  | OpensteerComputerDragAction
+  | OpensteerComputerScreenshotAction
+  | OpensteerComputerWaitAction;
+
+export interface OpensteerComputerScreenshotOptions {
+  readonly format?: ScreenshotFormat;
+  readonly includeCursor?: boolean;
+  readonly annotations?: readonly OpensteerComputerAnnotation[];
+}
+
+export interface OpensteerComputerExecuteInput {
+  readonly action: OpensteerComputerAction;
+  readonly screenshot?: OpensteerComputerScreenshotOptions;
+}
+
+export interface OpensteerComputerTracePoint {
+  readonly role: "point" | "start" | "end";
+  readonly point: Point;
+  readonly hitTest?: HitTestResult;
+  readonly target?: OpensteerResolvedTarget;
+}
+
+export interface OpensteerComputerTraceEnrichment {
+  readonly points: readonly OpensteerComputerTracePoint[];
+}
+
+export interface OpensteerComputerExecuteTiming {
+  readonly actionMs: number;
+  readonly waitMs: number;
+  readonly totalMs: number;
+}
+
+export interface OpensteerComputerExecuteOutput {
+  readonly action: OpensteerComputerAction;
+  readonly pageRef: PageRef;
+  readonly screenshot: ScreenshotArtifact;
+  readonly viewport: ViewportMetrics;
+  readonly events: readonly OpensteerEvent[];
+  readonly timing: OpensteerComputerExecuteTiming;
+  readonly trace?: OpensteerComputerTraceEnrichment;
+}
+
 export const opensteerSemanticOperationNames = [
   "session.open",
   "page.goto",
@@ -192,6 +306,7 @@ export const opensteerSemanticOperationNames = [
   "dom.input",
   "dom.scroll",
   "dom.extract",
+  "computer.execute",
   "session.close",
 ] as const;
 
@@ -566,6 +681,217 @@ const opensteerSessionCloseOutputSchema: JsonSchema = objectSchema(
   },
 );
 
+const opensteerComputerMouseButtonSchema: JsonSchema = enumSchema(
+  ["left", "middle", "right"] as const,
+  {
+    title: "OpensteerComputerMouseButton",
+  },
+);
+
+const opensteerComputerKeyModifierSchema: JsonSchema = enumSchema(
+  ["Shift", "Control", "Alt", "Meta"] as const,
+  {
+    title: "OpensteerComputerKeyModifier",
+  },
+);
+
+const opensteerComputerAnnotationSchema: JsonSchema = enumSchema(opensteerComputerAnnotationNames, {
+  title: "OpensteerComputerAnnotation",
+});
+
+const opensteerComputerClickActionSchema: JsonSchema = objectSchema(
+  {
+    type: enumSchema(["click"] as const),
+    x: numberSchema(),
+    y: numberSchema(),
+    button: opensteerComputerMouseButtonSchema,
+    clickCount: integerSchema({ minimum: 1 }),
+    modifiers: arraySchema(opensteerComputerKeyModifierSchema, {
+      uniqueItems: true,
+    }),
+  },
+  {
+    title: "OpensteerComputerClickAction",
+    required: ["type", "x", "y"],
+  },
+);
+
+const opensteerComputerMoveActionSchema: JsonSchema = objectSchema(
+  {
+    type: enumSchema(["move"] as const),
+    x: numberSchema(),
+    y: numberSchema(),
+  },
+  {
+    title: "OpensteerComputerMoveAction",
+    required: ["type", "x", "y"],
+  },
+);
+
+const opensteerComputerScrollActionSchema: JsonSchema = objectSchema(
+  {
+    type: enumSchema(["scroll"] as const),
+    x: numberSchema(),
+    y: numberSchema(),
+    deltaX: numberSchema(),
+    deltaY: numberSchema(),
+  },
+  {
+    title: "OpensteerComputerScrollAction",
+    required: ["type", "x", "y", "deltaX", "deltaY"],
+  },
+);
+
+const opensteerComputerTypeActionSchema: JsonSchema = objectSchema(
+  {
+    type: enumSchema(["type"] as const),
+    text: stringSchema(),
+  },
+  {
+    title: "OpensteerComputerTypeAction",
+    required: ["type", "text"],
+  },
+);
+
+const opensteerComputerKeyActionSchema: JsonSchema = objectSchema(
+  {
+    type: enumSchema(["key"] as const),
+    key: stringSchema(),
+    modifiers: arraySchema(opensteerComputerKeyModifierSchema, {
+      uniqueItems: true,
+    }),
+  },
+  {
+    title: "OpensteerComputerKeyAction",
+    required: ["type", "key"],
+  },
+);
+
+const opensteerComputerDragActionSchema: JsonSchema = objectSchema(
+  {
+    type: enumSchema(["drag"] as const),
+    start: pointSchema,
+    end: pointSchema,
+    steps: integerSchema({ minimum: 1 }),
+  },
+  {
+    title: "OpensteerComputerDragAction",
+    required: ["type", "start", "end"],
+  },
+);
+
+const opensteerComputerScreenshotActionSchema: JsonSchema = objectSchema(
+  {
+    type: enumSchema(["screenshot"] as const),
+  },
+  {
+    title: "OpensteerComputerScreenshotAction",
+    required: ["type"],
+  },
+);
+
+const opensteerComputerWaitActionSchema: JsonSchema = objectSchema(
+  {
+    type: enumSchema(["wait"] as const),
+    durationMs: integerSchema({ minimum: 0 }),
+  },
+  {
+    title: "OpensteerComputerWaitAction",
+    required: ["type", "durationMs"],
+  },
+);
+
+const opensteerComputerActionSchema: JsonSchema = oneOfSchema(
+  [
+    opensteerComputerClickActionSchema,
+    opensteerComputerMoveActionSchema,
+    opensteerComputerScrollActionSchema,
+    opensteerComputerTypeActionSchema,
+    opensteerComputerKeyActionSchema,
+    opensteerComputerDragActionSchema,
+    opensteerComputerScreenshotActionSchema,
+    opensteerComputerWaitActionSchema,
+  ],
+  {
+    title: "OpensteerComputerAction",
+  },
+);
+
+const opensteerComputerScreenshotOptionsSchema: JsonSchema = objectSchema(
+  {
+    format: enumSchema(["png", "jpeg", "webp"] as const),
+    includeCursor: { type: "boolean" },
+    annotations: arraySchema(opensteerComputerAnnotationSchema, {
+      uniqueItems: true,
+    }),
+  },
+  {
+    title: "OpensteerComputerScreenshotOptions",
+  },
+);
+
+const opensteerComputerExecuteInputSchema: JsonSchema = objectSchema(
+  {
+    action: opensteerComputerActionSchema,
+    screenshot: opensteerComputerScreenshotOptionsSchema,
+  },
+  {
+    title: "OpensteerComputerExecuteInput",
+    required: ["action"],
+  },
+);
+
+const opensteerComputerTracePointSchema: JsonSchema = objectSchema(
+  {
+    role: enumSchema(["point", "start", "end"] as const),
+    point: pointSchema,
+    hitTest: hitTestResultSchema,
+    target: opensteerResolvedTargetSchema,
+  },
+  {
+    title: "OpensteerComputerTracePoint",
+    required: ["role", "point"],
+  },
+);
+
+const opensteerComputerTraceEnrichmentSchema: JsonSchema = objectSchema(
+  {
+    points: arraySchema(opensteerComputerTracePointSchema),
+  },
+  {
+    title: "OpensteerComputerTraceEnrichment",
+    required: ["points"],
+  },
+);
+
+const opensteerComputerExecuteTimingSchema: JsonSchema = objectSchema(
+  {
+    actionMs: integerSchema({ minimum: 0 }),
+    waitMs: integerSchema({ minimum: 0 }),
+    totalMs: integerSchema({ minimum: 0 }),
+  },
+  {
+    title: "OpensteerComputerExecuteTiming",
+    required: ["actionMs", "waitMs", "totalMs"],
+  },
+);
+
+const opensteerComputerExecuteOutputSchema: JsonSchema = objectSchema(
+  {
+    action: opensteerComputerActionSchema,
+    pageRef: pageRefSchema,
+    screenshot: screenshotArtifactSchema,
+    viewport: viewportMetricsSchema,
+    events: arraySchema(opensteerEventSchema),
+    timing: opensteerComputerExecuteTimingSchema,
+    trace: opensteerComputerTraceEnrichmentSchema,
+  },
+  {
+    title: "OpensteerComputerExecuteOutput",
+    required: ["action", "pageRef", "screenshot", "viewport", "events", "timing"],
+  },
+);
+
 export function resolveSemanticRequiredCapabilities<TInput>(
   spec: Pick<
     OpensteerSemanticOperationSpec<TInput, unknown>,
@@ -664,6 +990,32 @@ export const opensteerSemanticOperationSpecifications = [
     inputSchema: opensteerDomExtractInputSchema,
     outputSchema: opensteerDomExtractOutputSchema,
     requiredCapabilities: ["inspect.domSnapshot", "inspect.text", "inspect.attributes"],
+  }),
+  defineSemanticOperationSpec<OpensteerComputerExecuteInput, OpensteerComputerExecuteOutput>({
+    name: "computer.execute",
+    description: "Execute a computer-use action in viewport pixels and return the post-action screenshot.",
+    inputSchema: opensteerComputerExecuteInputSchema,
+    outputSchema: opensteerComputerExecuteOutputSchema,
+    requiredCapabilities: ["artifacts.screenshot", "inspect.viewportMetrics"],
+    resolveRequiredCapabilities: (input) => {
+      const base: OpensteerCapability[] = ["artifacts.screenshot", "inspect.viewportMetrics"];
+      switch (input.action.type) {
+        case "click":
+        case "move":
+        case "scroll":
+        case "drag":
+          base.unshift("input.pointer");
+          break;
+        case "type":
+        case "key":
+          base.unshift("input.keyboard");
+          break;
+        case "screenshot":
+        case "wait":
+          break;
+      }
+      return base;
+    },
   }),
   defineSemanticOperationSpec<OpensteerSessionCloseInput, OpensteerSessionCloseOutput>({
     name: "session.close",

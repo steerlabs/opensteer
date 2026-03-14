@@ -31,6 +31,7 @@ import {
   opensteerSemanticOperationSpecificationMap,
   opensteerSemanticOperationSpecifications,
   opensteerSemanticRestEndpoints,
+  assertValidSemanticOperationInput,
   parseOpensteerRef,
   resolveRequiredCapabilities,
   resolveSemanticRequiredCapabilities,
@@ -278,6 +279,10 @@ describe("semantic protocol descriptors", () => {
       "sessions.manage",
       "pages.manage",
     ]);
+    expect(opensteerSemanticOperationSpecificationMap["computer.execute"]?.requiredCapabilities).toEqual([
+      "artifacts.screenshot",
+      "inspect.viewportMetrics",
+    ]);
   });
 
   test("uses the dedicated semantic REST namespace and capability resolution rules", () => {
@@ -287,12 +292,18 @@ describe("semantic protocol descriptors", () => {
     const extractEndpoint = opensteerSemanticRestEndpoints.find(
       (endpoint) => endpoint.name === "dom.extract",
     );
+    const computerEndpoint = opensteerSemanticRestEndpoints.find(
+      (endpoint) => endpoint.name === "computer.execute",
+    );
 
     expect(openEndpoint?.path).toBe(
       `${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/session/open`,
     );
     expect(extractEndpoint?.path).toBe(
       `${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/dom/extract`,
+    );
+    expect(computerEndpoint?.path).toBe(
+      `${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/computer/execute`,
     );
     expect(
       resolveSemanticRequiredCapabilities(
@@ -310,6 +321,54 @@ describe("semantic protocol descriptors", () => {
         },
       ),
     ).toEqual(["inspect.domSnapshot", "inspect.text", "inspect.attributes"]);
+    expect(
+      resolveSemanticRequiredCapabilities(
+        opensteerSemanticOperationSpecificationMap["computer.execute"]!,
+        {
+          action: {
+            type: "drag",
+            start: { x: 10, y: 20 },
+            end: { x: 50, y: 60 },
+          },
+        },
+      ),
+    ).toEqual(["input.pointer", "artifacts.screenshot", "inspect.viewportMetrics"]);
+    expect(
+      resolveSemanticRequiredCapabilities(
+        opensteerSemanticOperationSpecificationMap["computer.execute"]!,
+        {
+          action: {
+            type: "key",
+            key: "Enter",
+          },
+        },
+      ),
+    ).toEqual(["input.keyboard", "artifacts.screenshot", "inspect.viewportMetrics"]);
+  });
+
+  test("validates the computer.execute action union at the semantic boundary", () => {
+    expect(() =>
+      assertValidSemanticOperationInput("computer.execute", {
+        action: {
+          type: "click",
+          x: 10,
+          y: 20,
+          clickCount: 2,
+        },
+        screenshot: {
+          annotations: ["clickable", "grid"],
+        },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      assertValidSemanticOperationInput("computer.execute", {
+        action: {
+          type: "wait",
+          durationMs: -1,
+        },
+      }),
+    ).toThrow(/invalid computer\.execute input/i);
   });
 });
 

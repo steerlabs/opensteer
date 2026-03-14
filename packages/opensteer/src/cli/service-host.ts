@@ -233,6 +233,8 @@ async function dispatchOperation(
       return runtime.scroll(input as Parameters<OpensteerSessionRuntime["scroll"]>[0]);
     case "dom.extract":
       return runtime.extract(input as Parameters<OpensteerSessionRuntime["extract"]>[0]);
+    case "computer.execute":
+      return runtime.computerExecute(input as Parameters<OpensteerSessionRuntime["computerExecute"]>[0]);
     case "session.close":
       return runtime.close();
   }

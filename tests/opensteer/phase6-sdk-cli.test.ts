@@ -283,6 +283,45 @@ describe("Phase 6 SDK and CLI surfaces", () => {
     expect((await readdir(path.dirname(metadataPath))).includes("service.json")).toBe(false);
   }, 60_000);
 
+  test("CLI forwards raw computer-use actions through the local service boundary", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const sessionName = "phase9-cli-computer";
+
+    await runCliCommand(rootDir, [
+      "open",
+      `${baseUrl}/phase6/main`,
+      "--name",
+      sessionName,
+      "--headless",
+      "true",
+    ]);
+
+    const computer = await runCliCommand(rootDir, [
+      "computer",
+      '{"type":"click","x":110,"y":41}',
+      "--name",
+      sessionName,
+      "--annotations",
+      "clickable,grid",
+    ]);
+    expect((computer as { readonly action: { readonly type: string } }).action.type).toBe("click");
+
+    const extracted = await runCliCommand(rootDir, [
+      "extract",
+      '{"status":{"selector":"#status"}}',
+      "--name",
+      sessionName,
+      "--description",
+      "status text",
+    ]);
+    expect(extracted).toEqual({
+      status: "main clicked",
+    });
+
+    await runCliCommand(rootDir, ["close", "--name", sessionName]);
+  }, 60_000);
+
   test("SDK rejects invalid semantic input at the runtime boundary", async () => {
     const rootDir = await createPhase6TemporaryRoot();
     const baseUrl = requireFixtureServer().url;
