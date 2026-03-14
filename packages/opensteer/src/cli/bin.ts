@@ -271,7 +271,7 @@ async function main(argv: readonly string[]): Promise<void> {
         ...(query.size === 0 ? {} : { query: Object.fromEntries(query) }),
         ...(headers.size === 0 ? {} : { headers: Object.fromEntries(headers) }),
         ...(body === undefined ? {} : { body }),
-        ...(readBooleanOption(parsed.options, "no-validate", true) === true
+        ...(readBooleanOption(parsed.options, "no-validate") === true
           ? { validateResponse: false }
           : {}),
       });
@@ -414,9 +414,9 @@ function parseBrowserOptions(
   }
 
   const parsed = {
-    ...(readBooleanOption(options, "headless", true) === undefined
+    ...(readBooleanOption(options, "headless") === undefined
       ? {}
-      : { headless: readBooleanOption(options, "headless", true) }),
+      : { headless: readBooleanOption(options, "headless") }),
     ...(readStringOption(options, "executable-path") === undefined
       ? {}
       : { executablePath: readStringOption(options, "executable-path") }),
@@ -660,19 +660,15 @@ function readStringOption(
 function readBooleanOption(
   options: Readonly<Record<string, CliOptionValue>>,
   key: string,
-  bareTrue = false,
 ): boolean | undefined {
   const value = options[key];
   if (value === undefined) {
     return undefined;
   }
   if (Array.isArray(value)) {
-    return readBooleanOption({ [key]: value[value.length - 1]! }, key, bareTrue);
+    return readBooleanOption({ [key]: value[value.length - 1]! }, key);
   }
-  if (value === true) {
-    return bareTrue ? true : true;
-  }
-  if (value === "true" || value === "1") {
+  if (value === true || value === "true" || value === "1") {
     return true;
   }
   if (value === "false" || value === "0") {
@@ -787,14 +783,8 @@ function appendOptionValue(
   if (current === undefined || current === true) {
     return next;
   }
-
   if (typeof current === "string") {
     return [current, next];
   }
-
-  if (Array.isArray(current)) {
-    return [...current, next];
-  }
-
-  return next;
+  return [...current, next];
 }

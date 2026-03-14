@@ -595,7 +595,6 @@ export class OpensteerSessionRuntime {
       const output = await this.runWithOperationTimeout("request-capture.start", async () =>
         this.requestCapture.start({
           engine: this.requireEngine(),
-          artifacts: this.requireRoot().artifacts,
           sessionRef,
           pageRef,
           request: input,
