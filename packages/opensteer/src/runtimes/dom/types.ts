@@ -50,16 +50,26 @@ export interface ContextHop {
   readonly host: DomPath;
 }
 
-export interface ElementPath {
+interface ElementRouteBase {
   readonly context: readonly ContextHop[];
   readonly nodes: DomPath;
 }
+
+export interface StructuralElementAnchor extends ElementRouteBase {
+  readonly resolution: "structural";
+}
+
+export interface ReplayElementPath extends ElementRouteBase {
+  readonly resolution: "deterministic";
+}
+
+export type ElementPath = ReplayElementPath;
 
 export interface DomDescriptorPayload {
   readonly kind: "dom-target";
   readonly method: string;
   readonly description: string;
-  readonly path: ElementPath;
+  readonly path: ReplayElementPath;
   readonly sourceUrl?: string;
 }
 
@@ -80,12 +90,19 @@ export interface DescriptorTargetRef {
 export interface LiveTargetRef {
   readonly kind: "live";
   readonly locator: NodeLocator;
+  readonly anchor?: StructuralElementAnchor;
+  readonly description?: string;
+}
+
+export interface AnchorTargetRef {
+  readonly kind: "anchor";
+  readonly anchor: StructuralElementAnchor;
   readonly description?: string;
 }
 
 export interface PathTargetRef {
   readonly kind: "path";
-  readonly path: ElementPath;
+  readonly path: ReplayElementPath;
   readonly description?: string;
 }
 
@@ -97,10 +114,15 @@ export interface SelectorTargetRef {
   readonly documentRef?: DocumentRef;
 }
 
-export type DomTargetRef = DescriptorTargetRef | LiveTargetRef | PathTargetRef | SelectorTargetRef;
+export type DomTargetRef =
+  | DescriptorTargetRef
+  | LiveTargetRef
+  | AnchorTargetRef
+  | PathTargetRef
+  | SelectorTargetRef;
 
 export interface ResolvedDomTarget {
-  readonly source: "descriptor" | "live" | "path" | "selector";
+  readonly source: "descriptor" | "live" | "anchor" | "path" | "selector";
   readonly pageRef: PageRef;
   readonly frameRef: FrameRef;
   readonly documentRef: DocumentRef;
@@ -109,7 +131,8 @@ export interface ResolvedDomTarget {
   readonly locator: NodeLocator;
   readonly snapshot: DomSnapshot;
   readonly node: DomSnapshotNode;
-  readonly path: ElementPath;
+  readonly anchor: StructuralElementAnchor;
+  readonly replayPath?: ReplayElementPath;
   readonly description?: string;
   readonly selectorUsed?: string;
   readonly descriptor?: DomDescriptorRecord;
@@ -128,7 +151,7 @@ export interface DomResolveTargetInput {
 export interface DomWriteDescriptorInput {
   readonly method: string;
   readonly description: string;
-  readonly path: ElementPath;
+  readonly path: ReplayElementPath;
   readonly sourceUrl?: string;
   readonly createdAt?: number;
   readonly updatedAt?: number;
@@ -190,13 +213,13 @@ export interface DomExtractFieldsInput {
 
 export interface DomArrayFieldSelector {
   readonly key: string;
-  readonly path?: ElementPath;
+  readonly path?: ReplayElementPath;
   readonly attribute?: string;
   readonly source?: "current_url";
 }
 
 export interface DomArraySelector {
-  readonly itemParentPath: ElementPath;
+  readonly itemParentPath: ReplayElementPath;
   readonly fields: readonly DomArrayFieldSelector[];
 }
 
@@ -218,7 +241,8 @@ export interface DomExtractedArrayRow {
 export interface DomRuntime {
   readonly engine: BrowserCoreEngine;
 
-  buildPath(input: DomBuildPathInput): Promise<ElementPath>;
+  buildAnchor(input: DomBuildPathInput): Promise<StructuralElementAnchor>;
+  buildPath(input: DomBuildPathInput): Promise<ReplayElementPath>;
   resolveTarget(input: DomResolveTargetInput): Promise<ResolvedDomTarget>;
   writeDescriptor(input: DomWriteDescriptorInput): Promise<DomDescriptorRecord>;
   readDescriptor(input: DomReadDescriptorInput): Promise<DomDescriptorRecord | undefined>;

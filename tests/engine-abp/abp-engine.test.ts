@@ -2,12 +2,23 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { once } from "node:events";
 
-import { createPoint } from "../../packages/browser-core/src/index.js";
+import {
+  bodyPayloadFromUtf8,
+  createBodyPayload,
+  createPoint,
+} from "../../packages/browser-core/src/index.js";
 import { createAbpBrowserCoreEngine } from "../../packages/engine-abp/src/index.js";
+import { resolveDefaultAbpExecutablePath } from "../../packages/engine-abp/src/launcher.js";
 import { defineBrowserCoreConformanceSuite } from "../browser-core/conformance-suite.js";
 
-const executablePath = process.env.OPENSTEER_ABP_EXECUTABLE;
-const runAbp = process.env.OPENSTEER_ABP_E2E === "1" || executablePath !== undefined;
+const configuredAbpExecutablePath = process.env.OPENSTEER_ABP_EXECUTABLE;
+const configuredBrowserExecutablePath = process.env.OPENSTEER_ABP_BROWSER_EXECUTABLE;
+const defaultAbpExecutablePath = resolveDefaultAbpExecutablePath();
+const runAbp =
+  process.env.OPENSTEER_ABP_E2E !== "0" &&
+  (configuredAbpExecutablePath !== undefined ||
+    configuredBrowserExecutablePath !== undefined ||
+    defaultAbpExecutablePath !== undefined);
 
 let baseUrl = "";
 let closeServer: (() => Promise<void>) | undefined;
@@ -135,8 +146,16 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   }
 
   if (url.pathname === "/api/session-transport") {
-    response.setHeader("content-type", "text/plain; charset=utf-8");
-    response.end(request.headers.cookie ?? "");
+    const body = await readRequestBody(request);
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    response.end(
+      JSON.stringify({
+        method: request.method,
+        cookie: request.headers.cookie ?? "",
+        bodyUtf8: body.toString("utf8"),
+        bodyBase64: body.toString("base64"),
+      }),
+    );
     return;
   }
 
@@ -167,6 +186,20 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function createAbpTestEngine() {
+  return createAbpBrowserCoreEngine({
+    launch: {
+      headless: true,
+      ...(configuredAbpExecutablePath === undefined
+        ? {}
+        : { abpExecutablePath: configuredAbpExecutablePath }),
+      ...(configuredBrowserExecutablePath === undefined
+        ? {}
+        : { browserExecutablePath: configuredBrowserExecutablePath }),
+    },
+  });
+}
+
 beforeAll(async () => {
   if (!runAbp) {
     return;
@@ -180,132 +213,158 @@ afterAll(async () => {
   await closeServer?.();
 });
 
-if (runAbp) {
-  defineBrowserCoreConformanceSuite({
-    name: "AbpBrowserCoreEngine conformance",
-    createHarness: async () => {
-      const engine = await createAbpBrowserCoreEngine({
-        launch: {
-          headless: true,
-          ...(executablePath === undefined ? {} : { executablePath }),
-        },
-      });
+describe.sequential("AbpBrowserCoreEngine", () => {
+  if (runAbp) {
+    defineBrowserCoreConformanceSuite({
+      name: "conformance",
+      testTimeoutMs: 60_000,
+      createHarness: async () => {
+        const engine = await createAbpTestEngine();
 
-      return {
-        engine,
-        urls: {
-          initial: `${baseUrl}/basic`,
-          sameDocument: `${baseUrl}/basic#details`,
-          crossDocument: `${baseUrl}/next`,
-          popup: `${baseUrl}/popup`,
-        },
-        dispose: async () => {
-          await engine.dispose();
-        },
-      };
-    },
-  });
-}
-
-describe.skipIf(!runAbp)("AbpBrowserCoreEngine integration", () => {
-  test("captures network, popup, dialog, storage, session HTTP, and execution control", async () => {
-    const engine = await createAbpBrowserCoreEngine({
-      launch: {
-        headless: true,
-        ...(executablePath === undefined ? {} : { executablePath }),
+        return {
+          engine,
+          urls: {
+            initial: `${baseUrl}/basic`,
+            sameDocument: `${baseUrl}/basic#details`,
+            crossDocument: `${baseUrl}/next`,
+            popup: `${baseUrl}/popup`,
+          },
+          dispose: async () => {
+            await engine.dispose();
+          },
+        };
       },
     });
+  }
 
-    try {
-      const sessionRef = await engine.createSession();
-      const created = await engine.createPage({
-        sessionRef,
-        url: `${baseUrl}/integration`,
-      });
-      await wait(400);
+  describe.skipIf(!runAbp)("integration", () => {
+    test.sequential(
+      "captures network, popup, dialog, storage, session HTTP, and execution control",
+      async () => {
+        const engine = await createAbpTestEngine();
 
-      const popup = await engine.mouseClick({
-        pageRef: created.data.pageRef,
-        point: createPoint(60, 40),
-        coordinateSpace: "layout-viewport-css",
-      });
-      expect(popup.events.map((event) => event.kind)).toContain("popup-opened");
-      expect((await engine.listPages({ sessionRef })).length).toBe(2);
+        try {
+          const sessionRef = await engine.createSession();
+          const created = await engine.createPage({
+            sessionRef,
+            url: `${baseUrl}/integration`,
+          });
+          await wait(400);
 
-      const dialog = await engine.mouseClick({
-        pageRef: created.data.pageRef,
-        point: createPoint(60, 100),
-        coordinateSpace: "layout-viewport-css",
-      });
-      expect(dialog.events.map((event) => event.kind)).toContain("dialog-opened");
+          const popup = await engine.mouseClick({
+            pageRef: created.data.pageRef,
+            point: createPoint(60, 40),
+            coordinateSpace: "layout-viewport-css",
+          });
+          expect(popup.events.map((event) => event.kind)).toContain("popup-opened");
+          expect((await engine.listPages({ sessionRef })).length).toBe(2);
 
-      await engine.mouseClick({
-        pageRef: created.data.pageRef,
-        point: createPoint(60, 160),
-        coordinateSpace: "layout-viewport-css",
-      });
-      await wait(1000);
+          const dialog = await engine.mouseClick({
+            pageRef: created.data.pageRef,
+            point: createPoint(60, 100),
+            coordinateSpace: "layout-viewport-css",
+          });
+          expect(dialog.events.map((event) => event.kind)).toContain("dialog-opened");
 
-      const network = await engine.getNetworkRecords({
-        sessionRef,
-        pageRef: created.data.pageRef,
-        includeBodies: true,
-      });
-      const fetchRecord = network.find((record) => record.url.endsWith("/api/echo"));
-      expect(fetchRecord?.status).toBe(200);
-      expect(new TextDecoder().decode(fetchRecord?.requestBody?.bytes)).toBe("hello-network");
+          await engine.mouseClick({
+            pageRef: created.data.pageRef,
+            point: createPoint(60, 160),
+            coordinateSpace: "layout-viewport-css",
+          });
+          await wait(1000);
 
-      const cookies = await engine.getCookies({
-        sessionRef,
-        urls: [`${baseUrl}/integration`],
-      });
-      expect(cookies.map((cookie) => cookie.name).sort()).toEqual(["server-session", "theme"]);
+          const network = await engine.getNetworkRecords({
+            sessionRef,
+            pageRef: created.data.pageRef,
+            includeBodies: true,
+          });
+          const fetchRecord = network.find((record) => record.url.endsWith("/api/echo"));
+          expect(fetchRecord?.status).toBe(200);
+          expect(new TextDecoder().decode(fetchRecord?.requestBody?.bytes)).toBe("hello-network");
 
-      const transport = await engine.executeRequest({
-        sessionRef,
-        request: {
-          method: "GET",
-          url: `${baseUrl}/api/session-transport`,
-        },
-      });
-      // ABP v0.1.6 curl does not forward cookies from the browser cookie jar.
-      expect(transport.data.status).toBe(200);
+          const cookies = await engine.getCookies({
+            sessionRef,
+            urls: [`${baseUrl}/integration`],
+          });
+          expect(cookies.map((cookie) => cookie.name).sort()).toEqual(["server-session", "theme"]);
 
-      const storage = await engine.getStorageSnapshot({
-        sessionRef,
-      });
-      expect(storage.origins[0]?.localStorage).toContainEqual({
-        key: "theme",
-        value: "dark",
-      });
-      expect(
-        storage.sessionStorage?.some((snapshot) =>
-          snapshot.entries.some((entry) => entry.key === "main" && entry.value === "session-main"),
-        ),
-      ).toBe(true);
-      expect(
-        storage.sessionStorage?.some((snapshot) =>
-          snapshot.entries.some(
-            (entry) => entry.key === "child" && entry.value === "session-child",
-          ),
-        ),
-      ).toBe(true);
+          const transport = await engine.executeRequest({
+            sessionRef,
+            request: {
+              method: "POST",
+              url: `${baseUrl}/api/session-transport`,
+              headers: [{ name: "x-test-header", value: "session-http" }],
+              body: bodyPayloadFromUtf8("transport-body", {
+                mimeType: "text/plain",
+              }),
+            },
+          });
+          expect(transport.data.status).toBe(200);
+          expect(JSON.parse(new TextDecoder().decode(transport.data.body!.bytes))).toMatchObject({
+            method: "POST",
+            bodyUtf8: "transport-body",
+          });
+          expect(JSON.parse(new TextDecoder().decode(transport.data.body!.bytes)).cookie).toContain(
+            "server-session=abc",
+          );
 
-      const paused = await engine.setExecutionState({
-        pageRef: created.data.pageRef,
-        paused: true,
-      });
-      const resumed = await engine.setExecutionState({
-        pageRef: created.data.pageRef,
-        paused: false,
-      });
+          const binaryTransport = await engine.executeRequest({
+            sessionRef,
+            request: {
+              method: "POST",
+              url: `${baseUrl}/api/session-transport`,
+              body: createBodyPayload(new Uint8Array([0x00, 0xff, 0x7f, 0x41]), {
+                mimeType: "application/octet-stream",
+              }),
+            },
+          });
+          expect(binaryTransport.data.status).toBe(200);
+          expect(
+            JSON.parse(new TextDecoder().decode(binaryTransport.data.body!.bytes)),
+          ).toMatchObject({
+            bodyBase64: "AP9/QQ==",
+          });
 
-      expect(paused.data).toEqual({ paused: true, frozen: true });
-      expect(paused.events.map((event) => event.kind)).toEqual(["paused", "frozen"]);
-      expect(resumed.data).toEqual({ paused: false, frozen: false });
-      expect(resumed.events.map((event) => event.kind)).toEqual(["resumed"]);
-    } finally {
-      await engine.dispose();
-    }
-  }, 60_000);
+          const storage = await engine.getStorageSnapshot({
+            sessionRef,
+          });
+          expect(storage.origins[0]?.localStorage).toContainEqual({
+            key: "theme",
+            value: "dark",
+          });
+          expect(
+            storage.sessionStorage?.some((snapshot) =>
+              snapshot.entries.some(
+                (entry) => entry.key === "main" && entry.value === "session-main",
+              ),
+            ),
+          ).toBe(true);
+          expect(
+            storage.sessionStorage?.some((snapshot) =>
+              snapshot.entries.some(
+                (entry) => entry.key === "child" && entry.value === "session-child",
+              ),
+            ),
+          ).toBe(true);
+
+          const paused = await engine.setExecutionState({
+            pageRef: created.data.pageRef,
+            paused: true,
+          });
+          const resumed = await engine.setExecutionState({
+            pageRef: created.data.pageRef,
+            paused: false,
+          });
+
+          expect(paused.data).toEqual({ paused: true, frozen: true });
+          expect(paused.events.map((event) => event.kind)).toEqual(["paused", "frozen"]);
+          expect(resumed.data).toEqual({ paused: false, frozen: false });
+          expect(resumed.events.map((event) => event.kind)).toEqual(["resumed"]);
+        } finally {
+          await engine.dispose();
+        }
+      },
+      60_000,
+    );
+  });
 });

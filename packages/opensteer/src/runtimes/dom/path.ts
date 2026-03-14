@@ -20,7 +20,13 @@ import {
   type DomQueryScope,
   type DomSnapshotIndex,
 } from "./selectors.js";
-import type { ElementPath, MatchClause, PathNode, PathNodePosition } from "./types.js";
+import type {
+  MatchClause,
+  PathNode,
+  PathNodePosition,
+  ReplayElementPath,
+  StructuralElementAnchor,
+} from "./types.js";
 
 const MAX_ATTRIBUTE_VALUE_LENGTH = 300;
 
@@ -36,17 +42,29 @@ interface CandidateDiagnostic {
   readonly count: number;
 }
 
-export function cloneElementPath(path: ElementPath): ElementPath {
+export function cloneStructuralElementAnchor(
+  anchor: StructuralElementAnchor,
+): StructuralElementAnchor {
   return {
-    context: path.context.map((hop) => ({
-      kind: hop.kind,
-      host: hop.host.map(clonePathNode),
-    })),
+    resolution: "structural",
+    context: cloneContext(anchor.context),
+    nodes: anchor.nodes.map(clonePathNode),
+  };
+}
+
+export function cloneReplayElementPath(path: ReplayElementPath): ReplayElementPath {
+  return {
+    resolution: "deterministic",
+    context: cloneContext(path.context),
     nodes: path.nodes.map(clonePathNode),
   };
 }
 
-export function buildPathSelectorHint(path: ElementPath): string {
+export function cloneElementPath(path: ReplayElementPath): ReplayElementPath {
+  return cloneReplayElementPath(path);
+}
+
+export function buildPathSelectorHint(path: { readonly nodes: readonly PathNode[] } | null | undefined): string {
   const nodes = path?.nodes || [];
   const last = nodes[nodes.length - 1];
   if (!last) {
@@ -101,34 +119,38 @@ export function createSnapshotIndex(snapshot: DomSnapshot) {
   return createDomSnapshotIndex(snapshot);
 }
 
-export function sanitizeElementPath(path: ElementPath): ElementPath {
-  const cleanNodes = (nodes: unknown[]): PathNode[] =>
-    (Array.isArray(nodes) ? nodes : []).map((raw) =>
-      normalizePathNode(raw as Record<string, unknown>),
-    );
-
-  const context = (Array.isArray(path?.context) ? path.context : [])
-    .filter((hop) => hop && (hop.kind === "iframe" || hop.kind === "shadow"))
-    .map((hop) => ({
-      kind: hop.kind,
-      host: cleanNodes((hop as { readonly host?: unknown[] }).host || []),
-    }));
-
+export function sanitizeStructuralElementAnchor(
+  anchor: StructuralElementAnchor,
+): StructuralElementAnchor {
   return {
-    context,
-    nodes: cleanNodes((path?.nodes || []) as unknown[]),
+    resolution: "structural",
+    context: sanitizeContext(anchor.context),
+    nodes: sanitizeNodes(anchor.nodes),
   };
 }
 
-export function buildLocalElementPath(
+export function sanitizeReplayElementPath(path: ReplayElementPath): ReplayElementPath {
+  return {
+    resolution: "deterministic",
+    context: sanitizeContext(path.context),
+    nodes: sanitizeNodes(path.nodes),
+  };
+}
+
+export function sanitizeElementPath(path: ReplayElementPath): ReplayElementPath {
+  return sanitizeReplayElementPath(path);
+}
+
+export function buildLocalStructuralElementAnchor(
   index: DomSnapshotIndex,
   rawTargetNode: DomSnapshotNode,
-): ElementPath {
+): StructuralElementAnchor {
   const targetNode = requireElementNode(index, rawTargetNode);
-  const nodes = finalizeScopedDomPath(index, targetNode);
+  const nodes = captureScopedStructuralNodes(index, targetNode);
   const shadowHostNodeRef = targetNode.shadowHostNodeRef;
   if (shadowHostNodeRef === undefined) {
-    return sanitizeElementPath({
+    return sanitizeStructuralElementAnchor({
+      resolution: "structural",
       context: [],
       nodes,
     });
@@ -141,16 +163,51 @@ export function buildLocalElementPath(
     );
   }
 
-  const hostPath = buildLocalElementPath(index, hostNode);
-  return sanitizeElementPath({
-    context: [...hostPath.context, { kind: "shadow", host: cloneElementPath(hostPath).nodes }],
+  const hostAnchor = buildLocalStructuralElementAnchor(index, hostNode);
+  return sanitizeStructuralElementAnchor({
+    resolution: "structural",
+    context: [
+      ...hostAnchor.context,
+      { kind: "shadow", host: cloneStructuralElementAnchor(hostAnchor).nodes },
+    ],
+    nodes,
+  });
+}
+
+export function buildLocalReplayElementPath(
+  index: DomSnapshotIndex,
+  rawTargetNode: DomSnapshotNode,
+): ReplayElementPath {
+  const targetNode = requireElementNode(index, rawTargetNode);
+  const localAnchor = captureLocalScopedStructuralAnchor(index, targetNode);
+  const nodes = finalizeScopedReplayNodes(index, targetNode, localAnchor.nodes);
+  const shadowHostNodeRef = targetNode.shadowHostNodeRef;
+  if (shadowHostNodeRef === undefined) {
+    return sanitizeReplayElementPath({
+      resolution: "deterministic",
+      context: [],
+      nodes,
+    });
+  }
+
+  const hostNode = findNodeByNodeRef(index, shadowHostNodeRef);
+  if (!hostNode) {
+    throw new Error(
+      `shadow host ${shadowHostNodeRef} is missing from snapshot ${index.snapshot.documentRef}`,
+    );
+  }
+
+  const hostPath = buildLocalReplayElementPath(index, hostNode);
+  return sanitizeReplayElementPath({
+    resolution: "deterministic",
+    context: [...hostPath.context, { kind: "shadow", host: cloneReplayElementPath(hostPath).nodes }],
     nodes,
   });
 }
 
 export function resolveDomPathInScope(
   index: DomSnapshotIndex,
-  domPath: ElementPath["nodes"],
+  domPath: ReplayElementPath["nodes"],
   scope: DomQueryScope,
 ): ResolveMatch | null {
   const candidates = buildPathCandidates(domPath);
@@ -184,7 +241,7 @@ export function resolveDomPathInScope(
 
 export function queryAllDomPathInScope(
   index: DomSnapshotIndex,
-  domPath: ElementPath["nodes"],
+  domPath: ReplayElementPath["nodes"],
   scope: DomQueryScope,
 ): DomSnapshotNode[] {
   const selectors = buildPathCandidates(domPath);
@@ -222,7 +279,7 @@ export function resolveFirstWithinNodeBySelectors(
 
 export function collectCandidateDiagnostics(
   index: DomSnapshotIndex,
-  domPath: ElementPath["nodes"],
+  domPath: ReplayElementPath["nodes"],
   scope: DomQueryScope,
 ): CandidateDiagnostic[] {
   return buildPathCandidates(domPath).map((selector) => ({
@@ -231,8 +288,57 @@ export function collectCandidateDiagnostics(
   }));
 }
 
+export function resolveStructuralAnchorInScope(
+  index: DomSnapshotIndex,
+  anchorNodes: StructuralElementAnchor["nodes"],
+  scope: DomQueryScope,
+): ResolveMatch | null {
+  const matches = queryAllStructuralAnchorInScope(index, anchorNodes, scope);
+  if (matches.length === 0) {
+    return null;
+  }
+
+  return {
+    node: matches[0]!,
+    selector: buildPathSelectorHint({ nodes: anchorNodes }),
+    mode: matches.length === 1 ? "unique" : "ambiguous",
+    count: matches.length,
+  };
+}
+
+export function queryAllStructuralAnchorInScope(
+  index: DomSnapshotIndex,
+  anchorNodes: StructuralElementAnchor["nodes"],
+  scope: DomQueryScope,
+): DomSnapshotNode[] {
+  if (!anchorNodes.length) {
+    return [];
+  }
+
+  const scopeHostNodeRef = scope.shadowHostNodeRef;
+  const scopeRoot =
+    scopeHostNodeRef === undefined ? index.rootNode : findNodeByNodeRef(index, scopeHostNodeRef);
+  if (!scopeRoot) {
+    return [];
+  }
+
+  let matches = collectChildrenInScope(index, scopeRoot, scopeHostNodeRef).filter((node) =>
+    matchesStructuralAnchorNode(index, node, anchorNodes[0]!, scopeHostNodeRef),
+  );
+  for (let depth = 1; depth < anchorNodes.length && matches.length > 0; depth += 1) {
+    const nextAnchorNode = anchorNodes[depth]!;
+    matches = matches.flatMap((parent) =>
+      collectChildrenInScope(index, parent, scopeHostNodeRef).filter((child) =>
+        matchesStructuralAnchorNode(index, child, nextAnchorNode, scopeHostNodeRef),
+      ),
+    );
+  }
+
+  return matches;
+}
+
 export function buildTargetNotFoundMessage(
-  domPath: ElementPath["nodes"],
+  domPath: ReplayElementPath["nodes"],
   diagnostics: readonly CandidateDiagnostic[],
 ): string {
   const depth = Array.isArray(domPath) ? domPath.length : 0;
@@ -249,7 +355,7 @@ export function buildTargetNotFoundMessage(
 }
 
 export function buildTargetNotUniqueMessage(
-  domPath: ElementPath["nodes"],
+  domPath: ReplayElementPath["nodes"],
   diagnostics: readonly CandidateDiagnostic[],
 ): string {
   const depth = Array.isArray(domPath) ? domPath.length : 0;
@@ -267,7 +373,7 @@ export function buildTargetNotUniqueMessage(
 }
 
 export function buildContextHostNotUniqueMessage(
-  domPath: ElementPath["nodes"],
+  domPath: ReplayElementPath["nodes"],
   diagnostics: readonly CandidateDiagnostic[],
 ): string {
   const depth = Array.isArray(domPath) ? domPath.length : 0;
@@ -284,7 +390,7 @@ export function buildContextHostNotUniqueMessage(
   return `${base} Host depth ${String(depth)}. Candidate counts: ${sample}.`;
 }
 
-export function buildArrayFieldCandidates(path: ElementPath): string[] {
+export function buildArrayFieldCandidates(path: ReplayElementPath): string[] {
   return buildArrayFieldPathCandidates(path);
 }
 
@@ -298,13 +404,42 @@ function firstDefinedAttribute(node: PathNode, keys: readonly string[]): string 
   return undefined;
 }
 
+function cloneContext(
+  context: readonly StructuralElementAnchor["context"][number][],
+): StructuralElementAnchor["context"] {
+  return context.map((hop) => ({
+    kind: hop.kind,
+    host: hop.host.map(clonePathNode),
+  }));
+}
+
+function sanitizeContext(
+  context: unknown,
+): StructuralElementAnchor["context"] {
+  const hops = Array.isArray(context) ? context : [];
+  return hops
+    .filter((hop): hop is { readonly kind: "iframe" | "shadow"; readonly host?: unknown[] } =>
+      !!hop && (hop.kind === "iframe" || hop.kind === "shadow"),
+    )
+    .map((hop) => ({
+      kind: hop.kind,
+      host: sanitizeNodes(hop.host),
+    }));
+}
+
+function sanitizeNodes(nodes: unknown): PathNode[] {
+  return (Array.isArray(nodes) ? nodes : []).map((raw) =>
+    normalizePathNode(raw as Record<string, unknown>),
+  );
+}
+
 function sanitizeHintToken(value: string): string {
   return value.replace(/"/g, '\\"').trim();
 }
 
 export function throwTargetNotFound(
   index: DomSnapshotIndex,
-  domPath: ElementPath["nodes"],
+  domPath: ReplayElementPath["nodes"],
   scope: DomQueryScope,
 ): never {
   throw new ElementPathError(
@@ -315,7 +450,7 @@ export function throwTargetNotFound(
 
 export function throwTargetNotUnique(
   index: DomSnapshotIndex,
-  domPath: ElementPath["nodes"],
+  domPath: ReplayElementPath["nodes"],
   scope: DomQueryScope,
 ): never {
   throw new ElementPathError(
@@ -326,7 +461,7 @@ export function throwTargetNotUnique(
 
 export function throwContextHostNotUnique(
   index: DomSnapshotIndex,
-  domPath: ElementPath["nodes"],
+  domPath: ReplayElementPath["nodes"],
   scope: DomQueryScope,
 ): never {
   throw new ElementPathError(
@@ -507,7 +642,44 @@ function isPseudoElementNodeName(nodeName: string): boolean {
   return String(nodeName || "").startsWith("::");
 }
 
-function finalizeScopedDomPath(index: DomSnapshotIndex, targetNode: DomSnapshotNode): PathNode[] {
+function captureLocalScopedStructuralAnchor(
+  index: DomSnapshotIndex,
+  targetNode: DomSnapshotNode,
+): StructuralElementAnchor {
+  return {
+    resolution: "structural",
+    context: [],
+    nodes: captureScopedStructuralNodes(index, targetNode),
+  };
+}
+
+function captureScopedStructuralNodes(
+  index: DomSnapshotIndex,
+  targetNode: DomSnapshotNode,
+): PathNode[] {
+  const scopeHostNodeRef = targetNode.shadowHostNodeRef;
+  const chain = buildScopedElementChain(index, targetNode, scopeHostNodeRef);
+  if (!chain.length) {
+    throw new Error(
+      `target node ${String(targetNode.snapshotNodeId)} has no scoped ancestor chain`,
+    );
+  }
+
+  return chain.map((element) =>
+    normalizePathNode({
+      tag: element.nodeName.toLowerCase(),
+      attrs: collectAttrs(element),
+      position: toPosition(index, element, scopeHostNodeRef),
+      match: [],
+    }),
+  );
+}
+
+function finalizeScopedReplayNodes(
+  index: DomSnapshotIndex,
+  targetNode: DomSnapshotNode,
+  structuralNodes: readonly PathNode[],
+): PathNode[] {
   const scopeHostNodeRef = targetNode.shadowHostNodeRef;
   const chain = buildScopedElementChain(index, targetNode, scopeHostNodeRef);
   if (!chain.length) {
@@ -521,10 +693,13 @@ function finalizeScopedDomPath(index: DomSnapshotIndex, targetNode: DomSnapshotN
     attrs: Record<string, string>;
     position: PathNodePosition;
     match: MatchClause[];
-  }> = chain.map((element) => ({
-    tag: element.nodeName.toLowerCase(),
-    attrs: collectAttrs(element),
-    position: toPosition(index, element, scopeHostNodeRef),
+  }> = structuralNodes.map((node) => ({
+    tag: node.tag,
+    attrs: { ...node.attrs },
+    position: {
+      nthChild: node.position.nthChild,
+      nthOfType: node.position.nthOfType,
+    },
     match: [],
   }));
 
@@ -577,6 +752,33 @@ function finalizeScopedDomPath(index: DomSnapshotIndex, targetNode: DomSnapshotN
 
   throw new Error(
     `failed to finalize element path for node ${String(expectedTarget.snapshotNodeId)} in ${index.snapshot.documentRef}`,
+  );
+}
+
+function matchesStructuralAnchorNode(
+  index: DomSnapshotIndex,
+  candidate: DomSnapshotNode,
+  anchorNode: PathNode,
+  scopeHostNodeRef: NodeRef | undefined,
+): boolean {
+  if (candidate.nodeType !== 1 || candidate.shadowHostNodeRef !== scopeHostNodeRef) {
+    return false;
+  }
+  if (candidate.nodeName.toLowerCase() !== anchorNode.tag.toLowerCase()) {
+    return false;
+  }
+
+  const attrs = collectAttrs(candidate);
+  for (const [key, value] of Object.entries(anchorNode.attrs)) {
+    if (attrs[key] !== value) {
+      return false;
+    }
+  }
+
+  const position = toPosition(index, candidate, scopeHostNodeRef);
+  return (
+    position.nthChild === anchorNode.position.nthChild &&
+    position.nthOfType === anchorNode.position.nthOfType
   );
 }
 

@@ -119,7 +119,7 @@ function toOpensteerResolvedTarget(target: ResolvedDomTarget): OpensteerResolved
     documentEpoch: target.documentEpoch,
     nodeRef: target.nodeRef,
     tagName: target.node.nodeName.toUpperCase(),
-    pathHint: buildPathSelectorHint(target.path),
+    pathHint: buildPathSelectorHint(target.replayPath ?? target.anchor),
     ...(target.description === undefined ? {} : { description: target.description }),
     ...(target.selectorUsed === undefined ? {} : { selectorUsed: target.selectorUsed }),
   };

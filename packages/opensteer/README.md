@@ -96,6 +96,12 @@ Important subtrees:
 - `input({ element | selector | description, text })`
 - `scroll({ element | selector | description, direction, amount })`
 - `extract({ description, schema? })`
+- `startRequestCapture({ urlPattern?, method?, includeBodies? })`
+- `stopRequestCapture()`
+- `writeRequestPlan({ key, plan })`
+- `getRequestPlan({ key })`
+- `listRequestPlans({ cursor?, limit? })`
+- `request(key, { path?, query?, headers?, body? })`
 - `computerExecute({ action, screenshot? })`
 - `close()`
 

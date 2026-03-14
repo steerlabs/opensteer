@@ -49,12 +49,8 @@ export function redactHeaderEntries(
 }
 
 export function toProtocolBodyPayload(
-  body: BrowserBodyPayload | undefined,
-): ProtocolBodyPayload | undefined {
-  if (body === undefined) {
-    return undefined;
-  }
-
+  body: BrowserBodyPayload,
+): ProtocolBodyPayload {
   return createBodyPayload(Buffer.from(body.bytes).toString("base64"), {
     encoding: body.encoding,
     ...(body.mimeType === undefined ? {} : { mimeType: body.mimeType }),
@@ -73,38 +69,65 @@ export function toProtocolNetworkRecord(
   } = {},
 ): ProtocolNetworkRecord {
   const headers = options.redactSecretHeaders ?? false ? redactHeaderEntries : cloneHeaders;
+  const requestBody =
+    record.requestBody === undefined ? undefined : toProtocolBodyPayload(record.requestBody);
+  const responseBody =
+    record.responseBody === undefined ? undefined : toProtocolBodyPayload(record.responseBody);
 
   return {
-    ...record,
+    kind: record.kind,
+    requestId: record.requestId,
+    sessionRef: record.sessionRef,
+    ...(record.pageRef === undefined ? {} : { pageRef: record.pageRef }),
+    ...(record.frameRef === undefined ? {} : { frameRef: record.frameRef }),
+    ...(record.documentRef === undefined ? {} : { documentRef: record.documentRef }),
+    method: record.method,
+    url: record.url,
     requestHeaders: headers(record.requestHeaders),
     responseHeaders: headers(record.responseHeaders),
-    ...(record.requestBody === undefined ? {} : { requestBody: toProtocolBodyPayload(record.requestBody) }),
-    ...(record.responseBody === undefined
+    ...(record.status === undefined ? {} : { status: record.status }),
+    ...(record.statusText === undefined ? {} : { statusText: record.statusText }),
+    resourceType: record.resourceType,
+    ...(record.redirectFromRequestId === undefined
       ? {}
-      : { responseBody: toProtocolBodyPayload(record.responseBody) }),
+      : { redirectFromRequestId: record.redirectFromRequestId }),
+    ...(record.redirectToRequestId === undefined
+      ? {}
+      : { redirectToRequestId: record.redirectToRequestId }),
+    navigationRequest: record.navigationRequest,
+    ...(record.initiator === undefined ? {} : { initiator: record.initiator }),
+    ...(record.timing === undefined ? {} : { timing: record.timing }),
+    ...(record.transfer === undefined ? {} : { transfer: record.transfer }),
+    ...(record.source === undefined ? {} : { source: record.source }),
+    ...(requestBody === undefined ? {} : { requestBody }),
+    ...(responseBody === undefined ? {} : { responseBody }),
   };
 }
 
 export function toProtocolRequestTransportResult(
   request: SessionTransportRequest,
 ): OpensteerRequestTransportResult {
+  const body = request.body === undefined ? undefined : toProtocolBodyPayload(request.body);
+
   return {
     method: request.method,
     url: request.url,
     headers: cloneHeaders(request.headers ?? []),
-    ...(request.body === undefined ? {} : { body: toProtocolBodyPayload(request.body) }),
+    ...(body === undefined ? {} : { body }),
   };
 }
 
 export function toProtocolRequestResponseResult(
   response: SessionTransportResponse,
 ): OpensteerRequestResponseResult {
+  const body = response.body === undefined ? undefined : toProtocolBodyPayload(response.body);
+
   return {
     url: response.url,
     status: response.status,
     statusText: response.statusText,
     headers: cloneHeaders(response.headers),
-    ...(response.body === undefined ? {} : { body: toProtocolBodyPayload(response.body) }),
+    ...(body === undefined ? {} : { body }),
     redirected: response.redirected,
   };
 }

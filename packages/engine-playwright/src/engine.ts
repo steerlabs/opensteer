@@ -1806,11 +1806,14 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
         };
       }
       const contentType = await response.headerValue("content-type");
-      const responseBody = captureBodyPayload(
-        await response.body(),
-        contentType ?? undefined,
-        this.bodyCaptureLimitBytes,
-      );
+      const responseBody =
+        record.redirectToRequestId !== undefined
+          ? undefined
+          : captureBodyPayload(
+              await response.body(),
+              contentType ?? undefined,
+              this.bodyCaptureLimitBytes,
+            );
       if (responseBody) {
         record.responseBody = responseBody;
         record.transfer = {

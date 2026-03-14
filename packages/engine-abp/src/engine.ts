@@ -59,10 +59,7 @@ import {
   type StorageSnapshot,
   type ViewportMetrics,
 } from "@opensteer/browser-core";
-import {
-  OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL,
-  type ComputerUseBridge,
-} from "@opensteer/protocol";
+import { OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL, type ComputerUseBridge } from "@opensteer/protocol";
 import { STATUS_CODES } from "node:http";
 import type { ChildProcess } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -104,11 +101,9 @@ import { allocatePort, launchAbpProcess } from "./launcher.js";
 import { normalizeSelectChooserEventData } from "./action-events.js";
 import {
   AbpRestClient,
-  assertUtf8RequestBody,
   buildImmediateActionRequest,
   buildImmediateScreenshotRequest,
   buildInputActionRequest,
-  encodeHeaders,
 } from "./rest-client.js";
 import { createAbpComputerUseBridge } from "./computer-use.js";
 import {
@@ -123,7 +118,6 @@ import type {
   AbpActionResponse,
   AbpCdpCookie,
   AbpCdpTargetInfo,
-  AbpCurlResponse,
   AbpDomStorageItemsResult,
   AbpIndexedDbDataResult,
   AbpIndexedDbDatabaseNamesResult,
@@ -158,6 +152,37 @@ interface LocalStorageOriginState {
   readonly storageKey: string;
 }
 
+interface SessionHttpScriptResponse {
+  readonly url: string;
+  readonly status: number;
+  readonly statusText: string;
+  readonly headers: ReadonlyArray<readonly [string, string]>;
+  readonly bodyBase64?: string;
+  readonly redirected: boolean;
+}
+
+interface SessionHttpScriptPendingResult {
+  readonly state: "pending";
+}
+
+interface SessionHttpScriptFulfilledResult {
+  readonly state: "fulfilled";
+  readonly response: SessionHttpScriptResponse;
+}
+
+interface SessionHttpScriptRejectedResult {
+  readonly state: "rejected";
+  readonly error: {
+    readonly name?: string;
+    readonly message: string;
+  };
+}
+
+type SessionHttpScriptPollResult =
+  | SessionHttpScriptPendingResult
+  | SessionHttpScriptFulfilledResult
+  | SessionHttpScriptRejectedResult;
+
 function clone<T>(value: T): T {
   return structuredClone(value);
 }
@@ -168,6 +193,198 @@ function delay(ms: number): Promise<void> {
 
 function combineFrameUrl(url: string, fragment?: string): string {
   return `${url}${fragment ?? ""}`;
+}
+
+function buildSessionHttpStartScript(request: SessionTransportRequest): string {
+  const serialized = JSON.stringify({
+    url: request.url,
+    method: request.method,
+    headers: (request.headers ?? []).map((header) => [header.name, header.value]),
+    bodyBase64:
+      request.body === undefined ? undefined : Buffer.from(request.body.bytes).toString("base64"),
+    followRedirects: request.followRedirects !== false,
+    timeoutMs: request.timeoutMs,
+  });
+
+  return `(() => {
+    const input = ${serialized};
+    const state = globalThis.__opensteerSessionHttp ?? (globalThis.__opensteerSessionHttp = {
+      nextId: 0,
+      requests: Object.create(null),
+    });
+    const requestId = String(++state.nextId);
+    state.requests[requestId] = { state: "pending" };
+
+    const decodeBase64 = (value) => {
+      if (typeof value !== "string") {
+        return undefined;
+      }
+      const binary = atob(value);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+      return bytes;
+    };
+
+    const encodeBase64 = (bytes) => {
+      let binary = "";
+      const chunkSize = 0x8000;
+      for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+        const chunk = bytes.subarray(offset, offset + chunkSize);
+        binary += String.fromCharCode(...chunk);
+      }
+      return btoa(binary);
+    };
+
+    const headers = new Headers();
+    for (const [name, value] of input.headers) {
+      headers.append(name, value);
+    }
+
+    const controller = new AbortController();
+    const timeoutId =
+      typeof input.timeoutMs === "number"
+        ? setTimeout(
+            () => controller.abort(new DOMException("session HTTP timed out", "AbortError")),
+            input.timeoutMs,
+          )
+        : undefined;
+
+    void fetch(input.url, {
+      method: input.method,
+      headers,
+      credentials: "include",
+      redirect: input.followRedirects ? "follow" : "manual",
+      signal: controller.signal,
+      ...(input.bodyBase64 === undefined ? {} : { body: decodeBase64(input.bodyBase64) }),
+    })
+      .then(async (response) => {
+        const body = new Uint8Array(await response.arrayBuffer());
+        const responseHeaders = [];
+        response.headers.forEach((value, name) => {
+          responseHeaders.push([name, value]);
+        });
+        state.requests[requestId] = {
+          state: "fulfilled",
+          response: {
+            url: response.url,
+            status: response.status,
+            statusText: response.statusText,
+            headers: responseHeaders,
+            bodyBase64: encodeBase64(body),
+            redirected: response.redirected,
+          },
+        };
+        if (timeoutId !== undefined) {
+          clearTimeout(timeoutId);
+        }
+      })
+      .catch((error) => {
+        state.requests[requestId] = {
+          state: "rejected",
+          error: {
+            ...(error && typeof error.name === "string" ? { name: error.name } : {}),
+            message:
+              error && typeof error.message === "string"
+                ? error.message
+                : "session HTTP request failed",
+          },
+        };
+        if (timeoutId !== undefined) {
+          clearTimeout(timeoutId);
+        }
+      });
+
+    return requestId;
+  })()`;
+}
+
+function buildSessionHttpPollScript(requestId: string): string {
+  return `(() => {
+    const requests = globalThis.__opensteerSessionHttp?.requests;
+    const result = requests?.[${JSON.stringify(requestId)}];
+    if (!result || result.state === "pending") {
+      return { state: "pending" };
+    }
+    delete requests[${JSON.stringify(requestId)}];
+    return result;
+  })()`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function normalizeSessionHttpScriptResponse(value: unknown): SessionHttpScriptResponse {
+  if (!isRecord(value)) {
+    throw new Error("ABP session HTTP returned an invalid response payload");
+  }
+
+  const { url, status, statusText, headers, bodyBase64, redirected } = value;
+  if (
+    typeof url !== "string" ||
+    !Number.isInteger(status) ||
+    typeof statusText !== "string" ||
+    !Array.isArray(headers) ||
+    typeof redirected !== "boolean" ||
+    (bodyBase64 !== undefined && typeof bodyBase64 !== "string")
+  ) {
+    throw new Error("ABP session HTTP returned an invalid response payload");
+  }
+
+  const normalizedHeaders = headers.map((entry) => {
+    if (!Array.isArray(entry) || entry.length !== 2) {
+      throw new Error("ABP session HTTP returned invalid response headers");
+    }
+    const [name, headerValue] = entry;
+    if (typeof name !== "string" || typeof headerValue !== "string") {
+      throw new Error("ABP session HTTP returned invalid response headers");
+    }
+    return [name, headerValue] as const;
+  });
+  const normalizedStatus = status as number;
+
+  return {
+    url,
+    status: normalizedStatus,
+    statusText,
+    headers: normalizedHeaders,
+    ...(bodyBase64 === undefined ? {} : { bodyBase64 }),
+    redirected,
+  };
+}
+
+function normalizeSessionHttpScriptPollResult(value: unknown): SessionHttpScriptPollResult {
+  if (!isRecord(value) || typeof value.state !== "string") {
+    throw new Error("ABP session HTTP returned an invalid execution state");
+  }
+
+  switch (value.state) {
+    case "pending":
+      return { state: "pending" };
+    case "fulfilled":
+      if (!isRecord(value.response)) {
+        throw new Error("ABP session HTTP returned an invalid completion state");
+      }
+      return {
+        state: "fulfilled",
+        response: normalizeSessionHttpScriptResponse(value.response),
+      };
+    case "rejected":
+      if (!isRecord(value.error) || typeof value.error.message !== "string") {
+        throw new Error("ABP session HTTP returned an invalid failure state");
+      }
+      return {
+        state: "rejected",
+        error: {
+          ...(typeof value.error.name === "string" ? { name: value.error.name } : {}),
+          message: value.error.message,
+        },
+      };
+    default:
+      throw new Error("ABP session HTTP returned an unknown execution state");
+  }
 }
 
 function headerValue(
@@ -321,12 +538,6 @@ function parseOrigin(value: string): string | undefined {
   }
 }
 
-function headersFromCurlResponse(
-  response: AbpCurlResponse,
-): readonly { readonly name: string; readonly value: string }[] {
-  return Object.entries(response.headers).map(([name, value]) => createHeaderEntry(name, value));
-}
-
 async function waitForProcessExit(process: ChildProcess | undefined): Promise<void> {
   if (!process || process.exitCode !== null) {
     return;
@@ -387,6 +598,12 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       throw createBrowserCoreError(
         "invalid-argument",
         "provide either launch or browser options, not both",
+      );
+    }
+    if (options.launch?.abpExecutablePath && options.launch.browserExecutablePath) {
+      throw createBrowserCoreError(
+        "invalid-argument",
+        "provide either an ABP wrapper executable path or a browser executable path, not both",
       );
     }
 
@@ -1596,36 +1813,40 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
 
     const controller = this.requirePage(activePageRef);
     const startedAt = Date.now();
-    const body =
-      input.request.body === undefined
-        ? undefined
-        : assertUtf8RequestBody(input.request.body.bytes);
+    const requestId = await session.rest.executeScript<string>(
+      controller.tabId,
+      buildSessionHttpStartScript(input.request),
+      {
+        wait_until: {
+          type: "immediate",
+        },
+        screenshot: {
+          area: "none",
+        },
+      },
+    );
 
-    let response: AbpCurlResponse;
+    let response: SessionHttpScriptResponse;
     try {
-      response = await session.rest.curlTab(controller.tabId, {
-        url: input.request.url,
-        method: input.request.method,
-        ...(input.request.headers === undefined
-          ? {}
-          : { headers: encodeHeaders(input.request.headers) }),
-        ...(body === undefined ? {} : { body }),
-      });
+      response = await this.awaitSessionHttpResponse(
+        session,
+        controller,
+        requestId,
+        input.request.timeoutMs,
+      );
     } catch (error) {
       throw normalizeAbpError(error, controller.pageRef);
     }
 
-    const responseHeaders = headersFromCurlResponse(response);
+    const responseHeaders = response.headers.map(([name, value]) => createHeaderEntry(name, value));
     const contentType = headerValue(responseHeaders, "content-type");
     const payload =
-      response.body === undefined
+      response.bodyBase64 === undefined
         ? undefined
-        : response.bodyEncoding === "base64"
-          ? createBodyPayload(new Uint8Array(Buffer.from(response.body, "base64")), {
-              encoding: "base64",
-              ...parseMimeType(contentType),
-            })
-          : bodyPayloadFromUtf8(response.body, parseMimeType(contentType));
+        : createBodyPayload(new Uint8Array(Buffer.from(response.bodyBase64, "base64")), {
+            encoding: "base64",
+            ...parseMimeType(contentType),
+          });
 
     const mainFrame = this.requireMainFrame(controller);
     return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
@@ -1636,12 +1857,59 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       data: {
         url: response.url,
         status: response.status,
-        statusText: STATUS_CODES[response.status] ?? "",
+        statusText: response.statusText || STATUS_CODES[response.status] || "",
         headers: responseHeaders,
         ...(payload === undefined ? {} : { body: payload }),
         redirected: response.redirected,
       },
     });
+  }
+
+  private async awaitSessionHttpResponse(
+    session: SessionState,
+    controller: PageController,
+    requestId: string,
+    timeoutMs: number | undefined,
+  ): Promise<SessionHttpScriptResponse> {
+    const startedAt = Date.now();
+    const maxWaitMs =
+      timeoutMs === undefined ? 30_000 : Math.max(Math.ceil(timeoutMs) + 1_000, 30_000);
+
+    while (Date.now() - startedAt < maxWaitMs) {
+      const result = normalizeSessionHttpScriptPollResult(
+        await session.rest.executeScript<unknown>(
+          controller.tabId,
+          buildSessionHttpPollScript(requestId),
+          {
+            wait_until: {
+              type: "immediate",
+            },
+            screenshot: {
+              area: "none",
+            },
+          },
+        ),
+      );
+
+      if (result.state === "pending") {
+        await delay(25);
+        continue;
+      }
+
+      if (result.state === "rejected") {
+        throw createBrowserCoreError(
+          result.error.name === "AbortError" ? "timeout" : "operation-failed",
+          result.error.message,
+        );
+      }
+
+      return result.response;
+    }
+
+    throw createBrowserCoreError(
+      "timeout",
+      `session ${session.sessionRef} did not finish a session HTTP request within ${String(maxWaitMs)}ms`,
+    );
   }
 
   private async createLaunchSession(): Promise<SessionRef> {
@@ -1661,9 +1929,12 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       port: restPort,
       userDataDir,
       sessionDir,
-      ...(this.launchOptions?.executablePath === undefined
+      ...(this.launchOptions?.abpExecutablePath === undefined
         ? {}
-        : { executablePath: this.launchOptions.executablePath }),
+        : { abpExecutablePath: this.launchOptions.abpExecutablePath }),
+      ...(this.launchOptions?.browserExecutablePath === undefined
+        ? {}
+        : { browserExecutablePath: this.launchOptions.browserExecutablePath }),
       headless: this.launchOptions?.headless ?? true,
       args: launchArgs,
       verbose: this.launchOptions?.verbose ?? false,

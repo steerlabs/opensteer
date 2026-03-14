@@ -295,6 +295,7 @@ describe("Phase 5 DOM runtime utilities", () => {
     ).toBe(`${baseUrl}/child-relative`);
 
     const fieldPath: ElementPath = {
+      resolution: "deterministic",
       context: [],
       nodes: [
         {
@@ -317,6 +318,7 @@ describe("Phase 5 DOM runtime utilities", () => {
 
   test("sanitizes element paths with stable deferred id clauses preserved", () => {
     const sanitized = sanitizeElementPath({
+      resolution: "deterministic",
       context: [],
       nodes: [
         {
@@ -459,6 +461,99 @@ describe("Phase 5 DOM runtime integration", () => {
   );
 
   test(
+    "resolves stale live locators through structural anchors when the replacement keeps the same structure",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+      try {
+        const runtime = createDomRuntime({ engine });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: dataUrl(
+            html(
+              `
+                <button id="replace" type="button" style="position:absolute;left:20px;top:20px;width:160px;height:40px">Replace</button>
+                <div id="slot" style="position:absolute;left:20px;top:80px">
+                  <button id="target" class="target" type="button" style="width:160px;height:40px">Target V1</button>
+                </div>
+                <div id="status" style="position:absolute;left:20px;top:140px">ready</div>
+                <script>
+                  const status = document.getElementById("status");
+                  const wire = (label) => {
+                    document.getElementById("target").addEventListener("click", () => {
+                      status.textContent = "clicked " + label;
+                    });
+                  };
+                  wire("v1");
+                  document.getElementById("replace").addEventListener("click", () => {
+                    document.getElementById("slot").innerHTML =
+                      '<button id="target" class="target" type="button" style="width:160px;height:40px">Target V2</button>';
+                    wire("v2");
+                    status.textContent = "replaced";
+                  });
+                </script>
+              `,
+              "DOM runtime live anchor fallback",
+            ),
+          ),
+        });
+
+        await wait(300);
+
+        const snapshot = await engine.getDomSnapshot({
+          frameRef: created.frameRef!,
+        });
+        const targetNode = requireValue(findNodeById(snapshot.nodes, "target"), "target node missing");
+        const locator = createLocator(snapshot, targetNode);
+        const anchor = await runtime.buildAnchor({ locator });
+
+        await runtime.click({
+          pageRef: created.data.pageRef,
+          target: { kind: "selector", selector: "#replace" },
+        });
+        await wait(150);
+
+        await expect(runtime.buildPath({ locator })).rejects.toThrow(/stale|not found/i);
+
+        const resolvedLive = await runtime.resolveTarget({
+          pageRef: created.data.pageRef,
+          method: "click",
+          target: { kind: "live", locator, anchor },
+        });
+        const resolvedAnchor = await runtime.resolveTarget({
+          pageRef: created.data.pageRef,
+          method: "click",
+          target: { kind: "anchor", anchor },
+        });
+
+        expect(resolvedLive.node.attributes.find((attribute) => attribute.name === "id")?.value).toBe(
+          "target",
+        );
+        expect(resolvedAnchor.node.attributes.find((attribute) => attribute.name === "id")?.value).toBe(
+          "target",
+        );
+
+        await runtime.click({
+          pageRef: created.data.pageRef,
+          target: { kind: "live", locator, anchor },
+        });
+        await wait(100);
+
+        const latestSnapshot = await engine.getDomSnapshot({
+          frameRef: created.frameRef!,
+        });
+        const statusNode = requireValue(findNodeById(latestSnapshot.nodes, "status"), "status missing");
+        expect(await engine.readText(createLocator(latestSnapshot, statusNode))).toBe("clicked v2");
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
     "persists selector descriptors and replays them after a same-document rewrite",
     { timeout: 60_000 },
     async () => {
@@ -515,6 +610,78 @@ describe("Phase 5 DOM runtime integration", () => {
         expect(await engine.readText(createLocator(snapshot, statusNode))).toBe(
           "descriptor clicked v2",
         );
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "keeps deterministic replay strict after structural drift",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+
+      try {
+        const runtime = createDomRuntime({ engine });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: dataUrl(
+            html(
+              `
+                <button id="drift" type="button" style="position:absolute;left:20px;top:20px;width:160px;height:40px">Drift</button>
+                <div id="slot" style="position:absolute;left:20px;top:80px">
+                  <button class="choice" type="button" style="width:160px;height:40px">Only choice</button>
+                </div>
+                <script>
+                  document.getElementById("drift").addEventListener("click", () => {
+                    document.getElementById("slot").innerHTML =
+                      '<div class="wrapper"><button class="choice" type="button" style="width:160px;height:40px">Wrapped choice A</button></div>' +
+                      '<div class="wrapper"><button class="choice" type="button" style="width:160px;height:40px">Wrapped choice B</button></div>';
+                  });
+                </script>
+              `,
+              "DOM runtime replay drift",
+            ),
+          ),
+        });
+
+        await wait(300);
+
+        const snapshot = await engine.getDomSnapshot({
+          frameRef: created.frameRef!,
+        });
+        const targetNode = requireValue(
+          snapshot.nodes.find(
+            (node) =>
+              node.nodeName.toLowerCase() === "button" &&
+              node.attributes.some((attribute) => attribute.name === "class" && attribute.value === "choice"),
+          ),
+          "choice button missing",
+        );
+        const path = await runtime.buildPath({
+          locator: createLocator(snapshot, targetNode),
+        });
+
+        await runtime.click({
+          pageRef: created.data.pageRef,
+          target: { kind: "selector", selector: "#drift" },
+        });
+        await wait(150);
+
+        await expect(
+          runtime.resolveTarget({
+            pageRef: created.data.pageRef,
+            method: "click",
+            target: { kind: "path", path },
+          }),
+        ).rejects.toMatchObject({
+          name: "ElementPathError",
+          code: "ERR_PATH_TARGET_NOT_UNIQUE",
+        });
       } finally {
         await engine.dispose();
       }
@@ -611,6 +778,7 @@ describe("Phase 5 DOM runtime integration", () => {
         await wait(300);
 
         const path: ElementPath = {
+          resolution: "deterministic",
           context: [],
           nodes: [
             {
@@ -1077,6 +1245,82 @@ describe("Phase 5 DOM runtime integration", () => {
         expect(await engine.readText(createLocator(eventualSnapshot, eventualStatusNode))).toBe(
           "clicked",
         );
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "snapshot compilation succeeds on pages with many identical repeated siblings that cannot be uniquely finalized",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+
+      try {
+        const runtime = createDomRuntime({ engine });
+        const sessionRef = await engine.createSession();
+
+        const repeatedItems = Array.from({ length: 20 }, (_, i) =>
+          `<li class="item"><a class="link" href="/item/${i}"><span class="title">Item ${i}</span></a></li>`,
+        ).join("\n");
+        const repeatedSections = Array.from({ length: 5 }, (_, i) =>
+          `<section class="card"><div class="card-body"><h3 class="card-title">Section ${i}</h3><ul class="list">${repeatedItems}</ul></div></section>`,
+        ).join("\n");
+
+        const created = await engine.createPage({
+          sessionRef,
+          url: dataUrl(
+            html(
+              `
+                <nav class="nav">
+                  <a class="nav-link" href="/a">Home</a>
+                  <a class="nav-link" href="/b">About</a>
+                  <a class="nav-link" href="/c">Contact</a>
+                </nav>
+                <main id="content">
+                  ${repeatedSections}
+                </main>
+                <div id="status" style="position:absolute;left:20px;top:20px">ready</div>
+              `,
+              "Snapshot repeated-siblings regression",
+            ),
+          ),
+        });
+
+        await wait(300);
+
+        const snapshot = await engine.getDomSnapshot({
+          frameRef: created.frameRef!,
+        });
+        const index = (await import("../../packages/opensteer/src/runtimes/dom/path.js")).createSnapshotIndex(snapshot);
+        const { buildLocalStructuralElementAnchor } = await import("../../packages/opensteer/src/runtimes/dom/path.js");
+
+        let anchorCount = 0;
+        for (const node of snapshot.nodes) {
+          if (node.nodeType !== 1 || node.nodeRef === undefined) {
+            continue;
+          }
+          const anchor = buildLocalStructuralElementAnchor(index, node);
+          expect(anchor.resolution).toBe("structural");
+          expect(anchor.nodes.length).toBeGreaterThan(0);
+          anchorCount += 1;
+        }
+
+        expect(anchorCount).toBeGreaterThan(100);
+
+        const mainFrame = (await engine.listFrames({ pageRef: created.data.pageRef })).find(
+          (frame) => frame.isMainFrame,
+        );
+        expect(mainFrame).toBeDefined();
+
+        const statusNode = requireValue(
+          findNodeById(snapshot.nodes, "status"),
+          "status node missing in repeated-siblings page",
+        );
+        expect(statusNode.nodeRef).toBeDefined();
       } finally {
         await engine.dispose();
       }

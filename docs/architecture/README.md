@@ -4,7 +4,8 @@ This directory contains the source-of-truth documents for the rewrite.
 
 Current status: `Phase 0` complete, `Phase 1` complete, `Phase 2` complete,
 `Phase 3` complete, `Phase 4` complete, `Phase 5` complete, `Phase 6` complete,
-`Phase 7` complete, `Phase 8` complete, `Phase 9` complete, `Phase 10` next.
+`Phase 7` complete, `Phase 8` complete, `Phase 9` complete, `Phase 10`
+complete. `Phase 11` is deferred while the rewrite remains local-only.
 
 - [Framework rewrite plan](framework-rewrite-plan.md)
 - `packages/browser-core/src/` contains the implemented Phase 1 contract
@@ -36,6 +37,16 @@ Current status: `Phase 0` complete, `Phase 1` complete, `Phase 2` complete,
   `packages/engine-abp/src/computer-use.ts` contain the Phase 9
   engine-specific computer-use adapters
 - `tests/opensteer/computer-use.test.ts` contains the Phase 9 runtime coverage
+- `packages/opensteer/src/requests/` contains the implemented Phase 10 local
+  request workflow system for capture, plans, and browser-session HTTP
+- `tests/opensteer/request-workflows.test.ts` contains the Phase 10 request
+  workflow coverage
+
+Phase 10 is local-only by design:
+
+- request plans, traces, and artifacts persist in the local `.opensteer/` root
+- SDK, CLI, and local service-host are the supported request-workflow surfaces
+- `apps/opensteer-cloud` is Phase 11 work and is not being implemented yet
 
 Current Opensteer package direction:
 

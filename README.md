@@ -9,7 +9,7 @@ that owns Opensteer's actual semantics.
 
 ## Current Status
 
-`Phase 0`, `Phase 1`, `Phase 2`, `Phase 3`, `Phase 4`, `Phase 5`, `Phase 6`, `Phase 7`, `Phase 8`, and `Phase 9` are complete. `Phase 10` is next.
+`Phase 0`, `Phase 1`, `Phase 2`, `Phase 3`, `Phase 4`, `Phase 5`, `Phase 6`, `Phase 7`, `Phase 8`, `Phase 9`, and `Phase 10` are complete. `Phase 11` is not started.
 
 The repository now has:
 
@@ -27,8 +27,8 @@ The repository now has:
   read-only CDP inspection sidecar
 - the `packages/opensteer/src/runtimes/computer-use` Phase 9 computer-use runtime is
   implemented and tested, with engine-specific adapters for Playwright and ABP
+- the `packages/opensteer/src/requests` Phase 10 request workflow system is implemented and tested
 - the rewrite architecture and phased rollout plan are documented
-- the next active work is Phase 10 request workflow behavior
 
 ## Repository Layout
 
@@ -104,9 +104,12 @@ pnpm test
 The current public surface lives in `packages/opensteer`:
 
 - SDK: `new Opensteer({ ... }).open()`, `goto()`, `snapshot()`, `click()`, `hover()`, `input()`,
-  `scroll()`, `extract()`, `computerExecute()`, `close()`
+  `scroll()`, `extract()`, `startRequestCapture()`, `stopRequestCapture()`,
+  `writeRequestPlan()`, `getRequestPlan()`, `listRequestPlans()`, `request()`,
+  `computerExecute()`, `close()`
 - CLI: `opensteer open`, `goto`, `snapshot`, `click`, `hover`, `input`, `scroll`, `extract`,
-  `computer`, `close`
+  `request-capture-start`, `request-capture-stop`, `request-plan-write`, `request-plan-get`,
+  `request-plan-list`, `request`, `computer`, `close`
 - Session continuity: the CLI now talks to a local per-session service under
   `.opensteer/runtime/sessions/<name>/service.json`
 - Snapshot mode: HTML-first action and extraction snapshots with in-memory element counters

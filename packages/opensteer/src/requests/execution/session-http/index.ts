@@ -14,7 +14,6 @@ import type {
   OpensteerRequestExecuteInput,
   OpensteerRequestExecuteOutput,
   OpensteerRequestPlanParameter,
-  OpensteerRequestPlanPayload,
 } from "@opensteer/protocol";
 
 import type {
@@ -23,12 +22,17 @@ import type {
   RequestPlanFreshness,
 } from "../../../registry.js";
 import {
+  invalidRequestExecutionError,
+  requestPlanExpectationConflictError,
+  requestPlanNotFoundError,
+  unsupportedRequestPlanTransportError,
+} from "../../errors.js";
+import {
   entriesFromScalarMap,
   headerValue,
   normalizeHeaderName,
   parseMimeType,
   parseStructuredResponseData,
-  stringifyRequestScalar,
   toProtocolRequestResponseResult,
   toProtocolRequestTransportResult,
 } from "../../shared.js";
@@ -41,9 +45,7 @@ export async function executeSessionHttpRequest(input: {
 }): Promise<OpensteerRequestExecuteOutput> {
   const plan = await resolveRequestPlan(input.registry, input.request.key, input.request.version);
   if (plan.payload.transport.kind !== "session-http") {
-    throw new Error(
-      `request plan ${plan.key}@${plan.version} uses unsupported transport ${plan.payload.transport.kind}`,
-    );
+    throw unsupportedRequestPlanTransportError(plan);
   }
 
   const transportRequest = buildSessionTransportRequest(plan, input.request);
@@ -86,11 +88,7 @@ async function resolveRequestPlan(
     ...(version === undefined ? {} : { version }),
   });
   if (plan === undefined) {
-    throw new Error(
-      version === undefined
-        ? `request plan ${key} was not found`
-        : `request plan ${key}@${version} was not found`,
-    );
+    throw requestPlanNotFoundError(key, version);
   }
   return plan;
 }
@@ -106,9 +104,9 @@ function buildSessionTransportRequest(
   const queryParameters = parameters.filter((parameter) => parameter.in === "query");
   const headerParameters = parameters.filter((parameter) => parameter.in === "header");
 
-  const resolvedPathParameters = resolveParameterValues(pathParameters, input.params, "params");
-  const resolvedQueryParameters = resolveParameterValues(queryParameters, input.query, "query");
-  const resolvedHeaderParameters = resolveParameterValues(headerParameters, input.headers, "headers");
+  const resolvedPathParameters = resolveParameterValues(plan, pathParameters, input.params, "params");
+  const resolvedQueryParameters = resolveParameterValues(plan, queryParameters, input.query, "query");
+  const resolvedHeaderParameters = resolveParameterValues(plan, headerParameters, input.headers, "headers");
 
   let url = payload.endpoint.urlTemplate;
   for (const [name, value] of resolvedPathParameters.entries()) {
@@ -136,7 +134,7 @@ function buildSessionTransportRequest(
     }
   }
 
-  const requestBody = buildRequestBody(input.body, payload);
+  const requestBody = buildRequestBody(input.body, plan);
   if (requestBody.contentType !== undefined && headerValue(headers, "content-type") === undefined) {
     headers.push(createHeaderEntry("content-type", requestBody.contentType));
   }
@@ -150,6 +148,7 @@ function buildSessionTransportRequest(
 }
 
 function resolveParameterValues(
+  plan: RequestPlanRecord,
   parameters: readonly OpensteerRequestPlanParameter[],
   values: Readonly<Record<string, string | number | boolean>> | undefined,
   fieldName: "params" | "query" | "headers",
@@ -158,7 +157,14 @@ function resolveParameterValues(
   const knownParameters = new Set(parameters.map((parameter) => parameter.name));
   for (const name of normalizedValues.keys()) {
     if (!knownParameters.has(name)) {
-      throw new Error(`unknown ${fieldName} input "${name}" for request plan`);
+      throw invalidRequestExecutionError(
+        plan,
+        `unknown ${fieldName} input "${name}" for request plan ${plan.key}@${plan.version}`,
+        {
+          field: fieldName,
+          name,
+        },
+      );
     }
   }
 
@@ -167,7 +173,15 @@ function resolveParameterValues(
     const value = normalizedValues.get(parameter.name) ?? parameter.defaultValue;
     if (value === undefined) {
       if (parameter.required ?? parameter.in === "path") {
-        throw new Error(`missing required ${parameter.in} parameter "${parameter.name}"`);
+        throw invalidRequestExecutionError(
+          plan,
+          `missing required ${parameter.in} parameter "${parameter.name}" for request plan ${plan.key}@${plan.version}`,
+          {
+            field: fieldName,
+            parameter: parameter.name,
+            location: parameter.in,
+          },
+        );
       }
       continue;
     }
@@ -179,20 +193,27 @@ function resolveParameterValues(
 
 function buildRequestBody(
   body: OpensteerRequestBodyInput | undefined,
-  plan: OpensteerRequestPlanPayload,
+  plan: RequestPlanRecord,
 ): {
   readonly body?: BrowserBodyPayload;
   readonly contentType?: string;
 } {
   if (body === undefined) {
-    if (plan.body?.required) {
-      throw new Error(`request plan ${plan.endpoint.method} ${plan.endpoint.urlTemplate} requires a request body`);
+    if (plan.payload.body?.required) {
+      throw invalidRequestExecutionError(
+        plan,
+        `request plan ${plan.key}@${plan.version} requires a request body`,
+        {
+          field: "body",
+        },
+      );
     }
     return {};
   }
 
+  const payload = plan.payload;
   if ("json" in body) {
-    const contentType = body.contentType ?? plan.body?.contentType ?? "application/json; charset=utf-8";
+    const contentType = body.contentType ?? payload.body?.contentType ?? "application/json; charset=utf-8";
     return {
       body: bodyPayloadFromUtf8(JSON.stringify(body.json), parseMimeType(contentType)),
       contentType,
@@ -200,14 +221,14 @@ function buildRequestBody(
   }
 
   if ("text" in body) {
-    const contentType = body.contentType ?? plan.body?.contentType ?? "text/plain; charset=utf-8";
+    const contentType = body.contentType ?? payload.body?.contentType ?? "text/plain; charset=utf-8";
     return {
       body: bodyPayloadFromUtf8(body.text, parseMimeType(contentType)),
       contentType,
     };
   }
 
-  const contentType = body.contentType ?? plan.body?.contentType;
+  const contentType = body.contentType ?? payload.body?.contentType;
   return {
     body: createBodyPayload(new Uint8Array(Buffer.from(body.base64, "base64")), parseMimeType(contentType)),
     ...(contentType === undefined ? {} : { contentType }),
@@ -227,8 +248,13 @@ function assertResponseMatchesPlan(
     ? expectation.status
     : [expectation.status];
   if (!expectedStatuses.includes(response.status)) {
-    throw new Error(
+    throw requestPlanExpectationConflictError(
+      plan,
       `request plan ${plan.key}@${plan.version} expected status ${expectedStatuses.join(", ")} but received ${String(response.status)}`,
+      {
+        expectedStatus: expectedStatuses,
+        actualStatus: response.status,
+      },
     );
   }
 
@@ -239,8 +265,13 @@ function assertResponseMatchesPlan(
       parseMimeType(expectation.contentType).mimeType?.toLowerCase() ??
       expectation.contentType.toLowerCase();
     if (actualContentType !== expectedContentType) {
-      throw new Error(
+      throw requestPlanExpectationConflictError(
+        plan,
         `request plan ${plan.key}@${plan.version} expected content-type ${expectedContentType} but received ${actualContentType ?? "none"}`,
+        {
+          expectedContentType,
+          actualContentType: actualContentType ?? null,
+        },
       );
     }
   }

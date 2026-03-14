@@ -14,6 +14,7 @@ import {
   Opensteer,
   createFilesystemOpensteerRoot,
 } from "../../packages/opensteer/src/index.js";
+import { ensureOpensteerService } from "../../packages/opensteer/src/cli/client.js";
 import { normalizeRequestPlanPayload } from "../../packages/opensteer/src/requests/plans/index.js";
 import {
   cleanupPhase6TemporaryRoots,
@@ -113,6 +114,22 @@ describe("Phase 10 request workflows", () => {
         ],
       }),
     ).toThrow(/duplicate request plan parameter/);
+
+    expect(() =>
+      normalizeRequestPlanPayload({
+        transport: {
+          kind: "session-http",
+        },
+        endpoint: {
+          method: "GET",
+          urlTemplate: "https://example.com/api/users/{userId}",
+        },
+        parameters: [
+          { name: "userId", in: "path" },
+          { name: "csrf", in: "header", wireName: "   " },
+        ],
+      }),
+    ).toThrow(/parameter\.wireName must be a non-empty string/);
   });
 
   test("SDK captures redacted network records, persists artifacts and traces, and executes typed request plans", async () => {
@@ -248,7 +265,10 @@ describe("Phase 10 request workflows", () => {
             },
           },
         }),
-      ).rejects.toThrow(/expected status 201/);
+      ).rejects.toMatchObject({
+        code: "conflict",
+        message: expect.stringMatching(/expected status 201/),
+      });
 
       const invalidPlan = await opensteer.getRequestPlan({
         key: "phase10-create-order-invalid",
@@ -256,6 +276,99 @@ describe("Phase 10 request workflows", () => {
       expect(invalidPlan.freshness).toBeUndefined();
     } finally {
       await opensteer.close();
+    }
+  }, 60_000);
+
+  test("service returns protocol-typed request workflow errors", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const sessionName = "phase10-service-validation";
+    const client = await ensureOpensteerService({
+      name: sessionName,
+      rootDir,
+      launchContext: {
+        execPath: process.execPath,
+        execArgv: process.execArgv,
+        scriptPath: CLI_SCRIPT,
+        cwd: process.cwd(),
+      },
+    });
+
+    try {
+      await client.invoke("session.open", {
+        url: `${baseUrl}/phase10/session`,
+        name: sessionName,
+        browser: {
+          headless: true,
+        },
+      });
+
+      await expect(
+        client.invoke("request-plan.write", {
+          key: "phase10-invalid-plan",
+          version: "1.0.0",
+          payload: {
+            transport: {
+              kind: "session-http",
+              requiresBrowser: false,
+            },
+            endpoint: {
+              method: "GET",
+              urlTemplate: `${baseUrl}/phase10/api/users/{userId}/orders`,
+            },
+            parameters: [{ name: "userId", in: "path" }],
+          },
+        }),
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        opensteerError: {
+          code: "invalid-request",
+        },
+      });
+
+      await expect(
+        client.invoke("request.execute", {
+          key: "phase10-missing-plan",
+        }),
+      ).rejects.toMatchObject({
+        statusCode: 404,
+        opensteerError: {
+          code: "not-found",
+        },
+      });
+
+      await client.invoke("request-plan.write", {
+        key: "phase10-service-order",
+        version: "1.0.0",
+        payload: buildOrderPlanPayload(baseUrl),
+      });
+
+      await expect(
+        client.invoke("request.execute", {
+          key: "phase10-service-order",
+          params: {
+            userId: "u_service",
+          },
+          query: {
+            unexpected: "true",
+          },
+          headers: {
+            csrf: "csrf-service",
+          },
+          body: {
+            json: {
+              item: "widget-service",
+            },
+          },
+        }),
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        opensteerError: {
+          code: "invalid-request",
+        },
+      });
+    } finally {
+      await client.invoke("session.close", {}).catch(() => undefined);
     }
   }, 60_000);
 

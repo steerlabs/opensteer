@@ -14,11 +14,11 @@ import {
 } from "@opensteer/browser-core";
 import type { OpensteerSnapshotCounter, OpensteerSnapshotMode } from "@opensteer/protocol";
 
-import type { ElementPath } from "../../runtimes/dom/index.js";
+import type { StructuralElementAnchor } from "../../runtimes/dom/index.js";
 import {
-  buildLocalElementPath,
+  buildLocalStructuralElementAnchor,
   createSnapshotIndex,
-  sanitizeElementPath,
+  sanitizeStructuralElementAnchor,
 } from "../../runtimes/dom/path.js";
 import { findIframeHostNode, type DomSnapshotIndex } from "../../runtimes/dom/selectors.js";
 import { cleanForAction, cleanForExtraction } from "./cleaner.js";
@@ -42,7 +42,7 @@ export interface CompiledOpensteerSnapshotCounterRecord extends Omit<
 > {
   readonly nodeRef: NodeRef;
   readonly locator: NodeLocator;
-  readonly path: ElementPath;
+  readonly anchor: StructuralElementAnchor;
 }
 
 export interface CompiledOpensteerSnapshot {
@@ -61,7 +61,7 @@ interface RenderDepth {
 
 interface RenderedNodeMetadata {
   readonly locator: NodeLocator;
-  readonly path: ElementPath;
+  readonly anchor: StructuralElementAnchor;
   readonly pageRef: PageRef;
   readonly frameRef: FrameRef;
   readonly documentRef: DocumentRef;
@@ -286,7 +286,7 @@ function renderNode(
     attributes.push({ name: OPENSTEER_NODE_ID_ATTR, value: syntheticNodeId });
     renderedNodes.set(syntheticNodeId, {
       locator: createNodeLocator(snapshot.documentRef, snapshot.documentEpoch, node.nodeRef),
-      path: buildSnapshotElementPath(snapshot, node, snapshotsByDocumentRef, snapshotIndices),
+      anchor: buildSnapshotElementAnchor(snapshot, node, snapshotsByDocumentRef, snapshotIndices),
       pageRef: snapshot.pageRef,
       frameRef: snapshot.frameRef,
       documentRef: snapshot.documentRef,
@@ -408,7 +408,7 @@ function assignCounters(
       shadowDepth: rendered.shadowDepth,
       interactive: rendered.interactive,
       locator: rendered.locator,
-      path: rendered.path,
+      anchor: rendered.anchor,
     });
   });
 
@@ -631,25 +631,25 @@ function escapeAttribute(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
-function buildSnapshotElementPath(
+function buildSnapshotElementAnchor(
   snapshot: DomSnapshot,
   node: DomSnapshotNode,
   snapshotsByDocumentRef: ReadonlyMap<DocumentRef, DomSnapshot>,
   snapshotIndices: Map<DocumentRef, DomSnapshotIndex>,
-): ElementPath {
+): StructuralElementAnchor {
   const index = getSnapshotIndex(snapshot.documentRef, snapshotsByDocumentRef, snapshotIndices);
-  const localPath = buildLocalElementPath(index, node);
-  return prefixIframeContext(snapshot, localPath, snapshotsByDocumentRef, snapshotIndices);
+  const localAnchor = buildLocalStructuralElementAnchor(index, node);
+  return prefixIframeContext(snapshot, localAnchor, snapshotsByDocumentRef, snapshotIndices);
 }
 
 function prefixIframeContext(
   snapshot: DomSnapshot,
-  localPath: ElementPath,
+  localPath: StructuralElementAnchor,
   snapshotsByDocumentRef: ReadonlyMap<DocumentRef, DomSnapshot>,
   snapshotIndices: Map<DocumentRef, DomSnapshotIndex>,
-): ElementPath {
+): StructuralElementAnchor {
   if (snapshot.parentDocumentRef === undefined) {
-    return sanitizeElementPath(localPath);
+    return sanitizeStructuralElementAnchor(localPath);
   }
 
   const parentSnapshot = snapshotsByDocumentRef.get(snapshot.parentDocumentRef);
@@ -671,13 +671,14 @@ function prefixIframeContext(
     );
   }
 
-  const hostPath = buildSnapshotElementPath(
+  const hostPath = buildSnapshotElementAnchor(
     parentSnapshot,
     iframeHost,
     snapshotsByDocumentRef,
     snapshotIndices,
   );
-  return sanitizeElementPath({
+  return sanitizeStructuralElementAnchor({
+    resolution: "structural",
     context: [...hostPath.context, { kind: "iframe", host: hostPath.nodes }, ...localPath.context],
     nodes: localPath.nodes,
   });

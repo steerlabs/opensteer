@@ -546,7 +546,12 @@ async function resolveFieldPath(options: {
         selector: options.field.selector,
       },
     });
-    return sanitizeElementPath(resolved.path);
+    return (
+      resolved.replayPath ??
+      (await options.dom.buildPath({
+        locator: resolved.locator,
+      }))
+    );
   }
 
   const counters = options.latestSnapshotCounters;
@@ -563,7 +568,22 @@ async function resolveFieldPath(options: {
     );
   }
 
-  return sanitizeElementPath(counter.path);
+  const resolved = await options.dom.resolveTarget({
+    pageRef: options.pageRef,
+    method: "extract",
+    target: {
+      kind: "live",
+      locator: counter.locator,
+      anchor: counter.anchor,
+    },
+  });
+
+  return (
+    resolved.replayPath ??
+    (await options.dom.buildPath({
+      locator: resolved.locator,
+    }))
+  );
 }
 
 function inferArrayItemPath(
@@ -587,6 +607,7 @@ function inferArrayItemPath(
 
   return generalizePathCollection(
     paths.map((path) => ({
+      resolution: "deterministic",
       context: path.context.slice(0, contextLength),
       nodes: path.nodes.slice(0, nodeLength),
     })),
@@ -663,6 +684,7 @@ function toRelativeArrayPath(
   }
 
   return sanitizeElementPath({
+    resolution: "deterministic",
     context: [],
     nodes: relativeNodes,
   });
@@ -780,6 +802,7 @@ function generalizePathCollection(
   const first = paths[0];
   if (!first) {
     return sanitizeElementPath({
+      resolution: "deterministic",
       context: [],
       nodes: [],
     });
@@ -798,6 +821,7 @@ function generalizePathCollection(
   );
 
   return sanitizeElementPath({
+    resolution: "deterministic",
     context,
     nodes,
   });
@@ -816,6 +840,7 @@ function generalizeContextHop(hops: ElementPath["context"]): ElementPath["contex
     kind: first.kind,
     host: generalizePathCollection(
       hops.map((hop) => ({
+        resolution: "deterministic",
         context: [],
         nodes: hop.host,
       })),
@@ -963,6 +988,7 @@ function toPersistedLeafNode(field: RelativeArrayField): PersistedOpensteerExtra
   return field.path === undefined
     ? {
         $path: sanitizeElementPath({
+          resolution: "deterministic",
           context: [],
           nodes: [],
         }),
@@ -1045,14 +1071,23 @@ async function extractPersistedNode(
   node: PersistedOpensteerExtractionNode,
 ): Promise<JsonValue> {
   if (isPersistedOpensteerExtractionValueNode(node)) {
+    const resolved = await dom.resolveTarget({
+      pageRef,
+      method: "extract",
+      target: {
+        kind: "path",
+        path: node.$path,
+      },
+    });
     const values = await dom.extractFields({
       pageRef,
       fields: [
         {
           key: "value",
           target: {
-            kind: "path",
-            path: node.$path,
+            kind: "live",
+            locator: resolved.locator,
+            anchor: resolved.anchor,
           },
           ...(node.attribute === undefined ? {} : { attribute: node.attribute }),
         },
@@ -1317,8 +1352,17 @@ function normalizePersistedExtractionNode(
 
   const record = value as Record<string, unknown>;
   if ("$path" in record) {
+    const rawPath = record.$path;
+    if (
+      !rawPath ||
+      typeof rawPath !== "object" ||
+      Array.isArray(rawPath) ||
+      (rawPath as { readonly resolution?: unknown }).resolution !== "deterministic"
+    ) {
+      throw new Error(`Invalid persisted extraction path node at "${label}".`);
+    }
     return {
-      $path: sanitizeElementPath(record.$path as ElementPath),
+      $path: sanitizeElementPath(rawPath as ElementPath),
       ...(typeof record.attribute === "string" ? { attribute: record.attribute } : {}),
     };
   }
@@ -1348,8 +1392,19 @@ function normalizePersistedExtractionNode(
           }
 
           const rawVariant = variant as Record<string, unknown>;
+          const itemParentPath = rawVariant.itemParentPath;
+          if (
+            !itemParentPath ||
+            typeof itemParentPath !== "object" ||
+            Array.isArray(itemParentPath) ||
+            (itemParentPath as { readonly resolution?: unknown }).resolution !== "deterministic"
+          ) {
+            throw new Error(
+              `Invalid persisted extraction array item parent path at "${label}[${String(index)}]".`,
+            );
+          }
           return {
-            itemParentPath: sanitizeElementPath(rawVariant.itemParentPath as ElementPath),
+            itemParentPath: sanitizeElementPath(itemParentPath as ElementPath),
             item: normalizePersistedExtractionNode(
               rawVariant.item,
               `${label}[${String(index)}].item`,
