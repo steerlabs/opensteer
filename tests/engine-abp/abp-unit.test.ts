@@ -13,18 +13,24 @@ import {
   shouldParkPageAsBootstrap,
 } from "../../packages/engine-abp/src/session-model.js";
 
+function expectThrownCode(fn: () => unknown, code: string): void {
+  let error: unknown;
+  try {
+    fn();
+  } catch (caught) {
+    error = caught;
+  }
+
+  expect(error).toMatchObject({ code });
+}
+
 describe("engine-abp internals", () => {
   test("enforces the read-only page CDP allowlist", () => {
     expect(() => assertAllowedCdpMethod("Page.enable", PAGE_CDP_METHOD_ALLOWLIST)).not.toThrow();
-
-    try {
-      assertAllowedCdpMethod("Runtime.evaluate", PAGE_CDP_METHOD_ALLOWLIST);
-      throw new Error("expected Runtime.evaluate to be rejected");
-    } catch (error) {
-      expect(error).toMatchObject({
-        code: "operation-failed",
-      });
-    }
+    expectThrownCode(
+      () => assertAllowedCdpMethod("Runtime.evaluate", PAGE_CDP_METHOD_ALLOWLIST),
+      "operation-failed",
+    );
   });
 
   test("normalizes ABP HTTP errors into browser-core errors", () => {
@@ -43,15 +49,10 @@ describe("engine-abp internals", () => {
   });
 
   test("rejects binary session HTTP request bodies", () => {
-    try {
-      assertUtf8RequestBody(new Uint8Array([0xff, 0xfe, 0xfd]));
-      throw new Error("expected binary request body to be rejected");
-    } catch (error) {
-      expect(error).toMatchObject({
-        code: "unsupported-capability",
-      });
-    }
-
+    expectThrownCode(
+      () => assertUtf8RequestBody(new Uint8Array([0xff, 0xfe, 0xfd])),
+      "unsupported-capability",
+    );
     expect(assertUtf8RequestBody(new TextEncoder().encode("hello"))).toBe("hello");
   });
 

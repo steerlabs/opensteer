@@ -6,7 +6,7 @@ type EventHandler = (params: Record<string, unknown>) => void;
 type CloseHandler = (error?: Error) => void;
 
 interface PendingCommand {
-  readonly resolve: (value: any) => void;
+  readonly resolve: (value: unknown) => void;
   readonly reject: (reason: unknown) => void;
 }
 
@@ -138,7 +138,10 @@ export class CdpClient {
     });
 
     const result = new Promise<TResult>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, {
+        resolve: (value) => resolve(value as TResult),
+        reject,
+      });
     });
 
     this.socket.send(payload);
