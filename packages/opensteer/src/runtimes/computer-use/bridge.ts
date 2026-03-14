@@ -51,8 +51,6 @@ function isComputerUseBridgeFactory(value: unknown): value is ComputerUseBridgeF
 export function resolveComputerUseBridge(
   engine: BrowserCoreEngine,
 ): ComputerUseBridge | undefined {
-  const candidate = (engine as unknown as Record<PropertyKey, unknown>)[
-    OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL
-  ];
+  const candidate = Reflect.get(engine, OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL);
   return isComputerUseBridgeFactory(candidate) ? candidate.call(engine) : undefined;
 }

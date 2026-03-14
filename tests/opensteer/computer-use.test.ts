@@ -148,7 +148,7 @@ describe("Phase 9 computer-use runtime", () => {
       const computerEntries = traceEntries.filter((entry) => entry.operation === "computer.execute");
       expect(computerEntries.length).toBeGreaterThan(0);
       expect(computerEntries.some((entry) => (entry.artifacts?.length ?? 0) > 0)).toBe(true);
-      expect(computerEntries.some((entry) => entry.events.length >= 0)).toBe(true);
+      expect(computerEntries.every((entry) => Array.isArray(entry.events))).toBe(true);
     } finally {
       await runtime.close().catch(() => undefined);
     }

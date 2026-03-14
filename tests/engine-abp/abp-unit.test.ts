@@ -27,6 +27,7 @@ import {
   shouldClaimBootstrapTab,
   shouldParkPageAsBootstrap,
 } from "../../packages/engine-abp/src/session-model.js";
+import type { AbpActionResponse, PageController, SessionState } from "../../packages/engine-abp/src/types.js";
 
 function expectThrownCode(fn: () => unknown, code: string): void {
   let error: unknown;
@@ -410,7 +411,7 @@ function createComputerBridgeContext(options: {
     sessionRef,
     activePageRef: options.tabChanged ? popupPageRef : mainPageRef,
     rest: outputTestState.rest,
-  } as any;
+  } as SessionState;
 
   return {
     resolveController: (pageRef: ReturnType<typeof createPageRef>) => {
@@ -418,7 +419,7 @@ function createComputerBridgeContext(options: {
       if (!controller) {
         throw new Error(`missing controller for ${pageRef}`);
       }
-      return controller as any;
+      return controller as PageController;
     },
     resolveSession: () => session,
     normalizeActionEvents: async () =>
@@ -435,7 +436,11 @@ function createComputerBridgeContext(options: {
           ]
         : [],
     detectNewTabs: async () => [],
-    executeInputAction: async (_session: unknown, _controller: unknown, execute: () => Promise<any>) => ({
+    executeInputAction: async (
+      _session: SessionState,
+      _controller: PageController,
+      execute: () => Promise<AbpActionResponse>,
+    ) => ({
       response: await execute(),
       dialogEvents: [],
     }),

@@ -10,6 +10,22 @@ import { defineBrowserCoreConformanceSuite } from "../browser-core/conformance-s
 let baseUrl = "";
 let closeServer: (() => Promise<void>) | undefined;
 
+interface ComputerUseBridgeResult {
+  readonly pageRef: string;
+  readonly screenshot: {
+    readonly payload: {
+      readonly bytes: Uint8Array;
+    };
+  };
+  readonly events: readonly {
+    readonly kind: string;
+  }[];
+}
+
+interface ComputerUseBridge {
+  execute(input: unknown): Promise<ComputerUseBridgeResult>;
+}
+
 function html(body: string, title: string, extraHead = ""): string {
   return `<!doctype html>
 <html lang="en">
@@ -862,9 +878,7 @@ test("computer-use bridge renders annotation and cursor overlays", async () => {
       sessionRef,
       url: `${baseUrl}/integration`,
     });
-    const bridge = (engine as Record<PropertyKey, () => { execute(input: unknown): Promise<any> }>) [
-      opensteerComputerUseBridgeSymbol
-    ]();
+    const bridge = requireComputerUseBridge(engine);
 
     await bridge.execute({
       pageRef: created.data.pageRef,
@@ -913,7 +927,12 @@ test("computer-use bridge renders annotation and cursor overlays", async () => {
       settle: async () => {},
     });
 
-    expect(Buffer.compare(Buffer.from(plain.screenshot.payload.bytes), Buffer.from(decorated.screenshot.payload.bytes))).not.toBe(0);
+    expect(
+      Buffer.compare(
+        Buffer.from(plain.screenshot.payload.bytes),
+        Buffer.from(decorated.screenshot.payload.bytes),
+      ),
+    ).not.toBe(0);
   } finally {
     await engine.dispose();
   }
@@ -929,9 +948,7 @@ test("computer-use bridge hands off popup pages", async () => {
       sessionRef,
       url: `${baseUrl}/integration`,
     });
-    const bridge = (engine as Record<PropertyKey, () => { execute(input: unknown): Promise<any> }>) [
-      opensteerComputerUseBridgeSymbol
-    ]();
+    const bridge = requireComputerUseBridge(engine);
 
     const popup = await bridge.execute({
       pageRef: created.data.pageRef,
@@ -953,9 +970,17 @@ test("computer-use bridge hands off popup pages", async () => {
     });
 
     expect(popup.pageRef).not.toBe(created.data.pageRef);
-    expect(popup.events.map((event: { readonly kind: string }) => event.kind)).toContain("popup-opened");
+    expect(popup.events.map((event) => event.kind)).toContain("popup-opened");
     expect((await engine.getPageInfo({ pageRef: popup.pageRef })).url).toBe(`${baseUrl}/popup`);
   } finally {
     await engine.dispose();
   }
 });
+
+function requireComputerUseBridge(engine: object): ComputerUseBridge {
+  const factory = Reflect.get(engine, opensteerComputerUseBridgeSymbol);
+  if (typeof factory !== "function") {
+    throw new Error("engine does not expose a computer-use bridge");
+  }
+  return factory.call(engine) as ComputerUseBridge;
+}
