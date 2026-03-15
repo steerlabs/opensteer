@@ -13,6 +13,9 @@
 ```bash
 pnpm add opensteer
 pnpm exec playwright install chromium
+
+# Optional ABP backend for `--engine abp`
+pnpm add @opensteer/engine-abp
 ```
 
 ## SDK
@@ -56,6 +59,7 @@ try {
 
 ```bash
 opensteer open https://example.com --name docs-example --headless true
+opensteer open https://example.com --name docs-example --engine abp
 opensteer snapshot action --name docs-example
 opensteer click 3 --name docs-example --description "primary button"
 opensteer extract --name docs-example --description "page summary" \
@@ -66,6 +70,11 @@ opensteer close --name docs-example
 
 Each CLI command prints JSON to stdout. Browser state does not live in the CLI process. It lives
 in the local session service recorded under `.opensteer/runtime/sessions/<name>/service.json`.
+
+Use `--engine <playwright|abp>` on `open` to choose the backend for a new session. You can also
+set `OPENSTEER_ENGINE=abp` to change the default engine for `open` in the current shell. Engine
+selection is fixed when the session service starts, so `OPENSTEER_ENGINE` and `--engine` only
+affect `open`, not commands like `snapshot` or `click` that attach to an existing session.
 
 ## Session Root
 

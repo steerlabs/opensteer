@@ -7,6 +7,10 @@ import {
   readJsonFile,
   writeJsonFileAtomic,
 } from "../internal/filesystem.js";
+import {
+  normalizeOpensteerEngineName,
+  type OpensteerEngineName,
+} from "../internal/engine-selection.js";
 
 export interface OpensteerServiceMetadata {
   readonly name: string;
@@ -16,6 +20,7 @@ export interface OpensteerServiceMetadata {
   readonly token: string;
   readonly startedAt: number;
   readonly baseUrl: string;
+  readonly engine: OpensteerEngineName;
 }
 
 export function getOpensteerServiceDirectory(rootPath: string, name: string): string {
@@ -29,13 +34,13 @@ export function getOpensteerServiceMetadataPath(rootPath: string, name: string):
 export async function readOpensteerServiceMetadata(
   rootPath: string,
   name: string,
-): Promise<OpensteerServiceMetadata | undefined> {
+): Promise<unknown | undefined> {
   const metadataPath = getOpensteerServiceMetadataPath(rootPath, name);
   if (!(await pathExists(metadataPath))) {
     return undefined;
   }
 
-  return readJsonFile<OpensteerServiceMetadata>(metadataPath);
+  return readJsonFile<unknown>(metadataPath);
 }
 
 export async function writeOpensteerServiceMetadata(
@@ -67,7 +72,79 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
+export function parseOpensteerServiceMetadata(
+  value: unknown,
+  metadataPath: string,
+): OpensteerServiceMetadata {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(
+      `Opensteer service metadata at ${metadataPath} is invalid. Remove the stale session metadata and open the session again.`,
+    );
+  }
+
+  const record = value as Record<string, unknown>;
+
+  return {
+    name: readRequiredString(record, "name", metadataPath),
+    rootPath: readRequiredString(record, "rootPath", metadataPath),
+    pid: readRequiredInteger(record, "pid", metadataPath),
+    port: readRequiredInteger(record, "port", metadataPath),
+    token: readRequiredString(record, "token", metadataPath),
+    startedAt: readRequiredInteger(record, "startedAt", metadataPath),
+    baseUrl: readRequiredString(record, "baseUrl", metadataPath),
+    engine: readRequiredEngineName(record, metadataPath),
+  };
+}
+
 function normalizeName(value: string): string {
   const normalized = String(value ?? "default").trim();
   return normalized.length === 0 ? "default" : normalized;
+}
+
+function readRequiredString(
+  record: Readonly<Record<string, unknown>>,
+  key: string,
+  metadataPath: string,
+): string {
+  const value = record[key];
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(
+      `Opensteer service metadata at ${metadataPath} is missing a valid "${key}" field. Remove the stale session metadata and open the session again.`,
+    );
+  }
+  return value;
+}
+
+function readRequiredInteger(
+  record: Readonly<Record<string, unknown>>,
+  key: string,
+  metadataPath: string,
+): number {
+  const value = record[key];
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    throw new Error(
+      `Opensteer service metadata at ${metadataPath} is missing a valid "${key}" field. Remove the stale session metadata and open the session again.`,
+    );
+  }
+  return value;
+}
+
+function readRequiredEngineName(
+  record: Readonly<Record<string, unknown>>,
+  metadataPath: string,
+): OpensteerEngineName {
+  const value = record.engine;
+  if (typeof value !== "string") {
+    throw new Error(
+      `Opensteer service metadata at ${metadataPath} is missing a valid "engine" field. Existing sessions from older versions are not supported; close the session and open it again.`,
+    );
+  }
+
+  try {
+    return normalizeOpensteerEngineName(value, `engine in ${metadataPath}`);
+  } catch {
+    throw new Error(
+      `Opensteer service metadata at ${metadataPath} has an unsupported "engine" value. Remove the stale session metadata and open the session again.`,
+    );
+  }
 }

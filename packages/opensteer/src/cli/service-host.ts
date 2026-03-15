@@ -18,6 +18,11 @@ import {
 } from "@opensteer/protocol";
 
 import { normalizeThrownOpensteerError } from "../internal/errors.js";
+import {
+  createOpensteerEngineFactory,
+  DEFAULT_OPENSTEER_ENGINE,
+  type OpensteerEngineName,
+} from "../internal/engine-selection.js";
 import { OpensteerSessionRuntime } from "../sdk/runtime.js";
 import {
   isProcessAlive,
@@ -30,10 +35,13 @@ const PING_PATH = "/runtime/ping";
 export async function runOpensteerServiceHost(options: {
   readonly name: string;
   readonly rootDir?: string;
+  readonly engine?: OpensteerEngineName;
 }): Promise<void> {
+  const engine = options.engine ?? DEFAULT_OPENSTEER_ENGINE;
   const runtime = new OpensteerSessionRuntime({
     name: options.name,
     ...(options.rootDir === undefined ? {} : { rootDir: options.rootDir }),
+    engineFactory: createOpensteerEngineFactory(engine),
   });
   const rootPath = runtime.rootPath;
   const token = randomBytes(24).toString("hex");
@@ -112,6 +120,7 @@ export async function runOpensteerServiceHost(options: {
     token,
     startedAt: Date.now(),
     baseUrl,
+    engine,
   });
 
   await once(server, "close");

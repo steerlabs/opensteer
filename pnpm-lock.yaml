@@ -50,8 +50,8 @@ importers:
         specifier: ^8.18.1
         version: 8.18.1
       agent-browser-protocol:
-        specifier: ^0.1.6
-        version: 0.1.6
+        specifier: ^0.1.7
+        version: 0.1.7
 
   packages/engine-playwright:
     dependencies:
@@ -726,8 +726,8 @@ packages:
     engines: {node: '>=0.4.0'}
     hasBin: true
 
-  agent-browser-protocol@0.1.6:
-    resolution: {integrity: sha512-ukdFdLtC279uvljo24TdApw3TEmHMRzn/WJDhPgYKjGDXHBQQW/Cg48j4e5VHBkQn5CutpUfiPj7RGZVxC+qbQ==}
+  agent-browser-protocol@0.1.7:
+    resolution: {integrity: sha512-DwMqqESoha5eUqeHGykhCzMV19U/my81ul0vD3XOcfKQoOVOGuSJz7Y58TmeWeWHwahbi5pFvFSZYZfIjeU2xw==}
     engines: {node: '>=18'}
     hasBin: true
 
@@ -1859,7 +1859,7 @@ snapshots:
 
   acorn@8.16.0: {}
 
-  agent-browser-protocol@0.1.6:
+  agent-browser-protocol@0.1.7:
     dependencies:
       better-sqlite3: 12.8.0
       sharp: 0.34.5

@@ -106,6 +106,7 @@ import {
   buildInputActionRequest,
 } from "./rest-client.js";
 import { createAbpComputerUseBridge } from "./computer-use.js";
+import { buildAbpScrollSegments } from "./scroll.js";
 import {
   chooseNextActivePageRef,
   resolveTabOpeners,
@@ -1150,8 +1151,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       session.rest.scrollTab(controller.tabId, {
         x: point.x,
         y: point.y,
-        delta_x: input.delta.x,
-        delta_y: input.delta.y,
+        scrolls: buildAbpScrollSegments(input.delta),
         ...buildInputActionRequest(),
       }),
     );

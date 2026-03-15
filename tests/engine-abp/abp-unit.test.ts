@@ -24,6 +24,7 @@ import {
   AbpRestClient,
   buildInputActionRequest,
 } from "../../packages/engine-abp/src/rest-client.js";
+import { buildAbpScrollSegments } from "../../packages/engine-abp/src/scroll.js";
 import {
   chooseNextActivePageRef,
   resolveTabOpeners,
@@ -500,6 +501,49 @@ describe("engine-abp internals", () => {
         signal,
       },
     );
+  });
+
+  test("computer-use bridge encodes scroll actions using ABP scroll segments", async () => {
+    const bridge = createAbpComputerUseBridge(createComputerBridgeContext());
+    const signal = new AbortController().signal;
+
+    await bridge.execute({
+      pageRef: createPageRef("main"),
+      action: {
+        type: "scroll",
+        x: 320,
+        y: 240,
+        deltaX: 40,
+        deltaY: -180,
+      },
+      screenshot: {
+        format: "png",
+        includeCursor: false,
+        annotations: [],
+      },
+      signal,
+      remainingMs: () => 10_000,
+      settle: async () => {},
+    });
+
+    expect(outputTestState.rest.scrollTab).toHaveBeenCalledWith(
+      "tab-main",
+      expect.objectContaining({
+        x: 320,
+        y: 240,
+        scrolls: [
+          { delta_px: 40, direction: "x" },
+          { delta_px: -180, direction: "y" },
+        ],
+      }),
+      {
+        signal,
+      },
+    );
+  });
+
+  test("buildAbpScrollSegments rejects zero-delta scroll requests", () => {
+    expectThrownCode(() => buildAbpScrollSegments({ x: 0, y: 0 }), "invalid-argument");
   });
 });
 

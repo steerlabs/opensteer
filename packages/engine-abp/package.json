@@ -26,7 +26,7 @@
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",
-    "agent-browser-protocol": "^0.1.6"
+    "agent-browser-protocol": "^0.1.7"
   },
   "scripts": {
     "build": "tsup",
