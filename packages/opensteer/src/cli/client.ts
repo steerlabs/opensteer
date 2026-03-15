@@ -18,6 +18,7 @@ import {
   parseOpensteerServiceMetadata,
   readOpensteerServiceMetadata,
   removeOpensteerServiceMetadata,
+  writeOpensteerServiceMetadata,
   type OpensteerServiceMetadata,
 } from "./service-metadata.js";
 import { type OpensteerEngineName } from "../internal/engine-selection.js";
@@ -89,16 +90,8 @@ export class OpensteerCliServiceClient {
 export async function connectOpensteerService(
   options: OpensteerCliSessionOptions = {},
 ): Promise<OpensteerCliServiceClient | undefined> {
-  const metadata = await loadOpensteerServiceMetadata(options);
+  const metadata = await resolveLiveOpensteerServiceMetadata(options);
   if (!metadata) {
-    return undefined;
-  }
-
-  const valid = await validateServiceMetadata(metadata);
-  if (!valid) {
-    const name = normalizeName(options.name);
-    const rootPath = resolveRootPath(options.rootDir);
-    await removeOpensteerServiceMetadata(rootPath, name);
     return undefined;
   }
 
@@ -116,7 +109,6 @@ export async function ensureOpensteerService(
   }
 
   const name = normalizeName(options.name);
-  const rootPath = resolveRootPath(options.rootDir);
   const serviceArgs = [
     ...options.launchContext.execArgv,
     options.launchContext.scriptPath,
@@ -135,8 +127,8 @@ export async function ensureOpensteerService(
 
   const startedAt = Date.now();
   while (Date.now() - startedAt < SERVICE_START_TIMEOUT_MS) {
-    const metadata = await loadOpensteerServiceMetadata(options);
-    if (metadata && (await validateServiceMetadata(metadata))) {
+    const metadata = await resolveLiveOpensteerServiceMetadata(options);
+    if (metadata) {
       return new OpensteerCliServiceClient(metadata);
     }
 
@@ -185,9 +177,13 @@ async function validateServiceMetadata(metadata: OpensteerServiceMetadata): Prom
   }
 }
 
-async function loadOpensteerServiceMetadata(
-  options: OpensteerCliSessionOptions,
-): Promise<OpensteerServiceMetadata | undefined> {
+async function loadOpensteerServiceMetadata(options: OpensteerCliSessionOptions): Promise<
+  | {
+      readonly metadata: OpensteerServiceMetadata;
+      readonly needsRewrite: boolean;
+    }
+  | undefined
+> {
   const name = normalizeName(options.name);
   const rootPath = resolveRootPath(options.rootDir);
   const metadataPath = getOpensteerServiceMetadataPath(rootPath, name);
@@ -196,7 +192,29 @@ async function loadOpensteerServiceMetadata(
     return undefined;
   }
 
-  const metadata = parseOpensteerServiceMetadata(rawMetadata, metadataPath);
+  return parseOpensteerServiceMetadata(rawMetadata, metadataPath);
+}
+
+async function resolveLiveOpensteerServiceMetadata(
+  options: OpensteerCliSessionOptions,
+): Promise<OpensteerServiceMetadata | undefined> {
+  const name = normalizeName(options.name);
+  const rootPath = resolveRootPath(options.rootDir);
+  const parsed = await loadOpensteerServiceMetadata(options);
+  if (!parsed) {
+    return undefined;
+  }
+
+  const { metadata } = parsed;
+  if (!(await validateServiceMetadata(metadata))) {
+    await removeOpensteerServiceMetadata(rootPath, name);
+    return undefined;
+  }
+
+  if (parsed.needsRewrite) {
+    await writeOpensteerServiceMetadata(rootPath, metadata);
+  }
+
   if (options.engine !== undefined && metadata.engine !== options.engine) {
     throw new Error(
       `Opensteer session "${name}" is already running with engine "${metadata.engine}". Run "opensteer close --name ${name}" before reopening it with engine "${options.engine}".`,

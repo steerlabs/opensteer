@@ -7,17 +7,15 @@ afterEach(() => {
 
 describe("Opensteer engine selection", () => {
   test("resolves the default engine when no CLI flag or env var is provided", async () => {
-    const { resolveOpensteerEngineName } = await import(
-      "../../packages/opensteer/src/internal/engine-selection.js"
-    );
+    const { resolveOpensteerEngineName } =
+      await import("../../packages/opensteer/src/internal/engine-selection.js");
 
     expect(resolveOpensteerEngineName()).toBe("playwright");
   });
 
   test("resolves the environment engine when no CLI flag is provided", async () => {
-    const { resolveOpensteerEngineName } = await import(
-      "../../packages/opensteer/src/internal/engine-selection.js"
-    );
+    const { resolveOpensteerEngineName } =
+      await import("../../packages/opensteer/src/internal/engine-selection.js");
 
     expect(
       resolveOpensteerEngineName({
@@ -27,9 +25,8 @@ describe("Opensteer engine selection", () => {
   });
 
   test("prefers the CLI flag over the environment variable", async () => {
-    const { resolveOpensteerEngineName } = await import(
-      "../../packages/opensteer/src/internal/engine-selection.js"
-    );
+    const { resolveOpensteerEngineName } =
+      await import("../../packages/opensteer/src/internal/engine-selection.js");
 
     expect(
       resolveOpensteerEngineName({
@@ -40,9 +37,8 @@ describe("Opensteer engine selection", () => {
   });
 
   test("rejects invalid engine names with the allowed values", async () => {
-    const { resolveOpensteerEngineName } = await import(
-      "../../packages/opensteer/src/internal/engine-selection.js"
-    );
+    const { resolveOpensteerEngineName } =
+      await import("../../packages/opensteer/src/internal/engine-selection.js");
 
     expect(() =>
       resolveOpensteerEngineName({
@@ -56,9 +52,8 @@ describe("Opensteer engine selection", () => {
       dispose: vi.fn(),
     }));
 
-    const { createOpensteerEngineFactory } = await import(
-      "../../packages/opensteer/src/internal/engine-selection.js"
-    );
+    const { createOpensteerEngineFactory } =
+      await import("../../packages/opensteer/src/internal/engine-selection.js");
     const factory = createOpensteerEngineFactory("playwright", {
       importPlaywrightModule: async () => ({
         createPlaywrightBrowserCoreEngine,
@@ -94,9 +89,8 @@ describe("Opensteer engine selection", () => {
       dispose: vi.fn(),
     }));
 
-    const { createOpensteerEngineFactory } = await import(
-      "../../packages/opensteer/src/internal/engine-selection.js"
-    );
+    const { createOpensteerEngineFactory } =
+      await import("../../packages/opensteer/src/internal/engine-selection.js");
     const factory = createOpensteerEngineFactory("abp", {
       importPlaywrightModule: async () => {
         throw new Error("unexpected Playwright import");
@@ -111,12 +105,6 @@ describe("Opensteer engine selection", () => {
         headless: true,
         executablePath: "/tmp/abp-browser",
         args: ["--foo=bar"],
-        devtools: true,
-        slowMo: 250,
-        channel: "chrome",
-      },
-      context: {
-        locale: "en-US",
       },
     });
 
@@ -130,9 +118,8 @@ describe("Opensteer engine selection", () => {
   });
 
   test("wraps missing ABP module errors with an install hint", async () => {
-    const { createOpensteerEngineFactory } = await import(
-      "../../packages/opensteer/src/internal/engine-selection.js"
-    );
+    const { createOpensteerEngineFactory } =
+      await import("../../packages/opensteer/src/internal/engine-selection.js");
     const factory = createOpensteerEngineFactory("abp", {
       importPlaywrightModule: async () => {
         throw new Error("unexpected Playwright import");
@@ -146,6 +133,33 @@ describe("Opensteer engine selection", () => {
 
     await expect(factory({})).rejects.toThrow(
       'ABP engine selected but "@opensteer/engine-abp" is not installed.',
+    );
+  });
+
+  test("rejects ABP-specific open options that are not supported", async () => {
+    const { createOpensteerEngineFactory } =
+      await import("../../packages/opensteer/src/internal/engine-selection.js");
+    const factory = createOpensteerEngineFactory("abp", {
+      importPlaywrightModule: async () => {
+        throw new Error("unexpected Playwright import");
+      },
+      importAbpModule: async () => {
+        throw new Error("unexpected ABP import");
+      },
+    });
+
+    await expect(
+      factory({
+        browser: {
+          channel: "chrome",
+          headless: true,
+        },
+        context: {
+          locale: "en-US",
+        },
+      }),
+    ).rejects.toThrow(
+      "ABP engine does not support browser.channel, context.locale. Supported ABP open options: browser.headless, browser.args, browser.executablePath.",
     );
   });
 });
