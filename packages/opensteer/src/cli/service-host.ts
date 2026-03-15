@@ -29,6 +29,7 @@ import {
   removeOpensteerServiceMetadata,
   writeOpensteerServiceMetadata,
 } from "./service-metadata.js";
+import { dispatchSemanticOperation } from "./dispatch.js";
 
 const PING_PATH = "/runtime/ping";
 
@@ -206,7 +207,7 @@ async function handleRequest(
 
   try {
     assertValidSemanticOperationInput(endpoint.name, envelope.input);
-    const data = await dispatchOperation(options.runtime, endpoint.name, envelope.input);
+    const data = await dispatchSemanticOperation(options.runtime, endpoint.name, envelope.input);
     const result = createSuccessEnvelope(envelope, data);
     writeJson(response, 200, result);
 
@@ -217,51 +218,6 @@ async function handleRequest(
     }
   } catch (error) {
     writeProtocolError(response, envelope, normalizeOpensteerError(error));
-  }
-}
-
-async function dispatchOperation(
-  runtime: OpensteerSessionRuntime,
-  operation: OpensteerSemanticOperationName,
-  input: unknown,
-): Promise<unknown> {
-  switch (operation) {
-    case "session.open":
-      return runtime.open((input ?? {}) as Parameters<OpensteerSessionRuntime["open"]>[0]);
-    case "page.goto":
-      return runtime.goto(input as Parameters<OpensteerSessionRuntime["goto"]>[0]);
-    case "page.snapshot":
-      return runtime.snapshot((input ?? {}) as Parameters<OpensteerSessionRuntime["snapshot"]>[0]);
-    case "dom.click":
-      return runtime.click(input as Parameters<OpensteerSessionRuntime["click"]>[0]);
-    case "dom.hover":
-      return runtime.hover(input as Parameters<OpensteerSessionRuntime["hover"]>[0]);
-    case "dom.input":
-      return runtime.input(input as Parameters<OpensteerSessionRuntime["input"]>[0]);
-    case "dom.scroll":
-      return runtime.scroll(input as Parameters<OpensteerSessionRuntime["scroll"]>[0]);
-    case "dom.extract":
-      return runtime.extract(input as Parameters<OpensteerSessionRuntime["extract"]>[0]);
-    case "request-capture.start":
-      return runtime.startRequestCapture(
-        (input ?? {}) as Parameters<OpensteerSessionRuntime["startRequestCapture"]>[0],
-      );
-    case "request-capture.stop":
-      return runtime.stopRequestCapture();
-    case "request-plan.write":
-      return runtime.writeRequestPlan(input as Parameters<OpensteerSessionRuntime["writeRequestPlan"]>[0]);
-    case "request-plan.get":
-      return runtime.getRequestPlan(input as Parameters<OpensteerSessionRuntime["getRequestPlan"]>[0]);
-    case "request-plan.list":
-      return runtime.listRequestPlans(
-        (input ?? {}) as Parameters<OpensteerSessionRuntime["listRequestPlans"]>[0],
-      );
-    case "request.execute":
-      return runtime.request(input as Parameters<OpensteerSessionRuntime["request"]>[0]);
-    case "computer.execute":
-      return runtime.computerExecute(input as Parameters<OpensteerSessionRuntime["computerExecute"]>[0]);
-    case "session.close":
-      return runtime.close();
   }
 }
 

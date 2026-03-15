@@ -26,9 +26,11 @@ export const PAGE_CDP_METHOD_ALLOWLIST = new Set<string>([
   "IndexedDB.requestData",
   "IndexedDB.requestDatabase",
   "IndexedDB.requestDatabaseNames",
+  "Page.addScriptToEvaluateOnNewDocument",
   "Page.enable",
   "Page.getFrameTree",
   "Page.getLayoutMetrics",
+  "Runtime.evaluate",
   "Storage.getStorageKey",
 ]);
 

@@ -141,20 +141,16 @@ export function buildContextOptions(
 export function buildLaunchOptions(
   options: PlaywrightChromiumLaunchOptions | undefined,
 ): Record<string, unknown> {
-  if (!options) {
-    return {};
-  }
-
   return {
-    ...(options.headless === undefined ? {} : { headless: options.headless }),
-    ...(options.executablePath === undefined ? {} : { executablePath: options.executablePath }),
-    ...(options.channel === undefined ? {} : { channel: options.channel }),
-    ...(options.args === undefined ? {} : { args: [...options.args] }),
-    ...(options.chromiumSandbox === undefined ? {} : { chromiumSandbox: options.chromiumSandbox }),
-    ...(options.devtools === undefined ? {} : { devtools: options.devtools }),
-    ...(options.downloadsPath === undefined ? {} : { downloadsPath: options.downloadsPath }),
-    ...(options.proxy === undefined ? {} : { proxy: options.proxy }),
-    ...(options.slowMo === undefined ? {} : { slowMo: options.slowMo }),
-    ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),
+    headless: options?.headless ?? false,
+    ...(options?.executablePath === undefined ? {} : { executablePath: options.executablePath }),
+    ...(options?.channel === undefined ? {} : { channel: options.channel }),
+    ...(options?.args === undefined ? {} : { args: [...options.args] }),
+    ...(options?.chromiumSandbox === undefined ? {} : { chromiumSandbox: options.chromiumSandbox }),
+    ...(options?.devtools === undefined ? {} : { devtools: options.devtools }),
+    ...(options?.downloadsPath === undefined ? {} : { downloadsPath: options.downloadsPath }),
+    ...(options?.proxy === undefined ? {} : { proxy: options.proxy }),
+    ...(options?.slowMo === undefined ? {} : { slowMo: options.slowMo }),
+    ...(options?.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),
   };
 }

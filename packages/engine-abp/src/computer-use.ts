@@ -47,6 +47,7 @@ export function createAbpComputerUseBridge(context: {
     execute: () => Promise<AbpActionResponse>,
   ): Promise<{ readonly response: AbpActionResponse; readonly dialogEvents: readonly StepEvent[] }>;
   flushDomUpdateTask(controller: PageController): Promise<void>;
+  resettlePausedExecution(controller: PageController, timeoutMs: number): Promise<void>;
   requireMainFrame(controller: PageController): {
     readonly frameRef: FrameRef;
     readonly currentDocument: {
@@ -203,13 +204,18 @@ export function createAbpComputerUseBridge(context: {
         session.activePageRef = resultPageRef;
       }
       const resultController = context.resolveController(resultPageRef);
+      const remainingBudgetMs = input.remainingMs();
+      const settleBudgetMs =
+        remainingBudgetMs === undefined ? 5_000 : Math.max(0, Math.min(remainingBudgetMs, 5_000));
+      if (settleBudgetMs > 0) {
+        await context.resettlePausedExecution(resultController, settleBudgetMs);
+      }
       await context.flushDomUpdateTask(resultController);
 
       const screenshotArtifact = await materializeScreenshotArtifact({
         context,
         session,
         controller: resultController,
-        response,
         fallback: screenshot,
         signal: input.signal,
       });
@@ -273,21 +279,16 @@ async function materializeScreenshotArtifact(input: {
   readonly context: Parameters<typeof createAbpComputerUseBridge>[0];
   readonly session: SessionState;
   readonly controller: PageController;
-  readonly response: AbpActionResponse;
   readonly fallback: ReturnType<typeof toAbpScreenshotOptions>;
   readonly signal: AbortSignal;
 }): Promise<ScreenshotArtifact> {
-  let response = input.response;
-  if (response.screenshot_after === undefined) {
-    response = await input.session.rest.screenshotTab(
-      input.controller.tabId,
-      buildImmediateScreenshotRequest(input.fallback),
-      {
-        signal: input.signal,
-      },
-    );
-  }
-
+  const response = await input.session.rest.screenshotTab(
+    input.controller.tabId,
+    buildImmediateScreenshotRequest(input.fallback),
+    {
+      signal: input.signal,
+    },
+  );
   const screenshot = response.screenshot_after;
   if (screenshot === undefined) {
     throw new Error(
@@ -327,7 +328,7 @@ function timingFromResponse(
   return {
     actionMs: Math.max(0, timing.action_completed_ms - timing.action_started_ms),
     waitMs: Math.max(0, timing.wait_completed_ms - timing.action_completed_ms),
-    totalMs: Math.max(0, timing.duration_ms),
+    totalMs: Math.max(fallbackTotalMs, Math.max(0, timing.duration_ms)),
   };
 }
 
