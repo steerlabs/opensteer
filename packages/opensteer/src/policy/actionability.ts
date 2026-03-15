@@ -5,18 +5,26 @@ import {
   type DocumentRef,
   type DomSnapshot,
   type DomSnapshotNode,
+  type NodeRef,
   type Point,
   type Rect,
 } from "@opensteer/browser-core";
 import { OpensteerProtocolError } from "@opensteer/protocol";
 
 import { createSnapshotIndex } from "../runtimes/dom/path.js";
-import { findIframeHostNode, isSameNodeOrDescendant } from "../runtimes/dom/selectors.js";
+import {
+  type DomSnapshotIndex,
+  findIframeHostNode,
+  findNodeByNodeRef,
+  findNodeBySnapshotNodeId,
+  isSameNodeOrDescendant,
+} from "../runtimes/dom/selectors.js";
 import type {
   ActionabilityCheckInput,
   ActionabilityCheckResult,
   ActionabilityFailureDetails,
   ActionabilityPolicy,
+  DomActionPolicyOperation,
 } from "./types.js";
 
 export const defaultActionabilityPolicy: ActionabilityPolicy = {
@@ -141,7 +149,7 @@ export async function checkActionability(
   }
 
   const index = createSnapshotIndex(input.resolved.snapshot);
-  if (!isSameNodeOrDescendant(index, hit.nodeRef, input.resolved.nodeRef)) {
+  if (!acceptsHitTarget(index, input.operation, hit.nodeRef, input.resolved.nodeRef)) {
     return failure(
       "obscured",
       `hit test resolved ${hit.nodeRef} outside the target subtree rooted at ${input.resolved.nodeRef}`,
@@ -247,4 +255,99 @@ function findAttribute(node: DomSnapshotNode, name: string) {
 
 function findAttributeValue(node: DomSnapshotNode, name: string): string | undefined {
   return findAttribute(node, name)?.value.trim().toLowerCase();
+}
+
+function findAttributeText(node: DomSnapshotNode, name: string): string | undefined {
+  return findAttribute(node, name)?.value.trim();
+}
+
+function acceptsHitTarget(
+  index: DomSnapshotIndex,
+  operation: DomActionPolicyOperation,
+  hitNodeRef: NodeRef,
+  targetNodeRef: NodeRef,
+): boolean {
+  if (isSameNodeOrDescendant(index, hitNodeRef, targetNodeRef)) {
+    return true;
+  }
+  if (!isActivationOperation(operation)) {
+    return false;
+  }
+  return isAssociatedLabelHit(index, hitNodeRef, targetNodeRef);
+}
+
+function isActivationOperation(operation: DomActionPolicyOperation): boolean {
+  return operation === "dom.click" || operation === "dom.input";
+}
+
+function isAssociatedLabelHit(
+  index: DomSnapshotIndex,
+  hitNodeRef: NodeRef,
+  targetNodeRef: NodeRef,
+): boolean {
+  const targetNode = findNodeByNodeRef(index, targetNodeRef);
+  if (!targetNode) {
+    return false;
+  }
+  const targetId = findAttributeText(targetNode, "id");
+  const labelNode = findAssociatedLabelAncestor(index, hitNodeRef, targetNodeRef, targetId);
+  return labelNode !== undefined;
+}
+
+function isAssociatedLabelNode(
+  index: DomSnapshotIndex,
+  candidate: DomSnapshotNode,
+  targetNodeRef: NodeRef,
+  targetId: string | undefined,
+): boolean {
+  if (candidate.nodeType !== 1 || candidate.nodeName.toLowerCase() !== "label") {
+    return false;
+  }
+  if (candidate.nodeRef && isSameNodeOrDescendant(index, targetNodeRef, candidate.nodeRef)) {
+    return true;
+  }
+  const htmlFor = findAttributeText(candidate, "for");
+  return targetId !== undefined && htmlFor === targetId;
+}
+
+function findAssociatedLabelAncestor(
+  index: DomSnapshotIndex,
+  startNodeRef: NodeRef,
+  targetNodeRef: NodeRef,
+  targetId: string | undefined,
+): DomSnapshotNode | undefined {
+  const startNode = findNodeByNodeRef(index, startNodeRef);
+  if (!startNode) {
+    return undefined;
+  }
+
+  const stack: DomSnapshotNode[] = [startNode];
+  const visited = new Set<number>();
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (visited.has(current.snapshotNodeId)) {
+      continue;
+    }
+    visited.add(current.snapshotNodeId);
+
+    if (isAssociatedLabelNode(index, current, targetNodeRef, targetId)) {
+      return current;
+    }
+
+    if (current.parentSnapshotNodeId !== undefined) {
+      const parent = findNodeBySnapshotNodeId(index, current.parentSnapshotNodeId);
+      if (parent) {
+        stack.push(parent);
+      }
+    }
+
+    if (current.shadowHostNodeRef !== undefined) {
+      const host = findNodeByNodeRef(index, current.shadowHostNodeRef);
+      if (host) {
+        stack.push(host);
+      }
+    }
+  }
+
+  return undefined;
 }

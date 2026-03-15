@@ -1,5 +1,8 @@
 import type { JsonObject, JsonSchema } from "./json.js";
-import { opensteerOperationSpecifications, type OpensteerOperationName } from "./operations.js";
+import {
+  opensteerSemanticOperationSpecifications,
+  type OpensteerSemanticOperationName,
+} from "./semantic.js";
 
 export interface OpensteerMcpToolAnnotations {
   readonly readOnlyHint?: boolean;
@@ -12,7 +15,7 @@ export interface OpensteerMcpToolDescriptor {
   readonly name: string;
   readonly title: string;
   readonly description: string;
-  readonly operation: OpensteerOperationName;
+  readonly operation: OpensteerSemanticOperationName;
   readonly inputSchema: JsonSchema;
   readonly outputSchema: JsonSchema;
   readonly annotations?: OpensteerMcpToolAnnotations;
@@ -23,36 +26,34 @@ export interface OpensteerMcpTextContent {
   readonly text: string;
 }
 
+export interface OpensteerMcpImageContent {
+  readonly type: "image";
+  readonly data: string;
+  readonly mimeType: string;
+}
+
+export type OpensteerMcpContent = OpensteerMcpTextContent | OpensteerMcpImageContent;
+
 export interface OpensteerMcpToolResult<TStructured extends JsonObject = JsonObject> {
   readonly structuredContent: TStructured;
-  readonly content?: readonly OpensteerMcpTextContent[];
+  readonly content?: readonly OpensteerMcpContent[];
   readonly isError?: boolean;
 }
 
-const readOnlyOperations = new Set<OpensteerOperationName>([
-  "artifact.capture-screenshot",
-  "inspect.list-pages",
-  "inspect.list-frames",
-  "inspect.get-page-info",
-  "inspect.get-frame-info",
-  "inspect.get-html-snapshot",
-  "inspect.get-dom-snapshot",
-  "inspect.read-text",
-  "inspect.read-attributes",
-  "inspect.hit-test",
-  "inspect.get-viewport-metrics",
-  "inspect.get-network-records",
-  "inspect.get-cookies",
-  "inspect.get-storage-snapshot",
+const readOnlyOperations = new Set<OpensteerSemanticOperationName>([
+  "page.snapshot",
+  "dom.extract",
+  "request-plan.get",
+  "request-plan.list",
 ]);
 
-const destructiveOperations = new Set<OpensteerOperationName>(["session.close", "page.close"]);
+const destructiveOperations = new Set<OpensteerSemanticOperationName>(["session.close"]);
 
-function toolNameFromOperation(operation: OpensteerOperationName): string {
+function toolNameFromOperation(operation: OpensteerSemanticOperationName): string {
   return `opensteer_${operation.replaceAll(".", "_").replaceAll("-", "_")}`;
 }
 
-function titleFromOperation(operation: OpensteerOperationName): string {
+function titleFromOperation(operation: OpensteerSemanticOperationName): string {
   return operation
     .split(/[.-]/)
     .map((segment) => {
@@ -69,7 +70,7 @@ function titleFromOperation(operation: OpensteerOperationName): string {
 }
 
 export const opensteerMcpTools: readonly OpensteerMcpToolDescriptor[] =
-  opensteerOperationSpecifications.map((spec) => ({
+  opensteerSemanticOperationSpecifications.map((spec) => ({
     name: toolNameFromOperation(spec.name),
     title: titleFromOperation(spec.name),
     description: spec.description,
@@ -88,21 +89,24 @@ export function createStructuredToolResult<TStructured extends JsonObject>(
   structuredContent: TStructured,
   options: {
     readonly text?: string;
+    readonly content?: readonly OpensteerMcpContent[];
     readonly isError?: boolean;
   } = {},
 ): OpensteerMcpToolResult<TStructured> {
+  const content =
+    options.content ??
+    (options.text === undefined
+      ? undefined
+      : [
+          {
+            type: "text",
+            text: options.text,
+          } satisfies OpensteerMcpTextContent,
+        ]);
+
   return {
     structuredContent,
-    ...(options.text === undefined
-      ? {}
-      : {
-          content: [
-            {
-              type: "text",
-              text: options.text,
-            },
-          ],
-        }),
+    ...(content === undefined ? {} : { content }),
     ...(options.isError === undefined ? {} : { isError: options.isError }),
   };
 }

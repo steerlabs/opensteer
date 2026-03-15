@@ -12,6 +12,7 @@ import {
   normalizeOpensteerEngineName,
   resolveOpensteerEngineName,
 } from "../internal/engine-selection.js";
+import { runOpensteerMcpServer } from "./mcp.js";
 import { runOpensteerServiceHost } from "./service-host.js";
 
 interface ParsedCliArgs {
@@ -34,6 +35,20 @@ async function main(argv: readonly string[]): Promise<void> {
       ...(readStringOption(parsed.options, "engine") === undefined
         ? {}
         : { engine: normalizeOpensteerEngineName(readStringOption(parsed.options, "engine")!, "--engine") }),
+    });
+    return;
+  }
+
+  if (parsed.command === "mcp") {
+    await runOpensteerMcpServer({
+      name: readStringOption(parsed.options, "name") ?? "default",
+      ...(readStringOption(parsed.options, "root-dir") === undefined
+        ? {}
+        : { rootDir: readStringOption(parsed.options, "root-dir")! }),
+      engine: resolveOpensteerEngineName({
+        requested: readStringOption(parsed.options, "engine"),
+        environment: process.env.OPENSTEER_ENGINE,
+      }),
     });
     return;
   }
@@ -325,7 +340,7 @@ async function main(argv: readonly string[]): Promise<void> {
     case "-h":
     default:
       throw new Error(
-        `unsupported command "${parsed.command}". Supported commands: open, goto, snapshot, click, hover, input, scroll, extract, capture, plan, request, computer, close.`,
+        `unsupported command "${parsed.command}". Supported commands: open, goto, snapshot, click, hover, input, scroll, extract, capture, plan, request, computer, mcp, close.`,
       );
   }
 }
@@ -340,7 +355,7 @@ function assertEngineOptionAllowed(parsed: ParsedCliArgs): void {
     throw new Error("--engine requires a value.");
   }
 
-  if (parsed.command === "open" || parsed.command === "service-host") {
+  if (parsed.command === "open" || parsed.command === "service-host" || parsed.command === "mcp") {
     return;
   }
 

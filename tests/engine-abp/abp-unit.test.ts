@@ -55,10 +55,13 @@ afterEach(() => {
 describe("engine-abp internals", () => {
   test("enforces the read-only page CDP allowlist", () => {
     expect(() => assertAllowedCdpMethod("Page.enable", PAGE_CDP_METHOD_ALLOWLIST)).not.toThrow();
-    expectThrownCode(
-      () => assertAllowedCdpMethod("Runtime.evaluate", PAGE_CDP_METHOD_ALLOWLIST),
-      "operation-failed",
-    );
+    expect(() =>
+      assertAllowedCdpMethod("Runtime.evaluate", PAGE_CDP_METHOD_ALLOWLIST),
+    ).not.toThrow();
+    expect(() =>
+      assertAllowedCdpMethod("Page.addScriptToEvaluateOnNewDocument", PAGE_CDP_METHOD_ALLOWLIST),
+    ).not.toThrow();
+    expectThrownCode(() => assertAllowedCdpMethod("Network.enable", PAGE_CDP_METHOD_ALLOWLIST), "operation-failed");
   });
 
   test("normalizes ABP HTTP errors into browser-core errors", () => {
@@ -353,7 +356,7 @@ describe("engine-abp internals", () => {
     );
   });
 
-  test("computer-use bridge translates drag requests without extra screenshots", async () => {
+  test("computer-use bridge translates drag requests and captures a fresh post-settle screenshot", async () => {
     const bridge = createAbpComputerUseBridge(createComputerBridgeContext());
     const signal = new AbortController().signal;
 
@@ -395,7 +398,24 @@ describe("engine-abp internals", () => {
         signal,
       },
     );
-    expect(rest.screenshotTab).not.toHaveBeenCalled();
+    expect(outputTestState.resettlePausedExecution).toHaveBeenCalledWith(
+      expect.objectContaining({ pageRef: createPageRef("main") }),
+      5_000,
+    );
+    expect(rest.screenshotTab).toHaveBeenCalledWith(
+      "tab-main",
+      expect.objectContaining({
+        screenshot: {
+          area: "viewport",
+          cursor: true,
+          format: "png",
+          markup: ["clickable", "grid"],
+        },
+      }),
+      {
+        signal,
+      },
+    );
     expect(output.timing.totalMs).toBe(80);
   });
 
@@ -429,7 +449,15 @@ describe("engine-abp internals", () => {
     const rest = outputTestState.rest;
     expect(output.pageRef).toBe(popupPageRef);
     expect(output.events.map((event) => event.kind)).toContain("page-created");
-    expect(rest.screenshotTab).not.toHaveBeenCalled();
+    expect(outputTestState.resettlePausedExecution).toHaveBeenCalledWith(
+      expect.objectContaining({ pageRef: popupPageRef }),
+      5_000,
+    );
+    expect(rest.screenshotTab).toHaveBeenCalledWith(
+      "tab-popup",
+      expect.any(Object),
+      expect.any(Object),
+    );
   });
 
   test("computer-use bridge threads semantic timeout budgets and abort signals into ABP actions", async () => {
@@ -464,6 +492,10 @@ describe("engine-abp internals", () => {
       {
         signal: controller.signal,
       },
+    );
+    expect(outputTestState.resettlePausedExecution).toHaveBeenCalledWith(
+      expect.objectContaining({ pageRef: createPageRef("main") }),
+      4_321,
     );
   });
 
@@ -501,6 +533,7 @@ describe("engine-abp internals", () => {
         signal,
       },
     );
+    expect(outputTestState.rest.screenshotTab).toHaveBeenCalledTimes(1);
   });
 
   test("computer-use bridge encodes scroll actions using ABP scroll segments", async () => {
@@ -540,6 +573,7 @@ describe("engine-abp internals", () => {
         signal,
       },
     );
+    expect(outputTestState.rest.screenshotTab).toHaveBeenCalledTimes(1);
   });
 
   test("buildAbpScrollSegments rejects zero-delta scroll requests", () => {
@@ -549,6 +583,8 @@ describe("engine-abp internals", () => {
 
 const outputTestState = {
   rest: createRestStubs(),
+  flushDomUpdateTask: vi.fn(async () => {}),
+  resettlePausedExecution: vi.fn(async () => {}),
 };
 
 function createComputerBridgeContext(
@@ -561,6 +597,8 @@ function createComputerBridgeContext(
   outputTestState.rest = createRestStubs({
     tabChanged: options.tabChanged ?? false,
   });
+  outputTestState.flushDomUpdateTask = vi.fn(async () => {});
+  outputTestState.resettlePausedExecution = vi.fn(async () => {});
 
   const sessionRef = createSessionRef("abp-computer");
   const mainPageRef = createPageRef("main");
@@ -623,7 +661,8 @@ function createComputerBridgeContext(
       response: await execute(),
       dialogEvents: [],
     }),
-    flushDomUpdateTask: async () => {},
+    flushDomUpdateTask: outputTestState.flushDomUpdateTask,
+    resettlePausedExecution: outputTestState.resettlePausedExecution,
     requireMainFrame: (controller: ReturnType<typeof createPageController>) => controller.mainFrame,
     drainQueuedEvents: (pageRef: ReturnType<typeof createPageRef>) =>
       pageRef === popupPageRef &&

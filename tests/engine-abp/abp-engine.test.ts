@@ -74,6 +74,46 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
+  if (url.pathname === "/timer-ready") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(
+      html(
+        `
+          <div id="status">Loading...</div>
+          <script>
+            setTimeout(() => {
+              document.getElementById("status").textContent = "Ready";
+            }, 600);
+          </script>
+        `,
+        "Timer ready page",
+      ),
+    );
+    return;
+  }
+
+  if (url.pathname === "/delayed-click") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(
+      html(
+        `
+          <button id="continue" type="button">Continue</button>
+          <div id="status">Idle</div>
+          <script>
+            document.getElementById("continue").addEventListener("click", () => {
+              document.getElementById("status").textContent = "Working...";
+              setTimeout(() => {
+                document.getElementById("status").textContent = "Done";
+              }, 600);
+            });
+          </script>
+        `,
+        "Delayed click page",
+      ),
+    );
+    return;
+  }
+
   if (url.pathname === "/integration") {
     response.setHeader("content-type", "text/html; charset=utf-8");
     response.end(
@@ -239,6 +279,94 @@ describe.sequential("AbpBrowserCoreEngine", () => {
 
   describe.skipIf(!runAbp)("integration", () => {
     test.sequential(
+      "waits for delayed navigation scripts before freezing the page",
+      async () => {
+        const engine = await createAbpTestEngine();
+
+        try {
+          const sessionRef = await engine.createSession();
+          const created = await engine.createPage({
+            sessionRef,
+            url: `${baseUrl}/timer-ready`,
+          });
+          const frames = await engine.listFrames({ pageRef: created.data.pageRef });
+          const mainFrame = frames.find((frame) => frame.isMainFrame);
+          expect(mainFrame).toBeDefined();
+
+          const snapshot = await engine.getHtmlSnapshot({
+            frameRef: mainFrame!.frameRef,
+          });
+          expect(snapshot.html).toContain("Ready");
+          expect(snapshot.html).not.toContain("Loading...");
+        } finally {
+          await engine.dispose();
+        }
+      },
+      20_000,
+    );
+
+    test.sequential(
+      "resumes execution state correctly before settling navigate() from a blank tab",
+      async () => {
+        const engine = await createAbpTestEngine();
+
+        try {
+          const sessionRef = await engine.createSession();
+          const created = await engine.createPage({
+            sessionRef,
+          });
+          const navigation = await engine.navigate({
+            pageRef: created.data.pageRef,
+            url: `${baseUrl}/timer-ready`,
+            timeoutMs: 10_000,
+          });
+
+          const snapshot = await engine.getHtmlSnapshot({
+            frameRef: navigation.data.mainFrame.frameRef,
+          });
+          expect(snapshot.html).toContain("Ready");
+          expect(snapshot.html).not.toContain("Loading...");
+        } finally {
+          await engine.dispose();
+        }
+      },
+      20_000,
+    );
+
+    test.sequential(
+      "waits for delayed click handlers before freezing the page",
+      async () => {
+        const engine = await createAbpTestEngine();
+
+        try {
+          const sessionRef = await engine.createSession();
+          const created = await engine.createPage({
+            sessionRef,
+            url: `${baseUrl}/delayed-click`,
+          });
+
+          await engine.mouseClick({
+            pageRef: created.data.pageRef,
+            point: createPoint(80, 40),
+            coordinateSpace: "layout-viewport-css",
+          });
+
+          const frames = await engine.listFrames({ pageRef: created.data.pageRef });
+          const mainFrame = frames.find((frame) => frame.isMainFrame);
+          expect(mainFrame).toBeDefined();
+
+          const snapshot = await engine.getHtmlSnapshot({
+            frameRef: mainFrame!.frameRef,
+          });
+          expect(snapshot.html).toContain('<div id="status">Done</div>');
+        } finally {
+          await engine.dispose();
+        }
+      },
+      20_000,
+    );
+
+    test.sequential(
       "captures network, popup, dialog, storage, session HTTP, and execution control",
       async () => {
         const engine = await createAbpTestEngine();
@@ -357,7 +485,7 @@ describe.sequential("AbpBrowserCoreEngine", () => {
           });
 
           expect(paused.data).toEqual({ paused: true, frozen: true });
-          expect(paused.events.map((event) => event.kind)).toEqual(["paused", "frozen"]);
+          expect(paused.events.map((event) => event.kind)).toEqual([]);
           expect(resumed.data).toEqual({ paused: false, frozen: false });
           expect(resumed.events.map((event) => event.kind)).toEqual(["resumed"]);
         } finally {

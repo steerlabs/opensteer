@@ -506,7 +506,10 @@ describe("Phase 5 DOM runtime integration", () => {
         const snapshot = await engine.getDomSnapshot({
           frameRef: created.frameRef!,
         });
-        const targetNode = requireValue(findNodeById(snapshot.nodes, "target"), "target node missing");
+        const targetNode = requireValue(
+          findNodeById(snapshot.nodes, "target"),
+          "target node missing",
+        );
         const locator = createLocator(snapshot, targetNode);
         const anchor = await runtime.buildAnchor({ locator });
 
@@ -529,12 +532,12 @@ describe("Phase 5 DOM runtime integration", () => {
           target: { kind: "anchor", anchor },
         });
 
-        expect(resolvedLive.node.attributes.find((attribute) => attribute.name === "id")?.value).toBe(
-          "target",
-        );
-        expect(resolvedAnchor.node.attributes.find((attribute) => attribute.name === "id")?.value).toBe(
-          "target",
-        );
+        expect(
+          resolvedLive.node.attributes.find((attribute) => attribute.name === "id")?.value,
+        ).toBe("target");
+        expect(
+          resolvedAnchor.node.attributes.find((attribute) => attribute.name === "id")?.value,
+        ).toBe("target");
 
         await runtime.click({
           pageRef: created.data.pageRef,
@@ -545,7 +548,10 @@ describe("Phase 5 DOM runtime integration", () => {
         const latestSnapshot = await engine.getDomSnapshot({
           frameRef: created.frameRef!,
         });
-        const statusNode = requireValue(findNodeById(latestSnapshot.nodes, "status"), "status missing");
+        const statusNode = requireValue(
+          findNodeById(latestSnapshot.nodes, "status"),
+          "status missing",
+        );
         expect(await engine.readText(createLocator(latestSnapshot, statusNode))).toBe("clicked v2");
       } finally {
         await engine.dispose();
@@ -658,7 +664,9 @@ describe("Phase 5 DOM runtime integration", () => {
           snapshot.nodes.find(
             (node) =>
               node.nodeName.toLowerCase() === "button" &&
-              node.attributes.some((attribute) => attribute.name === "class" && attribute.value === "choice"),
+              node.attributes.some(
+                (attribute) => attribute.name === "class" && attribute.value === "choice",
+              ),
           ),
           "choice button missing",
         );
@@ -1032,6 +1040,90 @@ describe("Phase 5 DOM runtime integration", () => {
     },
   );
 
+  test("inputs through associated label overlays", { timeout: 60_000 }, async () => {
+    const engine = await createPlaywrightBrowserCoreEngine({
+      launch: { headless: true },
+    });
+
+    try {
+      const runtime = createDomRuntime({ engine });
+      const sessionRef = await engine.createSession();
+      const created = await engine.createPage({
+        sessionRef,
+        url: dataUrl(
+          html(
+            `
+                <style>
+                  #field {
+                    position: absolute;
+                    left: 20px;
+                    top: 20px;
+                    width: 260px;
+                    height: 56px;
+                  }
+                  #overlay-input {
+                    position: absolute;
+                    inset: 0;
+                    width: 100%;
+                    height: 100%;
+                    box-sizing: border-box;
+                    padding-top: 20px;
+                  }
+                  label[for="overlay-input"] {
+                    position: absolute;
+                    inset: 0;
+                    display: flex;
+                    align-items: flex-start;
+                    padding: 8px 12px;
+                    background: rgba(255, 0, 0, 0.08);
+                  }
+                  #overlay-mirror {
+                    position: absolute;
+                    left: 20px;
+                    top: 96px;
+                  }
+                </style>
+                <div id="field">
+                  <input id="overlay-input" name="custname" type="text" />
+                  <label for="overlay-input">Customer name</label>
+                </div>
+                <div id="overlay-mirror"></div>
+                <script>
+                  document.getElementById("overlay-input").addEventListener("input", (event) => {
+                    document.getElementById("overlay-mirror").textContent = event.target.value;
+                  });
+                </script>
+              `,
+            "DOM runtime label overlay",
+          ),
+        ),
+      });
+
+      await wait(300);
+
+      await runtime.input({
+        pageRef: created.data.pageRef,
+        target: {
+          kind: "selector",
+          selector: "#overlay-input",
+        },
+        text: "Opensteer",
+      });
+      await wait(100);
+
+      const snapshot = await engine.getDomSnapshot({
+        frameRef: requireValue(created.frameRef, "main frame ref missing"),
+      });
+      const mirrorNode = requireValue(
+        findNodeById(snapshot.nodes, "overlay-mirror"),
+        "overlay mirror missing",
+      );
+      expect(await engine.readText(createLocator(snapshot, mirrorNode))).toBe("Opensteer");
+    } finally {
+      await engine.dispose();
+    }
+  });
+
   test(
     "returns structured actionability errors for hidden targets",
     { timeout: 60_000 },
@@ -1263,11 +1355,15 @@ describe("Phase 5 DOM runtime integration", () => {
         const runtime = createDomRuntime({ engine });
         const sessionRef = await engine.createSession();
 
-        const repeatedItems = Array.from({ length: 20 }, (_, i) =>
-          `<li class="item"><a class="link" href="/item/${i}"><span class="title">Item ${i}</span></a></li>`,
+        const repeatedItems = Array.from(
+          { length: 20 },
+          (_, i) =>
+            `<li class="item"><a class="link" href="/item/${i}"><span class="title">Item ${i}</span></a></li>`,
         ).join("\n");
-        const repeatedSections = Array.from({ length: 5 }, (_, i) =>
-          `<section class="card"><div class="card-body"><h3 class="card-title">Section ${i}</h3><ul class="list">${repeatedItems}</ul></div></section>`,
+        const repeatedSections = Array.from(
+          { length: 5 },
+          (_, i) =>
+            `<section class="card"><div class="card-body"><h3 class="card-title">Section ${i}</h3><ul class="list">${repeatedItems}</ul></div></section>`,
         ).join("\n");
 
         const created = await engine.createPage({
@@ -1295,8 +1391,11 @@ describe("Phase 5 DOM runtime integration", () => {
         const snapshot = await engine.getDomSnapshot({
           frameRef: created.frameRef!,
         });
-        const index = (await import("../../packages/opensteer/src/runtimes/dom/path.js")).createSnapshotIndex(snapshot);
-        const { buildLocalStructuralElementAnchor } = await import("../../packages/opensteer/src/runtimes/dom/path.js");
+        const index = (
+          await import("../../packages/opensteer/src/runtimes/dom/path.js")
+        ).createSnapshotIndex(snapshot);
+        const { buildLocalStructuralElementAnchor } =
+          await import("../../packages/opensteer/src/runtimes/dom/path.js");
 
         let anchorCount = 0;
         for (const node of snapshot.nodes) {

@@ -156,6 +156,58 @@ describe("Phase 7 policy actionability", () => {
       point: createPoint(50, 32),
     });
   });
+
+  test("accepts wrapping label hits for activation operations", async () => {
+    for (const operation of ["dom.click", "dom.input"] as const) {
+      const fixture = createActionabilityFixture({
+        rect: createRect(10, 20, 80, 24),
+        operation,
+        labelAssociation: "ancestor",
+      });
+
+      const result = await checkActionability(fixture.input);
+
+      expect(result).toEqual({
+        actionable: true,
+        point: createPoint(50, 32),
+      });
+    }
+  });
+
+  test("accepts external label hits when the label is associated via for", async () => {
+    for (const operation of ["dom.click", "dom.input"] as const) {
+      const fixture = createActionabilityFixture({
+        rect: createRect(10, 20, 80, 24),
+        operation,
+        labelAssociation: "for",
+      });
+
+      const result = await checkActionability(fixture.input);
+
+      expect(result).toEqual({
+        actionable: true,
+        point: createPoint(50, 32),
+      });
+    }
+  });
+
+  test("keeps associated label hits obscured for non-activation operations", async () => {
+    const fixture = createActionabilityFixture({
+      rect: createRect(10, 20, 80, 24),
+      operation: "dom.hover",
+      labelAssociation: "for",
+    });
+
+    const result = await checkActionability(fixture.input);
+
+    expect(result).toMatchObject({
+      actionable: false,
+      reason: "obscured",
+      details: {
+        hitNodeRef: fixture.hitNodeRef,
+      },
+    });
+  });
 });
 
 describe("Phase 7 policy timeout", () => {
@@ -346,6 +398,8 @@ function createActionabilityFixture(options: {
   readonly hitNodeRef?: ReturnType<typeof createNodeRef>;
   readonly hitObscured?: boolean;
   readonly includeDescendant?: boolean;
+  readonly operation?: ActionabilityCheckInput["operation"];
+  readonly labelAssociation?: "ancestor" | "for";
 }): {
   readonly input: ActionabilityCheckInput;
   readonly hitNodeRef: ReturnType<typeof createNodeRef>;
@@ -355,42 +409,93 @@ function createActionabilityFixture(options: {
   const documentRef = createDocumentRef("document-1");
   const documentEpoch = createDocumentEpoch(1);
   const targetNodeRef = createNodeRef("target");
+  const labelNodeRef = createNodeRef("label");
   const descendantNodeRef = createNodeRef("child");
+  const targetId = "target-input";
+  const targetAttributes = [...(options.attributes ?? [])];
+  if (
+    options.labelAssociation === "for" &&
+    !targetAttributes.some((attribute) => attribute.name.toLowerCase() === "id")
+  ) {
+    targetAttributes.push({ name: "id", value: targetId });
+  }
   const hitNodeRef =
-    options.hitNodeRef ?? (options.includeDescendant ? descendantNodeRef : targetNodeRef);
+    options.hitNodeRef ??
+    (options.labelAssociation === undefined
+      ? options.includeDescendant
+        ? descendantNodeRef
+        : targetNodeRef
+      : labelNodeRef);
   const rect = options.rect;
   const descendantRect = rect ?? createRect(10, 20, 80, 24);
+  const targetSnapshotNodeId = options.labelAssociation === "ancestor" ? 3 : 2;
+  const descendantSnapshotNodeId = options.labelAssociation === "ancestor" ? 4 : 3;
+  const rootChildSnapshotNodeIds =
+    options.labelAssociation === "ancestor"
+      ? [2]
+      : options.labelAssociation === "for"
+        ? [2, 3]
+        : [2];
 
   const targetNode: DomSnapshotNode = {
-    snapshotNodeId: 2,
+    snapshotNodeId: targetSnapshotNodeId,
     nodeRef: targetNodeRef,
-    parentSnapshotNodeId: 1,
-    childSnapshotNodeIds: options.includeDescendant ? [3] : [],
+    parentSnapshotNodeId: options.labelAssociation === "ancestor" ? 2 : 1,
+    childSnapshotNodeIds: options.includeDescendant ? [descendantSnapshotNodeId] : [],
     nodeType: 1,
-    nodeName: "BUTTON",
+    nodeName: options.labelAssociation === undefined ? "BUTTON" : "INPUT",
     nodeValue: "",
-    textContent: "Action",
-    attributes: options.attributes ?? [],
+    textContent: options.labelAssociation === undefined ? "Action" : "",
+    attributes: targetAttributes,
     ...(rect === undefined ? {} : { layout: { rect } }),
   };
 
   const nodes: DomSnapshotNode[] = [
     {
       snapshotNodeId: 1,
-      childSnapshotNodeIds: [2],
+      childSnapshotNodeIds: rootChildSnapshotNodeIds,
       nodeType: 9,
       nodeName: "#document",
       nodeValue: "",
       attributes: [],
     },
-    targetNode,
   ];
+
+  if (options.labelAssociation === "ancestor") {
+    nodes.push({
+      snapshotNodeId: 2,
+      nodeRef: labelNodeRef,
+      parentSnapshotNodeId: 1,
+      childSnapshotNodeIds: [targetSnapshotNodeId],
+      nodeType: 1,
+      nodeName: "LABEL",
+      nodeValue: "",
+      textContent: "Label",
+      attributes: [],
+    });
+  }
+
+  nodes.push(targetNode);
+
+  if (options.labelAssociation === "for") {
+    nodes.push({
+      snapshotNodeId: 3,
+      nodeRef: labelNodeRef,
+      parentSnapshotNodeId: 1,
+      childSnapshotNodeIds: [],
+      nodeType: 1,
+      nodeName: "LABEL",
+      nodeValue: "",
+      textContent: "Label",
+      attributes: [{ name: "for", value: targetId }],
+    });
+  }
 
   if (options.includeDescendant) {
     nodes.push({
-      snapshotNodeId: 3,
+      snapshotNodeId: descendantSnapshotNodeId,
       nodeRef: descendantNodeRef,
-      parentSnapshotNodeId: 2,
+      parentSnapshotNodeId: targetSnapshotNodeId,
       childSnapshotNodeIds: [],
       nodeType: 1,
       nodeName: "SPAN",
@@ -430,7 +535,7 @@ function createActionabilityFixture(options: {
   return {
     input: {
       engine,
-      operation: "dom.click",
+      operation: options.operation ?? "dom.click",
       resolved: {
         source: "selector",
         pageRef,

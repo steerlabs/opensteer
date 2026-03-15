@@ -22,6 +22,7 @@ import {
   createSessionRef,
   createSize,
   filterCookieRecords,
+  isBrowserCoreError,
   staleNodeRefError,
   unsupportedCapabilityError,
   type BrowserCoreEngine,
@@ -107,6 +108,11 @@ import {
 } from "./rest-client.js";
 import { createAbpComputerUseBridge } from "./computer-use.js";
 import { buildAbpScrollSegments } from "./scroll.js";
+import {
+  buildAbpSettleTrackerInstallScript,
+  buildAbpSettleTrackerReadExpression,
+  normalizeAbpSettleTrackerState,
+} from "./settle.js";
 import {
   chooseNextActivePageRef,
   resolveTabOpeners,
@@ -195,6 +201,11 @@ function delay(ms: number): Promise<void> {
 function combineFrameUrl(url: string, fragment?: string): string {
   return `${url}${fragment ?? ""}`;
 }
+
+const POST_ACTION_SETTLE_QUIET_WINDOW_MS = 400;
+const POST_ACTION_SETTLE_POLL_INTERVAL_MS = 100;
+const DEFAULT_NAVIGATION_SETTLE_TIMEOUT_MS = 5_000;
+const DEFAULT_INPUT_SETTLE_TIMEOUT_MS = 5_000;
 
 function buildSessionHttpStartScript(request: SessionTransportRequest): string {
   const serialized = JSON.stringify({
@@ -651,6 +662,8 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       executeInputAction: (session, controller, execute) =>
         this.executeInputAction(session, controller, execute),
       flushDomUpdateTask: (controller) => this.flushDomUpdateTask(controller),
+      resettlePausedExecution: (controller, timeoutMs) =>
+        this.settlePausedExecutionBoundary(controller, timeoutMs),
       requireMainFrame: (controller) => this.requireMainFrame(controller),
       drainQueuedEvents: (pageRef) => this.drainQueuedEvents(pageRef),
       getViewportMetrics: (pageRef) => this.getViewportMetrics({ pageRef }),
@@ -759,6 +772,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
         requireDocumentChange: false,
         observeTitle: false,
       });
+      await this.settlePausedExecutionBoundary(controller, DEFAULT_NAVIGATION_SETTLE_TIMEOUT_MS);
       const normalizedEvents = await this.normalizeActionEvents(controller, response);
       const mainFrame = this.requireMainFrame(controller);
       return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
@@ -893,6 +907,10 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       requireDocumentChange: false,
       observeTitle: false,
     });
+    await this.settlePausedExecutionBoundary(
+      controller,
+      Math.min(input.timeoutMs ?? 30_000, DEFAULT_NAVIGATION_SETTLE_TIMEOUT_MS),
+    );
 
     const directEvents = await this.normalizeActionEvents(controller, response);
     const mainFrame = this.requireMainFrame(controller);
@@ -931,6 +949,10 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       requireDocumentChange: true,
       observeTitle: false,
     });
+    await this.settlePausedExecutionBoundary(
+      controller,
+      Math.min(input.timeoutMs ?? 30_000, DEFAULT_NAVIGATION_SETTLE_TIMEOUT_MS),
+    );
 
     const directEvents = await this.normalizeActionEvents(controller, response);
     const mainFrame = this.requireMainFrame(controller);
@@ -975,6 +997,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       observeTitle: true,
       allowFallback: true,
     });
+    await this.settlePausedExecutionBoundary(controller, DEFAULT_NAVIGATION_SETTLE_TIMEOUT_MS);
 
     const directEvents = await this.normalizeActionEvents(controller, response);
     const mainFrame = this.requireMainFrame(controller);
@@ -1016,6 +1039,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       observeTitle: true,
       allowFallback: true,
     });
+    await this.settlePausedExecutionBoundary(controller, DEFAULT_NAVIGATION_SETTLE_TIMEOUT_MS);
 
     const directEvents = await this.normalizeActionEvents(controller, response);
     const mainFrame = this.requireMainFrame(controller);
@@ -1119,14 +1143,19 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     const actionEvents = await this.normalizeActionEvents(controller, response);
     const discoveredTabs = await this.detectNewTabs(session, controller);
     this.applyActionTabChange(session, controller.pageRef, response, actionEvents, discoveredTabs);
-    await this.flushDomUpdateTask(controller);
-    const mainFrame = this.requireMainFrame(controller);
-    return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
+    const resultController = this.requirePage(session.activePageRef ?? controller.pageRef);
+    await this.settlePausedExecutionBoundary(resultController, DEFAULT_INPUT_SETTLE_TIMEOUT_MS);
+    await this.flushDomUpdateTask(resultController);
+    const mainFrame = this.requireMainFrame(resultController);
+    return this.createStepResult(session.sessionRef, resultController.pageRef, startedAt, {
       frameRef: mainFrame.frameRef,
       documentRef: mainFrame.currentDocument.documentRef,
       documentEpoch: mainFrame.currentDocument.documentEpoch,
       events: [
         ...this.drainQueuedEvents(controller.pageRef),
+        ...(resultController.pageRef === controller.pageRef
+          ? []
+          : this.drainQueuedEvents(resultController.pageRef)),
         ...actionEvents,
         ...discoveredTabs.events,
         ...dialogEvents,
@@ -1159,14 +1188,19 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     const actionEvents = await this.normalizeActionEvents(controller, response);
     const discoveredTabs = await this.detectNewTabs(session, controller);
     this.applyActionTabChange(session, controller.pageRef, response, actionEvents, discoveredTabs);
-    await this.flushDomUpdateTask(controller);
-    const mainFrame = this.requireMainFrame(controller);
-    return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
+    const resultController = this.requirePage(session.activePageRef ?? controller.pageRef);
+    await this.settlePausedExecutionBoundary(resultController, DEFAULT_INPUT_SETTLE_TIMEOUT_MS);
+    await this.flushDomUpdateTask(resultController);
+    const mainFrame = this.requireMainFrame(resultController);
+    return this.createStepResult(session.sessionRef, resultController.pageRef, startedAt, {
       frameRef: mainFrame.frameRef,
       documentRef: mainFrame.currentDocument.documentRef,
       documentEpoch: mainFrame.currentDocument.documentEpoch,
       events: [
         ...this.drainQueuedEvents(controller.pageRef),
+        ...(resultController.pageRef === controller.pageRef
+          ? []
+          : this.drainQueuedEvents(resultController.pageRef)),
         ...actionEvents,
         ...discoveredTabs.events,
         ...dialogEvents,
@@ -1195,14 +1229,19 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     const actionEvents = await this.normalizeActionEvents(controller, response);
     const discoveredTabs = await this.detectNewTabs(session, controller);
     this.applyActionTabChange(session, controller.pageRef, response, actionEvents, discoveredTabs);
-    await this.flushDomUpdateTask(controller);
-    const mainFrame = this.requireMainFrame(controller);
-    return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
+    const resultController = this.requirePage(session.activePageRef ?? controller.pageRef);
+    await this.settlePausedExecutionBoundary(resultController, DEFAULT_INPUT_SETTLE_TIMEOUT_MS);
+    await this.flushDomUpdateTask(resultController);
+    const mainFrame = this.requireMainFrame(resultController);
+    return this.createStepResult(session.sessionRef, resultController.pageRef, startedAt, {
       frameRef: mainFrame.frameRef,
       documentRef: mainFrame.currentDocument.documentRef,
       documentEpoch: mainFrame.currentDocument.documentEpoch,
       events: [
         ...this.drainQueuedEvents(controller.pageRef),
+        ...(resultController.pageRef === controller.pageRef
+          ? []
+          : this.drainQueuedEvents(resultController.pageRef)),
         ...actionEvents,
         ...discoveredTabs.events,
         ...dialogEvents,
@@ -1229,14 +1268,19 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     const actionEvents = await this.normalizeActionEvents(controller, response);
     const discoveredTabs = await this.detectNewTabs(session, controller);
     this.applyActionTabChange(session, controller.pageRef, response, actionEvents, discoveredTabs);
-    await this.flushDomUpdateTask(controller);
-    const mainFrame = this.requireMainFrame(controller);
-    return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
+    const resultController = this.requirePage(session.activePageRef ?? controller.pageRef);
+    await this.settlePausedExecutionBoundary(resultController, DEFAULT_INPUT_SETTLE_TIMEOUT_MS);
+    await this.flushDomUpdateTask(resultController);
+    const mainFrame = this.requireMainFrame(resultController);
+    return this.createStepResult(session.sessionRef, resultController.pageRef, startedAt, {
       frameRef: mainFrame.frameRef,
       documentRef: mainFrame.currentDocument.documentRef,
       documentEpoch: mainFrame.currentDocument.documentEpoch,
       events: [
         ...this.drainQueuedEvents(controller.pageRef),
+        ...(resultController.pageRef === controller.pageRef
+          ? []
+          : this.drainQueuedEvents(resultController.pageRef)),
         ...actionEvents,
         ...discoveredTabs.events,
         ...dialogEvents,
@@ -2087,6 +2131,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       domUpdateTask: undefined,
       backgroundError: undefined,
       executionPaused: false,
+      settleTrackerRegistered: false,
     };
 
     this.pages.set(pageRef, controller);
@@ -2141,12 +2186,27 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
         includeWhitespace: "none",
       });
       await cdp.send("DOMStorage.enable");
+      await this.registerSettleTracker(controller);
+      const executionState = await session.rest.getExecutionState(tabId).catch(() => undefined);
+      const shouldRestorePaused = executionState?.paused ?? false;
+      controller.executionPaused = shouldRestorePaused;
+      if (shouldRestorePaused) {
+        await this.setControllerExecutionPaused(controller, false);
+      }
       const frameTree = await cdp.send<{ readonly frameTree: FrameTreeNode }>("Page.getFrameTree");
       this.syncFrameTree(controller, frameTree.frameTree);
       await this.reconcileDocumentEpochs(controller);
       controller.lastKnownTitle = await this.refreshTabTitle(controller);
-      const executionState = await session.rest.getExecutionState(tabId).catch(() => undefined);
-      controller.executionPaused = executionState?.paused ?? false;
+      if (!shouldRestorePaused) {
+        return controller;
+      }
+      try {
+        await this.setControllerExecutionPaused(controller, true);
+      } catch (error) {
+        if (!isPageClosedApiError(error)) {
+          throw error;
+        }
+      }
       return controller;
     } catch (error) {
       await cdp.close().catch(() => undefined);
@@ -2432,6 +2492,145 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       url: mainFrame.currentDocument.url,
       title,
     };
+  }
+
+  private async setControllerExecutionPaused(
+    controller: PageController,
+    paused: boolean,
+  ): Promise<void> {
+    const session = this.requireSession(controller.sessionRef);
+    try {
+      const state = await session.rest.setExecutionState(controller.tabId, {
+        paused,
+      });
+      controller.executionPaused = state.paused;
+    } catch (error) {
+      throw normalizeAbpError(error, controller.pageRef);
+    }
+  }
+
+  private async syncControllerExecutionPaused(controller: PageController): Promise<boolean> {
+    const session = this.requireSession(controller.sessionRef);
+    try {
+      const state = await session.rest.getExecutionState(controller.tabId);
+      controller.executionPaused = state.paused;
+      return state.paused;
+    } catch (error) {
+      throw normalizeAbpError(error, controller.pageRef);
+    }
+  }
+
+  private async registerSettleTracker(controller: PageController): Promise<void> {
+    if (controller.settleTrackerRegistered) {
+      return;
+    }
+
+    const installScript = buildAbpSettleTrackerInstallScript();
+    await controller.cdp.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: installScript,
+    });
+    controller.settleTrackerRegistered = true;
+  }
+
+  private async installSettleTracker(controller: PageController): Promise<void> {
+    await this.registerSettleTracker(controller);
+    const installScript = buildAbpSettleTrackerInstallScript();
+    await controller.cdp.send<{
+      readonly result?: {
+        readonly value?: unknown;
+      };
+    }>("Runtime.evaluate", {
+      expression: installScript,
+      returnByValue: true,
+      awaitPromise: true,
+    });
+  }
+
+  private async readSettleTrackerState(controller: PageController) {
+    const evaluated = await controller.cdp.send<{
+      readonly result?: {
+        readonly value?: unknown;
+      };
+    }>("Runtime.evaluate", {
+      expression: buildAbpSettleTrackerReadExpression(),
+      returnByValue: true,
+      awaitPromise: true,
+    });
+
+    return normalizeAbpSettleTrackerState(evaluated.result?.value);
+  }
+
+  private trackerStateIsSettled(
+    tracker:
+      | ReturnType<typeof normalizeAbpSettleTrackerState>
+      | undefined,
+  ): boolean {
+    if (!tracker) {
+      return false;
+    }
+
+    if (tracker.readyState !== "complete") {
+      return false;
+    }
+
+    if (tracker.pendingFetches > 0 || tracker.pendingTimeouts > 0 || tracker.pendingXhrs > 0) {
+      return false;
+    }
+
+    const lastActivityAt = Math.max(
+      tracker.installedAt,
+      tracker.lastMutationAt,
+      tracker.lastNetworkActivityAt,
+    );
+    return tracker.now - lastActivityAt >= POST_ACTION_SETTLE_QUIET_WINDOW_MS;
+  }
+
+  private async settlePausedExecutionBoundary(
+    controller: PageController,
+    timeoutMs: number,
+  ): Promise<void> {
+    if (timeoutMs <= 0) {
+      return;
+    }
+
+    const startedAt = Date.now();
+    if (await this.syncControllerExecutionPaused(controller)) {
+      await this.setControllerExecutionPaused(controller, false);
+    }
+    await this.installSettleTracker(controller);
+
+    try {
+      while (Date.now() - startedAt < timeoutMs) {
+        this.throwBackgroundError(controller);
+        if (controller.lifecycleState === "closed") {
+          return;
+        }
+        const tracker = await this.readSettleTrackerState(controller).catch(() => undefined);
+        if (this.trackerStateIsSettled(tracker)) {
+          break;
+        }
+        await delay(POST_ACTION_SETTLE_POLL_INTERVAL_MS);
+      }
+    } finally {
+      if (controller.lifecycleState === "closed") {
+        return;
+      }
+      try {
+        await this.setControllerExecutionPaused(controller, true);
+      } catch (error) {
+        if (!isPageClosedApiError(error)) {
+          throw error;
+        }
+        return;
+      }
+      try {
+        await this.flushDomUpdateTask(controller);
+      } catch (error) {
+        if (!isBrowserCoreError(error) || error.code !== "page-closed") {
+          throw error;
+        }
+      }
+    }
   }
 
   private async normalizeActionEvents(

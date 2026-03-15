@@ -221,15 +221,15 @@ describe("protocol capabilities and errors", () => {
 
 describe("protocol surface descriptors", () => {
   test("keeps operation, REST, and MCP descriptors in lockstep", () => {
-    const operationNames = opensteerOperationSpecifications.map((spec) => spec.name);
-    const restNames = opensteerRestEndpoints.map((endpoint) => endpoint.name);
+    const operationNames = opensteerSemanticOperationSpecifications.map((spec) => spec.name);
+    const restNames = opensteerSemanticRestEndpoints.map((endpoint) => endpoint.name);
     const mcpNames = opensteerMcpTools.map((tool) => tool.operation);
-    const uniqueRestPaths = new Set(opensteerRestEndpoints.map((endpoint) => endpoint.path));
+    const uniqueRestPaths = new Set(opensteerSemanticRestEndpoints.map((endpoint) => endpoint.path));
     const uniqueToolNames = new Set(opensteerMcpTools.map((tool) => tool.name));
 
     expect(restNames).toEqual(operationNames);
     expect(mcpNames).toEqual(operationNames);
-    expect(uniqueRestPaths.size).toBe(opensteerRestEndpoints.length);
+    expect(uniqueRestPaths.size).toBe(opensteerSemanticRestEndpoints.length);
     expect(uniqueToolNames.size).toBe(opensteerMcpTools.length);
     expect(opensteerOperationSpecificationMap["page.navigate"]?.requiredCapabilities).toEqual([
       "pages.navigate",
@@ -237,43 +237,43 @@ describe("protocol surface descriptors", () => {
   });
 
   test("uses versioned request envelopes for REST and raw operation schemas for MCP", () => {
-    const restNavigate = opensteerRestEndpoints.find(
-      (endpoint) => endpoint.name === "page.navigate",
+    const restGoto = opensteerSemanticRestEndpoints.find(
+      (endpoint) => endpoint.name === "page.goto",
     );
-    const mcpNavigate = opensteerMcpTools.find((tool) => tool.operation === "page.navigate");
+    const mcpGoto = opensteerMcpTools.find((tool) => tool.operation === "page.goto");
 
-    const restVersion = restNavigate?.requestSchema.properties?.version;
-    const restOperation = restNavigate?.requestSchema.properties?.operation;
-    const restResponseOperations = restNavigate?.responseSchema.oneOf?.map(
+    const restVersion = restGoto?.requestSchema.properties?.version;
+    const restOperation = restGoto?.requestSchema.properties?.operation;
+    const restResponseOperations = restGoto?.responseSchema.oneOf?.map(
       (schema) => schema.properties?.operation,
     );
 
-    expect(restNavigate?.method).toBe("POST");
-    expect(restNavigate?.path).toBe(
-      `${OPENSTEER_PROTOCOL_REST_BASE_PATH}/operations/page/navigate`,
+    expect(restGoto?.method).toBe("POST");
+    expect(restGoto?.path).toBe(
+      `${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/page/goto`,
     );
     expect(restVersion).toMatchObject({
       const: OPENSTEER_PROTOCOL_VERSION,
     });
     expect(restOperation).toMatchObject({
-      const: "page.navigate",
+      const: "page.goto",
     });
     expect(restResponseOperations).toEqual([
-      expect.objectContaining({ const: "page.navigate" }),
-      expect.objectContaining({ const: "page.navigate" }),
+      expect.objectContaining({ const: "page.goto" }),
+      expect.objectContaining({ const: "page.goto" }),
     ]);
-    expect(mcpNavigate?.name).toBe("opensteer_page_navigate");
-    expect(mcpNavigate?.annotations).toMatchObject({
+    expect(mcpGoto?.name).toBe("opensteer_page_goto");
+    expect(mcpGoto?.annotations).toMatchObject({
       readOnlyHint: false,
       openWorldHint: true,
     });
   });
 
   test("normalizes public operation names into readable MCP titles", () => {
-    const tool = opensteerMcpTools.find((entry) => entry.operation === "inspect.get-dom-snapshot");
+    const tool = opensteerMcpTools.find((entry) => entry.operation === "dom.extract");
 
-    expect(tool?.name).toBe("opensteer_inspect_get_dom_snapshot");
-    expect(tool?.title).toBe("Inspect Get DOM Snapshot");
+    expect(tool?.name).toBe("opensteer_dom_extract");
+    expect(tool?.title).toBe("DOM Extract");
   });
 
   test("models exclusive targets and input-aware capability requirements", () => {
