@@ -1,6 +1,6 @@
 import { promisify } from "node:util";
 import { execFile as execFileCallback } from "node:child_process";
-import { access, readFile, readdir } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
@@ -247,7 +247,9 @@ describe("Phase 6 SDK and CLI surfaces", () => {
 
       const snapshot = await opensteer.snapshot("action");
       const swapButton = requireCounter(snapshot, (counter) => counter.pathHint.includes("#swap"));
-      const targetButton = requireCounter(snapshot, (counter) => counter.pathHint.includes("#target"));
+      const targetButton = requireCounter(snapshot, (counter) =>
+        counter.pathHint.includes("#target"),
+      );
 
       await opensteer.click({
         element: swapButton.element,
@@ -443,6 +445,42 @@ describe("Phase 6 SDK and CLI surfaces", () => {
     await runCliCommand(rootDir, ["close", "--name", sessionName]);
   }, 60_000);
 
+  test("CLI close reconnects to live sessions with legacy metadata", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const sessionName = "phase6-cli-legacy-metadata";
+    const client = await ensureOpensteerService({
+      name: sessionName,
+      rootDir,
+      engine: "playwright",
+      launchContext: {
+        execPath: process.execPath,
+        execArgv: process.execArgv,
+        scriptPath: CLI_SCRIPT,
+        cwd: process.cwd(),
+      },
+    });
+
+    const metadataPath = path.join(
+      rootDir,
+      ".opensteer",
+      "runtime",
+      "sessions",
+      encodeURIComponent(sessionName),
+      "service.json",
+    );
+    const metadata = JSON.parse(await readFile(metadataPath, "utf8")) as Record<string, unknown>;
+    delete metadata.version;
+    delete metadata.engine;
+    await writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
+
+    const closed = await runCliCommand(rootDir, ["close", "--name", sessionName]);
+    expect(closed).toEqual({
+      closed: true,
+    });
+
+    await client.invoke("session.close", {}).catch(() => undefined);
+  }, 60_000);
+
   test("service reconnect requires the same engine", async () => {
     const rootDir = await createPhase6TemporaryRoot();
     const sessionName = "phase6-cli-engine-mismatch";
@@ -477,6 +515,62 @@ describe("Phase 6 SDK and CLI surfaces", () => {
     } finally {
       await client.invoke("session.close", {}).catch(() => undefined);
     }
+  }, 60_000);
+
+  test("dead stale metadata does not block reopening with a different engine", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const sessionName = "phase6-cli-stale-engine-mismatch";
+    const metadataPath = path.join(
+      rootDir,
+      ".opensteer",
+      "runtime",
+      "sessions",
+      encodeURIComponent(sessionName),
+      "service.json",
+    );
+
+    await mkdir(path.dirname(metadataPath), {
+      recursive: true,
+    });
+    await writeFile(
+      metadataPath,
+      `${JSON.stringify(
+        {
+          version: 2,
+          name: sessionName,
+          rootPath: path.join(rootDir, ".opensteer"),
+          pid: 999_999,
+          port: 1234,
+          token: "stale-token",
+          startedAt: 1,
+          baseUrl: "http://127.0.0.1:1234",
+          engine: "abp",
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    const opened = await runCliCommand(rootDir, [
+      "open",
+      `${baseUrl}/phase6/main`,
+      "--name",
+      sessionName,
+      "--engine",
+      "playwright",
+      "--headless",
+      "true",
+    ]);
+    expect((opened as { readonly url: string }).url).toBe(`${baseUrl}/phase6/main`);
+
+    const metadata = JSON.parse(await readFile(metadataPath, "utf8")) as {
+      readonly engine: string;
+    };
+    expect(metadata.engine).toBe("playwright");
+
+    await runCliCommand(rootDir, ["close", "--name", sessionName]);
   }, 60_000);
 
   test("CLI rejects --engine on commands other than open", async () => {

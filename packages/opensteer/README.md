@@ -75,6 +75,10 @@ Use `--engine <playwright|abp>` on `open` to choose the backend for a new sessio
 set `OPENSTEER_ENGINE=abp` to change the default engine for `open` in the current shell. Engine
 selection is fixed when the session service starts, so `OPENSTEER_ENGINE` and `--engine` only
 affect `open`, not commands like `snapshot` or `click` that attach to an existing session.
+When using `--engine abp`, Opensteer accepts the ABP launch options it can actually honor:
+`--headless`, `--executable-path`, and equivalent `--browser-json` fields for `headless`, `args`,
+and `executablePath`. Unsupported shared browser/context options fail fast instead of being
+ignored.
 
 ## Session Root
 

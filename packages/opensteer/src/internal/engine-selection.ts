@@ -23,15 +23,55 @@ interface OpensteerEngineModuleImporters {
   readonly importAbpModule: () => Promise<typeof import("@opensteer/engine-abp")>;
 }
 
+interface OpensteerEngineDefinition {
+  readonly createFactory: (
+    importers: OpensteerEngineModuleImporters,
+  ) => OpensteerNamedEngineFactory;
+}
+
 const defaultOpensteerEngineModuleImporters: OpensteerEngineModuleImporters = {
   importPlaywrightModule: () => import("@opensteer/engine-playwright"),
   importAbpModule: () => import("@opensteer/engine-abp"),
 };
 
-export function resolveOpensteerEngineName(input: {
-  readonly requested?: string | undefined;
-  readonly environment?: string | undefined;
-} = {}): OpensteerEngineName {
+const OPENSTEER_ABP_SUPPORTED_BROWSER_OPTIONS = [
+  "headless",
+  "args",
+  "executablePath",
+] as const satisfies readonly (keyof OpensteerBrowserLaunchOptions)[];
+
+const OPENSTEER_ENGINE_REGISTRY = {
+  playwright: {
+    createFactory: (importers) => async (options) => {
+      const { createPlaywrightBrowserCoreEngine } = await importers.importPlaywrightModule();
+      return createPlaywrightBrowserCoreEngine({
+        ...(options.browser === undefined ? {} : { launch: options.browser }),
+        ...(options.context === undefined ? {} : { context: options.context }),
+      });
+    },
+  },
+  abp: {
+    createFactory: (importers) => async (options) => {
+      assertSupportedAbpEngineOptions(options);
+      const { createAbpBrowserCoreEngine } = await loadAbpEngineModule(importers);
+      const launch = toAbpLaunchOptions(options.browser);
+      return createAbpBrowserCoreEngine(
+        launch === undefined
+          ? {}
+          : {
+              launch,
+            },
+      );
+    },
+  },
+} as const satisfies Record<OpensteerEngineName, OpensteerEngineDefinition>;
+
+export function resolveOpensteerEngineName(
+  input: {
+    readonly requested?: string | undefined;
+    readonly environment?: string | undefined;
+  } = {},
+): OpensteerEngineName {
   if (input.requested !== undefined) {
     return normalizeOpensteerEngineName(input.requested, "--engine");
   }
@@ -61,32 +101,10 @@ export function createOpensteerEngineFactory(
   name: OpensteerEngineName,
   importers: OpensteerEngineModuleImporters = defaultOpensteerEngineModuleImporters,
 ): OpensteerNamedEngineFactory {
-  switch (name) {
-    case "playwright":
-      return async (options) => {
-        const { createPlaywrightBrowserCoreEngine } = await importers.importPlaywrightModule();
-        return createPlaywrightBrowserCoreEngine({
-          ...(options.browser === undefined ? {} : { launch: options.browser }),
-          ...(options.context === undefined ? {} : { context: options.context }),
-        });
-      };
-    case "abp":
-      return async (options) => {
-        const { createAbpBrowserCoreEngine } = await loadAbpEngineModule(importers);
-        const launch = toAbpLaunchOptions(options.browser);
-        return createAbpBrowserCoreEngine(
-          launch === undefined
-            ? {}
-            : {
-                launch,
-              },
-        );
-      };
-  }
+  return OPENSTEER_ENGINE_REGISTRY[name].createFactory(importers);
 }
 
-export const defaultOpensteerEngineFactory =
-  createOpensteerEngineFactory(DEFAULT_OPENSTEER_ENGINE);
+export const defaultOpensteerEngineFactory = createOpensteerEngineFactory(DEFAULT_OPENSTEER_ENGINE);
 
 async function loadAbpEngineModule(importers: OpensteerEngineModuleImporters) {
   try {
@@ -101,13 +119,13 @@ async function loadAbpEngineModule(importers: OpensteerEngineModuleImporters) {
   }
 }
 
-function toAbpLaunchOptions(
-  options: OpensteerBrowserLaunchOptions | undefined,
-): {
-  readonly headless?: boolean;
-  readonly args?: readonly string[];
-  readonly browserExecutablePath?: string;
-} | undefined {
+function toAbpLaunchOptions(options: OpensteerBrowserLaunchOptions | undefined):
+  | {
+      readonly headless?: boolean;
+      readonly args?: readonly string[];
+      readonly browserExecutablePath?: string;
+    }
+  | undefined {
   if (options === undefined) {
     return undefined;
   }
@@ -121,6 +139,55 @@ function toAbpLaunchOptions(
   };
 
   return Object.keys(mapped).length === 0 ? undefined : mapped;
+}
+
+function assertSupportedAbpEngineOptions(options: OpensteerNamedEngineFactoryOptions): void {
+  const unsupportedOptionNames = [
+    ...listUnsupportedOptionNames(
+      options.browser,
+      OPENSTEER_ABP_SUPPORTED_BROWSER_OPTIONS,
+      "browser",
+    ),
+    ...listDefinedOptionNames(options.context, "context"),
+  ];
+  if (unsupportedOptionNames.length === 0) {
+    return;
+  }
+
+  const supportedBrowserOptions = OPENSTEER_ABP_SUPPORTED_BROWSER_OPTIONS.map(
+    (name) => `browser.${name}`,
+  ).join(", ");
+  throw new Error(
+    `ABP engine does not support ${unsupportedOptionNames.join(", ")}. Supported ABP open options: ${supportedBrowserOptions}.`,
+  );
+}
+
+function listUnsupportedOptionNames<T extends object, TSupportedKey extends keyof T>(
+  options: T | undefined,
+  supportedKeys: readonly TSupportedKey[],
+  prefix: string,
+): readonly string[] {
+  if (options === undefined) {
+    return [];
+  }
+
+  const supportedKeySet = new Set<keyof T>(supportedKeys);
+  return Object.entries(options)
+    .filter(([key, value]) => value !== undefined && !supportedKeySet.has(key as keyof T))
+    .map(([key]) => `${prefix}.${key}`);
+}
+
+function listDefinedOptionNames<T extends object>(
+  options: T | undefined,
+  prefix: string,
+): readonly string[] {
+  if (options === undefined) {
+    return [];
+  }
+
+  return Object.entries(options)
+    .filter(([, value]) => value !== undefined)
+    .map(([key]) => `${prefix}.${key}`);
 }
 
 function isMissingPackageError(error: unknown, packageName: string): boolean {
