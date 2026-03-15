@@ -71,6 +71,7 @@ import {
   createComputerUseRuntime,
   type ComputerUseRuntime,
 } from "../runtimes/computer-use/index.js";
+import { defaultOpensteerEngineFactory } from "../internal/engine-selection.js";
 import { OpensteerRequestCaptureRuntime } from "../requests/capture/index.js";
 import { executeSessionHttpRequest } from "../requests/execution/session-http/index.js";
 import { normalizeRequestPlanPayload } from "../requests/plans/index.js";
@@ -152,7 +153,7 @@ export class OpensteerSessionRuntime {
     this.configuredBrowser = options.browser;
     this.configuredContext = options.context;
     this.injectedEngine = options.engine;
-    this.engineFactory = options.engineFactory ?? defaultEngineFactory;
+    this.engineFactory = options.engineFactory ?? defaultOpensteerEngineFactory;
     this.policy = options.policy ?? defaultPolicy();
   }
 
@@ -1541,16 +1542,6 @@ function buildArtifactScope(input: {
   readonly documentEpoch?: DocumentEpoch | undefined;
 }): TraceContext {
   return buildRuntimeTraceContext(input);
-}
-
-async function defaultEngineFactory(
-  options: OpensteerEngineFactoryOptions,
-): Promise<BrowserCoreEngine> {
-  const { createPlaywrightBrowserCoreEngine } = await import("@opensteer/engine-playwright");
-  return createPlaywrightBrowserCoreEngine({
-    ...(options.browser === undefined ? {} : { launch: options.browser }),
-    ...(options.context === undefined ? {} : { context: options.context }),
-  });
 }
 
 async function getMainFrame(engine: BrowserCoreEngine, pageRef: PageRef) {

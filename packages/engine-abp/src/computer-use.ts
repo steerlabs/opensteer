@@ -22,6 +22,7 @@ import {
   buildImmediateScreenshotRequest,
   buildInputActionRequest,
 } from "./rest-client.js";
+import { buildAbpScrollSegments } from "./scroll.js";
 import {
   collectPopupPageRefs,
   type DiscoveredTabEffects,
@@ -117,8 +118,10 @@ export function createAbpComputerUseBridge(context: {
             {
               x: action.x,
               y: action.y,
-              delta_x: action.deltaX,
-              delta_y: action.deltaY,
+              scrolls: buildAbpScrollSegments({
+                x: action.deltaX,
+                y: action.deltaY,
+              }),
               ...inputActionRequest,
             },
             requestOptions,

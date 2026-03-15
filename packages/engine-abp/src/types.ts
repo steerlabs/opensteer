@@ -440,8 +440,10 @@ export interface AbpRestClientLike {
     body: {
       readonly x: number;
       readonly y: number;
-      readonly delta_x?: number;
-      readonly delta_y?: number;
+      readonly scrolls: readonly {
+        readonly delta_px: number;
+        readonly direction: "x" | "y";
+      }[];
     } & AbpActionRequest,
     options?: AbpRequestOptions,
   ): Promise<AbpActionResponse>;

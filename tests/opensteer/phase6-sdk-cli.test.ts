@@ -1,6 +1,6 @@
 import { promisify } from "node:util";
 import { execFile as execFileCallback } from "node:child_process";
-import { access, readdir } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
@@ -411,6 +411,106 @@ describe("Phase 6 SDK and CLI surfaces", () => {
     expect((await readdir(path.dirname(metadataPath))).includes("service.json")).toBe(false);
   }, 60_000);
 
+  test("CLI open writes the selected engine into service metadata", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const sessionName = "phase6-cli-engine-metadata";
+
+    await runCliCommand(rootDir, [
+      "open",
+      `${baseUrl}/phase6/main`,
+      "--name",
+      sessionName,
+      "--engine",
+      "playwright",
+      "--headless",
+      "true",
+    ]);
+
+    const metadataPath = path.join(
+      rootDir,
+      ".opensteer",
+      "runtime",
+      "sessions",
+      encodeURIComponent(sessionName),
+      "service.json",
+    );
+    const metadata = JSON.parse(await readFile(metadataPath, "utf8")) as {
+      readonly engine: string;
+    };
+    expect(metadata.engine).toBe("playwright");
+
+    await runCliCommand(rootDir, ["close", "--name", sessionName]);
+  }, 60_000);
+
+  test("service reconnect requires the same engine", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const sessionName = "phase6-cli-engine-mismatch";
+    const client = await ensureOpensteerService({
+      name: sessionName,
+      rootDir,
+      engine: "playwright",
+      launchContext: {
+        execPath: process.execPath,
+        execArgv: process.execArgv,
+        scriptPath: CLI_SCRIPT,
+        cwd: process.cwd(),
+      },
+    });
+
+    try {
+      await expect(
+        ensureOpensteerService({
+          name: sessionName,
+          rootDir,
+          engine: "abp",
+          launchContext: {
+            execPath: process.execPath,
+            execArgv: process.execArgv,
+            scriptPath: CLI_SCRIPT,
+            cwd: process.cwd(),
+          },
+        }),
+      ).rejects.toThrow(
+        `Opensteer session "${sessionName}" is already running with engine "playwright".`,
+      );
+    } finally {
+      await client.invoke("session.close", {}).catch(() => undefined);
+    }
+  }, 60_000);
+
+  test("CLI rejects --engine on commands other than open", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+
+    await expect(
+      runCliCommandExpectFailure(rootDir, ["snapshot", "action", "--engine", "abp"]),
+    ).resolves.toMatchObject({
+      error: {
+        message: '--engine is only supported on "open".',
+      },
+    });
+  });
+
+  test("CLI open accepts --engine playwright without changing the default behavior", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const sessionName = "phase6-cli-engine-playwright";
+
+    const opened = await runCliCommand(rootDir, [
+      "open",
+      `${baseUrl}/phase6/main`,
+      "--name",
+      sessionName,
+      "--engine",
+      "playwright",
+      "--headless",
+      "true",
+    ]);
+    expect((opened as { readonly url: string }).url).toBe(`${baseUrl}/phase6/main`);
+
+    await runCliCommand(rootDir, ["close", "--name", sessionName]);
+  }, 60_000);
+
   test("CLI forwards raw computer-use actions through the local service boundary", async () => {
     const rootDir = await createPhase6TemporaryRoot();
     const baseUrl = requireFixtureServer().url;
@@ -757,6 +857,40 @@ async function runCliCommand(rootDir: string, args: readonly string[]): Promise<
 
   expect(stderr.trim()).toBe("");
   return JSON.parse(stdout.trim()) as unknown;
+}
+
+async function runCliCommandExpectFailure(
+  rootDir: string,
+  args: readonly string[],
+): Promise<{
+  readonly error: {
+    readonly message?: string;
+    readonly name?: string;
+  };
+}> {
+  try {
+    await execFile(process.execPath, [CLI_SCRIPT, ...args], {
+      cwd: rootDir,
+      env: {
+        ...process.env,
+      },
+      maxBuffer: 1024 * 1024,
+    });
+  } catch (error) {
+    const result = error as {
+      readonly stdout?: string;
+      readonly stderr?: string;
+    };
+    expect((result.stdout ?? "").trim()).toBe("");
+    return JSON.parse((result.stderr ?? "").trim()) as {
+      readonly error: {
+        readonly message?: string;
+        readonly name?: string;
+      };
+    };
+  }
+
+  throw new Error("expected CLI command to fail");
 }
 
 async function hasBuiltCliArtifacts(): Promise<boolean> {

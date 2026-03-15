@@ -110,6 +110,9 @@ The current public surface lives in `packages/opensteer`:
 - CLI: `opensteer open`, `goto`, `snapshot`, `click`, `hover`, `input`, `scroll`, `extract`,
   `request-capture-start`, `request-capture-stop`, `request-plan-write`, `request-plan-get`,
   `request-plan-list`, `request`, `computer`, `close`
+- Engine selection: `opensteer open --engine <playwright|abp>` or `OPENSTEER_ENGINE=<engine>`
+  chooses the backend for new session services; existing sessions keep the engine they were
+  started with
 - Session continuity: the CLI now talks to a local per-session service under
   `.opensteer/runtime/sessions/<name>/service.json`
 - Snapshot mode: HTML-first action and extraction snapshots with in-memory element counters

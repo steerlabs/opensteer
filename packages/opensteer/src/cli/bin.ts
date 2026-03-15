@@ -8,6 +8,10 @@ import {
   OpensteerCliServiceError,
   requireOpensteerService,
 } from "./client.js";
+import {
+  normalizeOpensteerEngineName,
+  resolveOpensteerEngineName,
+} from "../internal/engine-selection.js";
 import { runOpensteerServiceHost } from "./service-host.js";
 
 interface ParsedCliArgs {
@@ -27,9 +31,14 @@ async function main(argv: readonly string[]): Promise<void> {
       ...(readStringOption(parsed.options, "root-dir") === undefined
         ? {}
         : { rootDir: readStringOption(parsed.options, "root-dir")! }),
+      ...(readStringOption(parsed.options, "engine") === undefined
+        ? {}
+        : { engine: normalizeOpensteerEngineName(readStringOption(parsed.options, "engine")!, "--engine") }),
     });
     return;
   }
+
+  assertEngineOptionAllowed(parsed);
 
   const sessionOptions = {
     ...(readStringOption(parsed.options, "name") === undefined
@@ -42,8 +51,13 @@ async function main(argv: readonly string[]): Promise<void> {
 
   switch (parsed.command) {
     case "open": {
+      const engine = resolveOpensteerEngineName({
+        requested: readStringOption(parsed.options, "engine"),
+        environment: process.env.OPENSTEER_ENGINE,
+      });
       const client = await ensureOpensteerService({
         ...sessionOptions,
+        engine,
         launchContext: {
           execPath: process.execPath,
           execArgv: process.execArgv,
@@ -314,6 +328,23 @@ async function main(argv: readonly string[]): Promise<void> {
         `unsupported command "${parsed.command}". Supported commands: open, goto, snapshot, click, hover, input, scroll, extract, capture, plan, request, computer, close.`,
       );
   }
+}
+
+function assertEngineOptionAllowed(parsed: ParsedCliArgs): void {
+  const engineOption = parsed.options.engine;
+  if (engineOption === undefined) {
+    return;
+  }
+
+  if (engineOption === true) {
+    throw new Error("--engine requires a value.");
+  }
+
+  if (parsed.command === "open" || parsed.command === "service-host") {
+    return;
+  }
+
+  throw new Error('--engine is only supported on "open".');
 }
 
 function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
