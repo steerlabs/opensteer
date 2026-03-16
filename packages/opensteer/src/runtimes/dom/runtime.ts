@@ -12,17 +12,12 @@ import {
 import { OpensteerProtocolError } from "@opensteer/protocol";
 
 import {
-  assertValidActionPosition,
   defaultPolicy,
-  runWithPolicyTimeout,
-  settleWithPolicy,
-  toActionabilityError,
-  type DomActionPolicyOperation,
   type OpensteerPolicy,
-  type TimeoutExecutionContext,
 } from "../../policy/index.js";
 import type { FilesystemOpensteerRoot } from "../../root.js";
 import { createDomDescriptorStore } from "./descriptors.js";
+import { DomActionExecutor } from "./executor.js";
 import { normalizeExtractedValue, resolveExtractedValueInContext } from "./extraction.js";
 import { ElementPathError } from "./errors.js";
 import {
@@ -47,7 +42,7 @@ import {
 import {
   findIframeHostNode,
   findNodeByNodeRef,
-  hasOpenShadowRoot,
+  hasShadowRoot,
   normalizeToElementNode,
   querySelectorAllInScope,
   type DomQueryScope,
@@ -137,6 +132,7 @@ class DefaultDomRuntime implements DomRuntime {
   readonly engine: BrowserCoreEngine;
   private readonly descriptors: ReturnType<typeof createDomDescriptorStore>;
   private readonly policy: OpensteerPolicy;
+  private readonly executor: DomActionExecutor;
 
   constructor(options: {
     readonly engine: BrowserCoreEngine;
@@ -150,6 +146,14 @@ class DefaultDomRuntime implements DomRuntime {
       ...(options.namespace === undefined ? {} : { namespace: options.namespace }),
     });
     this.policy = options.policy ?? defaultPolicy();
+    this.executor = new DomActionExecutor({
+      engine: this.engine,
+      policy: this.policy,
+      createResolutionSession: () => new SnapshotSession(this.engine),
+      resolveTarget: (session, input) =>
+        this.resolveTargetWithSession(session as SnapshotSession, input),
+      writeDescriptor: (input) => this.descriptors.write(input),
+    });
   }
 
   async buildAnchor(input: DomBuildPathInput): Promise<StructuralElementAnchor> {
@@ -206,138 +210,19 @@ class DefaultDomRuntime implements DomRuntime {
   }
 
   async click(input: DomClickInput): Promise<DomActionOutcome> {
-    return this.withSnapshotSession(async (session) => {
-      return this.executeActionWithPolicy(session, {
-        operation: "dom.click",
-        pageRef: input.pageRef,
-        target: input.target,
-        ...(input.position === undefined ? {} : { position: input.position }),
-        ...(input.timeout === undefined ? {} : { timeout: input.timeout }),
-        execute: async (resolved, point, timeout) => {
-          await timeout.runStep(() =>
-            this.engine.mouseMove({
-              pageRef: resolved.pageRef,
-              point,
-              coordinateSpace: "document-css",
-            }),
-          );
-          await timeout.runStep(() =>
-            this.engine.mouseClick({
-              pageRef: resolved.pageRef,
-              point,
-              coordinateSpace: "document-css",
-              ...(input.button === undefined ? {} : { button: input.button }),
-              ...(input.clickCount === undefined ? {} : { clickCount: input.clickCount }),
-              ...(input.modifiers === undefined ? {} : { modifiers: input.modifiers }),
-            }),
-          );
-          return {
-            resolved,
-            point,
-          };
-        },
-      });
-    });
+    return this.executor.click(input);
   }
 
   async hover(input: DomHoverInput): Promise<DomActionOutcome> {
-    return this.withSnapshotSession(async (session) => {
-      return this.executeActionWithPolicy(session, {
-        operation: "dom.hover",
-        pageRef: input.pageRef,
-        target: input.target,
-        ...(input.position === undefined ? {} : { position: input.position }),
-        ...(input.timeout === undefined ? {} : { timeout: input.timeout }),
-        execute: async (resolved, point, timeout) => {
-          await timeout.runStep(() =>
-            this.engine.mouseMove({
-              pageRef: resolved.pageRef,
-              point,
-              coordinateSpace: "document-css",
-            }),
-          );
-          return {
-            resolved,
-            point,
-          };
-        },
-      });
-    });
+    return this.executor.hover(input);
   }
 
   async input(input: DomInputInput): Promise<ResolvedDomTarget> {
-    return this.withSnapshotSession(async (session) => {
-      return this.executeActionWithPolicy(session, {
-        operation: "dom.input",
-        pageRef: input.pageRef,
-        target: input.target,
-        ...(input.timeout === undefined ? {} : { timeout: input.timeout }),
-        execute: async (resolved, point, timeout) => {
-          await timeout.runStep(() =>
-            this.engine.mouseMove({
-              pageRef: resolved.pageRef,
-              point,
-              coordinateSpace: "document-css",
-            }),
-          );
-          await timeout.runStep(() =>
-            this.engine.mouseClick({
-              pageRef: resolved.pageRef,
-              point,
-              coordinateSpace: "document-css",
-            }),
-          );
-          await timeout.runStep(() =>
-            this.engine.textInput({
-              pageRef: resolved.pageRef,
-              text: input.text,
-            }),
-          );
-          if (input.pressEnter) {
-            await timeout.runStep(() =>
-              this.engine.keyPress({
-                pageRef: resolved.pageRef,
-                key: "Enter",
-              }),
-            );
-          }
-          return resolved;
-        },
-      });
-    });
+    return this.executor.input(input);
   }
 
   async scroll(input: DomScrollInput): Promise<DomActionOutcome> {
-    return this.withSnapshotSession(async (session) => {
-      return this.executeActionWithPolicy(session, {
-        operation: "dom.scroll",
-        pageRef: input.pageRef,
-        target: input.target,
-        ...(input.position === undefined ? {} : { position: input.position }),
-        ...(input.timeout === undefined ? {} : { timeout: input.timeout }),
-        execute: async (resolved, point, timeout) => {
-          await timeout.runStep(() =>
-            this.engine.mouseMove({
-              pageRef: resolved.pageRef,
-              point,
-              coordinateSpace: "document-css",
-            }),
-          );
-          await timeout.runStep(() =>
-            this.engine.mouseScroll({
-              pageRef: resolved.pageRef,
-              point,
-              coordinateSpace: "document-css",
-              delta: input.delta,
-            }),
-          );
-          return {
-            resolved,
-            point,
-          };
-        },
-      });
-    });
+    return this.executor.scroll(input);
   }
 
   async extractFields(input: {
@@ -441,72 +326,6 @@ class DefaultDomRuntime implements DomRuntime {
     callback: (session: SnapshotSession) => Promise<T>,
   ): Promise<T> {
     return callback(new SnapshotSession(this.engine));
-  }
-
-  private async executeActionWithPolicy<T>(
-    session: SnapshotSession,
-    input: {
-      readonly operation: DomActionPolicyOperation;
-      readonly pageRef: PageRef;
-      readonly target: DomTargetRef;
-      readonly position?: Point;
-      readonly timeout?: TimeoutExecutionContext;
-      readonly execute: (
-        resolved: ResolvedDomTarget,
-        point: Point,
-        timeout: TimeoutExecutionContext,
-      ) => Promise<T>;
-    },
-  ): Promise<T> {
-    const executeWithinBudget = async (timeout: TimeoutExecutionContext) => {
-      const resolved = await timeout.runStep(() =>
-        this.resolveTargetWithSession(session, {
-          pageRef: input.pageRef,
-          method: input.operation,
-          target: input.target,
-          descriptorWriter: (writeInput) =>
-            timeout.runStep(() => this.descriptors.write(writeInput)),
-        }),
-      );
-      if (input.position !== undefined) {
-        assertValidActionPosition(resolved, input.position);
-      }
-
-      const actionability = await timeout.runStep(() =>
-        this.policy.actionability.check({
-          engine: this.engine,
-          operation: input.operation,
-          resolved,
-          ...(input.position === undefined ? {} : { position: input.position }),
-          loadDocumentSnapshot: (documentRef) => session.getDocument(documentRef),
-        }),
-      );
-      if (!actionability.actionable) {
-        throw toActionabilityError(input.operation, actionability);
-      }
-
-      const result = await input.execute(resolved, actionability.point, timeout);
-      await timeout.runStep(() =>
-        settleWithPolicy(this.policy.settle, {
-          operation: input.operation,
-          trigger: "dom-action",
-          engine: this.engine,
-          pageRef: resolved.pageRef,
-          signal: timeout.signal,
-        }),
-      );
-      return result;
-    };
-
-    if (input.timeout !== undefined) {
-      return executeWithinBudget(input.timeout);
-    }
-
-    return runWithPolicyTimeout(
-      this.policy.timeout,
-      { operation: input.operation },
-      executeWithinBudget,
-    );
   }
 
   private async resolveTargetWithSession(
@@ -870,7 +689,7 @@ class DefaultDomRuntime implements DomRuntime {
       }
 
       const hostRef = host.node.nodeRef;
-      if (hostRef === undefined || !hasOpenShadowRoot(index, host.node)) {
+      if (hostRef === undefined || !hasShadowRoot(index, host.node)) {
         throw new ElementPathError(
           "ERR_PATH_SHADOW_ROOT_UNAVAILABLE",
           "Shadow root is unavailable for this path.",
@@ -919,7 +738,7 @@ class DefaultDomRuntime implements DomRuntime {
       }
 
       const hostRef = host.node.nodeRef;
-      if (hostRef === undefined || !hasOpenShadowRoot(index, host.node)) {
+      if (hostRef === undefined || !hasShadowRoot(index, host.node)) {
         throw new Error("Shadow root is unavailable for this structural anchor.");
       }
 

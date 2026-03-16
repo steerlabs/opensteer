@@ -73,6 +73,7 @@ function mainDocument(): string {
       </div>
       <div id="status">ready</div>
       <div id="shadow-host"></div>
+      <div id="closed-shadow-host" style="position:absolute;left:260px;top:120px"></div>
       <iframe id="child-frame" src="/runtime/child"></iframe>
       <script>
         const status = document.getElementById("status");
@@ -108,6 +109,19 @@ function mainDocument(): string {
         nestedRoot.getElementById("nested-shadow-action").addEventListener("click", () => {
           status.textContent = "nested shadow clicked";
         });
+
+        const closedHost = document.getElementById("closed-shadow-host");
+        const closedRoot = closedHost.attachShadow({ mode: "closed" });
+        const closedButton = document.createElement("button");
+        closedButton.id = "closed-shadow-action";
+        closedButton.type = "button";
+        closedButton.textContent = "Closed Shadow";
+        closedButton.style.width = "180px";
+        closedButton.style.height = "42px";
+        closedButton.addEventListener("click", () => {
+          status.textContent = "closed shadow clicked";
+        });
+        closedRoot.append(closedButton);
       </script>
     `,
     "DOM runtime main",
@@ -401,6 +415,66 @@ describe("Phase 5 DOM runtime integration", () => {
 
         expect(resolved.node.attributes.find((attribute) => attribute.name === "id")?.value).toBe(
           "child-shadow-action",
+        );
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "replays closed-shadow paths and actions through the existing shadow context hops",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+      try {
+        const runtime = createDomRuntime({ engine });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: `${baseUrl}/runtime/main`,
+        });
+
+        await wait(500);
+
+        const snapshot = await engine.getDomSnapshot({
+          frameRef: requireValue(created.frameRef, "main frame ref missing"),
+        });
+        const closedShadowNode = requireValue(
+          findNodeById(snapshot.nodes, "closed-shadow-action"),
+          "closed shadow action not found",
+        );
+        const locator = createLocator(snapshot, closedShadowNode);
+        const path = await runtime.buildPath({ locator });
+
+        expect(path.context.map((hop) => hop.kind)).toEqual(["shadow"]);
+
+        const resolved = await runtime.resolveTarget({
+          pageRef: created.data.pageRef,
+          method: "click",
+          target: { kind: "path", path },
+        });
+
+        expect(resolved.node.attributes.find((attribute) => attribute.name === "id")?.value).toBe(
+          "closed-shadow-action",
+        );
+
+        await runtime.click({
+          pageRef: created.data.pageRef,
+          target: { kind: "path", path },
+        });
+
+        const latestSnapshot = await engine.getDomSnapshot({
+          frameRef: requireValue(created.frameRef, "main frame ref missing"),
+        });
+        const statusNode = requireValue(
+          findNodeById(latestSnapshot.nodes, "status"),
+          "status node missing",
+        );
+        expect(await engine.readText(createLocator(latestSnapshot, statusNode))).toBe(
+          "closed shadow clicked",
         );
       } finally {
         await engine.dispose();

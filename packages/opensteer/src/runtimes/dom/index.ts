@@ -30,6 +30,18 @@ export type {
   StructuralElementAnchor,
 } from "./types.js";
 export {
+  OPENSTEER_DOM_ACTION_BRIDGE_SYMBOL,
+  resolveDomActionBridge,
+} from "./bridge.js";
+export type {
+  DomActionBridge,
+  DomActionBridgeProvider,
+  DomActionScrollAlignment,
+  DomActionScrollOptions,
+  DomActionSettleOptions,
+  DomActionTargetInspection,
+} from "./bridge.js";
+export {
   buildArrayFieldPathCandidates,
   isCurrentUrlField,
   normalizeExtractedValue,

@@ -162,14 +162,43 @@ export function findIframeHostNode(
   );
 }
 
-export function hasOpenShadowRoot(index: DomSnapshotIndex, hostNode: DomSnapshotNode): boolean {
+export function hasShadowRoot(index: DomSnapshotIndex, hostNode: DomSnapshotNode): boolean {
   const hostRef = hostNode.nodeRef;
   if (hostRef === undefined) {
     return false;
   }
   return index.snapshot.nodes.some(
-    (node) => node.shadowHostNodeRef === hostRef && node.shadowRootType === "open",
+    (node) => findContainingShadowHostNode(index, node)?.nodeRef === hostRef,
   );
+}
+
+export function findContainingShadowHostNode(
+  index: DomSnapshotIndex,
+  node: DomSnapshotNode,
+): DomSnapshotNode | undefined {
+  if (node.shadowHostNodeRef !== undefined) {
+    return findNodeByNodeRef(index, node.shadowHostNodeRef);
+  }
+
+  if (node.shadowRootType === undefined) {
+    return undefined;
+  }
+
+  let current =
+    node.parentSnapshotNodeId === undefined
+      ? undefined
+      : findNodeBySnapshotNodeId(index, node.parentSnapshotNodeId);
+  while (current) {
+    if (current.shadowRootType === undefined) {
+      return normalizeToElementNode(index, current);
+    }
+    current =
+      current.parentSnapshotNodeId === undefined
+        ? undefined
+        : findNodeBySnapshotNodeId(index, current.parentSnapshotNodeId);
+  }
+
+  return undefined;
 }
 
 export function isSameNodeOrDescendant(
@@ -235,11 +264,12 @@ export function querySelectorAllWithinNode(
   selector: string,
   scope: DomQueryScope,
 ): DomSnapshotNode[] {
+  const rootShadowHostNodeRef = findContainingShadowHostNode(index, rootNode)?.nodeRef;
   const wrapper = buildElementWrapper(index, rootNode, {
     pierceOpenShadow: scope.pierceOpenShadow,
-    ...(rootNode.shadowHostNodeRef === undefined
+    ...(rootShadowHostNodeRef === undefined
       ? {}
-      : { currentShadowHostNodeRef: rootNode.shadowHostNodeRef }),
+      : { currentShadowHostNodeRef: rootShadowHostNodeRef }),
   });
   const matches = selectAll<SelectorNode, SelectorElementNode>(selector, wrapper, {
     adapter: selectorAdapter,
@@ -294,13 +324,11 @@ function buildElementWrapper(
     buildElementWrapper(index, child, {
       pierceOpenShadow: options.pierceOpenShadow,
       parent: wrapper,
-      ...(child.shadowHostNodeRef === undefined
+      ...(resolveCurrentShadowHostNodeRef(index, child, options.currentShadowHostNodeRef) === undefined
         ? {}
         : {
             currentShadowHostNodeRef:
-              child.shadowHostNodeRef === options.currentShadowHostNodeRef
-                ? options.currentShadowHostNodeRef
-                : child.shadowHostNodeRef,
+              resolveCurrentShadowHostNodeRef(index, child, options.currentShadowHostNodeRef),
           }),
     }),
   );
@@ -348,7 +376,10 @@ function collectChildNodes(
       if (!node || node.nodeType !== 1) {
         return false;
       }
-      return node.shadowHostNodeRef === source.nodeRef && node.shadowRootType === "open";
+      return (
+        node.shadowRootType === "open" &&
+        findContainingShadowHostNode(index, node)?.nodeRef === source.nodeRef
+      );
     });
 
   return sortNodes([...children, ...openShadowChildren]);
@@ -364,9 +395,20 @@ function collectDirectChildren(
       .map((snapshotNodeId) => findNodeBySnapshotNodeId(index, snapshotNodeId))
       .filter(
         (node): node is DomSnapshotNode =>
-          !!node && node.nodeType === 1 && node.shadowHostNodeRef === expectedShadowHostNodeRef,
+          !!node &&
+          node.nodeType === 1 &&
+          findContainingShadowHostNode(index, node)?.nodeRef === expectedShadowHostNodeRef,
       ),
   );
+}
+
+function resolveCurrentShadowHostNodeRef(
+  index: DomSnapshotIndex,
+  node: DomSnapshotNode,
+  fallback: NodeRef | undefined,
+): NodeRef | undefined {
+  const shadowHostNodeRef = findContainingShadowHostNode(index, node)?.nodeRef;
+  return shadowHostNodeRef ?? fallback;
 }
 
 function sortNodes(nodes: readonly DomSnapshotNode[]): DomSnapshotNode[] {

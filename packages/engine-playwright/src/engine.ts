@@ -50,7 +50,12 @@ import {
   type CookieRecord,
 } from "@opensteer/browser-core";
 import { chromium, type Browser, type BrowserContext } from "playwright";
-import { OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL, type ComputerUseBridge } from "@opensteer/protocol";
+import {
+  OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL,
+  OPENSTEER_DOM_ACTION_BRIDGE_SYMBOL,
+  type ComputerUseBridge,
+  type DomActionBridge,
+} from "@opensteer/protocol";
 import type {
   CDPSession,
   ConsoleMessage,
@@ -112,6 +117,7 @@ import {
   rethrowNodeLookupError,
 } from "./errors.js";
 import { createPlaywrightComputerUseBridge } from "./computer-use.js";
+import { createPlaywrightDomActionBridge } from "./dom-action-bridge.js";
 import {
   captureLayoutViewportScreenshotArtifact,
   getViewportMetricsFromCdp,
@@ -148,6 +154,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   private eventCounter = 0;
   private stepCounter = 0;
   private computerUseBridge: ComputerUseBridge | undefined;
+  private domActionBridge: DomActionBridge | undefined;
   private disposed = false;
 
   private constructor(
@@ -211,6 +218,16 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       withModifiers: (page, modifiers, action) => this.withModifiers(page, modifiers, action),
     });
     return this.computerUseBridge;
+  }
+
+  [OPENSTEER_DOM_ACTION_BRIDGE_SYMBOL](): DomActionBridge {
+    this.domActionBridge ??= createPlaywrightDomActionBridge({
+      resolveController: (pageRef: PageRef) => this.requirePage(pageRef),
+      flushPendingPageTasks: (sessionRef: SessionRef) => this.flushPendingPageTasks(sessionRef),
+      flushDomUpdateTask: (controller) => this.flushDomUpdateTask(controller),
+      requireLiveNode: (locator) => this.requireLiveNode(locator),
+    });
+    return this.domActionBridge;
   }
 
   async createSession(): Promise<SessionRef> {
@@ -517,7 +534,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       pageRef: input.pageRef,
       point: input.point,
       coordinateSpace: input.coordinateSpace,
-    });
+    }).catch(() => undefined);
     const metrics = await this.getViewportMetrics({ pageRef: input.pageRef });
     const point = toViewportPoint(metrics, input.point, input.coordinateSpace);
     await this.withModifiers(controller.page, input.modifiers, async () => {

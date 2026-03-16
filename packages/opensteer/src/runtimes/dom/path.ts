@@ -13,6 +13,7 @@ import {
 } from "./match-policy.js";
 import {
   createDomSnapshotIndex,
+  findContainingShadowHostNode,
   findNodeByNodeRef,
   findNodeBySnapshotNodeId,
   querySelectorAllInScope,
@@ -147,8 +148,8 @@ export function buildLocalStructuralElementAnchor(
 ): StructuralElementAnchor {
   const targetNode = requireElementNode(index, rawTargetNode);
   const nodes = captureScopedStructuralNodes(index, targetNode);
-  const shadowHostNodeRef = targetNode.shadowHostNodeRef;
-  if (shadowHostNodeRef === undefined) {
+  const shadowHost = findContainingShadowHostNode(index, targetNode);
+  if (!shadowHost) {
     return sanitizeStructuralElementAnchor({
       resolution: "structural",
       context: [],
@@ -156,14 +157,7 @@ export function buildLocalStructuralElementAnchor(
     });
   }
 
-  const hostNode = findNodeByNodeRef(index, shadowHostNodeRef);
-  if (!hostNode) {
-    throw new Error(
-      `shadow host ${shadowHostNodeRef} is missing from snapshot ${index.snapshot.documentRef}`,
-    );
-  }
-
-  const hostAnchor = buildLocalStructuralElementAnchor(index, hostNode);
+  const hostAnchor = buildLocalStructuralElementAnchor(index, shadowHost);
   return sanitizeStructuralElementAnchor({
     resolution: "structural",
     context: [
@@ -181,8 +175,8 @@ export function buildLocalReplayElementPath(
   const targetNode = requireElementNode(index, rawTargetNode);
   const localAnchor = captureLocalScopedStructuralAnchor(index, targetNode);
   const nodes = finalizeScopedReplayNodes(index, targetNode, localAnchor.nodes);
-  const shadowHostNodeRef = targetNode.shadowHostNodeRef;
-  if (shadowHostNodeRef === undefined) {
+  const shadowHost = findContainingShadowHostNode(index, targetNode);
+  if (!shadowHost) {
     return sanitizeReplayElementPath({
       resolution: "deterministic",
       context: [],
@@ -190,14 +184,7 @@ export function buildLocalReplayElementPath(
     });
   }
 
-  const hostNode = findNodeByNodeRef(index, shadowHostNodeRef);
-  if (!hostNode) {
-    throw new Error(
-      `shadow host ${shadowHostNodeRef} is missing from snapshot ${index.snapshot.documentRef}`,
-    );
-  }
-
-  const hostPath = buildLocalReplayElementPath(index, hostNode);
+  const hostPath = buildLocalReplayElementPath(index, shadowHost);
   return sanitizeReplayElementPath({
     resolution: "deterministic",
     context: [...hostPath.context, { kind: "shadow", host: cloneReplayElementPath(hostPath).nodes }],
@@ -657,7 +644,7 @@ function captureScopedStructuralNodes(
   index: DomSnapshotIndex,
   targetNode: DomSnapshotNode,
 ): PathNode[] {
-  const scopeHostNodeRef = targetNode.shadowHostNodeRef;
+  const scopeHostNodeRef = getShadowScopeNodeRef(index, targetNode);
   const chain = buildScopedElementChain(index, targetNode, scopeHostNodeRef);
   if (!chain.length) {
     throw new Error(
@@ -680,7 +667,7 @@ function finalizeScopedReplayNodes(
   targetNode: DomSnapshotNode,
   structuralNodes: readonly PathNode[],
 ): PathNode[] {
-  const scopeHostNodeRef = targetNode.shadowHostNodeRef;
+  const scopeHostNodeRef = getShadowScopeNodeRef(index, targetNode);
   const chain = buildScopedElementChain(index, targetNode, scopeHostNodeRef);
   if (!chain.length) {
     throw new Error(
@@ -761,7 +748,7 @@ function matchesStructuralAnchorNode(
   anchorNode: PathNode,
   scopeHostNodeRef: NodeRef | undefined,
 ): boolean {
-  if (candidate.nodeType !== 1 || candidate.shadowHostNodeRef !== scopeHostNodeRef) {
+  if (candidate.nodeType !== 1 || getShadowScopeNodeRef(index, candidate) !== scopeHostNodeRef) {
     return false;
   }
   if (candidate.nodeName.toLowerCase() !== anchorNode.tag.toLowerCase()) {
@@ -799,7 +786,7 @@ function buildScopedElementChain(
       continue;
     }
 
-    if (current.shadowHostNodeRef !== scopeHostNodeRef) {
+    if (getShadowScopeNodeRef(index, current) !== scopeHostNodeRef) {
       break;
     }
 
@@ -808,7 +795,11 @@ function buildScopedElementChain(
       current.parentSnapshotNodeId === undefined
         ? undefined
         : findNodeBySnapshotNodeId(index, current.parentSnapshotNodeId);
-    if (!parent || parent.nodeType !== 1 || parent.shadowHostNodeRef !== scopeHostNodeRef) {
+    if (
+      !parent ||
+      parent.nodeType !== 1 ||
+      getShadowScopeNodeRef(index, parent) !== scopeHostNodeRef
+    ) {
       break;
     }
     current = parent;
@@ -863,7 +854,7 @@ function getSiblingsInScope(
     node.parentSnapshotNodeId === undefined
       ? undefined
       : findNodeBySnapshotNodeId(index, node.parentSnapshotNodeId);
-  if (parent && parent.nodeType === 1 && parent.shadowHostNodeRef === scopeHostNodeRef) {
+  if (parent && parent.nodeType === 1 && getShadowScopeNodeRef(index, parent) === scopeHostNodeRef) {
     return collectChildrenInScope(index, parent, scopeHostNodeRef);
   }
 
@@ -887,9 +878,16 @@ function collectChildrenInScope(
     .map((snapshotNodeId) => findNodeBySnapshotNodeId(index, snapshotNodeId))
     .filter(
       (child): child is DomSnapshotNode =>
-        !!child && child.nodeType === 1 && child.shadowHostNodeRef === scopeHostNodeRef,
+        !!child && child.nodeType === 1 && getShadowScopeNodeRef(index, child) === scopeHostNodeRef,
     )
     .sort((left, right) => left.snapshotNodeId - right.snapshotNodeId);
+}
+
+function getShadowScopeNodeRef(
+  index: DomSnapshotIndex,
+  node: DomSnapshotNode,
+): NodeRef | undefined {
+  return findContainingShadowHostNode(index, node)?.nodeRef;
 }
 
 export { DEFERRED_MATCH_ATTR_KEYS, MATCH_ATTRIBUTE_PRIORITY, STABLE_PRIMARY_ATTR_KEYS };
