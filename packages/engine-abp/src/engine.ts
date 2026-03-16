@@ -22,6 +22,7 @@ import {
   createSessionRef,
   createSize,
   filterCookieRecords,
+  isBrowserCoreError,
   staleNodeRefError,
   unsupportedCapabilityError,
   type BrowserCoreEngine,
@@ -104,6 +105,10 @@ import {
 } from "./errors.js";
 import { allocatePort, launchAbpProcess } from "./launcher.js";
 import { normalizeSelectChooserEventData } from "./action-events.js";
+import {
+  createAbpActionSettler,
+  DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS,
+} from "./action-settle.js";
 import {
   AbpRestClient,
   buildImmediateActionRequest,
@@ -200,6 +205,17 @@ function delay(ms: number): Promise<void> {
 
 function combineFrameUrl(url: string, fragment?: string): string {
   return `${url}${fragment ?? ""}`;
+}
+
+function isAbpPageClosedError(error: unknown): boolean {
+  return isPageClosedApiError(error) || (isBrowserCoreError(error) && error.code === "page-closed");
+}
+
+function boundAbpActionSettleTimeout(timeoutMs?: number): number {
+  if (timeoutMs === undefined) {
+    return DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS;
+  }
+  return Math.max(0, Math.min(DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS, timeoutMs));
 }
 
 function buildSessionHttpStartScript(request: SessionTransportRequest): string {
@@ -576,6 +592,13 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
   private readonly documents = new Map<DocumentRef, DocumentState>();
   private readonly retiredDocuments = new Set<DocumentRef>();
   private readonly downloadRefsByAbpId = new Map<string, ReturnType<typeof createDownloadRef>>();
+  private readonly actionSettler = createAbpActionSettler({
+    syncExecutionPaused: (controller) => this.syncControllerExecutionPaused(controller),
+    setExecutionPaused: (controller, paused) => this.setControllerExecutionPaused(controller, paused),
+    flushDomUpdateTask: (controller) => this.flushDomUpdateTask(controller),
+    throwBackgroundError: (controller) => this.throwBackgroundError(controller),
+    isPageClosedError: isAbpPageClosedError,
+  });
   private pageCounter = 0;
   private frameCounter = 0;
   private documentCounter = 0;
@@ -658,6 +681,8 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       executeInputAction: (session, controller, execute) =>
         this.executeInputAction(session, controller, execute),
       flushDomUpdateTask: (controller) => this.flushDomUpdateTask(controller),
+      settleActionBoundary: (controller, options) =>
+        this.actionSettler.settle({ controller, ...options }),
       requireMainFrame: (controller) => this.requireMainFrame(controller),
       drainQueuedEvents: (pageRef) => this.drainQueuedEvents(pageRef),
     });
@@ -669,10 +694,12 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       resolveController: (pageRef: PageRef) => this.requirePage(pageRef),
       resolveSession: (sessionRef: SessionRef) => this.requireSession(sessionRef),
       flushDomUpdateTask: (controller) => this.flushDomUpdateTask(controller),
+      settleActionBoundary: (controller, options) =>
+        this.actionSettler.settle({ controller, ...options }),
       syncExecutionPaused: (controller) => this.syncControllerExecutionPaused(controller),
       setExecutionPaused: (controller, paused) =>
         this.setControllerExecutionPaused(controller, paused),
-      isPageClosedError: (error) => isPageClosedApiError(error),
+      isPageClosedError: isAbpPageClosedError,
       requireLiveNode: (locator) => this.requireLiveNode(locator),
       getDomSnapshot: (documentRef: DocumentRef) => this.getDomSnapshot({ documentRef }),
       getViewportMetrics: (pageRef: PageRef) => this.getViewportMetrics({ pageRef }),
@@ -781,7 +808,10 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
         requireDocumentChange: false,
         observeTitle: false,
       });
-      await this.flushDomUpdateTask(controller);
+      await this.actionSettler.settle({
+        controller,
+        timeoutMs: DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS,
+      });
       const normalizedEvents = await this.normalizeActionEvents(controller, response);
       const mainFrame = this.requireMainFrame(controller);
       return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
@@ -916,7 +946,10 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       requireDocumentChange: false,
       observeTitle: false,
     });
-    await this.flushDomUpdateTask(controller);
+    await this.actionSettler.settle({
+      controller,
+      timeoutMs: boundAbpActionSettleTimeout(input.timeoutMs),
+    });
 
     const directEvents = await this.normalizeActionEvents(controller, response);
     const mainFrame = this.requireMainFrame(controller);
@@ -955,7 +988,10 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       requireDocumentChange: true,
       observeTitle: false,
     });
-    await this.flushDomUpdateTask(controller);
+    await this.actionSettler.settle({
+      controller,
+      timeoutMs: boundAbpActionSettleTimeout(input.timeoutMs),
+    });
 
     const directEvents = await this.normalizeActionEvents(controller, response);
     const mainFrame = this.requireMainFrame(controller);
@@ -1000,7 +1036,10 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       observeTitle: true,
       allowFallback: true,
     });
-    await this.flushDomUpdateTask(controller);
+    await this.actionSettler.settle({
+      controller,
+      timeoutMs: DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS,
+    });
 
     const directEvents = await this.normalizeActionEvents(controller, response);
     const mainFrame = this.requireMainFrame(controller);
@@ -1042,7 +1081,10 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       observeTitle: true,
       allowFallback: true,
     });
-    await this.flushDomUpdateTask(controller);
+    await this.actionSettler.settle({
+      controller,
+      timeoutMs: DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS,
+    });
 
     const directEvents = await this.normalizeActionEvents(controller, response);
     const mainFrame = this.requireMainFrame(controller);
@@ -1147,7 +1189,10 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     const discoveredTabs = await this.detectNewTabs(session, controller);
     this.applyActionTabChange(session, controller.pageRef, response, actionEvents, discoveredTabs);
     const resultController = this.requirePage(session.activePageRef ?? controller.pageRef);
-    await this.flushDomUpdateTask(resultController);
+    await this.actionSettler.settle({
+      controller: resultController,
+      timeoutMs: DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS,
+    });
     const mainFrame = this.requireMainFrame(resultController);
     return this.createStepResult(session.sessionRef, resultController.pageRef, startedAt, {
       frameRef: mainFrame.frameRef,
@@ -1191,7 +1236,10 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     const discoveredTabs = await this.detectNewTabs(session, controller);
     this.applyActionTabChange(session, controller.pageRef, response, actionEvents, discoveredTabs);
     const resultController = this.requirePage(session.activePageRef ?? controller.pageRef);
-    await this.flushDomUpdateTask(resultController);
+    await this.actionSettler.settle({
+      controller: resultController,
+      timeoutMs: DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS,
+    });
     const mainFrame = this.requireMainFrame(resultController);
     return this.createStepResult(session.sessionRef, resultController.pageRef, startedAt, {
       frameRef: mainFrame.frameRef,
@@ -1231,7 +1279,10 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     const discoveredTabs = await this.detectNewTabs(session, controller);
     this.applyActionTabChange(session, controller.pageRef, response, actionEvents, discoveredTabs);
     const resultController = this.requirePage(session.activePageRef ?? controller.pageRef);
-    await this.flushDomUpdateTask(resultController);
+    await this.actionSettler.settle({
+      controller: resultController,
+      timeoutMs: DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS,
+    });
     const mainFrame = this.requireMainFrame(resultController);
     return this.createStepResult(session.sessionRef, resultController.pageRef, startedAt, {
       frameRef: mainFrame.frameRef,
@@ -1269,7 +1320,10 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     const discoveredTabs = await this.detectNewTabs(session, controller);
     this.applyActionTabChange(session, controller.pageRef, response, actionEvents, discoveredTabs);
     const resultController = this.requirePage(session.activePageRef ?? controller.pageRef);
-    await this.flushDomUpdateTask(resultController);
+    await this.actionSettler.settle({
+      controller: resultController,
+      timeoutMs: DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS,
+    });
     const mainFrame = this.requireMainFrame(resultController);
     return this.createStepResult(session.sessionRef, resultController.pageRef, startedAt, {
       frameRef: mainFrame.frameRef,
@@ -2130,6 +2184,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       domUpdateTask: undefined,
       backgroundError: undefined,
       executionPaused: false,
+      settleTrackerRegistered: false,
     };
 
     this.pages.set(pageRef, controller);
@@ -2190,6 +2245,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       if (shouldRestorePaused) {
         await this.setControllerExecutionPaused(controller, false);
       }
+      await this.actionSettler.installTracker(controller);
       const frameTree = await cdp.send<{ readonly frameTree: FrameTreeNode }>("Page.getFrameTree");
       this.syncFrameTree(controller, frameTree.frameTree);
       await this.reconcileDocumentEpochs(controller);

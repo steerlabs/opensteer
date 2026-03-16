@@ -355,9 +355,10 @@ describe("engine-abp internals", () => {
     );
   });
 
-  test("computer-use bridge translates drag requests and returns ABP's native screenshot", async () => {
+  test("computer-use bridge translates drag requests and captures a final frozen screenshot", async () => {
     const bridge = createAbpComputerUseBridge(createComputerBridgeContext());
     const signal = new AbortController().signal;
+    const policySettle = vi.fn(async () => {});
 
     const output = await bridge.execute({
       pageRef: createPageRef("main"),
@@ -374,7 +375,7 @@ describe("engine-abp internals", () => {
       },
       signal,
       remainingMs: () => 10_000,
-      policySettle: async () => {},
+      policySettle,
     });
 
     const rest = outputTestState.rest;
@@ -397,10 +398,32 @@ describe("engine-abp internals", () => {
         signal,
       },
     );
+    expect(outputTestState.settleActionBoundary).toHaveBeenCalledWith(
+      expect.objectContaining({ pageRef: createPageRef("main") }),
+      expect.objectContaining({
+        timeoutMs: 5_000,
+        signal,
+      }),
+    );
+    expect(policySettle).toHaveBeenCalledWith(createPageRef("main"));
     expect(outputTestState.flushDomUpdateTask).toHaveBeenCalledWith(
       expect.objectContaining({ pageRef: createPageRef("main") }),
     );
-    expect(rest.screenshotTab).not.toHaveBeenCalled();
+    expect(rest.screenshotTab).toHaveBeenCalledWith(
+      "tab-main",
+      expect.objectContaining({
+        screenshot: {
+          area: "viewport",
+          cursor: true,
+          format: "png",
+          markup: ["clickable", "grid"],
+        },
+      }),
+      {
+        signal,
+      },
+    );
+    expect(Buffer.from(output.screenshot.payload.bytes).toString("utf8")).toBe("computer-use-final");
     expect(output.screenshot.size).toEqual(output.viewport.visualViewport.size);
     expect(output.timing.totalMs).toBe(80);
   });
@@ -435,15 +458,23 @@ describe("engine-abp internals", () => {
     const rest = outputTestState.rest;
     expect(output.pageRef).toBe(popupPageRef);
     expect(output.events.map((event) => event.kind)).toContain("page-created");
+    expect(outputTestState.settleActionBoundary).toHaveBeenCalledWith(
+      expect.objectContaining({ pageRef: popupPageRef }),
+      expect.objectContaining({
+        timeoutMs: 5_000,
+      }),
+    );
     expect(outputTestState.flushDomUpdateTask).toHaveBeenCalledWith(
       expect.objectContaining({ pageRef: popupPageRef }),
     );
-    expect(rest.screenshotTab).not.toHaveBeenCalled();
+    expect(rest.screenshotTab).toHaveBeenCalledTimes(1);
   });
 
   test("computer-use bridge threads semantic timeout budgets and abort signals into ABP actions", async () => {
     const bridge = createAbpComputerUseBridge(createComputerBridgeContext());
     const controller = new AbortController();
+
+    const policySettle = vi.fn(async () => {});
 
     await bridge.execute({
       pageRef: createPageRef("main"),
@@ -459,7 +490,7 @@ describe("engine-abp internals", () => {
       },
       signal: controller.signal,
       remainingMs: () => 4_321,
-      policySettle: async () => {},
+      policySettle,
     });
 
     expect(outputTestState.rest.clickTab).toHaveBeenCalledWith(
@@ -474,6 +505,14 @@ describe("engine-abp internals", () => {
         signal: controller.signal,
       },
     );
+    expect(outputTestState.settleActionBoundary).toHaveBeenCalledWith(
+      expect.objectContaining({ pageRef: createPageRef("main") }),
+      expect.objectContaining({
+        timeoutMs: 4_321,
+        signal: controller.signal,
+      }),
+    );
+    expect(policySettle).toHaveBeenCalledWith(createPageRef("main"));
     expect(outputTestState.flushDomUpdateTask).toHaveBeenCalledWith(
       expect.objectContaining({ pageRef: createPageRef("main") }),
     );
@@ -482,6 +521,8 @@ describe("engine-abp internals", () => {
   test("computer-use bridge translates wait requests to the native wait endpoint", async () => {
     const bridge = createAbpComputerUseBridge(createComputerBridgeContext());
     const signal = new AbortController().signal;
+
+    const policySettle = vi.fn(async () => {});
 
     await bridge.execute({
       pageRef: createPageRef("main"),
@@ -496,7 +537,7 @@ describe("engine-abp internals", () => {
       },
       signal,
       remainingMs: () => 10_000,
-      policySettle: async () => {},
+      policySettle,
     });
 
     expect(outputTestState.rest.waitTab).toHaveBeenCalledWith(
@@ -513,12 +554,22 @@ describe("engine-abp internals", () => {
         signal,
       },
     );
-    expect(outputTestState.rest.screenshotTab).not.toHaveBeenCalled();
+    expect(outputTestState.settleActionBoundary).toHaveBeenCalledWith(
+      expect.objectContaining({ pageRef: createPageRef("main") }),
+      expect.objectContaining({
+        timeoutMs: 5_000,
+        signal,
+      }),
+    );
+    expect(policySettle).toHaveBeenCalledWith(createPageRef("main"));
+    expect(outputTestState.rest.screenshotTab).toHaveBeenCalledTimes(1);
   });
 
   test("computer-use bridge encodes scroll actions using ABP scroll segments", async () => {
     const bridge = createAbpComputerUseBridge(createComputerBridgeContext());
     const signal = new AbortController().signal;
+
+    const policySettle = vi.fn(async () => {});
 
     await bridge.execute({
       pageRef: createPageRef("main"),
@@ -536,7 +587,7 @@ describe("engine-abp internals", () => {
       },
       signal,
       remainingMs: () => 10_000,
-      policySettle: async () => {},
+      policySettle,
     });
 
     expect(outputTestState.rest.scrollTab).toHaveBeenCalledWith(
@@ -553,7 +604,15 @@ describe("engine-abp internals", () => {
         signal,
       },
     );
-    expect(outputTestState.rest.screenshotTab).not.toHaveBeenCalled();
+    expect(outputTestState.settleActionBoundary).toHaveBeenCalledWith(
+      expect.objectContaining({ pageRef: createPageRef("main") }),
+      expect.objectContaining({
+        timeoutMs: 5_000,
+        signal,
+      }),
+    );
+    expect(policySettle).toHaveBeenCalledWith(createPageRef("main"));
+    expect(outputTestState.rest.screenshotTab).toHaveBeenCalledTimes(1);
   });
 
   test("computer-use bridge rejects ABP responses whose screenshot and viewport sizes drift", async () => {
@@ -592,6 +651,7 @@ describe("engine-abp internals", () => {
 const outputTestState = {
   rest: createRestStubs(),
   flushDomUpdateTask: vi.fn(async () => {}),
+  settleActionBoundary: vi.fn(async () => {}),
 };
 
 function createComputerBridgeContext(
@@ -609,6 +669,10 @@ function createComputerBridgeContext(
     viewportHeight: options.viewportHeight,
   });
   outputTestState.flushDomUpdateTask = vi.fn(async () => {});
+  outputTestState.settleActionBoundary = vi.fn(async (controller, settleOptions) => {
+    await settleOptions.policySettle?.(controller.pageRef, settleOptions.signal);
+    await outputTestState.flushDomUpdateTask(controller);
+  });
 
   const sessionRef = createSessionRef("abp-computer");
   const mainPageRef = createPageRef("main");
@@ -672,6 +736,7 @@ function createComputerBridgeContext(
       dialogEvents: [],
     }),
     flushDomUpdateTask: outputTestState.flushDomUpdateTask,
+    settleActionBoundary: outputTestState.settleActionBoundary,
     requireMainFrame: (controller: ReturnType<typeof createPageController>) => controller.mainFrame,
     drainQueuedEvents: (pageRef: ReturnType<typeof createPageRef>) =>
       pageRef === popupPageRef &&
@@ -720,7 +785,7 @@ function createRestStubs(
     result: {},
     tab_changed: options.tabChanged ?? false,
     screenshot_after: {
-      data: Buffer.from("computer-use").toString("base64"),
+      data: Buffer.from("computer-use-action").toString("base64"),
       width: 800,
       height: 600,
       virtual_time_ms: 0,
@@ -750,6 +815,12 @@ function createRestStubs(
     keyPressTab: vi.fn().mockResolvedValue(actionResponse),
     typeTab: vi.fn().mockResolvedValue(actionResponse),
     waitTab: vi.fn().mockResolvedValue(actionResponse),
-    screenshotTab: vi.fn().mockResolvedValue(actionResponse),
+    screenshotTab: vi.fn().mockResolvedValue({
+      ...actionResponse,
+      screenshot_after: {
+        ...actionResponse.screenshot_after,
+        data: Buffer.from("computer-use-final").toString("base64"),
+      },
+    }),
   };
 }

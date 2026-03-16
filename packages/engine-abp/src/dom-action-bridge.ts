@@ -14,11 +14,23 @@ import {
 import type { DomActionBridge, DomActionTargetInspection } from "@opensteer/protocol";
 
 import type { DocumentState, PageController, SessionState } from "./types.js";
+import { DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS } from "./action-settle.js";
 
 interface AbpDomActionBridgeContext {
   resolveController(pageRef: PageRef): PageController;
   resolveSession(sessionRef: SessionRef): SessionState;
   flushDomUpdateTask(controller: PageController): Promise<void>;
+  settleActionBoundary(
+    controller: PageController,
+    options: {
+      readonly timeoutMs: number;
+      readonly signal?: AbortSignal;
+      readonly policySettle?: (
+        pageRef: PageRef,
+        signal: AbortSignal | undefined,
+      ) => Promise<void>;
+    },
+  ): Promise<void>;
   syncExecutionPaused(controller: PageController): Promise<boolean>;
   setExecutionPaused(controller: PageController, paused: boolean): Promise<void>;
   isPageClosedError(error: unknown): boolean;
@@ -93,9 +105,13 @@ export function createAbpDomActionBridge(context: AbpDomActionBridgeContext): Do
       });
     },
 
-    async finalizeDomAction(pageRef, _options) {
+    async finalizeDomAction(pageRef, options) {
       const controller = context.resolveController(pageRef);
-      await context.flushDomUpdateTask(controller);
+      await context.settleActionBoundary(controller, {
+        timeoutMs: boundAbpActionSettleTimeout(options.remainingMs()),
+        signal: options.signal,
+        policySettle: (targetPageRef) => options.policySettle(targetPageRef),
+      });
       const session = context.resolveSession(controller.sessionRef);
       if (session.closed) {
         throw createBrowserCoreError("page-closed", `page ${pageRef} is closed`, {
@@ -104,6 +120,13 @@ export function createAbpDomActionBridge(context: AbpDomActionBridgeContext): Do
       }
     },
   };
+}
+
+function boundAbpActionSettleTimeout(timeoutMs: number | undefined): number {
+  if (timeoutMs === undefined) {
+    return DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS;
+  }
+  return Math.max(0, Math.min(DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS, timeoutMs));
 }
 
 async function prepareLiveNodeContext(
