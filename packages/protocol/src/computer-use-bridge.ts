@@ -11,10 +11,7 @@ import type {
 } from "./semantic.js";
 import type { OpensteerEvent } from "./events.js";
 import type { ViewportMetrics } from "./geometry.js";
-import type {
-  ScreenshotArtifact as ProtocolScreenshotArtifact,
-  ScreenshotFormat,
-} from "./snapshots.js";
+import type { ScreenshotFormat } from "./snapshots.js";
 
 export const OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL = Symbol.for("@opensteer/computer-use-bridge");
 
@@ -35,7 +32,7 @@ export interface ComputerUseBridgeInput {
 
 export interface ComputerUseBridgeOutput {
   readonly pageRef: PageRef;
-  readonly screenshot: BrowserCoreScreenshotArtifact | ProtocolScreenshotArtifact;
+  readonly screenshot: BrowserCoreScreenshotArtifact;
   readonly viewport: ViewportMetrics;
   readonly events: readonly OpensteerEvent[];
   readonly timing: OpensteerComputerExecuteTiming;

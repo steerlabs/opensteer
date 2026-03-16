@@ -2,6 +2,11 @@
 
 import { readFile, writeFile } from "node:fs/promises";
 
+import type {
+  OpensteerComputerExecuteInput,
+  OpensteerComputerExecuteOutput,
+} from "@opensteer/protocol";
+
 import {
   connectOpensteerService,
   ensureOpensteerService,
@@ -12,6 +17,7 @@ import {
   normalizeOpensteerEngineName,
   resolveOpensteerEngineName,
 } from "../internal/engine-selection.js";
+import { fileUriToPath } from "../internal/filesystem.js";
 import { runOpensteerMcpServer } from "./mcp.js";
 import { runOpensteerServiceHost } from "./service-host.js";
 
@@ -388,12 +394,19 @@ async function main(argv: readonly string[]): Promise<void> {
         throw new Error("computer requires an action JSON object");
       }
       const screenshot = parseComputerScreenshotOptions(parsed.options);
-      const result = await client.invoke("computer.execute", {
-        action: parseJsonObject(actionRaw, "action"),
+      const action = parseJsonObject(
+        actionRaw,
+        "action",
+      ) as unknown as OpensteerComputerExecuteInput["action"];
+      const result = await client.invoke<
+        OpensteerComputerExecuteInput,
+        OpensteerComputerExecuteOutput
+      >("computer.execute", {
+        action,
         ...(screenshot === undefined ? {} : { screenshot }),
         ...buildNetworkTagInput(parsed.options),
       });
-      writeJson(result);
+      writeJson(projectCliComputerOutput(result));
       return;
     }
 
@@ -942,6 +955,22 @@ async function writeJsonOutput(value: unknown, outputPath: string | undefined): 
   }
 
   await writeFile(outputPath, `${JSON.stringify(value)}\n`, "utf8");
+}
+
+function projectCliComputerOutput(
+  output: OpensteerComputerExecuteOutput,
+): OpensteerComputerExecuteOutput & {
+  readonly screenshot: OpensteerComputerExecuteOutput["screenshot"] & {
+    readonly path: string;
+  };
+} {
+  return {
+    ...output,
+    screenshot: {
+      ...output.screenshot,
+      path: fileUriToPath(output.screenshot.payload.uri),
+    },
+  };
 }
 
 function writeError(error: unknown): void {

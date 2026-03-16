@@ -6,6 +6,8 @@ import {
   pageRefSchema,
   sessionRefSchema,
 } from "./identity.js";
+import type { ExternalBinaryLocation } from "./binary-location.js";
+import { externalBinaryLocationSchema } from "./binary-location.js";
 import type { JsonSchema } from "./json.js";
 import {
   arraySchema,
@@ -29,13 +31,7 @@ export type OpensteerArtifactKind =
 
 export type ArtifactRelation = "result" | "before" | "after" | "capture" | "evidence" | "snapshot";
 
-export interface ArtifactExternalLocation {
-  readonly delivery: "external";
-  readonly uri: string;
-  readonly mimeType?: string;
-  readonly byteLength?: number;
-  readonly sha256?: string;
-}
+export type ArtifactExternalLocation = ExternalBinaryLocation;
 
 export interface ArtifactInline<TData> {
   readonly delivery: "inline";
@@ -114,20 +110,6 @@ const artifactRelationSchema: JsonSchema = enumSchema(
   },
 );
 
-const artifactExternalLocationSchema: JsonSchema = objectSchema(
-  {
-    delivery: enumSchema(["external"] as const),
-    uri: stringSchema(),
-    mimeType: stringSchema(),
-    byteLength: integerSchema({ minimum: 0 }),
-    sha256: stringSchema(),
-  },
-  {
-    title: "ArtifactExternalLocation",
-    required: ["delivery", "uri"],
-  },
-);
-
 function inlineArtifactPayloadSchema(dataSchema: JsonSchema, title: string): JsonSchema {
   return objectSchema(
     {
@@ -159,7 +141,7 @@ const screenshotArtifactRecordSchema: JsonSchema = objectSchema(
     ...artifactBaseSchema("screenshot"),
     payload: oneOfSchema([
       inlineArtifactPayloadSchema(screenshotArtifactSchema, "InlineScreenshotArtifact"),
-      artifactExternalLocationSchema,
+      externalBinaryLocationSchema,
     ]),
   },
   {
@@ -173,7 +155,7 @@ const htmlSnapshotArtifactRecordSchema: JsonSchema = objectSchema(
     ...artifactBaseSchema("html-snapshot"),
     payload: oneOfSchema([
       inlineArtifactPayloadSchema(htmlSnapshotSchema, "InlineHtmlSnapshotArtifact"),
-      artifactExternalLocationSchema,
+      externalBinaryLocationSchema,
     ]),
   },
   {
@@ -187,7 +169,7 @@ const domSnapshotArtifactRecordSchema: JsonSchema = objectSchema(
     ...artifactBaseSchema("dom-snapshot"),
     payload: oneOfSchema([
       inlineArtifactPayloadSchema(domSnapshotSchema, "InlineDomSnapshotArtifact"),
-      artifactExternalLocationSchema,
+      externalBinaryLocationSchema,
     ]),
   },
   {
@@ -201,7 +183,7 @@ const cookiesArtifactRecordSchema: JsonSchema = objectSchema(
     ...artifactBaseSchema("cookies"),
     payload: oneOfSchema([
       inlineArtifactPayloadSchema(arraySchema(cookieRecordSchema), "InlineCookiesArtifact"),
-      artifactExternalLocationSchema,
+      externalBinaryLocationSchema,
     ]),
   },
   {
@@ -215,7 +197,7 @@ const storageSnapshotArtifactRecordSchema: JsonSchema = objectSchema(
     ...artifactBaseSchema("storage-snapshot"),
     payload: oneOfSchema([
       inlineArtifactPayloadSchema(storageSnapshotSchema, "InlineStorageSnapshotArtifact"),
-      artifactExternalLocationSchema,
+      externalBinaryLocationSchema,
     ]),
   },
   {

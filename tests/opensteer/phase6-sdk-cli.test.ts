@@ -883,7 +883,7 @@ describe("Phase 6 SDK and CLI surfaces", () => {
       "true",
     ]);
 
-    const computer = await runCliCommand(rootDir, [
+    const computerResult = await runCliCommandWithStdout(rootDir, [
       "computer",
       '{"type":"click","x":110,"y":41}',
       "--name",
@@ -891,12 +891,18 @@ describe("Phase 6 SDK and CLI surfaces", () => {
       "--disable-annotations",
       "grid,scrollable,selected,typeable",
     ]);
+    const computer = computerResult.parsed;
     expect((computer as { readonly action: { readonly type: string } }).action.type).toBe("click");
     const computerOutput = computer as {
       readonly screenshot: {
+        readonly path: string;
         readonly format: string;
         readonly payload: {
-          readonly data: string;
+          readonly delivery: string;
+          readonly uri: string;
+          readonly mimeType: string;
+          readonly byteLength: number;
+          readonly sha256: string;
         };
         readonly size: {
           readonly width: number;
@@ -912,9 +918,9 @@ describe("Phase 6 SDK and CLI surfaces", () => {
         };
       };
     };
-    const raster = await sharp(
-      Buffer.from(computerOutput.screenshot.payload.data, "base64"),
-    ).metadata();
+    expect(computerOutput.screenshot.payload.delivery).toBe("external");
+    expect(computerResult.stdout).not.toContain('"payload":{"data"');
+    const raster = await sharp(await readFile(computerOutput.screenshot.path)).metadata();
     expect(computerOutput.screenshot.format).toBe("webp");
     expect({ width: raster.width, height: raster.height }).toEqual(computerOutput.screenshot.size);
     expect(computerOutput.screenshot.size).toEqual(
@@ -1233,6 +1239,17 @@ function requireCounter(
 }
 
 async function runCliCommand(rootDir: string, args: readonly string[]): Promise<unknown> {
+  const result = await runCliCommandWithStdout(rootDir, args);
+  return result.parsed;
+}
+
+async function runCliCommandWithStdout(
+  rootDir: string,
+  args: readonly string[],
+): Promise<{
+  readonly stdout: string;
+  readonly parsed: unknown;
+}> {
   const { stdout, stderr } = await execFile(process.execPath, [CLI_SCRIPT, ...args], {
     cwd: rootDir,
     env: {
@@ -1242,7 +1259,10 @@ async function runCliCommand(rootDir: string, args: readonly string[]): Promise<
   });
 
   expect(stderr.trim()).toBe("");
-  return JSON.parse(stdout.trim()) as unknown;
+  return {
+    stdout,
+    parsed: JSON.parse(stdout.trim()) as unknown,
+  };
 }
 
 async function runCliCommandExpectFailure(

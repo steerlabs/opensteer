@@ -70,6 +70,9 @@ opensteer close --name docs-example
 
 Each CLI command prints JSON to stdout. Browser state does not live in the CLI process. It lives
 in the local session service recorded under `.opensteer/runtime/sessions/<name>/service.json`.
+`opensteer computer` prints compact screenshot metadata and points at the persisted image through
+`screenshot.path` for local shells and `screenshot.payload.uri` for the canonical file-backed
+location.
 
 Use `--engine <playwright|abp>` on `open` to choose the backend for a new session. You can also
 set `OPENSTEER_ENGINE=abp` to change the default engine for `open` in the current shell. Engine

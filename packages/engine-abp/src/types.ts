@@ -4,6 +4,7 @@ import type {
   DocumentRef,
   FrameRef,
   HeaderEntry,
+  NetworkResourceType,
   NetworkRequestId,
   NodeRef,
   PageLifecycleState,
