@@ -1,6 +1,6 @@
 import { promisify } from "node:util";
 import { execFile as execFileCallback } from "node:child_process";
-import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
@@ -26,6 +26,7 @@ import {
   startPhase6FixtureServer,
   type Phase6FixtureServer,
 } from "./phase6-fixture.js";
+import { ensureCliArtifactsBuilt } from "./cli-artifacts.js";
 import { readPngSize } from "../helpers/png.js";
 
 const execFile = promisify(execFileCallback);
@@ -35,12 +36,7 @@ let fixtureServer: Phase6FixtureServer | undefined;
 
 beforeAll(async () => {
   fixtureServer = await startPhase6FixtureServer();
-  if (!(await hasBuiltCliArtifacts())) {
-    await execFile("pnpm", ["build"], {
-      cwd: process.cwd(),
-      maxBuffer: 1024 * 1024 * 4,
-    });
-  }
+  await ensureCliArtifactsBuilt();
 }, 120_000);
 
 afterEach(async () => {
@@ -1160,21 +1156,6 @@ async function runCliCommandExpectFailure(
   }
 
   throw new Error("expected CLI command to fail");
-}
-
-async function hasBuiltCliArtifacts(): Promise<boolean> {
-  const requiredPaths = [
-    CLI_SCRIPT,
-    path.resolve(process.cwd(), "packages/protocol/dist/index.js"),
-    path.resolve(process.cwd(), "packages/opensteer/dist/index.js"),
-  ];
-
-  try {
-    await Promise.all(requiredPaths.map((filePath) => access(filePath)));
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function createPolicy(options: {

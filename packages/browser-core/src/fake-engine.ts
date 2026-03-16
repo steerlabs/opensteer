@@ -743,19 +743,28 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
   async getNetworkRecords(input: {
     readonly sessionRef: SessionRef;
     readonly pageRef?: PageRef;
+    readonly requestIds?: readonly string[];
     readonly includeBodies?: boolean;
+    readonly signal?: AbortSignal;
   }): Promise<readonly NetworkRecord[]> {
     this.requireCapability("inspector.network");
+    input.signal?.throwIfAborted?.();
     const session = this.requireSession(input.sessionRef);
     const records: NetworkRecord[] = [];
     const includeBodies = input.includeBodies ?? false;
     const pageRefs = input.pageRef === undefined ? Array.from(session.pageRefs) : [input.pageRef];
+    const requestIds =
+      input.requestIds === undefined ? undefined : new Set(input.requestIds);
 
     for (const pageRef of pageRefs) {
       const page = this.requirePage(pageRef);
       const mainFrame = this.getMainFrame(page.pageRef);
       const document = this.requireDocument(mainFrame.frameInfo.documentRef);
-      records.push(...document.networkRecords.map((record) => clone(record)));
+      records.push(
+        ...document.networkRecords
+          .filter((record) => requestIds === undefined || requestIds.has(record.requestId))
+          .map((record) => clone(record)),
+      );
     }
 
     if (!includeBodies) {
@@ -818,8 +827,10 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
   async executeRequest(input: {
     readonly sessionRef: SessionRef;
     readonly request: SessionTransportRequest;
+    readonly signal?: AbortSignal;
   }): Promise<StepResult<SessionTransportResponse>> {
     this.requireCapability("transport.sessionHttp");
+    input.signal?.throwIfAborted?.();
     const session = this.requireSession(input.sessionRef);
     const key = buildTransportKey(input.request);
     const seededResponse = session.transportResponses.get(key);

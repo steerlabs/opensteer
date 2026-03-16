@@ -1,7 +1,11 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 import {
+  bodyPayloadFromUtf8,
+  createBodyPayload,
   type BrowserCoreEngine,
+  type BodyPayload as BrowserBodyPayload,
   type DocumentEpoch,
   type DocumentRef,
   type FrameRef,
@@ -23,17 +27,26 @@ import {
   type OpensteerDomInputInput,
   type OpensteerDomScrollInput,
   type OpensteerGetRequestPlanInput,
+  type OpensteerInferRequestPlanInput,
+  type OpensteerNetworkClearInput,
+  type OpensteerNetworkClearOutput,
+  type OpensteerNetworkQueryInput,
+  type OpensteerNetworkQueryOutput,
+  type OpensteerNetworkSaveInput,
+  type OpensteerNetworkSaveOutput,
   type OpensteerPageGotoInput,
   type OpensteerPageGotoOutput,
   type OpensteerPageSnapshotInput,
   type OpensteerPageSnapshotOutput,
   type OpensteerListRequestPlansInput,
   type OpensteerListRequestPlansOutput,
-  type OpensteerRequestCaptureStartInput,
-  type OpensteerRequestCaptureStartOutput,
-  type OpensteerRequestCaptureStopOutput,
+  type OpensteerRawRequestInput,
+  type OpensteerRawRequestOutput,
   type OpensteerRequestExecuteInput,
   type OpensteerRequestExecuteOutput,
+  type OpensteerRequestTransportResult,
+  type OpensteerRequestResponseResult,
+  type NetworkQueryRecord,
   type OpensteerResolvedTarget,
   type OpensteerSemanticOperationName,
   type OpensteerSessionCloseOutput,
@@ -44,6 +57,7 @@ import {
   type OpensteerEvent,
   type TraceContext,
   type OpensteerWriteRequestPlanInput,
+  type HeaderEntry,
 } from "@opensteer/protocol";
 
 import { type ArtifactManifest } from "../artifacts.js";
@@ -72,9 +86,15 @@ import {
   type ComputerUseRuntime,
 } from "../runtimes/computer-use/index.js";
 import { defaultOpensteerEngineFactory } from "../internal/engine-selection.js";
-import { OpensteerRequestCaptureRuntime } from "../requests/capture/index.js";
 import { executeSessionHttpRequest } from "../requests/execution/session-http/index.js";
+import { inferRequestPlanFromNetworkRecord } from "../requests/inference.js";
 import { normalizeRequestPlanPayload } from "../requests/plans/index.js";
+import {
+  parseStructuredResponseData,
+  toProtocolRequestResponseResult,
+  toProtocolRequestTransportResult,
+} from "../requests/shared.js";
+import { NetworkJournal } from "../network/journal.js";
 import {
   assertValidOpensteerExtractionSchemaRoot,
   compileOpensteerExtractionPayload,
@@ -123,6 +143,10 @@ interface OpensteerSessionTraceInput {
   readonly context?: TraceContext;
 }
 
+interface RuntimeOperationOptions {
+  readonly signal?: AbortSignal;
+}
+
 export class OpensteerSessionRuntime {
   readonly name: string;
   readonly rootPath: string;
@@ -137,7 +161,7 @@ export class OpensteerSessionRuntime {
   private engine: DisposableBrowserCoreEngine | undefined;
   private dom: DomRuntime | undefined;
   private computer: ComputerUseRuntime | undefined;
-  private readonly requestCapture = new OpensteerRequestCaptureRuntime();
+  private readonly networkJournal = new NetworkJournal();
   private extractionDescriptors:
     | ReturnType<typeof createOpensteerExtractionDescriptorStore>
     | undefined;
@@ -145,6 +169,7 @@ export class OpensteerSessionRuntime {
   private pageRef: PageRef | undefined;
   private runId: string | undefined;
   private latestSnapshot: CompiledOpensteerSnapshot | undefined;
+  private readonly backgroundNetworkPersistence = new Set<Promise<void>>();
   private ownsEngine = false;
 
   constructor(options: OpensteerRuntimeOptions = {}) {
@@ -157,7 +182,10 @@ export class OpensteerSessionRuntime {
     this.policy = options.policy ?? defaultPolicy();
   }
 
-  async open(input: OpensteerSessionOpenInput = {}): Promise<OpensteerSessionOpenOutput> {
+  async open(
+    input: OpensteerSessionOpenInput = {},
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerSessionOpenOutput> {
     assertValidSemanticOperationInput("session.open", input);
 
     if (input.name !== undefined && normalizeNamespace(input.name) !== this.name) {
@@ -170,7 +198,7 @@ export class OpensteerSessionRuntime {
       if (input.url !== undefined) {
         return this.goto({
           url: input.url,
-        });
+        }, options);
       }
       return this.readSessionState();
     }
@@ -223,6 +251,7 @@ export class OpensteerSessionRuntime {
             frameRef,
           };
         },
+        options,
       );
       await this.appendTrace({
         operation: "session.open",
@@ -253,7 +282,10 @@ export class OpensteerSessionRuntime {
     }
   }
 
-  async goto(input: OpensteerPageGotoInput): Promise<OpensteerPageGotoOutput> {
+  async goto(
+    input: OpensteerPageGotoInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerPageGotoOutput> {
     assertValidSemanticOperationInput("page.goto", input);
 
     const pageRef = await this.ensurePageRef();
@@ -263,21 +295,31 @@ export class OpensteerSessionRuntime {
       const { navigation, state } = await this.runWithOperationTimeout(
         "page.goto",
         async (timeout) => {
-          const navigation = await this.navigatePage(
-            {
-              operation: "page.goto",
-              pageRef,
-              url: input.url,
-            },
-            timeout,
-          );
-          timeout.throwIfAborted();
-          this.latestSnapshot = undefined;
-          return {
-            navigation,
-            state: await timeout.runStep(() => this.readSessionState()),
-          };
+          const baselineRequestIds = await this.beginMutationCapture(timeout);
+          try {
+            const navigation = await this.navigatePage(
+              {
+                operation: "page.goto",
+                pageRef,
+                url: input.url,
+              },
+              timeout,
+            );
+            timeout.throwIfAborted();
+            this.latestSnapshot = undefined;
+            await this.completeMutationCapture(timeout, baselineRequestIds, input.networkTag);
+            return {
+              navigation,
+              state: await timeout.runStep(() => this.readSessionState()),
+            };
+          } catch (error) {
+            await this.completeMutationCapture(timeout, baselineRequestIds, input.networkTag).catch(
+              () => undefined,
+            );
+            throw error;
+          }
         },
+        options,
       );
       await this.appendTrace({
         operation: "page.goto",
@@ -311,7 +353,10 @@ export class OpensteerSessionRuntime {
     }
   }
 
-  async snapshot(input: OpensteerPageSnapshotInput = {}): Promise<OpensteerPageSnapshotOutput> {
+  async snapshot(
+    input: OpensteerPageSnapshotInput = {},
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerPageSnapshotOutput> {
     assertValidSemanticOperationInput("page.snapshot", input);
 
     const pageRef = await this.ensurePageRef();
@@ -361,6 +406,7 @@ export class OpensteerSessionRuntime {
             output,
           };
         },
+        options,
       );
 
       await this.appendTrace({
@@ -398,7 +444,10 @@ export class OpensteerSessionRuntime {
     }
   }
 
-  async click(input: OpensteerDomClickInput): Promise<OpensteerActionResult> {
+  async click(
+    input: OpensteerDomClickInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerActionResult> {
     assertValidSemanticOperationInput("dom.click", input);
 
     return this.runDomAction("dom.click", input, async (pageRef, target, timeout) => {
@@ -410,10 +459,13 @@ export class OpensteerSessionRuntime {
       return {
         result,
       };
-    });
+    }, options);
   }
 
-  async hover(input: OpensteerDomHoverInput): Promise<OpensteerActionResult> {
+  async hover(
+    input: OpensteerDomHoverInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerActionResult> {
     assertValidSemanticOperationInput("dom.hover", input);
 
     return this.runDomAction("dom.hover", input, async (pageRef, target, timeout) => {
@@ -425,10 +477,13 @@ export class OpensteerSessionRuntime {
       return {
         result,
       };
-    });
+    }, options);
   }
 
-  async input(input: OpensteerDomInputInput): Promise<OpensteerActionResult> {
+  async input(
+    input: OpensteerDomInputInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerActionResult> {
     assertValidSemanticOperationInput("dom.input", input);
 
     return this.runDomAction("dom.input", input, async (pageRef, target, timeout) => {
@@ -445,10 +500,13 @@ export class OpensteerSessionRuntime {
           point: undefined,
         },
       };
-    });
+    }, options);
   }
 
-  async scroll(input: OpensteerDomScrollInput): Promise<OpensteerActionResult> {
+  async scroll(
+    input: OpensteerDomScrollInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerActionResult> {
     assertValidSemanticOperationInput("dom.scroll", input);
 
     return this.runDomAction("dom.scroll", input, async (pageRef, target, timeout) => {
@@ -461,10 +519,13 @@ export class OpensteerSessionRuntime {
       return {
         result,
       };
-    });
+    }, options);
   }
 
-  async extract(input: OpensteerDomExtractInput): Promise<OpensteerDomExtractOutput> {
+  async extract(
+    input: OpensteerDomExtractInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerDomExtractOutput> {
     assertValidSemanticOperationInput("dom.extract", input);
 
     const pageRef = await this.ensurePageRef();
@@ -542,6 +603,7 @@ export class OpensteerSessionRuntime {
             } satisfies OpensteerDomExtractOutput,
           };
         },
+        options,
       );
 
       await this.appendTrace({
@@ -580,95 +642,70 @@ export class OpensteerSessionRuntime {
     }
   }
 
-  async startRequestCapture(
-    input: OpensteerRequestCaptureStartInput = {},
-  ): Promise<OpensteerRequestCaptureStartOutput> {
-    assertValidSemanticOperationInput("request-capture.start", input);
+  async queryNetwork(
+    input: OpensteerNetworkQueryInput = {},
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerNetworkQueryOutput> {
+    assertValidSemanticOperationInput("network.query", input);
 
-    const pageRef = await this.ensurePageRef();
-    const sessionRef = this.sessionRef;
-    if (!sessionRef) {
-      throw new Error("Opensteer session is not initialized");
+    if (input.source !== "saved") {
+      await this.ensurePageRef();
     }
-    const startedAt = Date.now();
-
-    try {
-      const output = await this.runWithOperationTimeout("request-capture.start", async () =>
-        this.requestCapture.start({
-          engine: this.requireEngine(),
-          sessionRef,
-          pageRef,
-          request: input,
-        }),
-      );
-
-      await this.appendTrace({
-        operation: "request-capture.start",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "ok",
-        data: output,
-        context: buildRuntimeTraceContext({
-          sessionRef,
-          pageRef,
-        }),
-      });
-
-      return output;
-    } catch (error) {
-      await this.appendTrace({
-        operation: "request-capture.start",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "error",
-        error,
-        context: buildRuntimeTraceContext({
-          sessionRef,
-          pageRef,
-        }),
-      });
-      throw error;
-    }
-  }
-
-  async stopRequestCapture(): Promise<OpensteerRequestCaptureStopOutput> {
-    assertValidSemanticOperationInput("request-capture.stop", {});
-
+    const root = await this.ensureRoot();
     const startedAt = Date.now();
     try {
-      const { artifactManifest, output } = await this.runWithOperationTimeout(
-        "request-capture.stop",
-        async () =>
-          this.requestCapture.stop({
-            engine: this.requireEngine(),
-            artifacts: this.requireRoot().artifacts,
-          }),
-      );
+      const output = await this.runWithOperationTimeout(
+        "network.query",
+        async (timeout) => {
+          if (input.source === "saved") {
+            await timeout.runStep(() => this.flushBackgroundNetworkPersistence());
+            return {
+              records: await timeout.runStep(() =>
+                root.registry.savedNetwork.query({
+                  ...(input.recordId === undefined ? {} : { recordId: input.recordId }),
+                  ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
+                  ...(input.actionId === undefined ? {} : { actionId: input.actionId }),
+                  ...(input.tag === undefined ? {} : { tag: input.tag }),
+                  ...(input.url === undefined ? {} : { url: input.url }),
+                  ...(input.hostname === undefined ? {} : { hostname: input.hostname }),
+                  ...(input.path === undefined ? {} : { path: input.path }),
+                  ...(input.method === undefined ? {} : { method: input.method }),
+                  ...(input.status === undefined ? {} : { status: input.status }),
+                  ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
+                  ...(input.includeBodies === undefined ? {} : { includeBodies: input.includeBodies }),
+                  ...(input.limit === undefined ? {} : { limit: input.limit }),
+                }),
+              ),
+            } satisfies OpensteerNetworkQueryOutput;
+          }
 
-      await this.appendTrace({
-        operation: "request-capture.stop",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "ok",
-        artifacts: {
-          manifests: [artifactManifest],
+          return {
+            records: await this.queryLiveNetwork(input, timeout),
+          } satisfies OpensteerNetworkQueryOutput;
         },
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "network.query",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
         data: {
-          scope: output.scope,
-          baselineCount: output.baselineCount,
-          recordCount: output.recordCount,
-          artifactId: output.artifactId,
+          source: input.source ?? "live",
+          includeBodies: input.includeBodies ?? false,
+          limit: input.limit ?? 50,
+          count: output.records.length,
         },
         context: buildRuntimeTraceContext({
           sessionRef: this.sessionRef,
           pageRef: this.pageRef,
         }),
       });
-
       return output;
     } catch (error) {
       await this.appendTrace({
-        operation: "request-capture.stop",
+        operation: "network.query",
         startedAt,
         completedAt: Date.now(),
         outcome: "error",
@@ -682,16 +719,193 @@ export class OpensteerSessionRuntime {
     }
   }
 
-  async writeRequestPlan(input: OpensteerWriteRequestPlanInput): Promise<RequestPlanRecord> {
+  async saveNetwork(
+    input: OpensteerNetworkSaveInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerNetworkSaveOutput> {
+    assertValidSemanticOperationInput("network.save", input);
+
+    await this.ensurePageRef();
+    const root = await this.ensureRoot();
+    const startedAt = Date.now();
+    try {
+      const output = await this.runWithOperationTimeout(
+        "network.save",
+        async (timeout) => {
+          const records = await this.queryLiveNetwork(
+            {
+              includeBodies: true,
+              source: "live",
+              ...(input.pageRef === undefined ? {} : { pageRef: input.pageRef }),
+              ...(input.recordId === undefined ? {} : { recordId: input.recordId }),
+              ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
+              ...(input.actionId === undefined ? {} : { actionId: input.actionId }),
+              ...(input.url === undefined ? {} : { url: input.url }),
+              ...(input.hostname === undefined ? {} : { hostname: input.hostname }),
+              ...(input.path === undefined ? {} : { path: input.path }),
+              ...(input.method === undefined ? {} : { method: input.method }),
+              ...(input.status === undefined ? {} : { status: input.status }),
+              ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
+            },
+            timeout,
+            { ignoreLimit: true },
+          );
+          this.networkJournal.addTag(records, input.tag);
+          return {
+            savedCount: await timeout.runStep(() =>
+              root.registry.savedNetwork.save(records, input.tag),
+            ),
+          } satisfies OpensteerNetworkSaveOutput;
+        },
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "network.save",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          tag: input.tag,
+          savedCount: output.savedCount,
+        },
+      });
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "network.save",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+      });
+      throw error;
+    }
+  }
+
+  async clearNetwork(
+    input: OpensteerNetworkClearInput = {},
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerNetworkClearOutput> {
+    assertValidSemanticOperationInput("network.clear", input);
+
+    const root = await this.ensureRoot();
+    const startedAt = Date.now();
+    try {
+      const output = await this.runWithOperationTimeout(
+        "network.clear",
+        async (timeout) => {
+          await timeout.runStep(() => this.flushBackgroundNetworkPersistence());
+          return {
+            clearedCount: await timeout.runStep(() =>
+              root.registry.savedNetwork.clear(input),
+            ),
+          } satisfies OpensteerNetworkClearOutput;
+        },
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "network.clear",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          ...(input.tag === undefined ? {} : { tag: input.tag }),
+          clearedCount: output.clearedCount,
+        },
+      });
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "network.clear",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+      });
+      throw error;
+    }
+  }
+
+  async inferRequestPlan(
+    input: OpensteerInferRequestPlanInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<RequestPlanRecord> {
+    assertValidSemanticOperationInput("request-plan.infer", input);
+
+    const root = await this.ensureRoot();
+    const startedAt = Date.now();
+    try {
+      const record = await this.runWithOperationTimeout(
+        "request-plan.infer",
+        async (timeout) => {
+          const source = await this.resolveNetworkRecordByRecordId(input.recordId, timeout, {
+            includeBodies: true,
+          });
+          const inferred = inferRequestPlanFromNetworkRecord(source, input, {
+            ...(this.networkJournal.getObservedAt(source.recordId) === undefined
+              ? {}
+              : { observedAt: this.networkJournal.getObservedAt(source.recordId)! }),
+          });
+          return timeout.runStep(() =>
+            root.registry.requestPlans.write({
+              ...inferred,
+              payload: normalizeRequestPlanPayload(inferred.payload),
+            }),
+          );
+        },
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "request-plan.infer",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          recordId: input.recordId,
+          id: record.id,
+          key: record.key,
+          version: record.version,
+          lifecycle: record.lifecycle,
+        },
+      });
+      return record;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "request-plan.infer",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+      });
+      throw error;
+    }
+  }
+
+  async writeRequestPlan(
+    input: OpensteerWriteRequestPlanInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<RequestPlanRecord> {
     assertValidSemanticOperationInput("request-plan.write", input);
 
+    const root = await this.ensureRoot();
     const startedAt = Date.now();
     try {
-      const payload = normalizeRequestPlanPayload(input.payload);
-      const record = await (await this.ensureRoot()).registry.requestPlans.write({
-        ...input,
-        payload,
-      });
+      const record = await this.runWithOperationTimeout(
+        "request-plan.write",
+        async (timeout) => {
+          const payload = normalizeRequestPlanPayload(input.payload);
+          return timeout.runStep(() =>
+            root.registry.requestPlans.write({
+              ...input,
+              payload,
+            }),
+          );
+        },
+        options,
+      );
 
       await this.appendTrace({
         operation: "request-plan.write",
@@ -719,12 +933,20 @@ export class OpensteerSessionRuntime {
     }
   }
 
-  async getRequestPlan(input: OpensteerGetRequestPlanInput): Promise<RequestPlanRecord> {
+  async getRequestPlan(
+    input: OpensteerGetRequestPlanInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<RequestPlanRecord> {
     assertValidSemanticOperationInput("request-plan.get", input);
 
+    const root = await this.ensureRoot();
     const startedAt = Date.now();
     try {
-      const record = await (await this.ensureRoot()).registry.requestPlans.resolve(input);
+      const record = await this.runWithOperationTimeout(
+        "request-plan.get",
+        async (timeout) => timeout.runStep(() => root.registry.requestPlans.resolve(input)),
+        options,
+      );
       if (record === undefined) {
         throw new OpensteerProtocolError(
           "not-found",
@@ -769,15 +991,20 @@ export class OpensteerSessionRuntime {
 
   async listRequestPlans(
     input: OpensteerListRequestPlansInput = {},
+    options: RuntimeOperationOptions = {},
   ): Promise<OpensteerListRequestPlansOutput> {
     assertValidSemanticOperationInput("request-plan.list", input);
 
+    const root = await this.ensureRoot();
     const startedAt = Date.now();
     try {
-      const plans = await (await this.ensureRoot()).registry.requestPlans.list(input);
-      const output = {
-        plans,
-      } satisfies OpensteerListRequestPlansOutput;
+      const output = await this.runWithOperationTimeout(
+        "request-plan.list",
+        async (timeout) => ({
+          plans: await timeout.runStep(() => root.registry.requestPlans.list(input)),
+        }),
+        options,
+      );
 
       await this.appendTrace({
         operation: "request-plan.list",
@@ -786,7 +1013,7 @@ export class OpensteerSessionRuntime {
         outcome: "ok",
         data: {
           ...(input.key === undefined ? {} : { key: input.key }),
-          count: plans.length,
+          count: output.plans.length,
         },
       });
 
@@ -803,8 +1030,11 @@ export class OpensteerSessionRuntime {
     }
   }
 
-  async request(input: OpensteerRequestExecuteInput): Promise<OpensteerRequestExecuteOutput> {
-    assertValidSemanticOperationInput("request.execute", input);
+  async rawRequest(
+    input: OpensteerRawRequestInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerRawRequestOutput> {
+    assertValidSemanticOperationInput("request.raw", input);
 
     const pageRef = await this.ensurePageRef();
     const sessionRef = this.sessionRef;
@@ -814,13 +1044,93 @@ export class OpensteerSessionRuntime {
     const startedAt = Date.now();
 
     try {
-      const output = await this.runWithOperationTimeout("request.execute", async () =>
-        executeSessionHttpRequest({
-          engine: this.requireEngine(),
-          registry: this.requireRoot().registry.requestPlans,
+      const output = await this.runWithOperationTimeout(
+        "request.raw",
+        async (timeout) =>
+          this.executeTransportRequestWithJournal(
+            buildRawTransportRequest(input),
+            timeout,
+            sessionRef,
+          ),
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "request.raw",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          recordId: output.recordId,
+          request: {
+            method: output.request.method,
+            url: output.request.url,
+          },
+          response: {
+            url: output.response.url,
+            status: output.response.status,
+            redirected: output.response.redirected,
+          },
+        },
+        context: buildRuntimeTraceContext({
           sessionRef,
-          request: input,
+          pageRef,
         }),
+      });
+
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "request.raw",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+        context: buildRuntimeTraceContext({
+          sessionRef,
+          pageRef,
+        }),
+      });
+      throw error;
+    }
+  }
+
+  async request(
+    input: OpensteerRequestExecuteInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerRequestExecuteOutput> {
+    assertValidSemanticOperationInput("request.execute", input);
+
+    const pageRef = await this.ensurePageRef();
+    const sessionRef = this.sessionRef;
+    if (!sessionRef) {
+      throw new Error("Opensteer session is not initialized");
+    }
+    const root = await this.ensureRoot();
+    const startedAt = Date.now();
+
+    try {
+      const output = await this.runWithOperationTimeout(
+        "request.execute",
+        async (timeout) => {
+          const baselineRequestIds = await this.readLiveRequestIds(timeout, {
+            includeCurrentPageOnly: false,
+          });
+          const output = await timeout.runStep(() =>
+            executeSessionHttpRequest({
+              engine: this.requireEngine(),
+              registry: root.registry.requestPlans,
+              sessionRef,
+              request: input,
+              signal: timeout.signal,
+            }),
+          );
+          await this.observeLiveTransportDelta(timeout, baselineRequestIds, {
+            includeCurrentPageOnly: false,
+          });
+          return output;
+        },
+        options,
       );
 
       await this.appendTrace({
@@ -863,7 +1173,10 @@ export class OpensteerSessionRuntime {
     }
   }
 
-  async computerExecute(input: OpensteerComputerExecuteInput): Promise<OpensteerComputerExecuteOutput> {
+  async computerExecute(
+    input: OpensteerComputerExecuteInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerComputerExecuteOutput> {
     assertValidSemanticOperationInput("computer.execute", input);
 
     const pageRef = await this.ensurePageRef();
@@ -873,20 +1186,30 @@ export class OpensteerSessionRuntime {
       const { artifacts, output } = await this.runWithOperationTimeout(
         "computer.execute",
         async (timeout) => {
-          const output = await this.requireComputer().execute({
-            pageRef,
-            input,
-            timeout,
-          });
-          timeout.throwIfAborted();
-          this.pageRef = output.pageRef;
-          this.latestSnapshot = undefined;
-          const artifacts = await this.persistComputerArtifacts(output, timeout);
-          return {
-            artifacts,
-            output,
-          };
+          const baselineRequestIds = await this.beginMutationCapture(timeout);
+          try {
+            const output = await this.requireComputer().execute({
+              pageRef,
+              input,
+              timeout,
+            });
+            timeout.throwIfAborted();
+            this.pageRef = output.pageRef;
+            this.latestSnapshot = undefined;
+            await this.completeMutationCapture(timeout, baselineRequestIds, input.networkTag);
+            const artifacts = await this.persistComputerArtifacts(output, timeout);
+            return {
+              artifacts,
+              output,
+            };
+          } catch (error) {
+            await this.completeMutationCapture(timeout, baselineRequestIds, input.networkTag).catch(
+              () => undefined,
+            );
+            throw error;
+          }
         },
+        options,
       );
 
       await this.appendTrace({
@@ -929,7 +1252,7 @@ export class OpensteerSessionRuntime {
     }
   }
 
-  async close(): Promise<OpensteerSessionCloseOutput> {
+  async close(options: RuntimeOperationOptions = {}): Promise<OpensteerSessionCloseOutput> {
     const engine = this.engine;
     const pageRef = this.pageRef;
     const sessionRef = this.sessionRef;
@@ -937,22 +1260,27 @@ export class OpensteerSessionRuntime {
     let closeError: unknown;
 
     try {
-      await this.runWithOperationTimeout("session.close", async (timeout) => {
-        if (pageRef !== undefined) {
-          await timeout.runStep(() =>
-            this.requireEngine().closePage({
-              pageRef,
-            }),
-          );
-        }
-        if (sessionRef !== undefined) {
-          await timeout.runStep(() =>
-            this.requireEngine().closeSession({
-              sessionRef,
-            }),
-          );
-        }
-      });
+      await this.runWithOperationTimeout(
+        "session.close",
+        async (timeout) => {
+          await timeout.runStep(() => this.flushBackgroundNetworkPersistence());
+          if (pageRef !== undefined) {
+            await timeout.runStep(() =>
+              this.requireEngine().closePage({
+                pageRef,
+              }),
+            );
+          }
+          if (sessionRef !== undefined) {
+            await timeout.runStep(() =>
+              this.requireEngine().closeSession({
+                sessionRef,
+              }),
+            );
+          }
+        },
+        options,
+      );
     } catch (error) {
       closeError = error;
     }
@@ -996,6 +1324,7 @@ export class OpensteerSessionRuntime {
     TInput extends {
       readonly target: OpensteerTargetInput;
       readonly persistAsDescription?: string;
+      readonly networkTag?: string;
     },
   >(
     operation: "dom.click" | "dom.hover" | "dom.input" | "dom.scroll",
@@ -1012,6 +1341,7 @@ export class OpensteerSessionRuntime {
             readonly point?: undefined;
           };
     }>,
+    options: RuntimeOperationOptions = {},
   ): Promise<OpensteerActionResult> {
     const pageRef = await this.ensurePageRef();
     const startedAt = Date.now();
@@ -1020,18 +1350,29 @@ export class OpensteerSessionRuntime {
       const { executed, preparedTarget } = await this.runWithOperationTimeout(
         operation,
         async (timeout) => {
-          const preparedTarget = await this.prepareDomTarget(
-            pageRef,
-            operation,
-            input.target,
-            input.persistAsDescription,
-            timeout,
-          );
-          return {
-            executed: await executor(pageRef, preparedTarget.target, timeout),
-            preparedTarget,
-          };
+          const baselineRequestIds = await this.beginMutationCapture(timeout);
+          try {
+            const preparedTarget = await this.prepareDomTarget(
+              pageRef,
+              operation,
+              input.target,
+              input.persistAsDescription,
+              timeout,
+            );
+            const executed = await executor(pageRef, preparedTarget.target, timeout);
+            await this.completeMutationCapture(timeout, baselineRequestIds, input.networkTag);
+            return {
+              executed,
+              preparedTarget,
+            };
+          } catch (error) {
+            await this.completeMutationCapture(timeout, baselineRequestIds, input.networkTag).catch(
+              () => undefined,
+            );
+            throw error;
+          }
         },
+        options,
       );
       const output = toOpensteerActionResult(executed.result, preparedTarget.persistedDescription);
 
@@ -1174,6 +1515,292 @@ export class OpensteerSessionRuntime {
       },
       persistedDescription: persistAsDescription,
     };
+  }
+
+  private async queryLiveNetwork(
+    input: OpensteerNetworkQueryInput,
+    timeout: TimeoutExecutionContext,
+    options: {
+      readonly ignoreLimit?: boolean;
+    } = {},
+  ): Promise<readonly NetworkQueryRecord[]> {
+    const requestIdForRecordId =
+      input.recordId === undefined ? undefined : this.networkJournal.getRequestId(input.recordId);
+    const metadataRecords = await timeout.runStep(() =>
+      this.readLiveNetworkRecords(
+        {
+          ...(selectLiveQueryPageRef(input, this.pageRef) === undefined
+            ? {}
+            : { pageRef: selectLiveQueryPageRef(input, this.pageRef)! }),
+          includeBodies: false,
+          ...(input.recordId === undefined ? {} : { includeCurrentPageOnly: false }),
+          ...(requestIdForRecordId === undefined ? {} : { requestIds: [requestIdForRecordId] }),
+        },
+        timeout.signal,
+      ),
+    );
+    const filtered = filterNetworkQueryRecords(metadataRecords, {
+      ...(input.recordId === undefined ? {} : { recordId: input.recordId }),
+      ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
+      ...(input.actionId === undefined ? {} : { actionId: input.actionId }),
+      ...(input.tag === undefined ? {} : { tag: input.tag }),
+      ...(input.url === undefined ? {} : { url: input.url }),
+      ...(input.hostname === undefined ? {} : { hostname: input.hostname }),
+      ...(input.path === undefined ? {} : { path: input.path }),
+      ...(input.method === undefined ? {} : { method: input.method }),
+      ...(input.status === undefined ? {} : { status: input.status }),
+      ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
+    });
+    const sorted = sortLiveNetworkRecords(filtered, this.networkJournal);
+    const limit = options.ignoreLimit ? sorted.length : Math.max(1, Math.min(input.limit ?? 50, 200));
+    const limited = sorted.slice(0, limit);
+
+    if (!(input.includeBodies ?? false) || limited.length === 0) {
+      return limited;
+    }
+
+    const withBodies = await timeout.runStep(() =>
+      this.readLiveNetworkRecords(
+        {
+          ...(selectLiveQueryPageRef(input, this.pageRef) === undefined
+            ? {}
+            : { pageRef: selectLiveQueryPageRef(input, this.pageRef)! }),
+          includeBodies: true,
+          requestIds: limited.map((record) => record.record.requestId),
+          includeCurrentPageOnly: input.recordId === undefined,
+        },
+        timeout.signal,
+      ),
+    );
+    const byRequestId = new Map(withBodies.map((record) => [record.record.requestId, record]));
+    return limited.map((record) => byRequestId.get(record.record.requestId) ?? record);
+  }
+
+  private beginMutationCapture(
+    timeout: TimeoutExecutionContext,
+  ): Promise<ReadonlySet<string>> {
+    return this.readLiveRequestIds(timeout, {
+      includeCurrentPageOnly: true,
+    });
+  }
+
+  private async completeMutationCapture(
+    timeout: TimeoutExecutionContext,
+    baselineRequestIds: ReadonlySet<string>,
+    networkTag: string | undefined,
+  ): Promise<void> {
+    const records = await timeout.runStep(() =>
+      this.readLiveNetworkRecords(
+        {
+          includeBodies: false,
+          includeCurrentPageOnly: true,
+        },
+        timeout.signal,
+      ),
+    );
+    const delta = records.filter((record) => !baselineRequestIds.has(record.record.requestId));
+    if (delta.length === 0) {
+      return;
+    }
+
+    this.networkJournal.assignActionId(delta, `action:${randomUUID()}`);
+    if (networkTag === undefined) {
+      return;
+    }
+
+    this.networkJournal.addTag(delta, networkTag);
+    this.scheduleBackgroundNetworkSaveByRequestIds(
+      delta.map((record) => record.record.requestId),
+      networkTag,
+    );
+  }
+
+  private async resolveNetworkRecordByRecordId(
+    recordId: string,
+    timeout: TimeoutExecutionContext,
+    options: {
+      readonly includeBodies: boolean;
+    },
+  ): Promise<NetworkQueryRecord> {
+    const root = await this.ensureRoot();
+    const live = await this.queryLiveNetwork(
+      {
+        source: "live",
+        recordId,
+        includeBodies: options.includeBodies,
+        limit: 1,
+      },
+      timeout,
+      { ignoreLimit: true },
+    );
+    if (live.length > 0) {
+      return live[0]!;
+    }
+
+    await timeout.runStep(() => this.flushBackgroundNetworkPersistence());
+    const saved = await timeout.runStep(() =>
+      root.registry.savedNetwork.getByRecordId(recordId, {
+        includeBodies: options.includeBodies,
+      }),
+    );
+    if (!saved) {
+      throw new OpensteerProtocolError("not-found", `network record ${recordId} was not found`, {
+        details: {
+          recordId,
+          kind: "network-record",
+        },
+      });
+    }
+    return saved;
+  }
+
+  private async readLiveNetworkRecords(
+    input: {
+      readonly pageRef?: PageRef;
+      readonly requestIds?: readonly string[];
+      readonly includeBodies: boolean;
+      readonly includeCurrentPageOnly?: boolean;
+    },
+    signal: AbortSignal,
+  ): Promise<readonly NetworkQueryRecord[]> {
+    const sessionRef = this.sessionRef;
+    if (!sessionRef) {
+      throw new Error("Opensteer session is not initialized");
+    }
+
+    const records = await this.requireEngine().getNetworkRecords({
+      sessionRef,
+      ...(input.includeCurrentPageOnly === false || input.pageRef !== undefined
+        ? input.pageRef === undefined
+          ? {}
+          : { pageRef: input.pageRef }
+        : this.pageRef === undefined
+          ? {}
+          : { pageRef: this.pageRef }),
+      ...(input.requestIds === undefined ? {} : { requestIds: input.requestIds }),
+      includeBodies: input.includeBodies,
+      signal,
+    });
+    return this.networkJournal.sync(records, {
+      redactSecretHeaders: true,
+    });
+  }
+
+  private async readLiveRequestIds(
+    timeout: TimeoutExecutionContext,
+    options: {
+      readonly includeCurrentPageOnly: boolean;
+    },
+  ): Promise<ReadonlySet<string>> {
+    const records = await timeout.runStep(() =>
+      this.readLiveNetworkRecords(
+        {
+          includeBodies: false,
+          includeCurrentPageOnly: options.includeCurrentPageOnly,
+        },
+        timeout.signal,
+      ),
+    );
+    return new Set(records.map((record) => record.record.requestId));
+  }
+
+  private async observeLiveTransportDelta(
+    timeout: TimeoutExecutionContext,
+    baselineRequestIds: ReadonlySet<string>,
+    options: {
+      readonly includeCurrentPageOnly: boolean;
+    },
+  ): Promise<string | undefined> {
+    const records = await timeout.runStep(() =>
+      this.readLiveNetworkRecords(
+        {
+          includeBodies: false,
+          includeCurrentPageOnly: options.includeCurrentPageOnly,
+        },
+        timeout.signal,
+      ),
+    );
+    const delta = records.filter((record) => !baselineRequestIds.has(record.record.requestId));
+    return sortLiveNetworkRecords(delta, this.networkJournal)[0]?.recordId;
+  }
+
+  private async executeTransportRequestWithJournal(
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: import("@opensteer/browser-core").BodyPayload;
+      readonly followRedirects?: boolean;
+    },
+    timeout: TimeoutExecutionContext,
+    sessionRef: SessionRef,
+  ): Promise<OpensteerRawRequestOutput> {
+    const baselineRequestIds = await this.readLiveRequestIds(timeout, {
+      includeCurrentPageOnly: false,
+    });
+    const response = await timeout.runStep(() =>
+      this.requireEngine().executeRequest({
+        sessionRef,
+        request,
+        signal: timeout.signal,
+      }),
+    );
+    const recordId = await this.observeLiveTransportDelta(timeout, baselineRequestIds, {
+      includeCurrentPageOnly: false,
+    });
+
+    const requestResult: OpensteerRequestTransportResult = toProtocolRequestTransportResult(request);
+    const responseResult: OpensteerRequestResponseResult = toProtocolRequestResponseResult(response.data);
+    if (recordId === undefined) {
+      throw new OpensteerProtocolError(
+        "operation-failed",
+        "request.raw completed but no live network record was journaled for the transport request",
+      );
+    }
+    return {
+      recordId,
+      request: requestResult,
+      response: responseResult,
+      ...(parseStructuredResponseData(response.data) === undefined
+        ? {}
+        : { data: parseStructuredResponseData(response.data) }),
+    };
+  }
+
+  private scheduleBackgroundNetworkSaveByRequestIds(
+    requestIds: readonly string[],
+    tag: string,
+  ): void {
+    const task = (async () => {
+      const root = await this.ensureRoot();
+      const requestIdSet = new Set(requestIds);
+      const records = await this.readLiveNetworkRecords(
+        {
+          includeBodies: true,
+          includeCurrentPageOnly: false,
+          ...(this.pageRef === undefined ? {} : { pageRef: this.pageRef }),
+          requestIds,
+        },
+        new AbortController().signal,
+      );
+      const filtered = records.filter((record) => requestIdSet.has(record.record.requestId));
+      if (filtered.length === 0) {
+        return;
+      }
+      await root.registry.savedNetwork.save(filtered, tag);
+    })();
+    this.backgroundNetworkPersistence.add(task);
+    task.finally(() => {
+      this.backgroundNetworkPersistence.delete(task);
+    });
+    void task.catch(() => undefined);
+  }
+
+  private async flushBackgroundNetworkPersistence(): Promise<void> {
+    if (this.backgroundNetworkPersistence.size === 0) {
+      return;
+    }
+    await Promise.all([...this.backgroundNetworkPersistence]);
   }
 
   private toDomTargetRef(target: OpensteerTargetInput): DomTargetRef {
@@ -1460,7 +2087,8 @@ export class OpensteerSessionRuntime {
   private async resetRuntimeState(options: { readonly disposeEngine: boolean }): Promise<void> {
     const engine = this.engine;
 
-    this.requestCapture.clear();
+    this.networkJournal.clear();
+    this.backgroundNetworkPersistence.clear();
     this.sessionRef = undefined;
     this.pageRef = undefined;
     this.latestSnapshot = undefined;
@@ -1479,11 +2107,13 @@ export class OpensteerSessionRuntime {
   private runWithOperationTimeout<T>(
     operation: OpensteerSemanticOperationName,
     callback: (context: TimeoutExecutionContext) => Promise<T>,
+    options: RuntimeOperationOptions = {},
   ): Promise<T> {
     return runWithPolicyTimeout(
       this.policy.timeout,
       {
         operation,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
       },
       callback,
     );
@@ -1542,6 +2172,173 @@ function buildArtifactScope(input: {
   readonly documentEpoch?: DocumentEpoch | undefined;
 }): TraceContext {
   return buildRuntimeTraceContext(input);
+}
+
+function selectLiveQueryPageRef(
+  input: Pick<OpensteerNetworkQueryInput, "pageRef" | "recordId">,
+  currentPageRef: PageRef | undefined,
+): PageRef | undefined {
+  if (input.pageRef !== undefined) {
+    return input.pageRef;
+  }
+  if (input.recordId !== undefined) {
+    return undefined;
+  }
+  return currentPageRef;
+}
+
+function filterNetworkQueryRecords(
+  records: readonly NetworkQueryRecord[],
+  input: {
+    readonly recordId?: string;
+    readonly requestId?: string;
+    readonly actionId?: string;
+    readonly tag?: string;
+    readonly url?: string;
+    readonly hostname?: string;
+    readonly path?: string;
+    readonly method?: string;
+    readonly status?: string;
+    readonly resourceType?: string;
+  },
+): readonly NetworkQueryRecord[] {
+  return records.filter((record) => {
+    if (input.recordId !== undefined && record.recordId !== input.recordId) {
+      return false;
+    }
+    if (input.requestId !== undefined && record.record.requestId !== input.requestId) {
+      return false;
+    }
+    if (input.actionId !== undefined && record.actionId !== input.actionId) {
+      return false;
+    }
+    if (input.tag !== undefined && !(record.tags ?? []).includes(input.tag)) {
+      return false;
+    }
+    if (input.url !== undefined && !includesCaseInsensitive(record.record.url, input.url)) {
+      return false;
+    }
+    if (
+      input.hostname !== undefined &&
+      !includesCaseInsensitive(new URL(record.record.url).hostname, input.hostname)
+    ) {
+      return false;
+    }
+    if (input.path !== undefined && !includesCaseInsensitive(new URL(record.record.url).pathname, input.path)) {
+      return false;
+    }
+    if (input.method !== undefined && !includesCaseInsensitive(record.record.method, input.method)) {
+      return false;
+    }
+    if (
+      input.status !== undefined &&
+      !includesCaseInsensitive(record.record.status === undefined ? "" : String(record.record.status), input.status)
+    ) {
+      return false;
+    }
+    if (input.resourceType !== undefined && record.record.resourceType !== input.resourceType) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function sortLiveNetworkRecords(
+  records: readonly NetworkQueryRecord[],
+  journal: NetworkJournal,
+): NetworkQueryRecord[] {
+  return [...records].sort((left, right) => {
+    const leftObservedAt = journal.getObservedAt(left.recordId) ?? 0;
+    const rightObservedAt = journal.getObservedAt(right.recordId) ?? 0;
+    if (leftObservedAt !== rightObservedAt) {
+      return rightObservedAt - leftObservedAt;
+    }
+    return left.recordId.localeCompare(right.recordId);
+  });
+}
+
+function includesCaseInsensitive(value: string, search: string): boolean {
+  return value.toLowerCase().includes(search.toLowerCase());
+}
+
+function buildRawTransportRequest(input: OpensteerRawRequestInput): {
+  readonly method: string;
+  readonly url: string;
+  readonly headers?: readonly HeaderEntry[];
+  readonly body?: BrowserBodyPayload;
+  readonly followRedirects?: boolean;
+} {
+  const body = input.body === undefined ? undefined : toBrowserRequestBody(input.body);
+  const headers = [...(input.headers ?? [])];
+  if (
+    body?.contentType !== undefined &&
+    !headers.some((header) => header.name.toLowerCase() === "content-type")
+  ) {
+    headers.push({
+      name: "content-type",
+      value: body.contentType,
+    });
+  }
+
+  return {
+    method: input.method ?? "GET",
+    url: input.url,
+    ...(headers.length === 0 ? {} : { headers }),
+    ...(body === undefined ? {} : { body: body.payload }),
+    ...(input.followRedirects === undefined ? {} : { followRedirects: input.followRedirects }),
+  };
+}
+
+function toBrowserRequestBody(input: OpensteerRawRequestInput["body"]): {
+  readonly payload: BrowserBodyPayload;
+  readonly contentType?: string;
+} {
+  if (input === undefined) {
+    throw new Error("request body input is required");
+  }
+  if ("json" in input) {
+    const contentType = input.contentType ?? "application/json; charset=utf-8";
+    return {
+      payload: bodyPayloadFromUtf8(JSON.stringify(input.json), parseContentType(contentType)),
+      contentType,
+    };
+  }
+  if ("text" in input) {
+    const contentType = input.contentType ?? "text/plain; charset=utf-8";
+    return {
+      payload: bodyPayloadFromUtf8(input.text, parseContentType(contentType)),
+      contentType,
+    };
+  }
+  return {
+    payload: createBodyPayload(
+      new Uint8Array(Buffer.from(input.base64, "base64")),
+      parseContentType(input.contentType),
+    ),
+    ...(input.contentType === undefined ? {} : { contentType: input.contentType }),
+  };
+}
+
+function parseContentType(contentType: string | undefined): {
+  readonly mimeType?: string;
+  readonly charset?: string;
+} {
+  if (contentType === undefined) {
+    return {};
+  }
+  const [mimeTypePart, ...parts] = contentType.split(";");
+  const mimeType = mimeTypePart?.trim();
+  let charset: string | undefined;
+  for (const part of parts) {
+    const [name, rawValue] = part.split("=");
+    if (name?.trim().toLowerCase() === "charset" && rawValue !== undefined) {
+      charset = rawValue.trim();
+    }
+  }
+  return {
+    ...(mimeType === undefined || mimeType.length === 0 ? {} : { mimeType }),
+    ...(charset === undefined || charset.length === 0 ? {} : { charset }),
+  };
 }
 
 async function getMainFrame(engine: BrowserCoreEngine, pageRef: PageRef) {

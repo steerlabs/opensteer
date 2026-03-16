@@ -102,22 +102,29 @@ Important subtrees:
 ## Public Methods
 
 - `open(url?)`
-- `goto(url)`
+- `goto(url | { url, networkTag? })`
 - `snapshot("action" | "extraction")`
-- `click({ element | selector | description })`
-- `hover({ element | selector | description })`
-- `input({ element | selector | description, text })`
-- `scroll({ element | selector | description, direction, amount })`
+- `click({ element | selector | description, networkTag? })`
+- `hover({ element | selector | description, networkTag? })`
+- `input({ element | selector | description, text, networkTag? })`
+- `scroll({ element | selector | description, direction, amount, networkTag? })`
 - `extract({ description, schema? })`
-- `startRequestCapture({ urlPattern?, method?, includeBodies? })`
-- `stopRequestCapture()`
-- `writeRequestPlan({ key, plan })`
-- `getRequestPlan({ key })`
-- `listRequestPlans({ cursor?, limit? })`
+- `queryNetwork({ source?, recordId?, requestId?, actionId?, tag?, url?, hostname?, path?, method?, status?, resourceType?, pageRef?, includeBodies?, limit? })`
+- `saveNetwork({ tag, ...filters })`
+- `clearNetwork({ tag? })`
+- `rawRequest({ url, method?, headers?, body?, followRedirects? })`
+- `inferRequestPlan({ recordId, key, version, lifecycle? })`
+- `writeRequestPlan({ key, version, payload, lifecycle?, tags?, provenance?, freshness? })`
+- `getRequestPlan({ key, version? })`
+- `listRequestPlans({ key? })`
 - `request(key, { path?, query?, headers?, body? })`
-- `computerExecute({ action, screenshot? })`
+- `computerExecute({ action, screenshot?, networkTag? })`
 - `close()`
 
 `element` targets use counters from the latest snapshot. `description` replays a stored descriptor.
 `selector` resolves a CSS selector directly and, when not explicitly scoped, searches the current
 page before falling back to child frames.
+
+The reverse-engineering workflow is: perform a browser action, inspect traffic with
+`queryNetwork()`, experiment with `rawRequest()`, promote a record with `inferRequestPlan()`,
+then replay with `request()`.

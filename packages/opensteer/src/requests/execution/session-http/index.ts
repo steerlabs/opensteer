@@ -42,6 +42,7 @@ export async function executeSessionHttpRequest(input: {
   readonly registry: RequestPlanRegistryStore;
   readonly sessionRef: SessionRef;
   readonly request: OpensteerRequestExecuteInput;
+  readonly signal?: AbortSignal;
 }): Promise<OpensteerRequestExecuteOutput> {
   const plan = await resolveRequestPlan(input.registry, input.request.key, input.request.version);
   if (plan.payload.transport.kind !== "session-http") {
@@ -53,6 +54,7 @@ export async function executeSessionHttpRequest(input: {
     await input.engine.executeRequest({
       sessionRef: input.sessionRef,
       request: transportRequest,
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
     })
   ).data;
 

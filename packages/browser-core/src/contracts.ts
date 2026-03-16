@@ -150,7 +150,9 @@ export interface BrowserInspector {
   getNetworkRecords(input: {
     readonly sessionRef: SessionRef;
     readonly pageRef?: PageRef;
+    readonly requestIds?: readonly string[];
     readonly includeBodies?: boolean;
+    readonly signal?: AbortSignal;
   }): Promise<readonly NetworkRecord[]>;
   getCookies(input: {
     readonly sessionRef: SessionRef;
@@ -169,6 +171,7 @@ export interface SessionTransportExecutor {
   executeRequest(input: {
     readonly sessionRef: SessionRef;
     readonly request: SessionTransportRequest;
+    readonly signal?: AbortSignal;
   }): Promise<StepResult<SessionTransportResponse>>;
 }
 

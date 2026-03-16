@@ -104,17 +104,19 @@ pnpm test
 The current public surface lives in `packages/opensteer`:
 
 - SDK: `new Opensteer({ ... }).open()`, `goto()`, `snapshot()`, `click()`, `hover()`, `input()`,
-  `scroll()`, `extract()`, `startRequestCapture()`, `stopRequestCapture()`,
-  `writeRequestPlan()`, `getRequestPlan()`, `listRequestPlans()`, `request()`,
-  `computerExecute()`, `close()`
+  `scroll()`, `extract()`, `queryNetwork()`, `saveNetwork()`, `clearNetwork()`,
+  `rawRequest()`, `inferRequestPlan()`, `writeRequestPlan()`, `getRequestPlan()`,
+  `listRequestPlans()`, `request()`, `computerExecute()`, `close()`
 - CLI: `opensteer open`, `goto`, `snapshot`, `click`, `hover`, `input`, `scroll`, `extract`,
-  `request-capture-start`, `request-capture-stop`, `request-plan-write`, `request-plan-get`,
-  `request-plan-list`, `request`, `computer`, `close`
+  `network query`, `network save`, `network clear`, `request raw`, `plan infer`, `plan write`,
+  `plan get`, `plan list`, `request execute`, `computer`, `close`
 - Engine selection: `opensteer open --engine <playwright|abp>` or `OPENSTEER_ENGINE=<engine>`
   chooses the backend for new session services; existing sessions keep the engine they were
   started with
 - Session continuity: the CLI now talks to a local per-session service under
   `.opensteer/runtime/sessions/<name>/service.json`
+- Reverse engineering: the canonical workflow is browser action, `network query`, `request raw`,
+  `plan infer`, then `request execute`
 - Snapshot mode: HTML-first action and extraction snapshots with in-memory element counters
 - Computer-use mode: pixel-space actions with automatic post-action screenshots and trace data
 

@@ -5,6 +5,7 @@ export type DomActionPolicyOperation = "dom.click" | "dom.hover" | "dom.input" |
 
 export interface TimeoutResolutionInput {
   readonly operation: OpensteerSemanticOperationName;
+  readonly signal?: AbortSignal;
 }
 
 export interface TimeoutExecutionContext extends TimeoutResolutionInput {

@@ -280,6 +280,7 @@ export interface GetViewportMetricsInput {
 export interface GetNetworkRecordsInput {
   readonly sessionRef: SessionRef;
   readonly pageRef?: PageRef;
+  readonly requestIds?: readonly string[];
   readonly includeBodies?: boolean;
 }
 
@@ -824,6 +825,9 @@ const getNetworkRecordsInputSchema: JsonSchema = objectSchema(
   {
     sessionRef: sessionRefSchema,
     pageRef: pageRefSchema,
+    requestIds: arraySchema(stringSchema({ minLength: 1 }), {
+      uniqueItems: true,
+    }),
     includeBodies: {
       type: "boolean",
     },

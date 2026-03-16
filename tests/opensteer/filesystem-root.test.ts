@@ -84,6 +84,9 @@ describe("Phase 3 filesystem root", () => {
       "registry/request-plans/indexes/",
       "registry/request-plans/indexes/by-key/",
       "registry/request-plans/records/",
+      "registry/saved-network.sqlite",
+      "registry/saved-network.sqlite-shm",
+      "registry/saved-network.sqlite-wal",
       "traces/",
       "traces/runs/",
     ]);

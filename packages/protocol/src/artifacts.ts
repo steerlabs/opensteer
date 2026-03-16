@@ -15,8 +15,6 @@ import {
   oneOfSchema,
   stringSchema,
 } from "./json.js";
-import type { NetworkRecord } from "./network.js";
-import { networkRecordSchema } from "./network.js";
 import type { HtmlSnapshot, DomSnapshot, ScreenshotArtifact } from "./snapshots.js";
 import { domSnapshotSchema, htmlSnapshotSchema, screenshotArtifactSchema } from "./snapshots.js";
 import type { CookieRecord, StorageSnapshot } from "./storage.js";
@@ -26,7 +24,6 @@ export type OpensteerArtifactKind =
   | "screenshot"
   | "html-snapshot"
   | "dom-snapshot"
-  | "network-records"
   | "cookies"
   | "storage-snapshot";
 
@@ -74,11 +71,6 @@ export interface DomSnapshotArtifactRecord extends OpensteerArtifactBase {
   readonly payload: ArtifactInline<DomSnapshot> | ArtifactExternalLocation;
 }
 
-export interface NetworkRecordsArtifactRecord extends OpensteerArtifactBase {
-  readonly kind: "network-records";
-  readonly payload: ArtifactInline<readonly NetworkRecord[]> | ArtifactExternalLocation;
-}
-
 export interface CookiesArtifactRecord extends OpensteerArtifactBase {
   readonly kind: "cookies";
   readonly payload: ArtifactInline<readonly CookieRecord[]> | ArtifactExternalLocation;
@@ -93,7 +85,6 @@ export type OpensteerArtifact =
   | ScreenshotArtifactRecord
   | HtmlSnapshotArtifactRecord
   | DomSnapshotArtifactRecord
-  | NetworkRecordsArtifactRecord
   | CookiesArtifactRecord
   | StorageSnapshotArtifactRecord;
 
@@ -108,7 +99,6 @@ const artifactKindSchema: JsonSchema = enumSchema(
     "screenshot",
     "html-snapshot",
     "dom-snapshot",
-    "network-records",
     "cookies",
     "storage-snapshot",
   ] as const,
@@ -206,20 +196,6 @@ const domSnapshotArtifactRecordSchema: JsonSchema = objectSchema(
   },
 );
 
-const networkRecordsArtifactRecordSchema: JsonSchema = objectSchema(
-  {
-    ...artifactBaseSchema("network-records"),
-    payload: oneOfSchema([
-      inlineArtifactPayloadSchema(arraySchema(networkRecordSchema), "InlineNetworkRecordsArtifact"),
-      artifactExternalLocationSchema,
-    ]),
-  },
-  {
-    title: "NetworkRecordsArtifactRecord",
-    required: ["artifactId", "kind", "createdAt", "payload"],
-  },
-);
-
 const cookiesArtifactRecordSchema: JsonSchema = objectSchema(
   {
     ...artifactBaseSchema("cookies"),
@@ -253,7 +229,6 @@ export const opensteerArtifactSchema: JsonSchema = oneOfSchema(
     screenshotArtifactRecordSchema,
     htmlSnapshotArtifactRecordSchema,
     domSnapshotArtifactRecordSchema,
-    networkRecordsArtifactRecordSchema,
     cookiesArtifactRecordSchema,
     storageSnapshotArtifactRecordSchema,
   ],

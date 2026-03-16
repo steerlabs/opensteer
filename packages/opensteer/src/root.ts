@@ -14,6 +14,7 @@ import {
   type DescriptorRegistryStore,
   type RequestPlanRegistryStore,
 } from "./registry.js";
+import { createSavedNetworkStore, type SavedNetworkStore } from "./network/saved-store.js";
 import { createTraceStore, type OpensteerTraceStore } from "./traces.js";
 
 export const OPENSTEER_FILESYSTEM_ROOT_LAYOUT = "opensteer-filesystem-root";
@@ -44,6 +45,7 @@ export interface FilesystemOpensteerRoot {
   readonly registry: {
     readonly descriptors: DescriptorRegistryStore;
     readonly requestPlans: RequestPlanRegistryStore;
+    readonly savedNetwork: SavedNetworkStore;
   };
 }
 
@@ -91,6 +93,9 @@ export async function createFilesystemOpensteerRoot(
   const requestPlans = createRequestPlanRegistry(options.rootPath);
   await requestPlans.initialize();
 
+  const savedNetwork = createSavedNetworkStore(options.rootPath);
+  await savedNetwork.initialize();
+
   const traces = createTraceStore(options.rootPath, artifacts);
   await traces.initialize();
 
@@ -102,6 +107,7 @@ export async function createFilesystemOpensteerRoot(
     registry: {
       descriptors,
       requestPlans,
+      savedNetwork,
     },
   };
 }

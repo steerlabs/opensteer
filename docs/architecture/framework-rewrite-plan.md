@@ -48,8 +48,8 @@ src/
   runtimes/
     dom/
     computer-use/
+  network/
   requests/
-    capture/
     plans/
     execution/
       session-http/
@@ -68,7 +68,8 @@ Purpose of each area:
 
 - `runtimes/dom`: selector-aware DOM interaction semantics
 - `runtimes/computer-use`: coordinate and vision-driven interaction semantics
-- `requests/capture`: network evidence collection during interactive runs
+- `network`: live journal attribution plus saved-network persistence for reverse
+  engineering
 - `requests/plans`: request-plan inference, normalization, and validation
 - `requests/execution/session-http`: request execution inside the live browser
   session boundary when auth and origin state matter
@@ -77,8 +78,7 @@ Purpose of each area:
   extraction
 - `registry/request-plans`: versioned local registry of reusable API plans
 - `traces`: normalized timeline of what happened
-- `artifacts`: durable evidence such as screenshots, DOM snapshots, and network
-  captures
+- `artifacts`: durable evidence such as screenshots and DOM snapshots
 - `policy`: actionability, retry, timeout, approval, and fallback rules
 - `sdk` and `cli`: the agent-facing surfaces over the same Opensteer semantics
 
@@ -136,7 +136,8 @@ Owns the ABP backend.
 Owns product semantics and developer experience.
 
 - interaction runtimes for DOM and computer-use flows
-- request capture, request-plan compilation, and request execution transports
+- live network journaling, request-plan compilation, and request execution
+  transports
 - deterministic local registries for descriptor replay and request plans
 - artifacts
 - traces
@@ -409,18 +410,19 @@ Status: complete.
 
 ### Phase 10
 
-Add the request workflow system after the interaction runtimes are proven.
+Add the request reverse-engineering workflow after the interaction runtimes are proven.
 
-- local request capture with baseline-diff filtering over normalized network
-  records
+- live network querying over normalized engine records with explicit saved-record
+  promotion
 - typed request-plan creation, normalization, validation, and local registry
   persistence
 - `session-http` as the browser-session execution transport for local SDK, CLI,
   and service-host flows
 - Playwright and ABP parity for local browser-session HTTP execution
-- trace and artifact persistence for local request captures and request runs
+- trace persistence for request inspection and request runs, without artifact
+  capture in the normal reverse-engineering path
 - explicit header/query/path/body modeling in plans instead of replaying raw
-  captured requests
+  network records
 - `direct-http` later if detached execution is needed
 
 Status: complete.

@@ -32,6 +32,7 @@ export type {
   WriteDescriptorInput,
   WriteRequestPlanInput,
 } from "./registry.js";
+export type { SavedNetworkStore, SavedNetworkQueryInput } from "./network/saved-store.js";
 export type { JsonArray, JsonObject, JsonPrimitive, JsonValue } from "./json.js";
 export type {
   DomActionPolicyOperation,
@@ -134,9 +135,14 @@ export type {
   OpensteerComputerExecuteResult,
   OpensteerExtractOptions,
   OpensteerInputOptions,
-  OpensteerRequestCaptureOptions,
-  OpensteerRequestCaptureResult,
-  OpensteerRequestCaptureStopResult,
+  OpensteerNetworkClearOptions,
+  OpensteerNetworkClearResult,
+  OpensteerNetworkQueryOptions,
+  OpensteerNetworkQueryResult,
+  OpensteerNetworkSaveOptions,
+  OpensteerNetworkSaveResult,
+  OpensteerRawRequestOptions,
+  OpensteerRawRequestResult,
   OpensteerRequestOptions,
   OpensteerRequestResult,
   OpensteerScrollOptions,

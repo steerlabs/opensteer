@@ -764,7 +764,9 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       tabId = created.id;
     }
 
-    const controller = await this.initializePageController(session, tabId, input.openerPageRef);
+    const controller = await this.initializePageController(session, tabId, {
+      ...(input.openerPageRef === undefined ? {} : { openerPageRef: input.openerPageRef }),
+    });
     session.activePageRef = controller.pageRef;
 
     const directEvents: StepEvent[] = [
@@ -1763,10 +1765,14 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
   async getNetworkRecords(input: {
     readonly sessionRef: SessionRef;
     readonly pageRef?: PageRef;
+    readonly requestIds?: readonly string[];
     readonly includeBodies?: boolean;
+    readonly signal?: AbortSignal;
   }): Promise<readonly NetworkRecord[]> {
     const session = this.requireSession(input.sessionRef);
     const includeBodies = input.includeBodies ?? false;
+    const requestIds = input.requestIds === undefined ? undefined : new Set(input.requestIds);
+    input.signal?.throwIfAborted?.();
 
     if (input.pageRef) {
       const controller = this.requirePage(input.pageRef);
@@ -1776,21 +1782,31 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
           `page ${input.pageRef} does not belong to session ${input.sessionRef}`,
         );
       }
-      const calls = await session.rest.queryNetwork({
-        tabId: controller.tabId,
-        includeBodies,
-      });
-      return calls.map((call) => this.normalizeNetworkRecord(session, controller.pageRef, call));
+      const calls = await raceWithAbort(
+        session.rest.queryNetwork({
+          tabId: controller.tabId,
+          includeBodies,
+        }),
+        input.signal,
+      );
+      return calls
+        .map((call) => this.normalizeNetworkRecord(session, controller.pageRef, call))
+        .filter((record) => requestIds === undefined || requestIds.has(record.requestId));
     }
 
     const records = await Promise.all(
       Array.from(session.pageRefs, async (pageRef) => {
         const controller = this.requirePage(pageRef);
-        const calls = await session.rest.queryNetwork({
-          tabId: controller.tabId,
-          includeBodies,
-        });
-        return calls.map((call) => this.normalizeNetworkRecord(session, pageRef, call));
+        const calls = await raceWithAbort(
+          session.rest.queryNetwork({
+            tabId: controller.tabId,
+            includeBodies,
+          }),
+          input.signal,
+        );
+        return calls
+          .map((call) => this.normalizeNetworkRecord(session, pageRef, call))
+          .filter((record) => requestIds === undefined || requestIds.has(record.requestId));
       }),
     );
     return records.flat();
@@ -1892,6 +1908,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
   async executeRequest(input: {
     readonly sessionRef: SessionRef;
     readonly request: SessionTransportRequest;
+    readonly signal?: AbortSignal;
   }): Promise<StepResult<SessionTransportResponse>> {
     const session = this.requireSession(input.sessionRef);
     const activePageRef = session.activePageRef;
@@ -1904,26 +1921,24 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
 
     const controller = this.requirePage(activePageRef);
     const startedAt = Date.now();
-    const requestId = await session.rest.executeScript<string>(
-      controller.tabId,
-      buildSessionHttpStartScript(input.request),
-      {
+    input.signal?.throwIfAborted?.();
+    const requestId = await raceWithAbort(
+      session.rest.executeScript<string>(controller.tabId, buildSessionHttpStartScript(input.request), {
         wait_until: {
           type: "immediate",
         },
         screenshot: {
           area: "none",
         },
-      },
+      }),
+      input.signal,
     );
 
     let response: SessionHttpScriptResponse;
     try {
-      response = await this.awaitSessionHttpResponse(
-        session,
-        controller,
-        requestId,
-        input.request.timeoutMs,
+      response = await raceWithAbort(
+        this.awaitSessionHttpResponse(session, controller, requestId, input.request.timeoutMs),
+        input.signal,
       );
     } catch (error) {
       throw normalizeAbpError(error, controller.pageRef);
@@ -2123,7 +2138,12 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     ]);
 
     for (const tab of tabs) {
-      const controller = await this.initializePageController(session, tab.id);
+      const controller = await this.initializePageController(session, tab.id, {
+        metadata: {
+          url: tab.url,
+          title: tab.title,
+        },
+      });
       if (tab.active) {
         session.activePageRef = controller.pageRef;
       }
@@ -2145,18 +2165,25 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
   private async initializePageController(
     session: SessionState,
     tabId: string,
-    openerPageRef?: PageRef,
+    options: {
+      readonly openerPageRef?: PageRef;
+      readonly metadata?: {
+        readonly url?: string;
+        readonly title?: string;
+      };
+      readonly installSettleTracker?: boolean;
+    } = {},
   ): Promise<PageController> {
     const existingPageRef = session.pageRefByTabId.get(tabId);
     if (existingPageRef) {
       const existing = this.requirePage(existingPageRef);
-      if (openerPageRef !== undefined) {
-        existing.openerPageRef = openerPageRef;
+      if (options.openerPageRef !== undefined) {
+        existing.openerPageRef = options.openerPageRef;
       }
       return existing;
     }
 
-    const targetInfo = await this.waitForPageTargetInfo(session, tabId);
+    const targetInfo = await this.waitForPageTargetInfo(session, tabId, options.metadata);
     const cdp = await CdpClient.connect({
       url: derivePageWebSocketUrl(session.browserWebSocketUrl, targetInfo.targetId),
       allowedMethods: PAGE_CDP_METHOD_ALLOWLIST,
@@ -2171,7 +2198,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       framesByCdpId: new Map(),
       documentsByRef: new Map(),
       lifecycleState: "open",
-      openerPageRef,
+      openerPageRef: options.openerPageRef,
       mainFrameRef: undefined,
       lastKnownTitle: "",
       explicitCloseInFlight: false,
@@ -2239,7 +2266,9 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       if (shouldRestorePaused) {
         await this.setControllerExecutionPaused(controller, false);
       }
-      await this.actionSettler.installTracker(controller);
+      if (options.installSettleTracker !== false) {
+        await this.actionSettler.installTracker(controller);
+      }
       const frameTree = await cdp.send<{ readonly frameTree: FrameTreeNode }>("Page.getFrameTree");
       this.syncFrameTree(controller, frameTree.frameTree);
       await this.reconcileDocumentEpochs(controller);
@@ -2436,17 +2465,27 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
   private async waitForPageTargetInfo(
     session: SessionState,
     tabId: string,
+    tabMetadata?: {
+      readonly url?: string;
+      readonly title?: string;
+    },
   ): Promise<AbpCdpTargetInfo> {
     const startedAt = Date.now();
     while (Date.now() - startedAt < 30_000) {
       const targets = await session.browserCdp.send<{
         readonly targetInfos: readonly AbpCdpTargetInfo[];
       }>("Target.getTargets");
-      const match = targets.targetInfos.find(
+      const pageTargets = targets.targetInfos.filter((target) => target.type === "page");
+      const exactMatch = pageTargets.find(
         (target) => target.type === "page" && target.targetId === tabId,
       );
-      if (match) {
-        return match;
+      if (exactMatch) {
+        return exactMatch;
+      }
+
+      const fallbackMatch = resolveFallbackPageTarget(pageTargets, tabMetadata);
+      if (fallbackMatch) {
+        return fallbackMatch;
       }
       await delay(100);
     }
@@ -2590,11 +2629,10 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
             (this.readString(event.data.openerId)
               ? session.pageRefByTabId.get(this.readString(event.data.openerId)!)
               : undefined) ?? controller.pageRef;
-          const popupController = await this.initializePageController(
-            session,
-            popupTabId,
+          const popupController = await this.initializePageController(session, popupTabId, {
             openerPageRef,
-          );
+            installSettleTracker: false,
+          });
           this.queueEvent(
             popupController.pageRef,
             this.createEvent({
@@ -2799,7 +2837,14 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       const popupController = await this.initializePageController(
         session,
         tab.id,
-        openerController.pageRef,
+        {
+          openerPageRef: openerController.pageRef,
+          metadata: {
+            url: tab.url,
+            title: tab.title,
+          },
+          installSettleTracker: false,
+        },
       );
       this.queueEvent(
         popupController.pageRef,
@@ -3376,4 +3421,50 @@ export async function createAbpBrowserCoreEngine(
   options: AbpBrowserCoreEngineOptions = {},
 ): Promise<AbpBrowserCoreEngine> {
   return AbpBrowserCoreEngine.create(options);
+}
+
+function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) {
+    return promise;
+  }
+  signal.throwIfAborted?.();
+
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      signal.addEventListener(
+        "abort",
+        () => {
+          reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
+        },
+        { once: true },
+      );
+    }),
+  ]);
+}
+
+function resolveFallbackPageTarget(
+  targets: readonly AbpCdpTargetInfo[],
+  tabMetadata:
+    | {
+        readonly url?: string;
+        readonly title?: string;
+      }
+    | undefined,
+): AbpCdpTargetInfo | undefined {
+  if (tabMetadata?.url) {
+    const urlMatches = targets.filter((target) => target.url === tabMetadata.url);
+    if (urlMatches.length === 1) {
+      return urlMatches[0];
+    }
+  }
+
+  if (tabMetadata?.title) {
+    const titleMatches = targets.filter((target) => target.title === tabMetadata.title);
+    if (titleMatches.length === 1) {
+      return titleMatches[0];
+    }
+  }
+
+  return undefined;
 }

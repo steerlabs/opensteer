@@ -43,11 +43,15 @@ export interface OpensteerMcpToolResult<TStructured extends JsonObject = JsonObj
 const readOnlyOperations = new Set<OpensteerSemanticOperationName>([
   "page.snapshot",
   "dom.extract",
+  "network.query",
   "request-plan.get",
   "request-plan.list",
 ]);
 
-const destructiveOperations = new Set<OpensteerSemanticOperationName>(["session.close"]);
+const destructiveOperations = new Set<OpensteerSemanticOperationName>([
+  "network.clear",
+  "session.close",
+]);
 
 function toolNameFromOperation(operation: OpensteerSemanticOperationName): string {
   return `opensteer_${operation.replaceAll(".", "_").replaceAll("-", "_")}`;

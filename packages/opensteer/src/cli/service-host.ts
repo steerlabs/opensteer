@@ -47,8 +47,8 @@ export async function runOpensteerServiceHost(options: {
   const rootPath = runtime.rootPath;
   const token = randomBytes(24).toString("hex");
   const endpointByPath = new Map(opensteerSemanticRestEndpoints.map((endpoint) => [endpoint.path, endpoint]));
+  const scheduler = new ServiceOperationScheduler();
   let shuttingDown = false;
-  let requestQueue = Promise.resolve();
 
   const server = createServer((request, response) => {
     if (request.method === "GET" && request.url === PING_PATH) {
@@ -59,21 +59,22 @@ export async function runOpensteerServiceHost(options: {
       return;
     }
 
-    requestQueue = requestQueue
-      .then(async () => {
-        await handleRequest(request, response, {
-          runtime,
-          token,
-          endpointByPath,
-          rootPath,
-          onClosed: async () => {
-            shuttingDown = true;
-            await shutdown();
-          },
-        });
-      })
+    void handleRequest(request, response, {
+      runtime,
+      token,
+      endpointByPath,
+      rootPath,
+      scheduler,
+      onClosed: async () => {
+        shuttingDown = true;
+        await shutdown();
+      },
+    })
       .catch((error) => {
         const normalized = normalizeOpensteerError(error);
+        if (response.destroyed) {
+          return;
+        }
         if (!response.headersSent) {
           writeJson(response, httpStatusForOpensteerError(normalized), {
             error: normalized,
@@ -165,6 +166,7 @@ async function handleRequest(
     readonly token: string;
     readonly endpointByPath: ReadonlyMap<string, (typeof opensteerSemanticRestEndpoints)[number]>;
     readonly rootPath: string;
+    readonly scheduler: ServiceOperationScheduler;
     readonly onClosed: () => Promise<void>;
   },
 ): Promise<void> {
@@ -205,9 +207,34 @@ async function handleRequest(
     return;
   }
 
+  const abortController = new AbortController();
+  const abort = () => {
+    if (!abortController.signal.aborted) {
+      abortController.abort(new Error("The client disconnected before the Opensteer operation completed."));
+    }
+  };
+  request.on("aborted", abort);
+  request.on("close", abort);
+  response.on("close", () => {
+    if (!response.writableEnded) {
+      abort();
+    }
+  });
+
   try {
     assertValidSemanticOperationInput(endpoint.name, envelope.input);
-    const data = await dispatchSemanticOperation(options.runtime, endpoint.name, envelope.input);
+    const data = await options.scheduler.run({
+      operation: endpoint.name,
+      input: envelope.input,
+      signal: abortController.signal,
+      task: () =>
+        dispatchSemanticOperation(options.runtime, endpoint.name, envelope.input, {
+          signal: abortController.signal,
+        }),
+    });
+    if (response.destroyed) {
+      return;
+    }
     const result = createSuccessEnvelope(envelope, data);
     writeJson(response, 200, result);
 
@@ -218,6 +245,46 @@ async function handleRequest(
     }
   } catch (error) {
     writeProtocolError(response, envelope, normalizeOpensteerError(error));
+  }
+}
+
+class ServiceOperationScheduler {
+  private engineLane: Promise<void> = Promise.resolve();
+
+  run<T>(options: {
+    readonly operation: OpensteerSemanticOperationName;
+    readonly input: unknown;
+    readonly signal: AbortSignal;
+    readonly task: () => Promise<T>;
+  }): Promise<T> {
+    if (!requiresEngineLane(options.operation, options.input)) {
+      return options.task();
+    }
+
+    const runTask = async () => {
+      options.signal.throwIfAborted?.();
+      return options.task();
+    };
+    const scheduled = this.engineLane.then(runTask, runTask);
+    this.engineLane = scheduled.then(
+      () => undefined,
+      () => undefined,
+    );
+    return scheduled;
+  }
+}
+
+function requiresEngineLane(operation: OpensteerSemanticOperationName, input: unknown): boolean {
+  switch (operation) {
+    case "request-plan.write":
+    case "request-plan.get":
+    case "request-plan.list":
+    case "network.clear":
+      return false;
+    case "network.query":
+      return (input as { readonly source?: string } | undefined)?.source !== "saved";
+    default:
+      return true;
   }
 }
 

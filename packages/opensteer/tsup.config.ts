@@ -6,6 +6,6 @@ export default defineConfig({
   entry: ["src/index.ts", "src/cli/bin.ts"],
   format: ["esm", "cjs"],
   sourcemap: true,
-  target: "node20",
+  target: "node24",
   treeshake: true,
 });

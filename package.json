@@ -5,7 +5,7 @@
   "description": "Monorepo for the Opensteer framework rewrite.",
   "packageManager": "pnpm@10.29.3",
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "scripts": {
     "build": "pnpm -r build",
