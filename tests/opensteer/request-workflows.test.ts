@@ -219,7 +219,10 @@ describe("Phase 10 request workflows", () => {
 
     try {
       await opensteer.open(`${baseUrl}/phase10/session`);
-      await opensteer.goto(`${baseUrl}/phase10/capture`);
+      await opensteer.goto({
+        url: `${baseUrl}/phase10/capture`,
+        networkTag: "phase10-live-capture",
+      });
       const queried = await opensteer.queryNetwork({
         url: "/phase10/api/capture",
         includeBodies: true,
@@ -235,6 +238,27 @@ describe("Phase 10 request workflows", () => {
       expect(readHeader(captureRecord.record.requestHeaders, "x-csrf-token")).toBe("csrf-visible");
       expect(readHeader(captureRecord.record.responseHeaders, "set-cookie")).toBe("[redacted]");
       expect(decodeBody(captureRecord.record.requestBody)).toContain('"hello":"capture"');
+      expect(captureRecord.actionId).toEqual(expect.any(String));
+      expect(captureRecord.tags).toContain("phase10-live-capture");
+
+      const filteredLive = await opensteer.queryNetwork({
+        hostname: new URL(baseUrl).hostname,
+        path: "/phase10/api/capture",
+        method: "po",
+        status: "20",
+        resourceType: "fetch",
+      });
+      expect(filteredLive.records.map((record) => record.recordId)).toContain(captureRecord.recordId);
+
+      const byAction = await opensteer.queryNetwork({
+        actionId: captureRecord.actionId,
+      });
+      expect(byAction.records.map((record) => record.recordId)).toContain(captureRecord.recordId);
+
+      const byTag = await opensteer.queryNetwork({
+        tag: "phase10-live-capture",
+      });
+      expect(byTag.records.map((record) => record.recordId)).toContain(captureRecord.recordId);
 
       const saved = await opensteer.saveNetwork({
         recordId: captureRecord.recordId,
@@ -548,6 +572,24 @@ describe("Phase 10 request workflows", () => {
       "/phase10/api/capture",
       "--include-bodies",
       "true",
+      "--output",
+      networkOutputPath,
+    ]);
+    await runCliCommand(rootDir, [
+      "network",
+      "query",
+      "--name",
+      sessionName,
+      "--hostname",
+      new URL(baseUrl).hostname,
+      "--path",
+      "/phase10/api/capture",
+      "--method",
+      "POST",
+      "--status",
+      "200",
+      "--resource-type",
+      "fetch",
       "--output",
       networkOutputPath,
     ]);

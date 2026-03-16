@@ -373,6 +373,12 @@ export class AbpRestClient implements AbpRestClientLike {
   queryNetwork(input: {
     readonly tabId?: string;
     readonly includeBodies: boolean;
+    readonly url?: string;
+    readonly hostname?: string;
+    readonly path?: string;
+    readonly method?: string;
+    readonly status?: string;
+    readonly resourceType?: string;
   }): Promise<readonly AbpNetworkCall[]> {
     const params = new URLSearchParams();
     if (input.tabId !== undefined) {
@@ -380,6 +386,24 @@ export class AbpRestClient implements AbpRestClientLike {
     }
     if (input.includeBodies) {
       params.set("include_body", "true");
+    }
+    if (input.url !== undefined) {
+      params.set("url", input.url);
+    }
+    if (input.hostname !== undefined) {
+      params.set("hostname", input.hostname);
+    }
+    if (input.path !== undefined) {
+      params.set("url_path", input.path);
+    }
+    if (input.method !== undefined) {
+      params.set("method", input.method);
+    }
+    if (input.status !== undefined) {
+      params.set("status", input.status);
+    }
+    if (input.resourceType !== undefined) {
+      params.set("resource_type", input.resourceType);
     }
     return this.requestJson(`/network?${params.toString()}`, {}, normalizeNetworkQueryResponse);
   }

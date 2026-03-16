@@ -173,6 +173,34 @@ describe("engine-abp internals", () => {
     });
   });
 
+  test("forwards native ABP network filters at the REST boundary", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ requests: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    const client = new AbpRestClient("http://127.0.0.1:9222/api/v1");
+    await client.queryNetwork({
+      tabId: "tab-1",
+      includeBodies: true,
+      url: "/api/orders",
+      hostname: "example.com",
+      path: "/api",
+      method: "POST",
+      status: "200",
+      resourceType: "fetch",
+    });
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://127.0.0.1:9222/api/v1/network?tab_id=tab-1&include_body=true&url=%2Fapi%2Forders&hostname=example.com&url_path=%2Fapi&method=POST&status=200&resource_type=fetch",
+      expect.objectContaining({
+        method: "GET",
+      }),
+    );
+  });
+
   test("can omit the default ABP action-complete timeout when the caller owns budgeting", () => {
     expect(buildInputActionRequest({ omitDefaultTimeout: true })).toEqual({
       wait_until: {

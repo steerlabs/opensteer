@@ -7,6 +7,7 @@ import {
 import type {
   BrowserCoreEngine,
   FakeBrowserCoreEngineOptions,
+  GetNetworkRecordsInput,
   SessionTransportRequest,
   SessionTransportResponse,
 } from "./contracts.js";
@@ -51,7 +52,12 @@ import {
   type SessionRef,
 } from "./identity.js";
 import type { FrameInfo, PageInfo, PageLifecycleState } from "./metadata.js";
-import { bodyPayloadFromUtf8, createHeaderEntry, type NetworkRecord } from "./network.js";
+import {
+  bodyPayloadFromUtf8,
+  createHeaderEntry,
+  matchesNetworkRecordFilters,
+  type NetworkRecord,
+} from "./network.js";
 import {
   findDomSnapshotNodeByRef,
   type DomSnapshot,
@@ -740,13 +746,7 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
     return clone(this.requirePage(input.pageRef).viewportMetrics);
   }
 
-  async getNetworkRecords(input: {
-    readonly sessionRef: SessionRef;
-    readonly pageRef?: PageRef;
-    readonly requestIds?: readonly string[];
-    readonly includeBodies?: boolean;
-    readonly signal?: AbortSignal;
-  }): Promise<readonly NetworkRecord[]> {
+  async getNetworkRecords(input: GetNetworkRecordsInput): Promise<readonly NetworkRecord[]> {
     this.requireCapability("inspector.network");
     input.signal?.throwIfAborted?.();
     const session = this.requireSession(input.sessionRef);
@@ -761,7 +761,11 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
       const document = this.requireDocument(mainFrame.frameInfo.documentRef);
       records.push(
         ...document.networkRecords
-          .filter((record) => requestIds === undefined || requestIds.has(record.requestId))
+          .filter(
+            (record) =>
+              (requestIds === undefined || requestIds.has(record.requestId)) &&
+              matchesNetworkRecordFilters(record, input),
+          )
           .map((record) => clone(record)),
       );
     }
@@ -1461,6 +1465,11 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
           point.y / metrics.devicePixelRatio + metrics.scrollOffset.y,
         );
     }
+
+    throw createBrowserCoreError(
+      "invalid-argument",
+      `coordinate space ${coordinateSpace} is not supported by the fake engine`,
+    );
   }
 
   private hitTestKey(point: Point, ignorePointerEventsNone: boolean): string {

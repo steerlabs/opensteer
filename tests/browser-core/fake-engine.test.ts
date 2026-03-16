@@ -367,6 +367,78 @@ describe("FakeBrowserCoreEngine", () => {
     expect(filtered[0]?.requestBody).toBeUndefined();
   });
 
+  test("applies shared live network filters before cloning records", async () => {
+    const engine = createFakeBrowserCoreEngine();
+    const sessionRef = await engine.createSession();
+    await engine.createPage({
+      sessionRef,
+      url: "https://example.com",
+    });
+
+    await engine.executeRequest({
+      sessionRef,
+      request: {
+        method: "GET",
+        url: "https://api.example.com/items?kind=all",
+      },
+    });
+    await engine.executeRequest({
+      sessionRef,
+      request: {
+        method: "POST",
+        url: "https://api.example.com/orders?draft=yes",
+      },
+    });
+    await engine.executeRequest({
+      sessionRef,
+      request: {
+        method: "GET",
+        url: "https://static.example.org/logo.svg",
+      },
+    });
+
+    const all = await engine.getNetworkRecords({
+      sessionRef,
+      includeBodies: false,
+    });
+    const orderRequestId = all.find((record) => record.url.includes("/orders"))!.requestId;
+
+    const filtered = await engine.getNetworkRecords({
+      sessionRef,
+      includeBodies: false,
+      hostname: "api.example.com",
+      path: "/orders",
+      method: "po",
+      status: "20",
+      resourceType: "fetch",
+    });
+    expect(filtered).toEqual([
+      expect.objectContaining({
+        requestId: orderRequestId,
+        url: "https://api.example.com/orders?draft=yes",
+      }),
+    ]);
+
+    const byUrl = await engine.getNetworkRecords({
+      sessionRef,
+      includeBodies: false,
+      url: "kind=all",
+    });
+    expect(byUrl).toEqual([
+      expect.objectContaining({
+        url: "https://api.example.com/items?kind=all",
+      }),
+    ]);
+
+    const mismatched = await engine.getNetworkRecords({
+      sessionRef,
+      includeBodies: false,
+      requestIds: [orderRequestId],
+      hostname: "static.example.org",
+    });
+    expect(mismatched).toEqual([]);
+  });
+
   test("filters cookies by origin semantics and can omit storage surfaces", async () => {
     const engine = createFakeBrowserCoreEngine();
     const sessionRef = await engine.createSession();

@@ -122,6 +122,15 @@ export interface NetworkRecord {
   readonly responseBody?: BodyPayload;
 }
 
+export interface NetworkRecordFilterInput {
+  readonly url?: string;
+  readonly hostname?: string;
+  readonly path?: string;
+  readonly method?: string;
+  readonly status?: string;
+  readonly resourceType?: NetworkResourceType;
+}
+
 export function createHeaderEntry(name: string, value: string): HeaderEntry {
   return { name, value };
 }
@@ -167,4 +176,54 @@ export function bodyPayloadFromUtf8(
       : { originalByteLength: options.originalByteLength }),
     charset: "utf-8",
   });
+}
+
+export function matchesNetworkRecordFilters(
+  record: Pick<NetworkRecord, "url" | "method" | "status" | "resourceType">,
+  filters: NetworkRecordFilterInput,
+): boolean {
+  if (filters.url !== undefined && !includesCaseInsensitive(record.url, filters.url)) {
+    return false;
+  }
+
+  let parsedUrl: URL | undefined;
+  const getParsedUrl = (): URL => {
+    parsedUrl ??= new URL(record.url);
+    return parsedUrl;
+  };
+
+  if (filters.hostname !== undefined) {
+    const hostname = getParsedUrl().hostname;
+    if (!includesCaseInsensitive(hostname, filters.hostname)) {
+      return false;
+    }
+  }
+
+  if (filters.path !== undefined) {
+    const path = getParsedUrl().pathname;
+    if (!includesCaseInsensitive(path, filters.path)) {
+      return false;
+    }
+  }
+
+  if (filters.method !== undefined && !includesCaseInsensitive(record.method, filters.method)) {
+    return false;
+  }
+
+  if (
+    filters.status !== undefined &&
+    !includesCaseInsensitive(record.status === undefined ? "" : String(record.status), filters.status)
+  ) {
+    return false;
+  }
+
+  if (filters.resourceType !== undefined && record.resourceType !== filters.resourceType) {
+    return false;
+  }
+
+  return true;
+}
+
+function includesCaseInsensitive(value: string, query: string): boolean {
+  return value.toLowerCase().includes(query.toLowerCase());
 }

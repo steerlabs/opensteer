@@ -246,6 +246,20 @@ describe("protocol capabilities and errors", () => {
       "inspect.viewportMetrics",
     ]);
   });
+
+  test("validates inspect.get-network-records filters through the public schema", () => {
+    const inspectNetworkSpec = opensteerOperationSpecificationMap["inspect.get-network-records"];
+    expect(inspectNetworkSpec?.inputSchema).toMatchObject({
+      properties: expect.objectContaining({
+        url: expect.any(Object),
+        hostname: expect.any(Object),
+        path: expect.any(Object),
+        method: expect.any(Object),
+        status: expect.any(Object),
+        resourceType: expect.any(Object),
+      }),
+    });
+  });
 });
 
 describe("protocol surface descriptors", () => {
