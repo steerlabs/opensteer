@@ -56,7 +56,6 @@ export function createAbpComputerUseBridge(context: {
     };
   };
   drainQueuedEvents(pageRef: PageRef): readonly StepEvent[];
-  getViewportMetrics(pageRef: PageRef): Promise<ViewportMetrics>;
 }): ComputerUseBridge {
   return {
     async execute(input) {
@@ -212,35 +211,11 @@ export function createAbpComputerUseBridge(context: {
       }
       await context.flushDomUpdateTask(resultController);
 
-      const screenshotArtifact = await materializeScreenshotArtifact({
+      const display = materializeDisplayContract({
         context,
-        session,
         controller: resultController,
-        fallback: screenshot,
-        signal: input.signal,
+        response,
       });
-
-      let viewport: ViewportMetrics;
-      try {
-        viewport = await context.getViewportMetrics(resultController.pageRef);
-      } catch {
-        viewport = viewportMetricsFromResponse(response) ?? {
-          layoutViewport: {
-            origin: { x: 0, y: 0 },
-            size: { width: 0, height: 0 },
-          },
-          visualViewport: {
-            origin: { x: 0, y: 0 },
-            offsetWithinLayoutViewport: createScrollOffset(0, 0),
-            size: { width: 0, height: 0 },
-          },
-          scrollOffset: createScrollOffset(0, 0),
-          contentSize: { width: 0, height: 0 },
-          devicePixelRatio: createDevicePixelRatio(1),
-          pageScaleFactor: createPageScaleFactor(1),
-          pageZoomFactor: createPageZoomFactor(1),
-        };
-      }
 
       const popupQueuedEvents = popupPageRefs.flatMap((pageRef) =>
         pageRef === controller.pageRef ? [] : context.drainQueuedEvents(pageRef),
@@ -248,8 +223,8 @@ export function createAbpComputerUseBridge(context: {
 
       return {
         pageRef: resultController.pageRef,
-        screenshot: screenshotArtifact,
-        viewport,
+        screenshot: display.screenshot,
+        viewport: display.viewport,
         events: [
           ...context.drainQueuedEvents(controller.pageRef),
           ...actionEvents,
@@ -275,40 +250,39 @@ function toAbpScreenshotOptions(screenshot: NormalizedComputerScreenshotOptions)
   };
 }
 
-async function materializeScreenshotArtifact(input: {
+function materializeDisplayContract(input: {
   readonly context: Parameters<typeof createAbpComputerUseBridge>[0];
-  readonly session: SessionState;
   readonly controller: PageController;
-  readonly fallback: ReturnType<typeof toAbpScreenshotOptions>;
-  readonly signal: AbortSignal;
-}): Promise<ScreenshotArtifact> {
-  const response = await input.session.rest.screenshotTab(
-    input.controller.tabId,
-    buildImmediateScreenshotRequest(input.fallback),
-    {
-      signal: input.signal,
-    },
-  );
-  const screenshot = response.screenshot_after;
+  readonly response: AbpActionResponse;
+}): {
+  readonly screenshot: ScreenshotArtifact;
+  readonly viewport: ViewportMetrics;
+} {
+  const screenshot = input.response.screenshot_after;
   if (screenshot === undefined) {
     throw new Error(
       `ABP action response for ${input.controller.pageRef} did not include screenshot_after`,
     );
   }
 
+  const viewport = viewportMetricsFromResponse(input.response, screenshot);
   const mainFrame = input.context.requireMainFrame(input.controller);
-  const format = (screenshot.format as NormalizedComputerScreenshotOptions["format"] | undefined) ?? "png";
+  const format =
+    (screenshot.format as NormalizedComputerScreenshotOptions["format"] | undefined) ?? "png";
   return {
-    pageRef: input.controller.pageRef,
-    frameRef: mainFrame.frameRef,
-    documentRef: mainFrame.currentDocument.documentRef,
-    documentEpoch: mainFrame.currentDocument.documentEpoch,
-    payload: createBodyPayload(new Uint8Array(Buffer.from(screenshot.data, "base64")), {
-      mimeType: `image/${format}`,
-    }),
-    format,
-    size: createSize(screenshot.width, screenshot.height),
-    coordinateSpace: "layout-viewport-css",
+    screenshot: {
+      pageRef: input.controller.pageRef,
+      frameRef: mainFrame.frameRef,
+      documentRef: mainFrame.currentDocument.documentRef,
+      documentEpoch: mainFrame.currentDocument.documentEpoch,
+      payload: createBodyPayload(new Uint8Array(Buffer.from(screenshot.data, "base64")), {
+        mimeType: `image/${format}`,
+      }),
+      format,
+      size: createSize(screenshot.width, screenshot.height),
+      coordinateSpace: "layout-viewport-css",
+    },
+    viewport,
   };
 }
 
@@ -332,18 +306,37 @@ function timingFromResponse(
   };
 }
 
-function viewportMetricsFromResponse(response: AbpActionResponse): ViewportMetrics | undefined {
+function viewportMetricsFromResponse(
+  response: AbpActionResponse,
+  screenshot: NonNullable<AbpActionResponse["screenshot_after"]>,
+): ViewportMetrics {
   const scroll = response.scroll;
   if (scroll === undefined) {
-    return undefined;
+    throw new Error("ABP action response did not include scroll metrics for screenshot_after");
   }
 
-  const x = scroll.scrollX ?? scroll.horizontal_px ?? 0;
-  const y = scroll.scrollY ?? scroll.vertical_px ?? 0;
-  const pageWidth = scroll.pageWidth ?? scroll.page_width ?? 0;
-  const pageHeight = scroll.pageHeight ?? scroll.page_height ?? 0;
-  const viewportWidth = scroll.viewportWidth ?? scroll.viewport_width ?? 0;
-  const viewportHeight = scroll.viewportHeight ?? scroll.viewport_height ?? 0;
+  const x = scroll.scrollX ?? scroll.horizontal_px;
+  const y = scroll.scrollY ?? scroll.vertical_px;
+  const pageWidth = scroll.pageWidth ?? scroll.page_width;
+  const pageHeight = scroll.pageHeight ?? scroll.page_height;
+  const viewportWidth = scroll.viewportWidth ?? scroll.viewport_width;
+  const viewportHeight = scroll.viewportHeight ?? scroll.viewport_height;
+
+  if (
+    x === undefined ||
+    y === undefined ||
+    pageWidth === undefined ||
+    pageHeight === undefined ||
+    viewportWidth === undefined ||
+    viewportHeight === undefined
+  ) {
+    throw new Error("ABP action response did not include a complete screenshot viewport contract");
+  }
+  if (viewportWidth !== screenshot.width || viewportHeight !== screenshot.height) {
+    throw new Error(
+      `ABP screenshot_after size ${screenshot.width}x${screenshot.height} did not match viewport ${viewportWidth}x${viewportHeight}`,
+    );
+  }
 
   return {
     layoutViewport: {

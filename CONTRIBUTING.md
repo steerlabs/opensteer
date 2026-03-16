@@ -15,6 +15,21 @@ Thanks for contributing to Opensteer.
 - `pnpm test`
 - `pnpm check`
 - `pnpm format`
+- `pnpm run opensteer:local -- <args>` for local rewrite CLI testing in this repo
+
+## Local CLI Workflow
+
+Use `pnpm run opensteer:local -- ...` when testing the rewrite CLI from this workspace.
+
+Do not use bare `opensteer ...` in this repo. That can resolve to a globally installed CLI instead of the source in this checkout.
+
+Examples:
+
+```bash
+pnpm run opensteer:local -- open https://example.com --headless true
+pnpm run opensteer:local -- snapshot action
+pnpm run opensteer:local -- close
+```
 
 ## Project Rules
 

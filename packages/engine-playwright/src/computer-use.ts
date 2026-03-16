@@ -1,15 +1,8 @@
 import {
-  createBodyPayload,
-  createDevicePixelRatio,
-  createPageScaleFactor,
-  createPageZoomFactor,
-  createSize,
-  createScrollOffset,
   type PageRef,
   type Point,
   type ScreenshotArtifact,
   type StepEvent,
-  type ViewportMetrics,
 } from "@opensteer/browser-core";
 import type {
   ComputerUseBridge,
@@ -21,6 +14,7 @@ import type { Frame } from "playwright";
 
 import { mapScreenshotFormat } from "./normalize.js";
 import type { FrameState, PageController } from "./types.js";
+import { captureLayoutViewportScreenshotArtifact } from "./viewport-screenshot.js";
 
 const DECORATION_NAMESPACE = "opensteer-computer-use";
 
@@ -30,7 +24,6 @@ export function createPlaywrightComputerUseBridge(context: {
   flushDomUpdateTask(controller: PageController): Promise<void>;
   requireMainFrame(controller: PageController): FrameState;
   drainQueuedEvents(pageRef: PageRef): readonly StepEvent[];
-  getViewportMetrics(pageRef: PageRef): Promise<ViewportMetrics>;
   withModifiers(
     page: PageController["page"],
     modifiers: readonly OpensteerComputerKeyModifier[] | undefined,
@@ -54,9 +47,7 @@ export function createPlaywrightComputerUseBridge(context: {
           await context.withModifiers(actionController.page, action.modifiers, async () => {
             await actionController.page.mouse.click(action.x, action.y, {
               ...(action.button === undefined ? {} : { button: action.button }),
-              ...(action.clickCount === undefined
-                ? {}
-                : { clickCount: action.clickCount }),
+              ...(action.clickCount === undefined ? {} : { clickCount: action.clickCount }),
             });
           });
           break;
@@ -128,11 +119,10 @@ export function createPlaywrightComputerUseBridge(context: {
         resultController.pageRef === actionController.pageRef
           ? cursorByPageRef.get(resultController.pageRef)
           : undefined;
-      const screenshot = await captureScreenshotWithDecorations(resultController, {
+      const captured = await captureScreenshotWithDecorations(resultController, {
         screenshot: input.screenshot,
         ...(screenshotCursor === undefined ? {} : { cursorPoint: screenshotCursor }),
       });
-      const viewport = await context.getViewportMetrics(resultController.pageRef);
 
       const events = [
         ...actionEvents,
@@ -143,8 +133,8 @@ export function createPlaywrightComputerUseBridge(context: {
 
       return {
         pageRef: resultController.pageRef,
-        screenshot,
-        viewport,
+        screenshot: captured.screenshot,
+        viewport: captured.viewport,
         events,
         timing: {
           actionMs,
@@ -204,7 +194,12 @@ async function captureScreenshotWithDecorations(
     readonly screenshot: NormalizedComputerScreenshotOptions;
     readonly cursorPoint?: Point;
   },
-): Promise<ScreenshotArtifact> {
+): Promise<{
+  readonly screenshot: ScreenshotArtifact;
+  readonly viewport: Awaited<
+    ReturnType<typeof captureLayoutViewportScreenshotArtifact>
+  >["viewport"];
+}> {
   const shouldDecorate =
     options.screenshot.annotations.length > 0 ||
     (options.screenshot.includeCursor && options.cursorPoint !== undefined);
@@ -219,71 +214,22 @@ async function captureScreenshotWithDecorations(
   }
 
   try {
-    const metrics = await getViewportMetricsFromCdp(controller);
     const format = mapScreenshotFormat(options.screenshot.format);
-    const response = await controller.cdp.send("Page.captureScreenshot", {
-      format,
-      fromSurface: true,
-    });
     const mainFrame = requireMainFrameState(controller);
-    return {
-      pageRef: controller.pageRef,
-      frameRef: mainFrame.frameRef,
-      documentRef: mainFrame.currentDocument.documentRef,
-      documentEpoch: mainFrame.currentDocument.documentEpoch,
-      payload: createBodyPayload(new Uint8Array(Buffer.from(response.data, "base64")), {
-        mimeType: `image/${format}`,
-      }),
+    const { artifact, viewport } = await captureLayoutViewportScreenshotArtifact(
+      controller,
+      mainFrame,
       format,
-      size: createSize(metrics.visualViewport.size.width, metrics.visualViewport.size.height),
-      coordinateSpace: "layout-viewport-css",
+    );
+    return {
+      screenshot: artifact,
+      viewport,
     };
   } finally {
     if (shouldDecorate) {
       await cleanupDecorations(controller);
     }
   }
-}
-
-async function getViewportMetricsFromCdp(controller: PageController): Promise<ViewportMetrics> {
-  const layout = await controller.cdp.send("Page.getLayoutMetrics");
-  const screenInfos = await controller.cdp.send("Emulation.getScreenInfos");
-  const primaryScreen =
-    screenInfos.screenInfos.find((screen: { readonly isPrimary?: boolean }) => screen.isPrimary) ??
-    screenInfos.screenInfos[0];
-  const pageZoomFactor = layout.cssVisualViewport.zoom ?? 1;
-  const devicePixelRatio = (primaryScreen?.devicePixelRatio ?? 1) * pageZoomFactor;
-  return {
-    layoutViewport: {
-      origin: { x: layout.cssLayoutViewport.pageX, y: layout.cssLayoutViewport.pageY },
-      size: {
-        width: layout.cssLayoutViewport.clientWidth,
-        height: layout.cssLayoutViewport.clientHeight,
-      },
-    },
-    visualViewport: {
-      origin: { x: layout.cssVisualViewport.pageX, y: layout.cssVisualViewport.pageY },
-      offsetWithinLayoutViewport: {
-        x: layout.cssVisualViewport.offsetX,
-        y: layout.cssVisualViewport.offsetY,
-      },
-      size: {
-        width: layout.cssVisualViewport.clientWidth,
-        height: layout.cssVisualViewport.clientHeight,
-      },
-    },
-    scrollOffset: {
-      x: layout.cssVisualViewport.pageX,
-      y: layout.cssVisualViewport.pageY,
-    },
-    contentSize: {
-      width: layout.cssContentSize.width,
-      height: layout.cssContentSize.height,
-    },
-    devicePixelRatio: createDevicePixelRatio(devicePixelRatio),
-    pageScaleFactor: createPageScaleFactor(layout.cssVisualViewport.scale),
-    pageZoomFactor: createPageZoomFactor(pageZoomFactor),
-  };
 }
 
 function requireMainFrameState(controller: PageController): FrameState {
@@ -317,9 +263,16 @@ async function injectDecorations(
 
 async function cleanupDecorations(controller: PageController): Promise<void> {
   await Promise.all(
-    controller.page.frames().map((frame) =>
-      runFrameScript(frame, { annotations: [] }, frame === controller.page.mainFrame(), "cleanup"),
-    ),
+    controller.page
+      .frames()
+      .map((frame) =>
+        runFrameScript(
+          frame,
+          { annotations: [] },
+          frame === controller.page.mainFrame(),
+          "cleanup",
+        ),
+      ),
   );
 }
 

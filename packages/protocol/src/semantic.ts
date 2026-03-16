@@ -1050,7 +1050,8 @@ export const opensteerSemanticOperationSpecifications = [
   }),
   defineSemanticOperationSpec<unknown, OpensteerRequestCaptureStopOutput>({
     name: "request-capture.stop",
-    description: "Stop the active request capture, persist the network artifact, and return records.",
+    description:
+      "Stop the active request capture, persist the network artifact, and return records.",
     inputSchema: objectSchema(
       {},
       {
@@ -1091,7 +1092,7 @@ export const opensteerSemanticOperationSpecifications = [
   defineSemanticOperationSpec<OpensteerComputerExecuteInput, OpensteerComputerExecuteOutput>({
     name: "computer.execute",
     description:
-      "Execute a computer-use action in viewport pixels and return the post-action screenshot.",
+      "Execute a computer-use action in layout-viewport CSS pixels and return the post-action screenshot of the actionable page area in that same space.",
     inputSchema: opensteerComputerExecuteInputSchema,
     outputSchema: opensteerComputerExecuteOutputSchema,
     requiredCapabilities: ["artifacts.screenshot", "inspect.viewportMetrics"],
