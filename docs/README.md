@@ -3,11 +3,6 @@
 The documentation set is intentionally small while the rewrite foundation is
 still being established.
 
-## Architecture
-
-- [Architecture index](architecture/README.md)
-- [Framework rewrite plan](architecture/framework-rewrite-plan.md)
-
 ## Scope
 
 Documentation in this repository should explain:

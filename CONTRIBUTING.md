@@ -33,8 +33,6 @@ pnpm run opensteer:local -- close
 
 ## Project Rules
 
-- Read [docs/architecture/framework-rewrite-plan.md](docs/architecture/framework-rewrite-plan.md)
-  before making structural changes.
 - Keep `browser-core` engine-neutral and small.
 - Keep public wire schemas in `packages/protocol`.
 - Keep product semantics in `packages/opensteer`.

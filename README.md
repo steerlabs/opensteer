@@ -28,8 +28,6 @@ The repository now has:
 - the `packages/opensteer/src/runtimes/computer-use` Phase 9 computer-use runtime is
   implemented and tested, with engine-specific adapters for Playwright and ABP
 - the `packages/opensteer/src/requests` Phase 10 request workflow system is implemented and tested
-- the rewrite architecture and phased rollout plan are documented
-
 ## Repository Layout
 
 ```text
@@ -42,7 +40,6 @@ packages/
 apps/
   opensteer-cloud/
 docs/
-  architecture/
 ```
 
 Inside `packages/opensteer`, the current target structure is:
@@ -86,8 +83,6 @@ runtime/
 
 ## Key Documents
 
-- [Rewrite plan and phased roadmap](docs/architecture/framework-rewrite-plan.md)
-- [Architecture docs index](docs/architecture/README.md)
 - [Documentation index](docs/README.md)
 
 ## Local Development
