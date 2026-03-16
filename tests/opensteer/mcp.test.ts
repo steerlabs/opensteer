@@ -69,16 +69,26 @@ describe("Opensteer MCP server", () => {
         (entry): entry is Extract<(typeof result.content)[number], { readonly type: "image" }> =>
           entry.type === "image",
       );
-      expect(image?.mimeType).toBe("image/png");
+      expect(image?.mimeType).toBe("image/webp");
       expect(typeof image?.data).toBe("string");
       expect(image?.data.length).toBeGreaterThan(0);
       expect(
         (
           result.structuredContent as {
-            readonly screenshot?: { readonly payload?: { readonly data?: string } };
+            readonly screenshot?: {
+              readonly format?: string;
+              readonly payload?: { readonly data?: string };
+            };
           }
         ).screenshot?.payload?.data,
       ).toBe(image?.data);
+      expect(
+        (
+          result.structuredContent as {
+            readonly screenshot?: { readonly format?: string };
+          }
+        ).screenshot?.format,
+      ).toBe("webp");
 
       const rawResult = await client.callTool({
         name: "opensteer_request_raw",

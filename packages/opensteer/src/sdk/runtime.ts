@@ -86,7 +86,10 @@ import {
   createComputerUseRuntime,
   type ComputerUseRuntime,
 } from "../runtimes/computer-use/index.js";
-import { defaultOpensteerEngineFactory } from "../internal/engine-selection.js";
+import {
+  defaultOpensteerEngineFactory,
+  normalizeOpensteerBrowserContextOptions,
+} from "../internal/engine-selection.js";
 import { executeSessionHttpRequest } from "../requests/execution/session-http/index.js";
 import { inferRequestPlanFromNetworkRecord } from "../requests/inference.js";
 import { normalizeRequestPlanPayload } from "../requests/plans/index.js";
@@ -197,9 +200,12 @@ export class OpensteerSessionRuntime {
 
     if ((await this.ensureLiveRuntimeBinding()) === "live") {
       if (input.url !== undefined) {
-        return this.goto({
-          url: input.url,
-        }, options);
+        return this.goto(
+          {
+            url: input.url,
+          },
+          options,
+        );
       }
       return this.readSessionState();
     }
@@ -451,16 +457,21 @@ export class OpensteerSessionRuntime {
   ): Promise<OpensteerActionResult> {
     assertValidSemanticOperationInput("dom.click", input);
 
-    return this.runDomAction("dom.click", input, async (pageRef, target, timeout) => {
-      const result = await this.requireDom().click({
-        pageRef,
-        target,
-        timeout,
-      });
-      return {
-        result,
-      };
-    }, options);
+    return this.runDomAction(
+      "dom.click",
+      input,
+      async (pageRef, target, timeout) => {
+        const result = await this.requireDom().click({
+          pageRef,
+          target,
+          timeout,
+        });
+        return {
+          result,
+        };
+      },
+      options,
+    );
   }
 
   async hover(
@@ -469,16 +480,21 @@ export class OpensteerSessionRuntime {
   ): Promise<OpensteerActionResult> {
     assertValidSemanticOperationInput("dom.hover", input);
 
-    return this.runDomAction("dom.hover", input, async (pageRef, target, timeout) => {
-      const result = await this.requireDom().hover({
-        pageRef,
-        target,
-        timeout,
-      });
-      return {
-        result,
-      };
-    }, options);
+    return this.runDomAction(
+      "dom.hover",
+      input,
+      async (pageRef, target, timeout) => {
+        const result = await this.requireDom().hover({
+          pageRef,
+          target,
+          timeout,
+        });
+        return {
+          result,
+        };
+      },
+      options,
+    );
   }
 
   async input(
@@ -487,21 +503,26 @@ export class OpensteerSessionRuntime {
   ): Promise<OpensteerActionResult> {
     assertValidSemanticOperationInput("dom.input", input);
 
-    return this.runDomAction("dom.input", input, async (pageRef, target, timeout) => {
-      const resolved = await this.requireDom().input({
-        pageRef,
-        target,
-        text: input.text,
-        ...(input.pressEnter === undefined ? {} : { pressEnter: input.pressEnter }),
-        timeout,
-      });
-      return {
-        result: {
-          resolved,
-          point: undefined,
-        },
-      };
-    }, options);
+    return this.runDomAction(
+      "dom.input",
+      input,
+      async (pageRef, target, timeout) => {
+        const resolved = await this.requireDom().input({
+          pageRef,
+          target,
+          text: input.text,
+          ...(input.pressEnter === undefined ? {} : { pressEnter: input.pressEnter }),
+          timeout,
+        });
+        return {
+          result: {
+            resolved,
+            point: undefined,
+          },
+        };
+      },
+      options,
+    );
   }
 
   async scroll(
@@ -510,17 +531,22 @@ export class OpensteerSessionRuntime {
   ): Promise<OpensteerActionResult> {
     assertValidSemanticOperationInput("dom.scroll", input);
 
-    return this.runDomAction("dom.scroll", input, async (pageRef, target, timeout) => {
-      const result = await this.requireDom().scroll({
-        pageRef,
-        target,
-        delta: directionToDelta(input.direction, input.amount),
-        timeout,
-      });
-      return {
-        result,
-      };
-    }, options);
+    return this.runDomAction(
+      "dom.scroll",
+      input,
+      async (pageRef, target, timeout) => {
+        const result = await this.requireDom().scroll({
+          pageRef,
+          target,
+          delta: directionToDelta(input.direction, input.amount),
+          timeout,
+        });
+        return {
+          result,
+        };
+      },
+      options,
+    );
   }
 
   async extract(
@@ -673,7 +699,9 @@ export class OpensteerSessionRuntime {
                   ...(input.method === undefined ? {} : { method: input.method }),
                   ...(input.status === undefined ? {} : { status: input.status }),
                   ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
-                  ...(input.includeBodies === undefined ? {} : { includeBodies: input.includeBodies }),
+                  ...(input.includeBodies === undefined
+                    ? {}
+                    : { includeBodies: input.includeBodies }),
                   ...(input.limit === undefined ? {} : { limit: input.limit }),
                 }),
               ),
@@ -798,9 +826,7 @@ export class OpensteerSessionRuntime {
         async (timeout) => {
           await timeout.runStep(() => this.flushBackgroundNetworkPersistence());
           return {
-            clearedCount: await timeout.runStep(() =>
-              root.registry.savedNetwork.clear(input),
-            ),
+            clearedCount: await timeout.runStep(() => root.registry.savedNetwork.clear(input)),
           } satisfies OpensteerNetworkClearOutput;
         },
         options,
@@ -1223,7 +1249,9 @@ export class OpensteerSessionRuntime {
         data: {
           action: output.action,
           pageRef: output.pageRef,
-          viewport: output.viewport,
+          displayViewport: output.displayViewport,
+          nativeViewport: output.nativeViewport,
+          displayScale: output.displayScale,
           timing: output.timing,
           ...(output.trace === undefined ? {} : { trace: output.trace }),
         },
@@ -1568,7 +1596,9 @@ export class OpensteerSessionRuntime {
       ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
     });
     const sorted = sortLiveNetworkRecords(filtered, this.networkJournal);
-    const limit = options.ignoreLimit ? sorted.length : Math.max(1, Math.min(input.limit ?? 50, 200));
+    const limit = options.ignoreLimit
+      ? sorted.length
+      : Math.max(1, Math.min(input.limit ?? 50, 200));
     const limited = sorted.slice(0, limit);
 
     if (!(input.includeBodies ?? false) || limited.length === 0) {
@@ -1592,9 +1622,7 @@ export class OpensteerSessionRuntime {
     return limited.map((record) => byRequestId.get(record.record.requestId) ?? record);
   }
 
-  private beginMutationCapture(
-    timeout: TimeoutExecutionContext,
-  ): Promise<ReadonlySet<string>> {
+  private beginMutationCapture(timeout: TimeoutExecutionContext): Promise<ReadonlySet<string>> {
     return this.readLiveRequestIds(timeout, {
       includeCurrentPageOnly: true,
     });
@@ -1765,8 +1793,11 @@ export class OpensteerSessionRuntime {
       includeCurrentPageOnly: false,
     });
 
-    const requestResult: OpensteerRequestTransportResult = toProtocolRequestTransportResult(request);
-    const responseResult: OpensteerRequestResponseResult = toProtocolRequestResponseResult(response.data);
+    const requestResult: OpensteerRequestTransportResult =
+      toProtocolRequestTransportResult(request);
+    const responseResult: OpensteerRequestResponseResult = toProtocolRequestResponseResult(
+      response.data,
+    );
     if (recordId === undefined) {
       throw new OpensteerProtocolError(
         "operation-failed",
@@ -1867,7 +1898,9 @@ export class OpensteerSessionRuntime {
     }
 
     const browser = overrides.browser ?? this.configuredBrowser;
-    const context = overrides.context ?? this.configuredContext;
+    const context = normalizeOpensteerBrowserContextOptions(
+      overrides.context ?? this.configuredContext,
+    );
     const factoryOptions: OpensteerEngineFactoryOptions = {
       ...(browser === undefined ? {} : { browser }),
       ...(context === undefined ? {} : { context }),
@@ -2281,15 +2314,24 @@ function filterNetworkQueryRecords(
     ) {
       return false;
     }
-    if (input.path !== undefined && !includesCaseInsensitive(new URL(record.record.url).pathname, input.path)) {
+    if (
+      input.path !== undefined &&
+      !includesCaseInsensitive(new URL(record.record.url).pathname, input.path)
+    ) {
       return false;
     }
-    if (input.method !== undefined && !includesCaseInsensitive(record.record.method, input.method)) {
+    if (
+      input.method !== undefined &&
+      !includesCaseInsensitive(record.record.method, input.method)
+    ) {
       return false;
     }
     if (
       input.status !== undefined &&
-      !includesCaseInsensitive(record.record.status === undefined ? "" : String(record.record.status), input.status)
+      !includesCaseInsensitive(
+        record.record.status === undefined ? "" : String(record.record.status),
+        input.status,
+      )
     ) {
       return false;
     }
@@ -2474,10 +2516,10 @@ function normalizeOpensteerError(error: unknown) {
 }
 
 function isIgnorableRuntimeBindingError(error: unknown): boolean {
-  return isBrowserCoreError(error) &&
-    (error.code === "not-found" ||
-      error.code === "page-closed" ||
-      error.code === "session-closed");
+  return (
+    isBrowserCoreError(error) &&
+    (error.code === "not-found" || error.code === "page-closed" || error.code === "session-closed")
+  );
 }
 
 function screenshotMediaType(format: "png" | "jpeg" | "webp"): string {

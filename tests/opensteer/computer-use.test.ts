@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 
+import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 
 import {
@@ -76,11 +77,14 @@ describe("Phase 9 computer-use runtime", () => {
           y: 42,
         },
         screenshot: {
-          annotations: ["clickable", "grid"],
+          disableAnnotations: ["scrollable", "selected", "typeable"],
         },
       });
       expect(clickResult.trace?.points[0]?.point).toEqual({ x: 90, y: 42 });
-      expect(clickResult.screenshot.format).toBe("png");
+      expect(clickResult.screenshot.format).toBe("webp");
+      expect(clickResult.screenshot.coordinateSpace).toBe("computer-display-css");
+      expect(clickResult.screenshot.size).toEqual(clickResult.displayViewport.visualViewport.size);
+      expect(clickResult.displayScale).toEqual({ x: 1, y: 1 });
       expect(await extractStatus(runtime)).toBe("clicked");
 
       await runtime.computerExecute({
@@ -153,12 +157,20 @@ describe("Phase 9 computer-use runtime", () => {
           type: "screenshot",
         },
         screenshot: {
-          annotations: ["clickable", "grid"],
+          disableAnnotations: ["clickable", "grid", "scrollable", "selected", "typeable"],
         },
       });
       expect(annotatedScreenshot.screenshot.payload.data).not.toBe(
         plainScreenshot.screenshot.payload.data,
       );
+      expect(plainScreenshot.screenshot.format).toBe("webp");
+      expect(plainScreenshot.displayViewport.visualViewport.size).toEqual(
+        plainScreenshot.screenshot.size,
+      );
+      expect(plainScreenshot.nativeViewport.visualViewport.size).toEqual({
+        width: 800,
+        height: 600,
+      });
 
       const manifests = await readArtifactManifests(rootDir);
       expect(manifests.some((manifest) => manifest.kind === "screenshot")).toBe(true);
@@ -344,8 +356,12 @@ describe("Phase 9 computer-use runtime", () => {
   test("routes wait timing through the shared timeout controller instead of a preflight budget check", async () => {
     let bridgeInvoked = false;
     let abortedBySignal = false;
+    const viewport = createViewportMetrics(32, 24);
     const runtime = createComputerUseRuntime({
       engine: {
+        async getViewportMetrics() {
+          return viewport;
+        },
         [OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL]() {
           return {
             async execute(input: { readonly pageRef: string; readonly signal: AbortSignal }) {
@@ -368,22 +384,7 @@ describe("Phase 9 computer-use runtime", () => {
                   size: createSize(32, 24),
                   coordinateSpace: "layout-viewport-css",
                 },
-                viewport: {
-                  layoutViewport: {
-                    origin: { x: 0, y: 0 },
-                    size: createSize(32, 24),
-                  },
-                  visualViewport: {
-                    origin: { x: 0, y: 0 },
-                    offsetWithinLayoutViewport: createScrollOffset(0, 0),
-                    size: createSize(32, 24),
-                  },
-                  scrollOffset: createScrollOffset(0, 0),
-                  contentSize: createSize(32, 24),
-                  devicePixelRatio: createDevicePixelRatio(1),
-                  pageScaleFactor: createPageScaleFactor(1),
-                  pageZoomFactor: createPageZoomFactor(1),
-                },
+                viewport,
                 events: [],
                 timing: {
                   actionMs: 100,
@@ -427,6 +428,109 @@ describe("Phase 9 computer-use runtime", () => {
 
     expect(bridgeInvoked).toBe(true);
     expect(abortedBySignal).toBe(true);
+  });
+
+  test("normalizes oversized computer screenshots and translates display clicks back to native space", async () => {
+    const nativeViewport = createViewportMetrics(1920, 1200);
+    const screenshotBytes = await sharp({
+      create: {
+        width: 1920,
+        height: 1200,
+        channels: 3,
+        background: "#d0e4ff",
+      },
+    })
+      .png()
+      .toBuffer();
+
+    let receivedAction:
+      | {
+          readonly type: string;
+          readonly x: number;
+          readonly y: number;
+        }
+      | undefined;
+
+    const runtime = createComputerUseRuntime({
+      engine: {
+        async getViewportMetrics() {
+          return nativeViewport;
+        },
+        [OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL]() {
+          return {
+            async execute(input: {
+              readonly pageRef: string;
+              readonly action: {
+                readonly type: string;
+                readonly x: number;
+                readonly y: number;
+              };
+            }) {
+              receivedAction = input.action;
+              return {
+                pageRef: input.pageRef,
+                screenshot: {
+                  pageRef: input.pageRef,
+                  payload: createBodyPayload(new Uint8Array(screenshotBytes), {
+                    mimeType: "image/png",
+                  }),
+                  format: "png",
+                  size: createSize(1920, 1200),
+                  coordinateSpace: "layout-viewport-css",
+                },
+                viewport: nativeViewport,
+                events: [],
+                timing: {
+                  actionMs: 10,
+                  waitMs: 0,
+                  totalMs: 10,
+                },
+              };
+            },
+          };
+        },
+      } as never,
+      dom: {} as never,
+      policy: defaultPolicy(),
+    });
+
+    const output = await runWithPolicyTimeout(
+      {
+        resolveTimeoutMs() {
+          return 30_000;
+        },
+      },
+      {
+        operation: "computer.execute",
+      },
+      (timeout) =>
+        runtime.execute({
+          pageRef: createPageRef("scaled"),
+          input: {
+            action: {
+              type: "click",
+              x: 200,
+              y: 100,
+            },
+          },
+          timeout,
+        }),
+    );
+
+    expect(output.screenshot.format).toBe("webp");
+    expect(output.screenshot.coordinateSpace).toBe("computer-display-css");
+    expect(output.screenshot.size).toEqual(output.displayViewport.visualViewport.size);
+    expect(output.nativeViewport).toEqual(nativeViewport);
+    expect(output.displayScale.x).toBeLessThan(1);
+    expect(output.displayScale.y).toBeLessThan(1);
+    expect(receivedAction?.x).toBeCloseTo(200 / output.displayScale.x, 3);
+    expect(receivedAction?.y).toBeCloseTo(100 / output.displayScale.y, 3);
+    expect(output.trace?.points[0]?.point.x).toBeCloseTo(200, 3);
+    expect(output.trace?.points[0]?.point.y).toBeCloseTo(100, 3);
+
+    const metadata = await sharp(Buffer.from(output.screenshot.payload.data, "base64")).metadata();
+    expect(metadata.width).toBe(output.screenshot.size.width);
+    expect(metadata.height).toBe(output.screenshot.size.height);
   });
 });
 
@@ -676,4 +780,23 @@ function waitForAbortableDelay(durationMs: number, signal: AbortSignal): Promise
     };
     signal.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+function createViewportMetrics(width: number, height: number) {
+  return {
+    layoutViewport: {
+      origin: { x: 0, y: 0 },
+      size: createSize(width, height),
+    },
+    visualViewport: {
+      origin: { x: 0, y: 0 },
+      offsetWithinLayoutViewport: createScrollOffset(0, 0),
+      size: createSize(width, height),
+    },
+    scrollOffset: createScrollOffset(0, 0),
+    contentSize: createSize(width, height),
+    devicePixelRatio: createDevicePixelRatio(1),
+    pageScaleFactor: createPageScaleFactor(1),
+    pageZoomFactor: createPageZoomFactor(1),
+  };
 }

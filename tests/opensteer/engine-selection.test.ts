@@ -80,6 +80,10 @@ describe("Opensteer engine selection", () => {
       },
       context: {
         locale: "en-US",
+        viewport: {
+          width: 1280,
+          height: 800,
+        },
       },
     });
   });
@@ -112,7 +116,74 @@ describe("Opensteer engine selection", () => {
       launch: {
         headless: true,
         browserExecutablePath: "/tmp/abp-browser",
-        args: ["--foo=bar"],
+        args: ["--foo=bar", "--window-size=1280,800"],
+      },
+    });
+  });
+
+  test("maps explicit viewport context into the ABP window-size launch argument", async () => {
+    const createAbpBrowserCoreEngine = vi.fn(async () => ({
+      dispose: vi.fn(),
+    }));
+
+    const { createOpensteerEngineFactory } =
+      await import("../../packages/opensteer/src/internal/engine-selection.js");
+    const factory = createOpensteerEngineFactory("abp", {
+      importPlaywrightModule: async () => {
+        throw new Error("unexpected Playwright import");
+      },
+      importAbpModule: async () => ({
+        createAbpBrowserCoreEngine,
+      }),
+    });
+
+    await factory({
+      browser: {
+        args: ["--foo=bar", "--window-size=900,700"],
+      },
+      context: {
+        viewport: {
+          width: 1440,
+          height: 900,
+        },
+      },
+    });
+
+    expect(createAbpBrowserCoreEngine).toHaveBeenCalledWith({
+      launch: {
+        args: ["--foo=bar", "--window-size=1440,900"],
+      },
+    });
+  });
+
+  test("applies viewport-only context to ABP launch options", async () => {
+    const createAbpBrowserCoreEngine = vi.fn(async () => ({
+      dispose: vi.fn(),
+    }));
+
+    const { createOpensteerEngineFactory } =
+      await import("../../packages/opensteer/src/internal/engine-selection.js");
+    const factory = createOpensteerEngineFactory("abp", {
+      importPlaywrightModule: async () => {
+        throw new Error("unexpected Playwright import");
+      },
+      importAbpModule: async () => ({
+        createAbpBrowserCoreEngine,
+      }),
+    });
+
+    await factory({
+      context: {
+        viewport: {
+          width: 1440,
+          height: 900,
+        },
+      },
+    });
+
+    expect(createAbpBrowserCoreEngine).toHaveBeenCalledWith({
+      launch: {
+        args: ["--window-size=1440,900"],
       },
     });
   });
@@ -159,7 +230,7 @@ describe("Opensteer engine selection", () => {
         },
       }),
     ).rejects.toThrow(
-      "ABP engine does not support browser.channel, context.locale. Supported ABP open options: browser.headless, browser.args, browser.executablePath.",
+      "ABP engine does not support browser.channel, context.locale. Supported ABP open options: browser.headless, browser.args, browser.executablePath, context.viewport.",
     );
   });
 });

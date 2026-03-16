@@ -253,7 +253,9 @@ describe("protocol surface descriptors", () => {
     const operationNames = opensteerSemanticOperationSpecifications.map((spec) => spec.name);
     const restNames = opensteerSemanticRestEndpoints.map((endpoint) => endpoint.name);
     const mcpNames = opensteerMcpTools.map((tool) => tool.operation);
-    const uniqueRestPaths = new Set(opensteerSemanticRestEndpoints.map((endpoint) => endpoint.path));
+    const uniqueRestPaths = new Set(
+      opensteerSemanticRestEndpoints.map((endpoint) => endpoint.path),
+    );
     const uniqueToolNames = new Set(opensteerMcpTools.map((tool) => tool.name));
 
     expect(restNames).toEqual(operationNames);
@@ -362,9 +364,9 @@ describe("semantic protocol descriptors", () => {
     expect(
       opensteerSemanticOperationSpecificationMap["computer.execute"]?.requiredCapabilities,
     ).toEqual(["artifacts.screenshot", "inspect.viewportMetrics"]);
-    expect(opensteerSemanticOperationSpecificationMap["request.execute"]?.requiredCapabilities).toEqual([
-      "transport.sessionHttp",
-    ]);
+    expect(
+      opensteerSemanticOperationSpecificationMap["request.execute"]?.requiredCapabilities,
+    ).toEqual(["transport.sessionHttp"]);
   });
 
   test("uses the dedicated semantic REST namespace and capability resolution rules", () => {
@@ -444,7 +446,7 @@ describe("semantic protocol descriptors", () => {
           clickCount: 2,
         },
         screenshot: {
-          annotations: ["clickable", "grid"],
+          disableAnnotations: ["clickable", "grid"],
         },
       }),
     ).not.toThrow();
@@ -457,6 +459,15 @@ describe("semantic protocol descriptors", () => {
         },
       }),
     ).toThrow(/invalid computer\.execute input/i);
+
+    const computerOutputSchema =
+      opensteerSemanticOperationSpecificationMap["computer.execute"]?.outputSchema;
+    expect(computerOutputSchema?.required).toContain("displayViewport");
+    expect(computerOutputSchema?.required).toContain("nativeViewport");
+    expect(computerOutputSchema?.required).toContain("displayScale");
+    expect(
+      computerOutputSchema?.properties?.screenshot?.properties?.coordinateSpace?.enum,
+    ).toContain("computer-display-css");
   });
 
   test("validates request workflow shapes at the semantic boundary", () => {

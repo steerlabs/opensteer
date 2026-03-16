@@ -34,7 +34,12 @@ async function main(argv: readonly string[]): Promise<void> {
         : { rootDir: readStringOption(parsed.options, "root-dir")! }),
       ...(readStringOption(parsed.options, "engine") === undefined
         ? {}
-        : { engine: normalizeOpensteerEngineName(readStringOption(parsed.options, "engine")!, "--engine") }),
+        : {
+            engine: normalizeOpensteerEngineName(
+              readStringOption(parsed.options, "engine")!,
+              "--engine",
+            ),
+          }),
     });
     return;
   }
@@ -141,7 +146,8 @@ async function main(argv: readonly string[]): Promise<void> {
     case "input": {
       const client = await requireOpensteerService(sessionOptions);
       const target = parseTargetInput(parsed.positionals, parsed.options);
-      const text = readStringOption(parsed.options, "text") ?? consumeTextPositional(parsed.positionals);
+      const text =
+        readStringOption(parsed.options, "text") ?? consumeTextPositional(parsed.positionals);
       if (!text) {
         throw new Error("input requires text");
       }
@@ -159,9 +165,11 @@ async function main(argv: readonly string[]): Promise<void> {
       const client = await requireOpensteerService(sessionOptions);
       const target = parseTargetInput(parsed.positionals, parsed.options);
       const direction =
-        readStringOption(parsed.options, "direction") ?? consumeRemainingPositionals(parsed.positionals)[0];
+        readStringOption(parsed.options, "direction") ??
+        consumeRemainingPositionals(parsed.positionals)[0];
       const amountRaw =
-        readStringOption(parsed.options, "amount") ?? consumeRemainingPositionals(parsed.positionals)[1];
+        readStringOption(parsed.options, "amount") ??
+        consumeRemainingPositionals(parsed.positionals)[1];
       if (!direction || !amountRaw) {
         throw new Error("scroll requires direction and amount");
       }
@@ -336,7 +344,9 @@ async function main(argv: readonly string[]): Promise<void> {
             ? {}
             : { method: readStringOption(parsed.options, "method") }),
           ...(body === undefined ? {} : { body }),
-          ...(readBooleanOption(parsed.options, "no-follow-redirects") ? { followRedirects: false } : {}),
+          ...(readBooleanOption(parsed.options, "no-follow-redirects")
+            ? { followRedirects: false }
+            : {}),
           ...(parseHeaderEntries(readStringOptions(parsed.options, "header")).length === 0
             ? {}
             : { headers: parseHeaderEntries(readStringOptions(parsed.options, "header")) }),
@@ -666,9 +676,7 @@ function parseKeyValueOptions(values: readonly string[]): ReadonlyMap<string, st
   return entries;
 }
 
-function parseHeaderEntries(
-  values: readonly string[],
-): readonly {
+function parseHeaderEntries(values: readonly string[]): readonly {
   readonly name: string;
   readonly value: string;
 }[] {
@@ -754,9 +762,7 @@ async function parseRequestBodyInput(
     (value) => value !== undefined,
   );
   if (specifiedInputs.length > 1) {
-    throw new Error(
-      "Specify only one of --body-json, --body-text, --body-base64, or --body-file.",
-    );
+    throw new Error("Specify only one of --body-json, --body-text, --body-base64, or --body-file.");
   }
 
   if (bodyJson !== undefined) {
@@ -807,14 +813,14 @@ function parseComputerScreenshotOptions(
   const screenshotJson = readStringOption(options, "screenshot-json");
   const format = readStringOption(options, "format");
   const includeCursor = readBooleanOption(options, "include-cursor");
-  const annotations = parseCsvOption(readStringOption(options, "annotations"));
+  const disableAnnotations = parseCsvOption(readStringOption(options, "disable-annotations"));
 
   if (
     screenshotJson !== undefined &&
-    (format !== undefined || includeCursor !== undefined || annotations !== undefined)
+    (format !== undefined || includeCursor !== undefined || disableAnnotations !== undefined)
   ) {
     throw new Error(
-      "Specify either --screenshot-json or individual screenshot flags (--format, --include-cursor, --annotations).",
+      "Specify either --screenshot-json or individual screenshot flags (--format, --include-cursor, --disable-annotations).",
     );
   }
 
@@ -825,7 +831,7 @@ function parseComputerScreenshotOptions(
   const parsed = {
     ...(format === undefined ? {} : { format }),
     ...(includeCursor === undefined ? {} : { includeCursor }),
-    ...(annotations === undefined ? {} : { annotations }),
+    ...(disableAnnotations === undefined ? {} : { disableAnnotations }),
   };
 
   return Object.keys(parsed).length === 0 ? undefined : parsed;
