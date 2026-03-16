@@ -42,6 +42,7 @@ describe("Opensteer MCP server", () => {
       const toolNames = listed.tools.map((tool) => tool.name);
       expect(toolNames).toContain("opensteer_session_open");
       expect(toolNames).toContain("opensteer_computer_execute");
+      expect(toolNames).toContain("opensteer_request_raw");
 
       await client.callTool({
         name: "opensteer_session_open",
@@ -78,6 +79,32 @@ describe("Opensteer MCP server", () => {
           }
         ).screenshot?.payload?.data,
       ).toBe(image?.data);
+
+      const rawResult = await client.callTool({
+        name: "opensteer_request_raw",
+        arguments: {
+          url: `${fixtureServer.url}/phase10/api/session-http?source=mcp`,
+          method: "POST",
+          headers: [{ name: "x-csrf-token", value: "csrf-mcp" }],
+          body: {
+            json: {
+              item: "mcp",
+            },
+          },
+        },
+      });
+      expect(rawResult.isError).not.toBe(true);
+      expect(rawResult.content?.some((entry) => entry.type === "text")).toBe(true);
+      expect(
+        (
+          rawResult.structuredContent as {
+            readonly data?: { readonly source?: string; readonly csrf?: string };
+          }
+        ).data,
+      ).toMatchObject({
+        source: "mcp",
+        csrf: "csrf-mcp",
+      });
 
       await client.callTool({
         name: "opensteer_session_close",

@@ -15,12 +15,13 @@ export async function getViewportMetricsFromCdp(controller: {
   readonly cdp: PageController["cdp"];
 }): Promise<ViewportMetrics> {
   const layout = await controller.cdp.send("Page.getLayoutMetrics");
-  const screenInfos = await controller.cdp.send("Emulation.getScreenInfos");
-  const primaryScreen =
-    screenInfos.screenInfos.find((screen: { readonly isPrimary?: boolean }) => screen.isPrimary) ??
-    screenInfos.screenInfos[0];
+  const dprResult = await controller.cdp.send("Runtime.evaluate", {
+    expression: "window.devicePixelRatio",
+    returnByValue: true,
+  });
   const pageZoomFactor = layout.cssVisualViewport.zoom ?? 1;
-  const devicePixelRatio = (primaryScreen?.devicePixelRatio ?? 1) * pageZoomFactor;
+  const devicePixelRatio =
+    typeof dprResult.result.value === "number" ? dprResult.result.value : 1;
   return {
     layoutViewport: {
       origin: { x: layout.cssLayoutViewport.pageX, y: layout.cssLayoutViewport.pageY },

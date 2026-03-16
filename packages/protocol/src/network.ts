@@ -82,6 +82,17 @@ export interface NetworkRecord {
   readonly responseBody?: BodyPayload;
 }
 
+export type NetworkQuerySource = "live" | "saved";
+
+export interface NetworkQueryRecord {
+  readonly recordId: string;
+  readonly source: NetworkQuerySource;
+  readonly actionId?: string;
+  readonly tags?: readonly string[];
+  readonly savedAt?: number;
+  readonly record: NetworkRecord;
+}
+
 export function createBodyPayload(
   data: string,
   options: {
@@ -319,6 +330,27 @@ export const networkRecordSchema: JsonSchema = objectSchema(
       "resourceType",
       "navigationRequest",
     ],
+  },
+);
+
+export const networkQuerySourceSchema: JsonSchema = enumSchema(["live", "saved"] as const, {
+  title: "NetworkQuerySource",
+});
+
+export const networkQueryRecordSchema: JsonSchema = objectSchema(
+  {
+    recordId: stringSchema({ minLength: 1 }),
+    source: networkQuerySourceSchema,
+    actionId: stringSchema({ minLength: 1 }),
+    tags: arraySchema(stringSchema({ minLength: 1 }), {
+      uniqueItems: true,
+    }),
+    savedAt: integerSchema({ minimum: 0 }),
+    record: networkRecordSchema,
+  },
+  {
+    title: "NetworkQueryRecord",
+    required: ["recordId", "source", "record"],
   },
 );
 

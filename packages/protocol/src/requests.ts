@@ -2,13 +2,14 @@ import type { HeaderEntry } from "./network.js";
 import {
   bodyPayloadSchema,
   headerEntrySchema,
-  networkRecordSchema,
+  networkQueryRecordSchema,
   networkResourceTypeSchema,
   type BodyPayload,
-  type NetworkRecord,
+  type NetworkQueryRecord,
   type NetworkResourceType,
 } from "./network.js";
 import type { JsonSchema, JsonValue } from "./json.js";
+import { pageRefSchema, type PageRef } from "./identity.js";
 import {
   arraySchema,
   defineSchema,
@@ -105,28 +106,51 @@ export interface OpensteerRequestPlanRecord {
   readonly payload: OpensteerRequestPlanPayload;
 }
 
-export type OpensteerRequestCaptureScope = "page" | "session";
-
-export interface OpensteerRequestCaptureStartInput {
-  readonly scope?: OpensteerRequestCaptureScope;
-  readonly resourceTypes?: readonly NetworkResourceType[];
+export interface OpensteerNetworkQueryInput {
+  readonly source?: "live" | "saved";
+  readonly pageRef?: PageRef;
+  readonly recordId?: string;
+  readonly requestId?: string;
+  readonly actionId?: string;
+  readonly tag?: string;
+  readonly url?: string;
+  readonly hostname?: string;
+  readonly path?: string;
+  readonly method?: string;
+  readonly status?: string;
+  readonly resourceType?: NetworkResourceType;
+  readonly includeBodies?: boolean;
+  readonly limit?: number;
 }
 
-export interface OpensteerRequestCaptureStartOutput {
-  readonly scope: OpensteerRequestCaptureScope;
-  readonly startedAt: number;
-  readonly baselineCount: number;
-  readonly resourceTypes?: readonly NetworkResourceType[];
+export interface OpensteerNetworkQueryOutput {
+  readonly records: readonly NetworkQueryRecord[];
 }
 
-export interface OpensteerRequestCaptureStopOutput {
-  readonly scope: OpensteerRequestCaptureScope;
-  readonly startedAt: number;
-  readonly completedAt: number;
-  readonly baselineCount: number;
-  readonly recordCount: number;
-  readonly artifactId: string;
-  readonly records: readonly NetworkRecord[];
+export interface OpensteerNetworkSaveInput {
+  readonly pageRef?: PageRef;
+  readonly recordId?: string;
+  readonly requestId?: string;
+  readonly actionId?: string;
+  readonly tag: string;
+  readonly url?: string;
+  readonly hostname?: string;
+  readonly path?: string;
+  readonly method?: string;
+  readonly status?: string;
+  readonly resourceType?: NetworkResourceType;
+}
+
+export interface OpensteerNetworkSaveOutput {
+  readonly savedCount: number;
+}
+
+export interface OpensteerNetworkClearInput {
+  readonly tag?: string;
+}
+
+export interface OpensteerNetworkClearOutput {
+  readonly clearedCount: number;
 }
 
 export interface OpensteerWriteRequestPlanInput {
@@ -185,6 +209,14 @@ export interface OpensteerRequestExecuteInput {
   readonly validateResponse?: boolean;
 }
 
+export interface OpensteerRawRequestInput {
+  readonly url: string;
+  readonly method?: string;
+  readonly headers?: readonly HeaderEntry[];
+  readonly body?: OpensteerRequestBodyInput;
+  readonly followRedirects?: boolean;
+}
+
 export interface OpensteerRequestTransportResult {
   readonly method: string;
   readonly url: string;
@@ -210,6 +242,20 @@ export interface OpensteerRequestExecuteOutput {
   readonly request: OpensteerRequestTransportResult;
   readonly response: OpensteerRequestResponseResult;
   readonly data?: unknown;
+}
+
+export interface OpensteerRawRequestOutput {
+  readonly recordId: string;
+  readonly request: OpensteerRequestTransportResult;
+  readonly response: OpensteerRequestResponseResult;
+  readonly data?: unknown;
+}
+
+export interface OpensteerInferRequestPlanInput {
+  readonly recordId: string;
+  readonly key: string;
+  readonly version: string;
+  readonly lifecycle?: OpensteerRequestPlanLifecycle;
 }
 
 export const opensteerRequestScalarSchema: JsonSchema = oneOfSchema(
@@ -405,61 +451,86 @@ export const opensteerRequestPlanRecordSchema: JsonSchema = objectSchema(
   },
 );
 
-export const opensteerRequestCaptureScopeSchema: JsonSchema = enumSchema(
-  ["page", "session"] as const,
+export const opensteerNetworkQueryInputSchema: JsonSchema = objectSchema(
   {
-    title: "OpensteerRequestCaptureScope",
-  },
-);
-
-export const opensteerRequestCaptureStartInputSchema: JsonSchema = objectSchema(
-  {
-    scope: opensteerRequestCaptureScopeSchema,
-    resourceTypes: arraySchema(networkResourceTypeSchema, {
-      uniqueItems: true,
+    source: enumSchema(["live", "saved"] as const, {
+      title: "OpensteerNetworkQuerySource",
     }),
+    pageRef: pageRefSchema,
+    recordId: stringSchema({ minLength: 1 }),
+    requestId: stringSchema({ minLength: 1 }),
+    actionId: stringSchema({ minLength: 1 }),
+    tag: stringSchema({ minLength: 1 }),
+    url: stringSchema({ minLength: 1 }),
+    hostname: stringSchema({ minLength: 1 }),
+    path: stringSchema({ minLength: 1 }),
+    method: stringSchema({ minLength: 1 }),
+    status: stringSchema({ minLength: 1 }),
+    resourceType: networkResourceTypeSchema,
+    includeBodies: { type: "boolean" },
+    limit: integerSchema({ minimum: 1, maximum: 200 }),
   },
   {
-    title: "OpensteerRequestCaptureStartInput",
-  },
-);
-
-export const opensteerRequestCaptureStartOutputSchema: JsonSchema = objectSchema(
-  {
-    scope: opensteerRequestCaptureScopeSchema,
-    startedAt: integerSchema({ minimum: 0 }),
-    baselineCount: integerSchema({ minimum: 0 }),
-    resourceTypes: arraySchema(networkResourceTypeSchema, {
-      uniqueItems: true,
-    }),
-  },
-  {
-    title: "OpensteerRequestCaptureStartOutput",
-    required: ["scope", "startedAt", "baselineCount"],
+    title: "OpensteerNetworkQueryInput",
   },
 );
 
-export const opensteerRequestCaptureStopOutputSchema: JsonSchema = objectSchema(
+export const opensteerNetworkQueryOutputSchema: JsonSchema = objectSchema(
   {
-    scope: opensteerRequestCaptureScopeSchema,
-    startedAt: integerSchema({ minimum: 0 }),
-    completedAt: integerSchema({ minimum: 0 }),
-    baselineCount: integerSchema({ minimum: 0 }),
-    recordCount: integerSchema({ minimum: 0 }),
-    artifactId: stringSchema({ minLength: 1 }),
-    records: arraySchema(networkRecordSchema),
+    records: arraySchema(networkQueryRecordSchema),
   },
   {
-    title: "OpensteerRequestCaptureStopOutput",
-    required: [
-      "scope",
-      "startedAt",
-      "completedAt",
-      "baselineCount",
-      "recordCount",
-      "artifactId",
-      "records",
-    ],
+    title: "OpensteerNetworkQueryOutput",
+    required: ["records"],
+  },
+);
+
+export const opensteerNetworkSaveInputSchema: JsonSchema = objectSchema(
+  {
+    pageRef: pageRefSchema,
+    recordId: stringSchema({ minLength: 1 }),
+    requestId: stringSchema({ minLength: 1 }),
+    actionId: stringSchema({ minLength: 1 }),
+    tag: stringSchema({ minLength: 1 }),
+    url: stringSchema({ minLength: 1 }),
+    hostname: stringSchema({ minLength: 1 }),
+    path: stringSchema({ minLength: 1 }),
+    method: stringSchema({ minLength: 1 }),
+    status: stringSchema({ minLength: 1 }),
+    resourceType: networkResourceTypeSchema,
+  },
+  {
+    title: "OpensteerNetworkSaveInput",
+    required: ["tag"],
+  },
+);
+
+export const opensteerNetworkSaveOutputSchema: JsonSchema = objectSchema(
+  {
+    savedCount: integerSchema({ minimum: 0 }),
+  },
+  {
+    title: "OpensteerNetworkSaveOutput",
+    required: ["savedCount"],
+  },
+);
+
+export const opensteerNetworkClearInputSchema: JsonSchema = objectSchema(
+  {
+    tag: stringSchema({ minLength: 1 }),
+  },
+  {
+    title: "OpensteerNetworkClearInput",
+  },
+);
+
+export const opensteerNetworkClearOutputSchema: JsonSchema = objectSchema(
+  {
+    clearedCount: integerSchema({ minimum: 0 }),
+  },
+  {
+    title: "OpensteerNetworkClearOutput",
+    required: ["clearedCount"],
   },
 );
 
@@ -570,6 +641,20 @@ export const opensteerRequestExecuteInputSchema: JsonSchema = objectSchema(
   },
 );
 
+export const opensteerRawRequestInputSchema: JsonSchema = objectSchema(
+  {
+    url: stringSchema({ minLength: 1 }),
+    method: stringSchema({ minLength: 1 }),
+    headers: arraySchema(headerEntrySchema),
+    body: opensteerRequestBodyInputSchema,
+    followRedirects: { type: "boolean" },
+  },
+  {
+    title: "OpensteerRawRequestInput",
+    required: ["url"],
+  },
+);
+
 export const opensteerRequestTransportResultSchema: JsonSchema = objectSchema(
   {
     method: stringSchema({ minLength: 1 }),
@@ -618,5 +703,31 @@ export const opensteerRequestExecuteOutputSchema: JsonSchema = objectSchema(
   {
     title: "OpensteerRequestExecuteOutput",
     required: ["plan", "request", "response"],
+  },
+);
+
+export const opensteerRawRequestOutputSchema: JsonSchema = objectSchema(
+  {
+    recordId: stringSchema({ minLength: 1 }),
+    request: opensteerRequestTransportResultSchema,
+    response: opensteerRequestResponseResultSchema,
+    data: jsonValueSchema,
+  },
+  {
+    title: "OpensteerRawRequestOutput",
+    required: ["recordId", "request", "response"],
+  },
+);
+
+export const opensteerInferRequestPlanInputSchema: JsonSchema = objectSchema(
+  {
+    recordId: stringSchema({ minLength: 1 }),
+    key: stringSchema({ minLength: 1 }),
+    version: stringSchema({ minLength: 1 }),
+    lifecycle: opensteerRequestPlanLifecycleSchema,
+  },
+  {
+    title: "OpensteerInferRequestPlanInput",
+    required: ["recordId", "key", "version"],
   },
 );

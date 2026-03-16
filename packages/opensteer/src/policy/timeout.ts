@@ -9,6 +9,7 @@ class PolicyTimeoutController implements TimeoutExecutionContext {
 
   private readonly controller = new AbortController();
   private readonly abortPromise: Promise<never> | undefined;
+  private readonly removeParentAbortListener: (() => void) | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
@@ -18,6 +19,21 @@ class PolicyTimeoutController implements TimeoutExecutionContext {
     this.signal = this.controller.signal;
     this.budgetMs = budgetMs;
     this.deadlineAt = budgetMs === undefined ? undefined : Date.now() + budgetMs;
+
+    const parentSignal = input.signal;
+    if (parentSignal !== undefined) {
+      const onAbort = () => {
+        this.controller.abort(parentSignal.reason ?? abortError());
+      };
+      if (parentSignal.aborted) {
+        onAbort();
+      } else {
+        parentSignal.addEventListener("abort", onAbort, { once: true });
+        this.removeParentAbortListener = () => {
+          parentSignal.removeEventListener("abort", onAbort);
+        };
+      }
+    }
 
     if (budgetMs === undefined) {
       this.abortPromise = undefined;
@@ -79,6 +95,7 @@ class PolicyTimeoutController implements TimeoutExecutionContext {
       if (this.timer !== undefined) {
         clearTimeout(this.timer);
       }
+      this.removeParentAbortListener?.();
     }
   }
 }

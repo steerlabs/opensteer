@@ -328,6 +328,45 @@ describe("FakeBrowserCoreEngine", () => {
     });
   });
 
+  test("can narrow network inspection to selected request ids", async () => {
+    const engine = createFakeBrowserCoreEngine();
+    const sessionRef = await engine.createSession();
+    await engine.createPage({
+      sessionRef,
+      url: "https://example.com",
+    });
+
+    await engine.executeRequest({
+      sessionRef,
+      request: {
+        method: "GET",
+        url: "https://example.com/api/a",
+      },
+    });
+    await engine.executeRequest({
+      sessionRef,
+      request: {
+        method: "POST",
+        url: "https://example.com/api/b",
+      },
+    });
+
+    const records = await engine.getNetworkRecords({
+      sessionRef,
+      includeBodies: false,
+    });
+    expect(records).toHaveLength(2);
+
+    const filtered = await engine.getNetworkRecords({
+      sessionRef,
+      requestIds: [records[1]!.requestId],
+      includeBodies: true,
+    });
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]?.url).toBe("https://example.com/api/b");
+    expect(filtered[0]?.requestBody).toBeUndefined();
+  });
+
   test("filters cookies by origin semantics and can omit storage surfaces", async () => {
     const engine = createFakeBrowserCoreEngine();
     const sessionRef = await engine.createSession();

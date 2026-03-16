@@ -10,6 +10,7 @@ import {
 import {
   OPENSTEER_PROTOCOL_VERSION,
   type OpensteerComputerExecuteOutput,
+  type OpensteerRawRequestOutput,
   assertValidSemanticOperationInput,
   opensteerMcpTools,
   type OpensteerMcpToolDescriptor,
@@ -125,7 +126,7 @@ function createToolResult(tool: OpensteerMcpToolDescriptor, output: unknown): Ca
   if (tool.operation === "computer.execute") {
     const computerOutput = output as OpensteerComputerExecuteOutput;
     return {
-      structuredContent: output as Record<string, unknown>,
+      structuredContent: output as unknown as Record<string, unknown>,
       content: [
         toImageContent(computerOutput),
         {
@@ -136,8 +137,12 @@ function createToolResult(tool: OpensteerMcpToolDescriptor, output: unknown): Ca
     };
   }
 
+  if (tool.operation === "request.raw") {
+    return createRawRequestToolResult(output as OpensteerRawRequestOutput);
+  }
+
   return {
-    structuredContent: output as Record<string, unknown>,
+    structuredContent: output as unknown as Record<string, unknown>,
     content: [
       {
         type: "text",
@@ -145,6 +150,54 @@ function createToolResult(tool: OpensteerMcpToolDescriptor, output: unknown): Ca
       },
     ],
   };
+}
+
+function createRawRequestToolResult(output: OpensteerRawRequestOutput): CallToolResult {
+  const mimeType = inferResponseMimeType(output);
+  const textContent = formatRawResponseText(output);
+
+  if (mimeType?.startsWith("image/") && output.response.body !== undefined) {
+    return {
+      structuredContent: output as unknown as Record<string, unknown>,
+      content: [
+        {
+          type: "image",
+          data: output.response.body.data,
+          mimeType,
+        },
+      ],
+    };
+  }
+
+  return {
+    structuredContent: output as unknown as Record<string, unknown>,
+    content: [
+      {
+        type: "text",
+        text: textContent,
+      },
+    ],
+  };
+}
+
+function inferResponseMimeType(output: OpensteerRawRequestOutput): string | undefined {
+  const header = output.response.headers.find(
+    (entry) => entry.name.toLowerCase() === "content-type",
+  )?.value;
+  if (header) {
+    return header.split(";")[0]?.trim().toLowerCase();
+  }
+  return output.response.body?.mimeType?.toLowerCase();
+}
+
+function formatRawResponseText(output: OpensteerRawRequestOutput): string {
+  if (output.data !== undefined) {
+    return typeof output.data === "string" ? output.data : JSON.stringify(output.data, null, 2);
+  }
+  if (output.response.body !== undefined) {
+    return Buffer.from(output.response.body.data, "base64").toString("utf8");
+  }
+  return `Opensteer request.raw completed (${String(output.response.status)}).`;
 }
 
 function toImageContent(output: OpensteerComputerExecuteOutput): ImageContent {

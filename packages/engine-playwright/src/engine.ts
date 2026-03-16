@@ -957,18 +957,31 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   async getNetworkRecords(input: {
     readonly sessionRef: SessionRef;
     readonly pageRef?: PageRef;
+    readonly requestIds?: readonly string[];
     readonly includeBodies?: boolean;
+    readonly signal?: AbortSignal;
   }): Promise<readonly NetworkRecord[]> {
     const session = this.requireSession(input.sessionRef);
-    await Promise.all(
-      Array.from(session.pageRefs, async (pageRef) =>
-        this.flushBackgroundTasks(this.requirePage(pageRef)),
+    input.signal?.throwIfAborted?.();
+    await raceWithAbort(
+      Promise.all(
+        Array.from(session.pageRefs, async (pageRef) =>
+          this.flushBackgroundTasks(this.requirePage(pageRef)),
+        ),
       ),
+      input.signal,
     );
 
-    const records = session.networkRecords.filter(
-      (record) => input.pageRef === undefined || record.pageRef === input.pageRef,
-    );
+    const requestIds = input.requestIds === undefined ? undefined : new Set(input.requestIds);
+    const records = session.networkRecords.filter((record) => {
+      if (input.pageRef !== undefined && record.pageRef !== input.pageRef) {
+        return false;
+      }
+      if (requestIds !== undefined && !requestIds.has(record.requestId)) {
+        return false;
+      }
+      return true;
+    });
 
     if (!(input.includeBodies ?? false)) {
       return records.map(({ requestBody: _requestBody, responseBody: _responseBody, ...record }) =>
@@ -1065,6 +1078,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   async executeRequest(input: {
     readonly sessionRef: SessionRef;
     readonly request: SessionTransportRequest;
+    readonly signal?: AbortSignal;
   }): Promise<StepResult<SessionTransportResponse>> {
     const session = this.requireSession(input.sessionRef);
     const startedAt = Date.now();
@@ -1080,14 +1094,18 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
 
     let response: Awaited<ReturnType<BrowserContext["request"]["fetch"]>>;
     try {
-      response = await session.context.request.fetch(input.request.url, {
-        method: input.request.method,
-        headers: headersObject,
-        ...(requestBodyBytes === undefined ? {} : { data: requestBodyBytes }),
-        failOnStatusCode: false,
-        ...(input.request.timeoutMs === undefined ? {} : { timeout: input.request.timeoutMs }),
-        ...(input.request.followRedirects === false ? { maxRedirects: 0 } : {}),
-      });
+      input.signal?.throwIfAborted?.();
+      response = await raceWithAbort(
+        session.context.request.fetch(input.request.url, {
+          method: input.request.method,
+          headers: headersObject,
+          ...(requestBodyBytes === undefined ? {} : { data: requestBodyBytes }),
+          failOnStatusCode: false,
+          ...(input.request.timeoutMs === undefined ? {} : { timeout: input.request.timeoutMs }),
+          ...(input.request.followRedirects === false ? { maxRedirects: 0 } : {}),
+        }),
+        input.signal,
+      );
     } catch (error) {
       if (pageRef !== undefined) {
         throw normalizePlaywrightError(error, pageRef);
@@ -2275,4 +2293,24 @@ export async function createPlaywrightBrowserCoreEngine(
   options: PlaywrightBrowserCoreEngineOptions = {},
 ): Promise<PlaywrightBrowserCoreEngine> {
   return PlaywrightBrowserCoreEngine.create(options);
+}
+
+function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) {
+    return promise;
+  }
+  signal.throwIfAborted?.();
+
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      signal.addEventListener(
+        "abort",
+        () => {
+          reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
+        },
+        { once: true },
+      );
+    }),
+  ]);
 }

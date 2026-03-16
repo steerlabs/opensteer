@@ -500,7 +500,7 @@ describe("semantic protocol descriptors", () => {
 describe("protocol trace and artifact schemas", () => {
   test("exports discriminated unions for public events and artifacts", () => {
     expect(opensteerEventSchema.oneOf).toHaveLength(18);
-    expect(opensteerArtifactSchema.oneOf).toHaveLength(6);
+    expect(opensteerArtifactSchema.oneOf).toHaveLength(5);
   });
 
   test("preserves shadow and iframe metadata in the public DOM snapshot schema", () => {

@@ -18,6 +18,15 @@ const DEFAULT_TIMEOUTS: Readonly<Record<string, number>> = {
   "dom.input": 10_000,
   "dom.scroll": 10_000,
   "dom.extract": 15_000,
+  "network.query": 15_000,
+  "network.save": 15_000,
+  "network.clear": 10_000,
+  "request.raw": 30_000,
+  "request-plan.infer": 15_000,
+  "request-plan.write": 10_000,
+  "request-plan.get": 10_000,
+  "request-plan.list": 10_000,
+  "request.execute": 30_000,
   "session.close": 10_000,
 };
 

@@ -22,15 +22,18 @@ import {
   startPhase6FixtureServer,
   type Phase6FixtureServer,
 } from "./phase6-fixture.js";
+import { ensureCliArtifactsBuilt } from "./cli-artifacts.js";
 
 const execFile = promisify(execFileCallback);
 const CLI_SCRIPT = path.resolve(process.cwd(), "packages/opensteer/dist/cli/bin.js");
+const CLI_EXEC_ARGV: readonly string[] = [];
 
 let fixtureServer: Phase6FixtureServer | undefined;
 
 beforeAll(async () => {
   fixtureServer = await startPhase6FixtureServer();
-});
+  await ensureCliArtifactsBuilt();
+}, 120_000);
 
 afterEach(async () => {
   await cleanupPhase6TemporaryRoots();
@@ -132,7 +135,7 @@ describe("Phase 10 request workflows", () => {
     ).toThrow(/parameter\.wireName must be a non-empty string/);
   });
 
-  test("SDK captures redacted network records, persists artifacts and traces, and executes typed request plans", async () => {
+  test("SDK supports the live reverse-engineering workflow end to end", async () => {
     const rootDir = await createPhase6TemporaryRoot();
     const baseUrl = requireFixtureServer().url;
     const opensteer = new Opensteer({
@@ -145,72 +148,49 @@ describe("Phase 10 request workflows", () => {
 
     try {
       await opensteer.open(`${baseUrl}/phase10/session`);
-
-      const started = await opensteer.startRequestCapture({
-        resourceTypes: ["fetch"],
-      });
-      expect(started).toMatchObject({
-        scope: "page",
-        baselineCount: 0,
-        resourceTypes: ["fetch"],
-      });
-
       await opensteer.goto(`${baseUrl}/phase10/capture`);
-
-      const capture = await opensteer.stopRequestCapture();
-      expect(capture.recordCount).toBe(1);
-
-      const record = capture.records[0]!;
-      expect(record.method).toBe("POST");
-      expect(record.url).toBe(`${baseUrl}/phase10/api/capture?step=load`);
-      expect(readHeader(record.requestHeaders, "authorization")).toBe("[redacted]");
-      expect(readHeader(record.requestHeaders, "cookie")).toBe("[redacted]");
-      expect(readHeader(record.requestHeaders, "x-csrf-token")).toBe("csrf-visible");
-      expect(readHeader(record.responseHeaders, "set-cookie")).toBe("[redacted]");
-      expect(decodeBody(record.requestBody)).toContain('"hello":"capture"');
-
-      const root = await createFilesystemOpensteerRoot({
-        rootPath: path.join(rootDir, ".opensteer"),
+      const queried = await opensteer.queryNetwork({
+        url: "/phase10/api/capture",
+        includeBodies: true,
       });
-      const storedArtifact = await root.artifacts.read(capture.artifactId);
-      expect(storedArtifact?.payload).toMatchObject({
-        kind: "network-records",
-        payloadType: "structured",
+      expect(queried.records).toHaveLength(1);
+
+      const captureRecord = queried.records[0]!;
+      expect(captureRecord.source).toBe("live");
+      expect(captureRecord.record.method).toBe("POST");
+      expect(captureRecord.record.url).toBe(`${baseUrl}/phase10/api/capture?step=load`);
+      expect(readHeader(captureRecord.record.requestHeaders, "authorization")).toBe("[redacted]");
+      expect(readHeader(captureRecord.record.requestHeaders, "cookie")).toBe("[redacted]");
+      expect(readHeader(captureRecord.record.requestHeaders, "x-csrf-token")).toBe("csrf-visible");
+      expect(readHeader(captureRecord.record.responseHeaders, "set-cookie")).toBe("[redacted]");
+      expect(decodeBody(captureRecord.record.requestBody)).toContain('"hello":"capture"');
+
+      const saved = await opensteer.saveNetwork({
+        recordId: captureRecord.recordId,
+        tag: "phase10-capture",
       });
-      if (storedArtifact?.payload.kind !== "network-records") {
-        throw new Error("expected stored network-records artifact");
-      }
-      expect(storedArtifact.payload.data).toEqual(capture.records);
+      expect(saved.savedCount).toBe(1);
 
-      const runIds = await listRunIds(rootDir);
-      expect(runIds).toHaveLength(1);
-      const traceEntries = await root.traces.listEntries(runIds[0]!);
-      const stopTrace = traceEntries.find((entry) => entry.operation === "request-capture.stop");
-      expect(stopTrace?.artifacts?.[0]?.artifactId).toBe(capture.artifactId);
+      const savedQuery = await opensteer.queryNetwork({
+        source: "saved",
+        tag: "phase10-capture",
+        includeBodies: true,
+      });
+      expect(savedQuery.records).toHaveLength(1);
+      expect(savedQuery.records[0]?.source).toBe("saved");
+      expect(savedQuery.records[0]?.savedAt).toEqual(expect.any(Number));
 
-      const plan = await opensteer.writeRequestPlan({
-        key: "phase10-create-order",
+      const inferredCapture = await opensteer.inferRequestPlan({
+        recordId: savedQuery.records[0]!.recordId,
+        key: "phase10-capture-inferred",
         version: "1.0.0",
-        provenance: {
-          source: "network-capture",
-        },
-        payload: buildOrderPlanPayload(baseUrl),
       });
-      expect(plan.payload.endpoint.method).toBe("POST");
+      expect(inferredCapture.payload.auth?.strategy).toBe("bearer-token");
 
-      const listed = await opensteer.listRequestPlans();
-      expect(listed.plans.map((entry) => entry.key)).toContain("phase10-create-order");
-
-      const executed = await opensteer.request("phase10-create-order", {
-        params: {
-          userId: "u_sdk",
-        },
-        query: {
-          debug: true,
-        },
-        headers: {
-          csrf: "csrf-sdk",
-        },
+      const raw = await opensteer.rawRequest({
+        url: `${baseUrl}/phase10/api/session-http?source=raw-sdk`,
+        method: "POST",
+        headers: [{ name: "x-csrf-token", value: "csrf-sdk" }],
         body: {
           json: {
             item: "widget-99",
@@ -218,62 +198,78 @@ describe("Phase 10 request workflows", () => {
           },
         },
       });
-
-      expect(executed.data).toMatchObject({
-        userId: "u_sdk",
+      expect(raw.recordId).toEqual(expect.any(String));
+      expect(raw.data).toMatchObject({
         cookie: expect.stringContaining("phase10-session=abc123"),
         csrf: "csrf-sdk",
-        staticHeader: "static",
-        page: "1",
-        debug: "true",
+        source: "raw-sdk",
         body: {
           item: "widget-99",
           quantity: 3,
         },
       });
-      expect(executed.request.method).toBe("POST");
-      expect(executed.request.url).toBe(`${baseUrl}/phase10/api/users/u_sdk/orders?page=1&debug=true`);
 
-      const refreshed = await opensteer.getRequestPlan({
-        key: "phase10-create-order",
-      });
-      expect(refreshed.freshness?.lastValidatedAt).toEqual(expect.any(Number));
-
-      await opensteer.writeRequestPlan({
-        key: "phase10-create-order-invalid",
+      const inferred = await opensteer.inferRequestPlan({
+        recordId: raw.recordId,
+        key: "phase10-inferred-raw",
         version: "1.0.0",
-        payload: {
-          ...buildOrderPlanPayload(baseUrl),
-          response: {
-            status: 201,
-            contentType: "application/json",
+      });
+      expect(inferred.payload.endpoint.method).toBe("POST");
+      expect(inferred.payload.endpoint.urlTemplate).toBe(`${baseUrl}/phase10/api/session-http`);
+      expect(inferred.payload.endpoint.defaultQuery).toEqual([
+        {
+          name: "source",
+          value: "raw-sdk",
+        },
+      ]);
+
+      const listed = await opensteer.listRequestPlans();
+      expect(listed.plans.map((entry) => entry.key)).toContain("phase10-inferred-raw");
+
+      const executed = await opensteer.request("phase10-inferred-raw", {
+        version: "1.0.0",
+        body: {
+          json: {
+            item: "widget-100",
+            quantity: 1,
           },
         },
       });
-
-      await expect(
-        opensteer.request("phase10-create-order-invalid", {
-          params: {
-            userId: "u_sdk",
-          },
-          headers: {
-            csrf: "csrf-sdk",
-          },
-          body: {
-            json: {
-              item: "broken",
-            },
-          },
-        }),
-      ).rejects.toMatchObject({
-        code: "conflict",
-        message: expect.stringMatching(/expected status 201/),
+      expect(executed.data).toMatchObject({
+        cookie: expect.stringContaining("phase10-session=abc123"),
+        csrf: "csrf-sdk",
+        source: "raw-sdk",
+        body: {
+          item: "widget-100",
+          quantity: 1,
+        },
       });
 
-      const invalidPlan = await opensteer.getRequestPlan({
-        key: "phase10-create-order-invalid",
+      const refreshed = await opensteer.getRequestPlan({
+        key: "phase10-inferred-raw",
+        version: "1.0.0",
       });
-      expect(invalidPlan.freshness).toBeUndefined();
+      expect(refreshed.freshness?.lastValidatedAt).toEqual(expect.any(Number));
+
+      const root = await createFilesystemOpensteerRoot({
+        rootPath: path.join(rootDir, ".opensteer"),
+      });
+      const runIds = await listRunIds(rootDir);
+      expect(runIds).toHaveLength(1);
+      const traceEntries = await root.traces.listEntries(runIds[0]!);
+      expect(traceEntries.some((entry) => entry.operation === "network.query")).toBe(true);
+      expect(traceEntries.some((entry) => entry.operation === "request.raw")).toBe(true);
+      expect(traceEntries.some((entry) => entry.operation === "request-plan.infer")).toBe(true);
+
+      const cleared = await opensteer.clearNetwork({
+        tag: "phase10-capture",
+      });
+      expect(cleared.clearedCount).toBe(1);
+      const afterClear = await opensteer.queryNetwork({
+        source: "saved",
+        tag: "phase10-capture",
+      });
+      expect(afterClear.records).toHaveLength(0);
     } finally {
       await opensteer.close();
     }
@@ -288,7 +284,7 @@ describe("Phase 10 request workflows", () => {
       rootDir,
       launchContext: {
         execPath: process.execPath,
-        execArgv: process.execArgv,
+        execArgv: CLI_EXEC_ARGV,
         scriptPath: CLI_SCRIPT,
         cwd: process.cwd(),
       },
@@ -372,13 +368,13 @@ describe("Phase 10 request workflows", () => {
     }
   }, 60_000);
 
-  test("CLI exposes capture, plan, and request workflows with file-based payloads", async () => {
+  test("CLI exposes network query/save, request raw, plan infer, and request execute workflows", async () => {
     const rootDir = await createPhase6TemporaryRoot();
     const baseUrl = requireFixtureServer().url;
     const sessionName = "phase10-cli";
-    const captureOutputPath = path.join(rootDir, "phase10-capture.json");
-    const planPayloadPath = path.join(rootDir, "phase10-plan.json");
-    const requestBodyPath = path.join(rootDir, "phase10-body.json");
+    const networkOutputPath = path.join(rootDir, "phase10-network.json");
+    const rawBodyPath = path.join(rootDir, "phase10-raw-body.json");
+    const rawOutputPath = path.join(rootDir, "phase10-raw.json");
     const requestOutputPath = path.join(rootDir, "phase10-response.json");
 
     await runCliCommand(rootDir, [
@@ -390,45 +386,77 @@ describe("Phase 10 request workflows", () => {
       "true",
     ]);
 
-    await runCliCommand(rootDir, [
-      "capture",
-      "start",
-      "--name",
-      sessionName,
-      "--types",
-      "fetch",
-    ]);
     await runCliCommand(rootDir, ["goto", `${baseUrl}/phase10/capture`, "--name", sessionName]);
     await runCliCommand(rootDir, [
-      "capture",
-      "stop",
+      "network",
+      "query",
       "--name",
       sessionName,
+      "--url",
+      "/phase10/api/capture",
+      "--include-bodies",
+      "true",
       "--output",
-      captureOutputPath,
+      networkOutputPath,
     ]);
 
-    const capture = JSON.parse(await readFile(captureOutputPath, "utf8")) as {
-      readonly recordCount: number;
-      readonly records: readonly NetworkRecord[];
+    const network = JSON.parse(await readFile(networkOutputPath, "utf8")) as {
+      readonly records: readonly {
+        readonly recordId: string;
+        readonly record: NetworkRecord;
+      }[];
     };
-    expect(capture.recordCount).toBe(1);
-    expect(readHeader(capture.records[0]!.requestHeaders, "authorization")).toBe("[redacted]");
+    expect(network.records).toHaveLength(1);
+    expect(readHeader(network.records[0]!.record.requestHeaders, "authorization")).toBe("[redacted]");
 
-    await writeFile(planPayloadPath, `${JSON.stringify(buildOrderPlanPayload(baseUrl))}\n`, "utf8");
     await runCliCommand(rootDir, [
-      "plan",
-      "write",
+      "network",
+      "save",
       "--name",
       sessionName,
+      "--record-id",
+      network.records[0]!.recordId,
+      "--tag",
+      "phase10-cli-capture",
+    ]);
+
+    await writeFile(
+      rawBodyPath,
+      `${JSON.stringify({ item: "cli-widget", quantity: 4 })}\n`,
+      "utf8",
+    );
+    await runCliCommand(rootDir, [
+      "request",
+      "raw",
+      "--name",
+      sessionName,
+      "--url",
+      `${baseUrl}/phase10/api/session-http?source=raw-cli`,
+      "--method",
+      "POST",
+      "--header",
+      "x-csrf-token=csrf-cli",
+      "--body-file",
+      rawBodyPath,
+      "--output",
+      rawOutputPath,
+    ]);
+
+    const raw = JSON.parse(await readFile(rawOutputPath, "utf8")) as {
+      readonly recordId: string;
+    };
+
+    await runCliCommand(rootDir, [
+      "plan",
+      "infer",
+      "--name",
+      sessionName,
+      "--record-id",
+      raw.recordId,
       "--key",
-      "phase10-cli-order",
+      "phase10-cli-inferred",
       "--version",
       "1.0.0",
-      "--payload-file",
-      planPayloadPath,
-      "--provenance-source",
-      "network-capture",
     ]);
 
     const listed = (await runCliCommand(rootDir, [
@@ -439,41 +467,18 @@ describe("Phase 10 request workflows", () => {
     ])) as {
       readonly plans: readonly { readonly key: string }[];
     };
-    expect(listed.plans.map((entry) => entry.key)).toContain("phase10-cli-order");
+    expect(listed.plans.map((entry) => entry.key)).toContain("phase10-cli-inferred");
 
-    const storedPlan = (await runCliCommand(rootDir, [
-      "plan",
-      "get",
-      "phase10-cli-order",
-      "--name",
-      sessionName,
-    ])) as {
-      readonly payload: {
-        readonly endpoint: {
-          readonly method: string;
-        };
-      };
-    };
-    expect(storedPlan.payload.endpoint.method).toBe("POST");
-
-    await writeFile(
-      requestBodyPath,
-      `${JSON.stringify({ item: "cli-widget", quantity: 4 })}\n`,
-      "utf8",
-    );
     await runCliCommand(rootDir, [
       "request",
-      "phase10-cli-order",
+      "execute",
+      "phase10-cli-inferred",
       "--name",
       sessionName,
-      "--param",
-      "userId=u_cli",
-      "--query",
-      "debug=1",
-      "--header",
-      "csrf=csrf-cli",
-      "--body-file",
-      requestBodyPath,
+      "--version",
+      "1.0.0",
+      "--body-json",
+      JSON.stringify({ item: "cli-widget", quantity: 4 }),
       "--output",
       requestOutputPath,
     ]);
@@ -482,12 +487,9 @@ describe("Phase 10 request workflows", () => {
       readonly data: Record<string, unknown>;
     };
     expect(response.data).toMatchObject({
-      userId: "u_cli",
       cookie: expect.stringContaining("phase10-session=abc123"),
       csrf: "csrf-cli",
-      staticHeader: "static",
-      page: "1",
-      debug: "1",
+      source: "raw-cli",
       body: {
         item: "cli-widget",
         quantity: 4,
@@ -552,10 +554,11 @@ function requireFixtureServer(): Phase6FixtureServer {
 }
 
 async function runCliCommand(rootDir: string, args: readonly string[]): Promise<unknown> {
-  const { stdout, stderr } = await execFile(process.execPath, [CLI_SCRIPT, ...args], {
+  const { stdout, stderr } = await execFile(process.execPath, [...CLI_EXEC_ARGV, CLI_SCRIPT, ...args], {
     cwd: rootDir,
     env: {
       ...process.env,
+      NODE_NO_WARNINGS: "1",
     },
     maxBuffer: 1024 * 1024 * 4,
   });

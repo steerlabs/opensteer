@@ -98,7 +98,10 @@ async function main(argv: readonly string[]): Promise<void> {
       if (!url) {
         throw new Error("goto requires a URL");
       }
-      const result = await client.invoke("page.goto", { url });
+      const result = await client.invoke("page.goto", {
+        url,
+        ...buildNetworkTagInput(parsed.options),
+      });
       writeJson(result);
       return;
     }
@@ -116,7 +119,10 @@ async function main(argv: readonly string[]): Promise<void> {
     case "click": {
       const client = await requireOpensteerService(sessionOptions);
       const target = parseTargetInput(parsed.positionals, parsed.options);
-      const result = await client.invoke("dom.click", target);
+      const result = await client.invoke("dom.click", {
+        ...target,
+        ...buildNetworkTagInput(parsed.options),
+      });
       writeJson(result);
       return;
     }
@@ -124,7 +130,10 @@ async function main(argv: readonly string[]): Promise<void> {
     case "hover": {
       const client = await requireOpensteerService(sessionOptions);
       const target = parseTargetInput(parsed.positionals, parsed.options);
-      const result = await client.invoke("dom.hover", target);
+      const result = await client.invoke("dom.hover", {
+        ...target,
+        ...buildNetworkTagInput(parsed.options),
+      });
       writeJson(result);
       return;
     }
@@ -140,6 +149,7 @@ async function main(argv: readonly string[]): Promise<void> {
         ...target,
         text,
         ...(readBooleanOption(parsed.options, "press-enter") ? { pressEnter: true } : {}),
+        ...buildNetworkTagInput(parsed.options),
       });
       writeJson(result);
       return;
@@ -163,6 +173,7 @@ async function main(argv: readonly string[]): Promise<void> {
         ...target,
         direction,
         amount,
+        ...buildNetworkTagInput(parsed.options),
       });
       writeJson(result);
       return;
@@ -189,29 +200,40 @@ async function main(argv: readonly string[]): Promise<void> {
       return;
     }
 
-    case "capture": {
+    case "network": {
       const action = parsed.positionals[0];
       const client = await requireOpensteerService(sessionOptions);
 
-      if (action === "start") {
-        const resourceTypes = parseCsvOption(readStringOption(parsed.options, "types"));
-        const result = await client.invoke("request-capture.start", {
-          ...(readStringOption(parsed.options, "scope") === undefined
-            ? {}
-            : { scope: readStringOption(parsed.options, "scope") }),
-          ...(resourceTypes === undefined ? {} : { resourceTypes }),
+      if (action === "query") {
+        const result = await client.invoke("network.query", buildNetworkQueryInput(parsed.options));
+        await writeJsonOutput(result, readStringOption(parsed.options, "output"));
+        return;
+      }
+
+      if (action === "save") {
+        const tag = readStringOption(parsed.options, "tag");
+        if (!tag) {
+          throw new Error("network save requires --tag");
+        }
+        const result = await client.invoke("network.save", {
+          ...buildNetworkFilterInput(parsed.options),
+          tag,
         });
         await writeJsonOutput(result, readStringOption(parsed.options, "output"));
         return;
       }
 
-      if (action === "stop") {
-        const result = await client.invoke("request-capture.stop", {});
+      if (action === "clear") {
+        const result = await client.invoke("network.clear", {
+          ...(readStringOption(parsed.options, "tag") === undefined
+            ? {}
+            : { tag: readStringOption(parsed.options, "tag") }),
+        });
         await writeJsonOutput(result, readStringOption(parsed.options, "output"));
         return;
       }
 
-      throw new Error('capture requires a subcommand: "start" or "stop"');
+      throw new Error('network requires a subcommand: "query", "save", or "clear"');
     }
 
     case "plan": {
@@ -254,6 +276,25 @@ async function main(argv: readonly string[]): Promise<void> {
         return;
       }
 
+      if (action === "infer") {
+        const recordId = readStringOption(parsed.options, "record-id");
+        const key = readStringOption(parsed.options, "key");
+        const version = readStringOption(parsed.options, "version");
+        if (!recordId || !key || !version) {
+          throw new Error("plan infer requires --record-id, --key, and --version");
+        }
+        const result = await client.invoke("request-plan.infer", {
+          recordId,
+          key,
+          version,
+          ...(readStringOption(parsed.options, "lifecycle") === undefined
+            ? {}
+            : { lifecycle: readStringOption(parsed.options, "lifecycle") }),
+        });
+        await writeJsonOutput(result, readStringOption(parsed.options, "output"));
+        return;
+      }
+
       if (action === "get") {
         const key = parsed.positionals[1] ?? readStringOption(parsed.options, "key");
         if (!key) {
@@ -277,16 +318,38 @@ async function main(argv: readonly string[]): Promise<void> {
         return;
       }
 
-      throw new Error('plan requires a subcommand: "write", "get", or "list"');
+      throw new Error('plan requires a subcommand: "write", "infer", "get", or "list"');
     }
 
     case "request": {
       const client = await requireOpensteerService(sessionOptions);
-      const key = parsed.positionals[0] ?? readStringOption(parsed.options, "key");
-      if (!key) {
-        throw new Error("request requires a plan key");
+
+      if (parsed.positionals[0] === "raw") {
+        const url = parsed.positionals[1] ?? readStringOption(parsed.options, "url");
+        if (!url) {
+          throw new Error("request raw requires a URL");
+        }
+        const body = await parseRequestBodyInput(parsed.options);
+        const result = await client.invoke("request.raw", {
+          url,
+          ...(readStringOption(parsed.options, "method") === undefined
+            ? {}
+            : { method: readStringOption(parsed.options, "method") }),
+          ...(body === undefined ? {} : { body }),
+          ...(readBooleanOption(parsed.options, "no-follow-redirects") ? { followRedirects: false } : {}),
+          ...(parseHeaderEntries(readStringOptions(parsed.options, "header")).length === 0
+            ? {}
+            : { headers: parseHeaderEntries(readStringOptions(parsed.options, "header")) }),
+        });
+        await writeJsonOutput(result, readStringOption(parsed.options, "output"));
+        return;
       }
 
+      const executeOffset = parsed.positionals[0] === "execute" ? 1 : 0;
+      const key = parsed.positionals[executeOffset] ?? readStringOption(parsed.options, "key");
+      if (!key) {
+        throw new Error("request execute requires a plan key");
+      }
       const body = await parseRequestBodyInput(parsed.options);
       const params = parseKeyValueOptions(readStringOptions(parsed.options, "param"));
       const query = parseKeyValueOptions(readStringOptions(parsed.options, "query"));
@@ -318,6 +381,7 @@ async function main(argv: readonly string[]): Promise<void> {
       const result = await client.invoke("computer.execute", {
         action: parseJsonObject(actionRaw, "action"),
         ...(screenshot === undefined ? {} : { screenshot }),
+        ...buildNetworkTagInput(parsed.options),
       });
       writeJson(result);
       return;
@@ -340,7 +404,7 @@ async function main(argv: readonly string[]): Promise<void> {
     case "-h":
     default:
       throw new Error(
-        `unsupported command "${parsed.command}". Supported commands: open, goto, snapshot, click, hover, input, scroll, extract, capture, plan, request, computer, mcp, close.`,
+        `unsupported command "${parsed.command}". Supported commands: open, goto, snapshot, click, hover, input, scroll, extract, network, plan, request, computer, mcp, close.`,
       );
   }
 }
@@ -600,6 +664,81 @@ function parseKeyValueOptions(values: readonly string[]): ReadonlyMap<string, st
     entries.set(value.slice(0, equalsIndex), value.slice(equalsIndex + 1));
   }
   return entries;
+}
+
+function parseHeaderEntries(
+  values: readonly string[],
+): readonly {
+  readonly name: string;
+  readonly value: string;
+}[] {
+  return [...parseKeyValueOptions(values).entries()].map(([name, value]) => ({
+    name,
+    value,
+  }));
+}
+
+function buildNetworkFilterInput(
+  options: Readonly<Record<string, CliOptionValue>>,
+): Record<string, unknown> {
+  return {
+    ...(readStringOption(options, "page-ref") === undefined
+      ? {}
+      : { pageRef: readStringOption(options, "page-ref") }),
+    ...(readStringOption(options, "record-id") === undefined
+      ? {}
+      : { recordId: readStringOption(options, "record-id") }),
+    ...(readStringOption(options, "request-id") === undefined
+      ? {}
+      : { requestId: readStringOption(options, "request-id") }),
+    ...(readStringOption(options, "action-id") === undefined
+      ? {}
+      : { actionId: readStringOption(options, "action-id") }),
+    ...(readStringOption(options, "url") === undefined
+      ? {}
+      : { url: readStringOption(options, "url") }),
+    ...(readStringOption(options, "hostname") === undefined
+      ? {}
+      : { hostname: readStringOption(options, "hostname") }),
+    ...(readStringOption(options, "path") === undefined
+      ? {}
+      : { path: readStringOption(options, "path") }),
+    ...(readStringOption(options, "method") === undefined
+      ? {}
+      : { method: readStringOption(options, "method") }),
+    ...(readStringOption(options, "status") === undefined
+      ? {}
+      : { status: readStringOption(options, "status") }),
+    ...(readStringOption(options, "resource-type") === undefined
+      ? {}
+      : { resourceType: readStringOption(options, "resource-type") }),
+  };
+}
+
+function buildNetworkTagInput(
+  options: Readonly<Record<string, CliOptionValue>>,
+): Record<string, unknown> {
+  return readStringOption(options, "network-tag") === undefined
+    ? {}
+    : { networkTag: readStringOption(options, "network-tag") };
+}
+
+function buildNetworkQueryInput(
+  options: Readonly<Record<string, CliOptionValue>>,
+): Record<string, unknown> {
+  return {
+    ...(readStringOption(options, "source") === undefined
+      ? {}
+      : { source: readStringOption(options, "source") }),
+    ...(readBooleanOption(options, "include-bodies") ? { includeBodies: true } : {}),
+    ...(readNumberOption(options, "limit") === undefined
+      ? {}
+      : { limit: readNumberOption(options, "limit") }),
+    ...(readStringOption(options, "tag") === undefined
+      ? {}
+      : { tag: readStringOption(options, "tag") }),
+    ...buildNetworkFilterInput(options),
+  };
 }
 
 async function parseRequestBodyInput(

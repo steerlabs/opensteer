@@ -7,7 +7,6 @@ import type {
   CookieRecord,
   DomSnapshot,
   HtmlSnapshot,
-  NetworkRecord,
   OpensteerArtifact,
   OpensteerArtifactKind,
   StorageSnapshot,
@@ -54,7 +53,6 @@ export type StructuredArtifactKind = Exclude<OpensteerArtifactKind, "screenshot"
 interface StructuredArtifactDataByKind {
   readonly "html-snapshot": HtmlSnapshot;
   readonly "dom-snapshot": DomSnapshot;
-  readonly "network-records": readonly NetworkRecord[];
   readonly cookies: readonly CookieRecord[];
   readonly "storage-snapshot": StorageSnapshot;
 }
@@ -290,15 +288,6 @@ export class FilesystemArtifactStore implements OpensteerArtifactStore {
             data: await readStructuredPayload<DomSnapshot>(objectPath),
           },
         };
-      case "network-records":
-        return {
-          manifest,
-          payload: {
-            kind: "network-records",
-            payloadType: "structured",
-            data: await readStructuredPayload<readonly NetworkRecord[]>(objectPath),
-          },
-        };
       case "cookies":
         return {
           manifest,
@@ -393,15 +382,6 @@ export class FilesystemArtifactStore implements OpensteerArtifactStore {
         return {
           ...artifactBase,
           kind: "dom-snapshot",
-          payload:
-            delivery === "inline-if-structured"
-              ? { delivery: "inline", data: record.payload.data }
-              : externalPayload,
-        };
-      case "network-records":
-        return {
-          ...artifactBase,
-          kind: "network-records",
           payload:
             delivery === "inline-if-structured"
               ? { delivery: "inline", data: record.payload.data }

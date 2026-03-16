@@ -4,13 +4,20 @@ import type {
   OpensteerComputerExecuteOutput,
   OpensteerDomExtractOutput,
   OpensteerGetRequestPlanInput,
+  OpensteerInferRequestPlanInput,
+  OpensteerNetworkClearInput,
+  OpensteerNetworkClearOutput,
+  OpensteerNetworkQueryInput,
+  OpensteerNetworkQueryOutput,
+  OpensteerNetworkSaveInput,
+  OpensteerNetworkSaveOutput,
+  OpensteerPageGotoInput,
   OpensteerPageGotoOutput,
   OpensteerPageSnapshotOutput,
   OpensteerListRequestPlansInput,
   OpensteerListRequestPlansOutput,
-  OpensteerRequestCaptureStartInput,
-  OpensteerRequestCaptureStartOutput,
-  OpensteerRequestCaptureStopOutput,
+  OpensteerRawRequestInput,
+  OpensteerRawRequestOutput,
   OpensteerRequestExecuteInput,
   OpensteerRequestExecuteOutput,
   OpensteerSessionCloseOutput,
@@ -27,6 +34,7 @@ export interface OpensteerTargetOptions {
   readonly element?: number;
   readonly selector?: string;
   readonly description?: string;
+  readonly networkTag?: string;
 }
 
 export interface OpensteerInputOptions extends OpensteerTargetOptions {
@@ -44,11 +52,18 @@ export interface OpensteerExtractOptions {
   readonly schema?: Record<string, unknown>;
 }
 
+export type OpensteerGotoOptions = OpensteerPageGotoInput;
+
 export type OpensteerComputerExecuteOptions = OpensteerComputerExecuteInput;
 export type OpensteerComputerExecuteResult = OpensteerComputerExecuteOutput;
-export type OpensteerRequestCaptureOptions = OpensteerRequestCaptureStartInput;
-export type OpensteerRequestCaptureResult = OpensteerRequestCaptureStartOutput;
-export type OpensteerRequestCaptureStopResult = OpensteerRequestCaptureStopOutput;
+export type OpensteerNetworkQueryOptions = OpensteerNetworkQueryInput;
+export type OpensteerNetworkQueryResult = OpensteerNetworkQueryOutput;
+export type OpensteerNetworkSaveOptions = OpensteerNetworkSaveInput;
+export type OpensteerNetworkSaveResult = OpensteerNetworkSaveOutput;
+export type OpensteerNetworkClearOptions = OpensteerNetworkClearInput;
+export type OpensteerNetworkClearResult = OpensteerNetworkClearOutput;
+export type OpensteerRawRequestOptions = OpensteerRawRequestInput;
+export type OpensteerRawRequestResult = OpensteerRawRequestOutput;
 export type OpensteerRequestOptions = Omit<OpensteerRequestExecuteInput, "key">;
 export type OpensteerRequestResult = OpensteerRequestExecuteOutput;
 
@@ -63,8 +78,8 @@ export class Opensteer {
     return this.runtime.open(url === undefined ? {} : { url });
   }
 
-  async goto(url: string): Promise<OpensteerPageGotoOutput> {
-    return this.runtime.goto({ url });
+  async goto(input: string | OpensteerGotoOptions): Promise<OpensteerPageGotoOutput> {
+    return this.runtime.goto(typeof input === "string" ? { url: input } : input);
   }
 
   async snapshot(
@@ -107,18 +122,28 @@ export class Opensteer {
     return result.data;
   }
 
-  async startRequestCapture(
-    input: OpensteerRequestCaptureOptions = {},
-  ): Promise<OpensteerRequestCaptureResult> {
-    return this.runtime.startRequestCapture(input);
+  async queryNetwork(
+    input: OpensteerNetworkQueryOptions = {},
+  ): Promise<OpensteerNetworkQueryResult> {
+    return this.runtime.queryNetwork(input);
   }
 
-  async stopRequestCapture(): Promise<OpensteerRequestCaptureStopResult> {
-    return this.runtime.stopRequestCapture();
+  async saveNetwork(input: OpensteerNetworkSaveOptions): Promise<OpensteerNetworkSaveResult> {
+    return this.runtime.saveNetwork(input);
+  }
+
+  async clearNetwork(
+    input: OpensteerNetworkClearOptions = {},
+  ): Promise<OpensteerNetworkClearResult> {
+    return this.runtime.clearNetwork(input);
   }
 
   async writeRequestPlan(input: OpensteerWriteRequestPlanInput): Promise<RequestPlanRecord> {
     return this.runtime.writeRequestPlan(input);
+  }
+
+  async inferRequestPlan(input: OpensteerInferRequestPlanInput): Promise<RequestPlanRecord> {
+    return this.runtime.inferRequestPlan(input);
   }
 
   async getRequestPlan(input: OpensteerGetRequestPlanInput): Promise<RequestPlanRecord> {
@@ -138,6 +163,10 @@ export class Opensteer {
     });
   }
 
+  async rawRequest(input: OpensteerRawRequestOptions): Promise<OpensteerRawRequestResult> {
+    return this.runtime.rawRequest(input);
+  }
+
   async computerExecute(
     input: OpensteerComputerExecuteOptions,
   ): Promise<OpensteerComputerExecuteResult> {
@@ -152,6 +181,7 @@ export class Opensteer {
 function normalizeTargetOptions(input: OpensteerTargetOptions): {
   readonly target: OpensteerTargetInput;
   readonly persistAsDescription?: string;
+  readonly networkTag?: string;
 } {
   const hasElement = input.element !== undefined;
   const hasSelector = input.selector !== undefined;
@@ -166,6 +196,7 @@ function normalizeTargetOptions(input: OpensteerTargetOptions): {
         element: input.element!,
       },
       ...(input.description === undefined ? {} : { persistAsDescription: input.description }),
+      ...(input.networkTag === undefined ? {} : { networkTag: input.networkTag }),
     };
   }
 
@@ -176,6 +207,7 @@ function normalizeTargetOptions(input: OpensteerTargetOptions): {
         selector: input.selector!,
       },
       ...(input.description === undefined ? {} : { persistAsDescription: input.description }),
+      ...(input.networkTag === undefined ? {} : { networkTag: input.networkTag }),
     };
   }
 
@@ -188,5 +220,6 @@ function normalizeTargetOptions(input: OpensteerTargetOptions): {
       kind: "description",
       description: input.description,
     },
+    ...(input.networkTag === undefined ? {} : { networkTag: input.networkTag }),
   };
 }

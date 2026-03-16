@@ -43,9 +43,15 @@ import {
   opensteerGetRequestPlanInputSchema,
   opensteerListRequestPlansInputSchema,
   opensteerListRequestPlansOutputSchema,
-  opensteerRequestCaptureStartInputSchema,
-  opensteerRequestCaptureStartOutputSchema,
-  opensteerRequestCaptureStopOutputSchema,
+  opensteerNetworkClearInputSchema,
+  opensteerNetworkClearOutputSchema,
+  opensteerNetworkQueryInputSchema,
+  opensteerNetworkQueryOutputSchema,
+  opensteerNetworkSaveInputSchema,
+  opensteerNetworkSaveOutputSchema,
+  opensteerInferRequestPlanInputSchema,
+  opensteerRawRequestInputSchema,
+  opensteerRawRequestOutputSchema,
   opensteerRequestExecuteInputSchema,
   opensteerRequestExecuteOutputSchema,
   opensteerRequestPlanRecordSchema,
@@ -53,9 +59,15 @@ import {
   type OpensteerGetRequestPlanInput,
   type OpensteerListRequestPlansInput,
   type OpensteerListRequestPlansOutput,
-  type OpensteerRequestCaptureStartInput,
-  type OpensteerRequestCaptureStartOutput,
-  type OpensteerRequestCaptureStopOutput,
+  type OpensteerInferRequestPlanInput,
+  type OpensteerNetworkClearInput,
+  type OpensteerNetworkClearOutput,
+  type OpensteerNetworkQueryInput,
+  type OpensteerNetworkQueryOutput,
+  type OpensteerNetworkSaveInput,
+  type OpensteerNetworkSaveOutput,
+  type OpensteerRawRequestInput,
+  type OpensteerRawRequestOutput,
   type OpensteerRequestExecuteInput,
   type OpensteerRequestExecuteOutput,
   type OpensteerRequestPlanRecord,
@@ -171,6 +183,7 @@ export interface OpensteerSessionOpenOutput extends OpensteerSessionState {}
 
 export interface OpensteerPageGotoInput {
   readonly url: string;
+  readonly networkTag?: string;
 }
 
 export interface OpensteerPageGotoOutput extends OpensteerSessionState {}
@@ -190,11 +203,13 @@ export interface OpensteerPageSnapshotOutput {
 export interface OpensteerDomClickInput {
   readonly target: OpensteerTargetInput;
   readonly persistAsDescription?: string;
+  readonly networkTag?: string;
 }
 
 export interface OpensteerDomHoverInput {
   readonly target: OpensteerTargetInput;
   readonly persistAsDescription?: string;
+  readonly networkTag?: string;
 }
 
 export interface OpensteerDomInputInput {
@@ -202,6 +217,7 @@ export interface OpensteerDomInputInput {
   readonly text: string;
   readonly pressEnter?: boolean;
   readonly persistAsDescription?: string;
+  readonly networkTag?: string;
 }
 
 export interface OpensteerDomScrollInput {
@@ -209,6 +225,7 @@ export interface OpensteerDomScrollInput {
   readonly direction: "up" | "down" | "left" | "right";
   readonly amount: number;
   readonly persistAsDescription?: string;
+  readonly networkTag?: string;
 }
 
 export interface OpensteerDomExtractInput {
@@ -308,6 +325,7 @@ export interface OpensteerComputerScreenshotOptions {
 export interface OpensteerComputerExecuteInput {
   readonly action: OpensteerComputerAction;
   readonly screenshot?: OpensteerComputerScreenshotOptions;
+  readonly networkTag?: string;
 }
 
 export interface OpensteerComputerTracePoint {
@@ -346,8 +364,11 @@ export const opensteerSemanticOperationNames = [
   "dom.input",
   "dom.scroll",
   "dom.extract",
-  "request-capture.start",
-  "request-capture.stop",
+  "network.query",
+  "network.save",
+  "network.clear",
+  "request.raw",
+  "request-plan.infer",
   "request-plan.write",
   "request-plan.get",
   "request-plan.list",
@@ -589,6 +610,7 @@ const opensteerSessionOpenInputSchema: JsonSchema = objectSchema(
 const opensteerPageGotoInputSchema: JsonSchema = objectSchema(
   {
     url: stringSchema(),
+    networkTag: stringSchema({ minLength: 1 }),
   },
   {
     title: "OpensteerPageGotoInput",
@@ -623,6 +645,7 @@ const opensteerDomClickInputSchema: JsonSchema = objectSchema(
   {
     target: opensteerTargetInputSchema,
     persistAsDescription: stringSchema(),
+    networkTag: stringSchema({ minLength: 1 }),
   },
   {
     title: "OpensteerDomClickInput",
@@ -634,6 +657,7 @@ const opensteerDomHoverInputSchema = objectSchema(
   {
     target: opensteerTargetInputSchema,
     persistAsDescription: stringSchema(),
+    networkTag: stringSchema({ minLength: 1 }),
   },
   {
     title: "OpensteerDomHoverInput",
@@ -647,6 +671,7 @@ const opensteerDomInputInputSchema: JsonSchema = objectSchema(
     text: stringSchema(),
     pressEnter: { type: "boolean" },
     persistAsDescription: stringSchema(),
+    networkTag: stringSchema({ minLength: 1 }),
   },
   {
     title: "OpensteerDomInputInput",
@@ -660,6 +685,7 @@ const opensteerDomScrollInputSchema: JsonSchema = objectSchema(
     direction: enumSchema(["up", "down", "left", "right"] as const),
     amount: integerSchema({ minimum: 1 }),
     persistAsDescription: stringSchema(),
+    networkTag: stringSchema({ minLength: 1 }),
   },
   {
     title: "OpensteerDomScrollInput",
@@ -880,6 +906,7 @@ const opensteerComputerExecuteInputSchema: JsonSchema = objectSchema(
   {
     action: opensteerComputerActionSchema,
     screenshot: opensteerComputerScreenshotOptionsSchema,
+    networkTag: stringSchema({ minLength: 1 }),
   },
   {
     title: "OpensteerComputerExecuteInput",
@@ -1038,28 +1065,46 @@ export const opensteerSemanticOperationSpecifications = [
     outputSchema: opensteerDomExtractOutputSchema,
     requiredCapabilities: ["inspect.domSnapshot", "inspect.text", "inspect.attributes"],
   }),
-  defineSemanticOperationSpec<
-    OpensteerRequestCaptureStartInput,
-    OpensteerRequestCaptureStartOutput
-  >({
-    name: "request-capture.start",
-    description: "Begin capturing newly observed network records for the current session or page.",
-    inputSchema: opensteerRequestCaptureStartInputSchema,
-    outputSchema: opensteerRequestCaptureStartOutputSchema,
+  defineSemanticOperationSpec<OpensteerNetworkQueryInput, OpensteerNetworkQueryOutput>({
+    name: "network.query",
+    description: "Query live or saved network records for reverse engineering workflows.",
+    inputSchema: opensteerNetworkQueryInputSchema,
+    outputSchema: opensteerNetworkQueryOutputSchema,
+    requiredCapabilities: [],
+    resolveRequiredCapabilities: (input) =>
+      input.source === "saved"
+        ? []
+        : input.includeBodies === true
+          ? ["inspect.network", "inspect.networkBodies"]
+          : ["inspect.network"],
+  }),
+  defineSemanticOperationSpec<OpensteerNetworkSaveInput, OpensteerNetworkSaveOutput>({
+    name: "network.save",
+    description: "Persist filtered live network records into the saved network registry under a tag.",
+    inputSchema: opensteerNetworkSaveInputSchema,
+    outputSchema: opensteerNetworkSaveOutputSchema,
     requiredCapabilities: ["inspect.network"],
   }),
-  defineSemanticOperationSpec<unknown, OpensteerRequestCaptureStopOutput>({
-    name: "request-capture.stop",
-    description:
-      "Stop the active request capture, persist the network artifact, and return records.",
-    inputSchema: objectSchema(
-      {},
-      {
-        title: "OpensteerRequestCaptureStopInput",
-      },
-    ),
-    outputSchema: opensteerRequestCaptureStopOutputSchema,
-    requiredCapabilities: ["inspect.network", "inspect.networkBodies"],
+  defineSemanticOperationSpec<OpensteerNetworkClearInput, OpensteerNetworkClearOutput>({
+    name: "network.clear",
+    description: "Clear saved network records globally or for a specific tag.",
+    inputSchema: opensteerNetworkClearInputSchema,
+    outputSchema: opensteerNetworkClearOutputSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerRawRequestInput, OpensteerRawRequestOutput>({
+    name: "request.raw",
+    description: "Execute a raw HTTP request through the current browser session boundary.",
+    inputSchema: opensteerRawRequestInputSchema,
+    outputSchema: opensteerRawRequestOutputSchema,
+    requiredCapabilities: ["transport.sessionHttp"],
+  }),
+  defineSemanticOperationSpec<OpensteerInferRequestPlanInput, OpensteerRequestPlanRecord>({
+    name: "request-plan.infer",
+    description: "Infer and persist a request plan from a selected network record.",
+    inputSchema: opensteerInferRequestPlanInputSchema,
+    outputSchema: opensteerRequestPlanRecordSchema,
+    requiredCapabilities: [],
   }),
   defineSemanticOperationSpec<OpensteerWriteRequestPlanInput, OpensteerRequestPlanRecord>({
     name: "request-plan.write",

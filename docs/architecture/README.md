@@ -37,8 +37,9 @@ complete. `Phase 11` is deferred while the rewrite remains local-only.
   `packages/engine-abp/src/computer-use.ts` contain the Phase 9
   engine-specific computer-use adapters
 - `tests/opensteer/computer-use.test.ts` contains the Phase 9 runtime coverage
-- `packages/opensteer/src/requests/` contains the implemented Phase 10 local
-  request workflow system for capture, plans, and browser-session HTTP
+- `packages/opensteer/src/requests/` and `packages/opensteer/src/network/`
+  contain the implemented Phase 10 local reverse-engineering workflow for live
+  network inspection, saved records, plan inference, and browser-session HTTP
 - `tests/opensteer/request-workflows.test.ts` contains the Phase 10 request
   workflow coverage
 
@@ -51,7 +52,8 @@ Phase 10 is local-only by design:
 Current Opensteer package direction:
 
 - `runtimes/` owns DOM and computer-use interaction behavior
-- `requests/` owns capture, plans, and execution transports
+- `network/` owns the live network journal and saved-network store
+- `requests/` owns plan inference, plan persistence, and execution transports
 - `registry/` owns deterministic local replay and request-plan persistence
 - `traces/` records timelines
 - `artifacts/` stores evidence
