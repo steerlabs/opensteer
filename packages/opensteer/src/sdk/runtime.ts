@@ -5,6 +5,7 @@ import {
   bodyPayloadFromUtf8,
   createBodyPayload,
   type BrowserCoreEngine,
+  isBrowserCoreError,
   type BodyPayload as BrowserBodyPayload,
   type DocumentEpoch,
   type DocumentRef,
@@ -194,7 +195,7 @@ export class OpensteerSessionRuntime {
       );
     }
 
-    if (this.sessionRef && this.pageRef) {
+    if ((await this.ensureLiveRuntimeBinding()) === "live") {
       if (input.url !== undefined) {
         return this.goto({
           url: input.url,
@@ -1264,19 +1265,34 @@ export class OpensteerSessionRuntime {
         "session.close",
         async (timeout) => {
           await timeout.runStep(() => this.flushBackgroundNetworkPersistence());
+          if (engine === undefined) {
+            return;
+          }
           if (pageRef !== undefined) {
-            await timeout.runStep(() =>
-              this.requireEngine().closePage({
-                pageRef,
-              }),
-            );
+            await timeout.runStep(async () => {
+              try {
+                await engine.closePage({
+                  pageRef,
+                });
+              } catch (error) {
+                if (!isIgnorableRuntimeBindingError(error)) {
+                  throw error;
+                }
+              }
+            });
           }
           if (sessionRef !== undefined) {
-            await timeout.runStep(() =>
-              this.requireEngine().closeSession({
-                sessionRef,
-              }),
-            );
+            await timeout.runStep(async () => {
+              try {
+                await engine.closeSession({
+                  sessionRef,
+                });
+              } catch (error) {
+                if (!isIgnorableRuntimeBindingError(error)) {
+                  throw error;
+                }
+              }
+            });
           }
         },
         options,
@@ -1882,7 +1898,7 @@ export class OpensteerSessionRuntime {
   }
 
   private async ensurePageRef(): Promise<PageRef> {
-    if (!this.pageRef) {
+    if ((await this.ensureLiveRuntimeBinding()) === "unbound") {
       await this.open();
     }
     if (!this.pageRef) {
@@ -1924,6 +1940,47 @@ export class OpensteerSessionRuntime {
       throw new Error("Opensteer extraction descriptor store is not initialized");
     }
     return this.extractionDescriptors;
+  }
+
+  private async ensureLiveRuntimeBinding(): Promise<"unbound" | "live"> {
+    const health = await this.probeRuntimeBindingHealth();
+    if (health === "invalid") {
+      const engine = this.engine;
+      if (engine) {
+        await this.cleanupSessionResources(engine, this.pageRef, this.sessionRef);
+      }
+      await this.resetRuntimeState({
+        disposeEngine: true,
+      });
+      return "unbound";
+    }
+    return health;
+  }
+
+  private async probeRuntimeBindingHealth(): Promise<"unbound" | "live" | "invalid"> {
+    const pageRef = this.pageRef;
+    const sessionRef = this.sessionRef;
+    if (pageRef === undefined && sessionRef === undefined) {
+      return "unbound";
+    }
+    if (pageRef === undefined || sessionRef === undefined) {
+      return "invalid";
+    }
+
+    const engine = this.engine;
+    if (!engine) {
+      return "invalid";
+    }
+
+    try {
+      await engine.getPageInfo({ pageRef });
+      return "live";
+    } catch (error) {
+      if (isIgnorableRuntimeBindingError(error)) {
+        return "invalid";
+      }
+      throw error;
+    }
   }
 
   private async readSessionState(): Promise<OpensteerSessionOpenOutput> {
@@ -2414,6 +2471,13 @@ function toOpensteerResolvedTarget(target: ResolvedDomTarget): OpensteerResolved
 
 function normalizeOpensteerError(error: unknown) {
   return normalizeThrownOpensteerError(error, "Unknown Opensteer runtime failure");
+}
+
+function isIgnorableRuntimeBindingError(error: unknown): boolean {
+  return isBrowserCoreError(error) &&
+    (error.code === "not-found" ||
+      error.code === "page-closed" ||
+      error.code === "session-closed");
 }
 
 function screenshotMediaType(format: "png" | "jpeg" | "webp"): string {

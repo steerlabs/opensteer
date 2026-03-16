@@ -6,19 +6,13 @@ import type {
   OpensteerWriteRequestPlanInput,
 } from "@opensteer/protocol";
 
-import { headerValue, isSecretHeaderName, normalizeHeaderName } from "./shared.js";
+import {
+  headerValue,
+  isReplayableInferredHeaderName,
+  isSecretHeaderName,
+  normalizeHeaderName,
+} from "./shared.js";
 import { normalizeRequestPlanPayload } from "./plans/index.js";
-
-const IGNORED_DEFAULT_HEADER_NAMES = new Set([
-  "accept-encoding",
-  "connection",
-  "content-length",
-  "cookie",
-  "host",
-  "origin",
-  "referer",
-  "set-cookie",
-]);
 
 export function inferRequestPlanFromNetworkRecord(
   record: NetworkQueryRecord,
@@ -93,16 +87,7 @@ export function inferRequestPlanFromNetworkRecord(
 
 function inferDefaultHeaders(record: NetworkQueryRecord): readonly OpensteerRequestEntry[] {
   return record.record.requestHeaders
-    .filter((header) => {
-      const normalized = normalizeHeaderName(header.name);
-      if (IGNORED_DEFAULT_HEADER_NAMES.has(normalized)) {
-        return false;
-      }
-      if (isSecretHeaderName(normalized)) {
-        return false;
-      }
-      return true;
-    })
+    .filter((header) => isReplayableInferredHeaderName(header.name))
     .map((header) => ({
       name: header.name,
       value: header.value,

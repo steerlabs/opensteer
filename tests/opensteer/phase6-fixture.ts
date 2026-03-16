@@ -58,6 +58,12 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
+  if (url.pathname === "/phase6/close-delayed") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(closeDelayedDocumentHtml());
+    return;
+  }
+
   if (
     url.pathname === "/child-relative" ||
     url.pathname === "/item-1" ||
@@ -237,6 +243,22 @@ function mainDocumentHtml(): string {
       </script>
     `,
     "Phase 6 main",
+  );
+}
+
+function closeDelayedDocumentHtml(): string {
+  return html(
+    `
+      <div id="status">closing</div>
+      <script>
+        window.addEventListener("load", () => {
+          setTimeout(() => {
+            window.close();
+          }, 100);
+        });
+      </script>
+    `,
+    "Phase 6 close delayed",
   );
 }
 

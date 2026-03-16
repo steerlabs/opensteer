@@ -8,6 +8,7 @@ import {
 } from "@opensteer/protocol";
 
 import { invalidRequestPlanError } from "../errors.js";
+import { isValidHttpHeaderName } from "../shared.js";
 
 const HTTP_METHOD_PATTERN = /^[A-Za-z]+$/;
 const URL_TEMPLATE_PLACEHOLDER_PATTERN = /\{([A-Za-z][A-Za-z0-9_-]*)\}/g;
@@ -99,14 +100,14 @@ export function normalizeRequestPlanPayload(
       ? {}
       : {
           defaultQuery: payload.endpoint.defaultQuery.map((entry, index) =>
-            normalizeRequestEntry(entry, `endpoint.defaultQuery[${index}]`),
+            normalizeRequestEntry(entry, `endpoint.defaultQuery[${index}]`, "query"),
           ),
         }),
     ...(payload.endpoint.defaultHeaders === undefined || payload.endpoint.defaultHeaders.length === 0
       ? {}
       : {
           defaultHeaders: payload.endpoint.defaultHeaders.map((entry, index) =>
-            normalizeRequestEntry(entry, `endpoint.defaultHeaders[${index}]`),
+            normalizeRequestEntry(entry, `endpoint.defaultHeaders[${index}]`, "header"),
           ),
         }),
   } satisfies OpensteerRequestPlanPayload["endpoint"];
@@ -200,6 +201,15 @@ function normalizeParameters(
 
   return parameters.map((parameter) => {
     const name = normalizeTrimmedString("parameter.name", parameter.name);
+    const wireName =
+      parameter.in === "header"
+        ? normalizeHttpHeaderName(
+            parameter.wireName === undefined ? "parameter.name" : "parameter.wireName",
+            parameter.wireName ?? name,
+          )
+        : parameter.wireName === undefined
+          ? undefined
+          : normalizeTrimmedString("parameter.wireName", parameter.wireName);
 
     const seenKey = `${parameter.in}:${name}`;
     if (seenByLocation.has(seenKey)) {
@@ -255,9 +265,7 @@ function normalizeParameters(
     return {
       name,
       in: parameter.in,
-      ...(parameter.wireName === undefined
-        ? {}
-        : { wireName: normalizeTrimmedString("parameter.wireName", parameter.wireName) }),
+      ...(parameter.wireName === undefined || wireName === undefined ? {} : { wireName }),
       ...(parameter.required === undefined ? {} : { required: parameter.required }),
       ...(parameter.description === undefined
         ? {}
@@ -320,11 +328,26 @@ function assertAbsoluteUrlTemplate(
 function normalizeRequestEntry(
   entry: OpensteerRequestEntry,
   fieldPath: string,
+  kind: "header" | "query",
 ): OpensteerRequestEntry {
   return {
-    name: normalizeTrimmedString(`${fieldPath}.name`, entry.name),
+    name:
+      kind === "header"
+        ? normalizeHttpHeaderName(`${fieldPath}.name`, entry.name)
+        : normalizeTrimmedString(`${fieldPath}.name`, entry.name),
     value: entry.value,
   };
+}
+
+function normalizeHttpHeaderName(field: string, value: string): string {
+  const normalized = normalizeTrimmedString(field, value);
+  if (!isValidHttpHeaderName(normalized)) {
+    throw invalidRequestPlanError(`${field} must be a valid HTTP header name`, {
+      field,
+      value,
+    });
+  }
+  return normalized;
 }
 
 function normalizeTrimmedString(field: string, value: string): string {

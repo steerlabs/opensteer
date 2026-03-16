@@ -8,13 +8,22 @@ import type {
   BodyPayload,
   HeaderEntry,
   NetworkRecord,
+  NetworkQueryRecord,
   OpensteerRequestPlanPayload,
+} from "../../packages/protocol/src/index.js";
+import {
+  createBodyPayload,
+  createHeaderEntry,
+  createNetworkRequestId,
+  createPageRef,
+  createSessionRef,
 } from "../../packages/protocol/src/index.js";
 import {
   Opensteer,
   createFilesystemOpensteerRoot,
 } from "../../packages/opensteer/src/index.js";
 import { ensureOpensteerService } from "../../packages/opensteer/src/cli/client.js";
+import { inferRequestPlanFromNetworkRecord } from "../../packages/opensteer/src/requests/inference.js";
 import { normalizeRequestPlanPayload } from "../../packages/opensteer/src/requests/plans/index.js";
 import {
   cleanupPhase6TemporaryRoots,
@@ -133,6 +142,68 @@ describe("Phase 10 request workflows", () => {
         ],
       }),
     ).toThrow(/parameter\.wireName must be a non-empty string/);
+
+    expect(() =>
+      normalizeRequestPlanPayload({
+        transport: {
+          kind: "session-http",
+        },
+        endpoint: {
+          method: "GET",
+          urlTemplate: "https://example.com/api/users/{userId}",
+          defaultHeaders: [{ name: ":authority", value: "example.com" }],
+        },
+        parameters: [{ name: "userId", in: "path" }],
+      }),
+    ).toThrow(/valid HTTP header name/);
+
+    expect(() =>
+      normalizeRequestPlanPayload({
+        transport: {
+          kind: "session-http",
+        },
+        endpoint: {
+          method: "GET",
+          urlTemplate: "https://example.com/api/users/{userId}",
+        },
+        parameters: [
+          { name: "userId", in: "path" },
+          { name: "csrf", in: "header", wireName: "bad header" },
+        ],
+      }),
+    ).toThrow(/valid HTTP header name/);
+  });
+
+  test("request-plan inference keeps only replayable headers while preserving auth inference", () => {
+    const inferred = inferRequestPlanFromNetworkRecord(
+      createSavedNetworkRecord({
+        recordId: "record:inferred-headers",
+        requestId: createNetworkRequestId("inferred-headers"),
+        url: "https://example.com/api/search?q=airpods",
+        requestHeaders: [
+          createHeaderEntry(":authority", "example.com"),
+          createHeaderEntry("accept", "application/json"),
+          createHeaderEntry("accept-language", "en-US,en;q=0.9"),
+          createHeaderEntry("content-type", "application/json"),
+          createHeaderEntry("sec-fetch-mode", "cors"),
+          createHeaderEntry("user-agent", "agent-browser"),
+          createHeaderEntry("x-auth-token", "[redacted]"),
+          createHeaderEntry("x-client-version", "web-2026.03"),
+        ],
+      }),
+      {
+        recordId: "record:inferred-headers",
+        key: "phase10-header-filter",
+        version: "1.0.0",
+      },
+    );
+
+    expect(inferred.payload.auth?.strategy).toBe("api-key");
+    expect(inferred.payload.endpoint.defaultHeaders).toEqual([
+      { name: "accept", value: "application/json" },
+      { name: "content-type", value: "application/json" },
+      { name: "x-client-version", value: "web-2026.03" },
+    ]);
   });
 
   test("SDK supports the live reverse-engineering workflow end to end", async () => {
@@ -237,7 +308,7 @@ describe("Phase 10 request workflows", () => {
       });
       expect(executed.data).toMatchObject({
         cookie: expect.stringContaining("phase10-session=abc123"),
-        csrf: "csrf-sdk",
+        csrf: "",
         source: "raw-sdk",
         body: {
           item: "widget-100",
@@ -270,6 +341,87 @@ describe("Phase 10 request workflows", () => {
         tag: "phase10-capture",
       });
       expect(afterClear.records).toHaveLength(0);
+    } finally {
+      await opensteer.close();
+    }
+  }, 60_000);
+
+  test("inferred plans from saved records replay without pseudo-header cleanup", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const opensteer = new Opensteer({
+      name: "phase10-saved-infer-replay",
+      rootDir,
+      browser: {
+        headless: true,
+      },
+    });
+
+    try {
+      await opensteer.open(`${baseUrl}/phase10/session`);
+
+      const root = await createFilesystemOpensteerRoot({
+        rootPath: path.join(rootDir, ".opensteer"),
+      });
+      const savedRecord = createSavedNetworkRecord({
+        recordId: "record:phase10-saved-infer",
+        requestId: createNetworkRequestId("phase10-saved-infer"),
+        sessionRef: createSessionRef("saved-session"),
+        pageRef: createPageRef("saved-page"),
+        url: `${baseUrl}/phase10/api/session-http?source=saved-infer`,
+        method: "POST",
+        requestHeaders: [
+          createHeaderEntry(":authority", "127.0.0.1"),
+          createHeaderEntry("accept", "application/json"),
+          createHeaderEntry("accept-language", "en-US,en;q=0.9"),
+          createHeaderEntry("content-type", "application/json; charset=utf-8"),
+          createHeaderEntry("cookie", "[redacted]"),
+          createHeaderEntry("sec-fetch-mode", "cors"),
+          createHeaderEntry("user-agent", "agent-browser"),
+          createHeaderEntry("x-csrf-token", "[redacted]"),
+        ],
+        requestBody: createJsonBodyPayload({
+          item: "saved-widget",
+          quantity: 2,
+        }),
+      });
+      await root.registry.savedNetwork.save([savedRecord], "phase10-saved-infer");
+
+      const inferred = await opensteer.inferRequestPlan({
+        recordId: savedRecord.recordId,
+        key: "phase10-saved-infer",
+        version: "1.0.0",
+      });
+      expect(inferred.payload.auth?.strategy).toBe("session-cookie");
+      expect(inferred.payload.endpoint.defaultHeaders).toEqual([
+        {
+          name: "accept",
+          value: "application/json",
+        },
+        {
+          name: "content-type",
+          value: "application/json; charset=utf-8",
+        },
+      ]);
+
+      const executed = await opensteer.request("phase10-saved-infer", {
+        version: "1.0.0",
+        body: {
+          json: {
+            item: "saved-widget",
+            quantity: 5,
+          },
+        },
+      });
+      expect(executed.data).toMatchObject({
+        cookie: expect.stringContaining("phase10-session=abc123"),
+        csrf: "",
+        source: "saved-infer",
+        body: {
+          item: "saved-widget",
+          quantity: 5,
+        },
+      });
     } finally {
       await opensteer.close();
     }
@@ -488,7 +640,7 @@ describe("Phase 10 request workflows", () => {
     };
     expect(response.data).toMatchObject({
       cookie: expect.stringContaining("phase10-session=abc123"),
-      csrf: "csrf-cli",
+      csrf: "",
       source: "raw-cli",
       body: {
         item: "cli-widget",
@@ -528,6 +680,50 @@ function buildOrderPlanPayload(baseUrl: string): OpensteerRequestPlanPayload {
       strategy: "session-cookie",
     },
   };
+}
+
+function createSavedNetworkRecord(input: {
+  readonly recordId: string;
+  readonly requestId: NetworkRecord["requestId"];
+  readonly sessionRef?: NetworkRecord["sessionRef"];
+  readonly pageRef?: NetworkRecord["pageRef"];
+  readonly url: string;
+  readonly method?: string;
+  readonly requestHeaders?: readonly HeaderEntry[];
+  readonly responseHeaders?: readonly HeaderEntry[];
+  readonly requestBody?: BodyPayload;
+}): NetworkQueryRecord {
+  return {
+    recordId: input.recordId,
+    source: "live",
+    record: {
+      kind: "http",
+      requestId: input.requestId,
+      sessionRef: input.sessionRef ?? createSessionRef("saved-record-session"),
+      ...(input.pageRef === undefined ? {} : { pageRef: input.pageRef }),
+      method: input.method ?? "GET",
+      url: input.url,
+      requestHeaders: input.requestHeaders ?? [],
+      responseHeaders: input.responseHeaders ?? [
+        createHeaderEntry("content-type", "application/json; charset=utf-8"),
+      ],
+      status: 200,
+      statusText: "OK",
+      resourceType: "fetch",
+      navigationRequest: false,
+      ...(input.requestBody === undefined ? {} : { requestBody: input.requestBody }),
+      responseBody: createJsonBodyPayload({
+        ok: true,
+      }),
+    },
+  };
+}
+
+function createJsonBodyPayload(value: unknown): BodyPayload {
+  return createBodyPayload(Buffer.from(JSON.stringify(value), "utf8").toString("base64"), {
+    mimeType: "application/json",
+    charset: "utf-8",
+  });
 }
 
 function readHeader(headers: readonly HeaderEntry[], name: string): string | undefined {
