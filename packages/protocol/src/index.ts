@@ -19,3 +19,4 @@ export * from "./rest.js";
 export * from "./mcp.js";
 export * from "./semantic.js";
 export * from "./computer-use-bridge.js";
+export * from "./dom-action-bridge.js";

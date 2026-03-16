@@ -12,12 +12,15 @@ interface PendingCommand {
 
 export const PAGE_CDP_METHOD_ALLOWLIST = new Set<string>([
   "DOM.enable",
+  "DOM.focus",
   "DOM.getAttributes",
   "DOM.getContentQuads",
   "DOM.getDocument",
   "DOM.getNodeForLocation",
   "DOM.getOuterHTML",
   "DOM.pushNodesByBackendIdsToFrontend",
+  "DOM.resolveNode",
+  "DOM.scrollIntoViewIfNeeded",
   "DOMSnapshot.captureSnapshot",
   "DOMStorage.disable",
   "DOMStorage.enable",
@@ -30,7 +33,9 @@ export const PAGE_CDP_METHOD_ALLOWLIST = new Set<string>([
   "Page.enable",
   "Page.getFrameTree",
   "Page.getLayoutMetrics",
+  "Runtime.callFunctionOn",
   "Runtime.evaluate",
+  "Runtime.releaseObject",
   "Storage.getStorageKey",
 ]);
 

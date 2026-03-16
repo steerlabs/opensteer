@@ -60,7 +60,12 @@ import {
   type StorageSnapshot,
   type ViewportMetrics,
 } from "@opensteer/browser-core";
-import { OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL, type ComputerUseBridge } from "@opensteer/protocol";
+import {
+  OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL,
+  OPENSTEER_DOM_ACTION_BRIDGE_SYMBOL,
+  type ComputerUseBridge,
+  type DomActionBridge,
+} from "@opensteer/protocol";
 import { STATUS_CODES } from "node:http";
 import type { ChildProcess } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -107,6 +112,7 @@ import {
   buildInputActionRequest,
 } from "./rest-client.js";
 import { createAbpComputerUseBridge } from "./computer-use.js";
+import { createAbpDomActionBridge } from "./dom-action-bridge.js";
 import { buildAbpScrollSegments } from "./scroll.js";
 import {
   buildAbpSettleTrackerInstallScript,
@@ -588,6 +594,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
   private requestCounter = 0;
   private sessionCounter = 0;
   private computerUseBridge: ComputerUseBridge | undefined;
+  private domActionBridge: DomActionBridge | undefined;
   private eventCounter = 0;
   private stepCounter = 0;
   private dialogCounter = 0;
@@ -668,6 +675,20 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       drainQueuedEvents: (pageRef) => this.drainQueuedEvents(pageRef),
     });
     return this.computerUseBridge;
+  }
+
+  [OPENSTEER_DOM_ACTION_BRIDGE_SYMBOL](): DomActionBridge {
+    this.domActionBridge ??= createAbpDomActionBridge({
+      resolveController: (pageRef: PageRef) => this.requirePage(pageRef),
+      resolveSession: (sessionRef: SessionRef) => this.requireSession(sessionRef),
+      flushDomUpdateTask: (controller) => this.flushDomUpdateTask(controller),
+      resettlePausedExecution: (controller, timeoutMs) =>
+        this.settlePausedExecutionBoundary(controller, timeoutMs),
+      requireLiveNode: (locator) => this.requireLiveNode(locator),
+      getDomSnapshot: (documentRef: DocumentRef) => this.getDomSnapshot({ documentRef }),
+      getViewportMetrics: (pageRef: PageRef) => this.getViewportMetrics({ pageRef }),
+    });
+    return this.domActionBridge;
   }
 
   async createSession(): Promise<SessionRef> {

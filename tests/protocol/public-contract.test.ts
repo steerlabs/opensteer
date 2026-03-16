@@ -6,7 +6,9 @@ import {
   OPENSTEER_PROTOCOL_REST_BASE_PATH,
   OPENSTEER_PROTOCOL_VERSION,
   OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL,
+  OPENSTEER_DOM_ACTION_BRIDGE_SYMBOL,
   type ComputerUseBridge,
+  type DomActionBridge,
   createDocumentEpoch,
   createErrorEnvelope,
   createNodeRef,
@@ -38,6 +40,7 @@ import {
   assertValidSemanticOperationInput,
   parseOpensteerRef,
   resolveComputerUseBridge,
+  resolveDomActionBridge,
   resolveRequiredCapabilities,
   resolveSemanticRequiredCapabilities,
   unsupportedCapabilityError,
@@ -80,6 +83,32 @@ describe("computer-use bridge contract", () => {
     };
 
     expect(resolveComputerUseBridge(provider)).toBe(bridge);
+  });
+});
+
+describe("DOM action bridge contract", () => {
+  test("resolves shared DOM action bridge providers through the canonical symbol", () => {
+    const bridge: DomActionBridge = {
+      async inspectActionTarget() {
+        throw new Error("not called");
+      },
+      async scrollNodeIntoView() {
+        throw new Error("not called");
+      },
+      async focusNode() {
+        throw new Error("not called");
+      },
+      async settleAfterDomAction() {
+        throw new Error("not called");
+      },
+    };
+    const provider = {
+      [OPENSTEER_DOM_ACTION_BRIDGE_SYMBOL]() {
+        return bridge;
+      },
+    };
+
+    expect(resolveDomActionBridge(provider)).toBe(bridge);
   });
 });
 

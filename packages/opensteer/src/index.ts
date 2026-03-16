@@ -73,6 +73,12 @@ export {
 export type {
   AnchorTargetRef,
   ContextHop,
+  DomActionBridge,
+  DomActionBridgeProvider,
+  DomActionScrollAlignment,
+  DomActionScrollOptions,
+  DomActionSettleOptions,
+  DomActionTargetInspection,
   DomActionOutcome,
   DomArrayFieldSelector,
   DomArrayRowMetadata,
@@ -102,6 +108,7 @@ export type {
   StructuralElementAnchor,
 } from "./runtimes/dom/index.js";
 export {
+  OPENSTEER_DOM_ACTION_BRIDGE_SYMBOL,
   buildArrayFieldPathCandidates,
   buildPathCandidates,
   buildPathSelectorHint,
@@ -117,6 +124,7 @@ export {
   MATCH_ATTRIBUTE_PRIORITY,
   normalizeExtractedValue,
   resolveExtractedValueInContext,
+  resolveDomActionBridge,
   sanitizeElementPath,
   sanitizeReplayElementPath,
   sanitizeStructuralElementAnchor,
