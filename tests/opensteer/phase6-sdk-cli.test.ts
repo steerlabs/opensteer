@@ -26,6 +26,7 @@ import {
   startPhase6FixtureServer,
   type Phase6FixtureServer,
 } from "./phase6-fixture.js";
+import { readPngSize } from "../helpers/png.js";
 
 const execFile = promisify(execFileCallback);
 const CLI_SCRIPT = path.resolve(process.cwd(), "packages/opensteer/dist/cli/bin.js");
@@ -628,6 +629,28 @@ describe("Phase 6 SDK and CLI surfaces", () => {
       "clickable,grid",
     ]);
     expect((computer as { readonly action: { readonly type: string } }).action.type).toBe("click");
+    const computerOutput = computer as {
+      readonly screenshot: {
+        readonly payload: {
+          readonly data: string;
+        };
+        readonly size: {
+          readonly width: number;
+          readonly height: number;
+        };
+      };
+      readonly viewport: {
+        readonly visualViewport: {
+          readonly size: {
+            readonly width: number;
+            readonly height: number;
+          };
+        };
+      };
+    };
+    const raster = readPngSize(Buffer.from(computerOutput.screenshot.payload.data, "base64"));
+    expect(raster).toEqual(computerOutput.screenshot.size);
+    expect(computerOutput.screenshot.size).toEqual(computerOutput.viewport.visualViewport.size);
 
     const extracted = await runCliCommand(rootDir, [
       "extract",

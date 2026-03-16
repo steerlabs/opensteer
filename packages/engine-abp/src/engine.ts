@@ -666,7 +666,6 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
         this.settlePausedExecutionBoundary(controller, timeoutMs),
       requireMainFrame: (controller) => this.requireMainFrame(controller),
       drainQueuedEvents: (pageRef) => this.drainQueuedEvents(pageRef),
-      getViewportMetrics: (pageRef) => this.getViewportMetrics({ pageRef }),
     });
     return this.computerUseBridge;
   }
@@ -2561,9 +2560,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
   }
 
   private trackerStateIsSettled(
-    tracker:
-      | ReturnType<typeof normalizeAbpSettleTrackerState>
-      | undefined,
+    tracker: ReturnType<typeof normalizeAbpSettleTrackerState> | undefined,
   ): boolean {
     if (!tracker) {
       return false;

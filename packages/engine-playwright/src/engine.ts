@@ -2,7 +2,6 @@ import {
   createBodyPayload,
   createBrowserCoreError,
   createChooserRef,
-  createDevicePixelRatio,
   createDocumentEpoch,
   createDocumentRef,
   createDownloadRef,
@@ -12,11 +11,8 @@ import {
   createNodeRef,
   createPageRef,
   createPoint,
-  createScrollOffset,
   createSessionRef,
   createSize,
-  createPageScaleFactor,
-  createPageZoomFactor,
   createDialogRef,
   unsupportedCapabilityError,
   staleNodeRefError,
@@ -53,15 +49,8 @@ import {
   type ViewportMetrics,
   type CookieRecord,
 } from "@opensteer/browser-core";
-import {
-  chromium,
-  type Browser,
-  type BrowserContext,
-} from "playwright";
-import {
-  OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL,
-  type ComputerUseBridge,
-} from "@opensteer/protocol";
+import { chromium, type Browser, type BrowserContext } from "playwright";
+import { OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL, type ComputerUseBridge } from "@opensteer/protocol";
 import type {
   CDPSession,
   ConsoleMessage,
@@ -105,11 +94,7 @@ import {
   interleavedAttributesToEntries,
   mapScreenshotFormat,
 } from "./normalize.js";
-import {
-  toDocumentPoint,
-  toViewportPoint,
-  toViewportRect,
-} from "./coordinate.js";
+import { toDocumentPoint, toViewportPoint, toViewportRect } from "./coordinate.js";
 import {
   capturePageDomSnapshot,
   findCapturedDocument,
@@ -126,9 +111,11 @@ import {
   shouldIgnoreBackgroundTaskError,
   rethrowNodeLookupError,
 } from "./errors.js";
+import { createPlaywrightComputerUseBridge } from "./computer-use.js";
 import {
-  createPlaywrightComputerUseBridge,
-} from "./computer-use.js";
+  captureLayoutViewportScreenshotArtifact,
+  getViewportMetricsFromCdp,
+} from "./viewport-screenshot.js";
 
 export type {
   PlaywrightChromiumLaunchOptions,
@@ -221,7 +208,6 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       flushDomUpdateTask: (controller) => this.flushDomUpdateTask(controller),
       requireMainFrame: (controller) => this.requireMainFrame(controller),
       drainQueuedEvents: (pageRef) => this.drainQueuedEvents(pageRef),
-      getViewportMetrics: (pageRef) => this.getViewportMetrics({ pageRef }),
       withModifiers: (page, modifiers, action) => this.withModifiers(page, modifiers, action),
     });
     return this.computerUseBridge;
@@ -683,28 +669,33 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       coordinateSpace = "document-css";
     }
 
-    const response = await controller.cdp.send("Page.captureScreenshot", {
-      format,
-      ...(clip === undefined ? {} : { clip }),
-      ...(input.fullPage ? { captureBeyondViewport: true } : {}),
-      fromSurface: true,
-    });
-    const payload = createBodyPayload(new Uint8Array(Buffer.from(response.data, "base64")), {
-      mimeType: `image/${format}`,
-    });
     await this.flushPendingPageTasks(controller.sessionRef);
     const mainFrame = this.requireMainFrame(controller);
-    const artifact: ScreenshotArtifact = {
-      pageRef: controller.pageRef,
-      frameRef: mainFrame.frameRef,
-      documentRef: mainFrame.currentDocument.documentRef,
-      documentEpoch: mainFrame.currentDocument.documentEpoch,
-      payload,
-      format,
-      size,
-      coordinateSpace,
-      ...(input.clip === undefined ? {} : { clip: input.clip }),
-    };
+    let artifact: ScreenshotArtifact;
+    if (clip === undefined && !input.fullPage) {
+      artifact = (await captureLayoutViewportScreenshotArtifact(controller, mainFrame, format))
+        .artifact;
+    } else {
+      const response = await controller.cdp.send("Page.captureScreenshot", {
+        format,
+        ...(clip === undefined ? {} : { clip }),
+        ...(input.fullPage ? { captureBeyondViewport: true } : {}),
+        fromSurface: true,
+      });
+      artifact = {
+        pageRef: controller.pageRef,
+        frameRef: mainFrame.frameRef,
+        documentRef: mainFrame.currentDocument.documentRef,
+        documentEpoch: mainFrame.currentDocument.documentEpoch,
+        payload: createBodyPayload(new Uint8Array(Buffer.from(response.data, "base64")), {
+          mimeType: `image/${format}`,
+        }),
+        format,
+        size,
+        coordinateSpace,
+        ...(input.clip === undefined ? {} : { clip: input.clip }),
+      };
+    }
 
     return this.createStepResult(controller.sessionRef, controller.pageRef, startedAt, {
       frameRef: mainFrame.frameRef,
@@ -943,40 +934,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
 
   async getViewportMetrics(input: { readonly pageRef: PageRef }): Promise<ViewportMetrics> {
     const controller = this.requirePage(input.pageRef);
-    const layout = await controller.cdp.send("Page.getLayoutMetrics");
-    const screenInfos = await controller.cdp.send("Emulation.getScreenInfos");
-    const primaryScreen =
-      screenInfos.screenInfos.find((screen) => screen.isPrimary) ?? screenInfos.screenInfos[0];
-    const pageZoomFactor = layout.cssVisualViewport.zoom ?? 1;
-    const devicePixelRatio = (primaryScreen?.devicePixelRatio ?? 1) * pageZoomFactor;
-    return {
-      layoutViewport: {
-        origin: createPoint(layout.cssLayoutViewport.pageX, layout.cssLayoutViewport.pageY),
-        size: createSize(
-          layout.cssLayoutViewport.clientWidth,
-          layout.cssLayoutViewport.clientHeight,
-        ),
-      },
-      visualViewport: {
-        origin: createPoint(layout.cssVisualViewport.pageX, layout.cssVisualViewport.pageY),
-        offsetWithinLayoutViewport: createScrollOffset(
-          layout.cssVisualViewport.offsetX,
-          layout.cssVisualViewport.offsetY,
-        ),
-        size: createSize(
-          layout.cssVisualViewport.clientWidth,
-          layout.cssVisualViewport.clientHeight,
-        ),
-      },
-      scrollOffset: createScrollOffset(
-        layout.cssVisualViewport.pageX,
-        layout.cssVisualViewport.pageY,
-      ),
-      contentSize: createSize(layout.cssContentSize.width, layout.cssContentSize.height),
-      devicePixelRatio: createDevicePixelRatio(devicePixelRatio),
-      pageScaleFactor: createPageScaleFactor(layout.cssVisualViewport.scale),
-      pageZoomFactor: createPageZoomFactor(pageZoomFactor),
-    };
+    return getViewportMetricsFromCdp(controller);
   }
 
   async getNetworkRecords(input: {
@@ -1161,7 +1119,9 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     return this.createStepResult(input.sessionRef, pageRef, startedAt, {
       ...(mainFrame === undefined ? {} : { frameRef: mainFrame.frameRef }),
       ...(mainFrame === undefined ? {} : { documentRef: mainFrame.currentDocument.documentRef }),
-      ...(mainFrame === undefined ? {} : { documentEpoch: mainFrame.currentDocument.documentEpoch }),
+      ...(mainFrame === undefined
+        ? {}
+        : { documentEpoch: mainFrame.currentDocument.documentEpoch }),
       events: controller === undefined ? [] : this.drainQueuedEvents(controller.pageRef),
       data: {
         url: response.url(),

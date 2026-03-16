@@ -14,6 +14,7 @@ import {
   type DomSnapshotNode,
 } from "../../packages/browser-core/src/index.js";
 import { defineBrowserCoreConformanceSuite } from "../browser-core/conformance-suite.js";
+import { readPngSize } from "../helpers/png.js";
 
 let baseUrl = "";
 let closeServer: (() => Promise<void>) | undefined;
@@ -21,8 +22,30 @@ let closeServer: (() => Promise<void>) | undefined;
 interface ComputerUseBridgeResult {
   readonly pageRef: string;
   readonly screenshot: {
+    readonly size: {
+      readonly width: number;
+      readonly height: number;
+    };
     readonly payload: {
       readonly bytes: Uint8Array;
+    };
+  };
+  readonly viewport: {
+    readonly layoutViewport: {
+      readonly size: {
+        readonly width: number;
+        readonly height: number;
+      };
+    };
+    readonly visualViewport: {
+      readonly origin: {
+        readonly x: number;
+        readonly y: number;
+      };
+      readonly size: {
+        readonly width: number;
+        readonly height: number;
+      };
     };
   };
   readonly events: readonly {
@@ -33,6 +56,9 @@ interface ComputerUseBridgeResult {
 interface BrowserCoreComputerUseBridge {
   execute(input: ComputerUseBridgeInput): Promise<ComputerUseBridgeResult>;
 }
+
+const headedChromiumTest =
+  process.platform === "linux" && process.env.DISPLAY === undefined ? test.skip : test;
 
 function html(body: string, title: string, extraHead = ""): string {
   return `<!doctype html>
@@ -129,6 +155,27 @@ function domDocumentWithChild(): string {
   );
 }
 
+function tallScrollDocument(): string {
+  return html(
+    `
+      <div id="top-band"></div>
+      <div id="middle-band"></div>
+      <div id="bottom-band"></div>
+    `,
+    "Tall scroll page",
+    `
+      <style>
+        #top-band, #middle-band, #bottom-band {
+          width: 100%;
+        }
+        #top-band { height: 720px; background: rgb(220, 40, 40); }
+        #middle-band { height: 960px; background: rgb(245, 245, 245); }
+        #bottom-band { height: 720px; background: rgb(40, 80, 220); }
+      </style>
+    `,
+  );
+}
+
 function findNodeById(nodes: readonly DomSnapshotNode[], id: string) {
   return nodes.find((node) =>
     node.attributes.some((attribute) => attribute.name === "id" && attribute.value === id),
@@ -185,6 +232,12 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   if (url.pathname === "/dom-child") {
     response.setHeader("content-type", "text/html; charset=utf-8");
     response.end(html('<div id="child-text">Child stable</div>', "Child DOM page"));
+    return;
+  }
+
+  if (url.pathname === "/tall-scroll") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(tallScrollDocument());
     return;
   }
 
@@ -542,6 +595,153 @@ test(
   },
 );
 
+headedChromiumTest(
+  "captures computer-use screenshots in the same layout-viewport CSS space as the returned viewport",
+  { timeout: 60_000 },
+  async () => {
+    const engine = await createPlaywrightBrowserCoreEngine({
+      launch: { headless: false },
+    });
+    try {
+      const sessionRef = await engine.createSession();
+      const created = await engine.createPage({
+        sessionRef,
+        url: `${baseUrl}/tall-scroll`,
+      });
+      const bridge = requireComputerUseBridge(engine);
+
+      const top = await bridge.execute({
+        pageRef: created.data.pageRef,
+        action: {
+          type: "screenshot",
+        },
+        screenshot: {
+          format: "png",
+          includeCursor: false,
+          annotations: [],
+        },
+        signal: new AbortController().signal,
+        remainingMs: () => 10_000,
+        settle: async () => {},
+      });
+      const topRaster = readPngSize(top.screenshot.payload.bytes);
+
+      expect(topRaster).toEqual(top.screenshot.size);
+      expect(top.screenshot.size).toEqual(top.viewport.visualViewport.size);
+      expect(top.viewport.layoutViewport.size).toEqual(top.viewport.visualViewport.size);
+
+      const scrolled = await bridge.execute({
+        pageRef: created.data.pageRef,
+        action: {
+          type: "scroll",
+          x: 40,
+          y: 40,
+          deltaX: 0,
+          deltaY: 1_400,
+        },
+        screenshot: {
+          format: "png",
+          includeCursor: false,
+          annotations: [],
+        },
+        signal: new AbortController().signal,
+        remainingMs: () => 10_000,
+        settle: async () => {},
+      });
+      const scrolledRaster = readPngSize(scrolled.screenshot.payload.bytes);
+
+      expect(scrolledRaster).toEqual(scrolled.screenshot.size);
+      expect(scrolled.screenshot.size).toEqual(scrolled.viewport.visualViewport.size);
+      expect(scrolled.viewport.layoutViewport.size).toEqual(scrolled.viewport.visualViewport.size);
+      expect(scrolled.viewport.visualViewport.origin.y).toBeGreaterThan(
+        top.viewport.visualViewport.origin.y,
+      );
+      expect(
+        Buffer.compare(
+          Buffer.from(top.screenshot.payload.bytes),
+          Buffer.from(scrolled.screenshot.payload.bytes),
+        ),
+      ).not.toBe(0);
+    } finally {
+      await engine.dispose();
+    }
+  },
+);
+
+headedChromiumTest(
+  "captures viewport screenshots with raster dimensions that match the current visual viewport while leaving full-page capture unchanged",
+  { timeout: 60_000 },
+  async () => {
+    const engine = await createPlaywrightBrowserCoreEngine({
+      launch: { headless: false },
+    });
+    try {
+      const sessionRef = await engine.createSession();
+      const created = await engine.createPage({
+        sessionRef,
+        url: `${baseUrl}/tall-scroll`,
+      });
+
+      const viewportScreenshot = await engine.captureScreenshot({
+        pageRef: created.data.pageRef,
+        format: "png",
+      });
+      const viewportMetrics = await engine.getViewportMetrics({
+        pageRef: created.data.pageRef,
+      });
+      const viewportRaster = readPngSize(viewportScreenshot.data.payload.bytes);
+
+      expect(viewportRaster).toEqual(viewportScreenshot.data.size);
+      expect(viewportScreenshot.data.size).toEqual(viewportMetrics.visualViewport.size);
+      expect(viewportMetrics.layoutViewport.size).toEqual(viewportMetrics.visualViewport.size);
+
+      await engine.mouseScroll({
+        pageRef: created.data.pageRef,
+        point: createPoint(40, 40),
+        coordinateSpace: "layout-viewport-css",
+        delta: createPoint(0, 1_400),
+      });
+
+      const scrolledScreenshot = await engine.captureScreenshot({
+        pageRef: created.data.pageRef,
+        format: "png",
+      });
+      const scrolledMetrics = await engine.getViewportMetrics({
+        pageRef: created.data.pageRef,
+      });
+      const scrolledRaster = readPngSize(scrolledScreenshot.data.payload.bytes);
+
+      expect(scrolledRaster).toEqual(scrolledScreenshot.data.size);
+      expect(scrolledScreenshot.data.size).toEqual(scrolledMetrics.visualViewport.size);
+      expect(scrolledMetrics.layoutViewport.size).toEqual(scrolledMetrics.visualViewport.size);
+      expect(scrolledMetrics.visualViewport.origin.y).toBeGreaterThan(
+        viewportMetrics.visualViewport.origin.y,
+      );
+      expect(
+        Buffer.compare(
+          Buffer.from(viewportScreenshot.data.payload.bytes),
+          Buffer.from(scrolledScreenshot.data.payload.bytes),
+        ),
+      ).not.toBe(0);
+
+      const fullPageScreenshot = await engine.captureScreenshot({
+        pageRef: created.data.pageRef,
+        format: "png",
+        fullPage: true,
+      });
+      const fullPageRaster = readPngSize(fullPageScreenshot.data.payload.bytes);
+
+      expect(fullPageScreenshot.data.coordinateSpace).toBe("document-css");
+      expect(fullPageRaster).toEqual(fullPageScreenshot.data.size);
+      expect(fullPageScreenshot.data.size.height).toBeGreaterThan(
+        scrolledMetrics.visualViewport.size.height,
+      );
+    } finally {
+      await engine.dispose();
+    }
+  },
+);
+
 test("hitTest rounds fractional CSS coordinates before calling CDP", async () => {
   const engine = await createPlaywrightBrowserCoreEngine({
     launch: { headless: true },
@@ -818,9 +1018,9 @@ test("captures network, cookies, storage, and async page events", { timeout: 60_
       pageRef: created.data.pageRef,
       includeBodies: true,
     });
-    expect(
-      transportRecords.some((record) => record.url.endsWith("/api/session-transport")),
-    ).toBe(true);
+    expect(transportRecords.some((record) => record.url.endsWith("/api/session-transport"))).toBe(
+      true,
+    );
 
     const storage = await engine.getStorageSnapshot({
       sessionRef,

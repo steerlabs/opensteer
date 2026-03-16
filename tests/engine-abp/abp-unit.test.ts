@@ -1,14 +1,10 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
-  createDevicePixelRatio,
   createDocumentEpoch,
   createDocumentRef,
   createFrameRef,
   createPageRef,
-  createPageScaleFactor,
-  createPageZoomFactor,
-  createScrollOffset,
   createSessionRef,
   createSize,
 } from "../../packages/browser-core/src/index.js";
@@ -61,7 +57,10 @@ describe("engine-abp internals", () => {
     expect(() =>
       assertAllowedCdpMethod("Page.addScriptToEvaluateOnNewDocument", PAGE_CDP_METHOD_ALLOWLIST),
     ).not.toThrow();
-    expectThrownCode(() => assertAllowedCdpMethod("Network.enable", PAGE_CDP_METHOD_ALLOWLIST), "operation-failed");
+    expectThrownCode(
+      () => assertAllowedCdpMethod("Network.enable", PAGE_CDP_METHOD_ALLOWLIST),
+      "operation-failed",
+    );
   });
 
   test("normalizes ABP HTTP errors into browser-core errors", () => {
@@ -402,20 +401,8 @@ describe("engine-abp internals", () => {
       expect.objectContaining({ pageRef: createPageRef("main") }),
       5_000,
     );
-    expect(rest.screenshotTab).toHaveBeenCalledWith(
-      "tab-main",
-      expect.objectContaining({
-        screenshot: {
-          area: "viewport",
-          cursor: true,
-          format: "png",
-          markup: ["clickable", "grid"],
-        },
-      }),
-      {
-        signal,
-      },
-    );
+    expect(rest.screenshotTab).not.toHaveBeenCalled();
+    expect(output.screenshot.size).toEqual(output.viewport.visualViewport.size);
     expect(output.timing.totalMs).toBe(80);
   });
 
@@ -453,11 +440,7 @@ describe("engine-abp internals", () => {
       expect.objectContaining({ pageRef: popupPageRef }),
       5_000,
     );
-    expect(rest.screenshotTab).toHaveBeenCalledWith(
-      "tab-popup",
-      expect.any(Object),
-      expect.any(Object),
-    );
+    expect(rest.screenshotTab).not.toHaveBeenCalled();
   });
 
   test("computer-use bridge threads semantic timeout budgets and abort signals into ABP actions", async () => {
@@ -533,7 +516,7 @@ describe("engine-abp internals", () => {
         signal,
       },
     );
-    expect(outputTestState.rest.screenshotTab).toHaveBeenCalledTimes(1);
+    expect(outputTestState.rest.screenshotTab).not.toHaveBeenCalled();
   });
 
   test("computer-use bridge encodes scroll actions using ABP scroll segments", async () => {
@@ -573,7 +556,35 @@ describe("engine-abp internals", () => {
         signal,
       },
     );
-    expect(outputTestState.rest.screenshotTab).toHaveBeenCalledTimes(1);
+    expect(outputTestState.rest.screenshotTab).not.toHaveBeenCalled();
+  });
+
+  test("computer-use bridge rejects ABP responses whose screenshot and viewport sizes drift", async () => {
+    const bridge = createAbpComputerUseBridge(
+      createComputerBridgeContext({
+        viewportWidth: 700,
+        viewportHeight: 500,
+      }),
+    );
+
+    await expect(
+      bridge.execute({
+        pageRef: createPageRef("main"),
+        action: {
+          type: "click",
+          x: 40,
+          y: 30,
+        },
+        screenshot: {
+          format: "png",
+          includeCursor: false,
+          annotations: [],
+        },
+        signal: new AbortController().signal,
+        remainingMs: () => 10_000,
+        settle: async () => {},
+      }),
+    ).rejects.toThrow("did not match viewport");
   });
 
   test("buildAbpScrollSegments rejects zero-delta scroll requests", () => {
@@ -592,10 +603,14 @@ function createComputerBridgeContext(
     readonly popupPageRef?: ReturnType<typeof createPageRef>;
     readonly tabChanged?: boolean;
     readonly discoveredPopupPageRef?: ReturnType<typeof createPageRef>;
+    readonly viewportWidth?: number;
+    readonly viewportHeight?: number;
   } = {},
 ) {
   outputTestState.rest = createRestStubs({
     tabChanged: options.tabChanged ?? false,
+    viewportWidth: options.viewportWidth,
+    viewportHeight: options.viewportHeight,
   });
   outputTestState.flushDomUpdateTask = vi.fn(async () => {});
   outputTestState.resettlePausedExecution = vi.fn(async () => {});
@@ -677,7 +692,6 @@ function createComputerBridgeContext(
             },
           ]
         : [],
-    getViewportMetrics: async () => createViewportMetrics(),
   };
 }
 
@@ -701,7 +715,13 @@ function createPageController(
   };
 }
 
-function createRestStubs(options: { readonly tabChanged?: boolean } = {}) {
+function createRestStubs(
+  options: {
+    readonly tabChanged?: boolean;
+    readonly viewportWidth?: number;
+    readonly viewportHeight?: number;
+  } = {},
+) {
   const actionResponse = {
     result: {},
     tab_changed: options.tabChanged ?? false,
@@ -711,6 +731,14 @@ function createRestStubs(options: { readonly tabChanged?: boolean } = {}) {
       height: 600,
       virtual_time_ms: 0,
       format: "png",
+    },
+    scroll: {
+      scrollX: 0,
+      scrollY: 0,
+      pageWidth: 800,
+      pageHeight: 1_200,
+      viewportWidth: options.viewportWidth ?? 800,
+      viewportHeight: options.viewportHeight ?? 600,
     },
     timing: {
       action_started_ms: 10,
@@ -729,24 +757,5 @@ function createRestStubs(options: { readonly tabChanged?: boolean } = {}) {
     typeTab: vi.fn().mockResolvedValue(actionResponse),
     waitTab: vi.fn().mockResolvedValue(actionResponse),
     screenshotTab: vi.fn().mockResolvedValue(actionResponse),
-  };
-}
-
-function createViewportMetrics() {
-  return {
-    layoutViewport: {
-      origin: { x: 0, y: 0 },
-      size: createSize(800, 600),
-    },
-    visualViewport: {
-      origin: { x: 0, y: 0 },
-      offsetWithinLayoutViewport: createScrollOffset(0, 0),
-      size: createSize(800, 600),
-    },
-    scrollOffset: createScrollOffset(0, 0),
-    contentSize: createSize(800, 1200),
-    devicePixelRatio: createDevicePixelRatio(1),
-    pageScaleFactor: createPageScaleFactor(1),
-    pageZoomFactor: createPageZoomFactor(1),
   };
 }
