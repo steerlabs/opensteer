@@ -1,5 +1,6 @@
 import sharp from "sharp";
 import {
+  createBodyPayload,
   createDevicePixelRatio,
   createPageScaleFactor,
   createPageZoomFactor,
@@ -7,17 +8,16 @@ import {
   createScrollOffset,
   createSize,
   type Point,
+  type ScreenshotArtifact,
   type Size,
   type ViewportMetrics,
 } from "@opensteer/browser-core";
 import {
-  createBodyPayload,
   opensteerComputerAnnotationNames,
   type OpensteerComputerAction,
   type OpensteerComputerAnnotation,
   type OpensteerComputerDisplayScale,
   type OpensteerComputerTraceEnrichment,
-  type ScreenshotArtifact,
 } from "@opensteer/protocol";
 
 export const OPENSTEER_COMPUTER_DISPLAY_PROFILE = {
@@ -165,7 +165,7 @@ export async function normalizeComputerScreenshot(input: {
   readonly screenshot: ScreenshotArtifact;
   readonly transform: ComputerDisplayTransform;
 }): Promise<ScreenshotArtifact> {
-  const source = Buffer.from(input.screenshot.payload.data, "base64");
+  const source = Buffer.from(input.screenshot.payload.bytes);
 
   let pipeline = sharp(source, {
     failOn: "error",
@@ -184,7 +184,7 @@ export async function normalizeComputerScreenshot(input: {
 
   return {
     ...input.screenshot,
-    payload: createBodyPayload(normalized.toString("base64"), {
+    payload: createBodyPayload(new Uint8Array(normalized), {
       mimeType: "image/webp",
     }),
     format: "webp",

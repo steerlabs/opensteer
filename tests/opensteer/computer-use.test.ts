@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { once } from "node:events";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
@@ -84,6 +85,15 @@ describe("Phase 9 computer-use runtime", () => {
       expect(clickResult.screenshot.format).toBe("webp");
       expect(clickResult.screenshot.coordinateSpace).toBe("computer-display-css");
       expect(clickResult.screenshot.size).toEqual(clickResult.displayViewport.visualViewport.size);
+      expect(clickResult.screenshot.payload.delivery).toBe("external");
+      expect(clickResult.screenshot.payload.mimeType).toBe("image/webp");
+      const persistedScreenshotPath = fileURLToPath(clickResult.screenshot.payload.uri);
+      expect(persistedScreenshotPath).toContain("/artifacts/objects/sha256/");
+      const persistedScreenshot = await readFile(persistedScreenshotPath);
+      const persistedMetadata = await sharp(persistedScreenshot).metadata();
+      expect(persistedScreenshot.byteLength).toBe(clickResult.screenshot.payload.byteLength);
+      expect(persistedMetadata.width).toBe(clickResult.screenshot.size.width);
+      expect(persistedMetadata.height).toBe(clickResult.screenshot.size.height);
       expect(clickResult.displayScale).toEqual({ x: 1, y: 1 });
       expect(await extractStatus(runtime)).toBe("clicked");
 
@@ -160,8 +170,8 @@ describe("Phase 9 computer-use runtime", () => {
           disableAnnotations: ["clickable", "grid", "scrollable", "selected", "typeable"],
         },
       });
-      expect(annotatedScreenshot.screenshot.payload.data).not.toBe(
-        plainScreenshot.screenshot.payload.data,
+      expect(annotatedScreenshot.screenshot.payload.sha256).not.toBe(
+        plainScreenshot.screenshot.payload.sha256,
       );
       expect(plainScreenshot.screenshot.format).toBe("webp");
       expect(plainScreenshot.displayViewport.visualViewport.size).toEqual(
@@ -528,7 +538,7 @@ describe("Phase 9 computer-use runtime", () => {
     expect(output.trace?.points[0]?.point.x).toBeCloseTo(200, 3);
     expect(output.trace?.points[0]?.point.y).toBeCloseTo(100, 3);
 
-    const metadata = await sharp(Buffer.from(output.screenshot.payload.data, "base64")).metadata();
+    const metadata = await sharp(Buffer.from(output.screenshot.payload.bytes)).metadata();
     expect(metadata.width).toBe(output.screenshot.size.width);
     expect(metadata.height).toBe(output.screenshot.size.height);
   });

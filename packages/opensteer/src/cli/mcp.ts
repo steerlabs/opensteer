@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -22,6 +24,7 @@ import {
   DEFAULT_OPENSTEER_ENGINE,
   type OpensteerEngineName,
 } from "../internal/engine-selection.js";
+import { fileUriToPath } from "../internal/filesystem.js";
 import { OpensteerSessionRuntime } from "../sdk/runtime.js";
 import { dispatchSemanticOperation } from "./dispatch.js";
 
@@ -122,13 +125,16 @@ function toSdkTool(tool: OpensteerMcpToolDescriptor): Tool {
   };
 }
 
-function createToolResult(tool: OpensteerMcpToolDescriptor, output: unknown): CallToolResult {
+async function createToolResult(
+  tool: OpensteerMcpToolDescriptor,
+  output: unknown,
+): Promise<CallToolResult> {
   if (tool.operation === "computer.execute") {
     const computerOutput = output as OpensteerComputerExecuteOutput;
     return {
       structuredContent: output as unknown as Record<string, unknown>,
       content: [
-        toImageContent(computerOutput),
+        await toImageContent(computerOutput),
         {
           type: "text",
           text: `Opensteer computer.execute completed (${computerOutput.action.type}).`,
@@ -200,10 +206,11 @@ function formatRawResponseText(output: OpensteerRawRequestOutput): string {
   return `Opensteer request.raw completed (${String(output.response.status)}).`;
 }
 
-function toImageContent(output: OpensteerComputerExecuteOutput): ImageContent {
+async function toImageContent(output: OpensteerComputerExecuteOutput): Promise<ImageContent> {
+  const data = await readFile(fileUriToPath(output.screenshot.payload.uri));
   return {
     type: "image",
-    data: output.screenshot.payload.data,
-    mimeType: output.screenshot.payload.mimeType ?? `image/${output.screenshot.format}`,
+    data: data.toString("base64"),
+    mimeType: output.screenshot.payload.mimeType,
   };
 }

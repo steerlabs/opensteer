@@ -1,15 +1,12 @@
 import type {
-  BodyPayload as BrowserCoreBodyPayload,
   BrowserCoreEngine,
   PageRef,
   ScreenshotArtifact as BrowserCoreScreenshotArtifact,
 } from "@opensteer/browser-core";
 import {
   OpensteerProtocolError,
-  createBodyPayload,
   type OpensteerComputerExecuteInput,
   type OpensteerComputerExecuteOutput,
-  type ScreenshotArtifact as ProtocolScreenshotArtifact,
 } from "@opensteer/protocol";
 
 import {
@@ -39,7 +36,11 @@ export interface ComputerUseRuntime {
     readonly pageRef: PageRef;
     readonly input: OpensteerComputerExecuteInput;
     readonly timeout: TimeoutExecutionContext;
-  }): Promise<OpensteerComputerExecuteOutput>;
+  }): Promise<ComputerUseRuntimeOutput>;
+}
+
+export interface ComputerUseRuntimeOutput extends Omit<OpensteerComputerExecuteOutput, "screenshot"> {
+  readonly screenshot: BrowserCoreScreenshotArtifact;
 }
 
 export function createComputerUseRuntime(options: {
@@ -67,7 +68,7 @@ class DefaultComputerUseRuntime implements ComputerUseRuntime {
     readonly pageRef: PageRef;
     readonly input: OpensteerComputerExecuteInput;
     readonly timeout: TimeoutExecutionContext;
-  }): Promise<OpensteerComputerExecuteOutput> {
+  }): Promise<ComputerUseRuntimeOutput> {
     const bridge = this.requireBridge();
     const preActionNativeViewport = await input.timeout.runStep(() =>
       this.options.engine.getViewportMetrics({
@@ -112,11 +113,10 @@ class DefaultComputerUseRuntime implements ComputerUseRuntime {
       }
     }
 
-    const nativeScreenshot = normalizeScreenshotArtifact(executed.screenshot);
     const postActionDisplay = createComputerDisplayTransform(executed.viewport);
     const screenshotArtifact = await input.timeout.runStep(() =>
       normalizeComputerScreenshot({
-        screenshot: nativeScreenshot,
+        screenshot: executed.screenshot,
         transform: postActionDisplay,
       }),
     );
@@ -150,41 +150,6 @@ class DefaultComputerUseRuntime implements ComputerUseRuntime {
       },
     );
   }
-}
-
-function normalizeScreenshotArtifact(
-  screenshot: BrowserCoreScreenshotArtifact | ProtocolScreenshotArtifact,
-): ProtocolScreenshotArtifact {
-  const payload = screenshot.payload as
-    | BrowserCoreBodyPayload
-    | ProtocolScreenshotArtifact["payload"];
-  if ("data" in payload && typeof payload.data === "string") {
-    return screenshot as ProtocolScreenshotArtifact;
-  }
-  if ("bytes" in payload && payload.bytes instanceof Uint8Array) {
-    return {
-      ...screenshot,
-      payload: createBodyPayload(Buffer.from(payload.bytes).toString("base64"), {
-        encoding: payload.encoding,
-        ...(payload.mimeType === undefined ? {} : { mimeType: payload.mimeType }),
-        ...(payload.charset === undefined ? {} : { charset: payload.charset }),
-        truncated: payload.truncated,
-        ...(payload.originalByteLength === undefined
-          ? {}
-          : { originalByteLength: payload.originalByteLength }),
-      }),
-    };
-  }
-
-  throw new OpensteerProtocolError(
-    "internal",
-    "computer-use bridge returned an unsupported screenshot payload shape",
-    {
-      details: {
-        operation: "computer.execute",
-      },
-    },
-  );
 }
 
 function normalizeScreenshotOptions(

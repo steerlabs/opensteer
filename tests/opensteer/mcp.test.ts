@@ -77,11 +77,18 @@ describe("Opensteer MCP server", () => {
           result.structuredContent as {
             readonly screenshot?: {
               readonly format?: string;
-              readonly payload?: { readonly data?: string };
+              readonly payload?: {
+                readonly delivery?: string;
+                readonly uri?: string;
+                readonly mimeType?: string;
+              };
             };
           }
-        ).screenshot?.payload?.data,
-      ).toBe(image?.data);
+        ).screenshot?.payload,
+      ).toMatchObject({
+        delivery: "external",
+        mimeType: "image/webp",
+      });
       expect(
         (
           result.structuredContent as {

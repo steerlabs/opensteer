@@ -1,7 +1,7 @@
 import { access, mkdir, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { stableJsonString } from "../json.js";
 
@@ -134,6 +134,10 @@ export function sha256Hex(value: Uint8Array): string {
 
 export function filePathToUri(filePath: string): string {
   return pathToFileURL(filePath).toString();
+}
+
+export function fileUriToPath(uri: string): string {
+  return fileURLToPath(uri);
 }
 
 export function isAlreadyExistsError(error: unknown): error is NodeJS.ErrnoException {

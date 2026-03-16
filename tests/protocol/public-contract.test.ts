@@ -482,6 +482,12 @@ describe("semantic protocol descriptors", () => {
     expect(
       computerOutputSchema?.properties?.screenshot?.properties?.coordinateSpace?.enum,
     ).toContain("computer-display-css");
+    expect(
+      computerOutputSchema?.properties?.screenshot?.properties?.payload?.properties?.delivery?.enum,
+    ).toContain("external");
+    expect(
+      computerOutputSchema?.properties?.screenshot?.properties?.payload?.properties,
+    ).not.toHaveProperty("data");
   });
 
   test("validates request workflow shapes at the semantic boundary", () => {

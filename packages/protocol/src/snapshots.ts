@@ -17,8 +17,8 @@ import {
   nodeRefSchema,
   pageRefSchema,
 } from "./identity.js";
-import type { BodyPayload } from "./network.js";
-import { bodyPayloadSchema } from "./network.js";
+import type { ExternalBinaryLocation } from "./binary-location.js";
+import { externalBinaryLocationSchema } from "./binary-location.js";
 import type { CoordinateSpace, Rect, Size } from "./geometry.js";
 import {
   coordinateSpaceSchema,
@@ -41,7 +41,7 @@ export interface ScreenshotArtifact {
   readonly frameRef?: FrameRef;
   readonly documentRef?: DocumentRef;
   readonly documentEpoch?: DocumentEpoch;
-  readonly payload: BodyPayload;
+  readonly payload: ExternalBinaryLocation;
   readonly format: "png" | "jpeg" | "webp";
   readonly size: Size;
   readonly coordinateSpace: CoordinateSpace;
@@ -58,7 +58,7 @@ export const screenshotArtifactSchema: JsonSchema = objectSchema(
     frameRef: frameRefSchema,
     documentRef: documentRefSchema,
     documentEpoch: documentEpochSchema,
-    payload: bodyPayloadSchema,
+    payload: externalBinaryLocationSchema,
     format: screenshotFormatSchema,
     size: sizeSchema,
     coordinateSpace: coordinateSpaceSchema,

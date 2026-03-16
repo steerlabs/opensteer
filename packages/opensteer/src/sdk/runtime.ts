@@ -62,7 +62,7 @@ import {
   type HeaderEntry,
 } from "@opensteer/protocol";
 
-import { type ArtifactManifest } from "../artifacts.js";
+import { manifestToExternalBinaryLocation, type ArtifactManifest } from "../artifacts.js";
 import { normalizeThrownOpensteerError } from "../internal/errors.js";
 import { canonicalJsonString, toCanonicalJsonValue } from "../json.js";
 import {
@@ -86,6 +86,7 @@ import {
 import {
   createComputerUseRuntime,
   type ComputerUseRuntime,
+  type ComputerUseRuntimeOutput,
 } from "../runtimes/computer-use/index.js";
 import {
   defaultOpensteerEngineFactory,
@@ -134,6 +135,11 @@ export interface OpensteerRuntimeOptions {
 
 interface OpensteerTraceArtifacts {
   readonly manifests: readonly ArtifactManifest[];
+}
+
+interface PersistedComputerArtifacts {
+  readonly manifests: readonly ArtifactManifest[];
+  readonly output: OpensteerComputerExecuteOutput;
 }
 
 interface OpensteerSessionTraceInput {
@@ -1227,8 +1233,8 @@ export class OpensteerSessionRuntime {
             await this.completeMutationCapture(timeout, baselineRequestIds, input.networkTag);
             const artifacts = await this.persistComputerArtifacts(output, timeout);
             return {
-              artifacts,
-              output,
+              artifacts: { manifests: artifacts.manifests },
+              output: artifacts.output,
             };
           } catch (error) {
             await this.completeMutationCapture(timeout, baselineRequestIds, input.networkTag).catch(
@@ -2113,31 +2119,38 @@ export class OpensteerSessionRuntime {
   }
 
   private async persistComputerArtifacts(
-    output: OpensteerComputerExecuteOutput,
+    output: ComputerUseRuntimeOutput,
     timeout: TimeoutExecutionContext,
-  ): Promise<OpensteerTraceArtifacts> {
+  ): Promise<PersistedComputerArtifacts> {
     const root = this.requireRoot();
     const manifests: ArtifactManifest[] = [];
 
-    manifests.push(
-      await timeout.runStep(() =>
-        root.artifacts.writeBinary({
-          kind: "screenshot",
-          scope: buildArtifactScope({
-            sessionRef: this.sessionRef,
-            pageRef: output.pageRef,
-            frameRef: output.screenshot.frameRef,
-            documentRef: output.screenshot.documentRef,
-            documentEpoch: output.screenshot.documentEpoch,
-          }),
-          mediaType: screenshotMediaType(output.screenshot.format),
-          data: new Uint8Array(Buffer.from(output.screenshot.payload.data, "base64")),
+    const screenshotManifest = await timeout.runStep(() =>
+      root.artifacts.writeBinary({
+        kind: "screenshot",
+        scope: buildArtifactScope({
+          sessionRef: this.sessionRef,
+          pageRef: output.pageRef,
+          frameRef: output.screenshot.frameRef,
+          documentRef: output.screenshot.documentRef,
+          documentEpoch: output.screenshot.documentEpoch,
         }),
-      ),
+        mediaType: screenshotMediaType(output.screenshot.format),
+        data: output.screenshot.payload.bytes,
+      }),
     );
+    manifests.push(screenshotManifest);
 
+    const screenshotPayload = manifestToExternalBinaryLocation(root.rootPath, screenshotManifest);
     return {
       manifests,
+      output: {
+        ...output,
+        screenshot: {
+          ...output.screenshot,
+          payload: screenshotPayload,
+        },
+      },
     };
   }
 

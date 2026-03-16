@@ -6,6 +6,7 @@ import type {
   ArtifactRelation,
   CookieRecord,
   DomSnapshot,
+  ExternalBinaryLocation,
   HtmlSnapshot,
   OpensteerArtifact,
   OpensteerArtifactKind,
@@ -204,7 +205,13 @@ export class FilesystemArtifactStore implements OpensteerArtifactStore {
     const mediaType = normalizeNonEmptyString("mediaType", input.mediaType);
     const data = new Uint8Array(input.data);
     const sha256 = sha256Hex(data);
-    const objectRelativePath = joinStoragePath("artifacts", "objects", "sha256", sha256);
+    const extension = mediaTypeExtension(mediaType);
+    const objectRelativePath = joinStoragePath(
+      "artifacts",
+      "objects",
+      "sha256",
+      `${sha256}${extension}`,
+    );
     const objectPath = resolveStoragePath(this.rootPath, objectRelativePath);
 
     await writeBufferIfMissing(objectPath, data);
@@ -337,14 +344,7 @@ export class FilesystemArtifactStore implements OpensteerArtifactStore {
     }
 
     const delivery = options.delivery ?? "external";
-    const objectPath = resolveStoragePath(this.rootPath, record.manifest.objectRelativePath);
-    const externalPayload = {
-      delivery: "external" as const,
-      uri: filePathToUri(objectPath),
-      mimeType: record.manifest.mediaType,
-      byteLength: record.manifest.byteLength,
-      sha256: record.manifest.sha256,
-    };
+    const externalPayload = manifestToExternalBinaryLocation(this.rootPath, record.manifest);
 
     const artifactBase = {
       artifactId: record.manifest.artifactId,
@@ -415,4 +415,30 @@ export class FilesystemArtifactStore implements OpensteerArtifactStore {
 
 export function createArtifactStore(rootPath: string): FilesystemArtifactStore {
   return new FilesystemArtifactStore(rootPath);
+}
+
+export function manifestToExternalBinaryLocation(
+  rootPath: string,
+  manifest: Pick<ArtifactManifest, "objectRelativePath" | "mediaType" | "byteLength" | "sha256">,
+): ExternalBinaryLocation {
+  return {
+    delivery: "external",
+    uri: filePathToUri(resolveStoragePath(rootPath, manifest.objectRelativePath)),
+    mimeType: manifest.mediaType,
+    byteLength: manifest.byteLength,
+    sha256: manifest.sha256,
+  };
+}
+
+function mediaTypeExtension(mediaType: string): string {
+  switch (mediaType) {
+    case "image/png":
+      return ".png";
+    case "image/jpeg":
+      return ".jpeg";
+    case "image/webp":
+      return ".webp";
+    default:
+      return "";
+  }
 }

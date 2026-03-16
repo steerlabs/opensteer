@@ -143,6 +143,9 @@ describe("Phase 3 filesystem root", () => {
     });
 
     expect(duplicateBinary.objectRelativePath).toBe(screenshotArtifact.objectRelativePath);
+    expect(screenshotArtifact.objectRelativePath).toMatch(
+      /^artifacts\/objects\/sha256\/[0-9a-f]+\.webp$/,
+    );
     expect(duplicateBinary.sha256).toBe(screenshotArtifact.sha256);
 
     const binaryRecord = await root.artifacts.read(screenshotArtifact.artifactId);
@@ -181,6 +184,7 @@ describe("Phase 3 filesystem root", () => {
 
     expect(screenshotProtocolArtifact?.payload).toMatchObject({
       delivery: "external",
+      uri: expect.stringMatching(/\.webp$/),
       mimeType: "image/webp",
       byteLength: 5,
       sha256: screenshotArtifact.sha256,
