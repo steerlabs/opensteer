@@ -6,11 +6,16 @@ import type {
   ComputerUseBridge,
   ComputerUseBridgeInput,
 } from "../../packages/protocol/src/index.js";
-import { OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL } from "../../packages/protocol/src/index.js";
+import {
+  OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL,
+  resolveDomActionBridge,
+} from "../../packages/protocol/src/index.js";
 import { createPlaywrightBrowserCoreEngine } from "../../packages/engine-playwright/src/index.js";
 import {
   bodyPayloadFromUtf8,
+  createNodeLocator,
   createPoint,
+  type DomSnapshot,
   type DomSnapshotNode,
 } from "../../packages/browser-core/src/index.js";
 import { defineBrowserCoreConformanceSuite } from "../browser-core/conformance-suite.js";
@@ -140,7 +145,9 @@ function basicDocument(): string {
         const host = document.getElementById("shadow-host");
         const root = host.attachShadow({ mode: "open" });
         root.innerHTML =
-          '<button id="shadow-action" type="button">Shadow Action</button><div id="nested-shadow-host"></div>';
+          '<button id="shadow-action" type="button">' +
+          '<div id="shadow-action-shell"><span id="shadow-action-label"><slot id="shadow-action-slot">Shadow Action</slot></span></div>' +
+          '</button><div id="nested-shadow-host"></div>';
         const nestedHost = root.getElementById("nested-shadow-host");
         const nestedRoot = nestedHost.attachShadow({ mode: "open" });
         nestedRoot.innerHTML = '<button id="nested-shadow-action" type="button">Nested Shadow</button>';
@@ -201,6 +208,16 @@ function findNodeById(nodes: readonly DomSnapshotNode[], id: string) {
   return nodes.find((node) =>
     node.attributes.some((attribute) => attribute.name === "id" && attribute.value === id),
   );
+}
+
+function createLocator(
+  snapshot: Pick<DomSnapshot, "documentRef" | "documentEpoch">,
+  node: DomSnapshotNode,
+) {
+  if (!node.nodeRef) {
+    throw new Error(`node ${String(node.snapshotNodeId)} is missing a live node ref`);
+  }
+  return createNodeLocator(snapshot.documentRef, snapshot.documentEpoch, node.nodeRef);
 }
 
 async function readRequestBody(request: IncomingMessage): Promise<Buffer> {
@@ -892,6 +909,45 @@ test(
         documentRef: iframeNode.contentDocumentRef!,
       });
       expect(childSnapshot.parentDocumentRef).toBe(mainSnapshot.documentRef);
+    } finally {
+      await engine.dispose();
+    }
+  },
+);
+
+test(
+  "canonicalizes shadow descendants to their live pointer owner and classifies ancestor hits as non-blocking",
+  { timeout: 60_000 },
+  async () => {
+    const engine = await createPlaywrightBrowserCoreEngine({
+      launch: { headless: true },
+    });
+    try {
+      const sessionRef = await engine.createSession();
+      const created = await engine.createPage({
+        sessionRef,
+        url: `${baseUrl}/basic`,
+      });
+
+      await wait(400);
+
+      const snapshot = await engine.getDomSnapshot({
+        frameRef: created.frameRef!,
+      });
+      const buttonNode = findNodeById(snapshot.nodes, "shadow-action")!;
+      const slotNode = findNodeById(snapshot.nodes, "shadow-action-slot")!;
+      const bridge = resolveDomActionBridge(engine)!;
+
+      const canonicalTarget = await bridge.canonicalizePointerTarget(createLocator(snapshot, slotNode));
+      expect(canonicalTarget.nodeRef).toBe(buttonNode.nodeRef);
+
+      const assessment = await bridge.classifyPointerHit({
+        target: createLocator(snapshot, slotNode),
+        hit: createLocator(snapshot, buttonNode),
+        point: createPoint(60, 200),
+      });
+      expect(assessment.relation).toBe("ancestor");
+      expect(assessment.blocking).toBe(false);
     } finally {
       await engine.dispose();
     }

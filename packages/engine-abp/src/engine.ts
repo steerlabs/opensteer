@@ -8,6 +8,7 @@ import {
   createDevicePixelRatio,
   createDialogRef,
   createDocumentEpoch,
+  createNodeLocator,
   createDocumentRef,
   createDownloadRef,
   createFrameRef,
@@ -697,6 +698,12 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       setExecutionPaused: (controller, paused) =>
         this.setControllerExecutionPaused(controller, paused),
       isPageClosedError: isAbpPageClosedError,
+      locateBackendNode: (document, backendNodeId) =>
+        createNodeLocator(
+          document.documentRef,
+          document.documentEpoch,
+          this.nodeRefForBackendNode(document, backendNodeId),
+        ),
       requireLiveNode: (locator) => this.requireLiveNode(locator),
       getDomSnapshot: (documentRef: DocumentRef) => this.getDomSnapshot({ documentRef }),
       getViewportMetrics: (pageRef: PageRef) => this.getViewportMetrics({ pageRef }),

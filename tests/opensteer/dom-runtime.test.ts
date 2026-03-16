@@ -98,7 +98,9 @@ function mainDocument(): string {
         const shadowHost = document.getElementById("shadow-host");
         const shadowRoot = shadowHost.attachShadow({ mode: "open" });
         shadowRoot.innerHTML =
-          '<button id="shadow-action" data-testid="shadow-action" type="button" style="width:180px;height:42px">Shadow Action</button><div id="nested-shadow-host"></div>';
+          '<button id="shadow-action" data-testid="shadow-action" type="button" style="width:180px;height:42px">' +
+          '<div id="shadow-action-shell"><span id="shadow-action-label"><slot id="shadow-action-slot">Shadow Action</slot></span></div>' +
+          '</button><div id="nested-shadow-host"></div>';
         shadowRoot.getElementById("shadow-action").addEventListener("click", () => {
           status.textContent = "shadow clicked";
         });
@@ -168,6 +170,10 @@ function findNodeById(nodes: readonly DomSnapshotNode[], id: string): DomSnapsho
   return nodes.find((node) =>
     node.attributes.some((attribute) => attribute.name === "id" && attribute.value === id),
   );
+}
+
+function readIdAttribute(node: DomSnapshotNode): string | undefined {
+  return node.attributes.find((attribute) => attribute.name === "id")?.value;
 }
 
 function createLocator(snapshot: DomSnapshot, node: DomSnapshotNode) {
@@ -476,6 +482,289 @@ describe("Phase 5 DOM runtime integration", () => {
         expect(await engine.readText(createLocator(latestSnapshot, statusNode))).toBe(
           "closed shadow clicked",
         );
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "clicks structural descendants by promoting them to the live activation owner",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+      try {
+        const runtime = createDomRuntime({ engine });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: dataUrl(
+            html(
+              `
+                <button id="descendant-button" type="button" style="position:absolute;left:20px;top:20px;width:200px;height:48px">
+                  <span id="descendant-label">Click Descendant</span>
+                </button>
+                <div id="status" style="position:absolute;left:20px;top:90px">ready</div>
+                <script>
+                  document.getElementById("descendant-button").addEventListener("click", () => {
+                    document.getElementById("status").textContent = "descendant clicked";
+                  });
+                </script>
+              `,
+              "DOM runtime structural descendant",
+            ),
+          ),
+        });
+
+        await wait(300);
+
+        const snapshot = await engine.getDomSnapshot({ frameRef: created.frameRef! });
+        const labelNode = requireValue(
+          findNodeById(snapshot.nodes, "descendant-label"),
+          "descendant label missing",
+        );
+        const outcome = await runtime.click({
+          pageRef: created.data.pageRef,
+          target: {
+            kind: "live",
+            locator: createLocator(snapshot, labelNode),
+          },
+        });
+
+        expect(readIdAttribute(outcome.resolved.node)).toBe("descendant-label");
+
+        const latestSnapshot = await engine.getDomSnapshot({ frameRef: created.frameRef! });
+        const statusNode = requireValue(
+          findNodeById(latestSnapshot.nodes, "status"),
+          "status node missing",
+        );
+        expect(await engine.readText(createLocator(latestSnapshot, statusNode))).toBe(
+          "descendant clicked",
+        );
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "clicks nested shadow descendants when the live hit resolves to the button owner",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+      try {
+        const runtime = createDomRuntime({ engine });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: `${baseUrl}/runtime/main`,
+        });
+
+        await wait(500);
+
+        const snapshot = await engine.getDomSnapshot({ frameRef: created.frameRef! });
+        const slotNode = requireValue(
+          findNodeById(snapshot.nodes, "shadow-action-slot"),
+          "shadow action slot missing",
+        );
+        const outcome = await runtime.click({
+          pageRef: created.data.pageRef,
+          target: {
+            kind: "live",
+            locator: createLocator(snapshot, slotNode),
+          },
+        });
+
+        expect(readIdAttribute(outcome.resolved.node)).toBe("shadow-action-slot");
+
+        const latestSnapshot = await engine.getDomSnapshot({ frameRef: created.frameRef! });
+        const statusNode = requireValue(
+          findNodeById(latestSnapshot.nodes, "status"),
+          "status node missing",
+        );
+        expect(await engine.readText(createLocator(latestSnapshot, statusNode))).toBe(
+          "shadow clicked",
+        );
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "accepts live hit nodes created after snapshot capture when they share the same pointer owner",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+      try {
+        const runtime = createDomRuntime({ engine });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: dataUrl(
+            html(
+              `
+                <button
+                  id="late-child-button"
+                  type="button"
+                  style="position:absolute;left:20px;top:1500px;width:220px;height:48px"
+                >
+                  Late Child Button
+                </button>
+                <div id="status" style="position:absolute;left:20px;top:40px">ready</div>
+                <script>
+                  const button = document.getElementById("late-child-button");
+                  button.addEventListener("click", () => {
+                    document.getElementById("status").textContent = "late child clicked";
+                  });
+                  const observer = new IntersectionObserver((entries) => {
+                    if (!entries.some((entry) => entry.isIntersecting)) {
+                      return;
+                    }
+                    if (button.querySelector("#late-child-overlay")) {
+                      return;
+                    }
+                    const overlay = document.createElement("span");
+                    overlay.id = "late-child-overlay";
+                    overlay.style.position = "absolute";
+                    overlay.style.inset = "0";
+                    overlay.style.display = "block";
+                    button.append(overlay);
+                    observer.disconnect();
+                  });
+                  observer.observe(button);
+                </script>
+              `,
+              "DOM runtime late hit child",
+            ),
+          ),
+        });
+
+        await wait(300);
+
+        const snapshot = await engine.getDomSnapshot({ frameRef: created.frameRef! });
+        expect(findNodeById(snapshot.nodes, "late-child-overlay")).toBeUndefined();
+
+        await runtime.click({
+          pageRef: created.data.pageRef,
+          target: { kind: "selector", selector: "#late-child-button" },
+        });
+
+        const latestSnapshot = await engine.getDomSnapshot({ frameRef: created.frameRef! });
+        const statusNode = requireValue(
+          findNodeById(latestSnapshot.nodes, "status"),
+          "status node missing",
+        );
+        expect(await engine.readText(createLocator(latestSnapshot, statusNode))).toBe(
+          "late child clicked",
+        );
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "rejects clicks when a distinct visible overlay owns the hit target",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+      try {
+        const runtime = createDomRuntime({ engine });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: dataUrl(
+            html(
+              `
+                <button id="blocked-action" type="button" style="position:absolute;left:20px;top:20px;width:180px;height:48px">
+                  Blocked Action
+                </button>
+                <button
+                  id="blocking-overlay"
+                  type="button"
+                  style="position:fixed;left:20px;top:20px;width:180px;height:48px;z-index:10"
+                >
+                  Overlay
+                </button>
+              `,
+              "DOM runtime blocking overlay",
+            ),
+          ),
+        });
+
+        await wait(300);
+
+        await expect(
+          runtime.click({
+            pageRef: created.data.pageRef,
+            target: { kind: "selector", selector: "#blocked-action" },
+          }),
+        ).rejects.toMatchObject({
+          code: "operation-failed",
+          details: {
+            policy: "actionability",
+            reason: "obscured",
+            hitRelation: "outside",
+          },
+        });
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "rejects clicks when the hit resolves into a different live document",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+      try {
+        const runtime = createDomRuntime({ engine });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: dataUrl(
+            html(
+              `
+                <button id="cross-document-action" type="button" style="position:absolute;left:20px;top:20px;width:180px;height:48px">
+                  Cross Document Action
+                </button>
+                <iframe
+                  id="cross-document-overlay"
+                  style="position:fixed;left:20px;top:20px;width:180px;height:48px;border:0;z-index:10"
+                  srcdoc="<html><body style='margin:0'><button id='frame-button' style='width:180px;height:48px'>Frame Overlay</button></body></html>"
+                ></iframe>
+              `,
+              "DOM runtime cross document overlay",
+            ),
+          ),
+        });
+
+        await wait(500);
+
+        await expect(
+          runtime.click({
+            pageRef: created.data.pageRef,
+            target: { kind: "selector", selector: "#cross-document-action" },
+          }),
+        ).rejects.toMatchObject({
+          code: "operation-failed",
+          details: {
+            policy: "actionability",
+            reason: "obscured",
+          },
+        });
       } finally {
         await engine.dispose();
       }
