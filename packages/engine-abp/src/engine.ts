@@ -106,6 +106,7 @@ import {
 import { allocatePort, launchAbpProcess } from "./launcher.js";
 import { normalizeSelectChooserEventData } from "./action-events.js";
 import {
+  clampAbpActionSettleTimeout,
   createAbpActionSettler,
   DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS,
 } from "./action-settle.js";
@@ -209,13 +210,6 @@ function combineFrameUrl(url: string, fragment?: string): string {
 
 function isAbpPageClosedError(error: unknown): boolean {
   return isPageClosedApiError(error) || (isBrowserCoreError(error) && error.code === "page-closed");
-}
-
-function boundAbpActionSettleTimeout(timeoutMs?: number): number {
-  if (timeoutMs === undefined) {
-    return DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS;
-  }
-  return Math.max(0, Math.min(DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS, timeoutMs));
 }
 
 function buildSessionHttpStartScript(request: SessionTransportRequest): string {
@@ -948,7 +942,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     });
     await this.actionSettler.settle({
       controller,
-      timeoutMs: boundAbpActionSettleTimeout(input.timeoutMs),
+      timeoutMs: clampAbpActionSettleTimeout(input.timeoutMs),
     });
 
     const directEvents = await this.normalizeActionEvents(controller, response);
@@ -990,7 +984,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     });
     await this.actionSettler.settle({
       controller,
-      timeoutMs: boundAbpActionSettleTimeout(input.timeoutMs),
+      timeoutMs: clampAbpActionSettleTimeout(input.timeoutMs),
     });
 
     const directEvents = await this.normalizeActionEvents(controller, response);

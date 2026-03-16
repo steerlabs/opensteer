@@ -405,7 +405,7 @@ describe("engine-abp internals", () => {
         signal,
       }),
     );
-    expect(policySettle).toHaveBeenCalledWith(createPageRef("main"));
+    expect(policySettle).toHaveBeenCalledWith(createPageRef("main"), signal);
     expect(outputTestState.flushDomUpdateTask).toHaveBeenCalledWith(
       expect.objectContaining({ pageRef: createPageRef("main") }),
     );
@@ -512,7 +512,7 @@ describe("engine-abp internals", () => {
         signal: controller.signal,
       }),
     );
-    expect(policySettle).toHaveBeenCalledWith(createPageRef("main"));
+    expect(policySettle).toHaveBeenCalledWith(createPageRef("main"), controller.signal);
     expect(outputTestState.flushDomUpdateTask).toHaveBeenCalledWith(
       expect.objectContaining({ pageRef: createPageRef("main") }),
     );
@@ -561,7 +561,7 @@ describe("engine-abp internals", () => {
         signal,
       }),
     );
-    expect(policySettle).toHaveBeenCalledWith(createPageRef("main"));
+    expect(policySettle).toHaveBeenCalledWith(createPageRef("main"), signal);
     expect(outputTestState.rest.screenshotTab).toHaveBeenCalledTimes(1);
   });
 
@@ -611,7 +611,7 @@ describe("engine-abp internals", () => {
         signal,
       }),
     );
-    expect(policySettle).toHaveBeenCalledWith(createPageRef("main"));
+    expect(policySettle).toHaveBeenCalledWith(createPageRef("main"), signal);
     expect(outputTestState.rest.screenshotTab).toHaveBeenCalledTimes(1);
   });
 
