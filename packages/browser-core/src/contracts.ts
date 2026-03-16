@@ -11,7 +11,12 @@ import type {
   SessionRef,
 } from "./identity.js";
 import type { FrameInfo, PageInfo } from "./metadata.js";
-import type { BodyPayload, HeaderEntry, NetworkRecord } from "./network.js";
+import type {
+  BodyPayload,
+  HeaderEntry,
+  NetworkRecord,
+  NetworkRecordFilterInput,
+} from "./network.js";
 import type {
   DomSnapshot,
   HitTestResult,
@@ -41,6 +46,14 @@ export interface SessionTransportResponse {
   readonly headers: readonly HeaderEntry[];
   readonly body?: BodyPayload;
   readonly redirected: boolean;
+}
+
+export interface GetNetworkRecordsInput extends NetworkRecordFilterInput {
+  readonly sessionRef: SessionRef;
+  readonly pageRef?: PageRef;
+  readonly requestIds?: readonly string[];
+  readonly includeBodies?: boolean;
+  readonly signal?: AbortSignal;
 }
 
 export interface BrowserExecutor {
@@ -147,13 +160,7 @@ export interface BrowserInspector {
     readonly includeUserAgentShadowDom?: boolean;
   }): Promise<HitTestResult>;
   getViewportMetrics(input: { readonly pageRef: PageRef }): Promise<ViewportMetrics>;
-  getNetworkRecords(input: {
-    readonly sessionRef: SessionRef;
-    readonly pageRef?: PageRef;
-    readonly requestIds?: readonly string[];
-    readonly includeBodies?: boolean;
-    readonly signal?: AbortSignal;
-  }): Promise<readonly NetworkRecord[]>;
+  getNetworkRecords(input: GetNetworkRecordsInput): Promise<readonly NetworkRecord[]>;
   getCookies(input: {
     readonly sessionRef: SessionRef;
     readonly urls?: readonly string[];

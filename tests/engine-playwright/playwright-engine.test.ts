@@ -1031,6 +1031,37 @@ test("captures network, cookies, storage, and async page events", { timeout: 60_
     expect(transportOnly).toHaveLength(1);
     expect(transportOnly[0]?.url).toContain("/api/session-transport");
 
+    const host = new URL(baseUrl).hostname;
+    const filteredTransport = await engine.getNetworkRecords({
+      sessionRef,
+      pageRef: created.data.pageRef,
+      hostname: host,
+      path: "/api/session-transport",
+      method: "po",
+      status: "20",
+      resourceType: "fetch",
+      includeBodies: true,
+    });
+    expect(filteredTransport).toHaveLength(1);
+    expect(filteredTransport[0]?.requestId).toBe(transportOnly[0]?.requestId);
+
+    const documentOnly = await engine.getNetworkRecords({
+      sessionRef,
+      pageRef: created.data.pageRef,
+      method: "GET",
+      resourceType: "document",
+      includeBodies: false,
+    });
+    expect(documentOnly.some((record) => record.url.endsWith("/integration"))).toBe(true);
+
+    const mismatched = await engine.getNetworkRecords({
+      sessionRef,
+      requestIds: [transportOnly[0]!.requestId],
+      path: "/api/echo",
+      includeBodies: false,
+    });
+    expect(mismatched).toEqual([]);
+
     const storage = await engine.getStorageSnapshot({
       sessionRef,
     });

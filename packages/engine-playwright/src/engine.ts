@@ -14,10 +14,12 @@ import {
   createSessionRef,
   createSize,
   createDialogRef,
+  matchesNetworkRecordFilters,
   unsupportedCapabilityError,
   staleNodeRefError,
   closedPageError,
   closedSessionError,
+  type GetNetworkRecordsInput,
   type BrowserCoreEngine,
   type CoordinateSpace,
   type DocumentEpoch,
@@ -954,13 +956,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     return getViewportMetricsFromCdp(controller);
   }
 
-  async getNetworkRecords(input: {
-    readonly sessionRef: SessionRef;
-    readonly pageRef?: PageRef;
-    readonly requestIds?: readonly string[];
-    readonly includeBodies?: boolean;
-    readonly signal?: AbortSignal;
-  }): Promise<readonly NetworkRecord[]> {
+  async getNetworkRecords(input: GetNetworkRecordsInput): Promise<readonly NetworkRecord[]> {
     const session = this.requireSession(input.sessionRef);
     input.signal?.throwIfAborted?.();
     await raceWithAbort(
@@ -980,7 +976,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       if (requestIds !== undefined && !requestIds.has(record.requestId)) {
         return false;
       }
-      return true;
+      return matchesNetworkRecordFilters(record, input);
     });
 
     if (!(input.includeBodies ?? false)) {

@@ -116,6 +116,25 @@ describe("Opensteer MCP server", () => {
         csrf: "csrf-mcp",
       });
 
+      const networkResult = await client.callTool({
+        name: "opensteer_network_query",
+        arguments: {
+          hostname: new URL(fixtureServer.url).hostname,
+          path: "/phase10/api/session-http",
+          method: "POST",
+          status: "200",
+          resourceType: "fetch",
+        },
+      });
+      expect(networkResult.isError).not.toBe(true);
+      expect(
+        (
+          networkResult.structuredContent as {
+            readonly records?: readonly { readonly record?: { readonly url?: string } }[];
+          }
+        ).records?.some((record) => record.record?.url?.includes("/phase10/api/session-http")),
+      ).toBe(true);
+
       await client.callTool({
         name: "opensteer_session_close",
         arguments: {},

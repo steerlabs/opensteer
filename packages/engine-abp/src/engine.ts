@@ -25,6 +25,7 @@ import {
   isBrowserCoreError,
   staleNodeRefError,
   unsupportedCapabilityError,
+  type GetNetworkRecordsInput,
   type BrowserCoreEngine,
   type BodyPayload,
   type CoordinateSpace,
@@ -1762,13 +1763,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     };
   }
 
-  async getNetworkRecords(input: {
-    readonly sessionRef: SessionRef;
-    readonly pageRef?: PageRef;
-    readonly requestIds?: readonly string[];
-    readonly includeBodies?: boolean;
-    readonly signal?: AbortSignal;
-  }): Promise<readonly NetworkRecord[]> {
+  async getNetworkRecords(input: GetNetworkRecordsInput): Promise<readonly NetworkRecord[]> {
     const session = this.requireSession(input.sessionRef);
     const includeBodies = input.includeBodies ?? false;
     const requestIds = input.requestIds === undefined ? undefined : new Set(input.requestIds);
@@ -1786,6 +1781,12 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
         session.rest.queryNetwork({
           tabId: controller.tabId,
           includeBodies,
+          ...(input.url === undefined ? {} : { url: input.url }),
+          ...(input.hostname === undefined ? {} : { hostname: input.hostname }),
+          ...(input.path === undefined ? {} : { path: input.path }),
+          ...(input.method === undefined ? {} : { method: input.method }),
+          ...(input.status === undefined ? {} : { status: input.status }),
+          ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
         }),
         input.signal,
       );
@@ -1801,6 +1802,12 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
           session.rest.queryNetwork({
             tabId: controller.tabId,
             includeBodies,
+            ...(input.url === undefined ? {} : { url: input.url }),
+            ...(input.hostname === undefined ? {} : { hostname: input.hostname }),
+            ...(input.path === undefined ? {} : { path: input.path }),
+            ...(input.method === undefined ? {} : { method: input.method }),
+            ...(input.status === undefined ? {} : { status: input.status }),
+            ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
           }),
           input.signal,
         );

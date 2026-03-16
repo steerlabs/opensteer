@@ -501,6 +501,12 @@ export interface AbpRestClientLike {
   queryNetwork(input: {
     readonly tabId?: string;
     readonly includeBodies: boolean;
+    readonly url?: string;
+    readonly hostname?: string;
+    readonly path?: string;
+    readonly method?: string;
+    readonly status?: string;
+    readonly resourceType?: NetworkResourceType;
   }): Promise<readonly AbpNetworkCall[]>;
   curlTab(
     tabId: string,

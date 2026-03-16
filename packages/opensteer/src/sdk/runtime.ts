@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import {
   bodyPayloadFromUtf8,
   createBodyPayload,
+  matchesNetworkRecordFilters,
   type BrowserCoreEngine,
   isBrowserCoreError,
   type BodyPayload as BrowserBodyPayload,
@@ -1568,17 +1569,26 @@ export class OpensteerSessionRuntime {
       readonly ignoreLimit?: boolean;
     } = {},
   ): Promise<readonly NetworkQueryRecord[]> {
-    const requestIdForRecordId =
-      input.recordId === undefined ? undefined : this.networkJournal.getRequestId(input.recordId);
+    const requestIds = resolveLiveQueryRequestIds(input, this.networkJournal);
+    if (requestIds !== undefined && requestIds.length === 0) {
+      return [];
+    }
+
+    const pageRef = resolveLiveQueryPageRef(
+      input,
+      this.pageRef,
+      requestIds,
+      this.networkJournal,
+    );
+    const includeCurrentPageOnly = pageRef === undefined && input.recordId === undefined;
     const metadataRecords = await timeout.runStep(() =>
       this.readLiveNetworkRecords(
         {
-          ...(selectLiveQueryPageRef(input, this.pageRef) === undefined
-            ? {}
-            : { pageRef: selectLiveQueryPageRef(input, this.pageRef)! }),
+          ...(pageRef === undefined ? {} : { pageRef }),
           includeBodies: false,
-          ...(input.recordId === undefined ? {} : { includeCurrentPageOnly: false }),
-          ...(requestIdForRecordId === undefined ? {} : { requestIds: [requestIdForRecordId] }),
+          includeCurrentPageOnly,
+          ...(requestIds === undefined ? {} : { requestIds }),
+          ...buildEngineNetworkRecordFilters(input),
         },
         timeout.signal,
       ),
@@ -1608,12 +1618,10 @@ export class OpensteerSessionRuntime {
     const withBodies = await timeout.runStep(() =>
       this.readLiveNetworkRecords(
         {
-          ...(selectLiveQueryPageRef(input, this.pageRef) === undefined
-            ? {}
-            : { pageRef: selectLiveQueryPageRef(input, this.pageRef)! }),
+          ...(pageRef === undefined ? {} : { pageRef }),
           includeBodies: true,
           requestIds: limited.map((record) => record.record.requestId),
-          includeCurrentPageOnly: input.recordId === undefined,
+          includeCurrentPageOnly,
         },
         timeout.signal,
       ),
@@ -1702,6 +1710,12 @@ export class OpensteerSessionRuntime {
     input: {
       readonly pageRef?: PageRef;
       readonly requestIds?: readonly string[];
+      readonly url?: string;
+      readonly hostname?: string;
+      readonly path?: string;
+      readonly method?: string;
+      readonly status?: string;
+      readonly resourceType?: NetworkQueryRecord["record"]["resourceType"];
       readonly includeBodies: boolean;
       readonly includeCurrentPageOnly?: boolean;
     },
@@ -1722,6 +1736,12 @@ export class OpensteerSessionRuntime {
           ? {}
           : { pageRef: this.pageRef }),
       ...(input.requestIds === undefined ? {} : { requestIds: input.requestIds }),
+      ...(input.url === undefined ? {} : { url: input.url }),
+      ...(input.hostname === undefined ? {} : { hostname: input.hostname }),
+      ...(input.path === undefined ? {} : { path: input.path }),
+      ...(input.method === undefined ? {} : { method: input.method }),
+      ...(input.status === undefined ? {} : { status: input.status }),
+      ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
       includeBodies: input.includeBodies,
       signal,
     });
@@ -2277,6 +2297,99 @@ function selectLiveQueryPageRef(
   return currentPageRef;
 }
 
+function buildEngineNetworkRecordFilters(
+  input: Pick<
+    OpensteerNetworkQueryInput,
+    "url" | "hostname" | "path" | "method" | "status" | "resourceType"
+  >,
+): {
+  readonly url?: string;
+  readonly hostname?: string;
+  readonly path?: string;
+  readonly method?: string;
+  readonly status?: string;
+  readonly resourceType?: NetworkQueryRecord["record"]["resourceType"];
+} {
+  return {
+    ...(input.url === undefined ? {} : { url: input.url }),
+    ...(input.hostname === undefined ? {} : { hostname: input.hostname }),
+    ...(input.path === undefined ? {} : { path: input.path }),
+    ...(input.method === undefined ? {} : { method: input.method }),
+    ...(input.status === undefined ? {} : { status: input.status }),
+    ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
+  };
+}
+
+function resolveLiveQueryRequestIds(
+  input: Pick<OpensteerNetworkQueryInput, "recordId" | "requestId" | "actionId" | "tag">,
+  journal: NetworkJournal,
+): readonly string[] | undefined {
+  const requestIdCandidates: ReadonlySet<string>[] = [];
+
+  if (input.recordId !== undefined) {
+    const requestId = journal.getRequestId(input.recordId);
+    if (requestId === undefined) {
+      return [];
+    }
+    requestIdCandidates.push(new Set([requestId]));
+  }
+
+  if (input.requestId !== undefined) {
+    requestIdCandidates.push(new Set([input.requestId]));
+  }
+
+  if (input.actionId !== undefined) {
+    requestIdCandidates.push(journal.getRequestIdsForActionId(input.actionId));
+  }
+
+  if (input.tag !== undefined) {
+    requestIdCandidates.push(journal.getRequestIdsForTag(input.tag));
+  }
+
+  if (requestIdCandidates.length === 0) {
+    return undefined;
+  }
+
+  return intersectRequestIdSets(requestIdCandidates);
+}
+
+function resolveLiveQueryPageRef(
+  input: Pick<OpensteerNetworkQueryInput, "pageRef" | "recordId">,
+  currentPageRef: PageRef | undefined,
+  requestIds: readonly string[] | undefined,
+  journal: NetworkJournal,
+): PageRef | undefined {
+  const requestedPageRef = selectLiveQueryPageRef(input, currentPageRef);
+  if (requestedPageRef !== undefined || requestIds === undefined) {
+    return requestedPageRef;
+  }
+
+  const pageRefs = new Set<PageRef>();
+  for (const requestId of requestIds) {
+    const pageRef = journal.getPageRefForRequestId(requestId);
+    if (pageRef === undefined) {
+      continue;
+    }
+    pageRefs.add(pageRef);
+    if (pageRefs.size > 1) {
+      return undefined;
+    }
+  }
+
+  return pageRefs.values().next().value;
+}
+
+function intersectRequestIdSets(requestIdSets: readonly ReadonlySet<string>[]): readonly string[] {
+  let current = new Set<string>(requestIdSets[0] ?? []);
+  for (const requestIds of requestIdSets.slice(1)) {
+    current = new Set([...current].filter((requestId) => requestIds.has(requestId)));
+    if (current.size === 0) {
+      return [];
+    }
+  }
+  return [...current];
+}
+
 function filterNetworkQueryRecords(
   records: readonly NetworkQueryRecord[],
   input: {
@@ -2289,9 +2402,10 @@ function filterNetworkQueryRecords(
     readonly path?: string;
     readonly method?: string;
     readonly status?: string;
-    readonly resourceType?: string;
+    readonly resourceType?: NetworkQueryRecord["record"]["resourceType"];
   },
 ): readonly NetworkQueryRecord[] {
+  const networkFilters = buildEngineNetworkRecordFilters(input);
   return records.filter((record) => {
     if (input.recordId !== undefined && record.recordId !== input.recordId) {
       return false;
@@ -2305,37 +2419,7 @@ function filterNetworkQueryRecords(
     if (input.tag !== undefined && !(record.tags ?? []).includes(input.tag)) {
       return false;
     }
-    if (input.url !== undefined && !includesCaseInsensitive(record.record.url, input.url)) {
-      return false;
-    }
-    if (
-      input.hostname !== undefined &&
-      !includesCaseInsensitive(new URL(record.record.url).hostname, input.hostname)
-    ) {
-      return false;
-    }
-    if (
-      input.path !== undefined &&
-      !includesCaseInsensitive(new URL(record.record.url).pathname, input.path)
-    ) {
-      return false;
-    }
-    if (
-      input.method !== undefined &&
-      !includesCaseInsensitive(record.record.method, input.method)
-    ) {
-      return false;
-    }
-    if (
-      input.status !== undefined &&
-      !includesCaseInsensitive(
-        record.record.status === undefined ? "" : String(record.record.status),
-        input.status,
-      )
-    ) {
-      return false;
-    }
-    if (input.resourceType !== undefined && record.record.resourceType !== input.resourceType) {
+    if (!matchesNetworkRecordFilters(record.record, networkFilters)) {
       return false;
     }
     return true;
@@ -2354,10 +2438,6 @@ function sortLiveNetworkRecords(
     }
     return left.recordId.localeCompare(right.recordId);
   });
-}
-
-function includesCaseInsensitive(value: string, search: string): boolean {
-  return value.toLowerCase().includes(search.toLowerCase());
 }
 
 function buildRawTransportRequest(input: OpensteerRawRequestInput): {

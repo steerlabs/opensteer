@@ -26,8 +26,18 @@ import {
 } from "./identity.js";
 import type { FrameInfo, PageInfo } from "./metadata.js";
 import { frameInfoSchema, pageInfoSchema } from "./metadata.js";
-import type { BodyPayload, HeaderEntry, NetworkRecord } from "./network.js";
-import { bodyPayloadSchema, headerEntrySchema, networkRecordSchema } from "./network.js";
+import type {
+  BodyPayload,
+  HeaderEntry,
+  NetworkRecord,
+  NetworkResourceType,
+} from "./network.js";
+import {
+  bodyPayloadSchema,
+  headerEntrySchema,
+  networkRecordSchema,
+  networkResourceTypeSchema,
+} from "./network.js";
 import type { CookieRecord, StorageSnapshot } from "./storage.js";
 import { cookieRecordSchema, storageSnapshotSchema } from "./storage.js";
 import type {
@@ -281,6 +291,12 @@ export interface GetNetworkRecordsInput {
   readonly sessionRef: SessionRef;
   readonly pageRef?: PageRef;
   readonly requestIds?: readonly string[];
+  readonly url?: string;
+  readonly hostname?: string;
+  readonly path?: string;
+  readonly method?: string;
+  readonly status?: string;
+  readonly resourceType?: NetworkResourceType;
   readonly includeBodies?: boolean;
 }
 
@@ -828,6 +844,12 @@ const getNetworkRecordsInputSchema: JsonSchema = objectSchema(
     requestIds: arraySchema(stringSchema({ minLength: 1 }), {
       uniqueItems: true,
     }),
+    url: stringSchema({ minLength: 1 }),
+    hostname: stringSchema({ minLength: 1 }),
+    path: stringSchema({ minLength: 1 }),
+    method: stringSchema({ minLength: 1 }),
+    status: stringSchema({ minLength: 1 }),
+    resourceType: networkResourceTypeSchema,
     includeBodies: {
       type: "boolean",
     },

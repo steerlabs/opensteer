@@ -536,6 +536,39 @@ describe.sequential("AbpBrowserCoreEngine", () => {
             bodyBase64: "AP9/QQ==",
           });
 
+          const host = new URL(baseUrl).hostname;
+          const filteredTransport = await engine.getNetworkRecords({
+            sessionRef,
+            pageRef: created.data.pageRef,
+            hostname: host,
+            path: "/api/session-transport",
+            method: "po",
+            status: "20",
+            resourceType: "fetch",
+            includeBodies: true,
+          });
+          expect(filteredTransport).toHaveLength(2);
+          expect(filteredTransport.every((record) => record.url.includes("/api/session-transport"))).toBe(
+            true,
+          );
+
+          const documentOnly = await engine.getNetworkRecords({
+            sessionRef,
+            pageRef: created.data.pageRef,
+            method: "GET",
+            resourceType: "document",
+            includeBodies: false,
+          });
+          expect(documentOnly.some((record) => record.url.endsWith("/integration"))).toBe(true);
+
+          const mismatched = await engine.getNetworkRecords({
+            sessionRef,
+            requestIds: [filteredTransport[0]!.requestId],
+            path: "/api/echo",
+            includeBodies: false,
+          });
+          expect(mismatched).toEqual([]);
+
           const storage = await engine.getStorageSnapshot({
             sessionRef,
           });
