@@ -12,6 +12,7 @@ interface PendingCommand {
 
 export const PAGE_CDP_METHOD_ALLOWLIST = new Set<string>([
   "DOM.enable",
+  "DOM.describeNode",
   "DOM.focus",
   "DOM.getAttributes",
   "DOM.getContentQuads",
@@ -19,6 +20,7 @@ export const PAGE_CDP_METHOD_ALLOWLIST = new Set<string>([
   "DOM.getNodeForLocation",
   "DOM.getOuterHTML",
   "DOM.pushNodesByBackendIdsToFrontend",
+  "DOM.requestNode",
   "DOM.resolveNode",
   "DOM.scrollIntoViewIfNeeded",
   "DOMSnapshot.captureSnapshot",

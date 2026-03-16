@@ -5,13 +5,17 @@ import { once } from "node:events";
 import {
   bodyPayloadFromUtf8,
   createBodyPayload,
+  createNodeLocator,
   createPoint,
+  type DomSnapshot,
+  type DomSnapshotNode,
 } from "../../packages/browser-core/src/index.js";
 import { createAbpBrowserCoreEngine } from "../../packages/engine-abp/src/index.js";
 import { resolveDefaultAbpExecutablePath } from "../../packages/engine-abp/src/launcher.js";
 import { createDomRuntime } from "../../packages/opensteer/src/index.js";
 import {
   OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL,
+  resolveDomActionBridge,
   type ComputerUseBridge as BrowserCoreComputerUseBridge,
 } from "../../packages/protocol/src/index.js";
 import { defineBrowserCoreConformanceSuite } from "../browser-core/conformance-suite.js";
@@ -61,7 +65,9 @@ function basicDocument(): string {
         const host = document.getElementById("shadow-host");
         const root = host.attachShadow({ mode: "open" });
         root.innerHTML =
-          '<button id="shadow-action" type="button">Shadow Action</button><div id="nested-shadow-host"></div>';
+          '<button id="shadow-action" type="button">' +
+          '<div id="shadow-action-shell"><span id="shadow-action-label"><slot id="shadow-action-slot">Shadow Action</slot></span></div>' +
+          '</button><div id="nested-shadow-host"></div>';
         const nestedHost = root.getElementById("nested-shadow-host");
         const nestedRoot = nestedHost.attachShadow({ mode: "open" });
         nestedRoot.innerHTML = '<button id="nested-shadow-action" type="button">Nested Shadow</button>';
@@ -250,6 +256,22 @@ async function startServer(): Promise<{ url: string; close: () => Promise<void> 
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function findNodeById(nodes: readonly DomSnapshotNode[], id: string) {
+  return nodes.find((node) =>
+    node.attributes.some((attribute) => attribute.name === "id" && attribute.value === id),
+  );
+}
+
+function createLocator(
+  snapshot: Pick<DomSnapshot, "documentRef" | "documentEpoch">,
+  node: DomSnapshotNode,
+) {
+  if (!node.nodeRef) {
+    throw new Error(`node ${String(node.snapshotNodeId)} is missing a live node ref`);
+  }
+  return createNodeLocator(snapshot.documentRef, snapshot.documentEpoch, node.nodeRef);
 }
 
 function createAbpTestEngine() {
@@ -463,6 +485,46 @@ describe.sequential("AbpBrowserCoreEngine", () => {
             frameRef: mainFrame!.frameRef,
           });
           expect(snapshot.html).toContain('<div id="status">Done</div>');
+        } finally {
+          await engine.dispose();
+        }
+      },
+      20_000,
+    );
+
+    test.sequential(
+      "canonicalizes shadow descendants to their live pointer owner and classifies ancestor hits as non-blocking",
+      async () => {
+        const engine = await createAbpTestEngine();
+
+        try {
+          const sessionRef = await engine.createSession();
+          const created = await engine.createPage({
+            sessionRef,
+            url: `${baseUrl}/basic`,
+          });
+
+          await wait(400);
+
+          const snapshot = await engine.getDomSnapshot({
+            frameRef: created.frameRef!,
+          });
+          const buttonNode = findNodeById(snapshot.nodes, "shadow-action")!;
+          const slotNode = findNodeById(snapshot.nodes, "shadow-action-slot")!;
+          const bridge = resolveDomActionBridge(engine)!;
+
+          const canonicalTarget = await bridge.canonicalizePointerTarget(
+            createLocator(snapshot, slotNode),
+          );
+          expect(canonicalTarget.nodeRef).toBe(buttonNode.nodeRef);
+
+          const assessment = await bridge.classifyPointerHit({
+            target: createLocator(snapshot, slotNode),
+            hit: createLocator(snapshot, buttonNode),
+            point: createPoint(60, 200),
+          });
+          expect(assessment.relation).toBe("ancestor");
+          expect(assessment.blocking).toBe(false);
         } finally {
           await engine.dispose();
         }

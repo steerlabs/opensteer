@@ -2,6 +2,7 @@ import type {
   BrowserCoreEngine,
   NodeLocator,
   PageRef,
+  Point,
   Quad,
   Rect,
 } from "@opensteer/browser-core";
@@ -32,8 +33,30 @@ export interface DomActionSettleOptions {
   policySettle(pageRef: PageRef): Promise<void>;
 }
 
+export type DomPointerHitRelation =
+  | "self"
+  | "descendant"
+  | "ancestor"
+  | "same-owner"
+  | "outside"
+  | "unknown";
+
+export interface DomPointerHitAssessment {
+  readonly relation: DomPointerHitRelation;
+  readonly blocking: boolean;
+  readonly ambiguous?: boolean;
+  readonly canonicalTarget?: NodeLocator;
+  readonly hitOwner?: NodeLocator;
+}
+
 export interface DomActionBridge {
   inspectActionTarget(locator: NodeLocator): Promise<DomActionTargetInspection>;
+  canonicalizePointerTarget(locator: NodeLocator): Promise<NodeLocator>;
+  classifyPointerHit(input: {
+    readonly target: NodeLocator;
+    readonly hit: NodeLocator;
+    readonly point: Point;
+  }): Promise<DomPointerHitAssessment>;
   scrollNodeIntoView(locator: NodeLocator, options?: DomActionScrollOptions): Promise<void>;
   focusNode(locator: NodeLocator): Promise<void>;
   finalizeDomAction(pageRef: PageRef, options: DomActionSettleOptions): Promise<void>;

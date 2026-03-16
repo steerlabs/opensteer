@@ -1,4 +1,5 @@
 import {
+  createNodeLocator,
   createPoint,
   quadBounds,
   rectContainsPoint,
@@ -25,8 +26,6 @@ import {
   type DomActionBridge,
   type DomActionTargetInspection,
 } from "./bridge.js";
-import { createSnapshotIndex } from "./path.js";
-import { isSameNodeOrDescendant } from "./selectors.js";
 import type {
   DomActionOutcome,
   DomClickInput,
@@ -57,6 +56,11 @@ interface DomActionExecutorOptions {
   writeDescriptor(input: DomWriteDescriptorInput): Promise<DomDescriptorRecord>;
 }
 
+interface ActionablePointerTarget {
+  readonly resolved: ResolvedDomTarget;
+  readonly original: ResolvedDomTarget;
+}
+
 const MAX_DOM_ACTION_ATTEMPTS = 3;
 const DEFAULT_SCROLL_OPTIONS = {
   block: "center",
@@ -79,17 +83,17 @@ export class DomActionExecutor {
         ...(input.position === undefined ? {} : { position: input.position }),
         ...(input.timeout === undefined ? {} : { timeout: input.timeout }),
       },
-      async (resolved, point, timeout) => {
+      async (pointerTarget, point, timeout) => {
         await timeout.runStep(() =>
           this.options.engine.mouseMove({
-            pageRef: resolved.pageRef,
+            pageRef: pointerTarget.resolved.pageRef,
             point,
             coordinateSpace: "document-css",
           }),
         );
         await timeout.runStep(() =>
           this.options.engine.mouseClick({
-            pageRef: resolved.pageRef,
+            pageRef: pointerTarget.resolved.pageRef,
             point,
             coordinateSpace: "document-css",
             ...(input.button === undefined ? {} : { button: input.button }),
@@ -97,7 +101,7 @@ export class DomActionExecutor {
             ...(input.modifiers === undefined ? {} : { modifiers: input.modifiers }),
           }),
         );
-        return { resolved, point };
+        return { resolved: pointerTarget.original, point };
       },
     );
   }
@@ -111,15 +115,15 @@ export class DomActionExecutor {
         ...(input.position === undefined ? {} : { position: input.position }),
         ...(input.timeout === undefined ? {} : { timeout: input.timeout }),
       },
-      async (resolved, point, timeout) => {
+      async (pointerTarget, point, timeout) => {
         await timeout.runStep(() =>
           this.options.engine.mouseMove({
-            pageRef: resolved.pageRef,
+            pageRef: pointerTarget.resolved.pageRef,
             point,
             coordinateSpace: "document-css",
           }),
         );
-        return { resolved, point };
+        return { resolved: pointerTarget.original, point };
       },
     );
   }
@@ -133,23 +137,23 @@ export class DomActionExecutor {
         ...(input.position === undefined ? {} : { position: input.position }),
         ...(input.timeout === undefined ? {} : { timeout: input.timeout }),
       },
-      async (resolved, point, timeout) => {
+      async (pointerTarget, point, timeout) => {
         await timeout.runStep(() =>
           this.options.engine.mouseMove({
-            pageRef: resolved.pageRef,
+            pageRef: pointerTarget.resolved.pageRef,
             point,
             coordinateSpace: "document-css",
           }),
         );
         await timeout.runStep(() =>
           this.options.engine.mouseScroll({
-            pageRef: resolved.pageRef,
+            pageRef: pointerTarget.resolved.pageRef,
             point,
             coordinateSpace: "document-css",
             delta: input.delta,
           }),
         );
-        return { resolved, point };
+        return { resolved: pointerTarget.original, point };
       },
     );
   }
@@ -230,7 +234,7 @@ export class DomActionExecutor {
       readonly timeout?: TimeoutExecutionContext;
     },
     dispatch: (
-      resolved: ResolvedDomTarget,
+      pointerTarget: ActionablePointerTarget,
       point: Point,
       timeout: TimeoutExecutionContext,
     ) => Promise<TResult>,
@@ -251,44 +255,54 @@ export class DomActionExecutor {
                 timeout.runStep(() => this.options.writeDescriptor(writeInput)),
             }),
           );
+          const pointerTarget = await timeout.runStep(() =>
+            this.resolveActionablePointerTarget(session, input.operation, resolved),
+          );
 
           if (input.position !== undefined) {
-            assertValidResolvedActionPosition(resolved, input.position);
+            assertValidResolvedActionPosition(pointerTarget.resolved, input.position);
           }
 
           const inspectionBeforeScroll = await timeout.runStep(() =>
-            bridge.inspectActionTarget(resolved.locator),
+            bridge.inspectActionTarget(pointerTarget.resolved.locator),
           );
-          this.assertPointerActionable(input.operation, resolved, inspectionBeforeScroll, {
-            allowTransientVisibilityFailure: true,
-          });
+          this.assertPointerActionable(
+            input.operation,
+            pointerTarget.resolved,
+            inspectionBeforeScroll,
+            {
+              allowTransientVisibilityFailure: true,
+            },
+          );
 
           await timeout.runStep(() =>
-            bridge.scrollNodeIntoView(resolved.locator, DEFAULT_SCROLL_OPTIONS),
+            bridge.scrollNodeIntoView(pointerTarget.resolved.locator, DEFAULT_SCROLL_OPTIONS),
           );
 
           const inspectionAfterScroll = await timeout.runStep(() =>
-            bridge.inspectActionTarget(resolved.locator),
+            bridge.inspectActionTarget(pointerTarget.resolved.locator),
           );
-          this.assertPointerActionable(input.operation, resolved, inspectionAfterScroll);
+          this.assertPointerActionable(input.operation, pointerTarget.resolved, inspectionAfterScroll);
 
           const point = await timeout.runStep(() =>
             this.computeActionPoint(
               input.operation,
-              resolved,
+              pointerTarget.resolved,
               inspectionAfterScroll,
               input.position,
             ),
           );
           if (input.operation !== "dom.scroll") {
-            const hit = await timeout.runStep(() => this.tryHitTest(resolved.pageRef, point));
+            const hit = await timeout.runStep(() => this.tryHitTest(pointerTarget.resolved.pageRef, point));
             if (hit !== undefined) {
-              this.assertHitTarget(input.operation, resolved, point, hit);
+              await timeout.runStep(() =>
+                this.assertHitTarget(input.operation, pointerTarget, point, hit),
+              );
             }
           }
 
-          const outcome = await dispatch(resolved, point, timeout);
-          await this.settle(resolved.pageRef, input.operation, timeout);
+          const outcome = await dispatch(pointerTarget, point, timeout);
+          await this.settle(pointerTarget.resolved.pageRef, input.operation, timeout);
           return outcome;
         } catch (error) {
           lastError = error;
@@ -506,12 +520,14 @@ export class DomActionExecutor {
     );
   }
 
-  private assertHitTarget(
+  private async assertHitTarget(
     operation: DomActionPolicyOperation,
-    resolved: ResolvedDomTarget,
+    pointerTarget: ActionablePointerTarget,
     point: Point,
     hit: HitTestResult,
-  ): void {
+  ): Promise<void> {
+    const bridge = this.requireBridge();
+    const resolved = pointerTarget.resolved;
     const details = {
       ...(resolved.node.layout?.rect === undefined ? {} : { rect: resolved.node.layout.rect }),
       point,
@@ -542,8 +558,16 @@ export class DomActionExecutor {
       );
     }
 
-    const index = createSnapshotIndex(resolved.snapshot);
-    if (isSameNodeOrDescendant(index, hit.nodeRef, resolved.nodeRef)) {
+    const assessment = await bridge.classifyPointerHit({
+      target: resolved.locator,
+      hit: createNodeLocator(hit.documentRef, hit.documentEpoch, hit.nodeRef),
+      point,
+    });
+    if (
+      assessment.relation !== "outside" ||
+      assessment.blocking === false ||
+      assessment.ambiguous === true
+    ) {
       return;
     }
 
@@ -551,9 +575,60 @@ export class DomActionExecutor {
       operation,
       "obscured",
       `hit test resolved ${hit.nodeRef} outside the target subtree rooted at ${resolved.nodeRef}`,
-      details,
+      {
+        ...details,
+        hitRelation: assessment.relation,
+        ...(assessment.ambiguous === undefined ? {} : { hitAmbiguous: assessment.ambiguous }),
+        ...(assessment.canonicalTarget === undefined
+          ? {}
+          : {
+              canonicalNodeRef: assessment.canonicalTarget.nodeRef,
+              canonicalDocumentRef: assessment.canonicalTarget.documentRef,
+              canonicalDocumentEpoch: assessment.canonicalTarget.documentEpoch,
+            }),
+        ...(assessment.hitOwner === undefined
+          ? {}
+          : {
+              hitOwnerNodeRef: assessment.hitOwner.nodeRef,
+              hitOwnerDocumentRef: assessment.hitOwner.documentRef,
+              hitOwnerDocumentEpoch: assessment.hitOwner.documentEpoch,
+            }),
+        hitMissingFromSnapshot: !resolved.snapshot.nodes.some((node) => node.nodeRef === hit.nodeRef),
+      },
       true,
     );
+  }
+
+  private async resolveActionablePointerTarget(
+    session: DomActionResolutionSession,
+    operation: Extract<DomActionPolicyOperation, "dom.click" | "dom.hover" | "dom.scroll">,
+    resolved: ResolvedDomTarget,
+  ): Promise<ActionablePointerTarget> {
+    const canonicalLocator = await this.requireBridge().canonicalizePointerTarget(resolved.locator);
+    if (
+      canonicalLocator.documentRef === resolved.documentRef &&
+      canonicalLocator.documentEpoch === resolved.documentEpoch &&
+      canonicalLocator.nodeRef === resolved.nodeRef
+    ) {
+      return {
+        resolved,
+        original: resolved,
+      };
+    }
+
+    const canonicalResolved = await this.options.resolveTarget(session, {
+      pageRef: resolved.pageRef,
+      method: operation,
+      target: {
+        kind: "live",
+        locator: canonicalLocator,
+      },
+    });
+
+    return {
+      resolved: canonicalResolved,
+      original: resolved,
+    };
   }
 
   private createActionabilityError(

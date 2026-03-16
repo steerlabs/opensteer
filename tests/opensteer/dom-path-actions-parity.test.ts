@@ -191,6 +191,50 @@ for (const harness of harnesses) {
     );
 
     test(
+      "replays descendant paths inside shadow-hosted buttons without changing path semantics",
+      { timeout: 60_000 },
+      async () => {
+        await withFixturePage(
+          harness,
+          async ({ engine, runtime, pageRef }) => {
+            const childFrame = await waitForChildFrame(
+              engine,
+              pageRef,
+              "/path-parity-shadow-host-child?kind=open",
+            );
+            const childSnapshot = await waitForNodeInFrame(engine, childFrame, "shadow-hosted-slot");
+            const targetNode = expectValue(
+              findNodeById(childSnapshot, "shadow-hosted-slot"),
+              "shadow-hosted slot was not found",
+            );
+            const path = await runtime.buildPath({
+              locator: createLocator(childSnapshot, targetNode),
+            });
+
+            expect(path.context.map((hop) => hop.kind)).toEqual(["shadow", "iframe"]);
+
+            const resolved = await runtime.resolveTarget({
+              pageRef,
+              method: "click",
+              target: { kind: "path", path },
+            });
+            expect(readIdAttribute(resolved.node)).toBe("shadow-hosted-slot");
+
+            await runtime.click({
+              pageRef,
+              target: { kind: "path", path },
+            });
+
+            expect(await readTextById(engine, childFrame, "shadow-hosted-status")).toBe(
+              "clicked:open",
+            );
+          },
+          "/path-parity-shadow-host-open-main",
+        );
+      },
+    );
+
+    test(
       "builds and replays closed-shadow plus iframe paths for clicks",
       { timeout: 60_000 },
       async () => {
@@ -706,7 +750,13 @@ function shadowHostedChildDocument(mode: "open" | "closed"): string {
   </head>
   <body>
     <div id="shadow-hosted-status">ready</div>
-    <button id="shadow-hosted-button" type="button">Shadow Hosted Button</button>
+    <button id="shadow-hosted-button" type="button">
+      <div id="shadow-hosted-shell">
+        <span id="shadow-hosted-label">
+          <slot id="shadow-hosted-slot">Shadow Hosted Button</slot>
+        </span>
+      </div>
+    </button>
     <script>
       document.getElementById("shadow-hosted-button").addEventListener("click", () => {
         document.getElementById("shadow-hosted-status").textContent = "clicked:${mode}";

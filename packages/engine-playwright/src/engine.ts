@@ -3,6 +3,7 @@ import {
   createBrowserCoreError,
   createChooserRef,
   createDocumentEpoch,
+  createNodeLocator,
   createDocumentRef,
   createDownloadRef,
   createFrameRef,
@@ -228,6 +229,12 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       resolveController: (pageRef: PageRef) => this.requirePage(pageRef),
       flushPendingPageTasks: (sessionRef: SessionRef) => this.flushPendingPageTasks(sessionRef),
       flushDomUpdateTask: (controller) => this.flushDomUpdateTask(controller),
+      locateBackendNode: (document, backendNodeId) =>
+        createNodeLocator(
+          document.documentRef,
+          document.documentEpoch,
+          this.nodeRefForBackendNode(document, backendNodeId),
+        ),
       requireLiveNode: (locator) => this.requireLiveNode(locator),
     });
     return this.domActionBridge;
