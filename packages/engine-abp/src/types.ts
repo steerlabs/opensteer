@@ -4,6 +4,7 @@ import type {
   DocumentRef,
   FrameRef,
   HeaderEntry,
+  NetworkRecord,
   NetworkResourceType,
   NetworkRequestId,
   NodeRef,
@@ -256,6 +257,7 @@ export interface SessionState {
   readonly pageRefs: Set<PageRef>;
   readonly controllersByPageRef: Map<PageRef, PageController>;
   readonly pageRefByTabId: Map<string, PageRef>;
+  readonly networkRecordsByRequestId: Map<NetworkRequestId, NetworkRecord>;
   readonly userDataDir?: string;
   readonly sessionDir?: string;
   readonly ownedUserDataDir: boolean;

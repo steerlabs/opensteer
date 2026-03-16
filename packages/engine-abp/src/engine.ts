@@ -24,6 +24,7 @@ import {
   createSize,
   filterCookieRecords,
   isBrowserCoreError,
+  matchesNetworkRecordFilters,
   waitForCdpVisualStability,
   staleNodeRefError,
   unsupportedCapabilityError,
@@ -820,6 +821,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       });
       const normalizedEvents = await this.normalizeActionEvents(controller, response);
       const mainFrame = this.requireMainFrame(controller);
+      this.storeDocumentNavigationRecord(session, controller, mainFrame);
       return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
         frameRef: mainFrame.frameRef,
         documentRef: mainFrame.currentDocument.documentRef,
@@ -832,6 +834,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     await this.waitForMainFrame(controller, 10_000);
     await this.flushDomUpdateTask(controller);
     const mainFrame = this.requireMainFrame(controller);
+    this.storeDocumentNavigationRecord(session, controller, mainFrame);
     return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
       frameRef: mainFrame.frameRef,
       documentRef: mainFrame.currentDocument.documentRef,
@@ -959,6 +962,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
 
     const directEvents = await this.normalizeActionEvents(controller, response);
     const mainFrame = this.requireMainFrame(controller);
+    this.storeDocumentNavigationRecord(session, controller, mainFrame);
     return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
       frameRef: mainFrame.frameRef,
       documentRef: mainFrame.currentDocument.documentRef,
@@ -1001,6 +1005,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
 
     const directEvents = await this.normalizeActionEvents(controller, response);
     const mainFrame = this.requireMainFrame(controller);
+    this.storeDocumentNavigationRecord(session, controller, mainFrame);
     return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
       frameRef: mainFrame.frameRef,
       documentRef: mainFrame.currentDocument.documentRef,
@@ -1049,6 +1054,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
 
     const directEvents = await this.normalizeActionEvents(controller, response);
     const mainFrame = this.requireMainFrame(controller);
+    this.storeDocumentNavigationRecord(session, controller, mainFrame);
     return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
       frameRef: mainFrame.frameRef,
       documentRef: mainFrame.currentDocument.documentRef,
@@ -1094,6 +1100,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
 
     const directEvents = await this.normalizeActionEvents(controller, response);
     const mainFrame = this.requireMainFrame(controller);
+    this.storeDocumentNavigationRecord(session, controller, mainFrame);
     return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
       frameRef: mainFrame.frameRef,
       documentRef: mainFrame.currentDocument.documentRef,
@@ -1799,7 +1806,12 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
   async getNetworkRecords(input: GetNetworkRecordsInput): Promise<readonly NetworkRecord[]> {
     const session = this.requireSession(input.sessionRef);
     const includeBodies = input.includeBodies ?? false;
-    const requestIds = input.requestIds === undefined ? undefined : new Set(input.requestIds);
+    const requestIds =
+      input.requestIds === undefined
+        ? undefined
+        : new Set<NetworkRecord["requestId"]>(
+            input.requestIds as readonly NetworkRecord["requestId"][],
+          );
     input.signal?.throwIfAborted?.();
 
     if (input.pageRef) {
@@ -1810,46 +1822,98 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
           `page ${input.pageRef} does not belong to session ${input.sessionRef}`,
         );
       }
-      const calls = await raceWithAbort(
-        session.rest.queryNetwork({
-          tabId: controller.tabId,
-          includeBodies,
-          ...(input.url === undefined ? {} : { url: input.url }),
-          ...(input.hostname === undefined ? {} : { hostname: input.hostname }),
-          ...(input.path === undefined ? {} : { path: input.path }),
-          ...(input.method === undefined ? {} : { method: input.method }),
-          ...(input.status === undefined ? {} : { status: input.status }),
-          ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
-        }),
-        input.signal,
-      );
-      return calls
-        .map((call) => this.normalizeNetworkRecord(session, controller.pageRef, call))
-        .filter((record) => requestIds === undefined || requestIds.has(record.requestId));
+      return this.readNetworkRecordsForPage(session, controller.pageRef, {
+        includeBodies,
+        ...(requestIds === undefined ? {} : { requestIds }),
+        filters: input,
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+      });
     }
 
     const records = await Promise.all(
       Array.from(session.pageRefs, async (pageRef) => {
-        const controller = this.requirePage(pageRef);
-        const calls = await raceWithAbort(
-          session.rest.queryNetwork({
-            tabId: controller.tabId,
-            includeBodies,
-            ...(input.url === undefined ? {} : { url: input.url }),
-            ...(input.hostname === undefined ? {} : { hostname: input.hostname }),
-            ...(input.path === undefined ? {} : { path: input.path }),
-            ...(input.method === undefined ? {} : { method: input.method }),
-            ...(input.status === undefined ? {} : { status: input.status }),
-            ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
-          }),
-          input.signal,
-        );
-        return calls
-          .map((call) => this.normalizeNetworkRecord(session, pageRef, call))
-          .filter((record) => requestIds === undefined || requestIds.has(record.requestId));
+        return this.readNetworkRecordsForPage(session, pageRef, {
+          includeBodies,
+          ...(requestIds === undefined ? {} : { requestIds }),
+          filters: input,
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+        });
       }),
     );
     return records.flat();
+  }
+
+  private async readNetworkRecordsForPage(
+    session: SessionState,
+    pageRef: PageRef,
+    input: {
+      readonly includeBodies: boolean;
+      readonly requestIds?: ReadonlySet<NetworkRecord["requestId"]>;
+      readonly filters: GetNetworkRecordsInput;
+      readonly signal?: AbortSignal;
+    },
+  ): Promise<readonly NetworkRecord[]> {
+    const controller = this.requirePage(pageRef);
+    const filterInput = {
+      ...(input.filters.url === undefined ? {} : { url: input.filters.url }),
+      ...(input.filters.hostname === undefined ? {} : { hostname: input.filters.hostname }),
+      ...(input.filters.path === undefined ? {} : { path: input.filters.path }),
+      ...(input.filters.method === undefined ? {} : { method: input.filters.method }),
+      ...(input.filters.status === undefined ? {} : { status: input.filters.status }),
+      ...(input.filters.resourceType === undefined
+        ? {}
+        : { resourceType: input.filters.resourceType }),
+    };
+    const metadataCalls = await raceWithAbort(
+      session.rest.queryNetwork({
+        tabId: controller.tabId,
+        includeBodies: false,
+      }),
+      input.signal,
+    );
+    const metadataSnapshotRecords = metadataCalls.map((call) =>
+      this.normalizeNetworkRecord(session, pageRef, call, false),
+    );
+    this.storeNetworkRecords(session, metadataSnapshotRecords);
+    const metadataRecords = this.readLocalNetworkRecords(session, pageRef, input.includeBodies, {
+      filters: filterInput,
+      ...(input.requestIds === undefined ? {} : { requestIds: input.requestIds }),
+    });
+    if (!input.includeBodies) {
+      return metadataRecords;
+    }
+
+    let bodyCalls: readonly AbpNetworkCall[];
+    try {
+      bodyCalls = await raceWithAbort(
+        session.rest.queryNetwork({
+          tabId: controller.tabId,
+          includeBodies: true,
+        }),
+        input.signal,
+      );
+    } catch (error) {
+      if (input.signal?.aborted) {
+        throw error;
+      }
+      const failedRecords = metadataRecords.map((record) =>
+        this.markNetworkRecordBodyFailure(record, error),
+      );
+      this.storeNetworkRecords(session, failedRecords);
+      return this.readLocalNetworkRecords(session, pageRef, true, {
+        filters: filterInput,
+        ...(input.requestIds === undefined ? {} : { requestIds: input.requestIds }),
+      });
+    }
+
+    const bodySnapshotRecords = bodyCalls.map((call) =>
+      this.normalizeNetworkRecord(session, pageRef, call, true),
+    );
+    this.storeNetworkRecords(session, bodySnapshotRecords);
+    return this.readLocalNetworkRecords(session, pageRef, true, {
+      filters: filterInput,
+      ...(input.requestIds === undefined ? {} : { requestIds: input.requestIds }),
+    });
   }
 
   async getCookies(input: {
@@ -1999,6 +2063,12 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
           });
 
     const mainFrame = this.requireMainFrame(controller);
+    this.storeNetworkRecords(session, [
+      this.createSessionHttpNetworkRecord(session, controller, mainFrame, input.request, response, {
+        responseHeaders,
+        ...(payload === undefined ? {} : { responseBody: payload }),
+      }),
+    ]);
     return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
       frameRef: mainFrame.frameRef,
       documentRef: mainFrame.currentDocument.documentRef,
@@ -2108,6 +2178,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
         pageRefs: new Set(),
         controllersByPageRef: new Map(),
         pageRefByTabId: new Map(),
+        networkRecordsByRequestId: new Map(),
         userDataDir,
         sessionDir,
         ownedUserDataDir: this.launchOptions?.userDataDir === undefined,
@@ -2165,6 +2236,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       pageRefs: new Set(),
       controllersByPageRef: new Map(),
       pageRefByTabId: new Map(),
+      networkRecordsByRequestId: new Map(),
       ownedUserDataDir: false,
       ownedSessionDir: false,
       process: undefined,
@@ -2936,11 +3008,25 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     session: SessionState,
     pageRef: PageRef,
     call: AbpNetworkCall,
+    includeBodies: boolean,
   ): NetworkRecord {
     const requestHeaders = parseHeaderJson(call.request_headers);
     const responseHeaders = parseHeaderJson(call.response_headers);
     const responseContentType = headerValue(responseHeaders, "content-type");
     const requestContentType = headerValue(requestHeaders, "content-type");
+    const requestBody =
+      includeBodies && call.request_body !== undefined
+        ? bodyPayloadFromUtf8(call.request_body, parseMimeType(requestContentType))
+        : undefined;
+    const responseBody =
+      includeBodies && call.response_body !== undefined
+        ? call.response_body_encoding === "base64"
+          ? createBodyPayload(new Uint8Array(Buffer.from(call.response_body, "base64")), {
+              encoding: "base64",
+              ...parseMimeType(responseContentType),
+            })
+          : bodyPayloadFromUtf8(call.response_body, parseMimeType(responseContentType))
+        : undefined;
 
     return {
       kind: "http",
@@ -2954,23 +3040,146 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       ...(call.status === undefined ? {} : { status: call.status }),
       resourceType: normalizeResourceType(call.resource_type),
       navigationRequest: normalizeResourceType(call.resource_type) === "document",
-      ...(call.request_body === undefined
-        ? {}
-        : {
-            requestBody: bodyPayloadFromUtf8(call.request_body, parseMimeType(requestContentType)),
-          }),
-      ...(call.response_body === undefined
-        ? {}
-        : {
-            responseBody:
-              call.response_body_encoding === "base64"
-                ? createBodyPayload(new Uint8Array(Buffer.from(call.response_body, "base64")), {
-                    encoding: "base64",
-                    ...parseMimeType(responseContentType),
-                  })
-                : bodyPayloadFromUtf8(call.response_body, parseMimeType(responseContentType)),
-          }),
+      captureState: "complete",
+      requestBodyState:
+        call.request_body === undefined ? "skipped" : includeBodies ? "complete" : "pending",
+      responseBodyState:
+        call.response_body === undefined ? "skipped" : includeBodies ? "complete" : "pending",
+      ...(call.request_body === undefined ? { requestBodySkipReason: "not-present" } : {}),
+      ...(call.response_body === undefined ? { responseBodySkipReason: "not-present" } : {}),
+      ...(requestBody === undefined ? {} : { requestBody }),
+      ...(responseBody === undefined ? {} : { responseBody }),
     };
+  }
+
+  private createSessionHttpNetworkRecord(
+    session: SessionState,
+    controller: PageController,
+    mainFrame: FrameState,
+    request: SessionTransportRequest,
+    response: SessionHttpScriptResponse,
+    bodies: {
+      readonly responseHeaders: readonly ReturnType<typeof createHeaderEntry>[];
+      readonly responseBody?: BodyPayload;
+    },
+  ): NetworkRecord {
+    return {
+      kind: "http",
+      requestId: createNetworkRequestId(`abp-session-http-${++this.requestCounter}`),
+      sessionRef: session.sessionRef,
+      pageRef: controller.pageRef,
+      frameRef: mainFrame.frameRef,
+      documentRef: mainFrame.currentDocument.documentRef,
+      method: request.method,
+      url: response.url,
+      requestHeaders: request.headers ?? [],
+      responseHeaders: bodies.responseHeaders,
+      status: response.status,
+      statusText: response.statusText || STATUS_CODES[response.status] || "",
+      resourceType: "fetch",
+      navigationRequest: false,
+      captureState: "complete",
+      requestBodyState: request.body === undefined ? "skipped" : "complete",
+      responseBodyState: bodies.responseBody === undefined ? "skipped" : "complete",
+      ...(request.body === undefined ? { requestBodySkipReason: "not-present" } : {}),
+      ...(bodies.responseBody === undefined ? { responseBodySkipReason: "not-present" } : {}),
+      ...(request.body === undefined ? {} : { requestBody: request.body }),
+      ...(bodies.responseBody === undefined ? {} : { responseBody: bodies.responseBody }),
+    };
+  }
+
+  private storeDocumentNavigationRecord(
+    session: SessionState,
+    controller: PageController,
+    mainFrame: FrameState,
+  ): void {
+    const document = mainFrame.currentDocument;
+    this.storeNetworkRecords(session, [
+      {
+        kind: "http",
+        requestId: createNetworkRequestId(`abp-document-${++this.requestCounter}`),
+        sessionRef: session.sessionRef,
+        pageRef: controller.pageRef,
+        frameRef: mainFrame.frameRef,
+        documentRef: document.documentRef,
+        method: "GET",
+        url: document.url,
+        requestHeaders: [],
+        responseHeaders: [],
+        status: 200,
+        statusText: "OK",
+        resourceType: "document",
+        navigationRequest: true,
+        captureState: "complete",
+        requestBodyState: "skipped",
+        responseBodyState: "skipped",
+        requestBodySkipReason: "not-present",
+        responseBodySkipReason: "not-present",
+      },
+    ]);
+  }
+
+  private markNetworkRecordBodyFailure(record: NetworkRecord, error: unknown): NetworkRecord {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ...record,
+      requestBodyState:
+        record.requestBodyState === "pending" ? "failed" : record.requestBodyState,
+      responseBodyState:
+        record.responseBodyState === "pending" ? "failed" : record.responseBodyState,
+      ...(record.requestBodyState === "pending"
+        ? { requestBodyError: message }
+        : {}),
+      ...(record.responseBodyState === "pending"
+        ? { responseBodyError: message }
+        : {}),
+    };
+  }
+
+  private readLocalNetworkRecords(
+    session: SessionState,
+    pageRef: PageRef,
+    includeBodies: boolean,
+    input: {
+      readonly requestIds?: ReadonlySet<NetworkRecord["requestId"]>;
+      readonly filters: {
+        readonly url?: string;
+        readonly hostname?: string;
+        readonly path?: string;
+        readonly method?: string;
+        readonly status?: string;
+        readonly resourceType?: NetworkResourceType;
+      };
+    },
+  ): readonly NetworkRecord[] {
+    return Array.from(session.networkRecordsByRequestId.values())
+      .filter((record) => record.pageRef === pageRef)
+      .map((record) => this.projectNetworkRecordBodies(record, includeBodies))
+      .filter((record) => input.requestIds === undefined || input.requestIds.has(record.requestId))
+      .filter((record) => matchesNetworkRecordFilters(record, input.filters));
+  }
+
+  private projectNetworkRecordBodies(record: NetworkRecord, includeBodies: boolean): NetworkRecord {
+    if (includeBodies) {
+      return record;
+    }
+    const { requestBody: _requestBody, responseBody: _responseBody, ...metadataRecord } = record;
+    return {
+      ...metadataRecord,
+      requestBodyState:
+        record.requestBody === undefined ? record.requestBodyState : "pending",
+      responseBodyState:
+        record.responseBody === undefined ? record.responseBodyState : "pending",
+    };
+  }
+
+  private storeNetworkRecords(
+    session: SessionState,
+    records: readonly NetworkRecord[],
+  ): void {
+    for (const record of records) {
+      session.networkRecordsByRequestId.set(record.requestId, record);
+    }
   }
 
   private async readStorageEntriesForOrigin(

@@ -310,7 +310,9 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     }
 
     if (input.url) {
-      await controller.page.goto(input.url);
+      await controller.page.goto(input.url, {
+        waitUntil: "domcontentloaded",
+      });
       controller.lastKnownTitle = await this.readTitle(controller.page, controller.lastKnownTitle);
     }
     session.activePageRef = controller.pageRef;
@@ -387,6 +389,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     const startedAt = Date.now();
     try {
       await controller.page.goto(input.url, {
+        waitUntil: "domcontentloaded",
         ...(input.referrer === undefined ? {} : { referer: input.referrer }),
         ...(input.timeoutMs === undefined ? {} : { timeout: input.timeoutMs }),
       });
@@ -420,6 +423,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     const startedAt = Date.now();
     try {
       await controller.page.reload({
+        waitUntil: "domcontentloaded",
         ...(input.timeoutMs === undefined ? {} : { timeout: input.timeoutMs }),
       });
     } catch (error) {
@@ -990,14 +994,6 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   async getNetworkRecords(input: GetNetworkRecordsInput): Promise<readonly NetworkRecord[]> {
     const session = this.requireSession(input.sessionRef);
     input.signal?.throwIfAborted?.();
-    await raceWithAbort(
-      Promise.all(
-        Array.from(session.pageRefs, async (pageRef) =>
-          this.flushBackgroundTasks(this.requirePage(pageRef)),
-        ),
-      ),
-      input.signal,
-    );
 
     const requestIds = input.requestIds === undefined ? undefined : new Set(input.requestIds);
     const records = session.networkRecords.filter((record) => {
@@ -1007,7 +1003,15 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       if (requestIds !== undefined && !requestIds.has(record.requestId)) {
         return false;
       }
-      return matchesNetworkRecordFilters(record, input);
+      return matchesNetworkRecordFilters(
+        {
+          url: record.url,
+          method: record.method,
+          resourceType: record.resourceType,
+          ...(record.status === undefined ? {} : { status: record.status }),
+        },
+        input,
+      );
     });
 
     if (!(input.includeBodies ?? false)) {
@@ -1015,6 +1019,27 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
         clone(record as Omit<NetworkRecord, "requestBody" | "responseBody">),
       );
     }
+
+    await raceWithAbort(
+      Promise.all(
+        records.map(async (record) => {
+          const controller = this.resolvePageForNetworkRecord(record);
+          if (!controller) {
+            if (record.requestBodyState === "pending") {
+              record.requestBodyState = "failed";
+              record.requestBodyError = "request body capture is unavailable because the page is closed";
+            }
+            if (record.responseBodyState === "pending") {
+              record.responseBodyState = "failed";
+              record.responseBodyError = "response body capture is unavailable because the page is closed";
+            }
+            return;
+          }
+          await this.materializeNetworkRecordBodies(record, controller);
+        }),
+      ),
+      input.signal,
+    );
 
     return records.map((record) => clone(record as NetworkRecord));
   }
@@ -1149,20 +1174,36 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     const responseContentType = responseHeaders.find(
       (header) => header.name.toLowerCase() === "content-type",
     )?.value;
-    const responseBody = captureBodyPayload(
-      await response.body(),
-      responseContentType ?? undefined,
-      this.bodyCaptureLimitBytes,
-    );
+    let responseBody: ReturnType<typeof captureBodyPayload> | undefined;
+    const responseBodySkipReason = getResponseBodySkipReasonForMetadata({
+      method: input.request.method.toUpperCase(),
+      status: response.status(),
+      resourceType: "fetch",
+      url: response.url(),
+      captureState: "complete",
+    });
+    try {
+      responseBody =
+        responseBodySkipReason === undefined
+          ? captureBodyPayload(
+              await response.body(),
+              responseContentType ?? undefined,
+              this.bodyCaptureLimitBytes,
+            )
+          : undefined;
+    } catch {
+      responseBody = undefined;
+    }
 
     const requestId = createNetworkRequestId(`transport-${++this.requestCounter}`);
     const record: NetworkRecordState = {
       kind: "http",
       requestId,
       sessionRef: input.sessionRef,
-      ...(pageRef === undefined ? {} : { pageRef }),
-      ...(mainFrame === undefined ? {} : { frameRef: mainFrame.frameRef }),
-      ...(mainFrame === undefined ? {} : { documentRef: mainFrame.currentDocument.documentRef }),
+      cdpRequestId: undefined,
+      pageRef,
+      frameRef: mainFrame?.frameRef,
+      documentRef: mainFrame?.currentDocument.documentRef,
       method: input.request.method.toUpperCase(),
       url: input.request.url,
       requestHeaders: (input.request.headers ?? []).map((header) =>
@@ -1172,9 +1213,22 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       status: response.status(),
       statusText: response.statusText(),
       resourceType: "fetch",
+      redirectFromRequestId: undefined,
+      redirectToRequestId: undefined,
       navigationRequest: false,
-      ...(input.request.body === undefined ? {} : { requestBody: clone(input.request.body) }),
-      ...(responseBody === undefined ? {} : { responseBody }),
+      timing: undefined,
+      transfer: undefined,
+      source: undefined,
+      captureState: "complete",
+      requestBodyState: input.request.body === undefined ? "skipped" : "complete",
+      responseBodyState: responseBody === undefined ? "skipped" : "complete",
+      requestBodySkipReason: input.request.body === undefined ? "not-present" : undefined,
+      responseBodySkipReason:
+        responseBody === undefined ? responseBodySkipReason ?? "not-present-or-unavailable" : undefined,
+      requestBodyError: undefined,
+      responseBodyError: undefined,
+      requestBody: input.request.body === undefined ? undefined : clone(input.request.body),
+      responseBody,
     };
     session.networkRecords.push(record);
 
@@ -1229,7 +1283,10 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       framesByCdpId: new Map(),
       frameBindings: new WeakMap(),
       documentsByRef: new Map(),
-      networkByRequest: new Map(),
+      networkByRequest: new WeakMap(),
+      networkByCdpRequestId: new Map(),
+      requestBodyTasks: new Map(),
+      responseBodyTasks: new Map(),
       backgroundTasks: new Set(),
       domUpdateTask: undefined,
       backgroundError: undefined,
@@ -1247,6 +1304,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     session.activePageRef = pageRef;
 
     await cdp.send("Page.enable", { enableFileChooserOpenedEvent: true });
+    await cdp.send("Network.enable");
     await cdp.send("DOM.enable", { includeWhitespace: "none" });
     await cdp.send("DOMStorage.enable");
     await cdp.send("DOM.getDocument", { depth: 0 });
@@ -1265,6 +1323,21 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     );
     cdp.on("Page.fileChooserOpened", (payload) =>
       this.handleFileChooserOpened(controller, payload.mode),
+    );
+    cdp.on("Network.requestWillBeSent", (payload) =>
+      this.handleNetworkRequestWillBeSent(controller, payload),
+    );
+    cdp.on("Network.responseReceived", (payload) =>
+      this.handleNetworkResponseReceived(controller, payload),
+    );
+    cdp.on("Network.responseReceivedExtraInfo", (payload) =>
+      this.handleNetworkResponseReceivedExtraInfo(controller, payload),
+    );
+    cdp.on("Network.loadingFinished", (payload) =>
+      this.handleNetworkLoadingFinished(controller, payload),
+    );
+    cdp.on("Network.loadingFailed", (payload) =>
+      this.handleNetworkLoadingFailed(controller, payload),
     );
     cdp.on("DOM.documentUpdated", () => this.handleDocumentUpdated(controller));
 
@@ -1290,14 +1363,8 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       void this.handleDownload(controller, download);
     });
     page.on("pageerror", (error) => this.handlePageError(controller, error));
-    page.on("request", (request) => this.handleRequest(controller, request));
-    page.on("response", (response) => this.handleResponse(controller, response));
-    page.on("requestfinished", (request) => {
-      void this.handleRequestFinished(controller, request);
-    });
-    page.on("requestfailed", (request) => {
-      void this.handleRequestFailed(controller, request);
-    });
+    page.on("request", (request) => this.handlePlaywrightRequest(controller, request));
+    page.on("response", (response) => this.handlePlaywrightResponse(controller, response));
     page.on("close", () => this.handleUnexpectedPageClose(controller));
 
     const frameTree = await cdp.send("Page.getFrameTree");
@@ -1675,143 +1742,143 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     this.cleanupPageController(controller);
   }
 
-  private handleRequest(controller: PageController, request: Request): void {
-    const frameContext = this.resolveRequestFrameContext(controller, request);
-    const record: NetworkRecordState = {
-      kind: "http",
-      requestId: createNetworkRequestId(`playwright-${++this.requestCounter}`),
-      sessionRef: controller.sessionRef,
-      ...(frameContext?.pageRef === undefined ? {} : { pageRef: frameContext.pageRef }),
-      ...(frameContext?.frameRef === undefined ? {} : { frameRef: frameContext.frameRef }),
-      ...(frameContext?.documentRef === undefined ? {} : { documentRef: frameContext.documentRef }),
-      method: request.method(),
-      url: request.url(),
-      requestHeaders: [],
-      responseHeaders: [],
-      resourceType: normalizeResourceType(request.resourceType()),
-      navigationRequest: request.isNavigationRequest(),
-    };
-
-    const redirectedFrom = request.redirectedFrom();
-    if (redirectedFrom) {
-      const prior = controller.networkByRequest.get(redirectedFrom);
-      if (prior) {
-        record.redirectFromRequestId = prior.requestId;
-        prior.redirectToRequestId = record.requestId;
-      }
+  private handleNetworkRequestWillBeSent(
+    controller: PageController,
+    payload: {
+      readonly requestId: string;
+      readonly loaderId?: string;
+      readonly type?: string;
+      readonly frameId?: string;
+      readonly request: {
+        readonly url: string;
+        readonly method: string;
+        readonly headers?: Record<string, unknown>;
+        readonly hasPostData?: boolean;
+        readonly postData?: string;
+      };
+      readonly initiator?: {
+        readonly type?: string;
+        readonly url?: string;
+        readonly lineNumber?: number;
+        readonly columnNumber?: number;
+        readonly stack?: {
+          readonly callFrames?: ReadonlyArray<{
+            readonly url?: string;
+            readonly lineNumber?: number;
+            readonly columnNumber?: number;
+            readonly functionName?: string;
+          }>;
+        };
+      };
+      readonly redirectResponse?: {
+        readonly url: string;
+        readonly status: number;
+        readonly statusText: string;
+        readonly headers?: Record<string, unknown>;
+        readonly protocol?: string;
+        readonly remoteIPAddress?: string;
+        readonly remotePort?: number;
+        readonly fromDiskCache?: boolean;
+        readonly fromServiceWorker?: boolean;
+      };
+    },
+  ): void {
+    const prior = controller.networkByCdpRequestId.get(payload.requestId);
+    let redirectFromRequestId: NetworkRecordState["requestId"] | undefined;
+    if (prior && payload.redirectResponse) {
+      this.applyCdpResponseMetadata(prior, payload.redirectResponse);
+      prior.captureState = "complete";
+      prior.responseBodyState = "skipped";
+      prior.responseBodySkipReason = "redirect-response";
+      prior.responseBodyError = undefined;
+      redirectFromRequestId = prior.requestId;
     }
 
-    controller.networkByRequest.set(request, record);
+    const frameContext = this.resolveNetworkFrameContext(controller, payload.frameId);
+    const nextRequestId = createNetworkRequestId(`playwright-${++this.requestCounter}`);
+    const requestHeaders = objectHeadersToEntries(payload.request.headers);
+    const requestContentType = headerEntryValue(requestHeaders, "content-type");
+    const postData = payload.request.postData;
+    const requestBody =
+      typeof postData === "string"
+        ? captureBodyPayload(Buffer.from(postData, "utf8"), requestContentType, this.bodyCaptureLimitBytes)
+        : undefined;
+    const record: NetworkRecordState = {
+      kind: "http",
+      requestId: nextRequestId,
+      sessionRef: controller.sessionRef,
+      cdpRequestId: payload.requestId,
+      pageRef: frameContext.pageRef,
+      frameRef: frameContext.frameRef,
+      documentRef: frameContext.documentRef,
+      method: payload.request.method,
+      url: payload.request.url,
+      requestHeaders,
+      responseHeaders: [],
+      status: undefined,
+      statusText: undefined,
+      resourceType: normalizeResourceType((payload.type ?? "other").toLowerCase()),
+      redirectFromRequestId,
+      redirectToRequestId: undefined,
+      navigationRequest: payload.type === "Document",
+      timing: undefined,
+      transfer: undefined,
+      source: undefined,
+      captureState: "pending",
+      requestBodyState:
+        requestBody !== undefined
+          ? "complete"
+          : payload.request.hasPostData === true
+            ? "pending"
+            : "skipped",
+      responseBodyState: "pending",
+      requestBodySkipReason:
+        requestBody === undefined && payload.request.hasPostData !== true ? "not-present" : undefined,
+      responseBodySkipReason: undefined,
+      requestBodyError: undefined,
+      responseBodyError: undefined,
+      requestBody,
+      responseBody: undefined,
+      ...(payload.initiator === undefined ? {} : { initiator: normalizeNetworkInitiator(payload.initiator) }),
+    };
+
+    if (prior && payload.redirectResponse) {
+      prior.redirectToRequestId = record.requestId;
+    }
+
+    controller.networkByCdpRequestId.set(payload.requestId, record);
     this.requireSession(controller.sessionRef).networkRecords.push(record);
+  }
 
+  private handlePlaywrightRequest(controller: PageController, request: Request): void {
+    if (this.bindPlaywrightRequest(controller, request)) {
+      this.enrichPlaywrightRequest(controller, request);
+      return;
+    }
     const task = (async () => {
-      record.requestHeaders = (await request.headersArray()).map((header) =>
-        createHeaderEntry(header.name, header.value),
-      );
-      const contentType = await request.headerValue("content-type");
-      const requestBody = captureBodyPayload(
-        request.postDataBuffer(),
-        contentType ?? undefined,
-        this.bodyCaptureLimitBytes,
-      );
-      if (requestBody) {
-        record.requestBody = requestBody;
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (this.bindPlaywrightRequest(controller, request)) {
+          this.enrichPlaywrightRequest(controller, request);
+          return;
+        }
       }
     })();
     this.trackBackgroundTask(controller, task);
   }
 
-  private handleResponse(controller: PageController, response: Response): void {
+  private handlePlaywrightResponse(controller: PageController, response: Response): void {
+    const request = response.request();
+    const record = controller.networkByRequest.get(request);
+    if (!record) {
+      return;
+    }
     const task = (async () => {
-      const request = response.request();
-      const record = controller.networkByRequest.get(request);
-      if (!record) {
-        return;
-      }
-      record.status = response.status();
-      record.statusText = response.statusText();
-      record.responseHeaders = (await response.headersArray()).map((header) =>
+      const responseHeaders = (await response.headersArray()).map((header) =>
         createHeaderEntry(header.name, header.value),
       );
-      const serverAddr = await response.serverAddr();
-      record.source = {
-        ...(serverAddr === null
-          ? {}
-          : {
-              remoteAddress: {
-                ip: serverAddr.ipAddress,
-                port: serverAddr.port,
-              },
-            }),
-        fromServiceWorker: response.fromServiceWorker(),
-      };
-    })();
-    this.trackBackgroundTask(controller, task);
-  }
-
-  private async handleRequestFinished(controller: PageController, request: Request): Promise<void> {
-    const task = (async () => {
-      const record = controller.networkByRequest.get(request);
-      if (!record) {
-        return;
-      }
-      const timing = request.timing();
-      const sizes = await request.sizes();
-      record.timing = {
-        requestStartMs: timing.startTime,
-        ...(timing.domainLookupStart >= 0
-          ? { dnsStartMs: timing.startTime + timing.domainLookupStart }
-          : {}),
-        ...(timing.domainLookupEnd >= 0
-          ? { dnsEndMs: timing.startTime + timing.domainLookupEnd }
-          : {}),
-        ...(timing.connectStart >= 0
-          ? { connectStartMs: timing.startTime + timing.connectStart }
-          : {}),
-        ...(timing.connectEnd >= 0 ? { connectEndMs: timing.startTime + timing.connectEnd } : {}),
-        ...(timing.secureConnectionStart >= 0
-          ? { sslStartMs: timing.startTime + timing.secureConnectionStart }
-          : {}),
-        ...(timing.requestStart >= 0
-          ? { requestSentMs: timing.startTime + timing.requestStart }
-          : {}),
-        ...(timing.responseStart >= 0
-          ? { responseStartMs: timing.startTime + timing.responseStart }
-          : {}),
-        ...(timing.responseEnd >= 0
-          ? { responseEndMs: timing.startTime + timing.responseEnd }
-          : {}),
-      };
-      record.transfer = {
-        requestHeadersBytes: sizes.requestHeadersSize,
-        responseHeadersBytes: sizes.responseHeadersSize,
-        encodedBodyBytes: sizes.responseBodySize,
-        transferSizeBytes:
-          sizes.requestHeadersSize + sizes.responseHeadersSize + sizes.responseBodySize,
-        ...(record.responseBody === undefined
-          ? {}
-          : { decodedBodyBytes: record.responseBody.capturedByteLength }),
-      };
-
-      if (record.navigationRequest && record.frameRef) {
-        const frame = this.requireFrame(record.frameRef);
-        record.documentRef = frame.currentDocument.documentRef;
-      }
-
-      const response = await request.response();
-      if (!response) {
-        return;
-      }
-      if (record.status === undefined) {
-        record.status = response.status();
-      }
-      if (record.statusText === undefined) {
-        record.statusText = response.statusText();
-      }
-      if (record.responseHeaders.length === 0) {
-        record.responseHeaders = (await response.headersArray()).map((header) =>
-          createHeaderEntry(header.name, header.value),
-        );
+      if (responseHeaders.length > 0) {
+        record.responseHeaders = responseHeaders;
       }
       if (record.source === undefined) {
         const serverAddr = await response.serverAddr();
@@ -1827,56 +1894,186 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
           fromServiceWorker: response.fromServiceWorker(),
         };
       }
-      const contentType = await response.headerValue("content-type");
-      const responseBody =
-        record.redirectToRequestId !== undefined
-          ? undefined
-          : captureBodyPayload(
-              await response.body(),
-              contentType ?? undefined,
-              this.bodyCaptureLimitBytes,
-            );
-      if (responseBody) {
-        record.responseBody = responseBody;
-        record.transfer = {
-          ...(record.transfer ?? {}),
-          ...(record.transfer?.requestHeadersBytes === undefined
-            ? {}
-            : { requestHeadersBytes: record.transfer.requestHeadersBytes }),
-          ...(record.transfer?.responseHeadersBytes === undefined
-            ? {}
-            : { responseHeadersBytes: record.transfer.responseHeadersBytes }),
-          ...(record.transfer?.encodedBodyBytes === undefined
-            ? {}
-            : { encodedBodyBytes: record.transfer.encodedBodyBytes }),
-          decodedBodyBytes: responseBody.capturedByteLength,
-          ...(record.transfer?.transferSizeBytes === undefined
-            ? {}
-            : { transferSizeBytes: record.transfer.transferSizeBytes }),
-        };
-      }
     })();
-    await this.trackBackgroundTask(controller, task);
+    this.trackBackgroundTask(controller, task);
   }
 
-  private async handleRequestFailed(controller: PageController, request: Request): Promise<void> {
+  private bindPlaywrightRequest(controller: PageController, request: Request): boolean {
+    const session = this.requireSession(controller.sessionRef);
+    const record = [...session.networkRecords]
+      .reverse()
+      .find(
+        (entry) =>
+          entry.pageRef === controller.pageRef &&
+          entry.method === request.method() &&
+          entry.url === request.url() &&
+          entry.captureState === "pending",
+      );
+    if (!record) {
+      return false;
+    }
+    controller.networkByRequest.set(request, record);
+    return true;
+  }
+
+  private enrichPlaywrightRequest(controller: PageController, request: Request): void {
+    const record = controller.networkByRequest.get(request);
+    if (!record) {
+      return;
+    }
     const task = (async () => {
-      const record = controller.networkByRequest.get(request);
-      if (!record) {
-        return;
+      const requestHeaders = (await request.headersArray()).map((header) =>
+        createHeaderEntry(header.name, header.value),
+      );
+      if (requestHeaders.length > 0) {
+        record.requestHeaders = requestHeaders;
       }
-      const timing = request.timing();
-      record.timing = {
-        requestStartMs: timing.startTime,
-        ...(timing.requestStart >= 0
-          ? { requestSentMs: timing.startTime + timing.requestStart }
-          : {}),
-        ...(timing.responseEnd >= 0
-          ? { responseEndMs: timing.startTime + timing.responseEnd }
-          : {}),
-      };
+      if (record.requestBody === undefined) {
+        const contentType = await request.headerValue("content-type");
+        const requestBody = captureBodyPayload(
+          request.postDataBuffer(),
+          contentType ?? undefined,
+          this.bodyCaptureLimitBytes,
+        );
+        if (requestBody !== undefined) {
+          record.requestBody = requestBody;
+          record.requestBodyState = "complete";
+          record.requestBodySkipReason = undefined;
+          record.requestBodyError = undefined;
+        }
+      }
     })();
-    await this.trackBackgroundTask(controller, task);
+    this.trackBackgroundTask(controller, task);
+  }
+
+  private handleNetworkResponseReceived(
+    controller: PageController,
+    payload: {
+      readonly requestId: string;
+      readonly response: {
+        readonly url: string;
+        readonly status: number;
+        readonly statusText: string;
+        readonly headers?: Record<string, unknown>;
+        readonly protocol?: string;
+        readonly remoteIPAddress?: string;
+        readonly remotePort?: number;
+        readonly fromDiskCache?: boolean;
+        readonly fromServiceWorker?: boolean;
+        readonly timing?: {
+          readonly requestTime: number;
+          readonly dnsStart?: number;
+          readonly dnsEnd?: number;
+          readonly connectStart?: number;
+          readonly connectEnd?: number;
+          readonly sslStart?: number;
+          readonly sslEnd?: number;
+          readonly sendStart?: number;
+          readonly receiveHeadersStart?: number;
+          readonly receiveHeadersEnd?: number;
+          readonly workerStart?: number;
+          readonly workerReady?: number;
+        };
+      };
+    },
+  ): void {
+    const record = controller.networkByCdpRequestId.get(payload.requestId);
+    if (!record) {
+      return;
+    }
+    this.applyCdpResponseMetadata(record, payload.response);
+    record.url = payload.response.url;
+    record.timing = normalizeNetworkTiming(payload.response.timing);
+    const skipReason = getResponseBodySkipReason(record);
+    if (skipReason !== undefined) {
+      record.responseBodyState = "skipped";
+      record.responseBodySkipReason = skipReason;
+      record.responseBodyError = undefined;
+    }
+  }
+
+  private handleNetworkResponseReceivedExtraInfo(
+    controller: PageController,
+    payload: {
+      readonly requestId: string;
+      readonly headers?: Record<string, unknown>;
+      readonly headersText?: string;
+    },
+  ): void {
+    const record = controller.networkByCdpRequestId.get(payload.requestId);
+    if (!record) {
+      return;
+    }
+    const parsedFromText = parseRawHeadersText(payload.headersText);
+    if (parsedFromText.length > 0) {
+      if (
+        record.responseHeaders.length === 0 ||
+        !record.responseHeaders.some((header) => header.name.toLowerCase() === "set-cookie")
+      ) {
+        record.responseHeaders = parsedFromText;
+      }
+      return;
+    }
+    const parsedFromObject = objectHeadersToEntries(payload.headers);
+    if (parsedFromObject.length > 0) {
+      if (
+        record.responseHeaders.length === 0 ||
+        !record.responseHeaders.some((header) => header.name.toLowerCase() === "set-cookie")
+      ) {
+        record.responseHeaders = parsedFromObject;
+      }
+    }
+  }
+
+  private handleNetworkLoadingFinished(
+    controller: PageController,
+    payload: {
+      readonly requestId: string;
+      readonly encodedDataLength?: number;
+    },
+  ): void {
+    const record = controller.networkByCdpRequestId.get(payload.requestId);
+    if (!record) {
+      return;
+    }
+    record.captureState = "complete";
+    if (record.navigationRequest && record.frameRef) {
+      const frame = this.requireFrame(record.frameRef);
+      record.documentRef = frame.currentDocument.documentRef;
+    }
+    record.transfer = {
+      ...(record.transfer ?? {}),
+      ...(payload.encodedDataLength === undefined ? {} : { encodedBodyBytes: payload.encodedDataLength }),
+      ...(payload.encodedDataLength === undefined ? {} : { transferSizeBytes: payload.encodedDataLength }),
+      ...(record.responseBody === undefined
+        ? {}
+        : { decodedBodyBytes: record.responseBody.capturedByteLength }),
+    };
+    if (
+      record.responseBodyState === "pending" &&
+      getResponseBodySkipReason(record) !== undefined
+    ) {
+      record.responseBodyState = "skipped";
+      record.responseBodySkipReason = getResponseBodySkipReason(record);
+    }
+  }
+
+  private handleNetworkLoadingFailed(
+    controller: PageController,
+    payload: {
+      readonly requestId: string;
+      readonly errorText?: string;
+    },
+  ): void {
+    const record = controller.networkByCdpRequestId.get(payload.requestId);
+    if (!record) {
+      return;
+    }
+    record.captureState = "failed";
+    if (record.responseBodyState === "pending") {
+      record.responseBodyState = "failed";
+      record.responseBodyError = payload.errorText ?? "request failed before response body capture";
+    }
   }
 
   private async collectSessionStorageSnapshots(
@@ -2067,37 +2264,238 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     };
   }
 
-  private resolveRequestFrameContext(
+  private resolveNetworkFrameContext(
     controller: PageController,
-    request: Request,
-  ):
-    | {
-        readonly pageRef: PageRef;
-        readonly frameRef?: FrameRef;
-        readonly documentRef?: DocumentRef;
-      }
-    | undefined {
-    const worker = request.serviceWorker();
-    if (worker) {
-      return {
-        pageRef: controller.pageRef,
-      };
-    }
-    try {
-      const frame = request.frame();
-      const frameRef = controller.frameBindings.get(frame);
-      if (!frameRef) {
-        return { pageRef: controller.pageRef };
-      }
-      const frameState = this.requireFrame(frameRef);
-      return {
-        pageRef: controller.pageRef,
-        frameRef,
-        documentRef: frameState.currentDocument.documentRef,
-      };
-    } catch {
+    cdpFrameId: string | undefined,
+  ): {
+    readonly pageRef: PageRef;
+    readonly frameRef?: FrameRef;
+    readonly documentRef?: DocumentRef;
+  } {
+    if (cdpFrameId === undefined) {
       return { pageRef: controller.pageRef };
     }
+    const frame = controller.framesByCdpId.get(cdpFrameId);
+    if (!frame) {
+      return { pageRef: controller.pageRef };
+    }
+    return {
+      pageRef: controller.pageRef,
+      frameRef: frame.frameRef,
+      documentRef: frame.currentDocument.documentRef,
+    };
+  }
+
+  private resolvePageForNetworkRecord(record: NetworkRecordState): PageController | undefined {
+    if (record.pageRef !== undefined) {
+      const page = this.pages.get(record.pageRef);
+      if (page && page.lifecycleState !== "closed") {
+        return page;
+      }
+    }
+    const session = this.sessions.get(record.sessionRef);
+    if (!session) {
+      return undefined;
+    }
+    for (const pageRef of session.pageRefs) {
+      const page = this.pages.get(pageRef);
+      if (page && page.lifecycleState !== "closed") {
+        return page;
+      }
+    }
+    return undefined;
+  }
+
+  private async materializeNetworkRecordBodies(
+    record: NetworkRecordState,
+    controller: PageController,
+  ): Promise<void> {
+    await Promise.all([
+      this.materializeRequestBody(record, controller),
+      this.materializeResponseBody(record, controller),
+    ]);
+  }
+
+  private async materializeRequestBody(
+    record: NetworkRecordState,
+    controller: PageController,
+  ): Promise<void> {
+    if (record.requestBodyState !== "pending") {
+      return;
+    }
+    const existing = controller.requestBodyTasks.get(record.requestId);
+    if (existing) {
+      await existing;
+      return;
+    }
+    const task = (async () => {
+      if (record.cdpRequestId === undefined) {
+        record.requestBodyState = "failed";
+        record.requestBodyError = "request body capture is unavailable without a CDP request id";
+        return;
+      }
+      try {
+        const result = await controller.cdp.send("Network.getRequestPostData", {
+          requestId: record.cdpRequestId,
+        });
+        const contentType = headerEntryValue(record.requestHeaders, "content-type");
+        record.requestBody =
+          typeof result.postData === "string"
+            ? captureBodyPayload(
+                Buffer.from(result.postData, "utf8"),
+                contentType ?? undefined,
+                this.bodyCaptureLimitBytes,
+              )
+            : undefined;
+        if (record.requestBody === undefined) {
+          record.requestBodyState = "skipped";
+          record.requestBodySkipReason = "not-present";
+          return;
+        }
+        record.requestBodyState = "complete";
+        record.requestBodySkipReason = undefined;
+        record.requestBodyError = undefined;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/No post data|No resource with given identifier|No data found/i.test(message)) {
+          record.requestBodyState = "skipped";
+          record.requestBodySkipReason = "not-present";
+          record.requestBodyError = undefined;
+          return;
+        }
+        record.requestBodyState = "failed";
+        record.requestBodyError = message;
+      }
+    })();
+    controller.requestBodyTasks.set(record.requestId, task);
+    try {
+      await task;
+    } finally {
+      controller.requestBodyTasks.delete(record.requestId);
+    }
+  }
+
+  private async materializeResponseBody(
+    record: NetworkRecordState,
+    controller: PageController,
+  ): Promise<void> {
+    if (record.responseBodyState !== "pending") {
+      return;
+    }
+    const skipReason = getResponseBodySkipReason(record);
+    if (skipReason !== undefined) {
+      record.responseBodyState = "skipped";
+      record.responseBodySkipReason = skipReason;
+      record.responseBodyError = undefined;
+      return;
+    }
+    const existing = controller.responseBodyTasks.get(record.requestId);
+    if (existing) {
+      await existing;
+      return;
+    }
+    const task = (async () => {
+      if (record.cdpRequestId === undefined) {
+        record.responseBodyState = "failed";
+        record.responseBodyError = "response body capture is unavailable without a CDP request id";
+        return;
+      }
+      try {
+        const result = await controller.cdp.send("Network.getResponseBody", {
+          requestId: record.cdpRequestId,
+        });
+        const contentType = headerEntryValue(record.responseHeaders, "content-type");
+        const bytes = result.base64Encoded
+          ? Buffer.from(result.body, "base64")
+          : Buffer.from(result.body, "utf8");
+        const responseBody = captureBodyPayload(
+          bytes,
+          contentType ?? undefined,
+          this.bodyCaptureLimitBytes,
+        );
+        if (responseBody === undefined) {
+          record.responseBodyState = "skipped";
+          record.responseBodySkipReason = "not-present";
+          return;
+        }
+        record.responseBody = responseBody;
+        record.responseBodyState = "complete";
+        record.responseBodySkipReason = undefined;
+        record.responseBodyError = undefined;
+        record.transfer = {
+          ...(record.transfer ?? {}),
+          decodedBodyBytes: responseBody.capturedByteLength,
+          ...(record.transfer?.encodedBodyBytes === undefined
+            ? {}
+            : { encodedBodyBytes: record.transfer.encodedBodyBytes }),
+          ...(record.transfer?.requestHeadersBytes === undefined
+            ? {}
+            : { requestHeadersBytes: record.transfer.requestHeadersBytes }),
+          ...(record.transfer?.responseHeadersBytes === undefined
+            ? {}
+            : { responseHeadersBytes: record.transfer.responseHeadersBytes }),
+          ...(record.transfer?.transferSizeBytes === undefined
+            ? {}
+            : { transferSizeBytes: record.transfer.transferSizeBytes }),
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/No resource with given identifier|No data found|Could not load body/i.test(message)) {
+          record.responseBodyState = "failed";
+          record.responseBodyError = message;
+          return;
+        }
+        record.responseBodyState = "failed";
+        record.responseBodyError = message;
+      }
+    })();
+    controller.responseBodyTasks.set(record.requestId, task);
+    try {
+      await task;
+    } finally {
+      controller.responseBodyTasks.delete(record.requestId);
+    }
+  }
+
+  private applyCdpResponseMetadata(
+    record: NetworkRecordState,
+    response: {
+      readonly url: string;
+      readonly status: number;
+      readonly statusText: string;
+      readonly headers?: Record<string, unknown>;
+      readonly protocol?: string;
+      readonly remoteIPAddress?: string;
+      readonly remotePort?: number;
+      readonly fromDiskCache?: boolean;
+      readonly fromServiceWorker?: boolean;
+    },
+  ): void {
+    record.url = response.url;
+    record.status = response.status;
+    record.statusText = response.statusText;
+    const responseHeaders = objectHeadersToEntries(response.headers);
+    if (
+      record.responseHeaders.length === 0 ||
+      !record.responseHeaders.some((header) => header.name.toLowerCase() === "set-cookie")
+    ) {
+      record.responseHeaders = responseHeaders;
+    }
+    record.source = {
+      ...(response.protocol === undefined ? {} : { protocol: response.protocol }),
+      ...((response.remoteIPAddress === undefined && response.remotePort === undefined)
+        ? {}
+        : {
+            remoteAddress: {
+              ...(response.remoteIPAddress === undefined ? {} : { ip: response.remoteIPAddress }),
+              ...(response.remotePort === undefined ? {} : { port: response.remotePort }),
+            },
+          }),
+      ...(response.fromDiskCache === undefined ? {} : { fromDiskCache: response.fromDiskCache }),
+      ...(response.fromServiceWorker === undefined
+        ? {}
+        : { fromServiceWorker: response.fromServiceWorker }),
+    };
   }
 
   private requireMainFrame(controller: PageController): FrameState {
@@ -2162,6 +2560,9 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     }
     controller.framesByCdpId.clear();
     controller.documentsByRef.clear();
+    controller.networkByCdpRequestId.clear();
+    controller.requestBodyTasks.clear();
+    controller.responseBodyTasks.clear();
   }
 
   private trackBackgroundTask(controller: PageController, promise: Promise<void>): Promise<void> {
@@ -2320,6 +2721,210 @@ export async function createPlaywrightBrowserCoreEngine(
   options: PlaywrightBrowserCoreEngineOptions = {},
 ): Promise<PlaywrightBrowserCoreEngine> {
   return PlaywrightBrowserCoreEngine.create(options);
+}
+
+function objectHeadersToEntries(
+  headers: Record<string, unknown> | undefined,
+): ReturnType<typeof createHeaderEntry>[] {
+  if (!headers) {
+    return [];
+  }
+  return Object.entries(headers).flatMap(([name, value]) => {
+    if (typeof value === "string" && name.toLowerCase() === "set-cookie" && value.includes("\n")) {
+      return value
+        .split("\n")
+        .filter((entry) => entry.length > 0)
+        .map((entry) => createHeaderEntry(name, entry));
+    }
+    return [createHeaderEntry(name, stringifyHeaderValue(value))];
+  });
+}
+
+function stringifyHeaderValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.map((entry) => stringifyHeaderValue(entry)).join(", ");
+  }
+  return typeof value === "string" ? value : String(value ?? "");
+}
+
+function headerEntryValue(
+  headers: readonly { readonly name: string; readonly value: string }[],
+  name: string,
+): string | undefined {
+  const normalized = name.toLowerCase();
+  for (const header of headers) {
+    if (header.name.toLowerCase() === normalized) {
+      return header.value;
+    }
+  }
+  return undefined;
+}
+
+function parseRawHeadersText(value: string | undefined): ReturnType<typeof createHeaderEntry>[] {
+  if (value === undefined || value.length === 0) {
+    return [];
+  }
+  return value
+    .split(/\r?\n/)
+    .slice(1)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .flatMap((line) => {
+      const index = line.indexOf(":");
+      if (index <= 0) {
+        return [];
+      }
+      const name = line.slice(0, index).trim();
+      const headerValue = line.slice(index + 1).trim();
+      return [createHeaderEntry(name, headerValue)];
+    });
+}
+
+function normalizeNetworkInitiator(
+  initiator: {
+    readonly type?: string;
+    readonly url?: string;
+    readonly lineNumber?: number;
+    readonly columnNumber?: number;
+    readonly stack?: {
+      readonly callFrames?: ReadonlyArray<{
+        readonly url?: string;
+        readonly lineNumber?: number;
+        readonly columnNumber?: number;
+        readonly functionName?: string;
+      }>;
+    };
+  },
+): NonNullable<NetworkRecord["initiator"]> {
+  const type =
+    initiator.type === "parser" ||
+    initiator.type === "script" ||
+    initiator.type === "preload" ||
+    initiator.type === "redirect" ||
+    initiator.type === "user" ||
+    initiator.type === "service-worker"
+      ? initiator.type
+      : "other";
+  const stackTrace =
+    initiator.stack?.callFrames?.map((frame) =>
+      [frame.functionName, frame.url, frame.lineNumber, frame.columnNumber]
+        .filter((value) => value !== undefined && value !== "")
+        .join(" "),
+    ) ?? [];
+  return {
+    type,
+    ...(initiator.url === undefined ? {} : { url: initiator.url }),
+    ...(initiator.lineNumber === undefined ? {} : { lineNumber: initiator.lineNumber }),
+    ...(initiator.columnNumber === undefined ? {} : { columnNumber: initiator.columnNumber }),
+    ...(stackTrace.length === 0 ? {} : { stackTrace }),
+  };
+}
+
+function normalizeNetworkTiming(
+  timing:
+    | {
+        readonly requestTime: number;
+        readonly dnsStart?: number;
+        readonly dnsEnd?: number;
+        readonly connectStart?: number;
+        readonly connectEnd?: number;
+        readonly sslStart?: number;
+        readonly sslEnd?: number;
+        readonly sendStart?: number;
+        readonly receiveHeadersStart?: number;
+        readonly receiveHeadersEnd?: number;
+        readonly workerStart?: number;
+        readonly workerReady?: number;
+      }
+    | undefined,
+): NetworkRecord["timing"] | undefined {
+  if (timing === undefined) {
+    return undefined;
+  }
+  const start = timing.requestTime * 1000;
+  const at = (value: number | undefined) =>
+    value === undefined || value < 0 ? undefined : start + value;
+  const normalized: {
+    requestStartMs: number;
+    dnsStartMs?: number;
+    dnsEndMs?: number;
+    connectStartMs?: number;
+    connectEndMs?: number;
+    sslStartMs?: number;
+    sslEndMs?: number;
+    requestSentMs?: number;
+    responseStartMs?: number;
+    responseEndMs?: number;
+    workerStartMs?: number;
+    workerReadyMs?: number;
+  } = {
+    requestStartMs: start,
+  };
+  const dnsStartMs = at(timing.dnsStart);
+  const dnsEndMs = at(timing.dnsEnd);
+  const connectStartMs = at(timing.connectStart);
+  const connectEndMs = at(timing.connectEnd);
+  const sslStartMs = at(timing.sslStart);
+  const sslEndMs = at(timing.sslEnd);
+  const requestSentMs = at(timing.sendStart);
+  const responseStartMs = at(timing.receiveHeadersStart);
+  const responseEndMs = at(timing.receiveHeadersEnd);
+  const workerStartMs = at(timing.workerStart);
+  const workerReadyMs = at(timing.workerReady);
+  if (dnsStartMs !== undefined) normalized.dnsStartMs = dnsStartMs;
+  if (dnsEndMs !== undefined) normalized.dnsEndMs = dnsEndMs;
+  if (connectStartMs !== undefined) normalized.connectStartMs = connectStartMs;
+  if (connectEndMs !== undefined) normalized.connectEndMs = connectEndMs;
+  if (sslStartMs !== undefined) normalized.sslStartMs = sslStartMs;
+  if (sslEndMs !== undefined) normalized.sslEndMs = sslEndMs;
+  if (requestSentMs !== undefined) normalized.requestSentMs = requestSentMs;
+  if (responseStartMs !== undefined) normalized.responseStartMs = responseStartMs;
+  if (responseEndMs !== undefined) normalized.responseEndMs = responseEndMs;
+  if (workerStartMs !== undefined) normalized.workerStartMs = workerStartMs;
+  if (workerReadyMs !== undefined) normalized.workerReadyMs = workerReadyMs;
+  return normalized;
+}
+
+function getResponseBodySkipReason(record: NetworkRecordState): string | undefined {
+  return getResponseBodySkipReasonForMetadata({
+    method: record.method,
+    status: record.status,
+    resourceType: record.resourceType,
+    url: record.url,
+    captureState: record.captureState,
+  });
+}
+
+function getResponseBodySkipReasonForMetadata(input: {
+  readonly method: string;
+  readonly status: number | undefined;
+  readonly resourceType: NetworkRecordState["resourceType"];
+  readonly url: string;
+  readonly captureState: NetworkRecordState["captureState"];
+}): string | undefined {
+  if (input.captureState === "failed") {
+    return "request-failed";
+  }
+  if (input.method.toUpperCase() === "HEAD") {
+    return "head-request";
+  }
+  if (input.status !== undefined && [204, 205, 304].includes(input.status)) {
+    return "status-without-body";
+  }
+  if (input.status !== undefined && input.status >= 300 && input.status < 400) {
+    return "redirect-response";
+  }
+  if (
+    input.resourceType === "preflight" ||
+    input.resourceType === "websocket" ||
+    input.resourceType === "event-stream"
+  ) {
+    return "unsupported-resource-type";
+  }
+  if (/^(blob|data):/i.test(input.url)) {
+    return "unsupported-url-scheme";
+  }
+  return undefined;
 }
 
 function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
