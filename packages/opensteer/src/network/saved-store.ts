@@ -59,6 +59,13 @@ type SavedNetworkRow = {
   readonly timing_json: string | null;
   readonly transfer_json: string | null;
   readonly source_json: string | null;
+  readonly capture_state: string;
+  readonly request_body_state: string;
+  readonly response_body_state: string;
+  readonly request_body_skip_reason: string | null;
+  readonly response_body_skip_reason: string | null;
+  readonly request_body_error: string | null;
+  readonly response_body_error: string | null;
   readonly redirect_from_request_id: string | null;
   readonly redirect_to_request_id: string | null;
   readonly saved_at: number;
@@ -110,6 +117,13 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
         timing_json TEXT,
         transfer_json TEXT,
         source_json TEXT,
+        capture_state TEXT NOT NULL,
+        request_body_state TEXT NOT NULL,
+        response_body_state TEXT NOT NULL,
+        request_body_skip_reason TEXT,
+        response_body_skip_reason TEXT,
+        request_body_error TEXT,
+        response_body_error TEXT,
         redirect_from_request_id TEXT,
         redirect_to_request_id TEXT,
         saved_at INTEGER NOT NULL
@@ -130,6 +144,38 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
       CREATE INDEX IF NOT EXISTS saved_network_tags_tag
         ON saved_network_tags (tag);
     `);
+    this.ensureColumn(
+      database,
+      "saved_network_records",
+      "capture_state",
+      "TEXT NOT NULL DEFAULT 'complete'",
+    );
+    this.ensureColumn(
+      database,
+      "saved_network_records",
+      "request_body_state",
+      "TEXT NOT NULL DEFAULT 'skipped'",
+    );
+    this.ensureColumn(
+      database,
+      "saved_network_records",
+      "response_body_state",
+      "TEXT NOT NULL DEFAULT 'skipped'",
+    );
+    this.ensureColumn(
+      database,
+      "saved_network_records",
+      "request_body_skip_reason",
+      "TEXT",
+    );
+    this.ensureColumn(
+      database,
+      "saved_network_records",
+      "response_body_skip_reason",
+      "TEXT",
+    );
+    this.ensureColumn(database, "saved_network_records", "request_body_error", "TEXT");
+    this.ensureColumn(database, "saved_network_records", "response_body_error", "TEXT");
     this.database = database;
   }
 
@@ -172,6 +218,13 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
         timing_json,
         transfer_json,
         source_json,
+        capture_state,
+        request_body_state,
+        response_body_state,
+        request_body_skip_reason,
+        response_body_skip_reason,
+        request_body_error,
+        response_body_error,
         redirect_from_request_id,
         redirect_to_request_id,
         saved_at
@@ -204,6 +257,13 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
         @timing_json,
         @transfer_json,
         @source_json,
+        @capture_state,
+        @request_body_state,
+        @response_body_state,
+        @request_body_skip_reason,
+        @response_body_skip_reason,
+        @request_body_error,
+        @response_body_error,
         @redirect_from_request_id,
         @redirect_to_request_id,
         @saved_at
@@ -234,6 +294,13 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
         timing_json = excluded.timing_json,
         transfer_json = excluded.transfer_json,
         source_json = excluded.source_json,
+        capture_state = excluded.capture_state,
+        request_body_state = excluded.request_body_state,
+        response_body_state = excluded.response_body_state,
+        request_body_skip_reason = excluded.request_body_skip_reason,
+        response_body_skip_reason = excluded.response_body_skip_reason,
+        request_body_error = excluded.request_body_error,
+        response_body_error = excluded.response_body_error,
         redirect_from_request_id = excluded.redirect_from_request_id,
         redirect_to_request_id = excluded.redirect_to_request_id,
         saved_at = excluded.saved_at
@@ -290,6 +357,15 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
           timing_json: stringifyOptional(entry.record.timing),
           transfer_json: stringifyOptional(entry.record.transfer),
           source_json: stringifyOptional(entry.record.source),
+          capture_state: entry.record.captureState ?? "complete",
+          request_body_state:
+            entry.record.requestBodyState ?? (entry.record.requestBody === undefined ? "skipped" : "complete"),
+          response_body_state:
+            entry.record.responseBodyState ?? (entry.record.responseBody === undefined ? "skipped" : "complete"),
+          request_body_skip_reason: entry.record.requestBodySkipReason ?? null,
+          response_body_skip_reason: entry.record.responseBodySkipReason ?? null,
+          request_body_error: entry.record.requestBodyError ?? null,
+          response_body_error: entry.record.responseBodyError ?? null,
           redirect_from_request_id: entry.record.redirectFromRequestId ?? null,
           redirect_to_request_id: entry.record.redirectToRequestId ?? null,
           saved_at: savedAt,
@@ -389,6 +465,21 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
     }
     return this.database;
   }
+
+  private ensureColumn(
+    database: NodeSqliteDatabaseSync,
+    table: string,
+    column: string,
+    definition: string,
+  ): void {
+    const rows = database.prepare(`PRAGMA table_info(${table})`).all() as ReadonlyArray<{
+      readonly name?: string;
+    }>;
+    if (rows.some((row) => row.name === column)) {
+      return;
+    }
+    database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
 }
 
 function buildSavedNetworkWhere(input: SavedNetworkQueryInput): {
@@ -475,6 +566,9 @@ function inflateSavedNetworkRow(
     responseHeaders: JSON.parse(row.response_headers_json),
     resourceType: row.resource_type as NetworkResourceType,
     navigationRequest: row.navigation_request === 1,
+    captureState: row.capture_state as NetworkQueryRecord["record"]["captureState"],
+    requestBodyState: row.request_body_state as NetworkQueryRecord["record"]["requestBodyState"],
+    responseBodyState: row.response_body_state as NetworkQueryRecord["record"]["responseBodyState"],
   } as Mutable<NetworkQueryRecord["record"]>;
   if (row.page_ref !== null) {
     record.pageRef = row.page_ref as NonNullable<NetworkQueryRecord["record"]["pageRef"]>;
@@ -510,6 +604,18 @@ function inflateSavedNetworkRow(
   }
   if (row.source_json !== null) {
     record.source = JSON.parse(row.source_json);
+  }
+  if (row.request_body_skip_reason !== null) {
+    record.requestBodySkipReason = row.request_body_skip_reason;
+  }
+  if (row.response_body_skip_reason !== null) {
+    record.responseBodySkipReason = row.response_body_skip_reason;
+  }
+  if (row.request_body_error !== null) {
+    record.requestBodyError = row.request_body_error;
+  }
+  if (row.response_body_error !== null) {
+    record.responseBodyError = row.response_body_error;
   }
   if (requestBody !== undefined) {
     record.requestBody = requestBody;

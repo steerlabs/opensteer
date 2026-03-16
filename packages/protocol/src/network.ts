@@ -1,6 +1,7 @@
 export type {
   HeaderEntry,
   BodyPayloadEncoding,
+  NetworkCaptureState,
   NetworkRecordKind,
   NetworkResourceType,
   NetworkInitiatorType,
@@ -17,6 +18,7 @@ import type {
   DocumentRef,
   FrameRef,
   HeaderEntry,
+  NetworkCaptureState,
   NetworkInitiator,
   NetworkRecordKind,
   NetworkRequestId,
@@ -78,6 +80,13 @@ export interface NetworkRecord {
   readonly timing?: NetworkTiming;
   readonly transfer?: NetworkTransferSizes;
   readonly source?: NetworkSourceMetadata;
+  readonly captureState: NetworkCaptureState;
+  readonly requestBodyState: NetworkCaptureState;
+  readonly responseBodyState: NetworkCaptureState;
+  readonly requestBodySkipReason?: string;
+  readonly responseBodySkipReason?: string;
+  readonly requestBodyError?: string;
+  readonly responseBodyError?: string;
   readonly requestBody?: BodyPayload;
   readonly responseBody?: BodyPayload;
 }
@@ -180,6 +189,13 @@ export const networkRecordKindSchema: JsonSchema = enumSchema(
   ["http", "websocket", "event-stream"] as const,
   {
     title: "NetworkRecordKind",
+  },
+);
+
+export const networkCaptureStateSchema: JsonSchema = enumSchema(
+  ["pending", "complete", "failed", "skipped"] as const,
+  {
+    title: "NetworkCaptureState",
   },
 );
 
@@ -314,6 +330,13 @@ export const networkRecordSchema: JsonSchema = objectSchema(
     timing: networkTimingSchema,
     transfer: networkTransferSizesSchema,
     source: networkSourceMetadataSchema,
+    captureState: networkCaptureStateSchema,
+    requestBodyState: networkCaptureStateSchema,
+    responseBodyState: networkCaptureStateSchema,
+    requestBodySkipReason: stringSchema(),
+    responseBodySkipReason: stringSchema(),
+    requestBodyError: stringSchema(),
+    responseBodyError: stringSchema(),
     requestBody: bodyPayloadSchema,
     responseBody: bodyPayloadSchema,
   },
@@ -329,6 +352,9 @@ export const networkRecordSchema: JsonSchema = objectSchema(
       "responseHeaders",
       "resourceType",
       "navigationRequest",
+      "captureState",
+      "requestBodyState",
+      "responseBodyState",
     ],
   },
 );

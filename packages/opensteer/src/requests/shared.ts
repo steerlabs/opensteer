@@ -154,6 +154,21 @@ export function toProtocolNetworkRecord(
     ...(record.timing === undefined ? {} : { timing: record.timing }),
     ...(record.transfer === undefined ? {} : { transfer: record.transfer }),
     ...(record.source === undefined ? {} : { source: record.source }),
+    captureState: record.captureState,
+    requestBodyState: record.requestBodyState,
+    responseBodyState: record.responseBodyState,
+    ...(record.requestBodySkipReason === undefined
+      ? {}
+      : { requestBodySkipReason: record.requestBodySkipReason }),
+    ...(record.responseBodySkipReason === undefined
+      ? {}
+      : { responseBodySkipReason: record.responseBodySkipReason }),
+    ...(record.requestBodyError === undefined
+      ? {}
+      : { requestBodyError: record.requestBodyError }),
+    ...(record.responseBodyError === undefined
+      ? {}
+      : { responseBodyError: record.responseBodyError }),
     ...(requestBody === undefined ? {} : { requestBody }),
     ...(responseBody === undefined ? {} : { responseBody }),
   };

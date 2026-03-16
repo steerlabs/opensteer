@@ -24,6 +24,8 @@ export interface BodyPayload {
   readonly originalByteLength?: number;
 }
 
+export type NetworkCaptureState = "pending" | "complete" | "failed" | "skipped";
+
 export type NetworkRecordKind = "http" | "websocket" | "event-stream";
 
 export type NetworkResourceType =
@@ -118,6 +120,13 @@ export interface NetworkRecord {
   readonly timing?: NetworkTiming;
   readonly transfer?: NetworkTransferSizes;
   readonly source?: NetworkSourceMetadata;
+  readonly captureState: NetworkCaptureState;
+  readonly requestBodyState: NetworkCaptureState;
+  readonly responseBodyState: NetworkCaptureState;
+  readonly requestBodySkipReason?: string;
+  readonly responseBodySkipReason?: string;
+  readonly requestBodyError?: string;
+  readonly responseBodyError?: string;
   readonly requestBody?: BodyPayload;
   readonly responseBody?: BodyPayload;
 }

@@ -872,6 +872,11 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
       statusText: response.statusText,
       resourceType: "fetch",
       navigationRequest: false,
+      captureState: "complete",
+      requestBodyState: input.request.body === undefined ? "skipped" : "complete",
+      responseBodyState: response.body === undefined ? "skipped" : "complete",
+      ...(input.request.body === undefined ? { requestBodySkipReason: "not-present" } : {}),
+      ...(response.body === undefined ? { responseBodySkipReason: "not-present" } : {}),
       ...(input.request.body === undefined ? {} : { requestBody: input.request.body }),
       ...(response.body === undefined ? {} : { responseBody: response.body }),
     };
@@ -1131,6 +1136,10 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
         statusText: "OK",
         resourceType: "document",
         navigationRequest: true,
+        captureState: "complete",
+        requestBodyState: requestBody === undefined ? "skipped" : "complete",
+        responseBodyState: "complete",
+        ...(requestBody === undefined ? { requestBodySkipReason: "not-present" } : {}),
         timing: {
           requestStartMs: this.timestampMs,
           responseStartMs: this.timestampMs + 5,

@@ -4,6 +4,7 @@ import type {
   DocumentRef,
   FrameRef,
   HeaderEntry,
+  NetworkCaptureState,
   NetworkRequestId,
   NetworkResourceType,
   NetworkSourceMetadata,
@@ -42,7 +43,10 @@ export interface PageController {
   readonly framesByCdpId: Map<string, FrameState>;
   readonly frameBindings: WeakMap<Frame, FrameRef>;
   readonly documentsByRef: Map<DocumentRef, DocumentState>;
-  readonly networkByRequest: Map<Request, NetworkRecordState>;
+  readonly networkByRequest: WeakMap<Request, NetworkRecordState>;
+  readonly networkByCdpRequestId: Map<string, NetworkRecordState>;
+  readonly requestBodyTasks: Map<NetworkRequestId, Promise<void>>;
+  readonly responseBodyTasks: Map<NetworkRequestId, Promise<void>>;
   readonly backgroundTasks: Set<Promise<void>>;
   domUpdateTask: Promise<void> | undefined;
   backgroundError: Error | undefined;
@@ -94,24 +98,32 @@ export interface NetworkRecordState {
   readonly kind: "http";
   readonly requestId: NetworkRequestId;
   readonly sessionRef: SessionRef;
-  pageRef?: PageRef;
-  frameRef?: FrameRef;
-  documentRef?: DocumentRef;
+  cdpRequestId: string | undefined;
+  pageRef: PageRef | undefined;
+  frameRef: FrameRef | undefined;
+  documentRef: DocumentRef | undefined;
   method: string;
   url: string;
   requestHeaders: HeaderEntry[];
   responseHeaders: HeaderEntry[];
-  status?: number;
-  statusText?: string;
+  status: number | undefined;
+  statusText: string | undefined;
   resourceType: NetworkResourceType;
-  redirectFromRequestId?: NetworkRequestId;
-  redirectToRequestId?: NetworkRequestId;
+  redirectFromRequestId: NetworkRequestId | undefined;
+  redirectToRequestId: NetworkRequestId | undefined;
   navigationRequest: boolean;
-  timing?: NetworkTiming;
-  transfer?: NetworkTransferSizes;
-  source?: NetworkSourceMetadata;
-  requestBody?: BodyPayload;
-  responseBody?: BodyPayload;
+  timing: NetworkTiming | undefined;
+  transfer: NetworkTransferSizes | undefined;
+  source: NetworkSourceMetadata | undefined;
+  captureState: NetworkCaptureState;
+  requestBodyState: NetworkCaptureState;
+  responseBodyState: NetworkCaptureState;
+  requestBodySkipReason: string | undefined;
+  responseBodySkipReason: string | undefined;
+  requestBodyError: string | undefined;
+  responseBodyError: string | undefined;
+  requestBody: BodyPayload | undefined;
+  responseBody: BodyPayload | undefined;
 }
 
 export interface CapturedDomSnapshot {
