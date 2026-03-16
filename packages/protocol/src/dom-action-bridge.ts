@@ -26,15 +26,17 @@ export interface DomActionScrollOptions {
 }
 
 export interface DomActionSettleOptions {
+  readonly operation: "dom.click" | "dom.hover" | "dom.input" | "dom.scroll";
   readonly signal: AbortSignal;
   remainingMs(): number | undefined;
+  policySettle(pageRef: PageRef): Promise<void>;
 }
 
 export interface DomActionBridge {
   inspectActionTarget(locator: NodeLocator): Promise<DomActionTargetInspection>;
   scrollNodeIntoView(locator: NodeLocator, options?: DomActionScrollOptions): Promise<void>;
   focusNode(locator: NodeLocator): Promise<void>;
-  settleAfterDomAction(pageRef: PageRef, options: DomActionSettleOptions): Promise<void>;
+  finalizeDomAction(pageRef: PageRef, options: DomActionSettleOptions): Promise<void>;
 }
 
 export interface DomActionBridgeProvider {

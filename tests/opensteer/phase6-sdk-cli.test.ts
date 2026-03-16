@@ -207,6 +207,69 @@ describe("Phase 6 SDK and CLI surfaces", () => {
     }
   }, 60_000);
 
+  test("SessionRuntime auto-scrolls offscreen counter and selector targets before DOM actions", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const runtime = new OpensteerSessionRuntime({
+      name: "phase6-offscreen-runtime",
+      rootDir,
+      browser: {
+        headless: true,
+      },
+    });
+
+    try {
+      await runtime.open({
+        url: `${baseUrl}/phase6/main`,
+      });
+
+      const snapshot = await runtime.snapshot({
+        mode: "action",
+      });
+      const offscreenButton = requireCounter(snapshot, (counter) =>
+        counter.pathHint.includes("#offscreen-action"),
+      );
+      const offscreenScrollBox = requireCounter(snapshot, (counter) =>
+        counter.pathHint.includes("#offscreen-scroll-box"),
+      );
+
+      await runtime.click({
+        target: {
+          kind: "selector",
+          selector: "#move-offscreen",
+        },
+      });
+
+      await runtime.click({
+        target: {
+          kind: "element",
+          element: offscreenButton.element,
+        },
+      });
+      await expectStatus(runtime, "clicked");
+
+      await runtime.scroll({
+        target: {
+          kind: "element",
+          element: offscreenScrollBox.element,
+        },
+        direction: "down",
+        amount: 280,
+      });
+      await expectStatus(runtime, "scrolled");
+
+      await runtime.click({
+        target: {
+          kind: "selector",
+          selector: "#offscreen-action",
+        },
+      });
+      await expectStatus(runtime, "clicked");
+    } finally {
+      await runtime.close().catch(() => undefined);
+    }
+  }, 60_000);
+
   test("SDK resolves stale counters session-locally and promotes the recovered live node on description writes", async () => {
     const rootDir = await createPhase6TemporaryRoot();
     const opensteer = new Opensteer({
@@ -413,6 +476,95 @@ describe("Phase 6 SDK and CLI surfaces", () => {
     );
     expect((await readdir(path.dirname(metadataPath))).includes("service.json")).toBe(false);
   }, 60_000);
+
+  test("CLI auto-scrolls offscreen counter and selector targets before DOM actions", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const sessionName = "phase6-cli-offscreen";
+
+    await runCliCommand(rootDir, [
+      "open",
+      `${baseUrl}/phase6/main`,
+      "--name",
+      sessionName,
+      "--headless",
+      "true",
+    ]);
+
+    const snapshot = await runCliCommand(rootDir, ["snapshot", "action", "--name", sessionName]);
+    const offscreenButton = requireCounter(snapshot as OpensteerPageSnapshotOutput, (counter) =>
+      counter.pathHint.includes("#offscreen-action"),
+    );
+    const offscreenScrollBox = requireCounter(snapshot as OpensteerPageSnapshotOutput, (counter) =>
+      counter.pathHint.includes("#offscreen-scroll-box"),
+    );
+
+    await runCliCommand(rootDir, [
+      "click",
+      "--selector",
+      "#move-offscreen",
+      "--name",
+      sessionName,
+    ]);
+
+    await runCliCommand(rootDir, ["click", String(offscreenButton.element), "--name", sessionName]);
+    expect(
+      await runCliCommand(rootDir, [
+        "extract",
+        '{"status":{"selector":"#status"}}',
+        "--name",
+        sessionName,
+        "--description",
+        "offscreen status",
+      ]),
+    ).toEqual({
+      status: "clicked",
+    });
+
+    await runCliCommand(rootDir, [
+      "scroll",
+      String(offscreenScrollBox.element),
+      "down",
+      "280",
+      "--name",
+      sessionName,
+    ]);
+    expect(
+      await runCliCommand(rootDir, [
+        "extract",
+        "--name",
+        sessionName,
+        "--description",
+        "offscreen status",
+      ]),
+    ).toEqual({
+      status: "scrolled",
+    });
+
+    await runCliCommand(rootDir, [
+      "click",
+      "--selector",
+      "#offscreen-action",
+      "--name",
+      sessionName,
+    ]);
+    expect(
+      await runCliCommand(rootDir, [
+        "extract",
+        "--name",
+        sessionName,
+        "--description",
+        "offscreen status",
+      ]),
+    ).toEqual({
+      status: "clicked",
+    });
+
+    const closed = await runCliCommand(rootDir, ["close", "--name", sessionName]);
+    expect(closed).toEqual({
+      closed: true,
+    });
+  }, 120_000);
 
   test("CLI open writes the selected engine into service metadata", async () => {
     const rootDir = await createPhase6TemporaryRoot();
@@ -1066,6 +1218,24 @@ function createPolicy(options: {
       },
     },
   };
+}
+
+async function expectStatus(
+  runtime: OpensteerSessionRuntime,
+  expected: string,
+): Promise<void> {
+  await expect(
+    runtime.extract({
+      description: "offscreen status",
+      schema: {
+        status: { selector: "#status" },
+      },
+    }),
+  ).resolves.toEqual({
+    data: {
+      status: expected,
+    },
+  });
 }
 
 function delayedTitleUrl(initialTitle: string, settledTitle: string, delayMs: number): string {

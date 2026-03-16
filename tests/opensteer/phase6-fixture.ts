@@ -187,6 +187,11 @@ function mainDocumentHtml(): string {
       <div id="mirror"></div>
       <div id="status">ready</div>
       <div id="shadow-host"></div>
+      <button id="move-offscreen" type="button">Move Offscreen</button>
+      <button id="offscreen-action" type="button">Offscreen Action</button>
+      <div id="offscreen-scroll-box" role="button" tabindex="0">
+        <div style="height:1200px"></div>
+      </div>
       <iframe id="child-frame" src="/phase6/child"></iframe>
       <script>
         const status = document.getElementById("status");
@@ -199,6 +204,14 @@ function mainDocumentHtml(): string {
         document.getElementById("main-input").addEventListener("input", (event) => {
           document.getElementById("mirror").textContent = event.target.value;
           status.textContent = "input " + event.target.value;
+        });
+        document.getElementById("move-offscreen").addEventListener("click", () => {
+          document.getElementById("offscreen-action").style.top = "1600px";
+          document.getElementById("offscreen-scroll-box").style.top = "1760px";
+          status.textContent = "moved";
+        });
+        document.getElementById("offscreen-action").addEventListener("click", () => {
+          status.textContent = "clicked";
         });
         const wireDescriptorButton = (label) => {
           document.getElementById("descriptor-button").addEventListener("click", () => {
@@ -213,6 +226,9 @@ function mainDocumentHtml(): string {
         });
         document.getElementById("scroll-box").addEventListener("scroll", (event) => {
           status.textContent = "scrolled " + event.target.scrollTop;
+        });
+        document.getElementById("offscreen-scroll-box").addEventListener("scroll", (event) => {
+          status.textContent = event.target.scrollTop > 0 ? "scrolled" : "ready";
         });
         const shadowHost = document.getElementById("shadow-host");
         const shadowRoot = shadowHost.attachShadow({ mode: "open" });
@@ -268,6 +284,10 @@ function html(body: string, title: string): string {
       #mirror { top: 446px; width: 220px; }
       #status { top: 486px; width: 320px; }
       #shadow-host { top: 540px; width: 220px; }
+      #move-offscreen, #offscreen-action, #offscreen-scroll-box { position: absolute; left: 320px; }
+      #move-offscreen { top: 420px; width: 180px; height: 42px; }
+      #offscreen-action { top: 480px; width: 180px; height: 42px; }
+      #offscreen-scroll-box { top: 540px; width: 220px; height: 120px; overflow: auto; border: 1px solid #222; }
       iframe { top: 20px; left: 320px; width: 420px; height: 360px; border: 0; }
     </style>
   </head>

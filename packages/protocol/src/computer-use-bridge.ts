@@ -30,7 +30,7 @@ export interface ComputerUseBridgeInput {
   readonly screenshot: NormalizedComputerScreenshotOptions;
   readonly signal: AbortSignal;
   remainingMs(): number | undefined;
-  settle(pageRef: PageRef): Promise<void>;
+  policySettle(pageRef: PageRef): Promise<void>;
 }
 
 export interface ComputerUseBridgeOutput {

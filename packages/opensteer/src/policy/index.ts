@@ -1,9 +1,4 @@
 export type {
-  ActionabilityCheckInput,
-  ActionabilityCheckResult,
-  ActionabilityFailureDetails,
-  ActionabilityFailureReason,
-  ActionabilityPolicy,
   DomActionPolicyOperation,
   FallbackDecision,
   FallbackEvaluationInput,
@@ -21,12 +16,6 @@ export type {
   TimeoutPolicy,
   TimeoutResolutionInput,
 } from "./types.js";
-export {
-  assertValidActionPosition,
-  checkActionability,
-  defaultActionabilityPolicy,
-  toActionabilityError,
-} from "./actionability.js";
 export {
   defaultPolicy,
   defaultFallbackPolicy,

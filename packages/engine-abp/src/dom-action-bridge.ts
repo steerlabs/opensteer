@@ -19,7 +19,9 @@ interface AbpDomActionBridgeContext {
   resolveController(pageRef: PageRef): PageController;
   resolveSession(sessionRef: SessionRef): SessionState;
   flushDomUpdateTask(controller: PageController): Promise<void>;
-  resettlePausedExecution(controller: PageController, timeoutMs: number): Promise<void>;
+  syncExecutionPaused(controller: PageController): Promise<boolean>;
+  setExecutionPaused(controller: PageController, paused: boolean): Promise<void>;
+  isPageClosedError(error: unknown): boolean;
   requireLiveNode(locator: NodeLocator): {
     readonly document: DocumentState;
     readonly backendNodeId: number;
@@ -27,8 +29,6 @@ interface AbpDomActionBridgeContext {
   getDomSnapshot(documentRef: string): Promise<DomSnapshot>;
   getViewportMetrics(pageRef: PageRef): Promise<ViewportMetrics>;
 }
-
-const DEFAULT_ACTION_SETTLE_TIMEOUT_MS = 5_000;
 
 export function createAbpDomActionBridge(context: AbpDomActionBridgeContext): DomActionBridge {
   return {
@@ -78,25 +78,25 @@ export function createAbpDomActionBridge(context: AbpDomActionBridgeContext): Do
     async scrollNodeIntoView(locator) {
       const { controller, document, backendNodeId } = await prepareLiveNodeContext(context, locator);
       const nodeId = await resolveFrontendNodeId(controller, document, locator, backendNodeId);
-      await controller.cdp.send("DOM.scrollIntoViewIfNeeded", { nodeId });
-      await context.resettlePausedExecution(controller, DEFAULT_ACTION_SETTLE_TIMEOUT_MS);
-      await context.flushDomUpdateTask(controller);
+      await withTemporaryExecutionResume(context, controller, async () => {
+        await controller.cdp.send("DOM.scrollIntoViewIfNeeded", { nodeId });
+        await context.flushDomUpdateTask(controller);
+      });
     },
 
     async focusNode(locator) {
       const { controller, document, backendNodeId } = await prepareLiveNodeContext(context, locator);
       const nodeId = await resolveFrontendNodeId(controller, document, locator, backendNodeId);
-      await controller.cdp.send("DOM.focus", { nodeId });
-      await context.resettlePausedExecution(controller, DEFAULT_ACTION_SETTLE_TIMEOUT_MS);
-      await context.flushDomUpdateTask(controller);
+      await withTemporaryExecutionResume(context, controller, async () => {
+        await controller.cdp.send("DOM.focus", { nodeId });
+        await context.flushDomUpdateTask(controller);
+      });
     },
 
-    async settleAfterDomAction(pageRef, options) {
+    async finalizeDomAction(pageRef, _options) {
       const controller = context.resolveController(pageRef);
-      const session = context.resolveSession(controller.sessionRef);
-      const timeoutMs = options.remainingMs() ?? DEFAULT_ACTION_SETTLE_TIMEOUT_MS;
-      await context.resettlePausedExecution(controller, timeoutMs);
       await context.flushDomUpdateTask(controller);
+      const session = context.resolveSession(controller.sessionRef);
       if (session.closed) {
         throw createBrowserCoreError("page-closed", `page ${pageRef} is closed`, {
           details: { pageRef },
@@ -116,7 +116,6 @@ async function prepareLiveNodeContext(
 }> {
   const liveNode = context.requireLiveNode(locator);
   const controller = context.resolveController(liveNode.document.pageRef);
-  await context.resettlePausedExecution(controller, DEFAULT_ACTION_SETTLE_TIMEOUT_MS);
   await context.flushDomUpdateTask(controller);
   return {
     controller,
@@ -158,6 +157,30 @@ async function resolveFrontendNodeId(
       });
     }
     throw error;
+  }
+}
+
+async function withTemporaryExecutionResume<T>(
+  context: AbpDomActionBridgeContext,
+  controller: PageController,
+  execute: () => Promise<T>,
+): Promise<T> {
+  const wasPaused = await context.syncExecutionPaused(controller);
+  if (wasPaused) {
+    await context.setExecutionPaused(controller, false);
+  }
+  try {
+    return await execute();
+  } finally {
+    if (wasPaused && controller.lifecycleState !== "closed") {
+      try {
+        await context.setExecutionPaused(controller, true);
+      } catch (error) {
+        if (!context.isPageClosedError(error)) {
+          throw error;
+        }
+      }
+    }
   }
 }
 

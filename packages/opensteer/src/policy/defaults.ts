@@ -7,7 +7,6 @@ import type {
   SettlePolicy,
   TimeoutPolicy,
 } from "./types.js";
-import { defaultActionabilityPolicy } from "./actionability.js";
 
 const DEFAULT_TIMEOUTS: Readonly<Record<string, number>> = {
   "session.open": 30_000,
@@ -60,7 +59,6 @@ export const defaultFallbackPolicy: FallbackPolicy = {
 Object.freeze(defaultFallbackPolicy);
 
 const DEFAULT_POLICY: OpensteerPolicy = {
-  actionability: defaultActionabilityPolicy,
   timeout: defaultTimeoutPolicy,
   settle: defaultSettlePolicy,
   retry: defaultRetryPolicy,

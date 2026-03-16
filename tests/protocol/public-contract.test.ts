@@ -98,7 +98,7 @@ describe("DOM action bridge contract", () => {
       async focusNode() {
         throw new Error("not called");
       },
-      async settleAfterDomAction() {
+      async finalizeDomAction() {
         throw new Error("not called");
       },
     };

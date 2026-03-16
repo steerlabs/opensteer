@@ -125,7 +125,7 @@ function createToolResult(tool: OpensteerMcpToolDescriptor, output: unknown): Ca
   if (tool.operation === "computer.execute") {
     const computerOutput = output as OpensteerComputerExecuteOutput;
     return {
-      structuredContent: computerOutput as Record<string, unknown>,
+      structuredContent: output as Record<string, unknown>,
       content: [
         toImageContent(computerOutput),
         {
