@@ -17,6 +17,7 @@ import type {
   NormalizedComputerScreenshotOptions,
 } from "@opensteer/protocol";
 
+import { DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS } from "./action-settle.js";
 import {
   buildImmediateActionRequest,
   buildImmediateScreenshotRequest,
@@ -47,6 +48,17 @@ export function createAbpComputerUseBridge(context: {
     execute: () => Promise<AbpActionResponse>,
   ): Promise<{ readonly response: AbpActionResponse; readonly dialogEvents: readonly StepEvent[] }>;
   flushDomUpdateTask(controller: PageController): Promise<void>;
+  settleActionBoundary(
+    controller: PageController,
+    options: {
+      readonly timeoutMs: number;
+      readonly signal?: AbortSignal;
+      readonly policySettle?: (
+        pageRef: PageRef,
+        signal: AbortSignal | undefined,
+      ) => Promise<void>;
+    },
+  ): Promise<void>;
   requireMainFrame(controller: PageController): {
     readonly frameRef: FrameRef;
     readonly currentDocument: {
@@ -202,12 +214,26 @@ export function createAbpComputerUseBridge(context: {
         session.activePageRef = resultPageRef;
       }
       const resultController = context.resolveController(resultPageRef);
-      await context.flushDomUpdateTask(resultController);
+      let displayResponse = response;
+      if (action.type !== "screenshot") {
+        await context.settleActionBoundary(resultController, {
+          timeoutMs: boundAbpActionSettleTimeout(remainingMs),
+          signal: input.signal,
+          policySettle: (pageRef) => input.policySettle(pageRef),
+        });
+        displayResponse = await session.rest.screenshotTab(
+          resultController.tabId,
+          buildImmediateScreenshotRequest(screenshot),
+          requestOptions,
+        );
+      } else {
+        await context.flushDomUpdateTask(resultController);
+      }
 
       const display = materializeDisplayContract({
         context,
         controller: resultController,
-        response,
+        response: displayResponse,
       });
 
       const popupQueuedEvents = popupPageRefs.flatMap((pageRef) =>
@@ -241,6 +267,13 @@ function toAbpScreenshotOptions(screenshot: NormalizedComputerScreenshotOptions)
     ...(screenshot.format === undefined ? {} : { format: screenshot.format }),
     ...(screenshot.annotations.length === 0 ? {} : { markup: [...screenshot.annotations] }),
   };
+}
+
+function boundAbpActionSettleTimeout(timeoutMs: number | undefined): number {
+  if (timeoutMs === undefined) {
+    return DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS;
+  }
+  return Math.max(0, Math.min(DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS, timeoutMs));
 }
 
 function materializeDisplayContract(input: {

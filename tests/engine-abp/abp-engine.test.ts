@@ -9,6 +9,11 @@ import {
 } from "../../packages/browser-core/src/index.js";
 import { createAbpBrowserCoreEngine } from "../../packages/engine-abp/src/index.js";
 import { resolveDefaultAbpExecutablePath } from "../../packages/engine-abp/src/launcher.js";
+import { createDomRuntime } from "../../packages/opensteer/src/index.js";
+import {
+  OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL,
+  type ComputerUseBridge as BrowserCoreComputerUseBridge,
+} from "../../packages/protocol/src/index.js";
 import { defineBrowserCoreConformanceSuite } from "../browser-core/conformance-suite.js";
 
 const configuredAbpExecutablePath = process.env.OPENSTEER_ABP_EXECUTABLE;
@@ -367,6 +372,84 @@ describe.sequential("AbpBrowserCoreEngine", () => {
     );
 
     test.sequential(
+      "waits for delayed click handlers before freezing computer-use results",
+      async () => {
+        const engine = await createAbpTestEngine();
+
+        try {
+          const sessionRef = await engine.createSession();
+          const created = await engine.createPage({
+            sessionRef,
+            url: `${baseUrl}/delayed-click`,
+          });
+          const bridge = requireComputerUseBridge(engine);
+
+          await bridge.execute({
+            pageRef: created.data.pageRef,
+            action: {
+              type: "click",
+              x: 80,
+              y: 40,
+            },
+            screenshot: {
+              format: "png",
+              includeCursor: false,
+              annotations: [],
+            },
+            signal: new AbortController().signal,
+            remainingMs: () => 10_000,
+            policySettle: async () => {},
+          });
+
+          const frames = await engine.listFrames({ pageRef: created.data.pageRef });
+          const mainFrame = frames.find((frame) => frame.isMainFrame);
+          expect(mainFrame).toBeDefined();
+
+          const snapshot = await engine.getHtmlSnapshot({
+            frameRef: mainFrame!.frameRef,
+          });
+          expect(snapshot.html).toContain('<div id="status">Done</div>');
+        } finally {
+          await engine.dispose();
+        }
+      },
+      20_000,
+    );
+
+    test.sequential(
+      "waits for delayed click handlers before freezing DOM runtime actions",
+      async () => {
+        const engine = await createAbpTestEngine();
+
+        try {
+          const sessionRef = await engine.createSession();
+          const created = await engine.createPage({
+            sessionRef,
+            url: `${baseUrl}/delayed-click`,
+          });
+          const runtime = createDomRuntime({ engine });
+
+          await runtime.click({
+            pageRef: created.data.pageRef,
+            target: { kind: "selector", selector: "#continue" },
+          });
+
+          const frames = await engine.listFrames({ pageRef: created.data.pageRef });
+          const mainFrame = frames.find((frame) => frame.isMainFrame);
+          expect(mainFrame).toBeDefined();
+
+          const snapshot = await engine.getHtmlSnapshot({
+            frameRef: mainFrame!.frameRef,
+          });
+          expect(snapshot.html).toContain('<div id="status">Done</div>');
+        } finally {
+          await engine.dispose();
+        }
+      },
+      20_000,
+    );
+
+    test.sequential(
       "captures network, popup, dialog, storage, session HTTP, and execution control",
       async () => {
         const engine = await createAbpTestEngine();
@@ -496,3 +579,11 @@ describe.sequential("AbpBrowserCoreEngine", () => {
     );
   });
 });
+
+function requireComputerUseBridge(engine: object): BrowserCoreComputerUseBridge {
+  const factory = Reflect.get(engine, OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL);
+  if (typeof factory !== "function") {
+    throw new Error("engine does not expose a computer-use bridge");
+  }
+  return factory.call(engine) as BrowserCoreComputerUseBridge;
+}
