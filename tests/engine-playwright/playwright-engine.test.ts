@@ -129,6 +129,27 @@ function domFractionalHitDocument(): string {
   );
 }
 
+function basicDocument(): string {
+  return html(
+    `
+      <button id="continue" type="button">Continue</button>
+      <h1 id="snapshot-title" style="position:absolute;left:20px;top:96px">Snapshot Heading</h1>
+      <div id="hidden-panel" style="display:none">Hidden panel</div>
+      <div id="shadow-host" style="position:absolute;left:20px;top:180px"></div>
+      <script>
+        const host = document.getElementById("shadow-host");
+        const root = host.attachShadow({ mode: "open" });
+        root.innerHTML =
+          '<button id="shadow-action" type="button">Shadow Action</button><div id="nested-shadow-host"></div>';
+        const nestedHost = root.getElementById("nested-shadow-host");
+        const nestedRoot = nestedHost.attachShadow({ mode: "open" });
+        nestedRoot.innerHTML = '<button id="nested-shadow-action" type="button">Nested Shadow</button>';
+      </script>
+    `,
+    "Basic page",
+  );
+}
+
 function domDocumentWithChild(): string {
   const rewrittenDocument = JSON.stringify(
     html(
@@ -195,7 +216,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
 
   if (url.pathname === "/basic") {
     response.setHeader("content-type", "text/html; charset=utf-8");
-    response.end(html('<button id="continue" type="button">Continue</button>', "Basic page"));
+    response.end(basicDocument());
     return;
   }
 

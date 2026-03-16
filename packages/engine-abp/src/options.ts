@@ -26,6 +26,7 @@ export const ABP_BROWSER_CORE_CAPABILITIES: BrowserCapabilities = mergeBrowserCa
       frameEnumeration: true,
       html: true,
       domSnapshot: true,
+      visualStability: true,
       text: true,
       attributes: true,
       hitTest: true,

@@ -38,6 +38,15 @@ export interface DomSnapshotNode {
   readonly nodeName: string;
   readonly nodeValue: string;
   readonly textContent?: string;
+  readonly computedStyle?: {
+    readonly display?: string;
+    readonly visibility?: string;
+    readonly opacity?: string;
+    readonly position?: string;
+    readonly cursor?: string;
+    readonly overflowX?: string;
+    readonly overflowY?: string;
+  };
   readonly attributes: readonly {
     readonly name: string;
     readonly value: string;
@@ -79,6 +88,8 @@ export interface HitTestResult {
   readonly obscured: boolean;
   readonly pointerEventsSkipped: boolean;
 }
+
+export type VisualStabilityScope = "main-frame" | "visible-frames";
 
 export function findDomSnapshotNode(
   snapshot: DomSnapshot,

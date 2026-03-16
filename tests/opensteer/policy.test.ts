@@ -102,7 +102,7 @@ describe("Phase 7 policy settle", () => {
         settle: async () => true,
       }),
     ).toThrow(TypeError);
-    expect(defaultPolicy().settle.observers).toHaveLength(0);
+    expect(defaultPolicy().settle.observers).toHaveLength(1);
   });
 
   test("skips fixed delays when configured as zero", async () => {
@@ -201,5 +201,6 @@ function createSettleContext(trigger: "navigation" | "dom-action") {
     engine: {} as BrowserCoreEngine,
     pageRef: createPageRef(`page-${trigger}`),
     signal: new AbortController().signal,
+    remainingMs: undefined,
   } as const;
 }

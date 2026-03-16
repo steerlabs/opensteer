@@ -538,6 +538,7 @@ describe("protocol trace and artifact schemas", () => {
     expect(domSnapshotNodeSchema.properties?.shadowRootType).toMatchObject({
       enum: ["open", "closed", "user-agent"],
     });
+    expect(domSnapshotNodeSchema.properties?.computedStyle).toBeDefined();
     expect(domSnapshotNodeSchema.properties?.shadowHostNodeRef).toBeDefined();
     expect(domSnapshotNodeSchema.properties?.contentDocumentRef).toBeDefined();
     expect(domSnapshotSchema.properties?.shadowDomMode).toMatchObject({

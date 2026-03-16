@@ -39,7 +39,10 @@ export interface ComputerUseRuntime {
   }): Promise<ComputerUseRuntimeOutput>;
 }
 
-export interface ComputerUseRuntimeOutput extends Omit<OpensteerComputerExecuteOutput, "screenshot"> {
+export interface ComputerUseRuntimeOutput extends Omit<
+  OpensteerComputerExecuteOutput,
+  "screenshot"
+> {
   readonly screenshot: BrowserCoreScreenshotArtifact;
 }
 
@@ -93,6 +96,7 @@ class DefaultComputerUseRuntime implements ComputerUseRuntime {
             engine: this.options.engine,
             pageRef,
             signal: input.timeout.signal,
+            remainingMs: input.timeout.remainingMs(),
           }),
       }),
     );
