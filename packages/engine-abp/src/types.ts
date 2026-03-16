@@ -345,6 +345,7 @@ export interface DomSnapshotDocument {
   };
   readonly layout: {
     readonly nodeIndex: readonly number[];
+    readonly styles?: ReadonlyArray<readonly number[]>;
     readonly bounds: ReadonlyArray<readonly number[]>;
     readonly text: readonly number[];
     readonly paintOrders?: readonly number[];

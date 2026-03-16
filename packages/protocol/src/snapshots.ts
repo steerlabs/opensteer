@@ -99,6 +99,20 @@ export const domSnapshotNodeSchema: JsonSchema = objectSchema(
     nodeName: stringSchema(),
     nodeValue: stringSchema(),
     textContent: stringSchema(),
+    computedStyle: objectSchema(
+      {
+        display: stringSchema(),
+        visibility: stringSchema(),
+        opacity: stringSchema(),
+        position: stringSchema(),
+        cursor: stringSchema(),
+        overflowX: stringSchema(),
+        overflowY: stringSchema(),
+      },
+      {
+        required: [],
+      },
+    ),
     attributes: arraySchema(
       objectSchema(
         {

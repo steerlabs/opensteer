@@ -10,3 +10,5 @@ export * from "./errors.js";
 export * from "./contracts.js";
 export * from "./events.js";
 export * from "./fake-engine.js";
+export * from "./cdp-dom-snapshot.js";
+export * from "./cdp-visual-stability.js";

@@ -141,5 +141,38 @@ export function defineBrowserCoreConformanceSuite(options: BrowserCoreConformanc
       },
       options.testTimeoutMs,
     );
+
+    test.sequential(
+      "aggregates descendant text, preserves computed styles, and propagates shadow ownership",
+      async () => {
+        const harness = await options.createHarness();
+        try {
+          const sessionRef = await harness.engine.createSession();
+          const created = await harness.engine.createPage({
+            sessionRef,
+            url: harness.urls.initial,
+          });
+
+          const dom = await harness.engine.getDomSnapshot({
+            frameRef: created.frameRef!,
+          });
+          const titleNode = findNodeById(dom.nodes, "snapshot-title");
+          const hiddenNode = findNodeById(dom.nodes, "hidden-panel");
+          const shadowHostNode = findNodeById(dom.nodes, "shadow-host");
+          const shadowActionNode = findNodeById(dom.nodes, "shadow-action");
+          const nestedHostNode = findNodeById(dom.nodes, "nested-shadow-host");
+          const nestedShadowNode = findNodeById(dom.nodes, "nested-shadow-action");
+
+          expect(titleNode?.textContent).toContain("Snapshot Heading");
+          expect(hiddenNode?.computedStyle?.display).toBe("none");
+          expect(shadowHostNode?.textContent ?? "").toBe("");
+          expect(shadowActionNode?.shadowHostNodeRef).toBe(shadowHostNode?.nodeRef);
+          expect(nestedShadowNode?.shadowHostNodeRef).toBe(nestedHostNode?.nodeRef);
+        } finally {
+          await harness.dispose?.();
+        }
+      },
+      options.testTimeoutMs,
+    );
   });
 }

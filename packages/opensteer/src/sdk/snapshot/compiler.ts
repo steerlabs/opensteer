@@ -212,23 +212,6 @@ function renderNode(
     return "";
   }
 
-  if (node.shadowRootType !== undefined) {
-    const children = renderChildren(
-      snapshot,
-      node,
-      nodesById,
-      snapshotsByDocumentRef,
-      snapshotIndices,
-      renderedNodes,
-      {
-        iframeDepth: depth.iframeDepth,
-        shadowDepth: depth.shadowDepth + 1,
-      },
-    );
-
-    return `<${OPENSTEER_SHADOW_BOUNDARY_TAG} ${OPENSTEER_BOUNDARY_ATTR}="shadow">${children}</${OPENSTEER_SHADOW_BOUNDARY_TAG}>`;
-  }
-
   if (node.nodeType === 9 || node.nodeType === 11) {
     return renderChildren(
       snapshot,
@@ -287,8 +270,8 @@ function renderNode(
 
   const originalAttributes = normalizeNodeAttributes(node.attributes);
   const attributes = [...originalAttributes];
-  const hidden = isLikelyHidden(node);
-  const interactive = !hidden && isLikelyInteractive(tagName, originalAttributes);
+  const hidden = isLikelyHidden(node, nodesById);
+  const interactive = !hidden && isLikelyInteractive(tagName, node, originalAttributes);
 
   if (interactive) {
     attributes.push({ name: OPENSTEER_INTERACTIVE_ATTR, value: "1" });
@@ -367,13 +350,47 @@ function renderChildren(
   renderedNodes: Map<string, RenderedNodeMetadata>,
   depth: RenderDepth,
 ): string {
-  const chunks: string[] = [];
+  const regularChildren: DomSnapshotNode[] = [];
+  const shadowChildren: DomSnapshotNode[] = [];
+
   for (const childSnapshotNodeId of node.childSnapshotNodeIds) {
     const child = nodesById.get(childSnapshotNodeId);
     if (!child) {
       continue;
     }
 
+    if (node.nodeRef !== undefined && child.shadowHostNodeRef === node.nodeRef) {
+      shadowChildren.push(child);
+      continue;
+    }
+
+    regularChildren.push(child);
+  }
+
+  const chunks: string[] = [];
+  if (shadowChildren.length > 0) {
+    const shadowHtml = shadowChildren
+      .map((child) =>
+        renderNode(
+          snapshot,
+          child,
+          nodesById,
+          snapshotsByDocumentRef,
+          snapshotIndices,
+          renderedNodes,
+          {
+            iframeDepth: depth.iframeDepth,
+            shadowDepth: depth.shadowDepth + 1,
+          },
+        ),
+      )
+      .join("");
+    chunks.push(
+      `<${OPENSTEER_SHADOW_BOUNDARY_TAG} ${OPENSTEER_BOUNDARY_ATTR}="shadow">${shadowHtml}</${OPENSTEER_SHADOW_BOUNDARY_TAG}>`,
+    );
+  }
+
+  for (const child of regularChildren) {
     chunks.push(
       renderNode(
         snapshot,
@@ -386,6 +403,7 @@ function renderChildren(
       ),
     );
   }
+
   return chunks.join("");
 }
 
@@ -504,7 +522,10 @@ function normalizeNodeAttributes(
     .filter((attribute) => attribute.name.length > 0);
 }
 
-function isLikelyHidden(node: DomSnapshotNode): boolean {
+function isLikelyHidden(
+  node: DomSnapshotNode,
+  nodesById: ReadonlyMap<number, DomSnapshotNode>,
+): boolean {
   const hiddenAttr = findAttributeValue(node.attributes, "hidden");
   if (hiddenAttr !== undefined) {
     return true;
@@ -521,16 +542,35 @@ function isLikelyHidden(node: DomSnapshotNode): boolean {
     return true;
   }
 
+  const computedStyle = node.computedStyle;
+  if (computedStyle?.display === "none") {
+    return true;
+  }
+  if (computedStyle?.visibility === "hidden" || computedStyle?.visibility === "collapse") {
+    return true;
+  }
+  if (parseOpacity(computedStyle?.opacity) <= 0) {
+    return true;
+  }
+  if (computedStyle?.display === "contents") {
+    return false;
+  }
+
   const rect = node.layout?.rect;
   if (rect === undefined) {
     return false;
   }
 
-  return rect.width <= 0 || rect.height <= 0;
+  if (rect.width > 0 && rect.height > 0) {
+    return false;
+  }
+
+  return !hasVisibleOutOfFlowDescendant(node, nodesById);
 }
 
 function isLikelyInteractive(
   tagName: string,
+  node: DomSnapshotNode,
   attributes: readonly { readonly name: string; readonly value: string }[],
 ): boolean {
   if (NATIVE_INTERACTIVE_TAGS.has(tagName)) {
@@ -562,8 +602,68 @@ function isLikelyInteractive(
     return true;
   }
 
+  if (node.computedStyle?.cursor === "pointer") {
+    return true;
+  }
+
   const role = findAttributeValue(attributes, "role")?.toLowerCase();
   return role !== undefined && INTERACTIVE_ROLE_SET.has(role);
+}
+
+function hasVisibleOutOfFlowDescendant(
+  node: DomSnapshotNode,
+  nodesById: ReadonlyMap<number, DomSnapshotNode>,
+): boolean {
+  const stack = [...node.childSnapshotNodeIds];
+  while (stack.length > 0) {
+    const childSnapshotNodeId = stack.pop()!;
+    const child = nodesById.get(childSnapshotNodeId);
+    if (!child || child.nodeType !== 1) {
+      continue;
+    }
+
+    if (isVisibleOutOfFlowNode(child)) {
+      return true;
+    }
+
+    stack.push(...child.childSnapshotNodeIds);
+  }
+
+  return false;
+}
+
+function isVisibleOutOfFlowNode(node: DomSnapshotNode): boolean {
+  const position = node.computedStyle?.position;
+  if (position !== "absolute" && position !== "fixed") {
+    return false;
+  }
+  if (isExplicitlyHiddenByComputedStyle(node)) {
+    return false;
+  }
+
+  const rect = node.layout?.rect;
+  return rect !== undefined && rect.width > 0 && rect.height > 0;
+}
+
+function isExplicitlyHiddenByComputedStyle(node: DomSnapshotNode): boolean {
+  if (node.computedStyle?.display === "none") {
+    return true;
+  }
+  if (
+    node.computedStyle?.visibility === "hidden" ||
+    node.computedStyle?.visibility === "collapse"
+  ) {
+    return true;
+  }
+  return parseOpacity(node.computedStyle?.opacity) <= 0;
+}
+
+function parseOpacity(value: string | undefined): number {
+  if (value === undefined) {
+    return Number.NaN;
+  }
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
 }
 
 function buildSyntheticNodeId(snapshot: DomSnapshot, node: DomSnapshotNode): string {

@@ -23,6 +23,7 @@ import {
   createSize,
   filterCookieRecords,
   isBrowserCoreError,
+  waitForCdpVisualStability,
   staleNodeRefError,
   unsupportedCapabilityError,
   type GetNetworkRecordsInput,
@@ -589,7 +590,8 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
   private readonly downloadRefsByAbpId = new Map<string, ReturnType<typeof createDownloadRef>>();
   private readonly actionSettler = createAbpActionSettler({
     syncExecutionPaused: (controller) => this.syncControllerExecutionPaused(controller),
-    setExecutionPaused: (controller, paused) => this.setControllerExecutionPaused(controller, paused),
+    setExecutionPaused: (controller, paused) =>
+      this.setControllerExecutionPaused(controller, paused),
     flushDomUpdateTask: (controller) => this.flushDomUpdateTask(controller),
     throwBackgroundError: (controller) => this.throwBackgroundError(controller),
     isPageClosedError: isAbpPageClosedError,
@@ -1567,13 +1569,37 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     );
   }
 
+  async waitForVisualStability(input: {
+    readonly pageRef: PageRef;
+    readonly timeoutMs?: number;
+    readonly settleMs?: number;
+    readonly scope?: "main-frame" | "visible-frames";
+  }): Promise<void> {
+    const controller = this.requirePage(input.pageRef);
+    await this.flushDomUpdateTask(controller);
+    await waitForCdpVisualStability(controller.cdp, {
+      ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+      ...(input.settleMs === undefined ? {} : { settleMs: input.settleMs }),
+      ...(input.scope === undefined ? {} : { scope: input.scope }),
+    });
+    await this.flushDomUpdateTask(controller);
+  }
+
   async readText(input: NodeLocator): Promise<string | null> {
     const document = this.requireDocument(input.documentRef);
     const controller = this.requirePage(document.pageRef);
     await this.flushDomUpdateTask(controller);
-    const { document: liveDocument, backendNodeId } = this.requireLiveNode(input);
+    const { document: liveDocument } = this.requireLiveNode(input);
     const captured = await this.captureDomSnapshot(controller, liveDocument);
-    return readTextContent(captured, input, backendNodeId);
+    const snapshot = buildDomSnapshotFromCapture(
+      liveDocument,
+      captured,
+      (resolvedDocument, backendNodeId) =>
+        this.nodeRefForBackendNode(resolvedDocument, backendNodeId),
+      (contentDocumentIndex) =>
+        resolveCapturedContentDocumentRef(controller.framesByCdpId, captured, contentDocumentIndex),
+    );
+    return readTextContent(snapshot, input);
   }
 
   async readAttributes(
@@ -1930,14 +1956,18 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     const startedAt = Date.now();
     input.signal?.throwIfAborted?.();
     const requestId = await raceWithAbort(
-      session.rest.executeScript<string>(controller.tabId, buildSessionHttpStartScript(input.request), {
-        wait_until: {
-          type: "immediate",
+      session.rest.executeScript<string>(
+        controller.tabId,
+        buildSessionHttpStartScript(input.request),
+        {
+          wait_until: {
+            type: "immediate",
+          },
+          screenshot: {
+            area: "none",
+          },
         },
-        screenshot: {
-          area: "none",
-        },
-      }),
+      ),
       input.signal,
     );
 
@@ -2841,18 +2871,14 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       if (session.pageRefByTabId.has(tab.id)) {
         continue;
       }
-      const popupController = await this.initializePageController(
-        session,
-        tab.id,
-        {
-          openerPageRef: openerController.pageRef,
-          metadata: {
-            url: tab.url,
-            title: tab.title,
-          },
-          installSettleTracker: false,
+      const popupController = await this.initializePageController(session, tab.id, {
+        openerPageRef: openerController.pageRef,
+        metadata: {
+          url: tab.url,
+          title: tab.title,
         },
-      );
+        installSettleTracker: false,
+      });
       this.queueEvent(
         popupController.pageRef,
         this.createEvent({

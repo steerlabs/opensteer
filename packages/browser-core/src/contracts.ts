@@ -23,6 +23,7 @@ import type {
   HtmlSnapshot,
   ScreenshotArtifact,
   ScreenshotFormat,
+  VisualStabilityScope,
 } from "./snapshots.js";
 import type { CookieRecord, StorageSnapshot } from "./storage.js";
 
@@ -148,6 +149,12 @@ export interface BrowserInspector {
     readonly frameRef?: FrameRef;
     readonly documentRef?: DocumentRef;
   }): Promise<DomSnapshot>;
+  waitForVisualStability(input: {
+    readonly pageRef: PageRef;
+    readonly timeoutMs?: number;
+    readonly settleMs?: number;
+    readonly scope?: VisualStabilityScope;
+  }): Promise<void>;
   readText(input: NodeLocator): Promise<string | null>;
   readAttributes(
     input: NodeLocator,

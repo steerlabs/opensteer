@@ -388,6 +388,7 @@ export class OpensteerSessionRuntime {
               engine: this.requireEngine(),
               pageRef,
               signal: timeout.signal,
+              remainingMs: timeout.remainingMs(),
             }),
           );
           const compiled = await timeout.runStep(() =>
@@ -1580,12 +1581,7 @@ export class OpensteerSessionRuntime {
       return [];
     }
 
-    const pageRef = resolveLiveQueryPageRef(
-      input,
-      this.pageRef,
-      requestIds,
-      this.networkJournal,
-    );
+    const pageRef = resolveLiveQueryPageRef(input, this.pageRef, requestIds, this.networkJournal);
     const includeCurrentPageOnly = pageRef === undefined && input.recordId === undefined;
     const metadataRecords = await timeout.runStep(() =>
       this.readLiveNetworkRecords(
@@ -2265,6 +2261,7 @@ export class OpensteerSessionRuntime {
         engine: this.requireEngine(),
         pageRef: input.pageRef,
         signal: timeout.signal,
+        remainingMs: timeout.remainingMs(),
       }),
     );
     return navigation;

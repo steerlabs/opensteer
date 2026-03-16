@@ -18,6 +18,7 @@ export interface BrowserCapabilities {
     readonly frameEnumeration: boolean;
     readonly html: boolean;
     readonly domSnapshot: boolean;
+    readonly visualStability: boolean;
     readonly text: boolean;
     readonly attributes: boolean;
     readonly hitTest: boolean;
@@ -61,6 +62,7 @@ export type BrowserCapabilityPath =
   | "inspector.frameEnumeration"
   | "inspector.html"
   | "inspector.domSnapshot"
+  | "inspector.visualStability"
   | "inspector.text"
   | "inspector.attributes"
   | "inspector.hitTest"
@@ -116,6 +118,7 @@ export function noBrowserCapabilities(): BrowserCapabilities {
       frameEnumeration: false,
       html: false,
       domSnapshot: false,
+      visualStability: false,
       text: false,
       attributes: false,
       hitTest: false,
@@ -166,6 +169,7 @@ export function allBrowserCapabilities(): BrowserCapabilities {
       frameEnumeration: true,
       html: true,
       domSnapshot: true,
+      visualStability: true,
       text: true,
       attributes: true,
       hitTest: true,
@@ -256,6 +260,8 @@ export function hasCapability(
       return capabilities.inspector.html;
     case "inspector.domSnapshot":
       return capabilities.inspector.domSnapshot;
+    case "inspector.visualStability":
+      return capabilities.inspector.visualStability;
     case "inspector.text":
       return capabilities.inspector.text;
     case "inspector.attributes":

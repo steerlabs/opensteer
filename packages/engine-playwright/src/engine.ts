@@ -15,6 +15,7 @@ import {
   createSize,
   createDialogRef,
   matchesNetworkRecordFilters,
+  waitForCdpVisualStability,
   unsupportedCapabilityError,
   staleNodeRefError,
   closedPageError,
@@ -841,13 +842,36 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     );
   }
 
+  async waitForVisualStability(input: {
+    readonly pageRef: PageRef;
+    readonly timeoutMs?: number;
+    readonly settleMs?: number;
+    readonly scope?: "main-frame" | "visible-frames";
+  }): Promise<void> {
+    const controller = this.requirePage(input.pageRef);
+    await this.flushDomUpdateTask(controller);
+    await waitForCdpVisualStability(controller.cdp, {
+      ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+      ...(input.settleMs === undefined ? {} : { settleMs: input.settleMs }),
+      ...(input.scope === undefined ? {} : { scope: input.scope }),
+    });
+    await this.flushDomUpdateTask(controller);
+  }
+
   async readText(input: NodeLocator): Promise<string | null> {
     const document = this.requireDocument(input.documentRef);
     const controller = this.requirePage(document.pageRef);
     await this.flushDomUpdateTask(controller);
-    const { document: liveDocument, backendNodeId } = this.requireLiveNode(input);
+    const { document: liveDocument } = this.requireLiveNode(input);
     const captured = await this.captureDomSnapshot(controller, liveDocument);
-    return readTextContent(captured, input, backendNodeId);
+    const snapshot = buildDomSnapshotFromCapture(
+      liveDocument,
+      captured,
+      (doc, backendNodeId) => this.nodeRefForBackendNode(doc, backendNodeId),
+      (contentDocIndex) =>
+        resolveCapturedContentDocumentRef(controller.framesByCdpId, captured, contentDocIndex),
+    );
+    return readTextContent(snapshot, input);
   }
 
   async readAttributes(

@@ -20,7 +20,11 @@ import {
   type OpensteerPolicy,
   type TimeoutExecutionContext,
 } from "../../policy/index.js";
-import { resolveDomActionBridge, type DomActionBridge, type DomActionTargetInspection } from "./bridge.js";
+import {
+  resolveDomActionBridge,
+  type DomActionBridge,
+  type DomActionTargetInspection,
+} from "./bridge.js";
 import { createSnapshotIndex } from "./path.js";
 import { isSameNodeOrDescendant } from "./selectors.js";
 import type {
@@ -163,7 +167,8 @@ export class DomActionExecutor {
               pageRef: input.pageRef,
               method: "dom.input",
               target: input.target,
-              descriptorWriter: (writeInput) => timeout.runStep(() => this.options.writeDescriptor(writeInput)),
+              descriptorWriter: (writeInput) =>
+                timeout.runStep(() => this.options.writeDescriptor(writeInput)),
             }),
           );
 
@@ -215,7 +220,10 @@ export class DomActionExecutor {
 
   private async executePointerAction<TResult>(
     input: {
-      readonly operation: Extract<DomActionPolicyOperation, "dom.click" | "dom.hover" | "dom.scroll">;
+      readonly operation: Extract<
+        DomActionPolicyOperation,
+        "dom.click" | "dom.hover" | "dom.scroll"
+      >;
       readonly pageRef: PageRef;
       readonly target: DomTargetRef;
       readonly position?: Point;
@@ -239,7 +247,8 @@ export class DomActionExecutor {
               pageRef: input.pageRef,
               method: input.operation,
               target: input.target,
-              descriptorWriter: (writeInput) => timeout.runStep(() => this.options.writeDescriptor(writeInput)),
+              descriptorWriter: (writeInput) =>
+                timeout.runStep(() => this.options.writeDescriptor(writeInput)),
             }),
           );
 
@@ -264,12 +273,15 @@ export class DomActionExecutor {
           this.assertPointerActionable(input.operation, resolved, inspectionAfterScroll);
 
           const point = await timeout.runStep(() =>
-            this.computeActionPoint(input.operation, resolved, inspectionAfterScroll, input.position),
+            this.computeActionPoint(
+              input.operation,
+              resolved,
+              inspectionAfterScroll,
+              input.position,
+            ),
           );
           if (input.operation !== "dom.scroll") {
-            const hit = await timeout.runStep(() =>
-              this.tryHitTest(resolved.pageRef, point),
-            );
+            const hit = await timeout.runStep(() => this.tryHitTest(resolved.pageRef, point));
             if (hit !== undefined) {
               this.assertHitTarget(input.operation, resolved, point, hit);
             }
@@ -320,6 +332,7 @@ export class DomActionExecutor {
             engine: this.options.engine,
             pageRef: targetPageRef,
             signal: timeout.signal,
+            remainingMs: timeout.remainingMs(),
           }),
       }),
     );
@@ -360,7 +373,10 @@ export class DomActionExecutor {
       }
 
       const point = createPoint(bounds.x + position.x, bounds.y + position.y);
-      if (!rectContainsPoint(bounds, point) || !pointFallsWithinQuads(point, inspection.contentQuads)) {
+      if (
+        !rectContainsPoint(bounds, point) ||
+        !pointFallsWithinQuads(point, inspection.contentQuads)
+      ) {
         throw this.createActionabilityError(
           operation,
           "obscured",
@@ -625,10 +641,7 @@ function readAttributeValue(resolved: ResolvedDomTarget, name: string): string |
   return resolved.node.attributes.find((attribute) => attribute.name === name)?.value;
 }
 
-function assertValidResolvedActionPosition(
-  target: ResolvedDomTarget,
-  position: Point,
-): void {
+function assertValidResolvedActionPosition(target: ResolvedDomTarget, position: Point): void {
   const rect = target.node.layout?.rect;
   if (!rect) {
     return;

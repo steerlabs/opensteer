@@ -686,6 +686,15 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
     return clone(document.domSnapshot);
   }
 
+  async waitForVisualStability(_input: {
+    readonly pageRef: PageRef;
+    readonly timeoutMs?: number;
+    readonly settleMs?: number;
+    readonly scope?: "main-frame" | "visible-frames";
+  }): Promise<void> {
+    this.requireCapability("inspector.visualStability");
+  }
+
   async readText(input: NodeLocator): Promise<string | null> {
     this.requireCapability("inspector.text");
     const document = this.requireLiveNode(input);

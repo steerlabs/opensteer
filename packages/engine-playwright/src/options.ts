@@ -27,6 +27,7 @@ export const PLAYWRIGHT_BROWSER_CORE_CAPABILITIES: BrowserCapabilities = mergeBr
       frameEnumeration: true,
       html: true,
       domSnapshot: true,
+      visualStability: true,
       text: true,
       attributes: true,
       hitTest: true,

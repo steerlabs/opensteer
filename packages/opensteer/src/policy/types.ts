@@ -32,6 +32,7 @@ export interface SettleContext extends SettleDelayInput {
   readonly engine: BrowserCoreEngine;
   readonly pageRef: PageRef;
   readonly signal: AbortSignal;
+  readonly remainingMs: number | undefined;
 }
 
 export interface SettleObserver {

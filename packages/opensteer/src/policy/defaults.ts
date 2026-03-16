@@ -1,9 +1,12 @@
+import { DEFAULT_VISUAL_STABILITY_SETTLE_MS } from "@opensteer/browser-core";
+
 import type {
   FallbackDecision,
   FallbackPolicy,
   OpensteerPolicy,
   RetryDecision,
   RetryPolicy,
+  SettleObserver,
   SettlePolicy,
   TimeoutPolicy,
 } from "./types.js";
@@ -36,7 +39,26 @@ const DEFAULT_SETTLE_DELAYS: Readonly<Record<string, number>> = {
   snapshot: 0,
 };
 
-const EMPTY_SETTLE_OBSERVERS: NonNullable<SettlePolicy["observers"]> = Object.freeze([]);
+const defaultSnapshotSettleObserver: SettleObserver = {
+  async settle(input) {
+    if (input.trigger !== "snapshot") {
+      return false;
+    }
+
+    await input.engine.waitForVisualStability({
+      pageRef: input.pageRef,
+      ...(input.remainingMs === undefined ? {} : { timeoutMs: input.remainingMs }),
+      settleMs: DEFAULT_VISUAL_STABILITY_SETTLE_MS,
+      scope: "visible-frames",
+    });
+    return true;
+  },
+};
+Object.freeze(defaultSnapshotSettleObserver);
+
+const DEFAULT_SETTLE_OBSERVERS: NonNullable<SettlePolicy["observers"]> = Object.freeze([
+  defaultSnapshotSettleObserver,
+]);
 
 export const defaultTimeoutPolicy: TimeoutPolicy = {
   resolveTimeoutMs(input) {
@@ -46,7 +68,7 @@ export const defaultTimeoutPolicy: TimeoutPolicy = {
 Object.freeze(defaultTimeoutPolicy);
 
 export const defaultSettlePolicy: SettlePolicy = {
-  observers: EMPTY_SETTLE_OBSERVERS,
+  observers: DEFAULT_SETTLE_OBSERVERS,
   resolveDelayMs(input) {
     return DEFAULT_SETTLE_DELAYS[input.trigger] ?? 0;
   },
