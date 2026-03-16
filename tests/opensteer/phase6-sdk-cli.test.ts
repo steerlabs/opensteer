@@ -266,6 +266,72 @@ describe("Phase 6 SDK and CLI surfaces", () => {
     }
   }, 60_000);
 
+  test("SessionRuntime recreates a fresh binding after the current page becomes stale", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const engine = await createPlaywrightBrowserCoreEngine({
+      launch: {
+        headless: true,
+      },
+    });
+    const runtime = new OpensteerSessionRuntime({
+      name: "phase6-runtime-auto-heal",
+      rootDir,
+      engine,
+    });
+
+    try {
+      const opened = await runtime.open({
+        url: `${baseUrl}/phase6/main`,
+      });
+      await engine.closePage({
+        pageRef: opened.pageRef,
+      });
+
+      const reopened = await runtime.open({
+        url: `${baseUrl}/phase6/main`,
+      });
+
+      expect(reopened.url).toBe(`${baseUrl}/phase6/main`);
+      expect(reopened.pageRef).not.toBe(opened.pageRef);
+      expect(reopened.sessionRef).not.toBe(opened.sessionRef);
+    } finally {
+      await runtime.close().catch(() => undefined);
+      await engine.dispose?.();
+    }
+  }, 60_000);
+
+  test("SessionRuntime close is idempotent after the current page becomes stale", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const engine = await createPlaywrightBrowserCoreEngine({
+      launch: {
+        headless: true,
+      },
+    });
+    const runtime = new OpensteerSessionRuntime({
+      name: "phase6-runtime-close-stale",
+      rootDir,
+      engine,
+    });
+
+    try {
+      const opened = await runtime.open({
+        url: `${baseUrl}/phase6/main`,
+      });
+      await engine.closePage({
+        pageRef: opened.pageRef,
+      });
+
+      await expect(runtime.close()).resolves.toEqual({
+        closed: true,
+      });
+    } finally {
+      await runtime.close().catch(() => undefined);
+      await engine.dispose?.();
+    }
+  }, 60_000);
+
   test("SDK resolves stale counters session-locally and promotes the recovered live node on description writes", async () => {
     const rootDir = await createPhase6TemporaryRoot();
     const opensteer = new Opensteer({
@@ -661,6 +727,61 @@ describe("Phase 6 SDK and CLI surfaces", () => {
       ).rejects.toThrow(
         `Opensteer session "${sessionName}" is already running with engine "playwright".`,
       );
+    } finally {
+      await client.invoke("session.close", {}).catch(() => undefined);
+    }
+  }, 60_000);
+
+  test("service auto-heals stale runtime bindings without restarting the service", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const sessionName = "phase6-service-auto-heal";
+    const client = await ensureOpensteerService({
+      name: sessionName,
+      rootDir,
+      launchContext: {
+        execPath: process.execPath,
+        execArgv: process.execArgv,
+        scriptPath: CLI_SCRIPT,
+        cwd: process.cwd(),
+      },
+    });
+
+    try {
+      await client.invoke("session.open", {
+        url: `${baseUrl}/phase6/close-delayed`,
+        name: sessionName,
+        browser: {
+          headless: true,
+        },
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 250));
+
+      const reopened = await client.invoke("session.open", {
+        url: `${baseUrl}/phase6/main`,
+        name: sessionName,
+      });
+      expect(reopened).toMatchObject({
+        url: `${baseUrl}/phase6/main`,
+      });
+
+      await expect(
+        client.invoke("dom.extract", {
+          description: "status text",
+          schema: {
+            status: { selector: "#status" },
+          },
+        }),
+      ).resolves.toEqual({
+        data: {
+          status: "ready",
+        },
+      });
+
+      await expect(client.invoke("session.close", {})).resolves.toEqual({
+        closed: true,
+      });
     } finally {
       await client.invoke("session.close", {}).catch(() => undefined);
     }

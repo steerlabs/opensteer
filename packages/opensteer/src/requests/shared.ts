@@ -18,6 +18,7 @@ import {
 } from "@opensteer/protocol";
 
 const REDACTED_HEADER_VALUE = "[redacted]";
+const HTTP_HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
 const SECRET_HEADER_NAMES = new Set([
   "api-key",
@@ -30,12 +31,66 @@ const SECRET_HEADER_NAMES = new Set([
   "x-authorization",
 ]);
 
+const NON_REPLAYABLE_INFERRED_HEADER_NAMES = new Set([
+  "accept-encoding",
+  "accept-language",
+  "connection",
+  "content-length",
+  "host",
+  "origin",
+  "priority",
+  "referer",
+  "user-agent",
+  "csrf-token",
+  "x-csrf-token",
+  "x-csrftoken",
+  "x-xsrf-token",
+]);
+
+const HOP_BY_HOP_HEADER_NAMES = new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+]);
+
 export function normalizeHeaderName(name: string): string {
   return name.trim().toLowerCase();
 }
 
+export function isValidHttpHeaderName(name: string): boolean {
+  const normalized = name.trim();
+  return normalized.length > 0 &&
+    !normalized.startsWith(":") &&
+    HTTP_HEADER_NAME_PATTERN.test(normalized);
+}
+
 export function isSecretHeaderName(name: string): boolean {
   return SECRET_HEADER_NAMES.has(normalizeHeaderName(name));
+}
+
+export function isReplayableInferredHeaderName(name: string): boolean {
+  const normalized = normalizeHeaderName(name);
+  if (!isValidHttpHeaderName(name)) {
+    return false;
+  }
+  if (isSecretHeaderName(normalized)) {
+    return false;
+  }
+  if (HOP_BY_HOP_HEADER_NAMES.has(normalized)) {
+    return false;
+  }
+  if (NON_REPLAYABLE_INFERRED_HEADER_NAMES.has(normalized)) {
+    return false;
+  }
+  if (normalized.startsWith("sec-") || normalized.startsWith("proxy-")) {
+    return false;
+  }
+  return true;
 }
 
 export function redactHeaderEntries(
