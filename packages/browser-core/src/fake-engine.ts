@@ -753,8 +753,7 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
     const records: NetworkRecord[] = [];
     const includeBodies = input.includeBodies ?? false;
     const pageRefs = input.pageRef === undefined ? Array.from(session.pageRefs) : [input.pageRef];
-    const requestIds =
-      input.requestIds === undefined ? undefined : new Set(input.requestIds);
+    const requestIds = input.requestIds === undefined ? undefined : new Set(input.requestIds);
 
     for (const pageRef of pageRefs) {
       const page = this.requirePage(pageRef);
@@ -1444,6 +1443,16 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
       case "layout-viewport-css":
       case "visual-viewport-css":
         return createPoint(point.x + metrics.scrollOffset.x, point.y + metrics.scrollOffset.y);
+      case "computer-display-css":
+        throw createBrowserCoreError(
+          "unsupported-capability",
+          `coordinate space ${coordinateSpace} is not supported by the fake engine`,
+          {
+            details: {
+              coordinateSpace,
+            },
+          },
+        );
       case "window":
       case "screen":
       case "device-pixel":

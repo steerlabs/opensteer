@@ -23,6 +23,15 @@ import {
   type ComputerUseBridge,
   type NormalizedComputerScreenshotOptions,
 } from "./bridge.js";
+import {
+  OPENSTEER_COMPUTER_DISPLAY_PROFILE,
+  createComputerDisplayTransform,
+  normalizeComputerScreenshot,
+  resolveComputerAnnotations,
+  toDisplayComputerTrace,
+  toDisplayViewportMetrics,
+  toNativeComputerAction,
+} from "./display.js";
 import { enrichComputerUseTrace } from "./trace-enrichment.js";
 
 export interface ComputerUseRuntime {
@@ -60,12 +69,19 @@ class DefaultComputerUseRuntime implements ComputerUseRuntime {
     readonly timeout: TimeoutExecutionContext;
   }): Promise<OpensteerComputerExecuteOutput> {
     const bridge = this.requireBridge();
+    const preActionNativeViewport = await input.timeout.runStep(() =>
+      this.options.engine.getViewportMetrics({
+        pageRef: input.pageRef,
+      }),
+    );
+    const preActionDisplay = createComputerDisplayTransform(preActionNativeViewport);
+    const nativeAction = toNativeComputerAction(input.input.action, preActionDisplay);
     const screenshot = normalizeScreenshotOptions(input.input.screenshot);
 
     const executed = await input.timeout.runStep(() =>
       bridge.execute({
         pageRef: input.pageRef,
-        action: input.input.action,
+        action: nativeAction,
         screenshot,
         signal: input.timeout.signal,
         remainingMs: () => input.timeout.remainingMs(),
@@ -85,7 +101,7 @@ class DefaultComputerUseRuntime implements ComputerUseRuntime {
       try {
         trace = await input.timeout.runStep(() =>
           enrichComputerUseTrace({
-            action: input.input.action,
+            action: nativeAction,
             pageRef: input.pageRef,
             engine: this.options.engine,
             dom: this.options.dom,
@@ -96,14 +112,26 @@ class DefaultComputerUseRuntime implements ComputerUseRuntime {
       }
     }
 
+    const nativeScreenshot = normalizeScreenshotArtifact(executed.screenshot);
+    const postActionDisplay = createComputerDisplayTransform(executed.viewport);
+    const screenshotArtifact = await input.timeout.runStep(() =>
+      normalizeComputerScreenshot({
+        screenshot: nativeScreenshot,
+        transform: postActionDisplay,
+      }),
+    );
+    const displayTrace = toDisplayComputerTrace(trace, preActionDisplay);
+
     return {
       action: input.input.action,
       pageRef: executed.pageRef,
-      screenshot: normalizeScreenshotArtifact(executed.screenshot),
-      viewport: executed.viewport,
+      screenshot: screenshotArtifact,
+      displayViewport: toDisplayViewportMetrics(executed.viewport, postActionDisplay),
+      nativeViewport: executed.viewport,
+      displayScale: postActionDisplay.nativeToDisplay,
       events: executed.events,
       timing: executed.timing,
-      ...(trace === undefined ? {} : { trace }),
+      ...(displayTrace === undefined ? {} : { trace: displayTrace }),
     };
   }
 
@@ -163,8 +191,8 @@ function normalizeScreenshotOptions(
   input: OpensteerComputerExecuteInput["screenshot"] | undefined,
 ): NormalizedComputerScreenshotOptions {
   return {
-    format: input?.format ?? "png",
-    includeCursor: input?.includeCursor ?? false,
-    annotations: [...(input?.annotations ?? [])],
+    format: input?.format ?? OPENSTEER_COMPUTER_DISPLAY_PROFILE.defaultScreenshotFormat,
+    includeCursor: input?.includeCursor ?? OPENSTEER_COMPUTER_DISPLAY_PROFILE.defaultIncludeCursor,
+    annotations: [...resolveComputerAnnotations(input?.disableAnnotations)],
   };
 }

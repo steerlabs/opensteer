@@ -266,6 +266,25 @@ function renderNode(
     );
   }
 
+  // Flatten structural root tags (html, head, body) inside iframe/shadow boundaries.
+  // HTML5 parsers merge duplicate <html> attributes into the first <html> element,
+  // which can cause attributes like data-opensteer-hidden from an iframe's <html>
+  // to pollute the main document's <html> element.
+  if (
+    (depth.iframeDepth > 0 || depth.shadowDepth > 0) &&
+    (tagName === "html" || tagName === "head" || tagName === "body")
+  ) {
+    return renderChildren(
+      snapshot,
+      node,
+      nodesById,
+      snapshotsByDocumentRef,
+      snapshotIndices,
+      renderedNodes,
+      depth,
+    );
+  }
+
   const originalAttributes = normalizeNodeAttributes(node.attributes);
   const attributes = [...originalAttributes];
   const hidden = isLikelyHidden(node);

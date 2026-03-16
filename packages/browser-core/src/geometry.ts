@@ -28,6 +28,7 @@ export type CoordinateSpace =
   | "document-css"
   | "layout-viewport-css"
   | "visual-viewport-css"
+  | "computer-display-css"
   | "window"
   | "screen"
   | "device-pixel";

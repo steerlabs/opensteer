@@ -3,6 +3,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 
 import type { BrowserCoreEngine } from "../../packages/browser-core/src/index.js";
@@ -27,7 +28,6 @@ import {
   type Phase6FixtureServer,
 } from "./phase6-fixture.js";
 import { ensureCliArtifactsBuilt } from "./cli-artifacts.js";
-import { readPngSize } from "../helpers/png.js";
 
 const execFile = promisify(execFileCallback);
 const CLI_SCRIPT = path.resolve(process.cwd(), "packages/opensteer/dist/cli/bin.js");
@@ -561,13 +561,7 @@ describe("Phase 6 SDK and CLI surfaces", () => {
       counter.pathHint.includes("#offscreen-scroll-box"),
     );
 
-    await runCliCommand(rootDir, [
-      "click",
-      "--selector",
-      "#move-offscreen",
-      "--name",
-      sessionName,
-    ]);
+    await runCliCommand(rootDir, ["click", "--selector", "#move-offscreen", "--name", sessionName]);
 
     await runCliCommand(rootDir, ["click", String(offscreenButton.element), "--name", sessionName]);
     expect(
@@ -894,12 +888,13 @@ describe("Phase 6 SDK and CLI surfaces", () => {
       '{"type":"click","x":110,"y":41}',
       "--name",
       sessionName,
-      "--annotations",
-      "clickable,grid",
+      "--disable-annotations",
+      "grid,scrollable,selected,typeable",
     ]);
     expect((computer as { readonly action: { readonly type: string } }).action.type).toBe("click");
     const computerOutput = computer as {
       readonly screenshot: {
+        readonly format: string;
         readonly payload: {
           readonly data: string;
         };
@@ -908,7 +903,7 @@ describe("Phase 6 SDK and CLI surfaces", () => {
           readonly height: number;
         };
       };
-      readonly viewport: {
+      readonly displayViewport: {
         readonly visualViewport: {
           readonly size: {
             readonly width: number;
@@ -917,9 +912,14 @@ describe("Phase 6 SDK and CLI surfaces", () => {
         };
       };
     };
-    const raster = readPngSize(Buffer.from(computerOutput.screenshot.payload.data, "base64"));
-    expect(raster).toEqual(computerOutput.screenshot.size);
-    expect(computerOutput.screenshot.size).toEqual(computerOutput.viewport.visualViewport.size);
+    const raster = await sharp(
+      Buffer.from(computerOutput.screenshot.payload.data, "base64"),
+    ).metadata();
+    expect(computerOutput.screenshot.format).toBe("webp");
+    expect({ width: raster.width, height: raster.height }).toEqual(computerOutput.screenshot.size);
+    expect(computerOutput.screenshot.size).toEqual(
+      computerOutput.displayViewport.visualViewport.size,
+    );
 
     const extracted = await runCliCommand(rootDir, [
       "extract",
@@ -1322,10 +1322,7 @@ function createPolicy(options: {
   };
 }
 
-async function expectStatus(
-  runtime: OpensteerSessionRuntime,
-  expected: string,
-): Promise<void> {
+async function expectStatus(runtime: OpensteerSessionRuntime, expected: string): Promise<void> {
   await expect(
     runtime.extract({
       description: "offscreen status",

@@ -319,13 +319,18 @@ export type OpensteerComputerAction =
 export interface OpensteerComputerScreenshotOptions {
   readonly format?: ScreenshotFormat;
   readonly includeCursor?: boolean;
-  readonly annotations?: readonly OpensteerComputerAnnotation[];
+  readonly disableAnnotations?: readonly OpensteerComputerAnnotation[];
 }
 
 export interface OpensteerComputerExecuteInput {
   readonly action: OpensteerComputerAction;
   readonly screenshot?: OpensteerComputerScreenshotOptions;
   readonly networkTag?: string;
+}
+
+export interface OpensteerComputerDisplayScale {
+  readonly x: number;
+  readonly y: number;
 }
 
 export interface OpensteerComputerTracePoint {
@@ -349,7 +354,9 @@ export interface OpensteerComputerExecuteOutput {
   readonly action: OpensteerComputerAction;
   readonly pageRef: PageRef;
   readonly screenshot: ScreenshotArtifact;
-  readonly viewport: ViewportMetrics;
+  readonly displayViewport: ViewportMetrics;
+  readonly nativeViewport: ViewportMetrics;
+  readonly displayScale: OpensteerComputerDisplayScale;
   readonly events: readonly OpensteerEvent[];
   readonly timing: OpensteerComputerExecuteTiming;
   readonly trace?: OpensteerComputerTraceEnrichment;
@@ -893,7 +900,7 @@ const opensteerComputerScreenshotOptionsSchema: JsonSchema = objectSchema(
   {
     format: enumSchema(["png", "jpeg", "webp"] as const),
     includeCursor: { type: "boolean" },
-    annotations: arraySchema(opensteerComputerAnnotationSchema, {
+    disableAnnotations: arraySchema(opensteerComputerAnnotationSchema, {
       uniqueItems: true,
     }),
   },
@@ -949,19 +956,41 @@ const opensteerComputerExecuteTimingSchema: JsonSchema = objectSchema(
   },
 );
 
+const opensteerComputerDisplayScaleSchema: JsonSchema = objectSchema(
+  {
+    x: numberSchema({ exclusiveMinimum: 0 }),
+    y: numberSchema({ exclusiveMinimum: 0 }),
+  },
+  {
+    title: "OpensteerComputerDisplayScale",
+    required: ["x", "y"],
+  },
+);
+
 const opensteerComputerExecuteOutputSchema: JsonSchema = objectSchema(
   {
     action: opensteerComputerActionSchema,
     pageRef: pageRefSchema,
     screenshot: screenshotArtifactSchema,
-    viewport: viewportMetricsSchema,
+    displayViewport: viewportMetricsSchema,
+    nativeViewport: viewportMetricsSchema,
+    displayScale: opensteerComputerDisplayScaleSchema,
     events: arraySchema(opensteerEventSchema),
     timing: opensteerComputerExecuteTimingSchema,
     trace: opensteerComputerTraceEnrichmentSchema,
   },
   {
     title: "OpensteerComputerExecuteOutput",
-    required: ["action", "pageRef", "screenshot", "viewport", "events", "timing"],
+    required: [
+      "action",
+      "pageRef",
+      "screenshot",
+      "displayViewport",
+      "nativeViewport",
+      "displayScale",
+      "events",
+      "timing",
+    ],
   },
 );
 
@@ -1080,7 +1109,8 @@ export const opensteerSemanticOperationSpecifications = [
   }),
   defineSemanticOperationSpec<OpensteerNetworkSaveInput, OpensteerNetworkSaveOutput>({
     name: "network.save",
-    description: "Persist filtered live network records into the saved network registry under a tag.",
+    description:
+      "Persist filtered live network records into the saved network registry under a tag.",
     inputSchema: opensteerNetworkSaveInputSchema,
     outputSchema: opensteerNetworkSaveOutputSchema,
     requiredCapabilities: ["inspect.network"],
@@ -1137,7 +1167,7 @@ export const opensteerSemanticOperationSpecifications = [
   defineSemanticOperationSpec<OpensteerComputerExecuteInput, OpensteerComputerExecuteOutput>({
     name: "computer.execute",
     description:
-      "Execute a computer-use action in layout-viewport CSS pixels and return the post-action screenshot of the actionable page area in that same space.",
+      "Execute a computer-use action in canonical computer-display-css coordinates and return the post-action screenshot in that same model-visible space.",
     inputSchema: opensteerComputerExecuteInputSchema,
     outputSchema: opensteerComputerExecuteOutputSchema,
     requiredCapabilities: ["artifacts.screenshot", "inspect.viewportMetrics"],

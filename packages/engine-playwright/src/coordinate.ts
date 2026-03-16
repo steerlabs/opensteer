@@ -36,6 +36,7 @@ export function toDocumentPoint(
         point.x / metrics.devicePixelRatio + metrics.scrollOffset.x,
         point.y / metrics.devicePixelRatio + metrics.scrollOffset.y,
       );
+    case "computer-display-css":
     case "screen":
     case "window":
       unsupportedCoordinateSpace(coordinateSpace);
@@ -55,6 +56,7 @@ export function toViewportPoint(
       return createPoint(point.x - metrics.scrollOffset.x, point.y - metrics.scrollOffset.y);
     case "device-pixel":
       return createPoint(point.x / metrics.devicePixelRatio, point.y / metrics.devicePixelRatio);
+    case "computer-display-css":
     case "screen":
     case "window":
       unsupportedCoordinateSpace(coordinateSpace);

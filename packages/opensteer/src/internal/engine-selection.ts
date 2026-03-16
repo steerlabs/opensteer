@@ -4,6 +4,8 @@ import type {
   OpensteerBrowserLaunchOptions,
 } from "@opensteer/protocol";
 
+import { OPENSTEER_COMPUTER_DISPLAY_PROFILE } from "../runtimes/computer-use/display.js";
+
 export const OPENSTEER_ENGINE_NAMES = ["playwright", "abp"] as const;
 export type OpensteerEngineName = (typeof OPENSTEER_ENGINE_NAMES)[number];
 
@@ -44,9 +46,10 @@ const OPENSTEER_ENGINE_REGISTRY = {
   playwright: {
     createFactory: (importers) => async (options) => {
       const { createPlaywrightBrowserCoreEngine } = await importers.importPlaywrightModule();
+      const context = normalizeOpensteerBrowserContextOptions(options.context);
       return createPlaywrightBrowserCoreEngine({
         ...(options.browser === undefined ? {} : { launch: options.browser }),
-        ...(options.context === undefined ? {} : { context: options.context }),
+        ...(context === undefined ? {} : { context }),
       });
     },
   },
@@ -54,7 +57,10 @@ const OPENSTEER_ENGINE_REGISTRY = {
     createFactory: (importers) => async (options) => {
       assertSupportedAbpEngineOptions(options);
       const { createAbpBrowserCoreEngine } = await loadAbpEngineModule(importers);
-      const launch = toAbpLaunchOptions(options.browser);
+      const launch = toAbpLaunchOptions(
+        options.browser,
+        normalizeOpensteerBrowserContextOptions(options.context),
+      );
       return createAbpBrowserCoreEngine(
         launch === undefined
           ? {}
@@ -106,6 +112,15 @@ export function createOpensteerEngineFactory(
 
 export const defaultOpensteerEngineFactory = createOpensteerEngineFactory(DEFAULT_OPENSTEER_ENGINE);
 
+export function normalizeOpensteerBrowserContextOptions(
+  context: OpensteerBrowserContextOptions | undefined,
+): OpensteerBrowserContextOptions | undefined {
+  return {
+    ...(context ?? {}),
+    viewport: context?.viewport ?? OPENSTEER_COMPUTER_DISPLAY_PROFILE.preferredViewport,
+  };
+}
+
 async function loadAbpEngineModule(importers: OpensteerEngineModuleImporters) {
   try {
     return await importers.importAbpModule();
@@ -119,24 +134,34 @@ async function loadAbpEngineModule(importers: OpensteerEngineModuleImporters) {
   }
 }
 
-function toAbpLaunchOptions(options: OpensteerBrowserLaunchOptions | undefined):
+function toAbpLaunchOptions(
+  options: OpensteerBrowserLaunchOptions | undefined,
+  context: OpensteerBrowserContextOptions | undefined,
+):
   | {
       readonly headless?: boolean;
       readonly args?: readonly string[];
       readonly browserExecutablePath?: string;
     }
   | undefined {
-  if (options === undefined) {
-    return undefined;
+  const mapped: {
+    headless?: boolean;
+    args?: readonly string[];
+    browserExecutablePath?: string;
+  } = {};
+
+  if (options?.headless !== undefined) {
+    mapped.headless = options.headless;
   }
 
-  const mapped = {
-    ...(options.headless === undefined ? {} : { headless: options.headless }),
-    ...(options.args === undefined ? {} : { args: options.args }),
-    ...(options.executablePath === undefined
-      ? {}
-      : { browserExecutablePath: options.executablePath }),
-  };
+  const args = mergeAbpLaunchArgs(options?.args, context?.viewport);
+  if (args !== undefined) {
+    mapped.args = args;
+  }
+
+  if (options?.executablePath !== undefined) {
+    mapped.browserExecutablePath = options.executablePath;
+  }
 
   return Object.keys(mapped).length === 0 ? undefined : mapped;
 }
@@ -148,7 +173,7 @@ function assertSupportedAbpEngineOptions(options: OpensteerNamedEngineFactoryOpt
       OPENSTEER_ABP_SUPPORTED_BROWSER_OPTIONS,
       "browser",
     ),
-    ...listDefinedOptionNames(options.context, "context"),
+    ...listUnsupportedContextOptionNames(options.context),
   ];
   if (unsupportedOptionNames.length === 0) {
     return;
@@ -157,9 +182,22 @@ function assertSupportedAbpEngineOptions(options: OpensteerNamedEngineFactoryOpt
   const supportedBrowserOptions = OPENSTEER_ABP_SUPPORTED_BROWSER_OPTIONS.map(
     (name) => `browser.${name}`,
   ).join(", ");
+  const supportedContextOptions = "context.viewport";
   throw new Error(
-    `ABP engine does not support ${unsupportedOptionNames.join(", ")}. Supported ABP open options: ${supportedBrowserOptions}.`,
+    `ABP engine does not support ${unsupportedOptionNames.join(", ")}. Supported ABP open options: ${supportedBrowserOptions}, ${supportedContextOptions}.`,
   );
+}
+
+function listUnsupportedContextOptionNames(
+  options: OpensteerBrowserContextOptions | undefined,
+): readonly string[] {
+  if (options === undefined) {
+    return [];
+  }
+
+  return Object.entries(options)
+    .filter(([key, value]) => value !== undefined && key !== "viewport")
+    .map(([key]) => `context.${key}`);
 }
 
 function listUnsupportedOptionNames<T extends object, TSupportedKey extends keyof T>(
@@ -177,17 +215,43 @@ function listUnsupportedOptionNames<T extends object, TSupportedKey extends keyo
     .map(([key]) => `${prefix}.${key}`);
 }
 
-function listDefinedOptionNames<T extends object>(
-  options: T | undefined,
-  prefix: string,
-): readonly string[] {
-  if (options === undefined) {
+function mergeAbpLaunchArgs(
+  args: readonly string[] | undefined,
+  viewport:
+    | {
+        readonly width: number;
+        readonly height: number;
+      }
+    | null
+    | undefined,
+): readonly string[] | undefined {
+  const filtered = stripAbpWindowSizeArgs(args);
+  if (viewport === undefined || viewport === null) {
+    return filtered.length === 0 ? undefined : filtered;
+  }
+
+  return [...filtered, `--window-size=${viewport.width},${viewport.height}`];
+}
+
+function stripAbpWindowSizeArgs(args: readonly string[] | undefined): readonly string[] {
+  if (args === undefined) {
     return [];
   }
 
-  return Object.entries(options)
-    .filter(([, value]) => value !== undefined)
-    .map(([key]) => `${prefix}.${key}`);
+  const filtered: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]!;
+    if (argument === "--window-size") {
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith("--window-size=")) {
+      continue;
+    }
+    filtered.push(argument);
+  }
+
+  return filtered;
 }
 
 function isMissingPackageError(error: unknown, packageName: string): boolean {
