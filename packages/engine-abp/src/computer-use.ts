@@ -17,7 +17,10 @@ import type {
   NormalizedComputerScreenshotOptions,
 } from "@opensteer/protocol";
 
-import { DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS } from "./action-settle.js";
+import {
+  clampAbpActionSettleTimeout,
+  type AbpActionBoundaryOptions,
+} from "./action-settle.js";
 import {
   buildImmediateActionRequest,
   buildImmediateScreenshotRequest,
@@ -50,14 +53,7 @@ export function createAbpComputerUseBridge(context: {
   flushDomUpdateTask(controller: PageController): Promise<void>;
   settleActionBoundary(
     controller: PageController,
-    options: {
-      readonly timeoutMs: number;
-      readonly signal?: AbortSignal;
-      readonly policySettle?: (
-        pageRef: PageRef,
-        signal: AbortSignal | undefined,
-      ) => Promise<void>;
-    },
+    options: AbpActionBoundaryOptions,
   ): Promise<void>;
   requireMainFrame(controller: PageController): {
     readonly frameRef: FrameRef;
@@ -217,9 +213,9 @@ export function createAbpComputerUseBridge(context: {
       let displayResponse = response;
       if (action.type !== "screenshot") {
         await context.settleActionBoundary(resultController, {
-          timeoutMs: boundAbpActionSettleTimeout(remainingMs),
+          timeoutMs: clampAbpActionSettleTimeout(remainingMs),
           signal: input.signal,
-          policySettle: (pageRef) => input.policySettle(pageRef),
+          policySettle: input.policySettle,
         });
         displayResponse = await session.rest.screenshotTab(
           resultController.tabId,
@@ -267,13 +263,6 @@ function toAbpScreenshotOptions(screenshot: NormalizedComputerScreenshotOptions)
     ...(screenshot.format === undefined ? {} : { format: screenshot.format }),
     ...(screenshot.annotations.length === 0 ? {} : { markup: [...screenshot.annotations] }),
   };
-}
-
-function boundAbpActionSettleTimeout(timeoutMs: number | undefined): number {
-  if (timeoutMs === undefined) {
-    return DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS;
-  }
-  return Math.max(0, Math.min(DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS, timeoutMs));
 }
 
 function materializeDisplayContract(input: {

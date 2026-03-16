@@ -33,6 +33,15 @@ export interface AbpActionSettleOptions {
   readonly policySettle?: (pageRef: PageRef, signal: AbortSignal | undefined) => Promise<void>;
 }
 
+export type AbpActionBoundaryOptions = Omit<AbpActionSettleOptions, "controller">;
+
+export function clampAbpActionSettleTimeout(timeoutMs: number | undefined): number {
+  if (timeoutMs === undefined) {
+    return DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS;
+  }
+  return Math.max(0, Math.min(DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS, timeoutMs));
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
