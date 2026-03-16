@@ -622,7 +622,7 @@ headedChromiumTest(
         },
         signal: new AbortController().signal,
         remainingMs: () => 10_000,
-        settle: async () => {},
+        policySettle: async () => {},
       });
       const topRaster = readPngSize(top.screenshot.payload.bytes);
 
@@ -646,7 +646,7 @@ headedChromiumTest(
         },
         signal: new AbortController().signal,
         remainingMs: () => 10_000,
-        settle: async () => {},
+        policySettle: async () => {},
       });
       const scrolledRaster = readPngSize(scrolled.screenshot.payload.bytes);
 
@@ -1144,7 +1144,7 @@ test("computer-use bridge renders annotation and cursor overlays", async () => {
       },
       signal: new AbortController().signal,
       remainingMs: () => 10_000,
-      settle: async () => {},
+      policySettle: async () => {},
     });
 
     const plain = await bridge.execute({
@@ -1159,7 +1159,7 @@ test("computer-use bridge renders annotation and cursor overlays", async () => {
       },
       signal: new AbortController().signal,
       remainingMs: () => 10_000,
-      settle: async () => {},
+      policySettle: async () => {},
     });
 
     const decorated = await bridge.execute({
@@ -1174,7 +1174,7 @@ test("computer-use bridge renders annotation and cursor overlays", async () => {
       },
       signal: new AbortController().signal,
       remainingMs: () => 10_000,
-      settle: async () => {},
+      policySettle: async () => {},
     });
 
     expect(
@@ -1214,7 +1214,7 @@ test("computer-use bridge hands off popup pages", async () => {
       },
       signal: new AbortController().signal,
       remainingMs: () => 10_000,
-      settle: async () => {
+      policySettle: async () => {
         await wait(150);
       },
     });

@@ -69,7 +69,7 @@ class DefaultComputerUseRuntime implements ComputerUseRuntime {
         screenshot,
         signal: input.timeout.signal,
         remainingMs: () => input.timeout.remainingMs(),
-        settle: async (pageRef) =>
+        policySettle: async (pageRef) =>
           settleWithPolicy(this.options.policy.settle, {
             operation: "computer.execute",
             trigger: "dom-action",

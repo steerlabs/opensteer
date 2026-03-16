@@ -355,7 +355,7 @@ describe("engine-abp internals", () => {
     );
   });
 
-  test("computer-use bridge translates drag requests and captures a fresh post-settle screenshot", async () => {
+  test("computer-use bridge translates drag requests and returns ABP's native screenshot", async () => {
     const bridge = createAbpComputerUseBridge(createComputerBridgeContext());
     const signal = new AbortController().signal;
 
@@ -374,7 +374,7 @@ describe("engine-abp internals", () => {
       },
       signal,
       remainingMs: () => 10_000,
-      settle: async () => {},
+      policySettle: async () => {},
     });
 
     const rest = outputTestState.rest;
@@ -397,9 +397,8 @@ describe("engine-abp internals", () => {
         signal,
       },
     );
-    expect(outputTestState.resettlePausedExecution).toHaveBeenCalledWith(
+    expect(outputTestState.flushDomUpdateTask).toHaveBeenCalledWith(
       expect.objectContaining({ pageRef: createPageRef("main") }),
-      5_000,
     );
     expect(rest.screenshotTab).not.toHaveBeenCalled();
     expect(output.screenshot.size).toEqual(output.viewport.visualViewport.size);
@@ -430,15 +429,14 @@ describe("engine-abp internals", () => {
       },
       signal: new AbortController().signal,
       remainingMs: () => 10_000,
-      settle: async () => {},
+      policySettle: async () => {},
     });
 
     const rest = outputTestState.rest;
     expect(output.pageRef).toBe(popupPageRef);
     expect(output.events.map((event) => event.kind)).toContain("page-created");
-    expect(outputTestState.resettlePausedExecution).toHaveBeenCalledWith(
+    expect(outputTestState.flushDomUpdateTask).toHaveBeenCalledWith(
       expect.objectContaining({ pageRef: popupPageRef }),
-      5_000,
     );
     expect(rest.screenshotTab).not.toHaveBeenCalled();
   });
@@ -461,7 +459,7 @@ describe("engine-abp internals", () => {
       },
       signal: controller.signal,
       remainingMs: () => 4_321,
-      settle: async () => {},
+      policySettle: async () => {},
     });
 
     expect(outputTestState.rest.clickTab).toHaveBeenCalledWith(
@@ -476,9 +474,8 @@ describe("engine-abp internals", () => {
         signal: controller.signal,
       },
     );
-    expect(outputTestState.resettlePausedExecution).toHaveBeenCalledWith(
+    expect(outputTestState.flushDomUpdateTask).toHaveBeenCalledWith(
       expect.objectContaining({ pageRef: createPageRef("main") }),
-      4_321,
     );
   });
 
@@ -499,7 +496,7 @@ describe("engine-abp internals", () => {
       },
       signal,
       remainingMs: () => 10_000,
-      settle: async () => {},
+      policySettle: async () => {},
     });
 
     expect(outputTestState.rest.waitTab).toHaveBeenCalledWith(
@@ -539,7 +536,7 @@ describe("engine-abp internals", () => {
       },
       signal,
       remainingMs: () => 10_000,
-      settle: async () => {},
+      policySettle: async () => {},
     });
 
     expect(outputTestState.rest.scrollTab).toHaveBeenCalledWith(
@@ -582,7 +579,7 @@ describe("engine-abp internals", () => {
         },
         signal: new AbortController().signal,
         remainingMs: () => 10_000,
-        settle: async () => {},
+        policySettle: async () => {},
       }),
     ).rejects.toThrow("did not match viewport");
   });
@@ -595,7 +592,6 @@ describe("engine-abp internals", () => {
 const outputTestState = {
   rest: createRestStubs(),
   flushDomUpdateTask: vi.fn(async () => {}),
-  resettlePausedExecution: vi.fn(async () => {}),
 };
 
 function createComputerBridgeContext(
@@ -613,7 +609,6 @@ function createComputerBridgeContext(
     viewportHeight: options.viewportHeight,
   });
   outputTestState.flushDomUpdateTask = vi.fn(async () => {});
-  outputTestState.resettlePausedExecution = vi.fn(async () => {});
 
   const sessionRef = createSessionRef("abp-computer");
   const mainPageRef = createPageRef("main");
@@ -677,7 +672,6 @@ function createComputerBridgeContext(
       dialogEvents: [],
     }),
     flushDomUpdateTask: outputTestState.flushDomUpdateTask,
-    resettlePausedExecution: outputTestState.resettlePausedExecution,
     requireMainFrame: (controller: ReturnType<typeof createPageController>) => controller.mainFrame,
     drainQueuedEvents: (pageRef: ReturnType<typeof createPageRef>) =>
       pageRef === popupPageRef &&

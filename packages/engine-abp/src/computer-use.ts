@@ -47,7 +47,6 @@ export function createAbpComputerUseBridge(context: {
     execute: () => Promise<AbpActionResponse>,
   ): Promise<{ readonly response: AbpActionResponse; readonly dialogEvents: readonly StepEvent[] }>;
   flushDomUpdateTask(controller: PageController): Promise<void>;
-  resettlePausedExecution(controller: PageController, timeoutMs: number): Promise<void>;
   requireMainFrame(controller: PageController): {
     readonly frameRef: FrameRef;
     readonly currentDocument: {
@@ -203,12 +202,6 @@ export function createAbpComputerUseBridge(context: {
         session.activePageRef = resultPageRef;
       }
       const resultController = context.resolveController(resultPageRef);
-      const remainingBudgetMs = input.remainingMs();
-      const settleBudgetMs =
-        remainingBudgetMs === undefined ? 5_000 : Math.max(0, Math.min(remainingBudgetMs, 5_000));
-      if (settleBudgetMs > 0) {
-        await context.resettlePausedExecution(resultController, settleBudgetMs);
-      }
       await context.flushDomUpdateTask(resultController);
 
       const display = materializeDisplayContract({

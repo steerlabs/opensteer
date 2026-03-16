@@ -91,7 +91,7 @@ export function createPlaywrightComputerUseBridge(context: {
 
       if (action.type !== "screenshot" && action.type !== "wait") {
         const waitStartedAt = Date.now();
-        await input.settle(actionController.pageRef);
+        await input.policySettle(actionController.pageRef);
         waitMs = Date.now() - waitStartedAt;
       } else if (action.type === "wait") {
         waitMs = actionMs;
@@ -108,7 +108,7 @@ export function createPlaywrightComputerUseBridge(context: {
         resultController.pageRef !== actionController.pageRef
       ) {
         const popupWaitStartedAt = Date.now();
-        await input.settle(resultController.pageRef);
+        await input.policySettle(resultController.pageRef);
         waitMs += Date.now() - popupWaitStartedAt;
         await context.flushPendingPageTasks(actionController.sessionRef);
         resultController = context.resolveController(resultController.pageRef);

@@ -1,6 +1,5 @@
 import {
   createPoint,
-  createRect,
   quadBounds,
   rectContainsPoint,
   type BrowserCoreEngine,
@@ -11,12 +10,10 @@ import {
   type Point,
   type Quad,
   type Rect,
-  type ViewportMetrics,
 } from "@opensteer/browser-core";
 import { OpensteerProtocolError } from "@opensteer/protocol";
 
 import {
-  assertValidActionPosition,
   runWithPolicyTimeout,
   settleWithPolicy,
   type DomActionPolicyOperation,
@@ -247,7 +244,7 @@ export class DomActionExecutor {
           );
 
           if (input.position !== undefined) {
-            assertValidActionPosition(resolved, input.position);
+            assertValidResolvedActionPosition(resolved, input.position);
           }
 
           const inspectionBeforeScroll = await timeout.runStep(() =>
@@ -312,18 +309,18 @@ export class DomActionExecutor {
   ): Promise<void> {
     const bridge = this.requireBridge();
     await timeout.runStep(() =>
-      bridge.settleAfterDomAction(pageRef, {
+      bridge.finalizeDomAction(pageRef, {
+        operation,
         signal: timeout.signal,
         remainingMs: () => timeout.remainingMs(),
-      }),
-    );
-    await timeout.runStep(() =>
-      settleWithPolicy(this.options.policy.settle, {
-        operation,
-        trigger: "dom-action",
-        engine: this.options.engine,
-        pageRef,
-        signal: timeout.signal,
+        policySettle: (targetPageRef) =>
+          settleWithPolicy(this.options.policy.settle, {
+            operation,
+            trigger: "dom-action",
+            engine: this.options.engine,
+            pageRef: targetPageRef,
+            signal: timeout.signal,
+          }),
       }),
     );
   }
@@ -350,15 +347,12 @@ export class DomActionExecutor {
     inspection: DomActionTargetInspection,
     position: Point | undefined,
   ): Promise<Point> {
-    const metrics = await this.options.engine.getViewportMetrics({ pageRef: resolved.pageRef });
-    const viewportRect = toViewportRect(metrics);
-
     if (position !== undefined) {
       const bounds = inspection.bounds;
       if (bounds === undefined) {
         throw this.createActionabilityError(
           operation,
-          "not-visible",
+          "missing-geometry",
           `target ${resolved.nodeRef} does not expose live DOM geometry`,
           undefined,
           true,
@@ -374,7 +368,6 @@ export class DomActionExecutor {
           {
             rect: bounds,
             point,
-            viewportRect,
           },
           true,
         );
@@ -382,26 +375,17 @@ export class DomActionExecutor {
       return point;
     }
 
-    for (const quad of inspection.contentQuads) {
-      const candidateRect = intersectRects(quadBounds(quad), viewportRect);
-      if (candidateRect === undefined || candidateRect.width === 0 || candidateRect.height === 0) {
-        continue;
-      }
-      return createPoint(
-        candidateRect.x + candidateRect.width / 2,
-        candidateRect.y + candidateRect.height / 2,
-      );
+    const quad = inspection.contentQuads[0];
+    if (quad) {
+      return centerOfQuad(quad);
     }
 
-    const rect = inspection.bounds;
-    const reason = rect === undefined ? "not-visible" : "not-in-viewport";
     throw this.createActionabilityError(
       operation,
-      reason,
-      `target ${resolved.nodeRef} has no visible actionable point after scrolling`,
+      "missing-geometry",
+      `target ${resolved.nodeRef} has no live actionable geometry after scrolling`,
       {
-        ...(rect === undefined ? {} : { rect }),
-        viewportRect,
+        ...(inspection.bounds === undefined ? {} : { rect: inspection.bounds }),
       },
       true,
     );
@@ -558,7 +542,7 @@ export class DomActionExecutor {
 
   private createActionabilityError(
     operation: DomActionPolicyOperation,
-    reason: "missing-geometry" | "not-visible" | "disabled" | "not-in-viewport" | "obscured",
+    reason: "missing-geometry" | "not-visible" | "disabled" | "obscured",
     message: string,
     details?: Readonly<Record<string, unknown>>,
     retriable = false,
@@ -641,28 +625,37 @@ function readAttributeValue(resolved: ResolvedDomTarget, name: string): string |
   return resolved.node.attributes.find((attribute) => attribute.name === name)?.value;
 }
 
-function pointFallsWithinQuads(point: Point, quads: readonly Quad[]): boolean {
-  return quads.some((quad) => rectContainsPoint(quadBounds(quad), point));
+function assertValidResolvedActionPosition(
+  target: ResolvedDomTarget,
+  position: Point,
+): void {
+  const rect = target.node.layout?.rect;
+  if (!rect) {
+    return;
+  }
+
+  const point = createPoint(rect.x + position.x, rect.y + position.y);
+  if (!rectContainsPoint(rect, point)) {
+    throw new OpensteerProtocolError(
+      "invalid-argument",
+      `target point for ${target.nodeRef} falls outside the resolved DOM box`,
+      {
+        details: {
+          position,
+          rect,
+        },
+      },
+    );
+  }
 }
 
-function toViewportRect(metrics: ViewportMetrics): Rect {
-  return createRect(
-    metrics.visualViewport.origin.x,
-    metrics.visualViewport.origin.y,
-    metrics.visualViewport.size.width,
-    metrics.visualViewport.size.height,
+function centerOfQuad(quad: Quad): Point {
+  return createPoint(
+    (quad[0].x + quad[1].x + quad[2].x + quad[3].x) / 4,
+    (quad[0].y + quad[1].y + quad[2].y + quad[3].y) / 4,
   );
 }
 
-function intersectRects(left: Rect, right: Rect): Rect | undefined {
-  const minX = Math.max(left.x, right.x);
-  const minY = Math.max(left.y, right.y);
-  const maxX = Math.min(left.x + left.width, right.x + right.width);
-  const maxY = Math.min(left.y + left.height, right.y + right.height);
-
-  if (maxX < minX || maxY < minY) {
-    return undefined;
-  }
-
-  return createRect(minX, minY, Math.max(0, maxX - minX), Math.max(0, maxY - minY));
+function pointFallsWithinQuads(point: Point, quads: readonly Quad[]): boolean {
+  return quads.some((quad) => rectContainsPoint(quadBounds(quad), point));
 }

@@ -1,61 +1,7 @@
-import type {
-  BrowserCoreEngine,
-  DocumentEpoch,
-  DocumentRef,
-  DomSnapshot,
-  NodeRef,
-  PageRef,
-  Point,
-  Rect,
-} from "@opensteer/browser-core";
+import type { BrowserCoreEngine, PageRef } from "@opensteer/browser-core";
 import type { OpensteerSemanticOperationName } from "@opensteer/protocol";
 
-import type { ResolvedDomTarget } from "../runtimes/dom/types.js";
-
 export type DomActionPolicyOperation = "dom.click" | "dom.hover" | "dom.input" | "dom.scroll";
-
-export type ActionabilityFailureReason =
-  | "missing-geometry"
-  | "not-visible"
-  | "disabled"
-  | "not-in-viewport"
-  | "obscured";
-
-export interface ActionabilityFailureDetails {
-  readonly rect?: Rect;
-  readonly point?: Point;
-  readonly viewportRect?: Rect;
-  readonly attribute?: string;
-  readonly hitNodeRef?: NodeRef;
-  readonly hitDocumentRef?: DocumentRef;
-  readonly hitDocumentEpoch?: DocumentEpoch;
-  readonly hitObscured?: boolean;
-  readonly pointerEventsSkipped?: boolean;
-}
-
-export type ActionabilityCheckResult =
-  | {
-      readonly actionable: true;
-      readonly point: Point;
-    }
-  | {
-      readonly actionable: false;
-      readonly reason: ActionabilityFailureReason;
-      readonly message: string;
-      readonly details?: ActionabilityFailureDetails;
-    };
-
-export interface ActionabilityCheckInput {
-  readonly engine: BrowserCoreEngine;
-  readonly operation: DomActionPolicyOperation;
-  readonly resolved: ResolvedDomTarget;
-  readonly position?: Point;
-  readonly loadDocumentSnapshot: (documentRef: DocumentRef) => Promise<DomSnapshot>;
-}
-
-export interface ActionabilityPolicy {
-  check(input: ActionabilityCheckInput): Promise<ActionabilityCheckResult>;
-}
 
 export interface TimeoutResolutionInput {
   readonly operation: OpensteerSemanticOperationName;
@@ -123,7 +69,6 @@ export interface FallbackPolicy {
 }
 
 export interface OpensteerPolicy {
-  readonly actionability: ActionabilityPolicy;
   readonly timeout: TimeoutPolicy;
   readonly settle: SettlePolicy;
   readonly retry: RetryPolicy;

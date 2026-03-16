@@ -116,8 +116,10 @@ export function createPlaywrightDomActionBridge(
       });
     },
 
-    async settleAfterDomAction(pageRef) {
+    async finalizeDomAction(pageRef, options) {
       const controller = context.resolveController(pageRef);
+      await context.flushPendingPageTasks(controller.sessionRef);
+      await options.policySettle(pageRef);
       await context.flushPendingPageTasks(controller.sessionRef);
       await context.flushDomUpdateTask(controller);
     },

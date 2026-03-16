@@ -149,6 +149,92 @@ for (const harness of harnesses) {
     );
 
     test(
+      "builds and replays open-shadow plus iframe paths for clicks",
+      { timeout: 60_000 },
+      async () => {
+        await withFixturePage(
+          harness,
+          async ({ engine, runtime, pageRef }) => {
+            const childFrame = await waitForChildFrame(
+              engine,
+              pageRef,
+              "/path-parity-shadow-host-child?kind=open",
+            );
+            const childSnapshot = await waitForNodeInFrame(engine, childFrame, "shadow-hosted-button");
+            const targetNode = expectValue(
+              findNodeById(childSnapshot, "shadow-hosted-button"),
+              "shadow-hosted button was not found",
+            );
+            const path = await runtime.buildPath({
+              locator: createLocator(childSnapshot, targetNode),
+            });
+
+            expect(path.context.map((hop) => hop.kind)).toEqual(["shadow", "iframe"]);
+
+            const resolved = await runtime.resolveTarget({
+              pageRef,
+              method: "click",
+              target: { kind: "path", path },
+            });
+            expect(readIdAttribute(resolved.node)).toBe("shadow-hosted-button");
+
+            await runtime.click({
+              pageRef,
+              target: { kind: "path", path },
+            });
+
+            expect(await readTextById(engine, childFrame, "shadow-hosted-status")).toBe("clicked:open");
+          },
+          "/path-parity-shadow-host-open-main",
+        );
+      },
+    );
+
+    test(
+      "builds and replays closed-shadow plus iframe paths for clicks",
+      { timeout: 60_000 },
+      async () => {
+        await withFixturePage(
+          harness,
+          async ({ engine, runtime, pageRef }) => {
+            const childFrame = await waitForChildFrame(
+              engine,
+              pageRef,
+              "/path-parity-shadow-host-child?kind=closed",
+            );
+            const childSnapshot = await waitForNodeInFrame(engine, childFrame, "shadow-hosted-button");
+            const targetNode = expectValue(
+              findNodeById(childSnapshot, "shadow-hosted-button"),
+              "shadow-hosted button was not found",
+            );
+            const path = await runtime.buildPath({
+              locator: createLocator(childSnapshot, targetNode),
+            });
+
+            expect(path.context.map((hop) => hop.kind)).toEqual(["shadow", "iframe"]);
+
+            const resolved = await runtime.resolveTarget({
+              pageRef,
+              method: "click",
+              target: { kind: "path", path },
+            });
+            expect(readIdAttribute(resolved.node)).toBe("shadow-hosted-button");
+
+            await runtime.click({
+              pageRef,
+              target: { kind: "path", path },
+            });
+
+            expect(await readTextById(engine, childFrame, "shadow-hosted-status")).toBe(
+              "clicked:closed",
+            );
+          },
+          "/path-parity-shadow-host-closed-main",
+        );
+      },
+    );
+
+    test(
       "builds and replays open-shadow offscreen paths for input",
       { timeout: 60_000 },
       async () => {
@@ -272,6 +358,7 @@ async function withFixturePage(
     readonly pageRef: string;
     readonly frameRef: string;
   }) => Promise<void>,
+  path: string = "/path-parity-main",
 ): Promise<void> {
   const engine = await harness.create();
   try {
@@ -279,7 +366,7 @@ async function withFixturePage(
     const sessionRef = await engine.createSession();
     const created = await engine.createPage({
       sessionRef,
-      url: `${fixtureBaseUrl}/path-parity-main`,
+      url: `${fixtureBaseUrl}${path}`,
     });
 
     await wait(600);
@@ -388,6 +475,24 @@ async function handleFixtureRequest(
   if (url.pathname === "/path-parity-child") {
     response.setHeader("content-type", "text/html; charset=utf-8");
     response.end(childDocument());
+    return;
+  }
+
+  if (url.pathname === "/path-parity-shadow-host-open-main") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(shadowHostedIframeDocument("open"));
+    return;
+  }
+
+  if (url.pathname === "/path-parity-shadow-host-closed-main") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(shadowHostedIframeDocument("closed"));
+    return;
+  }
+
+  if (url.pathname === "/path-parity-shadow-host-child") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(shadowHostedChildDocument(url.searchParams.get("kind") === "closed" ? "closed" : "open"));
     return;
   }
 
@@ -539,6 +644,72 @@ function childDocument(): string {
         '<button id="child-shadow-button" type="button" style="position:absolute;left:20px;top:1500px;width:220px;height:42px">Child Shadow</button>';
       root.getElementById("child-shadow-button").addEventListener("click", () => {
         document.getElementById("child-status").textContent = "child shadow clicked";
+      });
+    </script>
+  </body>
+</html>`;
+}
+
+function shadowHostedIframeDocument(mode: "open" | "closed"): string {
+  const childUrl = `/path-parity-shadow-host-child?kind=${mode}`;
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <style>
+      body { margin: 0; font: 16px/1.4 sans-serif; }
+      #host {
+        display: block;
+        width: 520px;
+        margin: 24px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="host"></div>
+    <script>
+      const host = document.getElementById("host");
+      const root = host.attachShadow({ mode: "${mode}" });
+      const frame = document.createElement("iframe");
+      frame.id = "shadow-hosted-frame";
+      frame.src = "${childUrl}";
+      frame.width = "420";
+      frame.height = "220";
+      frame.style.border = "0";
+      root.append(frame);
+    </script>
+  </body>
+</html>`;
+}
+
+function shadowHostedChildDocument(mode: "open" | "closed"): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <style>
+      body { margin: 0; font: 16px/1.4 sans-serif; }
+      #shadow-hosted-status {
+        position: fixed;
+        left: 16px;
+        top: 16px;
+        background: rgba(255, 255, 255, 0.96);
+      }
+      #shadow-hosted-button {
+        position: absolute;
+        left: 16px;
+        top: 72px;
+        width: 220px;
+        height: 42px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="shadow-hosted-status">ready</div>
+    <button id="shadow-hosted-button" type="button">Shadow Hosted Button</button>
+    <script>
+      document.getElementById("shadow-hosted-button").addEventListener("click", () => {
+        document.getElementById("shadow-hosted-status").textContent = "clicked:${mode}";
       });
     </script>
   </body>

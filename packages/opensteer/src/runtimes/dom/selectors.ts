@@ -320,18 +320,26 @@ function buildElementWrapper(
     options.currentShadowHostNodeRef,
     options.pierceOpenShadow,
   );
-  wrapper.children = childSources.map((child) =>
-    buildElementWrapper(index, child, {
+  wrapper.children = childSources.map((child) => {
+    const currentShadowHostNodeRef = resolveCurrentShadowHostNodeRef(
+      index,
+      child,
+      options.currentShadowHostNodeRef,
+    );
+
+    if (currentShadowHostNodeRef === undefined) {
+      return buildElementWrapper(index, child, {
+        pierceOpenShadow: options.pierceOpenShadow,
+        parent: wrapper,
+      });
+    }
+
+    return buildElementWrapper(index, child, {
       pierceOpenShadow: options.pierceOpenShadow,
       parent: wrapper,
-      ...(resolveCurrentShadowHostNodeRef(index, child, options.currentShadowHostNodeRef) === undefined
-        ? {}
-        : {
-            currentShadowHostNodeRef:
-              resolveCurrentShadowHostNodeRef(index, child, options.currentShadowHostNodeRef),
-          }),
-    }),
-  );
+      currentShadowHostNodeRef,
+    });
+  });
 
   return wrapper;
 }

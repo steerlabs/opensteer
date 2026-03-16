@@ -281,7 +281,6 @@ export interface PageController {
   domUpdateTask: Promise<void> | undefined;
   backgroundError: Error | undefined;
   executionPaused: boolean;
-  settleTrackerRegistered: boolean;
 }
 
 export interface FrameState {
