@@ -1,4 +1,5 @@
 import type {
+  CookieRecord,
   OpensteerActionResult,
   OpensteerComputerExecuteInput,
   OpensteerComputerExecuteOutput,
@@ -8,8 +9,11 @@ import type {
   OpensteerDomHoverInput,
   OpensteerDomInputInput,
   OpensteerDomScrollInput,
+  OpensteerGetAuthRecipeInput,
   OpensteerGetRequestPlanInput,
   OpensteerInferRequestPlanInput,
+  OpensteerListAuthRecipesInput,
+  OpensteerListAuthRecipesOutput,
   OpensteerListRequestPlansInput,
   OpensteerListRequestPlansOutput,
   OpensteerNetworkClearInput,
@@ -26,13 +30,17 @@ import type {
   OpensteerRawRequestOutput,
   OpensteerRequestExecuteInput,
   OpensteerRequestExecuteOutput,
+  OpensteerRunAuthRecipeInput,
+  OpensteerRunAuthRecipeOutput,
   OpensteerSessionCloseOutput,
   OpensteerSessionOpenInput,
   OpensteerSessionOpenOutput,
+  OpensteerWriteAuthRecipeInput,
   OpensteerWriteRequestPlanInput,
+  StorageSnapshot,
 } from "@opensteer/protocol";
 
-import type { RequestPlanRecord } from "../registry.js";
+import type { AuthRecipeRecord, RequestPlanRecord } from "../registry.js";
 import type { OpensteerDisconnectableRuntime } from "../sdk/semantic-runtime.js";
 import {
   removeOpensteerServiceMetadata,
@@ -102,6 +110,19 @@ export class LocalOpensteerSessionProxy implements OpensteerDisconnectableRuntim
     return (await this.ensureClient()).invoke("network.clear", input);
   }
 
+  async getCookies(input: { readonly urls?: readonly string[] } = {}): Promise<readonly CookieRecord[]> {
+    return (await this.ensureClient()).invoke("inspect.cookies", input);
+  }
+
+  async getStorageSnapshot(
+    input: {
+      readonly includeSessionStorage?: boolean;
+      readonly includeIndexedDb?: boolean;
+    } = {},
+  ): Promise<StorageSnapshot> {
+    return (await this.ensureClient()).invoke("inspect.storage", input);
+  }
+
   async rawRequest(input: OpensteerRawRequestInput): Promise<OpensteerRawRequestOutput> {
     return (await this.ensureClient()).invoke("request.raw", input);
   }
@@ -122,6 +143,24 @@ export class LocalOpensteerSessionProxy implements OpensteerDisconnectableRuntim
     input: OpensteerListRequestPlansInput = {},
   ): Promise<OpensteerListRequestPlansOutput> {
     return (await this.ensureClient()).invoke("request-plan.list", input);
+  }
+
+  async writeAuthRecipe(input: OpensteerWriteAuthRecipeInput): Promise<AuthRecipeRecord> {
+    return (await this.ensureClient()).invoke("auth-recipe.write", input);
+  }
+
+  async getAuthRecipe(input: OpensteerGetAuthRecipeInput): Promise<AuthRecipeRecord> {
+    return (await this.ensureClient()).invoke("auth-recipe.get", input);
+  }
+
+  async listAuthRecipes(
+    input: OpensteerListAuthRecipesInput = {},
+  ): Promise<OpensteerListAuthRecipesOutput> {
+    return (await this.ensureClient()).invoke("auth-recipe.list", input);
+  }
+
+  async runAuthRecipe(input: OpensteerRunAuthRecipeInput): Promise<OpensteerRunAuthRecipeOutput> {
+    return (await this.ensureClient()).invoke("auth-recipe.run", input);
   }
 
   async request(input: OpensteerRequestExecuteInput): Promise<OpensteerRequestExecuteOutput> {

@@ -1,6 +1,6 @@
 ---
 name: opensteer
-description: Browser automation and structured data extraction with the Opensteer CLI and SDK. Use when the agent needs to open pages, navigate, snapshot, click, hover, input, scroll, extract structured data, capture network requests, write request plans, replay requests, or generate scraper scripts. Covers both interactive CLI workflows and programmatic TypeScript SDK usage.
+description: Browser automation and structured data extraction with the Opensteer CLI and SDK. Use when the agent needs to open pages, navigate, snapshot, click, hover, input, scroll, extract structured data, capture network requests, write request plans, replay requests, or generate scraper scripts. Covers both interactive CLI workflows and programmatic TypeScript SDK usage. Supports managed browsers, real Chrome profiles, CDP attachment, and auto-connect.
 ---
 
 # Opensteer — Browser Automation & Data Extraction
@@ -17,6 +17,7 @@ Opensteer provides two interfaces for browser automation:
 | Debugging element targeting | Creating automation that runs unattended |
 | Quick one-off data extraction | Chaining multiple pages/actions programmatically |
 | Inspecting network traffic live | Building reverse-engineered API clients |
+| Managing local Chrome profiles | Attaching to an existing browser session |
 
 ## Core Concepts
 
@@ -27,6 +28,20 @@ Every action (click, hover, input, scroll) accepts a target in one of these form
 - **`element` (counter number)** — from a snapshot's `counters` array. Fastest, but ephemeral per snapshot.
 - **`selector` (CSS selector)** — standard CSS. Stable across sessions if the DOM structure is consistent.
 - **`description` (semantic string)** — SDK only. Matches against persisted descriptors. Best for replay across sessions. Requires an API key for descriptor resolution.
+
+### Browser Modes
+
+Opensteer supports four browser launch modes:
+
+- **`managed`** (default) — launches a fresh Chromium instance. Best for headless scraping.
+- **`profile`** — launches Chrome with a real user-data-dir. Preserves cookies, extensions, and login state.
+- **`cdp`** — attaches to an already-running Chrome via DevTools Protocol. Pass a port, WebSocket URL, or HTTP URL.
+- **`auto-connect`** — auto-discovers a running Chrome/Chromium instance on the system.
+
+### Session Ownership
+
+- **Owned session** (`new Opensteer(...)`) — the SDK controls the browser lifecycle. Call `close()` to tear down.
+- **Attached session** (`Opensteer.attach(...)`) — the SDK connects to a session started elsewhere (e.g., by the CLI). Call `disconnect()` to release the handle without destroying the browser.
 
 ### Snapshots
 
@@ -40,11 +55,11 @@ Pass `networkTag` to any action to label the network traffic it triggers. Query 
 
 ### Descriptors
 
-When you use `description` targeting, Opensteer looks up a persisted descriptor by that key. When you use `element` or `selector` with a `description` option, the resolved path is saved as a descriptor for future replay.
+When you use `description` targeting (SDK only), Opensteer looks up a persisted descriptor by that key. When you use `element` or `selector` with a `description` option, the resolved path is saved as a descriptor for future replay.
 
 ### Request Plans
 
-Captured network requests can be promoted to reusable request plans with parameter substitution. This enables calling APIs directly without a browser.
+Captured network requests can be promoted to reusable request plans with parameter substitution. `session-http` plans replay through a live browser session. `direct-http` plans replay without a browser. Attach auth recipes when a site needs deterministic refresh or token recovery.
 
 ---
 
@@ -91,7 +106,7 @@ try {
 
 ## Workflow 2: Reverse-Engineer an API (SDK)
 
-**Goal**: Capture browser network traffic, identify the API call, and build a reusable request plan that can be executed without a browser.
+**Goal**: Capture browser network traffic, identify the API call, and build a reusable request plan for either browser-backed replay (`session-http`) or browser-free replay (`direct-http`).
 
 1. Read the request workflow guide: `${CLAUDE_SKILL_DIR}/references/request-workflow.md`
 2. Read the SDK reference: `${CLAUDE_SKILL_DIR}/references/sdk-reference.md`
@@ -112,11 +127,27 @@ try {
 **Quick sequence:**
 ```bash
 opensteer open https://example.com                # Start session + open URL
-opensteer snapshot action                          # See interactive elements
-opensteer click 5                                  # Click element counter 5
-opensteer input --selector "input[name=q]" --text "search term"  # Type into input
+opensteer snapshot action                          # Snapshot to see interactive elements
+opensteer input --selector "input[name=q]" --text "search term" --press-enter
+opensteer snapshot action                          # Re-snapshot — DOM changed after input
+opensteer click 12                                 # Click a counter from the NEW snapshot
+opensteer snapshot action                          # Re-snapshot again before next counter use
 opensteer network query --include-bodies           # Inspect network traffic
 opensteer close                                    # End session
+```
+
+**Critical: always re-snapshot before using counter numbers.** Any action (click, input, scroll, goto) can mutate the DOM, making previous counters stale. A counter from an old snapshot may point to the wrong element or fail entirely.
+
+**With a real Chrome profile:**
+```bash
+opensteer open https://example.com --browser profile \
+  --user-data-dir "~/Library/Application Support/Google/Chrome"
+```
+
+**Attach to a running Chrome:**
+```bash
+opensteer open https://example.com --browser cdp --cdp 9222
+opensteer open https://example.com --browser auto-connect
 ```
 
 ## Reference Files
@@ -130,12 +161,16 @@ opensteer close                                    # End session
 
 ## Key Rules
 
-- Always wrap SDK scripts in `try/finally` with `await opensteer.close()` in the finally block.
+- **Always re-snapshot before using counter numbers.** Any action (click, input, scroll, goto) can change the DOM, making previous counters stale. Run `opensteer snapshot action` (CLI) or `opensteer.snapshot("action")` (SDK) immediately before every counter-based action.
+- Always wrap owned SDK sessions in `try/finally` with `await opensteer.close()` in the finally block.
+- For attached sessions (`Opensteer.attach()`), use `await opensteer.disconnect()` instead of `close()` — disconnect releases the handle without destroying the browser.
 - Use `networkTag` on actions when you plan to inspect network traffic — otherwise traffic is unlabeled.
 - In the CLI, target elements by counter number or `--selector`. Description-based targeting is SDK-only (requires API key).
 - In the SDK, prefer `selector` targeting for scripts where CSS selectors are stable and known.
 - In the SDK, use `description` targeting for scripts that will be replayed across sessions (requires API key).
-- Use `element` targeting only within the same session immediately after a snapshot.
+- Use `element` targeting only within the same session immediately after a fresh snapshot.
 - Extraction schemas use CSS selectors for field values — they are not the same as element targeting selectors.
 - The `schema` in `extract()` supports arrays via `[{ field: { selector } }]` syntax for repeating elements.
 - Scripts are TypeScript files. Use `import { Opensteer } from "opensteer"` (not require).
+- Use `browser: { kind: "profile", userDataDir: "..." }` to launch with a real Chrome profile that preserves cookies, extensions, and login state.
+- Opensteer rejects default Chrome user-data-dirs in profile mode — use a dedicated directory.

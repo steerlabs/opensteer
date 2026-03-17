@@ -159,13 +159,71 @@ export function normalizeRequestPlanPayload(
       : {
           auth: {
             strategy: payload.auth.strategy,
-            ...(payload.auth.recipeRef === undefined
+            ...(payload.auth.recipe === undefined
               ? {}
               : {
-                  recipeRef: normalizeTrimmedString(
-                    "auth.recipeRef",
-                    payload.auth.recipeRef,
-                  ),
+                  recipe: {
+                    key: normalizeTrimmedString("auth.recipe.key", payload.auth.recipe.key),
+                    ...(payload.auth.recipe.version === undefined
+                      ? {}
+                      : {
+                          version: normalizeTrimmedString(
+                            "auth.recipe.version",
+                            payload.auth.recipe.version,
+                          ),
+                        }),
+                  },
+                }),
+            ...(payload.auth.failurePolicy === undefined
+              ? {}
+              : {
+                  failurePolicy: {
+                    ...(payload.auth.failurePolicy.statusCodes === undefined
+                      ? {}
+                      : {
+                          statusCodes: [...payload.auth.failurePolicy.statusCodes].sort(
+                            (left, right) => left - right,
+                          ),
+                        }),
+                    ...(payload.auth.failurePolicy.finalUrlIncludes === undefined
+                      ? {}
+                      : {
+                          finalUrlIncludes: payload.auth.failurePolicy.finalUrlIncludes.map(
+                            (value, index) =>
+                              normalizeTrimmedString(
+                                `auth.failurePolicy.finalUrlIncludes[${index}]`,
+                                value,
+                              ),
+                          ),
+                        }),
+                    ...(payload.auth.failurePolicy.responseHeaders === undefined
+                      ? {}
+                      : {
+                          responseHeaders: payload.auth.failurePolicy.responseHeaders.map(
+                            (match, index) => ({
+                              name: normalizeHttpHeaderName(
+                                `auth.failurePolicy.responseHeaders[${index}].name`,
+                                match.name,
+                              ),
+                              valueIncludes: normalizeTrimmedString(
+                                `auth.failurePolicy.responseHeaders[${index}].valueIncludes`,
+                                match.valueIncludes,
+                              ),
+                            }),
+                          ),
+                        }),
+                    ...(payload.auth.failurePolicy.responseBodyIncludes === undefined
+                      ? {}
+                      : {
+                          responseBodyIncludes: payload.auth.failurePolicy.responseBodyIncludes.map(
+                            (value, index) =>
+                              normalizeTrimmedString(
+                                `auth.failurePolicy.responseBodyIncludes[${index}]`,
+                                value,
+                              ),
+                          ),
+                        }),
+                  },
                 }),
             ...(payload.auth.description === undefined
               ? {}

@@ -43,6 +43,16 @@ export async function dispatchSemanticOperation(
         (input ?? {}) as Parameters<OpensteerSessionRuntime["clearNetwork"]>[0],
         options,
       );
+    case "inspect.cookies":
+      return runtime.getCookies(
+        (input ?? {}) as Parameters<OpensteerSessionRuntime["getCookies"]>[0],
+        options,
+      );
+    case "inspect.storage":
+      return runtime.getStorageSnapshot(
+        (input ?? {}) as Parameters<OpensteerSessionRuntime["getStorageSnapshot"]>[0],
+        options,
+      );
     case "request.raw":
       return runtime.rawRequest(input as Parameters<OpensteerSessionRuntime["rawRequest"]>[0], options);
     case "request-plan.infer":
@@ -60,6 +70,26 @@ export async function dispatchSemanticOperation(
     case "request-plan.list":
       return runtime.listRequestPlans(
         (input ?? {}) as Parameters<OpensteerSessionRuntime["listRequestPlans"]>[0],
+        options,
+      );
+    case "auth-recipe.write":
+      return runtime.writeAuthRecipe(
+        input as Parameters<OpensteerSessionRuntime["writeAuthRecipe"]>[0],
+        options,
+      );
+    case "auth-recipe.get":
+      return runtime.getAuthRecipe(
+        input as Parameters<OpensteerSessionRuntime["getAuthRecipe"]>[0],
+        options,
+      );
+    case "auth-recipe.list":
+      return runtime.listAuthRecipes(
+        (input ?? {}) as Parameters<OpensteerSessionRuntime["listAuthRecipes"]>[0],
+        options,
+      );
+    case "auth-recipe.run":
+      return runtime.runAuthRecipe(
+        input as Parameters<OpensteerSessionRuntime["runAuthRecipe"]>[0],
         options,
       );
     case "request.execute":

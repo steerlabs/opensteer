@@ -206,6 +206,286 @@ describe("Phase 10 request workflows", () => {
     ]);
   });
 
+  test("SDK retries session-http plans with a deterministic auth recipe in the same browser session", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const opensteer = new Opensteer({
+      name: "phase10-session-recovery",
+      rootDir,
+      browser: {
+        headless: true,
+      },
+    });
+
+    try {
+      await opensteer.open(`${baseUrl}/phase10/session`);
+      await opensteer.writeAuthRecipe({
+        key: "phase10-session-refresh",
+        version: "1.0.0",
+        payload: {
+          steps: [
+            {
+              kind: "sessionRequest",
+              request: {
+                url: `${baseUrl}/phase10/api/refresh-cookie`,
+                method: "POST",
+              },
+            },
+          ],
+        },
+      });
+      await opensteer.writeRequestPlan({
+        key: "phase10-session-protected",
+        version: "1.0.0",
+        payload: {
+          transport: {
+            kind: "session-http",
+          },
+          endpoint: {
+            method: "GET",
+            urlTemplate: `${baseUrl}/phase10/api/recovery-session`,
+          },
+          response: {
+            status: 200,
+            contentType: "application/json",
+          },
+          auth: {
+            strategy: "session-cookie",
+            recipe: {
+              key: "phase10-session-refresh",
+            },
+            failurePolicy: {
+              statusCodes: [401],
+            },
+          },
+        },
+      });
+
+      const result = await opensteer.request("phase10-session-protected");
+      expect(result.data).toMatchObject({
+        ok: true,
+        mode: "session-http",
+      });
+      expect(result.recovery).toMatchObject({
+        attempted: true,
+        succeeded: true,
+        matchedFailurePolicy: true,
+        recipe: {
+          key: "phase10-session-refresh",
+          version: "1.0.0",
+        },
+      });
+    } finally {
+      await opensteer.close().catch(() => undefined);
+    }
+  });
+
+  test("SDK executes direct-http plans without opening a browser and retries with deterministic header recovery", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const opensteer = new Opensteer({
+      name: "phase10-direct-recovery",
+      rootDir,
+    });
+
+    await opensteer.writeAuthRecipe({
+      key: "phase10-direct-refresh",
+      version: "1.0.0",
+      payload: {
+        steps: [
+          {
+            kind: "directRequest",
+            request: {
+              url: `${baseUrl}/phase10/api/direct-refresh`,
+              method: "POST",
+            },
+            capture: {
+              bodyJsonPointer: {
+                pointer: "/token",
+                saveAs: "token",
+              },
+            },
+          },
+        ],
+        outputs: {
+          headers: {
+            authorization: "Bearer {{token}}",
+          },
+        },
+      },
+    });
+    await opensteer.writeRequestPlan({
+      key: "phase10-direct-protected",
+      version: "1.0.0",
+      payload: {
+        transport: {
+          kind: "direct-http",
+        },
+        endpoint: {
+          method: "GET",
+          urlTemplate: `${baseUrl}/phase10/api/direct-protected`,
+        },
+        response: {
+          status: 200,
+          contentType: "application/json",
+        },
+        auth: {
+          strategy: "bearer-token",
+          recipe: {
+            key: "phase10-direct-refresh",
+          },
+          failurePolicy: {
+            statusCodes: [401],
+          },
+        },
+      },
+    });
+
+    const result = await opensteer.request("phase10-direct-protected");
+    expect(result.data).toMatchObject({
+      ok: true,
+      mode: "direct-http",
+    });
+    expect(result.recovery).toMatchObject({
+      attempted: true,
+      succeeded: true,
+      recipe: {
+        key: "phase10-direct-refresh",
+        version: "1.0.0",
+      },
+    });
+  });
+
+  test("direct-http auth recovery fails with browser-required when the recipe needs browser state", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const opensteer = new Opensteer({
+      name: "phase10-browser-required",
+      rootDir,
+    });
+
+    await opensteer.writeAuthRecipe({
+      key: "phase10-cookie-refresh",
+      version: "1.0.0",
+      payload: {
+        steps: [
+          {
+            kind: "readCookie",
+            name: "phase10-session",
+            saveAs: "token",
+          },
+        ],
+        outputs: {
+          headers: {
+            authorization: "Bearer {{token}}",
+          },
+        },
+      },
+    });
+    await opensteer.writeRequestPlan({
+      key: "phase10-browser-required-plan",
+      version: "1.0.0",
+      payload: {
+        transport: {
+          kind: "direct-http",
+        },
+        endpoint: {
+          method: "GET",
+          urlTemplate: `${baseUrl}/phase10/api/direct-protected`,
+        },
+        auth: {
+          strategy: "bearer-token",
+          recipe: {
+            key: "phase10-cookie-refresh",
+          },
+          failurePolicy: {
+            statusCodes: [401],
+          },
+        },
+      },
+    });
+
+    await expect(opensteer.request("phase10-browser-required-plan")).rejects.toMatchObject({
+      code: "browser-required",
+    });
+  });
+
+  test("CLI supports auth-recipe CRUD and direct-http execution without a browser session", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+
+    await runCliCommand(rootDir, [
+      "auth-recipe",
+      "write",
+      "--key",
+      "phase10-cli-direct-refresh",
+      "--version",
+      "1.0.0",
+      "--payload",
+      JSON.stringify({
+        steps: [
+          {
+            kind: "directRequest",
+            request: {
+              url: `${baseUrl}/phase10/api/direct-refresh`,
+              method: "POST",
+            },
+            capture: {
+              bodyJsonPointer: {
+                pointer: "/token",
+                saveAs: "token",
+              },
+            },
+          },
+        ],
+        outputs: {
+          headers: {
+            authorization: "Bearer {{token}}",
+          },
+        },
+      }),
+    ]);
+
+    const listed = (await runCliCommand(rootDir, [
+      "auth-recipe",
+      "list",
+    ])) as {
+      readonly recipes: readonly { readonly key: string }[];
+    };
+    expect(listed.recipes.map((entry) => entry.key)).toContain("phase10-cli-direct-refresh");
+
+    const recipe = (await runCliCommand(rootDir, [
+      "auth-recipe",
+      "run",
+      "phase10-cli-direct-refresh",
+    ])) as {
+      readonly variables: Record<string, string>;
+      readonly overrides?: {
+        readonly headers?: Record<string, string>;
+      };
+    };
+    expect(recipe.variables.token).toBe("phase10-refreshed");
+    expect(recipe.overrides?.headers?.authorization).toBe("Bearer phase10-refreshed");
+
+    const directRaw = (await runCliCommand(rootDir, [
+      "request",
+      "raw",
+      "--transport",
+      "direct-http",
+      "--url",
+      `${baseUrl}/phase10/api/direct-refresh`,
+      "--method",
+      "POST",
+    ])) as {
+      readonly recordId: string;
+      readonly data: Record<string, unknown>;
+    };
+    expect(directRaw.recordId).toEqual(expect.any(String));
+    expect(directRaw.data).toMatchObject({
+      token: "phase10-refreshed",
+    });
+  }, 60_000);
+
   test("SDK supports the live reverse-engineering workflow end to end", async () => {
     const rootDir = await createPhase6TemporaryRoot();
     const baseUrl = requireFixtureServer().url;

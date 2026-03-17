@@ -161,9 +161,11 @@ opensteer snapshot extraction      # Full page structure for extraction
 
 ## DOM Actions
 
+**IMPORTANT: Always run `opensteer snapshot action` immediately before using a counter number.** Any action (click, input, scroll, goto) can mutate the DOM, making previous counter numbers stale. A counter from an old snapshot may point to the wrong element or fail entirely. Re-snapshot every time.
+
 All action commands accept a target as either:
 
-- A **positional counter number** (from snapshot): `opensteer click 5`
+- A **positional counter number** (from a fresh snapshot): `opensteer click 5`
 - `--selector <css>` — CSS selector: `opensteer click --selector "button.submit"`
 
 All action commands support `--network-tag <tag>` to label triggered network traffic.
@@ -220,29 +222,51 @@ opensteer scroll --selector ".content" --direction up --amount 500
 
 ## Data Extraction
 
-### `opensteer extract --description <text> [--schema <json>]`
+### `opensteer extract --description <text>`
 
-Extracts structured data from the current page.
+Extracts structured data from the current page using a persisted extraction descriptor.
 
 ```bash
-# Description-only (uses persisted extraction descriptor)
 opensteer extract --description "product list"
-
-# With inline schema
-opensteer extract --description "products" --schema '{"items": [{"name": {"selector": ".name"}, "price": {"selector": ".price"}}]}'
+opensteer extract --description "search results"
 ```
 
 | Option                 | Description                              |
 | :--------------------- | :--------------------------------------- |
 | `--description <text>` | **(required)** Extraction descriptor key |
-| `--schema <json>`      | JSON extraction schema                   |
 
-**Schema syntax:**
+---
 
-- Single field: `{ "title": { "selector": "h1" } }`
-- With attribute: `{ "url": { "selector": "a", "attribute": "href" } }`
-- Current URL: `{ "url": { "source": "current_url" } }`
-- Array of objects: `{ "items": [{ "name": { "selector": ".name" } }] }`
+## Inspection
+
+### `opensteer inspect cookies`
+
+Reads cookies from the current browser session.
+
+```bash
+opensteer inspect cookies
+opensteer inspect cookies --url https://example.com
+opensteer inspect cookies --url https://example.com --url https://api.example.com
+```
+
+| Option        | Description                     |
+| :------------ | :------------------------------ |
+| `--url <url>` | Restrict cookies to URL scopes  |
+
+### `opensteer inspect storage`
+
+Reads browser storage from the current page session.
+
+```bash
+opensteer inspect storage
+opensteer inspect storage --include-session-storage
+opensteer inspect storage --include-indexed-db
+```
+
+| Option                      | Description                    |
+| :-------------------------- | :----------------------------- |
+| `--include-session-storage` | Include sessionStorage entries |
+| `--include-indexed-db`      | Include IndexedDB metadata     |
 
 ---
 
@@ -361,16 +385,19 @@ opensteer plan list --key search-api   # Plans for a specific key
 
 ### `opensteer request raw <url>`
 
-Executes a raw HTTP request through the browser's network context (inherits cookies, auth).
+Executes a raw HTTP request through either the live browser session (`session-http`) or the
+direct HTTP transport (`direct-http`).
 
 ```bash
 opensteer request raw https://api.example.com/data
 opensteer request raw https://api.example.com/data --method POST --body-json '{"q":"test"}'
 opensteer request raw https://api.example.com/data --header "Authorization=Bearer token"
+opensteer request raw https://api.example.com/data --transport direct-http
 ```
 
 | Option                  | Description                 |
 | :---------------------- | :-------------------------- |
+| `--transport <kind>`    | `session-http` or `direct-http` |
 | `--method <method>`     | HTTP method (default: GET)  |
 | `--header <name=value>` | Request header (repeatable) |
 | `--body-json <json>`    | JSON request body           |
@@ -382,7 +409,9 @@ opensteer request raw https://api.example.com/data --header "Authorization=Beare
 
 ### `opensteer request [execute] <key>`
 
-Executes a stored request plan with parameter substitution.
+Executes a stored request plan with parameter substitution. `session-http` plans run through the
+live browser session. `direct-http` plans run through the direct HTTP transport. If the plan has
+an auth failure policy and linked auth recipe, Opensteer runs the recipe once and retries once.
 
 ```bash
 opensteer request search-api                                       # Execute plan
@@ -399,6 +428,59 @@ opensteer request execute search-api --version 1.0                 # Explicit ex
 | `--header <name=value>` | Request header (repeatable)     |
 | `--body-json <json>`    | Override request body           |
 | `--no-validate`         | Skip response validation        |
+
+---
+
+## Auth Recipes
+
+### `opensteer auth-recipe write --key <key> --version <version> --payload <json>`
+
+Writes a deterministic auth recovery recipe.
+
+```bash
+opensteer auth-recipe write --key "refresh-session" --version "1.0.0" --payload '{"steps":[{"kind":"sessionRequest","request":{"url":"https://example.com/auth/refresh","method":"POST"}}]}'
+opensteer auth-recipe write --key "refresh-token" --version "1.0.0" --payload-file recipe.json
+```
+
+| Option                  | Description                          |
+| :---------------------- | :----------------------------------- |
+| `--key <key>`           | **(required)** Recipe key            |
+| `--version <version>`   | **(required)** Recipe version        |
+| `--payload <json>`      | Recipe payload as inline JSON        |
+| `--payload-file <path>` | Recipe payload from file             |
+| `--tags <csv>`          | Comma-separated tags                 |
+
+### `opensteer auth-recipe get <key> [version]`
+
+Retrieves a stored auth recipe.
+
+```bash
+opensteer auth-recipe get refresh-session
+opensteer auth-recipe get refresh-session 1.0.0
+```
+
+### `opensteer auth-recipe list [--key <key>]`
+
+Lists available auth recipes.
+
+```bash
+opensteer auth-recipe list
+opensteer auth-recipe list --key refresh-session
+```
+
+### `opensteer auth-recipe run <key>`
+
+Runs a stored auth recipe once and returns emitted variables plus any retry overrides.
+
+```bash
+opensteer auth-recipe run refresh-session
+opensteer auth-recipe run refresh-session --version 1.0.0 --variables '{"csrf":"seed"}'
+```
+
+| Option                | Description                         |
+| :-------------------- | :---------------------------------- |
+| `--version <version>` | Recipe version to run               |
+| `--variables <json>`  | Seed variables for interpolation    |
 
 ---
 

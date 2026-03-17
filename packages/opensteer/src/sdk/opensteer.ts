@@ -1,10 +1,14 @@
 import type {
+  CookieRecord,
+  OpensteerGetAuthRecipeInput,
   OpensteerActionResult,
   OpensteerComputerExecuteInput,
   OpensteerComputerExecuteOutput,
   OpensteerDomExtractOutput,
   OpensteerGetRequestPlanInput,
   OpensteerInferRequestPlanInput,
+  OpensteerListAuthRecipesInput,
+  OpensteerListAuthRecipesOutput,
   OpensteerNetworkClearInput,
   OpensteerNetworkClearOutput,
   OpensteerNetworkQueryInput,
@@ -20,15 +24,19 @@ import type {
   OpensteerRawRequestOutput,
   OpensteerRequestExecuteInput,
   OpensteerRequestExecuteOutput,
+  OpensteerRunAuthRecipeInput,
+  OpensteerRunAuthRecipeOutput,
   OpensteerSessionCloseOutput,
   OpensteerSessionOpenInput,
   OpensteerSessionOpenOutput,
   OpensteerSnapshotMode,
   OpensteerTargetInput,
+  OpensteerWriteAuthRecipeInput,
   OpensteerWriteRequestPlanInput,
+  StorageSnapshot,
 } from "@opensteer/protocol";
 
-import type { RequestPlanRecord } from "../registry.js";
+import type { AuthRecipeRecord, RequestPlanRecord } from "../registry.js";
 import { LocalOpensteerSessionProxy } from "../session-service/local-session-proxy.js";
 import type {
   OpensteerDisconnectableRuntime,
@@ -177,6 +185,19 @@ export class Opensteer {
     return this.runtime.clearNetwork(input);
   }
 
+  async getCookies(input: { readonly urls?: readonly string[] } = {}): Promise<readonly CookieRecord[]> {
+    return this.runtime.getCookies(input);
+  }
+
+  async getStorageSnapshot(
+    input: {
+      readonly includeSessionStorage?: boolean;
+      readonly includeIndexedDb?: boolean;
+    } = {},
+  ): Promise<StorageSnapshot> {
+    return this.runtime.getStorageSnapshot(input);
+  }
+
   async writeRequestPlan(input: OpensteerWriteRequestPlanInput): Promise<RequestPlanRecord> {
     return this.runtime.writeRequestPlan(input);
   }
@@ -193,6 +214,24 @@ export class Opensteer {
     input: OpensteerListRequestPlansInput = {},
   ): Promise<OpensteerListRequestPlansOutput> {
     return this.runtime.listRequestPlans(input);
+  }
+
+  async writeAuthRecipe(input: OpensteerWriteAuthRecipeInput): Promise<AuthRecipeRecord> {
+    return this.runtime.writeAuthRecipe(input);
+  }
+
+  async getAuthRecipe(input: OpensteerGetAuthRecipeInput): Promise<AuthRecipeRecord> {
+    return this.runtime.getAuthRecipe(input);
+  }
+
+  async listAuthRecipes(
+    input: OpensteerListAuthRecipesInput = {},
+  ): Promise<OpensteerListAuthRecipesOutput> {
+    return this.runtime.listAuthRecipes(input);
+  }
+
+  async runAuthRecipe(input: OpensteerRunAuthRecipeInput): Promise<OpensteerRunAuthRecipeOutput> {
+    return this.runtime.runAuthRecipe(input);
   }
 
   async request(key: string, input: OpensteerRequestOptions = {}): Promise<OpensteerRequestResult> {

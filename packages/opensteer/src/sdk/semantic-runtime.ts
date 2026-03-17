@@ -1,5 +1,7 @@
 import type {
+  CookieRecord,
   OpensteerActionResult,
+  OpensteerGetAuthRecipeInput,
   OpensteerComputerExecuteInput,
   OpensteerComputerExecuteOutput,
   OpensteerDomClickInput,
@@ -10,6 +12,8 @@ import type {
   OpensteerDomScrollInput,
   OpensteerGetRequestPlanInput,
   OpensteerInferRequestPlanInput,
+  OpensteerListAuthRecipesInput,
+  OpensteerListAuthRecipesOutput,
   OpensteerListRequestPlansInput,
   OpensteerListRequestPlansOutput,
   OpensteerNetworkClearInput,
@@ -26,13 +30,17 @@ import type {
   OpensteerRawRequestOutput,
   OpensteerRequestExecuteInput,
   OpensteerRequestExecuteOutput,
+  OpensteerRunAuthRecipeInput,
+  OpensteerRunAuthRecipeOutput,
   OpensteerSessionCloseOutput,
   OpensteerSessionOpenInput,
   OpensteerSessionOpenOutput,
+  OpensteerWriteAuthRecipeInput,
   OpensteerWriteRequestPlanInput,
+  StorageSnapshot,
 } from "@opensteer/protocol";
 
-import type { RequestPlanRecord } from "../registry.js";
+import type { AuthRecipeRecord, RequestPlanRecord } from "../registry.js";
 
 export interface OpensteerRuntimeOperationOptions {
   readonly signal?: AbortSignal;
@@ -83,6 +91,19 @@ export interface OpensteerSemanticRuntime {
     input?: OpensteerNetworkClearInput,
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerNetworkClearOutput>;
+  getCookies(
+    input?: {
+      readonly urls?: readonly string[];
+    },
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<readonly CookieRecord[]>;
+  getStorageSnapshot(
+    input?: {
+      readonly includeSessionStorage?: boolean;
+      readonly includeIndexedDb?: boolean;
+    },
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<StorageSnapshot>;
   rawRequest(
     input: OpensteerRawRequestInput,
     options?: OpensteerRuntimeOperationOptions,
@@ -103,6 +124,22 @@ export interface OpensteerSemanticRuntime {
     input?: OpensteerListRequestPlansInput,
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerListRequestPlansOutput>;
+  writeAuthRecipe(
+    input: OpensteerWriteAuthRecipeInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<AuthRecipeRecord>;
+  getAuthRecipe(
+    input: OpensteerGetAuthRecipeInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<AuthRecipeRecord>;
+  listAuthRecipes(
+    input?: OpensteerListAuthRecipesInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerListAuthRecipesOutput>;
+  runAuthRecipe(
+    input: OpensteerRunAuthRecipeInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerRunAuthRecipeOutput>;
   request(
     input: OpensteerRequestExecuteInput,
     options?: OpensteerRuntimeOperationOptions,

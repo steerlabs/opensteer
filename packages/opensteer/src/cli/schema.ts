@@ -795,11 +795,11 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
       },
     ],
   },
-  {
-    name: "request",
-    summary: "Execute request plans or raw requests.",
-    defaultSubcommand: "execute",
-    subcommands: [
+      {
+        name: "request",
+        summary: "Execute request plans or raw requests.",
+        defaultSubcommand: "execute",
+        subcommands: [
       {
         name: "raw",
         id: "request.raw",
@@ -818,6 +818,13 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
             description: "Request URL",
             kind: "string",
             valueLabel: "url",
+          },
+          {
+            name: "transport",
+            description: "Transport mode for raw requests",
+            kind: "enum",
+            valueLabel: "kind",
+            values: ["session-http", "direct-http"],
           },
           {
             name: "method",
@@ -949,6 +956,215 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
             name: "no-validate",
             description: "Skip response validation",
             kind: "boolean",
+          },
+        ],
+      },
+    ],
+  },
+  {
+    name: "inspect",
+    summary: "Inspect browser session state.",
+    defaultSubcommand: "cookies",
+    subcommands: [
+      {
+        name: "cookies",
+        id: "inspect.cookies",
+        summary: "Read cookies from the current browser session.",
+        options: [
+          ...SESSION_OPTIONS,
+          OUTPUT_OPTION,
+          {
+            name: "url",
+            description: "Filter cookies by URL (repeatable)",
+            kind: "string",
+            valueLabel: "url",
+            multiple: true,
+          },
+        ],
+      },
+      {
+        name: "storage",
+        id: "inspect.storage",
+        summary: "Read browser storage from the current browser session.",
+        options: [
+          ...SESSION_OPTIONS,
+          OUTPUT_OPTION,
+          {
+            name: "include-session-storage",
+            description: "Include sessionStorage snapshots",
+            kind: "boolean",
+          },
+          {
+            name: "include-indexed-db",
+            description: "Include IndexedDB snapshots",
+            kind: "boolean",
+          },
+        ],
+      },
+    ],
+  },
+  {
+    name: "auth-recipe",
+    summary: "Manage auth recovery recipes.",
+    defaultSubcommand: "list",
+    subcommands: [
+      {
+        name: "write",
+        id: "auth-recipe.write",
+        summary: "Write an auth recovery recipe.",
+        options: [
+          ...SESSION_OPTIONS,
+          OUTPUT_OPTION,
+          {
+            name: "id",
+            description: "Optional recipe id",
+            kind: "string",
+            valueLabel: "id",
+          },
+          {
+            name: "key",
+            description: "Recipe key",
+            kind: "string",
+            valueLabel: "key",
+          },
+          {
+            name: "version",
+            description: "Recipe version",
+            kind: "string",
+            valueLabel: "version",
+          },
+          {
+            name: "tags",
+            description: "Comma-separated tags",
+            kind: "string",
+            valueLabel: "tags",
+          },
+          {
+            name: "payload",
+            description: "Inline auth recipe payload JSON object",
+            kind: "json-object",
+            valueLabel: "json",
+          },
+          {
+            name: "payload-file",
+            description: "Path to auth recipe payload JSON file",
+            kind: "string",
+            valueLabel: "path",
+            internalName: "payloadFile",
+          },
+          {
+            name: "provenance-source",
+            description: "Provenance source label",
+            kind: "string",
+            valueLabel: "source",
+            internalName: "provenanceSource",
+          },
+          {
+            name: "provenance-source-id",
+            description: "Provenance source id",
+            kind: "string",
+            valueLabel: "id",
+            internalName: "provenanceSourceId",
+          },
+          {
+            name: "provenance-captured-at",
+            description: "Provenance capture timestamp (ms)",
+            kind: "number",
+            valueLabel: "ms",
+            internalName: "provenanceCapturedAt",
+          },
+          {
+            name: "provenance-notes",
+            description: "Provenance notes",
+            kind: "string",
+            valueLabel: "text",
+            internalName: "provenanceNotes",
+          },
+        ],
+      },
+      {
+        name: "get",
+        id: "auth-recipe.get",
+        summary: "Read an auth recovery recipe.",
+        positionals: [
+          {
+            name: "key",
+            description: "Recipe key",
+          },
+          {
+            name: "version",
+            description: "Optional recipe version",
+          },
+        ],
+        options: [
+          ...SESSION_OPTIONS,
+          OUTPUT_OPTION,
+          {
+            name: "key",
+            description: "Recipe key",
+            kind: "string",
+            valueLabel: "key",
+          },
+          {
+            name: "version",
+            description: "Recipe version",
+            kind: "string",
+            valueLabel: "version",
+          },
+        ],
+      },
+      {
+        name: "list",
+        id: "auth-recipe.list",
+        summary: "List auth recovery recipes.",
+        positionals: [
+          {
+            name: "key",
+            description: "Optional recipe key filter",
+          },
+        ],
+        options: [
+          ...SESSION_OPTIONS,
+          OUTPUT_OPTION,
+          {
+            name: "key",
+            description: "Recipe key filter",
+            kind: "string",
+            valueLabel: "key",
+          },
+        ],
+      },
+      {
+        name: "run",
+        id: "auth-recipe.run",
+        summary: "Run an auth recovery recipe.",
+        positionals: [
+          {
+            name: "key",
+            description: "Recipe key",
+          },
+        ],
+        options: [
+          ...SESSION_OPTIONS,
+          OUTPUT_OPTION,
+          {
+            name: "key",
+            description: "Recipe key",
+            kind: "string",
+            valueLabel: "key",
+          },
+          {
+            name: "version",
+            description: "Recipe version",
+            kind: "string",
+            valueLabel: "version",
+          },
+          {
+            name: "variables-json",
+            description: "JSON object of initial recipe variables",
+            kind: "json-object",
+            valueLabel: "json",
+            internalName: "variablesJson",
           },
         ],
       },

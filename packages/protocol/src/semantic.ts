@@ -40,7 +40,18 @@ import {
   type ScreenshotFormat,
 } from "./snapshots.js";
 import {
+  cookieRecordSchema,
+  storageSnapshotSchema,
+  type CookieRecord,
+  type StorageSnapshot,
+} from "./storage.js";
+import {
+  opensteerGetAuthRecipeInputSchema,
+  opensteerListAuthRecipesInputSchema,
+  opensteerListAuthRecipesOutputSchema,
   opensteerGetRequestPlanInputSchema,
+  opensteerRunAuthRecipeInputSchema,
+  opensteerRunAuthRecipeOutputSchema,
   opensteerListRequestPlansInputSchema,
   opensteerListRequestPlansOutputSchema,
   opensteerNetworkClearInputSchema,
@@ -54,9 +65,14 @@ import {
   opensteerRawRequestOutputSchema,
   opensteerRequestExecuteInputSchema,
   opensteerRequestExecuteOutputSchema,
+  opensteerAuthRecipeRecordSchema,
   opensteerRequestPlanRecordSchema,
+  opensteerWriteAuthRecipeInputSchema,
   opensteerWriteRequestPlanInputSchema,
+  type OpensteerGetAuthRecipeInput,
   type OpensteerGetRequestPlanInput,
+  type OpensteerListAuthRecipesInput,
+  type OpensteerListAuthRecipesOutput,
   type OpensteerListRequestPlansInput,
   type OpensteerListRequestPlansOutput,
   type OpensteerInferRequestPlanInput,
@@ -70,7 +86,11 @@ import {
   type OpensteerRawRequestOutput,
   type OpensteerRequestExecuteInput,
   type OpensteerRequestExecuteOutput,
+  type OpensteerAuthRecipeRecord,
+  type OpensteerRunAuthRecipeInput,
+  type OpensteerRunAuthRecipeOutput,
   type OpensteerRequestPlanRecord,
+  type OpensteerWriteAuthRecipeInput,
   type OpensteerWriteRequestPlanInput,
 } from "./requests.js";
 import { validateJsonSchema } from "./validation.js";
@@ -222,6 +242,15 @@ export interface OpensteerPageSnapshotOutput {
   readonly mode: OpensteerSnapshotMode;
   readonly html: string;
   readonly counters: readonly OpensteerSnapshotCounter[];
+}
+
+export interface OpensteerInspectCookiesInput {
+  readonly urls?: readonly string[];
+}
+
+export interface OpensteerInspectStorageInput {
+  readonly includeSessionStorage?: boolean;
+  readonly includeIndexedDb?: boolean;
 }
 
 export interface OpensteerDomClickInput {
@@ -398,11 +427,17 @@ export const opensteerSemanticOperationNames = [
   "network.query",
   "network.save",
   "network.clear",
+  "inspect.cookies",
+  "inspect.storage",
   "request.raw",
   "request-plan.infer",
   "request-plan.write",
   "request-plan.get",
   "request-plan.list",
+  "auth-recipe.write",
+  "auth-recipe.get",
+  "auth-recipe.list",
+  "auth-recipe.run",
   "request.execute",
   "computer.execute",
   "session.close",
@@ -719,6 +754,29 @@ const opensteerPageSnapshotOutputSchema: JsonSchema = objectSchema(
   {
     title: "OpensteerPageSnapshotOutput",
     required: ["url", "title", "mode", "html", "counters"],
+  },
+);
+
+const opensteerInspectCookiesInputSchema: JsonSchema = objectSchema(
+  {
+    urls: arraySchema(stringSchema({ minLength: 1 })),
+  },
+  {
+    title: "OpensteerInspectCookiesInput",
+  },
+);
+
+const opensteerInspectCookiesOutputSchema: JsonSchema = arraySchema(cookieRecordSchema, {
+  title: "OpensteerInspectCookiesOutput",
+});
+
+const opensteerInspectStorageInputSchema: JsonSchema = objectSchema(
+  {
+    includeSessionStorage: { type: "boolean" },
+    includeIndexedDb: { type: "boolean" },
+  },
+  {
+    title: "OpensteerInspectStorageInput",
   },
 );
 
@@ -1196,12 +1254,38 @@ export const opensteerSemanticOperationSpecifications = [
     outputSchema: opensteerNetworkClearOutputSchema,
     requiredCapabilities: [],
   }),
+  defineSemanticOperationSpec<OpensteerInspectCookiesInput, readonly CookieRecord[]>({
+    name: "inspect.cookies",
+    description: "Read cookies from the current browser session.",
+    inputSchema: opensteerInspectCookiesInputSchema,
+    outputSchema: opensteerInspectCookiesOutputSchema,
+    requiredCapabilities: ["inspect.cookies"],
+  }),
+  defineSemanticOperationSpec<OpensteerInspectStorageInput, StorageSnapshot>({
+    name: "inspect.storage",
+    description: "Read browser storage state from the current browser session.",
+    inputSchema: opensteerInspectStorageInputSchema,
+    outputSchema: storageSnapshotSchema,
+    requiredCapabilities: ["inspect.localStorage"],
+    resolveRequiredCapabilities: (input) => {
+      const capabilities: OpensteerCapability[] = ["inspect.localStorage"];
+      if (input.includeSessionStorage ?? false) {
+        capabilities.push("inspect.sessionStorage");
+      }
+      if (input.includeIndexedDb ?? false) {
+        capabilities.push("inspect.indexedDb");
+      }
+      return capabilities;
+    },
+  }),
   defineSemanticOperationSpec<OpensteerRawRequestInput, OpensteerRawRequestOutput>({
     name: "request.raw",
-    description: "Execute a raw HTTP request through the current browser session boundary.",
+    description: "Execute a raw HTTP request through either the current browser session or a direct HTTP transport.",
     inputSchema: opensteerRawRequestInputSchema,
     outputSchema: opensteerRawRequestOutputSchema,
-    requiredCapabilities: ["transport.sessionHttp"],
+    requiredCapabilities: [],
+    resolveRequiredCapabilities: (input) =>
+      (input.transport ?? "session-http") === "direct-http" ? [] : ["transport.sessionHttp"],
   }),
   defineSemanticOperationSpec<OpensteerInferRequestPlanInput, OpensteerRequestPlanRecord>({
     name: "request-plan.infer",
@@ -1231,12 +1315,40 @@ export const opensteerSemanticOperationSpecifications = [
     outputSchema: opensteerListRequestPlansOutputSchema,
     requiredCapabilities: [],
   }),
+  defineSemanticOperationSpec<OpensteerWriteAuthRecipeInput, OpensteerAuthRecipeRecord>({
+    name: "auth-recipe.write",
+    description: "Validate and persist a reusable auth recovery recipe in the local registry.",
+    inputSchema: opensteerWriteAuthRecipeInputSchema,
+    outputSchema: opensteerAuthRecipeRecordSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerGetAuthRecipeInput, OpensteerAuthRecipeRecord>({
+    name: "auth-recipe.get",
+    description: "Resolve an auth recipe by key and optional version.",
+    inputSchema: opensteerGetAuthRecipeInputSchema,
+    outputSchema: opensteerAuthRecipeRecordSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerListAuthRecipesInput, OpensteerListAuthRecipesOutput>({
+    name: "auth-recipe.list",
+    description: "List auth recovery recipes from the local registry.",
+    inputSchema: opensteerListAuthRecipesInputSchema,
+    outputSchema: opensteerListAuthRecipesOutputSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerRunAuthRecipeInput, OpensteerRunAuthRecipeOutput>({
+    name: "auth-recipe.run",
+    description: "Run a stored auth recovery recipe deterministically against the current runtime.",
+    inputSchema: opensteerRunAuthRecipeInputSchema,
+    outputSchema: opensteerRunAuthRecipeOutputSchema,
+    requiredCapabilities: [],
+  }),
   defineSemanticOperationSpec<OpensteerRequestExecuteInput, OpensteerRequestExecuteOutput>({
     name: "request.execute",
-    description: "Execute a request plan through the current browser session boundary.",
+    description: "Execute a request plan through its configured transport and deterministic auth recovery policy.",
     inputSchema: opensteerRequestExecuteInputSchema,
     outputSchema: opensteerRequestExecuteOutputSchema,
-    requiredCapabilities: ["transport.sessionHttp"],
+    requiredCapabilities: [],
   }),
   defineSemanticOperationSpec<OpensteerComputerExecuteInput, OpensteerComputerExecuteOutput>({
     name: "computer.execute",

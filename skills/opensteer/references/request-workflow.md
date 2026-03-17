@@ -2,7 +2,11 @@
 
 ## Overview
 
-The request workflow lets you capture network traffic from browser interactions, identify API endpoints, and build reusable request plans that call those APIs directly — no browser needed for subsequent calls.
+The request workflow lets you capture network traffic from browser interactions, identify API endpoints, and build reusable request plans.
+
+- `session-http` replays through the live browser session and reuses its cookies/storage.
+- `direct-http` replays through a direct HTTP client and can run without opening a browser.
+- Auth recipes can be attached to a request plan so auth failures are recovered deterministically before retrying the original request.
 
 **5-step process:**
 1. **Capture** — perform browser actions with `networkTag` to label traffic

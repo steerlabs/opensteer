@@ -76,6 +76,10 @@ describe("Phase 3 filesystem root", () => {
       "artifacts/objects/sha256/",
       "opensteer-root.json",
       "registry/",
+      "registry/auth-recipes/",
+      "registry/auth-recipes/indexes/",
+      "registry/auth-recipes/indexes/by-key/",
+      "registry/auth-recipes/records/",
       "registry/descriptors/",
       "registry/descriptors/indexes/",
       "registry/descriptors/indexes/by-key/",
@@ -518,6 +522,57 @@ describe("Phase 3 filesystem root", () => {
         payload: requestPlanPayload("https://example.com/login"),
       }),
     ).rejects.toThrow(/already exists/i);
+
+    const latestAuthRecipe = await root.registry.authRecipes.write({
+      id: "auth-recipe:v2",
+      key: "auth.refresh",
+      version: "2.0.0",
+      createdAt: 700,
+      payload: {
+        steps: [
+          {
+            kind: "directRequest",
+            request: {
+              url: "https://example.com/auth/refresh",
+              method: "POST",
+            },
+          },
+        ],
+        outputs: {
+          headers: {
+            authorization: "Bearer {{token}}",
+          },
+        },
+      },
+    });
+    await root.registry.authRecipes.write({
+      id: "auth-recipe:v1",
+      key: "auth.refresh",
+      version: "1.0.0",
+      createdAt: 650,
+      payload: {
+        steps: [
+          {
+            kind: "readCookie",
+            name: "session",
+            saveAs: "token",
+          },
+        ],
+      },
+    });
+
+    expect(await root.registry.authRecipes.getById(latestAuthRecipe.id)).toMatchObject({
+      key: "auth.refresh",
+      version: "2.0.0",
+    });
+    expect(
+      await root.registry.authRecipes.resolve({
+        key: "auth.refresh",
+      }),
+    ).toMatchObject({
+      id: "auth-recipe:v2",
+    });
+    expect(await root.registry.authRecipes.list({ key: "auth.refresh" })).toHaveLength(2);
   });
 
   test("rejects concurrent duplicate request-plan versions", async () => {

@@ -19,6 +19,9 @@ export const opensteerErrorCodes = [
   "permission-denied",
   "conflict",
   "profile-unavailable",
+  "auth-failure",
+  "auth-recovery-failed",
+  "browser-required",
   "rate-limited",
   "operation-failed",
   "internal",
@@ -151,7 +154,11 @@ export function httpStatusForOpensteerError(error: OpensteerError): number {
       return 404;
     case "conflict":
     case "profile-unavailable":
+    case "auth-failure":
+    case "auth-recovery-failed":
       return 409;
+    case "browser-required":
+      return 412;
     case "rate-limited":
       return 429;
     case "unsupported-operation":

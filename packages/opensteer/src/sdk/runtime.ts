@@ -1,5 +1,7 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 
 import {
   bodyPayloadFromUtf8,
@@ -17,7 +19,12 @@ import {
 import {
   OpensteerProtocolError,
   assertValidSemanticOperationInput,
+  createNetworkRequestId,
+  createSessionRef,
+  type CookieRecord,
   type OpensteerActionResult,
+  type OpensteerAuthRecipeRetryOverrides,
+  type OpensteerAuthRecipeStep,
   type OpensteerBrowserContextOptions,
   type OpensteerBrowserLaunchOptions,
   type OpensteerComputerExecuteInput,
@@ -28,8 +35,11 @@ import {
   type OpensteerDomHoverInput,
   type OpensteerDomInputInput,
   type OpensteerDomScrollInput,
+  type OpensteerGetAuthRecipeInput,
   type OpensteerGetRequestPlanInput,
   type OpensteerInferRequestPlanInput,
+  type OpensteerListAuthRecipesInput,
+  type OpensteerListAuthRecipesOutput,
   type OpensteerNetworkClearInput,
   type OpensteerNetworkClearOutput,
   type OpensteerNetworkQueryInput,
@@ -44,10 +54,13 @@ import {
   type OpensteerListRequestPlansOutput,
   type OpensteerRawRequestInput,
   type OpensteerRawRequestOutput,
+  type OpensteerRequestFailurePolicy,
   type OpensteerRequestExecuteInput,
   type OpensteerRequestExecuteOutput,
   type OpensteerRequestTransportResult,
   type OpensteerRequestResponseResult,
+  type OpensteerRunAuthRecipeInput,
+  type OpensteerRunAuthRecipeOutput,
   type NetworkQueryRecord,
   type OpensteerResolvedTarget,
   type OpensteerSemanticOperationName,
@@ -57,7 +70,9 @@ import {
   type OpensteerSnapshotMode,
   type OpensteerTargetInput,
   type OpensteerEvent,
+  type StorageSnapshot,
   type TraceContext,
+  type OpensteerWriteAuthRecipeInput,
   type OpensteerWriteRequestPlanInput,
   type HeaderEntry,
 } from "@opensteer/protocol";
@@ -73,7 +88,6 @@ import {
   type TimeoutExecutionContext,
 } from "../policy/index.js";
 import { createFilesystemOpensteerRoot, type FilesystemOpensteerRoot } from "../root.js";
-import type { RequestPlanRecord } from "../registry.js";
 import {
   buildPathSelectorHint,
   createDomRuntime,
@@ -92,11 +106,11 @@ import {
   defaultOpensteerEngineFactory,
   normalizeOpensteerBrowserContextOptions,
 } from "../internal/engine-selection.js";
-import { executeSessionHttpRequest } from "../requests/execution/session-http/index.js";
 import { inferRequestPlanFromNetworkRecord } from "../requests/inference.js";
 import { normalizeRequestPlanPayload } from "../requests/plans/index.js";
 import {
   parseStructuredResponseData,
+  toProtocolBodyPayload,
   toProtocolRequestResponseResult,
   toProtocolRequestTransportResult,
 } from "../requests/shared.js";
@@ -109,10 +123,13 @@ import {
   type OpensteerExtractionDescriptorRecord,
 } from "./extraction.js";
 import { compileOpensteerSnapshot, type CompiledOpensteerSnapshot } from "./snapshot/compiler.js";
+import type { AuthRecipeRecord, RequestPlanRecord } from "../registry.js";
 
 type DisposableBrowserCoreEngine = BrowserCoreEngine & {
   dispose?: () => Promise<void>;
 };
+
+const requireForAuthRecipeHook = createRequire(import.meta.url);
 
 export interface OpensteerEngineFactoryOptions {
   readonly browser?: OpensteerBrowserLaunchOptions;
@@ -156,6 +173,11 @@ interface OpensteerSessionTraceInput {
 
 interface RuntimeOperationOptions {
   readonly signal?: AbortSignal;
+}
+
+interface RuntimeBrowserBinding {
+  readonly sessionRef: SessionRef;
+  readonly pageRef: PageRef;
 }
 
 export class OpensteerSessionRuntime {
@@ -1065,27 +1087,325 @@ export class OpensteerSessionRuntime {
     }
   }
 
+  async writeAuthRecipe(
+    input: OpensteerWriteAuthRecipeInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<AuthRecipeRecord> {
+    assertValidSemanticOperationInput("auth-recipe.write", input);
+
+    const root = await this.ensureRoot();
+    const startedAt = Date.now();
+    try {
+      const record = await this.runWithOperationTimeout(
+        "auth-recipe.write",
+        async (timeout) => timeout.runStep(() => root.registry.authRecipes.write(input)),
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "auth-recipe.write",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          id: record.id,
+          key: record.key,
+          version: record.version,
+        },
+      });
+
+      return record;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "auth-recipe.write",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+      });
+      throw error;
+    }
+  }
+
+  async getAuthRecipe(
+    input: OpensteerGetAuthRecipeInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<AuthRecipeRecord> {
+    assertValidSemanticOperationInput("auth-recipe.get", input);
+
+    const root = await this.ensureRoot();
+    const startedAt = Date.now();
+    try {
+      const record = await this.runWithOperationTimeout(
+        "auth-recipe.get",
+        async (timeout) => timeout.runStep(() => root.registry.authRecipes.resolve(input)),
+        options,
+      );
+      if (record === undefined) {
+        throw new OpensteerProtocolError(
+          "not-found",
+          input.version === undefined
+            ? `no auth recipe found for "${input.key}"`
+            : `no auth recipe found for "${input.key}" version "${input.version}"`,
+          {
+            details: {
+              key: input.key,
+              ...(input.version === undefined ? {} : { version: input.version }),
+              kind: "auth-recipe",
+            },
+          },
+        );
+      }
+
+      await this.appendTrace({
+        operation: "auth-recipe.get",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          id: record.id,
+          key: record.key,
+          version: record.version,
+        },
+      });
+
+      return record;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "auth-recipe.get",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+      });
+      throw error;
+    }
+  }
+
+  async listAuthRecipes(
+    input: OpensteerListAuthRecipesInput = {},
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerListAuthRecipesOutput> {
+    assertValidSemanticOperationInput("auth-recipe.list", input);
+
+    const root = await this.ensureRoot();
+    const startedAt = Date.now();
+    try {
+      const output = await this.runWithOperationTimeout(
+        "auth-recipe.list",
+        async (timeout) => ({
+          recipes: await timeout.runStep(() => root.registry.authRecipes.list(input)),
+        }),
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "auth-recipe.list",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          ...(input.key === undefined ? {} : { key: input.key }),
+          count: output.recipes.length,
+        },
+      });
+
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "auth-recipe.list",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+      });
+      throw error;
+    }
+  }
+
+  async getCookies(
+    input: { readonly urls?: readonly string[] } = {},
+    options: RuntimeOperationOptions = {},
+  ): Promise<readonly CookieRecord[]> {
+    assertValidSemanticOperationInput("inspect.cookies", input);
+
+    const pageRef = await this.ensurePageRef();
+    const sessionRef = this.requireSessionRef();
+    const startedAt = Date.now();
+    try {
+      const cookies = await this.runWithOperationTimeout(
+        "inspect.cookies",
+        async (timeout) =>
+          timeout.runStep(() =>
+            this.requireEngine().getCookies({
+              sessionRef,
+              ...(input.urls === undefined ? {} : { urls: input.urls }),
+            }),
+          ),
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "inspect.cookies",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          count: cookies.length,
+          ...(input.urls === undefined ? {} : { urls: input.urls }),
+        },
+        context: buildRuntimeTraceContext({
+          sessionRef,
+          pageRef,
+        }),
+      });
+
+      return cookies;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "inspect.cookies",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+        context: buildRuntimeTraceContext({
+          sessionRef,
+          pageRef,
+        }),
+      });
+      throw error;
+    }
+  }
+
+  async getStorageSnapshot(
+    input: {
+      readonly includeSessionStorage?: boolean;
+      readonly includeIndexedDb?: boolean;
+    } = {},
+    options: RuntimeOperationOptions = {},
+  ): Promise<StorageSnapshot> {
+    assertValidSemanticOperationInput("inspect.storage", input);
+
+    const pageRef = await this.ensurePageRef();
+    const sessionRef = this.requireSessionRef();
+    const startedAt = Date.now();
+    try {
+      const snapshot = await this.runWithOperationTimeout(
+        "inspect.storage",
+        async (timeout) =>
+          timeout.runStep(() =>
+            this.requireEngine().getStorageSnapshot({
+              sessionRef,
+              ...(input.includeSessionStorage === undefined
+                ? {}
+                : { includeSessionStorage: input.includeSessionStorage }),
+              ...(input.includeIndexedDb === undefined
+                ? {}
+                : { includeIndexedDb: input.includeIndexedDb }),
+            }),
+          ),
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "inspect.storage",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          origins: snapshot.origins.length,
+          sessionStorage: snapshot.sessionStorage?.length ?? 0,
+        },
+        context: buildRuntimeTraceContext({
+          sessionRef,
+          pageRef,
+        }),
+      });
+
+      return snapshot;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "inspect.storage",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+        context: buildRuntimeTraceContext({
+          sessionRef,
+          pageRef,
+        }),
+      });
+      throw error;
+    }
+  }
+
+  async runAuthRecipe(
+    input: OpensteerRunAuthRecipeInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerRunAuthRecipeOutput> {
+    assertValidSemanticOperationInput("auth-recipe.run", input);
+
+    await this.ensureRoot();
+    const startedAt = Date.now();
+    try {
+      const output = await this.runWithOperationTimeout(
+        "auth-recipe.run",
+        async (timeout) => this.runResolvedAuthRecipe(input, timeout),
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "auth-recipe.run",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          recipe: output.recipe,
+          variables: Object.keys(output.variables).sort(),
+          ...(output.overrides === undefined ? {} : { overrides: output.overrides }),
+        },
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "auth-recipe.run",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+      throw error;
+    }
+  }
+
   async rawRequest(
     input: OpensteerRawRequestInput,
     options: RuntimeOperationOptions = {},
   ): Promise<OpensteerRawRequestOutput> {
     assertValidSemanticOperationInput("request.raw", input);
 
-    const pageRef = await this.ensurePageRef();
-    const sessionRef = this.sessionRef;
-    if (!sessionRef) {
-      throw new Error("Opensteer session is not initialized");
-    }
+    const transport = input.transport ?? "session-http";
+    const binding =
+      transport === "session-http" ? await this.ensureBrowserTransportBinding() : this.currentBinding();
     const startedAt = Date.now();
 
     try {
       const output = await this.runWithOperationTimeout(
         "request.raw",
         async (timeout) =>
-          this.executeTransportRequestWithJournal(
-            buildRawTransportRequest(input),
+          this.executeRawTransportRequest(
+            input,
             timeout,
-            sessionRef,
+            binding,
           ),
         options,
       );
@@ -1108,8 +1428,8 @@ export class OpensteerSessionRuntime {
           },
         },
         context: buildRuntimeTraceContext({
-          sessionRef,
-          pageRef,
+          sessionRef: binding?.sessionRef,
+          pageRef: binding?.pageRef,
         }),
       });
 
@@ -1122,8 +1442,8 @@ export class OpensteerSessionRuntime {
         outcome: "error",
         error,
         context: buildRuntimeTraceContext({
-          sessionRef,
-          pageRef,
+          sessionRef: binding?.sessionRef,
+          pageRef: binding?.pageRef,
         }),
       });
       throw error;
@@ -1136,35 +1456,36 @@ export class OpensteerSessionRuntime {
   ): Promise<OpensteerRequestExecuteOutput> {
     assertValidSemanticOperationInput("request.execute", input);
 
-    const pageRef = await this.ensurePageRef();
-    const sessionRef = this.sessionRef;
-    if (!sessionRef) {
-      throw new Error("Opensteer session is not initialized");
-    }
     const root = await this.ensureRoot();
+    const plan = await root.registry.requestPlans.resolve({
+      key: input.key,
+      ...(input.version === undefined ? {} : { version: input.version }),
+    });
+    if (plan === undefined) {
+      throw new OpensteerProtocolError(
+        "not-found",
+        input.version === undefined
+          ? `no request plan found for "${input.key}"`
+          : `no request plan found for "${input.key}" version "${input.version}"`,
+        {
+          details: {
+            key: input.key,
+            ...(input.version === undefined ? {} : { version: input.version }),
+            kind: "request-plan",
+          },
+        },
+      );
+    }
+    const binding =
+      plan.payload.transport.kind === "session-http"
+        ? await this.ensureBrowserTransportBinding()
+        : this.currentBinding();
     const startedAt = Date.now();
 
     try {
       const output = await this.runWithOperationTimeout(
         "request.execute",
-        async (timeout) => {
-          const baselineRequestIds = await this.readLiveRequestIds(timeout, {
-            includeCurrentPageOnly: false,
-          });
-          const output = await timeout.runStep(() =>
-            executeSessionHttpRequest({
-              engine: this.requireEngine(),
-              registry: root.registry.requestPlans,
-              sessionRef,
-              request: input,
-              signal: timeout.signal,
-            }),
-          );
-          await this.observeLiveTransportDelta(timeout, baselineRequestIds, {
-            includeCurrentPageOnly: false,
-          });
-          return output;
-        },
+        async (timeout) => this.executeResolvedRequestPlan(plan, input, timeout, binding),
         options,
       );
 
@@ -1184,10 +1505,11 @@ export class OpensteerSessionRuntime {
             status: output.response.status,
             redirected: output.response.redirected,
           },
+          ...(output.recovery === undefined ? {} : { recovery: output.recovery }),
         },
         context: buildRuntimeTraceContext({
-          sessionRef,
-          pageRef,
+          sessionRef: binding?.sessionRef,
+          pageRef: binding?.pageRef,
         }),
       });
 
@@ -1200,8 +1522,8 @@ export class OpensteerSessionRuntime {
         outcome: "error",
         error,
         context: buildRuntimeTraceContext({
-          sessionRef,
-          pageRef,
+          sessionRef: binding?.sessionRef,
+          pageRef: binding?.pageRef,
         }),
       });
       throw error;
@@ -1834,6 +2156,662 @@ export class OpensteerSessionRuntime {
         ? {}
         : { data: parseStructuredResponseData(response.data) }),
     };
+  }
+
+  private currentBinding(): RuntimeBrowserBinding | undefined {
+    return this.sessionRef === undefined || this.pageRef === undefined
+      ? undefined
+      : {
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        };
+  }
+
+  private requireSessionRef(): SessionRef {
+    if (!this.sessionRef) {
+      throw new Error("Opensteer session is not initialized");
+    }
+    return this.sessionRef;
+  }
+
+  private async ensureBrowserTransportBinding(): Promise<RuntimeBrowserBinding> {
+    const pageRef = await this.ensurePageRef();
+    return {
+      sessionRef: this.requireSessionRef(),
+      pageRef,
+    };
+  }
+
+  private requireExistingBrowserBindingForRecovery(): RuntimeBrowserBinding {
+    const binding = this.currentBinding();
+    if (binding !== undefined) {
+      return binding;
+    }
+
+    throw new OpensteerProtocolError(
+      "browser-required",
+      "auth recovery requires a live browser session, but none is currently attached or open",
+      {
+        details: {
+          kind: "auth-recovery",
+        },
+      },
+    );
+  }
+
+  private async executeRawTransportRequest(
+    input: OpensteerRawRequestInput,
+    timeout: TimeoutExecutionContext,
+    binding: RuntimeBrowserBinding | undefined,
+  ): Promise<OpensteerRawRequestOutput> {
+    const request = buildRawTransportRequest(input);
+    if ((input.transport ?? "session-http") === "session-http") {
+      if (binding === undefined) {
+        throw new Error("Opensteer session is not initialized");
+      }
+      return this.executeTransportRequestWithJournal(request, timeout, binding.sessionRef);
+    }
+
+    return this.executeDirectTransportRequestWithPersistence(request, timeout);
+  }
+
+  private async executeDirectTransportRequestWithPersistence(
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly followRedirects?: boolean;
+    },
+    timeout: TimeoutExecutionContext,
+  ): Promise<OpensteerRawRequestOutput> {
+    const response = await timeout.runStep(() =>
+      executeDirectTransportRequest(request, timeout.signal),
+    );
+    const recordId = await this.persistDirectTransportRecord(request, response, undefined);
+    return {
+      recordId,
+      request: toProtocolRequestTransportResult(request),
+      response: toProtocolRequestResponseResult(response),
+      ...(parseStructuredResponseData(response) === undefined
+        ? {}
+        : { data: parseStructuredResponseData(response) }),
+    };
+  }
+
+  private async persistDirectTransportRecord(
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+    },
+    response: {
+      readonly url: string;
+      readonly status: number;
+      readonly statusText: string;
+      readonly headers: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly redirected: boolean;
+    },
+    tag: string | undefined,
+  ): Promise<string> {
+    const root = await this.ensureRoot();
+    const now = Date.now();
+    const recordId = `record:${randomUUID()}`;
+    const requestId = createNetworkRequestId(`direct-http-${randomUUID()}`);
+    const syntheticSessionRef = createSessionRef(`direct-http-${this.name}`);
+    const record: NetworkQueryRecord = {
+      recordId,
+      source: "saved",
+      savedAt: now,
+      record: {
+        kind: "http",
+        requestId,
+        sessionRef: syntheticSessionRef,
+        method: request.method,
+        url: request.url,
+        requestHeaders: request.headers ?? [],
+        responseHeaders: response.headers,
+        status: response.status,
+        statusText: response.statusText,
+        resourceType: "fetch",
+        navigationRequest: false,
+        captureState: "complete",
+        requestBodyState: request.body === undefined ? "skipped" : "complete",
+        responseBodyState: response.body === undefined ? "skipped" : "complete",
+        ...(request.body === undefined
+          ? {}
+          : { requestBody: toProtocolBodyPayload(request.body) }),
+        ...(response.body === undefined
+          ? {}
+          : { responseBody: toProtocolBodyPayload(response.body) }),
+      },
+    };
+
+    await root.registry.savedNetwork.save([record], tag);
+    return recordId;
+  }
+
+  private async executeResolvedRequestPlan(
+    plan: RequestPlanRecord,
+    input: OpensteerRequestExecuteInput,
+    timeout: TimeoutExecutionContext,
+    binding: RuntimeBrowserBinding | undefined,
+  ): Promise<OpensteerRequestExecuteOutput> {
+    const transportRequest = buildTransportRequestFromPlan(plan, input);
+    const initial = await this.executePlanTransportRequest(plan, transportRequest, timeout, binding);
+    const validateResponse = input.validateResponse ?? true;
+    const failurePolicy = plan.payload.auth?.failurePolicy;
+    const matchedFailurePolicy =
+      failurePolicy !== undefined && matchesFailurePolicy(failurePolicy, initial.output.response);
+    if (!matchedFailurePolicy) {
+      if (validateResponse) {
+        assertResponseMatchesPlan(plan, initial.transportResponse);
+        await this.touchRequestPlanFreshness(plan);
+      }
+      return {
+        ...initial.output,
+        ...(failurePolicy === undefined
+          ? {}
+          : {
+              recovery: {
+                attempted: false,
+                succeeded: false,
+                matchedFailurePolicy,
+              },
+            }),
+      };
+    }
+
+    const recipeRef = plan.payload.auth?.recipe;
+    if (recipeRef === undefined) {
+      throw new OpensteerProtocolError(
+        "auth-failure",
+        `request plan ${plan.key}@${plan.version} matched its auth failure policy but has no recovery recipe configured`,
+        {
+          details: {
+            key: plan.key,
+            version: plan.version,
+            failurePolicy,
+          },
+        },
+      );
+    }
+
+    let recoveryOutput: OpensteerRunAuthRecipeOutput;
+    try {
+      recoveryOutput = await this.executeAuthRecipeRecord(
+        await this.resolveAuthRecipe(recipeRef.key, recipeRef.version),
+        timeout,
+        {},
+      );
+    } catch (error) {
+      if (error instanceof OpensteerProtocolError && error.code === "browser-required") {
+        throw error;
+      }
+      throw new OpensteerProtocolError(
+        "auth-recovery-failed",
+        `request plan ${plan.key}@${plan.version} failed during auth recovery`,
+        {
+          cause: error,
+          details: {
+            key: plan.key,
+            version: plan.version,
+            recipe: recipeRef,
+          },
+        },
+      );
+    }
+
+    const retriedRequest = applyTransportRequestOverrides(
+      buildTransportRequestFromPlan(plan, input),
+      recoveryOutput.overrides,
+    );
+    const retried = await this.executePlanTransportRequest(plan, retriedRequest, timeout, binding);
+    if (matchesFailurePolicy(failurePolicy, retried.output.response)) {
+      throw new OpensteerProtocolError(
+        "auth-recovery-failed",
+        `request plan ${plan.key}@${plan.version} still matched its auth failure policy after deterministic recovery`,
+        {
+          details: {
+            key: plan.key,
+            version: plan.version,
+            recipe: {
+              key: recoveryOutput.recipe.key,
+              version: recoveryOutput.recipe.version,
+            },
+          },
+        },
+      );
+    }
+    if (validateResponse) {
+      assertResponseMatchesPlan(plan, retried.transportResponse);
+      await this.touchRequestPlanFreshness(plan);
+    }
+
+    return {
+      ...retried.output,
+      recovery: {
+        attempted: true,
+        succeeded: true,
+        matchedFailurePolicy: true,
+        recipe: {
+          key: recoveryOutput.recipe.key,
+          version: recoveryOutput.recipe.version,
+        },
+      },
+    };
+  }
+
+  private async executePlanTransportRequest(
+    plan: RequestPlanRecord,
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly followRedirects?: boolean;
+    },
+    timeout: TimeoutExecutionContext,
+    binding: RuntimeBrowserBinding | undefined,
+  ): Promise<{
+    readonly output: OpensteerRequestExecuteOutput;
+    readonly transportResponse: {
+      readonly url: string;
+      readonly status: number;
+      readonly statusText: string;
+      readonly headers: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly redirected: boolean;
+    };
+  }> {
+    if (plan.payload.transport.kind === "session-http") {
+      const liveBinding = binding ?? (await this.ensureBrowserTransportBinding());
+      const baselineRequestIds = await this.readLiveRequestIds(timeout, {
+        includeCurrentPageOnly: false,
+      });
+      const response = await timeout.runStep(() =>
+        this.requireEngine().executeRequest({
+          sessionRef: liveBinding.sessionRef,
+          request,
+          signal: timeout.signal,
+        }),
+      );
+      await this.observeLiveTransportDelta(timeout, baselineRequestIds, {
+        includeCurrentPageOnly: false,
+      });
+      return {
+        output: buildPlanExecuteOutput(plan, request, response.data),
+        transportResponse: response.data,
+      };
+    }
+
+    const response = await timeout.runStep(() => executeDirectTransportRequest(request, timeout.signal));
+    return {
+      output: buildPlanExecuteOutput(plan, request, response),
+      transportResponse: response,
+    };
+  }
+
+  private async touchRequestPlanFreshness(plan: RequestPlanRecord): Promise<void> {
+    const freshness = touchFreshness(plan.freshness);
+    await this.requireRoot().registry.requestPlans.updateMetadata({
+      id: plan.id,
+      ...(freshness === undefined ? {} : { freshness }),
+    });
+  }
+
+  private async resolveAuthRecipe(key: string, version: string | undefined): Promise<AuthRecipeRecord> {
+    const recipe = await this.requireRoot().registry.authRecipes.resolve({
+      key,
+      ...(version === undefined ? {} : { version }),
+    });
+    if (recipe === undefined) {
+      throw new OpensteerProtocolError(
+        "not-found",
+        version === undefined
+          ? `auth recipe ${key} was not found`
+          : `auth recipe ${key}@${version} was not found`,
+        {
+          details: {
+            key,
+            ...(version === undefined ? {} : { version }),
+            kind: "auth-recipe",
+          },
+        },
+      );
+    }
+    return recipe;
+  }
+
+  private async runResolvedAuthRecipe(
+    input: OpensteerRunAuthRecipeInput,
+    timeout: TimeoutExecutionContext,
+  ): Promise<OpensteerRunAuthRecipeOutput> {
+    const recipe = await this.resolveAuthRecipe(input.key, input.version);
+    return this.executeAuthRecipeRecord(recipe, timeout, input.variables ?? {});
+  }
+
+  private async executeAuthRecipeRecord(
+    recipe: AuthRecipeRecord,
+    timeout: TimeoutExecutionContext,
+    initialVariables: Readonly<Record<string, string>>,
+  ): Promise<OpensteerRunAuthRecipeOutput> {
+    const variables = new Map<string, string>(Object.entries(initialVariables));
+    let overrides: OpensteerAuthRecipeRetryOverrides | undefined;
+
+    for (const [index, step] of recipe.payload.steps.entries()) {
+      const stepResult = await this.executeAuthRecipeStep(step, variables, timeout);
+      mergeVariables(variables, stepResult.variables);
+      overrides = mergeAuthRecipeOverrides(overrides, stepResult.overrides);
+
+      await this.appendTrace({
+        operation: "auth-recipe.step",
+        startedAt: Date.now(),
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          recipe: {
+            key: recipe.key,
+            version: recipe.version,
+          },
+          index,
+          kind: step.kind,
+        },
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+    }
+
+    const outputOverrides = renderOverrides(recipe.payload.outputs, variables);
+    const renderedOverrides = mergeAuthRecipeOverrides(overrides, outputOverrides);
+
+    return {
+      recipe: {
+        id: recipe.id,
+        key: recipe.key,
+        version: recipe.version,
+      },
+      variables: Object.fromEntries([...variables.entries()].sort(([left], [right]) => left.localeCompare(right))),
+      ...(renderedOverrides === undefined ? {} : { overrides: renderedOverrides }),
+    };
+  }
+
+  private async executeAuthRecipeStep(
+    step: OpensteerAuthRecipeStep,
+    variables: ReadonlyMap<string, string>,
+    timeout: TimeoutExecutionContext,
+  ): Promise<{
+    readonly variables?: Readonly<Record<string, string>>;
+    readonly overrides?: OpensteerAuthRecipeRetryOverrides;
+  }> {
+    switch (step.kind) {
+      case "goto": {
+        const binding = this.requireExistingBrowserBindingForRecovery();
+        await this.navigatePage(
+          {
+            operation: "page.goto",
+            pageRef: binding.pageRef,
+            url: interpolateTemplate(step.url, variables),
+          },
+          timeout,
+        );
+        return {};
+      }
+      case "reload": {
+        const binding = this.requireExistingBrowserBindingForRecovery();
+        const remainingMs = timeout.remainingMs();
+        await timeout.runStep(() =>
+          this.requireEngine().reload({
+            pageRef: binding.pageRef,
+            ...(remainingMs === undefined ? {} : { timeoutMs: remainingMs }),
+          }),
+        );
+        await timeout.runStep(() =>
+          settleWithPolicy(this.policy.settle, {
+            operation: "page.goto",
+            trigger: "navigation",
+            engine: this.requireEngine(),
+            pageRef: binding.pageRef,
+            signal: timeout.signal,
+            remainingMs: timeout.remainingMs(),
+          }),
+        );
+        return {};
+      }
+      case "waitForUrl": {
+        const binding = this.requireExistingBrowserBindingForRecovery();
+        await pollUntil(timeout, async () => {
+          const page = await this.requireEngine().getPageInfo({ pageRef: binding.pageRef });
+          return page.url.includes(interpolateTemplate(step.includes, variables));
+        });
+        return {};
+      }
+      case "waitForNetwork": {
+        this.requireExistingBrowserBindingForRecovery();
+        const record = await pollUntilResult(timeout, async () => {
+          const matches = await this.queryLiveNetwork(
+            {
+              source: "live",
+              ...(step.url === undefined ? {} : { url: interpolateTemplate(step.url, variables) }),
+              ...(step.hostname === undefined
+                ? {}
+                : { hostname: interpolateTemplate(step.hostname, variables) }),
+              ...(step.path === undefined ? {} : { path: interpolateTemplate(step.path, variables) }),
+              ...(step.method === undefined
+                ? {}
+                : { method: interpolateTemplate(step.method, variables) }),
+              ...(step.status === undefined
+                ? {}
+                : { status: interpolateTemplate(step.status, variables) }),
+              includeBodies: step.includeBodies ?? false,
+              limit: 1,
+            },
+            timeout,
+          );
+          return matches[0];
+        });
+        return step.saveAs === undefined ? {} : { variables: { [step.saveAs]: record.recordId } };
+      }
+      case "waitForCookie": {
+        const value = await pollUntilResult(timeout, async () =>
+          this.readCookieValue(interpolateTemplate(step.name, variables), step.url, variables),
+        );
+        return step.saveAs === undefined ? {} : { variables: { [step.saveAs]: value } };
+      }
+      case "waitForStorage": {
+        const value = await pollUntilResult(timeout, async () =>
+          this.readStorageValue(
+            {
+              area: step.area,
+              origin: step.origin,
+              key: step.key,
+            },
+            variables,
+          ),
+        );
+        return step.saveAs === undefined ? {} : { variables: { [step.saveAs]: value } };
+      }
+      case "readCookie": {
+        const value = await this.readCookieValue(step.name, step.url, variables);
+        if (value === undefined) {
+          throw new OpensteerProtocolError(
+            "not-found",
+            `auth recipe cookie ${step.name} was not found`,
+          );
+        }
+        return {
+          variables: {
+            [step.saveAs]: value,
+          },
+        };
+      }
+      case "readStorage": {
+        const value = await this.readStorageValue(step, variables);
+        if (value === undefined) {
+          throw new OpensteerProtocolError(
+            "not-found",
+            `auth recipe storage key ${step.origin}:${step.key} was not found`,
+          );
+        }
+        return {
+          variables: {
+            [step.saveAs]: value,
+          },
+        };
+      }
+      case "sessionRequest": {
+        const binding = this.requireExistingBrowserBindingForRecovery();
+        const request = buildRecipeRequest(step.request, variables);
+        const output = await this.executeTransportRequestWithJournal(request, timeout, binding.sessionRef);
+        return captureRecipeResponse(step, output.response, output.data);
+      }
+      case "directRequest": {
+        const request = buildRecipeRequest(step.request, variables);
+        const output = await this.executeDirectTransportRequestWithPersistence(request, timeout);
+        return captureRecipeResponse(step, output.response, output.data);
+      }
+      case "hook":
+        return this.executeAuthRecipeHook(step, variables);
+    }
+  }
+
+  private async executeAuthRecipeHook(
+    step: Extract<OpensteerAuthRecipeStep, { readonly kind: "hook" }>,
+    variables: ReadonlyMap<string, string>,
+  ): Promise<{
+    readonly variables?: Readonly<Record<string, string>>;
+    readonly overrides?: OpensteerAuthRecipeRetryOverrides;
+  }> {
+    const resolved = requireForAuthRecipeHook.resolve(step.hook.specifier, {
+      paths: [path.dirname(this.rootPath)],
+    });
+    const module = await import(pathToFileURL(resolved).href);
+    const handler = module[step.hook.export] as
+      | ((input: {
+          readonly variables: Readonly<Record<string, string>>;
+          readonly context: {
+            goto: (input: { readonly url: string }) => Promise<unknown>;
+            reload: () => Promise<unknown>;
+            queryNetwork: (input?: OpensteerNetworkQueryInput) => Promise<OpensteerNetworkQueryOutput>;
+            rawRequest: (input: OpensteerRawRequestInput) => Promise<OpensteerRawRequestOutput>;
+            getCookies: (input?: { readonly urls?: readonly string[] }) => Promise<readonly CookieRecord[]>;
+            getStorageSnapshot: (input?: {
+              readonly includeSessionStorage?: boolean;
+              readonly includeIndexedDb?: boolean;
+            }) => Promise<StorageSnapshot>;
+            extract: (input: OpensteerDomExtractInput) => Promise<OpensteerDomExtractOutput>;
+          };
+        }) => Promise<{
+          readonly variables?: Readonly<Record<string, string>>;
+          readonly overrides?: OpensteerAuthRecipeRetryOverrides;
+        } | void>)
+      | undefined;
+    if (typeof handler !== "function") {
+      throw new OpensteerProtocolError(
+        "invalid-request",
+        `auth recipe hook ${step.hook.specifier}#${step.hook.export} is not a function`,
+      );
+    }
+
+    const result = await handler({
+      variables: Object.fromEntries(variables),
+      context: {
+        goto: async (input) => {
+          const binding = this.requireExistingBrowserBindingForRecovery();
+          await this.runWithOperationTimeout("page.goto", (timeout) =>
+            this.navigatePage(
+              {
+                operation: "page.goto",
+                pageRef: binding.pageRef,
+                url: input.url,
+              },
+              timeout,
+            ),
+          );
+          return undefined;
+        },
+        reload: async () => {
+          const binding = this.requireExistingBrowserBindingForRecovery();
+          await this.requireEngine().reload({
+            pageRef: binding.pageRef,
+          });
+          return undefined;
+        },
+        queryNetwork: (input = {}) => this.queryNetwork(input),
+        rawRequest: (input) => this.rawRequest(input),
+        getCookies: async (input = {}) => {
+          const binding = this.requireExistingBrowserBindingForRecovery();
+          return this.requireEngine().getCookies({
+            sessionRef: binding.sessionRef,
+            ...(input.urls === undefined ? {} : { urls: input.urls }),
+          });
+        },
+        getStorageSnapshot: async (input = {}) => {
+          const binding = this.requireExistingBrowserBindingForRecovery();
+          return this.requireEngine().getStorageSnapshot({
+            sessionRef: binding.sessionRef,
+            ...(input.includeSessionStorage === undefined
+              ? {}
+              : { includeSessionStorage: input.includeSessionStorage }),
+            ...(input.includeIndexedDb === undefined
+              ? {}
+              : { includeIndexedDb: input.includeIndexedDb }),
+          });
+        },
+        extract: async (input) => {
+          this.requireExistingBrowserBindingForRecovery();
+          return this.extract(input);
+        },
+      },
+    });
+    return result ?? {};
+  }
+
+  private async readCookieValue(
+    name: string,
+    url: string | undefined,
+    variables: ReadonlyMap<string, string>,
+  ): Promise<string | undefined> {
+    const binding = this.requireExistingBrowserBindingForRecovery();
+    const cookies = await this.requireEngine().getCookies({
+      sessionRef: binding.sessionRef,
+      ...(url === undefined ? {} : { urls: [interpolateTemplate(url, variables)] }),
+    });
+    return cookies.find((cookie) => cookie.name === interpolateTemplate(name, variables))?.value;
+  }
+
+  private async readStorageValue(
+    step: {
+      readonly area: "local" | "session";
+      readonly origin: string;
+      readonly key: string;
+      readonly pageUrl?: string;
+    },
+    variables: ReadonlyMap<string, string>,
+  ): Promise<string | undefined> {
+    const binding = this.requireExistingBrowserBindingForRecovery();
+    const snapshot = await this.requireEngine().getStorageSnapshot({
+      sessionRef: binding.sessionRef,
+      includeSessionStorage: step.area === "session",
+      includeIndexedDb: false,
+    });
+    const origin = interpolateTemplate(step.origin, variables);
+    const key = interpolateTemplate(step.key, variables);
+    if (step.area === "local") {
+      return snapshot.origins
+        .find((entry) => entry.origin === origin)
+        ?.localStorage.find((entry) => entry.key === key)?.value;
+    }
+
+    const pageUrl = step.pageUrl === undefined ? undefined : interpolateTemplate(step.pageUrl, variables);
+    return snapshot.sessionStorage
+      ?.filter((entry) => entry.origin === origin)
+      .find((entry) => pageUrl === undefined || entry.origin === new URL(pageUrl).origin)
+      ?.entries.find((entry) => entry.key === key)?.value;
   }
 
   private scheduleBackgroundNetworkSaveByRequestIds(
@@ -2528,6 +3506,584 @@ function parseContentType(contentType: string | undefined): {
     ...(mimeType === undefined || mimeType.length === 0 ? {} : { mimeType }),
     ...(charset === undefined || charset.length === 0 ? {} : { charset }),
   };
+}
+
+function buildTransportRequestFromPlan(
+  plan: RequestPlanRecord,
+  input: OpensteerRequestExecuteInput,
+): {
+  readonly method: string;
+  readonly url: string;
+  readonly headers?: readonly HeaderEntry[];
+  readonly body?: BrowserBodyPayload;
+} {
+  const payload = plan.payload;
+  const parameters = payload.parameters ?? [];
+  const pathParameters = parameters.filter((parameter) => parameter.in === "path");
+  const queryParameters = parameters.filter((parameter) => parameter.in === "query");
+  const headerParameters = parameters.filter((parameter) => parameter.in === "header");
+
+  const resolvedPath = resolvePlanParameterValues(plan, pathParameters, input.params, "params");
+  const resolvedQuery = resolvePlanParameterValues(plan, queryParameters, input.query, "query");
+  const resolvedHeaders = resolvePlanParameterValues(plan, headerParameters, input.headers, "headers");
+
+  let url = payload.endpoint.urlTemplate;
+  for (const [name, value] of resolvedPath.entries()) {
+    url = url.replaceAll(`{${name}}`, encodeURIComponent(value));
+  }
+
+  const targetUrl = new URL(url);
+  for (const entry of payload.endpoint.defaultQuery ?? []) {
+    targetUrl.searchParams.set(entry.name, entry.value);
+  }
+  for (const parameter of queryParameters) {
+    const value = resolvedQuery.get(parameter.name);
+    if (value !== undefined) {
+      targetUrl.searchParams.set(parameter.wireName ?? parameter.name, value);
+    }
+  }
+
+  const headers = [...(payload.endpoint.defaultHeaders ?? [])];
+  for (const parameter of headerParameters) {
+    const value = resolvedHeaders.get(parameter.name);
+    if (value !== undefined) {
+      setHeaderValue(headers, parameter.wireName ?? parameter.name, value);
+    }
+  }
+
+  const body = input.body === undefined ? undefined : toBrowserRequestBody(input.body);
+  if (
+    body?.contentType !== undefined &&
+    !headers.some((header) => header.name.toLowerCase() === "content-type")
+  ) {
+    headers.push({
+      name: "content-type",
+      value: body.contentType,
+    });
+  }
+
+  return {
+    method: payload.endpoint.method,
+    url: targetUrl.toString(),
+    ...(headers.length === 0 ? {} : { headers }),
+    ...(body === undefined ? {} : { body: body.payload }),
+  };
+}
+
+function resolvePlanParameterValues(
+  plan: RequestPlanRecord,
+  parameters: readonly {
+    readonly name: string;
+    readonly in: "path" | "query" | "header";
+    readonly wireName?: string;
+    readonly required?: boolean;
+    readonly defaultValue?: string;
+  }[],
+  values: Readonly<Record<string, string | number | boolean>> | undefined,
+  fieldName: "params" | "query" | "headers",
+): ReadonlyMap<string, string> {
+  const normalizedValues = new Map(
+    Object.entries(values ?? {}).map(([name, value]) => [name, String(value)]),
+  );
+  const knownParameters = new Set(parameters.map((parameter) => parameter.name));
+  for (const name of normalizedValues.keys()) {
+    if (!knownParameters.has(name)) {
+      throw new OpensteerProtocolError(
+        "invalid-request",
+        `unknown ${fieldName} input "${name}" for request plan ${plan.key}@${plan.version}`,
+        {
+          details: {
+            key: plan.key,
+            version: plan.version,
+            field: fieldName,
+            name,
+          },
+        },
+      );
+    }
+  }
+
+  const resolved = new Map<string, string>();
+  for (const parameter of parameters) {
+    const value = normalizedValues.get(parameter.name) ?? parameter.defaultValue;
+    if (value === undefined) {
+      if (parameter.required ?? parameter.in === "path") {
+        throw new OpensteerProtocolError(
+          "invalid-request",
+          `missing required ${parameter.in} parameter "${parameter.name}" for request plan ${plan.key}@${plan.version}`,
+          {
+            details: {
+              key: plan.key,
+              version: plan.version,
+              field: fieldName,
+              parameter: parameter.name,
+              location: parameter.in,
+            },
+          },
+        );
+      }
+      continue;
+    }
+
+    resolved.set(parameter.name, value);
+  }
+  return resolved;
+}
+
+function setHeaderValue(
+  headers: { name: string; value: string }[],
+  name: string,
+  value: string,
+): void {
+  const normalized = name.toLowerCase();
+  const existing = headers.find((header) => header.name.toLowerCase() === normalized);
+  if (existing) {
+    existing.value = value;
+    return;
+  }
+  headers.push({ name, value });
+}
+
+function buildPlanExecuteOutput(
+  plan: RequestPlanRecord,
+  request: {
+    readonly method: string;
+    readonly url: string;
+    readonly headers?: readonly HeaderEntry[];
+    readonly body?: BrowserBodyPayload;
+  },
+  response: {
+    readonly url: string;
+    readonly status: number;
+    readonly statusText: string;
+    readonly headers: readonly HeaderEntry[];
+    readonly body?: BrowserBodyPayload;
+    readonly redirected: boolean;
+  },
+): OpensteerRequestExecuteOutput {
+  const data = parseStructuredResponseData(response);
+  return {
+    plan: {
+      id: plan.id,
+      key: plan.key,
+      version: plan.version,
+    },
+    request: toProtocolRequestTransportResult(request),
+    response: toProtocolRequestResponseResult(response),
+    ...(data === undefined ? {} : { data }),
+  };
+}
+
+function assertResponseMatchesPlan(
+  plan: RequestPlanRecord,
+  response: {
+    readonly status: number;
+    readonly headers: readonly HeaderEntry[];
+  },
+): void {
+  const expectation = plan.payload.response;
+  if (expectation === undefined) {
+    return;
+  }
+
+  const expectedStatuses = Array.isArray(expectation.status)
+    ? expectation.status
+    : [expectation.status];
+  if (!expectedStatuses.includes(response.status)) {
+    throw new OpensteerProtocolError(
+      "conflict",
+      `request plan ${plan.key}@${plan.version} expected status ${expectedStatuses.join(", ")} but received ${String(response.status)}`,
+      {
+        details: {
+          key: plan.key,
+          version: plan.version,
+          expectedStatus: expectedStatuses,
+          actualStatus: response.status,
+        },
+      },
+    );
+  }
+
+  if (expectation.contentType !== undefined) {
+    const actualContentType = response.headers.find(
+      (header) => header.name.toLowerCase() === "content-type",
+    )?.value;
+    if (actualContentType === undefined || !actualContentType.toLowerCase().includes(expectation.contentType.toLowerCase())) {
+      throw new OpensteerProtocolError(
+        "conflict",
+        `request plan ${plan.key}@${plan.version} expected content-type ${expectation.contentType} but received ${actualContentType ?? "none"}`,
+        {
+          details: {
+            key: plan.key,
+            version: plan.version,
+            expectedContentType: expectation.contentType,
+            actualContentType: actualContentType ?? null,
+          },
+        },
+      );
+    }
+  }
+}
+
+function touchFreshness(
+  freshness: RequestPlanRecord["freshness"],
+): RequestPlanRecord["freshness"] {
+  return {
+    ...(freshness ?? {}),
+    lastValidatedAt: Date.now(),
+  };
+}
+
+async function executeDirectTransportRequest(
+  request: {
+    readonly method: string;
+    readonly url: string;
+    readonly headers?: readonly HeaderEntry[];
+    readonly body?: BrowserBodyPayload;
+    readonly followRedirects?: boolean;
+  },
+  signal: AbortSignal,
+): Promise<{
+  readonly url: string;
+  readonly status: number;
+  readonly statusText: string;
+  readonly headers: readonly HeaderEntry[];
+  readonly body?: BrowserBodyPayload;
+  readonly redirected: boolean;
+}> {
+  const response = await fetch(request.url, {
+    method: request.method,
+    headers: Object.fromEntries((request.headers ?? []).map((header) => [header.name, header.value])),
+    ...(request.body === undefined ? {} : { body: Buffer.from(request.body.bytes) }),
+    redirect: request.followRedirects === false ? "manual" : "follow",
+    signal,
+  });
+
+  const headers = [...response.headers.entries()].map(([name, value]) => ({ name, value }));
+  const buffer = Buffer.from(await response.arrayBuffer());
+  const contentType = headers.find((header) => header.name.toLowerCase() === "content-type")?.value;
+  return {
+    url: response.url,
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+    ...(buffer.byteLength === 0
+      ? {}
+      : { body: createBodyPayload(new Uint8Array(buffer), parseContentType(contentType)) }),
+    redirected: response.redirected,
+  };
+}
+
+function matchesFailurePolicy(
+  policy: OpensteerRequestFailurePolicy,
+  response: OpensteerRequestExecuteOutput["response"],
+): boolean {
+  if (policy.statusCodes?.includes(response.status)) {
+    return true;
+  }
+
+  if (policy.finalUrlIncludes?.some((value) => response.url.includes(value))) {
+    return true;
+  }
+
+  if (
+    policy.responseHeaders?.some((match) =>
+      response.headers.some(
+        (header) =>
+          header.name.toLowerCase() === match.name.toLowerCase() &&
+          header.value.includes(match.valueIncludes),
+      ),
+    )
+  ) {
+    return true;
+  }
+
+  const responseText = decodeProtocolBody(response.body);
+  if (responseText !== undefined && policy.responseBodyIncludes?.some((value) => responseText.includes(value))) {
+    return true;
+  }
+
+  return false;
+}
+
+function applyTransportRequestOverrides(
+  request: {
+    readonly method: string;
+    readonly url: string;
+    readonly headers?: readonly HeaderEntry[];
+    readonly body?: BrowserBodyPayload;
+    readonly followRedirects?: boolean;
+  },
+  overrides: OpensteerAuthRecipeRetryOverrides | undefined,
+): {
+  readonly method: string;
+  readonly url: string;
+  readonly headers?: readonly HeaderEntry[];
+  readonly body?: BrowserBodyPayload;
+  readonly followRedirects?: boolean;
+} {
+  if (overrides === undefined) {
+    return request;
+  }
+
+  const url = new URL(request.url);
+  for (const [name, value] of Object.entries(overrides.query ?? {})) {
+    url.searchParams.set(name, value);
+  }
+  const headers = [...(request.headers ?? [])];
+  for (const [name, value] of Object.entries(overrides.headers ?? {})) {
+    setHeaderValue(headers, name, value);
+  }
+  return {
+    ...request,
+    url: url.toString(),
+    ...(headers.length === 0 ? {} : { headers }),
+  };
+}
+
+function interpolateTemplate(
+  value: string,
+  variables: ReadonlyMap<string, string>,
+): string {
+  return value.replace(/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g, (_match, name: string) =>
+    variables.get(name) ?? "",
+  );
+}
+
+function interpolateRecord(
+  value: Readonly<Record<string, string>> | undefined,
+  variables: ReadonlyMap<string, string>,
+): Readonly<Record<string, string>> | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [key, interpolateTemplate(entry, variables)]),
+  );
+}
+
+function buildRecipeRequest(
+  request: {
+    readonly url: string;
+    readonly method?: string;
+    readonly headers?: Readonly<Record<string, string>>;
+    readonly query?: Readonly<Record<string, string>>;
+    readonly body?: OpensteerRawRequestInput["body"];
+    readonly followRedirects?: boolean;
+  },
+  variables: ReadonlyMap<string, string>,
+): {
+  readonly method: string;
+  readonly url: string;
+  readonly headers?: readonly HeaderEntry[];
+  readonly body?: BrowserBodyPayload;
+  readonly followRedirects?: boolean;
+} {
+  const url = new URL(interpolateTemplate(request.url, variables));
+  for (const [name, value] of Object.entries(interpolateRecord(request.query, variables) ?? {})) {
+    url.searchParams.set(name, value);
+  }
+
+  const headers = Object.entries(interpolateRecord(request.headers, variables) ?? {}).map(
+    ([name, value]) => ({ name, value }),
+  );
+  const body = request.body === undefined ? undefined : toBrowserRequestBody(interpolateRequestBody(request.body, variables));
+  if (
+    body?.contentType !== undefined &&
+    !headers.some((header) => header.name.toLowerCase() === "content-type")
+  ) {
+    headers.push({
+      name: "content-type",
+      value: body.contentType,
+    });
+  }
+
+  return {
+    method: request.method === undefined ? "GET" : interpolateTemplate(request.method, variables),
+    url: url.toString(),
+    ...(headers.length === 0 ? {} : { headers }),
+    ...(body === undefined ? {} : { body: body.payload }),
+    ...(request.followRedirects === undefined ? {} : { followRedirects: request.followRedirects }),
+  };
+}
+
+function interpolateRequestBody(
+  body: OpensteerRawRequestInput["body"],
+  variables: ReadonlyMap<string, string>,
+): OpensteerRawRequestInput["body"] {
+  if (body === undefined) {
+    return undefined;
+  }
+  if ("json" in body) {
+    return {
+      json: toCanonicalJsonValue(interpolateJsonValue(body.json, variables)),
+      ...(body.contentType === undefined
+        ? {}
+        : { contentType: interpolateTemplate(body.contentType, variables) }),
+    };
+  }
+  if ("text" in body) {
+    return {
+      text: interpolateTemplate(body.text, variables),
+      ...(body.contentType === undefined
+        ? {}
+        : { contentType: interpolateTemplate(body.contentType, variables) }),
+    };
+  }
+  return {
+    base64: interpolateTemplate(body.base64, variables),
+    ...(body.contentType === undefined
+      ? {}
+      : { contentType: interpolateTemplate(body.contentType, variables) }),
+  };
+}
+
+function interpolateJsonValue(value: unknown, variables: ReadonlyMap<string, string>): unknown {
+  if (typeof value === "string") {
+    return interpolateTemplate(value, variables);
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => interpolateJsonValue(entry, variables));
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+        key,
+        interpolateJsonValue(entry, variables),
+      ]),
+    );
+  }
+  return value;
+}
+
+function captureRecipeResponse(
+  step:
+    | Extract<OpensteerAuthRecipeStep, { readonly kind: "sessionRequest" }>
+    | Extract<OpensteerAuthRecipeStep, { readonly kind: "directRequest" }>,
+  response: OpensteerRequestResponseResult,
+  data: unknown,
+): {
+  readonly variables?: Readonly<Record<string, string>>;
+} {
+  if (step.capture === undefined) {
+    return {};
+  }
+
+  const variables: Record<string, string> = {};
+  if (step.capture.header !== undefined) {
+    const value = response.headers.find(
+      (header) => header.name.toLowerCase() === step.capture!.header!.name.toLowerCase(),
+    )?.value;
+    if (value !== undefined) {
+      variables[step.capture.header.saveAs] = value;
+    }
+  }
+  if (step.capture.bodyText !== undefined) {
+    const text = decodeProtocolBody(response.body);
+    if (text !== undefined) {
+      variables[step.capture.bodyText.saveAs] = text;
+    }
+  }
+  if (step.capture.bodyJsonPointer !== undefined && data !== undefined) {
+    const value = readJsonPointer(data, step.capture.bodyJsonPointer.pointer);
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      variables[step.capture.bodyJsonPointer.saveAs] = String(value);
+    }
+  }
+  return Object.keys(variables).length === 0 ? {} : { variables };
+}
+
+function decodeProtocolBody(body: OpensteerRequestResponseResult["body"]): string | undefined {
+  if (body === undefined) {
+    return undefined;
+  }
+  return Buffer.from(body.data, "base64").toString("utf8");
+}
+
+function readJsonPointer(value: unknown, pointer: string): unknown {
+  if (pointer === "" || pointer === "/") {
+    return value;
+  }
+  const parts = pointer
+    .split("/")
+    .slice(1)
+    .map((part) => part.replaceAll("~1", "/").replaceAll("~0", "~"));
+  let current = value;
+  for (const part of parts) {
+    if (current === null || typeof current !== "object") {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
+}
+
+function renderOverrides(
+  overrides: OpensteerAuthRecipeRetryOverrides | undefined,
+  variables: ReadonlyMap<string, string>,
+): OpensteerAuthRecipeRetryOverrides | undefined {
+  if (overrides === undefined) {
+    return undefined;
+  }
+  const headers = overrides.headers === undefined ? undefined : interpolateRecord(overrides.headers, variables);
+  const query = overrides.query === undefined ? undefined : interpolateRecord(overrides.query, variables);
+  return {
+    ...(headers === undefined ? {} : { headers }),
+    ...(query === undefined ? {} : { query }),
+  };
+}
+
+function mergeVariables(
+  target: Map<string, string>,
+  source: Readonly<Record<string, string>> | undefined,
+): void {
+  if (source === undefined) {
+    return;
+  }
+  for (const [key, value] of Object.entries(source)) {
+    target.set(key, value);
+  }
+}
+
+function mergeAuthRecipeOverrides(
+  base: OpensteerAuthRecipeRetryOverrides | undefined,
+  next: OpensteerAuthRecipeRetryOverrides | undefined,
+): OpensteerAuthRecipeRetryOverrides | undefined {
+  if (base === undefined) {
+    return next;
+  }
+  if (next === undefined) {
+    return base;
+  }
+  return {
+    ...(base.headers === undefined && next.headers === undefined
+      ? {}
+      : { headers: { ...(base.headers ?? {}), ...(next.headers ?? {}) } }),
+    ...(base.query === undefined && next.query === undefined
+      ? {}
+      : { query: { ...(base.query ?? {}), ...(next.query ?? {}) } }),
+  };
+}
+
+async function pollUntil(
+  timeout: TimeoutExecutionContext,
+  predicate: () => Promise<boolean>,
+): Promise<void> {
+  await pollUntilResult(timeout, async () => ((await predicate()) ? true : undefined));
+}
+
+async function pollUntilResult<T>(
+  timeout: TimeoutExecutionContext,
+  producer: () => Promise<T | undefined>,
+): Promise<T> {
+  while (true) {
+    timeout.throwIfAborted();
+    const produced = await producer();
+    if (produced !== undefined) {
+      return produced;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
 }
 
 async function getMainFrame(engine: BrowserCoreEngine, pageRef: PageRef) {
