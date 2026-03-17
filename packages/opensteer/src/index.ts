@@ -133,7 +133,6 @@ export type {
 export type {
   OpensteerComputerExecuteOptions,
   OpensteerComputerExecuteResult,
-  OpensteerConnectOptions,
   OpensteerExtractOptions,
   OpensteerInputOptions,
   OpensteerNetworkClearOptions,
@@ -160,11 +159,42 @@ export type {
 export { OpensteerSessionRuntime } from "./sdk/runtime.js";
 export type { OpensteerExecutionMode } from "./mode/config.js";
 export { normalizeOpensteerExecutionMode, resolveOpensteerExecutionMode } from "./mode/config.js";
-export type { OpensteerConnectConfig } from "./connect/config.js";
-export { resolveConnectConfig } from "./connect/config.js";
-export { createConnectedOpensteerEngineFactory } from "./connect/engine.js";
 export type { OpensteerCloudConfig } from "./cloud/config.js";
 export { resolveCloudConfig } from "./cloud/config.js";
+export type {
+  BrowserProfileArchiveFormat,
+  BrowserProfileCreateRequest,
+  BrowserProfileDescriptor,
+  BrowserProfileImportCreateRequest,
+  BrowserProfileImportCreateResponse,
+  BrowserProfileImportDescriptor,
+  BrowserProfileImportFinalizeRequest,
+  BrowserProfileImportStatus,
+  BrowserProfileListResponse,
+  BrowserProfileStatus,
+  CloudBrowserContextConfig,
+  CloudBrowserExtensionConfig,
+  CloudBrowserLaunchConfig,
+  CloudBrowserProfilePreference,
+  CloudBrowserProfileLaunchPreference,
+  CloudFingerprintMode,
+  CloudFingerprintPreference,
+  CloudGeolocation,
+  CloudProxyMode,
+  CloudProxyPreference,
+  CloudProxyProtocol,
+  CloudSelectorCacheImportEntry,
+  CloudSelectorCacheImportRequest,
+  CloudSelectorCacheImportResponse,
+  CloudSessionCreateRequest,
+  CloudSessionCreateResponse,
+  CloudSessionLaunchConfig,
+  CloudSessionSourceType,
+  CloudSessionStatus,
+  CloudSessionSummary,
+  CloudSessionVisibilityScope,
+  CloudViewport,
+} from "@opensteer/cloud-contracts";
 export {
   OpensteerCloudClient,
   type OpensteerCloudSessionCreateInput,
@@ -174,3 +204,5 @@ export { CloudSessionProxy } from "./cloud/session-proxy.js";
 export type { OpensteerSemanticRuntime } from "./cli/dispatch.js";
 export { dispatchSemanticOperation } from "./cli/dispatch.js";
 export { ServiceOperationScheduler, parseRequestEnvelope } from "./cli/service-host.js";
+export type { LocalChromeProfileDescriptor } from "./local-browser/types.js";
+export { listLocalChromeProfiles } from "./local-browser/chrome-discovery.js";

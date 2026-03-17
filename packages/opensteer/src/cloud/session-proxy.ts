@@ -164,6 +164,7 @@ export class CloudSessionProxy implements OpensteerSemanticRuntime {
   private async ensureSession(input?: {
     readonly browser?: OpensteerSessionOpenInput["browser"];
     readonly context?: OpensteerSessionOpenInput["context"];
+    readonly browserProfile?: import("@opensteer/cloud-contracts").CloudBrowserProfilePreference;
   }): Promise<void> {
     if (this.client) {
       return;
@@ -173,6 +174,11 @@ export class CloudSessionProxy implements OpensteerSemanticRuntime {
       ...(this.name === undefined ? {} : { name: this.name }),
       ...(input?.browser === undefined ? {} : { browser: input.browser }),
       ...(input?.context === undefined ? {} : { context: input.context }),
+      ...(input?.browserProfile === undefined
+        ? this.cloud.getConfig().browserProfile === undefined
+          ? {}
+          : { browserProfile: this.cloud.getConfig().browserProfile }
+        : { browserProfile: input.browserProfile }),
     });
     this.sessionId = session.sessionId;
     const connection: OpensteerServiceConnection = {

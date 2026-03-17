@@ -16,12 +16,13 @@ import {
 } from "./client.js";
 import { OpensteerCloudClient } from "../cloud/client.js";
 import { resolveCloudConfig } from "../cloud/config.js";
-import { resolveConnectConfig } from "../connect/config.js";
 import {
   normalizeOpensteerEngineName,
   resolveOpensteerEngineName,
 } from "../internal/engine-selection.js";
 import { fileUriToPath } from "../internal/filesystem.js";
+import { runOpensteerLocalProfileCli } from "./local-profile.js";
+import { runOpensteerProfileUploadCli } from "./profile-upload.js";
 import {
   assertExecutionModeSupportsEngine,
   resolveOpensteerExecutionMode,
@@ -46,6 +47,9 @@ type CliOptionValue = string | true | readonly string[];
 
 async function main(argv: readonly string[]): Promise<void> {
   const parsed = parseCliArgs(argv);
+  if (parsed.options.connect !== undefined) {
+    throw new Error('--connect has been removed. Use --cdp or --auto-connect with "open" instead.');
+  }
 
   if (parsed.command === "service-host") {
     await runOpensteerServiceHost({
@@ -61,16 +65,12 @@ async function main(argv: readonly string[]): Promise<void> {
               "--engine",
             ),
           }),
-      ...(readStringOption(parsed.options, "connect") === undefined
-        ? {}
-        : { connectUrl: readStringOption(parsed.options, "connect")! }),
     });
     return;
   }
 
   if (parsed.command === "mcp") {
     const mode = resolveCliExecutionMode(parsed.options);
-    const connectUrl = resolveCliConnectUrl(parsed.options, mode);
     const engine = resolveOpensteerEngineName({
       requested: readStringOption(parsed.options, "engine"),
       environment: process.env.OPENSTEER_ENGINE,
@@ -82,9 +82,24 @@ async function main(argv: readonly string[]): Promise<void> {
         ? {}
         : { rootDir: readStringOption(parsed.options, "root-dir")! }),
       engine,
-      ...(connectUrl === undefined ? {} : { connectUrl }),
       ...(mode === "cloud" ? { cloud: true } : {}),
     });
+    return;
+  }
+
+  if (parsed.command === "local-profile") {
+    const exitCode = await runOpensteerLocalProfileCli(argv.slice(1));
+    if (exitCode !== 0) {
+      process.exitCode = exitCode;
+    }
+    return;
+  }
+
+  if (parsed.command === "profile") {
+    const exitCode = await runOpensteerProfileUploadCli(argv.slice(1));
+    if (exitCode !== 0) {
+      process.exitCode = exitCode;
+    }
     return;
   }
 
@@ -102,7 +117,6 @@ async function main(argv: readonly string[]): Promise<void> {
   switch (parsed.command) {
     case "open": {
       const mode = resolveCliExecutionMode(parsed.options);
-      const connectUrl = resolveCliConnectUrl(parsed.options, mode);
       const engine = resolveOpensteerEngineName({
         requested: readStringOption(parsed.options, "engine"),
         environment: process.env.OPENSTEER_ENGINE,
@@ -115,6 +129,16 @@ async function main(argv: readonly string[]): Promise<void> {
           resolveCloudConfig({
             enabled: true,
             mode,
+            ...(readStringOption(parsed.options, "cloud-profile-id") === undefined
+              ? {}
+              : {
+                  browserProfile: {
+                    profileId: readStringOption(parsed.options, "cloud-profile-id")!,
+                    ...(readBooleanOption(parsed.options, "cloud-profile-reuse-if-active") === true
+                      ? { reuseIfActive: true }
+                      : {}),
+                  },
+                }),
           })!,
         );
         const rootPath = resolveOpensteerRootPath(sessionOptions.rootDir);
@@ -123,6 +147,16 @@ async function main(argv: readonly string[]): Promise<void> {
           name: sessionName,
           ...(browser === undefined ? {} : { browser }),
           ...(context === undefined ? {} : { context }),
+          ...(readStringOption(parsed.options, "cloud-profile-id") === undefined
+            ? {}
+            : {
+                browserProfile: {
+                  profileId: readStringOption(parsed.options, "cloud-profile-id")!,
+                  ...(readBooleanOption(parsed.options, "cloud-profile-reuse-if-active") === true
+                    ? { reuseIfActive: true }
+                    : {}),
+                },
+              }),
         });
         await writeOpensteerServiceMetadata(rootPath, {
           mode: "cloud",
@@ -145,7 +179,6 @@ async function main(argv: readonly string[]): Promise<void> {
       const client = await ensureOpensteerService({
         ...sessionOptions,
         engine,
-        ...(connectUrl === undefined ? {} : { connect: { url: connectUrl } }),
         launchContext: {
           execPath: process.execPath,
           execArgv: process.execArgv,
@@ -506,7 +539,7 @@ async function main(argv: readonly string[]): Promise<void> {
     case "-h":
     default:
       throw new Error(
-        `unsupported command "${parsed.command}". Supported commands: open, goto, snapshot, click, hover, input, scroll, extract, network, plan, request, computer, mcp, close.`,
+        `unsupported command "${parsed.command}". Supported commands: open, goto, snapshot, click, hover, input, scroll, extract, network, plan, request, computer, local-profile, profile, mcp, close.`,
       );
   }
 }
@@ -530,34 +563,12 @@ function assertEngineOptionAllowed(parsed: ParsedCliArgs): void {
 
 function resolveCliExecutionMode(
   options: Readonly<Record<string, CliOptionValue>>,
-): "local" | "connect" | "cloud" {
-  const connectOption = options.connect;
+): "local" | "cloud" {
   return resolveOpensteerExecutionMode({
     local: readBooleanOption(options, "local") === true,
-    connect:
-      connectOption === true
-      || connectOption === "true"
-      || connectOption === "1"
-      || readStringOption(options, "connect") !== undefined,
     cloud: readBooleanOption(options, "cloud") === true,
     ...(process.env.OPENSTEER_MODE === undefined ? {} : { environment: process.env.OPENSTEER_MODE }),
   });
-}
-
-function resolveCliConnectUrl(
-  options: Readonly<Record<string, CliOptionValue>>,
-  mode: "local" | "connect" | "cloud",
-): string | undefined {
-  if (mode !== "connect") {
-    return undefined;
-  }
-
-  const url = readStringOption(options, "connect");
-  return resolveConnectConfig({
-    enabled: true,
-    ...(url === undefined ? {} : { url }),
-    mode,
-  })!.url;
 }
 
 function resolveOpensteerRootPath(rootDir: string | undefined): string {
@@ -674,24 +685,85 @@ function parseBrowserOptions(
     return parseJsonObject(browserJson, "browser-json");
   }
 
-  const parsed = {
-    ...(readBooleanOption(options, "headless") === undefined
-      ? {}
-      : { headless: readBooleanOption(options, "headless") }),
+  const browserKind = readStringOption(options, "browser");
+  const headed = readBooleanOption(options, "headed");
+  const headless = readBooleanOption(options, "headless");
+  if (headed === true && headless === true) {
+    throw new Error("Specify only one of --headed or --headless.");
+  }
+  const managed = {
+    ...(headed === true ? { headless: false } : {}),
+    ...(headed !== true && headless !== undefined ? { headless } : {}),
     ...(readStringOption(options, "executable-path") === undefined
       ? {}
       : { executablePath: readStringOption(options, "executable-path") }),
-    ...(readStringOption(options, "channel") === undefined
+    ...(readStringOptions(options, "browser-arg").length === 0
       ? {}
-      : { channel: readStringOption(options, "channel") }),
-    ...(readBooleanOption(options, "devtools") === undefined
-      ? {}
-      : { devtools: readBooleanOption(options, "devtools") }),
+      : { args: readStringOptions(options, "browser-arg") }),
     ...(readNumberOption(options, "timeout-ms") === undefined
       ? {}
       : { timeoutMs: readNumberOption(options, "timeout-ms") }),
   };
 
+  const cdp = readStringOption(options, "cdp");
+  const autoConnect = readBooleanOption(options, "auto-connect") === true;
+  const userDataDir = readStringOption(options, "user-data-dir");
+  const profileDirectory = readStringOption(options, "profile-directory");
+  const freshTab = readBooleanOption(options, "fresh-tab");
+  const cdpHeaders = parseHeaderEntries(readStringOptions(options, "cdp-header"));
+
+  const inferredKind =
+    browserKind
+    ?? (cdp !== undefined ? "cdp" : undefined)
+    ?? (autoConnect ? "auto-connect" : undefined)
+    ?? (userDataDir !== undefined ? "profile" : undefined);
+
+  if (cdp !== undefined && autoConnect) {
+    throw new Error("Specify only one of --cdp or --auto-connect.");
+  }
+  if ((cdp !== undefined || autoConnect) && userDataDir !== undefined) {
+    throw new Error("Specify either attach flags (--cdp/--auto-connect) or launch flags (--user-data-dir), not both.");
+  }
+
+  if (inferredKind === "profile") {
+    if (userDataDir === undefined) {
+      throw new Error('browser kind "profile" requires --user-data-dir.');
+    }
+    return {
+      kind: "profile" as const,
+      ...managed,
+      userDataDir,
+      ...(profileDirectory === undefined ? {} : { profileDirectory }),
+    };
+  }
+
+  if (inferredKind === "cdp") {
+    if (cdp === undefined) {
+      throw new Error('browser kind "cdp" requires --cdp.');
+    }
+    return {
+      kind: "cdp" as const,
+      endpoint: cdp,
+      ...(freshTab === undefined ? {} : { freshTab }),
+      ...(cdpHeaders.length === 0 ? {} : { headers: Object.fromEntries(cdpHeaders.map((entry) => [entry.name, entry.value])) }),
+    };
+  }
+
+  if (inferredKind === "auto-connect") {
+    return {
+      kind: "auto-connect" as const,
+      ...(freshTab === undefined ? {} : { freshTab }),
+    };
+  }
+
+  if (inferredKind !== undefined && inferredKind !== "managed") {
+    throw new Error(`browser must be "managed", "profile", "cdp", or "auto-connect"; received "${inferredKind}"`);
+  }
+
+  const parsed = {
+    ...(browserKind === "managed" ? { kind: "managed" as const } : {}),
+    ...managed,
+  };
   return Object.keys(parsed).length === 0 ? undefined : parsed;
 }
 

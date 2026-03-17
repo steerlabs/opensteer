@@ -45,6 +45,7 @@
   },
   "devDependencies": {
     "@opensteer/browser-core": "workspace:*",
+    "@opensteer/cloud-contracts": "workspace:*",
     "@opensteer/engine-playwright": "workspace:*",
     "@opensteer/protocol": "workspace:*",
     "@opensteer/engine-abp": "workspace:*"

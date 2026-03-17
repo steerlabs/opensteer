@@ -1,15 +1,18 @@
+import type { CloudBrowserProfilePreference } from "@opensteer/cloud-contracts";
 import { resolveOpensteerExecutionMode } from "../mode/config.js";
 
 export interface OpensteerCloudConfig {
   readonly apiKey: string;
   readonly baseUrl: string;
+  readonly browserProfile?: CloudBrowserProfilePreference;
 }
 
 export function resolveCloudConfig(input: {
   readonly enabled?: boolean;
   readonly apiKey?: string;
   readonly baseUrl?: string;
-  readonly mode?: "local" | "connect" | "cloud";
+  readonly browserProfile?: CloudBrowserProfilePreference;
+  readonly mode?: "local" | "cloud";
 } = {}): OpensteerCloudConfig | undefined {
   const mode = resolveOpensteerExecutionMode({
     ...(input.mode === undefined ? {} : { explicit: input.mode }),
@@ -30,5 +33,6 @@ export function resolveCloudConfig(input: {
     baseUrl: (input.baseUrl ?? process.env.OPENSTEER_BASE_URL ?? "https://api.opensteer.dev")
       .trim()
       .replace(/\/+$/, ""),
+    ...(input.browserProfile === undefined ? {} : { browserProfile: input.browserProfile }),
   };
 }

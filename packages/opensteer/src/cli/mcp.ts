@@ -28,7 +28,6 @@ export async function runOpensteerMcpServer(options: {
   readonly name: string;
   readonly rootDir?: string;
   readonly engine?: OpensteerEngineName;
-  readonly connectUrl?: string;
   readonly cloud?: boolean;
 }): Promise<void> {
   const runtime = createOpensteerSemanticRuntime({
@@ -37,7 +36,6 @@ export async function runOpensteerMcpServer(options: {
       ...(options.rootDir === undefined ? {} : { rootDir: options.rootDir }),
     },
     engine: options.engine ?? DEFAULT_OPENSTEER_ENGINE,
-    ...(options.connectUrl === undefined ? {} : { connect: { url: options.connectUrl } }),
     ...(options.cloud ? { cloud: true } : {}),
   });
   const toolByName = new Map(opensteerMcpTools.map((tool) => [tool.name, tool] as const));

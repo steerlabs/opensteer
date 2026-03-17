@@ -23,7 +23,6 @@ import {
   DEFAULT_OPENSTEER_ENGINE,
   type OpensteerEngineName,
 } from "../internal/engine-selection.js";
-import { createConnectedOpensteerEngineFactory } from "../connect/engine.js";
 import { OpensteerSessionRuntime } from "../sdk/runtime.js";
 import {
   isProcessAlive,
@@ -39,20 +38,14 @@ export async function runOpensteerServiceHost(options: {
   readonly name: string;
   readonly rootDir?: string;
   readonly engine?: OpensteerEngineName;
-  readonly connectUrl?: string;
 }): Promise<void> {
   const engine = options.engine ?? DEFAULT_OPENSTEER_ENGINE;
-  const mode = options.connectUrl === undefined ? "local" : "connect";
+  const mode = "local";
   assertExecutionModeSupportsEngine(mode, engine);
   const runtime = new OpensteerSessionRuntime({
     name: options.name,
     ...(options.rootDir === undefined ? {} : { rootDir: options.rootDir }),
-    engineFactory:
-      options.connectUrl === undefined
-        ? createOpensteerEngineFactory(engine)
-        : createConnectedOpensteerEngineFactory({
-            url: options.connectUrl,
-          }),
+    engineFactory: createOpensteerEngineFactory(engine),
   });
   const rootPath = runtime.rootPath;
   const token = randomBytes(24).toString("hex");
@@ -132,9 +125,8 @@ export async function runOpensteerServiceHost(options: {
     port: address.port,
     token,
     startedAt: Date.now(),
-    baseUrl,
-    engine,
-    ...(options.connectUrl === undefined ? {} : { connectUrl: options.connectUrl }),
+        baseUrl,
+        engine,
   });
 
   await once(server, "close");

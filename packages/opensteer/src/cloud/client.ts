@@ -1,10 +1,18 @@
 import type { OpensteerCloudConfig } from "./config.js";
 import type { OpensteerBrowserContextOptions, OpensteerBrowserLaunchOptions } from "@opensteer/protocol";
+import type {
+  BrowserProfileImportCreateRequest,
+  BrowserProfileImportCreateResponse,
+  BrowserProfileImportDescriptor,
+  BrowserProfileImportFinalizeRequest,
+  CloudBrowserProfilePreference,
+} from "@opensteer/cloud-contracts";
 
 export interface OpensteerCloudSessionCreateInput {
   readonly name?: string;
   readonly browser?: OpensteerBrowserLaunchOptions;
   readonly context?: OpensteerBrowserContextOptions;
+  readonly browserProfile?: CloudBrowserProfilePreference;
 }
 
 export interface OpensteerCloudSessionDescriptor {
@@ -29,6 +37,7 @@ export class OpensteerCloudClient {
         ...(input.name === undefined ? {} : { name: input.name }),
         ...(input.browser === undefined ? {} : { browser: input.browser }),
         ...(input.context === undefined ? {} : { context: input.context }),
+        ...(input.browserProfile === undefined ? {} : { browserProfile: input.browserProfile }),
       },
     });
 
@@ -53,6 +62,68 @@ export class OpensteerCloudClient {
     await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}`, {
       method: "DELETE",
     });
+  }
+
+  async createBrowserProfileImport(
+    input: BrowserProfileImportCreateRequest,
+  ): Promise<BrowserProfileImportCreateResponse> {
+    const response = await this.request("/v1/browser-profiles/imports", {
+      method: "POST",
+      body: input,
+    });
+    return (await response.json()) as BrowserProfileImportCreateResponse;
+  }
+
+  async uploadBrowserProfileImportPayload(input: {
+    readonly uploadUrl: string;
+    readonly payload: Buffer | Uint8Array;
+  }): Promise<{ readonly storageId: string }> {
+    const response = await fetch(input.uploadUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/octet-stream",
+      },
+      body: input.payload,
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!response.ok) {
+      throw new Error(`POST ${input.uploadUrl} failed with ${String(response.status)}.`);
+    }
+
+    const payload = (await response.json()) as {
+      readonly storageId?: unknown;
+    };
+    if (typeof payload.storageId !== "string" || payload.storageId.trim().length === 0) {
+      throw new Error("Profile upload response did not include storageId.");
+    }
+
+    return {
+      storageId: payload.storageId,
+    };
+  }
+
+  async finalizeBrowserProfileImport(
+    importId: string,
+    input: BrowserProfileImportFinalizeRequest,
+  ): Promise<BrowserProfileImportDescriptor> {
+    const response = await this.request(
+      `/v1/browser-profiles/imports/${encodeURIComponent(importId)}/finalize`,
+      {
+        method: "POST",
+        body: input,
+      },
+    );
+    return (await response.json()) as BrowserProfileImportDescriptor;
+  }
+
+  async getBrowserProfileImport(importId: string): Promise<BrowserProfileImportDescriptor> {
+    const response = await this.request(
+      `/v1/browser-profiles/imports/${encodeURIComponent(importId)}`,
+      {
+        method: "GET",
+      },
+    );
+    return (await response.json()) as BrowserProfileImportDescriptor;
   }
 
   buildAuthorizationHeader(): string {

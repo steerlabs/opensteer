@@ -1,10 +1,32 @@
 import type { BrowserCoreEngine } from "@opensteer/browser-core";
 import type {
+  OpensteerAutoConnectBrowserLaunchOptions,
   OpensteerBrowserContextOptions,
   OpensteerBrowserLaunchOptions,
+  OpensteerCdpBrowserLaunchOptions,
+  OpensteerManagedBrowserLaunchOptions,
+  OpensteerProfileBrowserLaunchOptions,
 } from "@opensteer/protocol";
 
 import { OPENSTEER_COMPUTER_DISPLAY_PROFILE } from "../runtimes/computer-use/display.js";
+import {
+  resolveAutoConnectBrowserLaunch,
+  resolveCdpBrowserLaunch,
+  resolveManagedBrowserLaunch,
+  resolveProfileBrowserLaunch,
+} from "../local-browser/chrome-discovery.js";
+import {
+  connectAutoBrowserSession,
+  connectCdpBrowserSession,
+  launchManagedBrowserSession,
+  launchProfileBrowserSession,
+} from "../local-browser/shared-session.js";
+import type {
+  ConnectedCdpBrowser,
+  ConnectedCdpBrowserContext,
+  ConnectedCdpPage,
+  LocalBrowserLease,
+} from "../local-browser/types.js";
 
 export const OPENSTEER_ENGINE_NAMES = ["playwright", "abp"] as const;
 export type OpensteerEngineName = (typeof OPENSTEER_ENGINE_NAMES)[number];
@@ -37,28 +59,34 @@ const defaultOpensteerEngineModuleImporters: OpensteerEngineModuleImporters = {
 };
 
 const OPENSTEER_ABP_SUPPORTED_BROWSER_OPTIONS = [
+  "kind",
   "headless",
   "args",
   "executablePath",
-] as const satisfies readonly (keyof OpensteerBrowserLaunchOptions)[];
+  "timeoutMs",
+] as const satisfies readonly (keyof OpensteerManagedBrowserLaunchOptions)[];
 
 const OPENSTEER_ENGINE_REGISTRY = {
   playwright: {
     createFactory: (importers) => async (options) => {
-      const { createPlaywrightBrowserCoreEngine } = await importers.importPlaywrightModule();
-      const context = normalizeOpensteerBrowserContextOptions(options.context);
-      return createPlaywrightBrowserCoreEngine({
-        ...(options.browser === undefined ? {} : { launch: options.browser }),
-        ...(context === undefined ? {} : { context }),
-      });
+      const playwrightModule = await importers.importPlaywrightModule();
+      const normalizedContext = normalizeOpensteerBrowserContextOptions(options.context);
+      return createPlaywrightBrowserEngine(
+        {
+          playwrightModule,
+          ...(options.browser === undefined ? {} : { browser: options.browser }),
+          ...(normalizedContext === undefined ? {} : { context: normalizedContext }),
+        },
+      );
     },
   },
   abp: {
     createFactory: (importers) => async (options) => {
       assertSupportedAbpEngineOptions(options);
       const { createAbpBrowserCoreEngine } = await loadAbpEngineModule(importers);
+      const managedBrowser = toManagedBrowserLaunchOptions(options.browser);
       const launch = toAbpLaunchOptions(
-        options.browser,
+        managedBrowser,
         normalizeOpensteerBrowserContextOptions(options.context),
       );
       return createAbpBrowserCoreEngine(
@@ -121,6 +149,87 @@ export function normalizeOpensteerBrowserContextOptions(
   };
 }
 
+async function createPlaywrightBrowserEngine(input: {
+  readonly browser?: OpensteerBrowserLaunchOptions;
+  readonly context?: OpensteerBrowserContextOptions;
+  readonly playwrightModule: Awaited<
+    ReturnType<OpensteerEngineModuleImporters["importPlaywrightModule"]>
+  >;
+}): Promise<BrowserCoreEngine> {
+  const lease = await acquireLocalBrowserLease({
+    ...(input.browser === undefined ? {} : { browser: input.browser }),
+    ...(input.context === undefined ? {} : { context: input.context }),
+    connectBrowser: async ({ headers, timeoutMs, url }) =>
+      asConnectedCdpBrowser(
+        await input.playwrightModule.connectPlaywrightChromiumBrowser({
+          url,
+          ...(headers === undefined ? {} : { headers }),
+        }),
+      ),
+  });
+
+  try {
+    const engine = await input.playwrightModule.createPlaywrightBrowserCoreEngine({
+      browser: asAdoptedChromiumBrowser(input.playwrightModule, lease.browser),
+      attachedContext: asAttachedContext(input.playwrightModule, lease.context),
+      attachedPage: asAttachedPage(input.playwrightModule, lease.page),
+      closeAttachedContextOnSessionClose: false,
+      closeBrowserOnDispose: false,
+      ...(input.context === undefined ? {} : { context: input.context }),
+    });
+
+    return wrapBrowserLease(engine, lease);
+  } catch (error) {
+    await lease.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+async function acquireLocalBrowserLease(input: {
+  readonly browser?: OpensteerBrowserLaunchOptions;
+  readonly context?: OpensteerBrowserContextOptions;
+  readonly connectBrowser: (input: {
+    readonly url: string;
+    readonly timeoutMs: number;
+    readonly headers?: Readonly<Record<string, string>>;
+  }) => Promise<ConnectedCdpBrowser>;
+}): Promise<LocalBrowserLease> {
+  const browser = input.browser;
+  if (browser === undefined || isManagedBrowserLaunchOptions(browser)) {
+    const resolved = resolveManagedBrowserLaunch(browser ?? {});
+    return launchManagedBrowserSession({
+      ...resolved,
+      args: mergeManagedLaunchArgs(resolved.args, input.context?.viewport) ?? [],
+      connectBrowser: input.connectBrowser,
+    });
+  }
+
+  if (isProfileBrowserLaunchOptions(browser)) {
+    const resolved = resolveProfileBrowserLaunch(browser);
+    return launchProfileBrowserSession({
+      ...resolved,
+      args: mergeManagedLaunchArgs(resolved.args, input.context?.viewport) ?? [],
+      connectBrowser: input.connectBrowser,
+    });
+  }
+
+  if (isCdpBrowserLaunchOptions(browser)) {
+    const resolved = resolveCdpBrowserLaunch(browser);
+    return connectCdpBrowserSession({
+      ...resolved,
+      timeoutMs: 15_000,
+      connectBrowser: input.connectBrowser,
+    });
+  }
+
+  const resolved = resolveAutoConnectBrowserLaunch(browser);
+  return connectAutoBrowserSession({
+    ...resolved,
+    timeoutMs: 15_000,
+    connectBrowser: input.connectBrowser,
+  });
+}
+
 async function loadAbpEngineModule(importers: OpensteerEngineModuleImporters) {
   try {
     return await importers.importAbpModule();
@@ -134,8 +243,22 @@ async function loadAbpEngineModule(importers: OpensteerEngineModuleImporters) {
   }
 }
 
-function toAbpLaunchOptions(
+function toManagedBrowserLaunchOptions(
   options: OpensteerBrowserLaunchOptions | undefined,
+): OpensteerManagedBrowserLaunchOptions | undefined {
+  if (options === undefined) {
+    return undefined;
+  }
+
+  if (isManagedBrowserLaunchOptions(options)) {
+    return options;
+  }
+
+  return undefined;
+}
+
+function toAbpLaunchOptions(
+  options: OpensteerManagedBrowserLaunchOptions | undefined,
   context: OpensteerBrowserContextOptions | undefined,
 ):
   | {
@@ -154,7 +277,7 @@ function toAbpLaunchOptions(
     mapped.headless = options.headless;
   }
 
-  const args = mergeAbpLaunchArgs(options?.args, context?.viewport);
+  const args = mergeManagedLaunchArgs(options?.args, context?.viewport);
   if (args !== undefined) {
     mapped.args = args;
   }
@@ -167,9 +290,15 @@ function toAbpLaunchOptions(
 }
 
 function assertSupportedAbpEngineOptions(options: OpensteerNamedEngineFactoryOptions): void {
+  if (options.browser && !isManagedBrowserLaunchOptions(options.browser)) {
+    throw new Error(
+      'ABP engine only supports managed local browser launches. Use the Playwright engine for browser.kind="profile", "cdp", or "auto-connect".',
+    );
+  }
+
   const unsupportedOptionNames = [
     ...listUnsupportedOptionNames(
-      options.browser,
+      toManagedBrowserLaunchOptions(options.browser),
       OPENSTEER_ABP_SUPPORTED_BROWSER_OPTIONS,
       "browser",
     ),
@@ -215,7 +344,7 @@ function listUnsupportedOptionNames<T extends object, TSupportedKey extends keyo
     .map(([key]) => `${prefix}.${key}`);
 }
 
-function mergeAbpLaunchArgs(
+function mergeManagedLaunchArgs(
   args: readonly string[] | undefined,
   viewport:
     | {
@@ -225,7 +354,7 @@ function mergeAbpLaunchArgs(
     | null
     | undefined,
 ): readonly string[] | undefined {
-  const filtered = stripAbpWindowSizeArgs(args);
+  const filtered = stripWindowSizeArgs(args);
   if (viewport === undefined || viewport === null) {
     return filtered.length === 0 ? undefined : filtered;
   }
@@ -233,7 +362,7 @@ function mergeAbpLaunchArgs(
   return [...filtered, `--window-size=${viewport.width},${viewport.height}`];
 }
 
-function stripAbpWindowSizeArgs(args: readonly string[] | undefined): readonly string[] {
+function stripWindowSizeArgs(args: readonly string[] | undefined): readonly string[] {
   if (args === undefined) {
     return [];
   }
@@ -261,4 +390,110 @@ function isMissingPackageError(error: unknown, packageName: string): boolean {
     error.code === "ERR_MODULE_NOT_FOUND" &&
     error.message.includes(packageName)
   );
+}
+
+function isManagedBrowserLaunchOptions(
+  options: OpensteerBrowserLaunchOptions | undefined,
+): options is OpensteerManagedBrowserLaunchOptions {
+  return options === undefined || options.kind === undefined || options.kind === "managed";
+}
+
+function isProfileBrowserLaunchOptions(
+  options: OpensteerBrowserLaunchOptions,
+): options is OpensteerProfileBrowserLaunchOptions {
+  return options.kind === "profile";
+}
+
+function isCdpBrowserLaunchOptions(
+  options: OpensteerBrowserLaunchOptions,
+): options is OpensteerCdpBrowserLaunchOptions {
+  return options.kind === "cdp";
+}
+
+function asConnectedCdpBrowser(
+  browser: Awaited<ReturnType<(typeof import("@opensteer/engine-playwright"))["connectPlaywrightChromiumBrowser"]>>,
+): ConnectedCdpBrowser {
+  return browser as unknown as ConnectedCdpBrowser;
+}
+
+function asAdoptedChromiumBrowser(
+  playwrightModule: Awaited<ReturnType<OpensteerEngineModuleImporters["importPlaywrightModule"]>>,
+  browser: ConnectedCdpBrowser,
+): NonNullable<
+  NonNullable<
+    Parameters<(typeof playwrightModule)["createPlaywrightBrowserCoreEngine"]>[0]
+  >["browser"]
+> {
+  return browser as unknown as NonNullable<
+    NonNullable<
+      Parameters<(typeof playwrightModule)["createPlaywrightBrowserCoreEngine"]>[0]
+    >["browser"]
+  >;
+}
+
+function asAttachedContext(
+  playwrightModule: Awaited<ReturnType<OpensteerEngineModuleImporters["importPlaywrightModule"]>>,
+  context: ConnectedCdpBrowserContext,
+): NonNullable<
+  NonNullable<
+    Parameters<(typeof playwrightModule)["createPlaywrightBrowserCoreEngine"]>[0]
+  >["attachedContext"]
+> {
+  return context as unknown as NonNullable<
+    NonNullable<
+      Parameters<(typeof playwrightModule)["createPlaywrightBrowserCoreEngine"]>[0]
+    >["attachedContext"]
+  >;
+}
+
+function asAttachedPage(
+  playwrightModule: Awaited<ReturnType<OpensteerEngineModuleImporters["importPlaywrightModule"]>>,
+  page: ConnectedCdpPage,
+): NonNullable<
+  NonNullable<
+    Parameters<(typeof playwrightModule)["createPlaywrightBrowserCoreEngine"]>[0]
+  >["attachedPage"]
+> {
+  return page as unknown as NonNullable<
+    NonNullable<
+      Parameters<(typeof playwrightModule)["createPlaywrightBrowserCoreEngine"]>[0]
+    >["attachedPage"]
+  >;
+}
+
+function wrapBrowserLease(
+  engine: BrowserCoreEngine,
+  lease: LocalBrowserLease,
+): BrowserCoreEngine {
+  const disposableEngine = engine as BrowserCoreEngine & {
+    dispose?: () => Promise<void>;
+    [Symbol.asyncDispose]?: () => Promise<void>;
+  };
+  const originalDispose = disposableEngine.dispose?.bind(disposableEngine);
+  const originalAsyncDispose = disposableEngine[Symbol.asyncDispose]?.bind(disposableEngine);
+  let released = false;
+  const releaseLease = async () => {
+    if (released) {
+      return;
+    }
+    released = true;
+    await lease.close();
+  };
+
+  disposableEngine.dispose = async () => {
+    try {
+      await originalDispose?.();
+    } finally {
+      await releaseLease();
+    }
+  };
+  disposableEngine[Symbol.asyncDispose] = async () => {
+    try {
+      await originalAsyncDispose?.();
+    } finally {
+      await releaseLease();
+    }
+  };
+
+  return disposableEngine;
 }
