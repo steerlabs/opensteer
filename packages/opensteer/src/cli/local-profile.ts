@@ -4,11 +4,7 @@ import {
   OpensteerLocalProfileUnavailableError,
   unlockLocalBrowserProfile,
 } from "../local-browser/profile-inspection.js";
-import {
-  localProfileCliSchema,
-  parseCliArguments,
-  renderHelp,
-} from "./schema.js";
+import { localProfileCliSchema, parseCliArguments, renderHelp } from "./schema.js";
 
 export interface LocalProfileCliDeps {
   readonly inspectProfile: typeof inspectLocalBrowserProfile;

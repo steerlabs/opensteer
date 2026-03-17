@@ -93,12 +93,14 @@ describe("Opensteer runtime modes", () => {
   test("CLI rejects unknown legacy --connect option", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "opensteer-cli-connect-"));
 
-    await expect(runCliExpectFailure(rootDir, [
-      "open",
-      "https://example.com",
-      "--connect",
-      "ws://127.0.0.1:9222/devtools/browser/test",
-    ])).resolves.toMatchObject({
+    await expect(
+      runCliExpectFailure(rootDir, [
+        "open",
+        "https://example.com",
+        "--connect",
+        "ws://127.0.0.1:9222/devtools/browser/test",
+      ]),
+    ).resolves.toMatchObject({
       error: {
         message: expect.stringContaining('unknown option "--connect"'),
       },
@@ -108,13 +110,9 @@ describe("Opensteer runtime modes", () => {
   test("CLI rejects ABP for cloud mode before resolving cloud auth", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "opensteer-cli-cloud-"));
 
-    await expect(runCliExpectFailure(rootDir, [
-      "open",
-      "https://example.com",
-      "--cloud",
-      "--engine",
-      "abp",
-    ])).resolves.toMatchObject({
+    await expect(
+      runCliExpectFailure(rootDir, ["open", "https://example.com", "--cloud", "--engine", "abp"]),
+    ).resolves.toMatchObject({
       error: {
         message: expect.stringContaining("ABP is not supported in cloud mode"),
       },

@@ -10,9 +10,7 @@ import {
   parseOpensteerLocalProfileArgs,
   runOpensteerLocalProfileCli,
 } from "../../packages/opensteer/src/cli/local-profile.js";
-import {
-  parseOpensteerProfileUploadArgs,
-} from "../../packages/opensteer/src/cli/profile-upload.js";
+import { parseOpensteerProfileUploadArgs } from "../../packages/opensteer/src/cli/profile-upload.js";
 import { ensureCliArtifactsBuilt } from "./cli-artifacts.js";
 
 const execFile = promisify(execFileCallback);
@@ -31,18 +29,14 @@ describe("local browser CLI surfaces", () => {
   });
 
   test("parses local-profile inspect mode", () => {
-    expect(
-      parseOpensteerLocalProfileArgs(["inspect", "--user-data-dir", "/tmp/chrome"]),
-    ).toEqual({
+    expect(parseOpensteerLocalProfileArgs(["inspect", "--user-data-dir", "/tmp/chrome"])).toEqual({
       mode: "inspect",
       userDataDir: "/tmp/chrome",
     });
   });
 
   test("parses local-profile unlock mode", () => {
-    expect(
-      parseOpensteerLocalProfileArgs(["unlock", "--user-data-dir", "/tmp/chrome"]),
-    ).toEqual({
+    expect(parseOpensteerLocalProfileArgs(["unlock", "--user-data-dir", "/tmp/chrome"])).toEqual({
       mode: "unlock",
       userDataDir: "/tmp/chrome",
     });
@@ -92,14 +86,15 @@ describe("local browser CLI surfaces", () => {
     });
 
     expect(code).toBe(0);
-    expect(stdout.join("")).toBe(JSON.stringify({ status: "available", userDataDir: "/tmp/chrome" }));
+    expect(stdout.join("")).toBe(
+      JSON.stringify({ status: "available", userDataDir: "/tmp/chrome" }),
+    );
   });
 
   test("local-profile unlock prints structured JSON errors", async () => {
     const stderr: string[] = [];
-    const { OpensteerLocalProfileUnavailableError } = await import(
-      "../../packages/opensteer/src/local-browser/profile-inspection.js"
-    );
+    const { OpensteerLocalProfileUnavailableError } =
+      await import("../../packages/opensteer/src/local-browser/profile-inspection.js");
 
     const code = await runOpensteerLocalProfileCli(["unlock", "--user-data-dir", "/tmp/chrome"], {
       inspectProfile: async () => ({
@@ -147,11 +142,7 @@ describe("local browser CLI surfaces", () => {
 
   test("profile upload parser requires a profile id", () => {
     expect(
-      parseOpensteerProfileUploadArgs([
-        "upload",
-        "--from-user-data-dir",
-        "/tmp/chrome",
-      ]),
+      parseOpensteerProfileUploadArgs(["upload", "--from-user-data-dir", "/tmp/chrome"]),
     ).toEqual({
       mode: "error",
       error: "--profile-id is required.",
@@ -159,9 +150,7 @@ describe("local browser CLI surfaces", () => {
   });
 
   test("local-profile parser rejects unknown camelCase flags", () => {
-    expect(
-      parseOpensteerLocalProfileArgs(["list", "--userDataDir", "/tmp/chrome"]),
-    ).toEqual({
+    expect(parseOpensteerLocalProfileArgs(["list", "--userDataDir", "/tmp/chrome"])).toEqual({
       mode: "error",
       error: 'unknown option "--userDataDir". Did you mean "--user-data-dir"?',
     });
@@ -187,47 +176,41 @@ describe("local browser CLI surfaces", () => {
   test("built CLI rejects unknown camelCase and command-inappropriate flags", async () => {
     const rootDir = await mkdtemp(path.join(tmpdir(), "opensteer-cli-strict-"));
 
-    await expect(runCliExpectFailure(rootDir, [
-      "input",
-      "--selector",
-      "input#search",
-      "--text",
-      "airpods",
-      "--pressEnter",
-      "true",
-    ])).resolves.toMatchObject({
+    await expect(
+      runCliExpectFailure(rootDir, [
+        "input",
+        "--selector",
+        "input#search",
+        "--text",
+        "airpods",
+        "--pressEnter",
+        "true",
+      ]),
+    ).resolves.toMatchObject({
       error: {
         message: 'unknown option "--pressEnter". Did you mean "--press-enter"?',
       },
     });
 
-    await expect(runCliExpectFailure(rootDir, [
-      "goto",
-      "https://example.com",
-      "--networkTag",
-      "nav",
-    ])).resolves.toMatchObject({
+    await expect(
+      runCliExpectFailure(rootDir, ["goto", "https://example.com", "--networkTag", "nav"]),
+    ).resolves.toMatchObject({
       error: {
         message: 'unknown option "--networkTag". Did you mean "--network-tag"?',
       },
     });
 
-    await expect(runCliExpectFailure(rootDir, [
-      "open",
-      "https://example.com",
-      "--bogus",
-      "true",
-    ])).resolves.toMatchObject({
+    await expect(
+      runCliExpectFailure(rootDir, ["open", "https://example.com", "--bogus", "true"]),
+    ).resolves.toMatchObject({
       error: {
         message: 'unknown option "--bogus".',
       },
     });
 
-    await expect(runCliExpectFailure(rootDir, [
-      "close",
-      "--headless",
-      "true",
-    ])).resolves.toMatchObject({
+    await expect(
+      runCliExpectFailure(rootDir, ["close", "--headless", "true"]),
+    ).resolves.toMatchObject({
       error: {
         message: 'unknown option "--headless".',
       },
@@ -324,13 +307,7 @@ describe("local browser CLI surfaces", () => {
 
     const result = await execFile(
       process.execPath,
-      [
-        CLI_SCRIPT,
-        "local-profile",
-        "list",
-        "--user-data-dir",
-        userDataDir,
-      ],
+      [CLI_SCRIPT, "local-profile", "list", "--user-data-dir", userDataDir],
       {
         cwd: rootDir,
         env: {
