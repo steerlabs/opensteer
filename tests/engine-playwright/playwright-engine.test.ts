@@ -954,6 +954,70 @@ test(
   },
 );
 
+test(
+  "normalizes DOM.getContentQuads node lookup failures from the DOM action bridge",
+  { timeout: 60_000 },
+  async () => {
+    const engine = await createPlaywrightBrowserCoreEngine({
+      launch: { headless: true },
+    });
+    const internalEngine = engine as typeof engine & {
+      readonly pages: Map<
+        string,
+        {
+          readonly cdp: {
+            send(method: string, params?: unknown): Promise<unknown>;
+          };
+        }
+      >;
+    };
+
+    try {
+      const sessionRef = await engine.createSession();
+      const created = await engine.createPage({
+        sessionRef,
+        url: `${baseUrl}/dom`,
+      });
+
+      await wait(300);
+
+      const snapshot = await engine.getDomSnapshot({
+        frameRef: created.frameRef!,
+      });
+      const inputNode = findNodeById(snapshot.nodes, "name");
+      if (!inputNode?.nodeRef) {
+        throw new Error("input node missing");
+      }
+
+      const controller = internalEngine.pages.get(created.data.pageRef);
+      if (!controller) {
+        throw new Error("page controller missing");
+      }
+
+      const originalSend = controller.cdp.send.bind(controller.cdp);
+      controller.cdp.send = async (method, params) => {
+        if (method === "DOM.getContentQuads") {
+          throw new Error("Protocol error (DOM.getContentQuads): Could not find node with given id");
+        }
+        return originalSend(method, params);
+      };
+
+      try {
+        const bridge = resolveDomActionBridge(engine)!;
+        await expect(
+          bridge.inspectActionTarget(createLocator(snapshot, inputNode)),
+        ).rejects.toMatchObject({
+          code: "stale-node-ref",
+        });
+      } finally {
+        controller.cdp.send = originalSend;
+      }
+    } finally {
+      await engine.dispose();
+    }
+  },
+);
+
 test("reports history traversal even when the URL string stays the same", async () => {
   const engine = await createPlaywrightBrowserCoreEngine({
     launch: { headless: true },

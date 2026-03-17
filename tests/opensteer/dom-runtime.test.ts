@@ -14,6 +14,11 @@ import {
 } from "../../packages/browser-core/src/index.js";
 import { createPlaywrightBrowserCoreEngine } from "../../packages/engine-playwright/src/index.js";
 import {
+  OPENSTEER_DOM_ACTION_BRIDGE_SYMBOL,
+  OpensteerProtocolError,
+  resolveDomActionBridge,
+} from "../../packages/protocol/src/index.js";
+import {
   buildArrayFieldPathCandidates,
   buildPathSelectorHint,
   createDomRuntime,
@@ -978,6 +983,92 @@ describe("Phase 5 DOM runtime integration", () => {
         );
         expect(await engine.readText(createLocator(snapshot, statusNode))).toBe(
           "descriptor clicked v2",
+        );
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "retries cached descriptor replay after a transient stale-node inspection failure",
+    { timeout: 60_000 },
+    async () => {
+      const rootPath = await createTemporaryRoot();
+      const root = await createFilesystemOpensteerRoot({ rootPath });
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+
+      try {
+        const runtime = createDomRuntime({
+          engine,
+          root,
+          namespace: "phase5-runtime-retry",
+        });
+        const baseBridge = resolveDomActionBridge(engine)!;
+        let inspectAttempts = 0;
+        const retryEngine = Object.create(engine) as BrowserCoreEngine;
+        Object.defineProperty(retryEngine, OPENSTEER_DOM_ACTION_BRIDGE_SYMBOL, {
+          configurable: true,
+          value() {
+            return {
+              ...baseBridge,
+              async inspectActionTarget(locator) {
+                inspectAttempts += 1;
+                if (inspectAttempts === 1) {
+                  throw new OpensteerProtocolError(
+                    "stale-node-ref",
+                    "synthetic stale inspection failure",
+                    {
+                      retriable: true,
+                    },
+                  );
+                }
+                return baseBridge.inspectActionTarget(locator);
+              },
+            };
+          },
+        });
+        const retryRuntime = createDomRuntime({
+          engine: retryEngine,
+          root,
+          namespace: "phase5-runtime-retry",
+        });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: `${baseUrl}/runtime/main`,
+        });
+
+        await wait(400);
+
+        await runtime.resolveTarget({
+          pageRef: created.data.pageRef,
+          method: "click",
+          target: {
+            kind: "selector",
+            selector: '[data-testid="descriptor-button"]',
+            description: "descriptor button",
+          },
+        });
+
+        await retryRuntime.click({
+          pageRef: created.data.pageRef,
+          target: { kind: "descriptor", description: "descriptor button" },
+        });
+
+        expect(inspectAttempts).toBeGreaterThan(1);
+
+        const snapshot = await engine.getDomSnapshot({
+          frameRef: requireValue(created.frameRef, "main frame ref missing"),
+        });
+        const statusNode = requireValue(
+          findNodeById(snapshot.nodes, "status"),
+          "status node missing",
+        );
+        expect(await engine.readText(createLocator(snapshot, statusNode))).toBe(
+          "descriptor clicked v1",
         );
       } finally {
         await engine.dispose();
