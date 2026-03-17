@@ -78,17 +78,41 @@ import { OPENSTEER_PROTOCOL_REST_BASE_PATH } from "./version.js";
 
 export type OpensteerSnapshotMode = "action" | "extraction";
 
-export interface OpensteerBrowserLaunchOptions {
+export interface OpensteerManagedBrowserLaunchOptions {
+  readonly kind?: "managed";
   readonly headless?: boolean;
   readonly executablePath?: string;
-  readonly channel?: string;
   readonly args?: readonly string[];
-  readonly chromiumSandbox?: boolean;
-  readonly devtools?: boolean;
-  readonly downloadsPath?: string;
-  readonly slowMo?: number;
   readonly timeoutMs?: number;
 }
+
+export interface OpensteerProfileBrowserLaunchOptions {
+  readonly kind: "profile";
+  readonly headless?: boolean;
+  readonly executablePath?: string;
+  readonly userDataDir: string;
+  readonly profileDirectory?: string;
+  readonly args?: readonly string[];
+  readonly timeoutMs?: number;
+}
+
+export interface OpensteerCdpBrowserLaunchOptions {
+  readonly kind: "cdp";
+  readonly endpoint: string;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly freshTab?: boolean;
+}
+
+export interface OpensteerAutoConnectBrowserLaunchOptions {
+  readonly kind: "auto-connect";
+  readonly freshTab?: boolean;
+}
+
+export type OpensteerBrowserLaunchOptions =
+  | OpensteerManagedBrowserLaunchOptions
+  | OpensteerProfileBrowserLaunchOptions
+  | OpensteerCdpBrowserLaunchOptions
+  | OpensteerAutoConnectBrowserLaunchOptions;
 
 export interface OpensteerBrowserContextOptions {
   readonly ignoreHTTPSErrors?: boolean;
@@ -433,18 +457,68 @@ const viewportSchema: JsonSchema = oneOfSchema(
   },
 );
 
-const opensteerBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
+const managedBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
   {
+    kind: enumSchema(["managed"] as const),
     headless: { type: "boolean" },
     executablePath: stringSchema(),
-    channel: stringSchema(),
     args: arraySchema(stringSchema()),
-    chromiumSandbox: { type: "boolean" },
-    devtools: { type: "boolean" },
-    downloadsPath: stringSchema(),
-    slowMo: integerSchema({ minimum: 0 }),
     timeoutMs: integerSchema({ minimum: 0 }),
   },
+  {
+    title: "OpensteerManagedBrowserLaunchOptions",
+  },
+);
+
+const profileBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
+  {
+    kind: enumSchema(["profile"] as const),
+    headless: { type: "boolean" },
+    executablePath: stringSchema(),
+    userDataDir: stringSchema(),
+    profileDirectory: stringSchema(),
+    args: arraySchema(stringSchema()),
+    timeoutMs: integerSchema({ minimum: 0 }),
+  },
+  {
+    title: "OpensteerProfileBrowserLaunchOptions",
+    required: ["kind", "userDataDir"],
+  },
+);
+
+const cdpBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
+  {
+    kind: enumSchema(["cdp"] as const),
+    endpoint: stringSchema(),
+    headers: recordSchema(stringSchema(), {
+      title: "OpensteerCdpBrowserHeaders",
+    }),
+    freshTab: { type: "boolean" },
+  },
+  {
+    title: "OpensteerCdpBrowserLaunchOptions",
+    required: ["kind", "endpoint"],
+  },
+);
+
+const autoConnectBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
+  {
+    kind: enumSchema(["auto-connect"] as const),
+    freshTab: { type: "boolean" },
+  },
+  {
+    title: "OpensteerAutoConnectBrowserLaunchOptions",
+    required: ["kind"],
+  },
+);
+
+const opensteerBrowserLaunchOptionsSchema: JsonSchema = oneOfSchema(
+  [
+    managedBrowserLaunchOptionsSchema,
+    profileBrowserLaunchOptionsSchema,
+    cdpBrowserLaunchOptionsSchema,
+    autoConnectBrowserLaunchOptionsSchema,
+  ],
   {
     title: "OpensteerBrowserLaunchOptions",
   },

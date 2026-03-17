@@ -1,4 +1,4 @@
-export const OPENSTEER_EXECUTION_MODES = ["local", "connect", "cloud"] as const;
+export const OPENSTEER_EXECUTION_MODES = ["local", "cloud"] as const;
 
 export type OpensteerExecutionMode = (typeof OPENSTEER_EXECUTION_MODES)[number];
 
@@ -8,10 +8,6 @@ export function assertExecutionModeSupportsEngine(
 ): void {
   if (engine !== "abp") {
     return;
-  }
-
-  if (mode === "connect") {
-    throw new Error("ABP is not supported in connect mode. Connect mode currently requires Playwright.");
   }
 
   if (mode === "cloud") {
@@ -26,8 +22,7 @@ export function normalizeOpensteerExecutionMode(
   const normalized = value.trim().toLowerCase();
   if (
     normalized === OPENSTEER_EXECUTION_MODES[0] ||
-    normalized === OPENSTEER_EXECUTION_MODES[1] ||
-    normalized === OPENSTEER_EXECUTION_MODES[2]
+    normalized === OPENSTEER_EXECUTION_MODES[1]
   ) {
     return normalized;
   }
@@ -39,14 +34,13 @@ export function normalizeOpensteerExecutionMode(
 
 export function resolveOpensteerExecutionMode(input: {
   readonly local?: boolean;
-  readonly connect?: boolean;
   readonly cloud?: boolean;
   readonly explicit?: OpensteerExecutionMode;
   readonly environment?: string;
 } = {}): OpensteerExecutionMode {
-  const explicitFlags = [input.local, input.connect, input.cloud].filter(Boolean).length;
+  const explicitFlags = [input.local, input.cloud].filter(Boolean).length;
   if (explicitFlags > 1) {
-    throw new Error("Choose exactly one execution mode: local, connect, or cloud.");
+    throw new Error("Choose exactly one execution mode: local or cloud.");
   }
 
   if (input.explicit) {
@@ -55,10 +49,6 @@ export function resolveOpensteerExecutionMode(input: {
 
   if (input.local) {
     return "local";
-  }
-
-  if (input.connect) {
-    return "connect";
   }
 
   if (input.cloud) {

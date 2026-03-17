@@ -72,13 +72,7 @@ export type OpensteerRawRequestResult = OpensteerRawRequestOutput;
 export type OpensteerRequestOptions = Omit<OpensteerRequestExecuteInput, "key">;
 export type OpensteerRequestResult = OpensteerRequestExecuteOutput;
 
-export interface OpensteerConnectOptions {
-  readonly url: string;
-  readonly headers?: Readonly<Record<string, string>>;
-}
-
 export interface OpensteerOptions extends OpensteerRuntimeOptions {
-  readonly connect?: boolean | OpensteerConnectOptions;
   readonly cloud?: boolean | OpensteerCloudOptions;
 }
 
@@ -88,7 +82,6 @@ export class Opensteer {
   constructor(options: OpensteerOptions = {}) {
     this.runtime = createOpensteerSemanticRuntime({
       runtimeOptions: options,
-      ...(options.connect === undefined ? {} : { connect: options.connect }),
       ...(options.cloud === undefined ? {} : { cloud: options.cloud }),
     });
   }

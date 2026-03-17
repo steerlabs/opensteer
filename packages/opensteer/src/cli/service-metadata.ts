@@ -19,7 +19,7 @@ const OPENSTEER_LEGACY_SERVICE_METADATA_VERSION = 2 as const;
 
 export interface OpensteerLocalServiceMetadata {
   readonly version: typeof OPENSTEER_SERVICE_METADATA_VERSION;
-  readonly mode: "local" | "connect";
+  readonly mode: "local";
   readonly name: string;
   readonly rootPath: string;
   readonly pid: number;
@@ -28,7 +28,6 @@ export interface OpensteerLocalServiceMetadata {
   readonly startedAt: number;
   readonly baseUrl: string;
   readonly engine: OpensteerEngineName;
-  readonly connectUrl?: string;
 }
 
 export interface OpensteerCloudServiceMetadata {
@@ -109,7 +108,7 @@ export function isProcessAlive(pid: number): boolean {
 export function isLocalOpensteerServiceMetadata(
   metadata: OpensteerServiceMetadata,
 ): metadata is OpensteerLocalServiceMetadata {
-  return metadata.mode === "local" || metadata.mode === "connect";
+  return metadata.mode === "local";
 }
 
 export function isCloudOpensteerServiceMetadata(
@@ -170,7 +169,7 @@ export function parseOpensteerServiceMetadata(
   return {
     metadata: {
       version: OPENSTEER_SERVICE_METADATA_VERSION,
-      mode,
+      mode: "local",
       name: readRequiredString(record, "name", metadataPath),
       rootPath: readRequiredString(record, "rootPath", metadataPath),
       pid: readRequiredInteger(record, "pid", metadataPath),
@@ -179,9 +178,6 @@ export function parseOpensteerServiceMetadata(
       startedAt: readRequiredInteger(record, "startedAt", metadataPath),
       baseUrl: readRequiredString(record, "baseUrl", metadataPath),
       engine: readRequiredEngineName(record, metadataPath),
-      ...(readOptionalString(record, "connectUrl") === undefined
-        ? {}
-        : { connectUrl: readOptionalString(record, "connectUrl")! }),
     },
     needsRewrite: false,
   };
@@ -253,8 +249,11 @@ function readRequiredMode(
   metadataPath: string,
 ): OpensteerExecutionMode {
   const value = record.mode;
-  if (value === "local" || value === "connect" || value === "cloud") {
+  if (value === "local" || value === "cloud") {
     return value;
+  }
+  if (value === "connect") {
+    return "local";
   }
   throw new Error(
     `Opensteer service metadata at ${metadataPath} is missing a valid "mode" field. Remove the stale session metadata and open the session again.`,

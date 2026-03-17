@@ -7,7 +7,6 @@ import { promisify } from "node:util";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 
 import { writeOpensteerServiceMetadata } from "../../packages/opensteer/src/cli/service-metadata.js";
-import { createConnectedOpensteerEngineFactory } from "../../packages/opensteer/src/connect/engine.js";
 import {
   createOpensteerSemanticRuntime,
   resolveOpensteerRuntimeConfig,
@@ -25,20 +24,14 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-describe("Opensteer remote modes", () => {
-  test("resolves connect mode from OPENSTEER_MODE and OPENSTEER_CONNECT_URL", async () => {
-    vi.stubEnv("OPENSTEER_MODE", "connect");
-    vi.stubEnv("OPENSTEER_CONNECT_URL", "ws://127.0.0.1:9222/devtools/browser/test");
-
+describe("Opensteer runtime modes", () => {
+  test("defaults to local mode", () => {
     expect(resolveOpensteerRuntimeConfig()).toEqual({
-      mode: "connect",
-      connect: {
-        url: "ws://127.0.0.1:9222/devtools/browser/test",
-      },
+      mode: "local",
     });
   });
 
-  test("resolves cloud mode from OPENSTEER_MODE and trims OPENSTEER_BASE_URL", async () => {
+  test("resolves cloud mode from OPENSTEER_MODE and trims OPENSTEER_BASE_URL", () => {
     vi.stubEnv("OPENSTEER_MODE", "cloud");
     vi.stubEnv("OPENSTEER_API_KEY", "osk_test");
     vi.stubEnv("OPENSTEER_BASE_URL", "https://api.opensteer.dev///");
@@ -52,18 +45,15 @@ describe("Opensteer remote modes", () => {
     });
   });
 
-  test("rejects ABP in connect mode", async () => {
-    expect(() =>
-      createOpensteerSemanticRuntime({
-        engine: "abp",
-        connect: {
-          url: "ws://127.0.0.1:9222/devtools/browser/test",
-        },
-      }),
-    ).toThrow("ABP is not supported in connect mode.");
+  test("rejects legacy connect mode in OPENSTEER_MODE", () => {
+    vi.stubEnv("OPENSTEER_MODE", "connect");
+
+    expect(() => resolveOpensteerRuntimeConfig()).toThrow(
+      'OPENSTEER_MODE must be one of local, cloud; received "connect".',
+    );
   });
 
-  test("rejects ABP in cloud mode", async () => {
+  test("rejects ABP in cloud mode", () => {
     vi.stubEnv("OPENSTEER_API_KEY", "osk_test");
 
     expect(() =>
@@ -72,22 +62,6 @@ describe("Opensteer remote modes", () => {
         cloud: true,
       }),
     ).toThrow("ABP is not supported in cloud mode.");
-  });
-
-  test("rejects browser launch overrides in connect mode", async () => {
-    const factory = createConnectedOpensteerEngineFactory({
-      url: "ws://127.0.0.1:9222/devtools/browser/test",
-    });
-
-    await expect(
-      factory({
-        browser: {
-          headless: true,
-        },
-      }),
-    ).rejects.toThrow(
-      "Connect mode does not support browser launch options. Provision the remote browser before connecting.",
-    );
   });
 
   test("cloud session metadata persists routing data without secrets", async () => {
@@ -116,7 +90,7 @@ describe("Opensteer remote modes", () => {
     expect(metadata).not.toHaveProperty("apiKey");
   });
 
-  test("CLI rejects ABP for connect mode before starting a service", async () => {
+  test("CLI rejects removed --connect option", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "opensteer-cli-connect-"));
 
     await expect(runCliExpectFailure(rootDir, [
@@ -124,11 +98,9 @@ describe("Opensteer remote modes", () => {
       "https://example.com",
       "--connect",
       "ws://127.0.0.1:9222/devtools/browser/test",
-      "--engine",
-      "abp",
     ])).resolves.toMatchObject({
       error: {
-        message: expect.stringContaining("ABP is not supported in connect mode"),
+        message: expect.stringContaining("--connect has been removed"),
       },
     });
   });

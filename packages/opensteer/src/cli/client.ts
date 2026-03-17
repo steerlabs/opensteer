@@ -50,15 +50,10 @@ export interface OpensteerServiceConnection {
   readonly getAuthorizationHeader: () => Promise<string>;
 }
 
-export interface OpensteerConnectSessionOptions {
-  readonly url: string;
-}
-
 export interface OpensteerCliSessionOptions {
   readonly name?: string;
   readonly rootDir?: string;
   readonly engine?: OpensteerEngineName;
-  readonly connect?: OpensteerConnectSessionOptions;
 }
 
 export interface OpensteerServiceLaunchContext {
@@ -140,7 +135,6 @@ export async function ensureOpensteerService(
     name,
     ...(options.rootDir === undefined ? [] : ["--root-dir", options.rootDir]),
     ...(options.engine === undefined ? [] : ["--engine", options.engine]),
-    ...(options.connect === undefined ? [] : ["--connect", options.connect.url]),
   ];
   const child = spawn(options.launchContext.execPath, serviceArgs, {
     cwd: options.launchContext.cwd ?? process.cwd(),
@@ -243,20 +237,6 @@ async function resolveLiveOpensteerServiceMetadata(
     throw new Error(
       `Opensteer session "${name}" is already running with engine "${metadata.engine}". Run "opensteer close --name ${name}" before reopening it with engine "${options.engine}".`,
     );
-  }
-
-  if (isLocalOpensteerServiceMetadata(metadata)) {
-    const expectedMode = options.connect === undefined ? "local" : "connect";
-    if (metadata.mode !== expectedMode) {
-      throw new Error(
-        `Opensteer session "${name}" is already running in ${metadata.mode} mode. Close it before reopening in ${expectedMode} mode.`,
-      );
-    }
-    if (options.connect && metadata.connectUrl !== options.connect.url) {
-      throw new Error(
-        `Opensteer session "${name}" is already connected to ${metadata.connectUrl}. Close it before reopening with ${options.connect.url}.`,
-      );
-    }
   }
 
   return metadata;
