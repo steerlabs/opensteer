@@ -133,6 +133,7 @@ export type {
 export type {
   OpensteerComputerExecuteOptions,
   OpensteerComputerExecuteResult,
+  OpensteerConnectOptions,
   OpensteerExtractOptions,
   OpensteerInputOptions,
   OpensteerNetworkClearOptions,
@@ -147,11 +148,29 @@ export type {
   OpensteerRequestResult,
   OpensteerScrollOptions,
   OpensteerTargetOptions,
+  OpensteerOptions,
 } from "./sdk/opensteer.js";
 export { Opensteer } from "./sdk/opensteer.js";
+export type { OpensteerCloudOptions } from "./sdk/runtime-resolution.js";
 export type {
   OpensteerEngineFactory,
   OpensteerEngineFactoryOptions,
   OpensteerRuntimeOptions,
 } from "./sdk/runtime.js";
 export { OpensteerSessionRuntime } from "./sdk/runtime.js";
+export type { OpensteerExecutionMode } from "./mode/config.js";
+export { normalizeOpensteerExecutionMode, resolveOpensteerExecutionMode } from "./mode/config.js";
+export type { OpensteerConnectConfig } from "./connect/config.js";
+export { resolveConnectConfig } from "./connect/config.js";
+export { createConnectedOpensteerEngineFactory } from "./connect/engine.js";
+export type { OpensteerCloudConfig } from "./cloud/config.js";
+export { resolveCloudConfig } from "./cloud/config.js";
+export {
+  OpensteerCloudClient,
+  type OpensteerCloudSessionCreateInput,
+  type OpensteerCloudSessionDescriptor,
+} from "./cloud/client.js";
+export { CloudSessionProxy } from "./cloud/session-proxy.js";
+export type { OpensteerSemanticRuntime } from "./cli/dispatch.js";
+export { dispatchSemanticOperation } from "./cli/dispatch.js";
+export { ServiceOperationScheduler, parseRequestEnvelope } from "./cli/service-host.js";

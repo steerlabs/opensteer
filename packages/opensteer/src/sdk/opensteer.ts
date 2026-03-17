@@ -28,7 +28,12 @@ import type {
 } from "@opensteer/protocol";
 
 import type { RequestPlanRecord } from "../registry.js";
-import { OpensteerSessionRuntime, type OpensteerRuntimeOptions } from "./runtime.js";
+import type { OpensteerSemanticRuntime } from "../cli/dispatch.js";
+import { type OpensteerRuntimeOptions } from "./runtime.js";
+import {
+  createOpensteerSemanticRuntime,
+  type OpensteerCloudOptions,
+} from "./runtime-resolution.js";
 
 export interface OpensteerTargetOptions {
   readonly element?: number;
@@ -67,11 +72,25 @@ export type OpensteerRawRequestResult = OpensteerRawRequestOutput;
 export type OpensteerRequestOptions = Omit<OpensteerRequestExecuteInput, "key">;
 export type OpensteerRequestResult = OpensteerRequestExecuteOutput;
 
-export class Opensteer {
-  private readonly runtime: OpensteerSessionRuntime;
+export interface OpensteerConnectOptions {
+  readonly url: string;
+  readonly headers?: Readonly<Record<string, string>>;
+}
 
-  constructor(options: OpensteerRuntimeOptions = {}) {
-    this.runtime = new OpensteerSessionRuntime(options);
+export interface OpensteerOptions extends OpensteerRuntimeOptions {
+  readonly connect?: boolean | OpensteerConnectOptions;
+  readonly cloud?: boolean | OpensteerCloudOptions;
+}
+
+export class Opensteer {
+  private readonly runtime: OpensteerSemanticRuntime;
+
+  constructor(options: OpensteerOptions = {}) {
+    this.runtime = createOpensteerSemanticRuntime({
+      runtimeOptions: options,
+      ...(options.connect === undefined ? {} : { connect: options.connect }),
+      ...(options.cloud === undefined ? {} : { cloud: options.cloud }),
+    });
   }
 
   async open(url?: string): Promise<OpensteerSessionOpenOutput> {

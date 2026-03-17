@@ -2,8 +2,31 @@ import type { OpensteerSemanticOperationName } from "@opensteer/protocol";
 
 import { OpensteerSessionRuntime } from "../sdk/runtime.js";
 
+export type OpensteerSemanticRuntime = Pick<
+  OpensteerSessionRuntime,
+  | "open"
+  | "goto"
+  | "snapshot"
+  | "click"
+  | "hover"
+  | "input"
+  | "scroll"
+  | "extract"
+  | "queryNetwork"
+  | "saveNetwork"
+  | "clearNetwork"
+  | "rawRequest"
+  | "inferRequestPlan"
+  | "writeRequestPlan"
+  | "getRequestPlan"
+  | "listRequestPlans"
+  | "request"
+  | "computerExecute"
+  | "close"
+>;
+
 export async function dispatchSemanticOperation(
-  runtime: OpensteerSessionRuntime,
+  runtime: OpensteerSemanticRuntime,
   operation: OpensteerSemanticOperationName,
   input: unknown,
   options: {

@@ -25,6 +25,8 @@ export interface SessionState {
   readonly networkRecords: NetworkRecordState[];
   readonly pendingRegistrations: PendingPageRegistration[];
   readonly pendingPageTasks: Set<Promise<void>>;
+  initialPage: Page | undefined;
+  readonly closeContextOnSessionClose: boolean;
   activePageRef: PageRef | undefined;
 }
 
@@ -39,6 +41,7 @@ export interface PageController {
   readonly sessionRef: SessionRef;
   readonly page: Page;
   readonly cdp: CDPSession;
+  readonly externallyOwned: boolean;
   readonly queuedEvents: StepEvent[];
   readonly framesByCdpId: Map<string, FrameState>;
   readonly frameBindings: WeakMap<Frame, FrameRef>;

@@ -19,24 +19,26 @@ import {
 } from "@opensteer/protocol";
 
 import { normalizeThrownOpensteerError } from "../internal/errors.js";
-import {
-  createOpensteerEngineFactory,
-  DEFAULT_OPENSTEER_ENGINE,
-  type OpensteerEngineName,
-} from "../internal/engine-selection.js";
+import { DEFAULT_OPENSTEER_ENGINE, type OpensteerEngineName } from "../internal/engine-selection.js";
 import { fileUriToPath } from "../internal/filesystem.js";
-import { OpensteerSessionRuntime } from "../sdk/runtime.js";
+import { createOpensteerSemanticRuntime } from "../sdk/runtime-resolution.js";
 import { dispatchSemanticOperation } from "./dispatch.js";
 
 export async function runOpensteerMcpServer(options: {
   readonly name: string;
   readonly rootDir?: string;
   readonly engine?: OpensteerEngineName;
+  readonly connectUrl?: string;
+  readonly cloud?: boolean;
 }): Promise<void> {
-  const runtime = new OpensteerSessionRuntime({
-    name: options.name,
-    ...(options.rootDir === undefined ? {} : { rootDir: options.rootDir }),
-    engineFactory: createOpensteerEngineFactory(options.engine ?? DEFAULT_OPENSTEER_ENGINE),
+  const runtime = createOpensteerSemanticRuntime({
+    runtimeOptions: {
+      name: options.name,
+      ...(options.rootDir === undefined ? {} : { rootDir: options.rootDir }),
+    },
+    engine: options.engine ?? DEFAULT_OPENSTEER_ENGINE,
+    ...(options.connectUrl === undefined ? {} : { connect: { url: options.connectUrl } }),
+    ...(options.cloud ? { cloud: true } : {}),
   });
   const toolByName = new Map(opensteerMcpTools.map((tool) => [tool.name, tool] as const));
   const server = new Server(

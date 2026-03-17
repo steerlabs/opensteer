@@ -140,6 +140,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   private readonly browser: Browser;
   private readonly closeBrowserOnDispose: boolean;
   private readonly contextOptions: PlaywrightBrowserContextOptions | undefined;
+  private readonly options: PlaywrightBrowserCoreEngineOptions;
   private readonly bodyCaptureLimitBytes: number;
   private readonly sessions = new Map<SessionRef, SessionState>();
   private readonly pages = new Map<PageRef, PageController>();
@@ -168,6 +169,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   ) {
     this.browser = browser;
     this.closeBrowserOnDispose = closeBrowserOnDispose;
+    this.options = options;
     this.contextOptions = options.context;
     this.bodyCaptureLimitBytes = options.bodyCaptureLimitBytes ?? DEFAULT_BODY_CAPTURE_LIMIT_BYTES;
   }
@@ -243,7 +245,8 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   async createSession(): Promise<SessionRef> {
     this.assertNotDisposed();
     const sessionRef = createSessionRef(`playwright-${++this.sessionCounter}`);
-    const context = await this.browser.newContext(buildContextOptions(this.contextOptions));
+    const context =
+      this.options.attachedContext ?? (await this.browser.newContext(buildContextOptions(this.contextOptions)));
     const session: SessionState = {
       sessionRef,
       context,
@@ -251,6 +254,11 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       networkRecords: [],
       pendingRegistrations: [],
       pendingPageTasks: new Set(),
+      initialPage: this.options.attachedPage,
+      closeContextOnSessionClose:
+        this.options.attachedContext === undefined
+          ? true
+          : this.options.closeAttachedContextOnSessionClose ?? false,
       activePageRef: undefined,
     };
     this.sessions.set(sessionRef, session);
@@ -268,6 +276,19 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       });
     });
 
+    if (session.initialPage) {
+      const task = this.handleAttachedInitialPage(session, session.initialPage).catch((error) => {
+        if (isContextClosedError(error)) {
+          return;
+        }
+        throw error;
+      });
+      session.pendingPageTasks.add(task);
+      void task.finally(() => {
+        session.pendingPageTasks.delete(task);
+      });
+    }
+
     return sessionRef;
   }
 
@@ -278,7 +299,9 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
         controller.explicitCloseInFlight = true;
       }
     }
-    await session.context.close();
+    if (session.closeContextOnSessionClose) {
+      await session.context.close();
+    }
     for (const pageRef of Array.from(session.pageRefs)) {
       const controller = this.pages.get(pageRef);
       if (controller) {
@@ -295,6 +318,30 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   }): Promise<StepResult<PageInfo>> {
     const session = this.requireSession(input.sessionRef);
     const startedAt = Date.now();
+    if (session.initialPage) {
+      const initialPage = session.initialPage;
+      session.initialPage = undefined;
+      const controller = this.pageByPlaywrightPage.get(initialPage)
+        ?? (await this.initializePageController(session, initialPage, input.openerPageRef, true));
+      if (input.url) {
+        await controller.page.goto(input.url, {
+          waitUntil: "domcontentloaded",
+        });
+        controller.lastKnownTitle = await this.readTitle(controller.page, controller.lastKnownTitle);
+      }
+      session.activePageRef = controller.pageRef;
+      await this.flushPendingPageTasks(session.sessionRef);
+      await this.flushDomUpdateTask(controller);
+      const mainFrame = this.requireMainFrame(controller);
+      return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
+        frameRef: mainFrame.frameRef,
+        documentRef: mainFrame.currentDocument.documentRef,
+        documentEpoch: mainFrame.currentDocument.documentEpoch,
+        events: this.drainQueuedEvents(controller.pageRef),
+        data: await this.buildPageInfo(controller),
+      });
+    }
+
     const controllerPromise = new Promise<PageController>((resolve, reject) => {
       session.pendingRegistrations.push({
         ...(input.openerPageRef === undefined ? {} : { openerPageRef: input.openerPageRef }),
@@ -335,7 +382,9 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     const mainFrame = this.requireMainFrame(controller);
     const queued = this.drainQueuedEvents(controller.pageRef);
     controller.explicitCloseInFlight = true;
-    await controller.page.close();
+    if (!controller.externallyOwned) {
+      await controller.page.close();
+    }
     this.cleanupPageController(controller);
     const pageClosedEvent = this.createEvent<"page-closed">({
       kind: "page-closed",
@@ -1257,6 +1306,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
         session,
         page,
         registration?.openerPageRef,
+        false,
       );
       registration?.resolve(controller);
     } catch (error) {
@@ -1265,10 +1315,18 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     }
   }
 
+  private async handleAttachedInitialPage(session: SessionState, page: Page): Promise<void> {
+    if (this.pageByPlaywrightPage.has(page)) {
+      return;
+    }
+    await this.initializePageController(session, page, undefined, true);
+  }
+
   private async initializePageController(
     session: SessionState,
     page: Page,
     forcedOpenerPageRef?: PageRef,
+    externallyOwned = false,
   ): Promise<PageController> {
     const cdp = await session.context.newCDPSession(page);
     const pageRef =
@@ -1279,6 +1337,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       sessionRef: session.sessionRef,
       page,
       cdp,
+      externallyOwned,
       queuedEvents: [],
       framesByCdpId: new Map(),
       frameBindings: new WeakMap(),
@@ -2721,6 +2780,16 @@ export async function createPlaywrightBrowserCoreEngine(
   options: PlaywrightBrowserCoreEngineOptions = {},
 ): Promise<PlaywrightBrowserCoreEngine> {
   return PlaywrightBrowserCoreEngine.create(options);
+}
+
+export async function connectPlaywrightChromiumBrowser(input: {
+  readonly url: string;
+  readonly headers?: Readonly<Record<string, string>>;
+}): Promise<Browser> {
+  return chromium.connectOverCDP({
+    endpointURL: input.url,
+    ...(input.headers === undefined ? {} : { headers: input.headers }),
+  });
 }
 
 function objectHeadersToEntries(

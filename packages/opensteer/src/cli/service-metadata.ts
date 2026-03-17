@@ -12,11 +12,14 @@ import {
   normalizeOpensteerEngineName,
   type OpensteerEngineName,
 } from "../internal/engine-selection.js";
+import { type OpensteerExecutionMode } from "../mode/config.js";
 
-const OPENSTEER_SERVICE_METADATA_VERSION = 2 as const;
+const OPENSTEER_SERVICE_METADATA_VERSION = 3 as const;
+const OPENSTEER_LEGACY_SERVICE_METADATA_VERSION = 2 as const;
 
-export interface OpensteerServiceMetadata {
+export interface OpensteerLocalServiceMetadata {
   readonly version: typeof OPENSTEER_SERVICE_METADATA_VERSION;
+  readonly mode: "local" | "connect";
   readonly name: string;
   readonly rootPath: string;
   readonly pid: number;
@@ -25,7 +28,26 @@ export interface OpensteerServiceMetadata {
   readonly startedAt: number;
   readonly baseUrl: string;
   readonly engine: OpensteerEngineName;
+  readonly connectUrl?: string;
 }
+
+export interface OpensteerCloudServiceMetadata {
+  readonly version: typeof OPENSTEER_SERVICE_METADATA_VERSION;
+  readonly mode: "cloud";
+  readonly name: string;
+  readonly rootPath: string;
+  readonly startedAt: number;
+  readonly baseUrl: string;
+  readonly sessionId: string;
+  readonly authSource: "env";
+}
+
+export type OpensteerServiceMetadata =
+  | OpensteerLocalServiceMetadata
+  | OpensteerCloudServiceMetadata;
+export type OpensteerServiceMetadataWriteInput =
+  | Omit<OpensteerLocalServiceMetadata, "version">
+  | Omit<OpensteerCloudServiceMetadata, "version">;
 
 interface ParsedOpensteerServiceMetadata {
   readonly metadata: OpensteerServiceMetadata;
@@ -54,14 +76,14 @@ export async function readOpensteerServiceMetadata(
 
 export async function writeOpensteerServiceMetadata(
   rootPath: string,
-  metadata: Omit<OpensteerServiceMetadata, "version">,
+  metadata: OpensteerServiceMetadataWriteInput,
 ): Promise<void> {
   const directory = getOpensteerServiceDirectory(rootPath, metadata.name);
   await ensureDirectory(directory);
   await writeJsonFileAtomic(getOpensteerServiceMetadataPath(rootPath, metadata.name), {
     version: OPENSTEER_SERVICE_METADATA_VERSION,
     ...metadata,
-  } satisfies OpensteerServiceMetadata);
+  } as OpensteerServiceMetadata);
 }
 
 export async function removeOpensteerServiceMetadata(
@@ -84,6 +106,18 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
+export function isLocalOpensteerServiceMetadata(
+  metadata: OpensteerServiceMetadata,
+): metadata is OpensteerLocalServiceMetadata {
+  return metadata.mode === "local" || metadata.mode === "connect";
+}
+
+export function isCloudOpensteerServiceMetadata(
+  metadata: OpensteerServiceMetadata,
+): metadata is OpensteerCloudServiceMetadata {
+  return metadata.mode === "cloud";
+}
+
 export function parseOpensteerServiceMetadata(
   value: unknown,
   metadataPath: string,
@@ -96,11 +130,47 @@ export function parseOpensteerServiceMetadata(
 
   const record = value as Record<string, unknown>;
   const version = readMetadataVersion(record, metadataPath);
-  const legacyMetadata = version === undefined;
+  const legacyMetadata =
+    version === undefined || version === OPENSTEER_LEGACY_SERVICE_METADATA_VERSION;
+  if (legacyMetadata) {
+    return {
+      metadata: {
+        version: OPENSTEER_SERVICE_METADATA_VERSION,
+        mode: "local",
+        name: readRequiredString(record, "name", metadataPath),
+        rootPath: readRequiredString(record, "rootPath", metadataPath),
+        pid: readRequiredInteger(record, "pid", metadataPath),
+        port: readRequiredInteger(record, "port", metadataPath),
+        token: readRequiredString(record, "token", metadataPath),
+        startedAt: readRequiredInteger(record, "startedAt", metadataPath),
+        baseUrl: readRequiredString(record, "baseUrl", metadataPath),
+        engine: DEFAULT_OPENSTEER_ENGINE,
+      },
+      needsRewrite: true,
+    };
+  }
+
+  const mode = readRequiredMode(record, metadataPath);
+  if (mode === "cloud") {
+    return {
+      metadata: {
+        version: OPENSTEER_SERVICE_METADATA_VERSION,
+        mode,
+        name: readRequiredString(record, "name", metadataPath),
+        rootPath: readRequiredString(record, "rootPath", metadataPath),
+        startedAt: readRequiredInteger(record, "startedAt", metadataPath),
+        baseUrl: readRequiredString(record, "baseUrl", metadataPath),
+        sessionId: readRequiredString(record, "sessionId", metadataPath),
+        authSource: readRequiredAuthSource(record, metadataPath),
+      },
+      needsRewrite: false,
+    };
+  }
 
   return {
     metadata: {
       version: OPENSTEER_SERVICE_METADATA_VERSION,
+      mode,
       name: readRequiredString(record, "name", metadataPath),
       rootPath: readRequiredString(record, "rootPath", metadataPath),
       pid: readRequiredInteger(record, "pid", metadataPath),
@@ -108,11 +178,12 @@ export function parseOpensteerServiceMetadata(
       token: readRequiredString(record, "token", metadataPath),
       startedAt: readRequiredInteger(record, "startedAt", metadataPath),
       baseUrl: readRequiredString(record, "baseUrl", metadataPath),
-      engine: legacyMetadata
-        ? DEFAULT_OPENSTEER_ENGINE
-        : readRequiredEngineName(record, metadataPath),
+      engine: readRequiredEngineName(record, metadataPath),
+      ...(readOptionalString(record, "connectUrl") === undefined
+        ? {}
+        : { connectUrl: readOptionalString(record, "connectUrl")! }),
     },
-    needsRewrite: legacyMetadata,
+    needsRewrite: false,
   };
 }
 
@@ -133,6 +204,14 @@ function readRequiredString(
     );
   }
   return value;
+}
+
+function readOptionalString(
+  record: Readonly<Record<string, unknown>>,
+  key: string,
+): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
 function readRequiredInteger(
@@ -169,20 +248,48 @@ function readRequiredEngineName(
   }
 }
 
+function readRequiredMode(
+  record: Readonly<Record<string, unknown>>,
+  metadataPath: string,
+): OpensteerExecutionMode {
+  const value = record.mode;
+  if (value === "local" || value === "connect" || value === "cloud") {
+    return value;
+  }
+  throw new Error(
+    `Opensteer service metadata at ${metadataPath} is missing a valid "mode" field. Remove the stale session metadata and open the session again.`,
+  );
+}
+
+function readRequiredAuthSource(
+  record: Readonly<Record<string, unknown>>,
+  metadataPath: string,
+): "env" {
+  if (record.authSource === "env") {
+    return "env";
+  }
+  throw new Error(
+    `Opensteer service metadata at ${metadataPath} is missing a valid "authSource" field. Remove the stale session metadata and open the session again.`,
+  );
+}
+
 function readMetadataVersion(
   record: Readonly<Record<string, unknown>>,
   metadataPath: string,
-): typeof OPENSTEER_SERVICE_METADATA_VERSION | undefined {
+): typeof OPENSTEER_SERVICE_METADATA_VERSION | typeof OPENSTEER_LEGACY_SERVICE_METADATA_VERSION | undefined {
   const value = record.version;
   if (value === undefined) {
     return undefined;
   }
 
-  if (value !== OPENSTEER_SERVICE_METADATA_VERSION) {
+  if (
+    value !== OPENSTEER_SERVICE_METADATA_VERSION
+    && value !== OPENSTEER_LEGACY_SERVICE_METADATA_VERSION
+  ) {
     throw new Error(
       `Opensteer service metadata at ${metadataPath} has unsupported version "${String(value)}". Remove the stale session metadata and open the session again.`,
     );
   }
 
-  return OPENSTEER_SERVICE_METADATA_VERSION;
+  return value;
 }

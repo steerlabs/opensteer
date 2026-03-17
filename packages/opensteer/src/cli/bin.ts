@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import path from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 
 import type {
@@ -13,11 +14,25 @@ import {
   OpensteerCliServiceError,
   requireOpensteerService,
 } from "./client.js";
+import { OpensteerCloudClient } from "../cloud/client.js";
+import { resolveCloudConfig } from "../cloud/config.js";
+import { resolveConnectConfig } from "../connect/config.js";
 import {
   normalizeOpensteerEngineName,
   resolveOpensteerEngineName,
 } from "../internal/engine-selection.js";
 import { fileUriToPath } from "../internal/filesystem.js";
+import {
+  assertExecutionModeSupportsEngine,
+  resolveOpensteerExecutionMode,
+} from "../mode/config.js";
+import {
+  getOpensteerServiceMetadataPath,
+  parseOpensteerServiceMetadata,
+  readOpensteerServiceMetadata,
+  removeOpensteerServiceMetadata,
+  writeOpensteerServiceMetadata,
+} from "./service-metadata.js";
 import { runOpensteerMcpServer } from "./mcp.js";
 import { runOpensteerServiceHost } from "./service-host.js";
 
@@ -46,20 +61,29 @@ async function main(argv: readonly string[]): Promise<void> {
               "--engine",
             ),
           }),
+      ...(readStringOption(parsed.options, "connect") === undefined
+        ? {}
+        : { connectUrl: readStringOption(parsed.options, "connect")! }),
     });
     return;
   }
 
   if (parsed.command === "mcp") {
+    const mode = resolveCliExecutionMode(parsed.options);
+    const connectUrl = resolveCliConnectUrl(parsed.options, mode);
+    const engine = resolveOpensteerEngineName({
+      requested: readStringOption(parsed.options, "engine"),
+      environment: process.env.OPENSTEER_ENGINE,
+    });
+    assertExecutionModeSupportsEngine(mode, engine);
     await runOpensteerMcpServer({
       name: readStringOption(parsed.options, "name") ?? "default",
       ...(readStringOption(parsed.options, "root-dir") === undefined
         ? {}
         : { rootDir: readStringOption(parsed.options, "root-dir")! }),
-      engine: resolveOpensteerEngineName({
-        requested: readStringOption(parsed.options, "engine"),
-        environment: process.env.OPENSTEER_ENGINE,
-      }),
+      engine,
+      ...(connectUrl === undefined ? {} : { connectUrl }),
+      ...(mode === "cloud" ? { cloud: true } : {}),
     });
     return;
   }
@@ -77,13 +101,51 @@ async function main(argv: readonly string[]): Promise<void> {
 
   switch (parsed.command) {
     case "open": {
+      const mode = resolveCliExecutionMode(parsed.options);
+      const connectUrl = resolveCliConnectUrl(parsed.options, mode);
       const engine = resolveOpensteerEngineName({
         requested: readStringOption(parsed.options, "engine"),
         environment: process.env.OPENSTEER_ENGINE,
       });
+      assertExecutionModeSupportsEngine(mode, engine);
+      const browser = parseBrowserOptions(parsed.options);
+      const context = parseContextOptions(parsed.options);
+      if (mode === "cloud") {
+        const client = new OpensteerCloudClient(
+          resolveCloudConfig({
+            enabled: true,
+            mode,
+          })!,
+        );
+        const rootPath = resolveOpensteerRootPath(sessionOptions.rootDir);
+        const sessionName = sessionOptions.name ?? "default";
+        const session = await client.createSession({
+          name: sessionName,
+          ...(browser === undefined ? {} : { browser }),
+          ...(context === undefined ? {} : { context }),
+        });
+        await writeOpensteerServiceMetadata(rootPath, {
+          mode: "cloud",
+          name: sessionName,
+          rootPath,
+          startedAt: Date.now(),
+          baseUrl: session.baseUrl,
+          sessionId: session.sessionId,
+          authSource: "env",
+        });
+        const cloudSession = await requireOpensteerService(sessionOptions);
+        const result = await cloudSession.invoke("session.open", {
+          ...(parsed.positionals[0] === undefined ? {} : { url: parsed.positionals[0] }),
+          ...(sessionOptions.name === undefined ? {} : { name: sessionOptions.name }),
+        });
+        writeJson(result);
+        return;
+      }
+
       const client = await ensureOpensteerService({
         ...sessionOptions,
         engine,
+        ...(connectUrl === undefined ? {} : { connect: { url: connectUrl } }),
         launchContext: {
           execPath: process.execPath,
           execArgv: process.execArgv,
@@ -91,8 +153,6 @@ async function main(argv: readonly string[]): Promise<void> {
           cwd: process.cwd(),
         },
       });
-      const browser = parseBrowserOptions(parsed.options);
-      const context = parseContextOptions(parsed.options);
       const result = await client.invoke("session.open", {
         ...(parsed.positionals[0] === undefined ? {} : { url: parsed.positionals[0] }),
         ...(sessionOptions.name === undefined ? {} : { name: sessionOptions.name }),
@@ -411,6 +471,25 @@ async function main(argv: readonly string[]): Promise<void> {
     }
 
     case "close": {
+      const metadata = await loadSessionMetadata(sessionOptions);
+      if (!metadata) {
+        writeJson({ closed: true });
+        return;
+      }
+
+      if (metadata.mode === "cloud") {
+        const cloud = new OpensteerCloudClient(
+          resolveCloudConfig({
+            enabled: true,
+            mode: "cloud",
+          })!,
+        );
+        await cloud.closeSession(metadata.sessionId);
+        await removeOpensteerServiceMetadata(metadata.rootPath, metadata.name);
+        writeJson({ closed: true });
+        return;
+      }
+
       const client = await connectOpensteerService(sessionOptions);
       if (!client) {
         writeJson({ closed: true });
@@ -447,6 +526,55 @@ function assertEngineOptionAllowed(parsed: ParsedCliArgs): void {
   }
 
   throw new Error('--engine is only supported on "open".');
+}
+
+function resolveCliExecutionMode(
+  options: Readonly<Record<string, CliOptionValue>>,
+): "local" | "connect" | "cloud" {
+  const connectOption = options.connect;
+  return resolveOpensteerExecutionMode({
+    local: readBooleanOption(options, "local") === true,
+    connect:
+      connectOption === true
+      || connectOption === "true"
+      || connectOption === "1"
+      || readStringOption(options, "connect") !== undefined,
+    cloud: readBooleanOption(options, "cloud") === true,
+    ...(process.env.OPENSTEER_MODE === undefined ? {} : { environment: process.env.OPENSTEER_MODE }),
+  });
+}
+
+function resolveCliConnectUrl(
+  options: Readonly<Record<string, CliOptionValue>>,
+  mode: "local" | "connect" | "cloud",
+): string | undefined {
+  if (mode !== "connect") {
+    return undefined;
+  }
+
+  const url = readStringOption(options, "connect");
+  return resolveConnectConfig({
+    enabled: true,
+    ...(url === undefined ? {} : { url }),
+    mode,
+  })!.url;
+}
+
+function resolveOpensteerRootPath(rootDir: string | undefined): string {
+  return path.resolve(rootDir ?? process.cwd(), ".opensteer");
+}
+
+async function loadSessionMetadata(sessionOptions: {
+  readonly name?: string;
+  readonly rootDir?: string;
+}) {
+  const name = sessionOptions.name ?? "default";
+  const rootPath = resolveOpensteerRootPath(sessionOptions.rootDir);
+  const raw = await readOpensteerServiceMetadata(rootPath, name);
+  if (!raw) {
+    return undefined;
+  }
+  return parseOpensteerServiceMetadata(raw, getOpensteerServiceMetadataPath(rootPath, name)).metadata;
 }
 
 function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
