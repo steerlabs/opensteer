@@ -5,7 +5,8 @@ export default defineConfig({
   dts: true,
   entry: ["src/index.ts", "src/cli/bin.ts"],
   format: ["esm", "cjs"],
+  noExternal: ["@opensteer/browser-core", "@opensteer/protocol"],
   sourcemap: true,
-  target: "node24",
+  target: "node22",
   treeshake: true,
 });

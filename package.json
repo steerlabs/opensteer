@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "pnpm -r build",
+    "build:runtime-artifact": "node scripts/build-runtime-artifact.mjs",
     "check": "pnpm run format:check && pnpm run typecheck && pnpm run test && pnpm run build",
     "clean": "pnpm -r clean && rimraf coverage",
     "format": "prettier --write .",

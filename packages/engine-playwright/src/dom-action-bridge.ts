@@ -303,7 +303,7 @@ export function createPlaywrightDomActionBridge(
             functionDeclaration: READ_ACTION_TARGET_STATE_DECLARATION,
             returnByValue: true,
           }),
-          readContentQuads(controller, nodeId),
+          readContentQuads(controller, document, locator, nodeId),
         ]);
 
         return normalizeActionTargetInspection(state, contentQuads);
@@ -368,7 +368,9 @@ export function createPlaywrightDomActionBridge(
     async scrollNodeIntoView(locator, _options) {
       return withLiveNode(context, locator, async ({ controller, document, backendNodeId }) => {
         const nodeId = await resolveFrontendNodeId(controller, document, locator, backendNodeId);
-        await controller.cdp.send("DOM.scrollIntoViewIfNeeded", { nodeId });
+        await sendNodeIdCommand(controller, document, locator, "DOM.scrollIntoViewIfNeeded", {
+          nodeId,
+        });
         await context.flushDomUpdateTask(controller);
       });
     },
@@ -376,7 +378,7 @@ export function createPlaywrightDomActionBridge(
     async focusNode(locator) {
       return withLiveNode(context, locator, async ({ controller, document, backendNodeId }) => {
         const nodeId = await resolveFrontendNodeId(controller, document, locator, backendNodeId);
-        await controller.cdp.send("DOM.focus", { nodeId });
+        await sendNodeIdCommand(controller, document, locator, "DOM.focus", { nodeId });
         await context.flushDomUpdateTask(controller);
       });
     },
@@ -608,14 +610,30 @@ async function resolveFrontendNodeId(
   }
 }
 
+async function sendNodeIdCommand<TResult>(
+  controller: PageController,
+  document: DocumentState,
+  locator: NodeLocator,
+  method: Parameters<PageController["cdp"]["send"]>[0],
+  params: Parameters<PageController["cdp"]["send"]>[1],
+): Promise<TResult> {
+  try {
+    return (await controller.cdp.send(method, params)) as TResult;
+  } catch (error) {
+    rethrowNodeLookupError(error, document, locator);
+  }
+}
+
 async function readContentQuads(
   controller: PageController,
+  document: DocumentState,
+  locator: NodeLocator,
   nodeId: number,
 ): Promise<readonly Quad[]> {
   const metrics = await getViewportMetricsFromCdp(controller);
-  const result = (await controller.cdp.send("DOM.getContentQuads", { nodeId })) as {
+  const result = await sendNodeIdCommand<{
     readonly quads?: ReadonlyArray<readonly number[]>;
-  };
+  }>(controller, document, locator, "DOM.getContentQuads", { nodeId });
 
   return (result.quads ?? [])
     .filter((quad): quad is readonly number[] => quad.length === 8)
