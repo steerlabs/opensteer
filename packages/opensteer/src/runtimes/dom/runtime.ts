@@ -514,10 +514,13 @@ class DefaultDomRuntime implements DomRuntime {
     pageRef: PageRef,
   ): Promise<readonly DomSnapshot[]> {
     const frames = await this.engine.listFrames({ pageRef });
-    return Promise.all(
+    const snapshots = await Promise.allSettled(
       [...frames]
         .sort((left, right) => Number(right.isMainFrame) - Number(left.isMainFrame))
         .map((frame) => session.getFrame(frame.frameRef)),
+    );
+    return snapshots.flatMap((snapshot) =>
+      snapshot.status === "fulfilled" ? [snapshot.value] : [],
     );
   }
 

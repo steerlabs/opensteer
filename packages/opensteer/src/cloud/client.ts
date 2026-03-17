@@ -7,6 +7,10 @@ import type {
   BrowserProfileImportFinalizeRequest,
   CloudBrowserProfilePreference,
 } from "@opensteer/cloud-contracts";
+import {
+  uploadLocalBrowserProfile,
+  type UploadLocalBrowserProfileInput,
+} from "./profile-upload.js";
 
 export interface OpensteerCloudSessionCreateInput {
   readonly name?: string;
@@ -20,6 +24,8 @@ export interface OpensteerCloudSessionDescriptor {
   readonly baseUrl: string;
   readonly status?: string;
 }
+
+export type { UploadLocalBrowserProfileInput };
 
 export class OpensteerCloudClient {
   constructor(private readonly config: OpensteerCloudConfig) {}
@@ -124,6 +130,12 @@ export class OpensteerCloudClient {
       },
     );
     return (await response.json()) as BrowserProfileImportDescriptor;
+  }
+
+  async uploadLocalBrowserProfile(
+    input: UploadLocalBrowserProfileInput,
+  ): Promise<BrowserProfileImportDescriptor> {
+    return uploadLocalBrowserProfile(this, input);
   }
 
   buildAuthorizationHeader(): string {

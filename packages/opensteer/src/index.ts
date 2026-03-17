@@ -131,6 +131,7 @@ export type {
   TraceRunManifest,
 } from "./traces.js";
 export type {
+  OpensteerAttachOptions,
   OpensteerComputerExecuteOptions,
   OpensteerComputerExecuteResult,
   OpensteerExtractOptions,
@@ -199,9 +200,13 @@ export {
   OpensteerCloudClient,
   type OpensteerCloudSessionCreateInput,
   type OpensteerCloudSessionDescriptor,
+  type UploadLocalBrowserProfileInput,
 } from "./cloud/client.js";
 export { CloudSessionProxy } from "./cloud/session-proxy.js";
-export type { OpensteerSemanticRuntime } from "./cli/dispatch.js";
+export type {
+  OpensteerDisconnectableRuntime,
+  OpensteerSemanticRuntime,
+} from "./sdk/semantic-runtime.js";
 export { dispatchSemanticOperation } from "./cli/dispatch.js";
 export { ServiceOperationScheduler, parseRequestEnvelope } from "./cli/service-host.js";
 export type { LocalChromeProfileDescriptor } from "./local-browser/types.js";

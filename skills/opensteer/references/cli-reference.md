@@ -22,8 +22,14 @@ Opens a browser session. Optionally navigates to a URL.
 ```bash
 opensteer open                                   # Open browser only
 opensteer open https://example.com               # Open and navigate
-opensteer open https://example.com --headless     # Headless mode
-opensteer open https://example.com --engine abp   # Use ABP engine
+opensteer open https://example.com --headless    # Headless mode
+opensteer open https://example.com --engine abp  # Use ABP engine
+opensteer open https://example.com --browser cdp --cdp 9222
+opensteer open https://example.com --browser auto-connect --fresh-tab
+opensteer open https://example.com --browser profile \
+  --user-data-dir "~/Library/Application Support/Google/Chrome" \
+  --profile-directory Default
+opensteer open https://example.com --cloud --cloud-profile-id bp_123
 ```
 
 **Options:**
@@ -31,9 +37,16 @@ opensteer open https://example.com --engine abp   # Use ABP engine
 |:-------|:-----------|
 | `--engine <name>` | Browser engine: `playwright` (default) or `abp` |
 | `--headless` | Run browser in headless mode |
+| `--headed` | Force a visible browser window |
+| `--browser <kind>` | Browser mode: `managed`, `profile`, `cdp`, or `auto-connect` |
 | `--executable-path <path>` | Custom browser executable |
-| `--channel <channel>` | Browser channel (e.g., `chrome`, `msedge`) |
-| `--devtools` | Open browser devtools |
+| `--browser-arg <arg>` | Extra Chrome/Chromium argument (repeatable) |
+| `--user-data-dir <path>` | Chrome user-data root for `--browser profile` |
+| `--profile-directory <name>` | Chrome profile directory for `--browser profile` |
+| `--cdp <port|ws-url|http-url>` | Existing Chrome DevTools endpoint for `--browser cdp` |
+| `--cdp-header <name:value>` | Extra CDP header (repeatable) |
+| `--auto-connect` | Auto-discover a running Chrome/Chromium instance |
+| `--fresh-tab` | Open a fresh tab when attaching through CDP/auto-connect |
 | `--timeout-ms <ms>` | Session timeout |
 | `--viewport <WxH>` | Viewport size (e.g., `1280x720`, `null` for no viewport) |
 | `--locale <locale>` | Browser locale (e.g., `en-US`) |
@@ -43,12 +56,13 @@ opensteer open https://example.com --engine abp   # Use ABP engine
 | `--bypass-csp` | Bypass Content Security Policy |
 | `--browser-json <json>` | Full browser config as JSON |
 | `--context-json <json>` | Full context config as JSON |
+| `--cloud-profile-id <id>` | Cloud browser profile ID when opening a cloud session |
+| `--cloud-profile-reuse-if-active` | Reuse an active cloud session for the selected profile |
 
 **Execution mode options:**
 | Option | Description |
 |:-------|:-----------|
 | `--local` | Force local execution mode |
-| `--connect [url]` | Connect to remote browser service |
 | `--cloud` | Use Opensteer Cloud |
 
 ### `opensteer close`
@@ -58,6 +72,24 @@ Closes the active browser session.
 ```bash
 opensteer close
 opensteer close --name my-session
+```
+
+### `opensteer local-profile list [--user-data-dir <path>]`
+
+Lists discovered local Chrome/Chromium profiles.
+
+```bash
+opensteer local-profile list
+opensteer local-profile list --user-data-dir "~/Library/Application Support/Google/Chrome"
+```
+
+### `opensteer profile upload --profile-id <id> --from-user-data-dir <path> [--profile-directory <name>]`
+
+Snapshots a local Chrome profile and uploads it into an existing cloud browser profile.
+
+```bash
+opensteer profile upload --profile-id bp_123 --from-user-data-dir "~/Library/Application Support/Google/Chrome"
+opensteer profile upload --profile-id bp_123 --from-user-data-dir "~/Library/Application Support/Google/Chrome" --profile-directory "Profile 1"
 ```
 
 ---

@@ -13,7 +13,7 @@ import {
 import { resolveCloudConfig, type OpensteerCloudConfig } from "../cloud/config.js";
 import { OpensteerCloudClient } from "../cloud/client.js";
 import { CloudSessionProxy } from "../cloud/session-proxy.js";
-import type { OpensteerSemanticRuntime } from "../cli/dispatch.js";
+import type { OpensteerSemanticRuntime } from "./semantic-runtime.js";
 
 export interface OpensteerCloudOptions {
   readonly apiKey?: string;
