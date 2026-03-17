@@ -178,7 +178,6 @@ export function escapeCssAttrValue(value: string): string {
 export function buildLocalClausePool(node: PathNode): MatchClause[] {
   const attrs = node.attrs || {};
   const pool: MatchClause[] = [];
-  const deferred: MatchClause[] = [];
 
   const classValue = String(attrs.class || "").trim();
   if (classValue) {
@@ -199,19 +198,40 @@ export function buildLocalClausePool(node: PathNode): MatchClause[] {
     if (!value || !value.trim()) {
       continue;
     }
-    const clause: MatchClause = { kind: "attr", key, op: "exact" };
     if (shouldDeferMatchAttribute(key)) {
-      deferred.push(clause);
       continue;
     }
-    pool.push(clause);
+    pool.push({ kind: "attr", key, op: "exact" });
   }
 
   pool.push({ kind: "position", axis: "nthOfType" });
   pool.push({ kind: "position", axis: "nthChild" });
-  pool.push(...deferred);
+
+  const hasPrimary = pool.some((clause) => clause.kind === "attr");
+  if (!hasPrimary) {
+    pool.push(...collectDeferredMatchClauses(node));
+  }
 
   return pool;
+}
+
+export function collectDeferredMatchClauses(node: PathNode): MatchClause[] {
+  const attrs = node.attrs || {};
+  const deferred: MatchClause[] = [];
+
+  const keys = sortAttributeKeys(Object.keys(attrs));
+  for (const key of keys) {
+    if (key === "class") {
+      continue;
+    }
+    const value = attrs[key];
+    if (!value || !value.trim() || !shouldDeferMatchAttribute(key)) {
+      continue;
+    }
+    deferred.push({ kind: "attr", key, op: "exact" });
+  }
+
+  return deferred;
 }
 
 export function shouldDeferMatchAttribute(rawKey: string): boolean {
