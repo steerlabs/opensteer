@@ -36,8 +36,8 @@ import type { RequestPlanRecord } from "../registry.js";
 import {
   OpensteerCliServiceClient,
   type OpensteerServiceConnection,
-} from "../cli/client.js";
-import type { OpensteerSemanticRuntime } from "../cli/dispatch.js";
+} from "../session-service/client.js";
+import type { OpensteerSemanticRuntime } from "../sdk/semantic-runtime.js";
 import { OpensteerCloudClient } from "./client.js";
 
 export class CloudSessionProxy implements OpensteerSemanticRuntime {

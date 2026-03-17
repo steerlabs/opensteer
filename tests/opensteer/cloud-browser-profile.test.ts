@@ -1,3 +1,7 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { OpensteerCloudClient } from "../../packages/opensteer/src/cloud/client.js";
@@ -161,5 +165,105 @@ describe("cloud browser-profile integration", () => {
         }),
       }),
     );
+  });
+
+  test("OpensteerCloudClient uploads a local browser profile snapshot", async () => {
+    const userDataDir = await mkdtemp(path.join(tmpdir(), "opensteer-cloud-profile-upload-"));
+    await mkdir(path.join(userDataDir, "Default"), { recursive: true });
+    await writeFile(
+      path.join(userDataDir, "Local State"),
+      JSON.stringify({
+        profile: {
+          info_cache: {
+            Default: { name: "Personal" },
+          },
+        },
+      }),
+    );
+    await writeFile(path.join(userDataDir, "Default", "Preferences"), "{}");
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          importId: "bpi_456",
+          profileId: "bp_456",
+          status: "awaiting_upload",
+          uploadUrl: "https://storage.example/upload",
+          uploadMethod: "POST",
+          maxUploadBytes: 1024 * 1024,
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          storageId: "storage_456",
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          importId: "bpi_456",
+          profileId: "bp_456",
+          status: "ready",
+          archiveFormat: "tar.gz",
+          storageId: "storage_456",
+          revision: 7,
+          createdAt: 1,
+          updatedAt: 2,
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new OpensteerCloudClient({
+      apiKey: "osk_test",
+      baseUrl: "https://api.opensteer.dev",
+    });
+
+    try {
+      const result = await client.uploadLocalBrowserProfile({
+        profileId: "bp_456",
+        fromUserDataDir: userDataDir,
+        profileDirectory: "Default",
+      });
+
+      expect(result).toMatchObject({
+        importId: "bpi_456",
+        status: "ready",
+        revision: 7,
+      });
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        1,
+        "https://api.opensteer.dev/v1/browser-profiles/imports",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            profileId: "bp_456",
+            archiveFormat: "tar.gz",
+          }),
+        }),
+      );
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        2,
+        "https://storage.example/upload",
+        expect.objectContaining({
+          method: "POST",
+          body: expect.any(Uint8Array),
+        }),
+      );
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        3,
+        "https://api.opensteer.dev/v1/browser-profiles/imports/bpi_456/finalize",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            storageId: "storage_456",
+          }),
+        }),
+      );
+    } finally {
+      await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
+    }
   });
 });

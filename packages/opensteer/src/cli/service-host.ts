@@ -239,14 +239,16 @@ async function handleRequest(
     if (response.destroyed) {
       return;
     }
-    const result = createSuccessEnvelope(envelope, data);
-    writeJson(response, 200, result);
-
     if (endpoint.name === "session.close") {
-      setImmediate(() => {
+      const result = createSuccessEnvelope(envelope, data);
+      writeJson(response, 200, result, () => {
         void options.onClosed();
       });
+      return;
     }
+
+    const result = createSuccessEnvelope(envelope, data);
+    writeJson(response, 200, result);
   } catch (error) {
     writeProtocolError(response, envelope, normalizeOpensteerError(error));
   }
@@ -360,10 +362,15 @@ function writeProtocolError(
   writeJson(response, httpStatusForOpensteerError(error), createErrorEnvelope(envelope, error));
 }
 
-function writeJson(response: ServerResponse, statusCode: number, body: unknown): void {
+function writeJson(
+  response: ServerResponse,
+  statusCode: number,
+  body: unknown,
+  onFlushed?: () => void,
+): void {
   response.statusCode = statusCode;
   response.setHeader("content-type", "application/json; charset=utf-8");
-  response.end(`${JSON.stringify(body)}\n`);
+  response.end(`${JSON.stringify(body)}\n`, onFlushed);
 }
 
 function normalizeOpensteerError(error: unknown) {

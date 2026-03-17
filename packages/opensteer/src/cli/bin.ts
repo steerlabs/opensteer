@@ -529,7 +529,8 @@ async function main(argv: readonly string[]): Promise<void> {
         return;
       }
 
-      const result = await client.invoke("session.close", {});
+      const result = await client.closeSession();
+      await removeOpensteerServiceMetadata(metadata.rootPath, metadata.name).catch(() => undefined);
       writeJson(result);
       return;
     }

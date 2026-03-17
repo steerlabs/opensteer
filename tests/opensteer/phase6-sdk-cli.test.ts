@@ -1,6 +1,6 @@
 import { promisify } from "node:util";
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import sharp from "sharp";
@@ -689,6 +689,106 @@ describe("Phase 6 SDK and CLI surfaces", () => {
 
     await client.invoke("session.close", {}).catch(() => undefined);
   }, 60_000);
+
+  test("Opensteer.attach reuses a live local session and preserves disconnect/close semantics", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const sessionName = "phase6-sdk-attach";
+
+    await runCliCommand(rootDir, [
+      "open",
+      `${baseUrl}/phase6/main`,
+      "--name",
+      sessionName,
+      "--headless",
+      "true",
+    ]);
+
+    const metadataPath = path.join(
+      rootDir,
+      ".opensteer",
+      "runtime",
+      "sessions",
+      encodeURIComponent(sessionName),
+      "service.json",
+    );
+    const attached = Opensteer.attach({
+      name: sessionName,
+      rootDir,
+    });
+
+    try {
+      const opened = await attached.open();
+      expect(opened).toMatchObject({
+        url: `${baseUrl}/phase6/main`,
+      });
+
+      const snapshot = await attached.snapshot("action");
+      const mainAction = requireCounter(snapshot, (counter) =>
+        counter.pathHint.includes("#main-action"),
+      );
+      await attached.click({
+        element: mainAction.element,
+      });
+
+      expect(
+        await runCliCommand(rootDir, [
+          "extract",
+          "--name",
+          sessionName,
+          "--description",
+          "status text",
+          "--schema",
+          '{"status":{"selector":"#status"}}',
+        ]),
+      ).toEqual({
+        status: "main clicked",
+      });
+
+      await attached.disconnect();
+
+      const continued = (await runCliCommand(rootDir, [
+        "snapshot",
+        "action",
+        "--name",
+        sessionName,
+      ])) as OpensteerPageSnapshotOutput;
+      expect(
+        requireCounter(continued, (counter) => counter.pathHint.includes("#descriptor-button")),
+      ).toBeDefined();
+
+      await expect(
+        attached.open({
+          url: `${baseUrl}/phase6/main`,
+          browser: {
+            headless: true,
+          },
+        }),
+      ).rejects.toThrow("open() may only receive url when attached");
+
+      await attached.close();
+      await expect(access(metadataPath)).rejects.toThrow();
+      await expect(
+        runCliCommandExpectFailure(rootDir, ["snapshot", "action", "--name", sessionName]),
+      ).resolves.toMatchObject({
+        error: {
+          message: expect.stringContaining(`Opensteer session "${sessionName}" is not running`),
+        },
+      });
+    } finally {
+      await attached.close().catch(() => undefined);
+    }
+  }, 60_000);
+
+  test("Opensteer.attach fails against missing local session metadata", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const attached = Opensteer.attach({
+      name: "phase6-missing-attach",
+      rootDir,
+    });
+
+    await expect(attached.open()).rejects.toThrow("Open the session first before attaching");
+  });
 
   test("service reconnect requires the same engine", async () => {
     const rootDir = await createPhase6TemporaryRoot();

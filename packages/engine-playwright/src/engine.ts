@@ -2607,10 +2607,12 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   private cleanupPageController(controller: PageController): void {
     controller.lifecycleState = "closed";
     this.pages.delete(controller.pageRef);
-    const session = this.requireSession(controller.sessionRef);
-    session.pageRefs.delete(controller.pageRef);
-    if (session.activePageRef === controller.pageRef) {
-      session.activePageRef = Array.from(session.pageRefs)[0];
+    const session = this.sessions.get(controller.sessionRef);
+    if (session) {
+      session.pageRefs.delete(controller.pageRef);
+      if (session.activePageRef === controller.pageRef) {
+        session.activePageRef = Array.from(session.pageRefs)[0];
+      }
     }
     for (const frame of controller.framesByCdpId.values()) {
       this.frames.delete(frame.frameRef);

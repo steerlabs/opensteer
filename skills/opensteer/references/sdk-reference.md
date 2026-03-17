@@ -20,6 +20,15 @@ import { Opensteer } from "opensteer";
 const opensteer = new Opensteer(options?: OpensteerOptions);
 ```
 
+## Attaching To An Existing Session
+
+```typescript
+const opensteer = Opensteer.attach({
+  name: "my-session",
+  rootDir: process.cwd(),
+});
+```
+
 ### OpensteerOptions
 
 ```typescript
@@ -27,13 +36,7 @@ interface OpensteerOptions {
   name?: string;          // Session name (default: auto-generated)
   rootDir?: string;       // Project root for .opensteer/ storage (default: cwd)
   engine?: "playwright";  // Browser engine
-  browser?: {
-    headless?: boolean;       // Run headless (default: false)
-    executablePath?: string;  // Custom browser path
-    channel?: string;         // Browser channel (chrome, msedge, etc.)
-    devtools?: boolean;       // Open devtools
-    timeoutMs?: number;       // Session timeout
-  };
+  browser?: OpensteerBrowserLaunchOptions;
   context?: {
     viewport?: { width: number; height: number } | null;
     locale?: string;
@@ -45,9 +48,47 @@ interface OpensteerOptions {
     colorScheme?: "light" | "dark" | "no-preference";
     reducedMotion?: "reduce" | "no-preference";
   };
-  connect?: boolean | { url: string; headers?: Record<string, string> };
-  cloud?: boolean | { apiKey: string; baseUrl?: string };
+  cloud?: {
+    apiKey: string;
+    baseUrl?: string;
+    browserProfile?: {
+      profileId: string;
+      reuseIfActive?: boolean;
+    };
+  };
 }
+```
+
+### OpensteerBrowserLaunchOptions
+
+```typescript
+type OpensteerBrowserLaunchOptions =
+  | {
+      kind?: "managed";
+      headless?: boolean;
+      executablePath?: string;
+      args?: readonly string[];
+      timeoutMs?: number;
+    }
+  | {
+      kind: "profile";
+      headless?: boolean;
+      executablePath?: string;
+      userDataDir: string;
+      profileDirectory?: string;
+      args?: readonly string[];
+      timeoutMs?: number;
+    }
+  | {
+      kind: "cdp";
+      endpoint: string;
+      headers?: Record<string, string>;
+      freshTab?: boolean;
+    }
+  | {
+      kind: "auto-connect";
+      freshTab?: boolean;
+    };
 ```
 
 ---
@@ -56,21 +97,38 @@ interface OpensteerOptions {
 
 ### Session
 
-#### `open(url?: string): Promise<OpensteerSessionOpenOutput>`
+#### `open(input?: string | OpensteerSessionOpenInput): Promise<OpensteerSessionOpenOutput>`
 
 Opens the browser session. Optionally navigates to a URL.
 
 ```typescript
 await opensteer.open();
 await opensteer.open("https://example.com");
+await opensteer.open({
+  url: "https://example.com",
+  browser: {
+    kind: "cdp",
+    endpoint: "ws://127.0.0.1:9222/devtools/browser/root",
+    freshTab: false,
+  },
+});
 ```
 
 #### `close(): Promise<OpensteerSessionCloseOutput>`
 
-Closes the browser session. Always call this in a `finally` block.
+Destructively closes the browser session. Always call this in a `finally` block for owned sessions.
 
 ```typescript
 await opensteer.close();
+```
+
+#### `disconnect(): Promise<void>`
+
+Releases the SDK handle without destroying the session when the client was created by
+`Opensteer.attach(...)`. On owned sessions, `disconnect()` is equivalent to `close()`.
+
+```typescript
+await opensteer.disconnect();
 ```
 
 ---
@@ -422,8 +480,7 @@ const result = await opensteer.computerExecute({
 | Variable | Description |
 |:---------|:-----------|
 | `OPENSTEER_ENGINE` | Default engine: `playwright` or `abp` |
-| `OPENSTEER_MODE` | Execution mode: `local`, `connect`, or `cloud` |
-| `OPENSTEER_CONNECT_URL` | Remote service URL for connect mode |
+| `OPENSTEER_MODE` | Execution mode: `local` or `cloud` |
 | `OPENSTEER_API_KEY` | Cloud API key |
 | `OPENSTEER_BASE_URL` | Cloud base URL |
 

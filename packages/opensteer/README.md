@@ -30,7 +30,12 @@ const opensteer = new Opensteer({
 });
 
 try {
-  await opensteer.open("https://example.com");
+  await opensteer.open({
+    url: "https://example.com",
+    browser: {
+      headless: true,
+    },
+  });
   const snapshot = await opensteer.snapshot("action");
   const firstButton = snapshot.counters.find((counter) => counter.tagName === "BUTTON");
   if (firstButton) {
@@ -55,10 +60,67 @@ try {
 }
 ```
 
+Attach to an existing CLI-opened local session:
+
+```ts
+import { Opensteer } from "opensteer";
+
+const opensteer = Opensteer.attach({
+  name: "docs-example",
+  rootDir: process.cwd(),
+});
+
+try {
+  const state = await opensteer.open();
+  console.log(state.url);
+} finally {
+  await opensteer.disconnect();
+}
+```
+
+Launch a cloud session with a specific browser profile:
+
+```ts
+import { Opensteer } from "opensteer";
+
+const opensteer = new Opensteer({
+  cloud: {
+    apiKey: process.env.OPENSTEER_API_KEY!,
+    browserProfile: {
+      profileId: "bp_123",
+      reuseIfActive: true,
+    },
+  },
+});
+```
+
+Upload a local Chrome profile into an existing cloud profile:
+
+```ts
+import { OpensteerCloudClient } from "opensteer";
+
+const client = new OpensteerCloudClient({
+  apiKey: process.env.OPENSTEER_API_KEY!,
+  baseUrl: process.env.OPENSTEER_BASE_URL ?? "https://api.opensteer.dev",
+});
+
+await client.uploadLocalBrowserProfile({
+  profileId: "bp_123",
+  fromUserDataDir: "~/Library/Application Support/Google/Chrome",
+  profileDirectory: "Default",
+});
+```
+
 ## CLI
 
 ```bash
 opensteer open https://example.com --name docs-example --headless true
+opensteer open https://example.com --name docs-example --browser cdp --cdp 9222
+opensteer open https://example.com --name docs-example --browser profile \
+  --user-data-dir "~/Library/Application Support/Google/Chrome" \
+  --profile-directory Default
+opensteer local-profile list
+opensteer profile upload --profile-id bp_123 --from-user-data-dir "~/Library/Application Support/Google/Chrome"
 opensteer open https://example.com --name docs-example --engine abp
 opensteer snapshot action --name docs-example
 opensteer click 3 --name docs-example --description "primary button"
@@ -104,7 +166,8 @@ Important subtrees:
 
 ## Public Methods
 
-- `open(url?)`
+- `Opensteer.attach({ name?, rootDir? })`
+- `open(url | { url?, name?, browser?, context? })`
 - `goto(url | { url, networkTag? })`
 - `snapshot("action" | "extraction")`
 - `click({ element | selector | description, networkTag? })`
@@ -122,11 +185,15 @@ Important subtrees:
 - `listRequestPlans({ key? })`
 - `request(key, { path?, query?, headers?, body? })`
 - `computerExecute({ action, screenshot?, networkTag? })`
+- `disconnect()`
 - `close()`
 
 `element` targets use counters from the latest snapshot. `description` replays a stored descriptor.
 `selector` resolves a CSS selector directly and, when not explicitly scoped, searches the current
 page before falling back to child frames.
+
+Use `disconnect()` for attached sessions when you want to release the SDK handle but keep the
+underlying session alive. Use `close()` when you want to destructively end the session.
 
 The reverse-engineering workflow is: perform a browser action, inspect traffic with
 `queryNetwork()`, experiment with `rawRequest()`, promote a record with `inferRequestPlan()`,
