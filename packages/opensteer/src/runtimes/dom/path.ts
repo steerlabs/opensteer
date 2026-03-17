@@ -4,6 +4,7 @@ import { ElementPathError } from "./errors.js";
 import { buildArrayFieldPathCandidates } from "./extraction.js";
 import { buildPathCandidates, buildSegmentSelector } from "./match-selectors.js";
 import {
+  collectDeferredMatchClauses,
   DEFERRED_MATCH_ATTR_KEYS,
   MATCH_ATTRIBUTE_PRIORITY,
   STABLE_PRIMARY_ATTR_KEYS,
@@ -34,7 +35,7 @@ const MAX_ATTRIBUTE_VALUE_LENGTH = 300;
 interface ResolveMatch {
   readonly node: DomSnapshotNode;
   readonly selector: string;
-  readonly mode: "unique" | "ambiguous";
+  readonly mode: "unique" | "fallback";
   readonly count: number;
 }
 
@@ -202,7 +203,7 @@ export function resolveDomPathInScope(
     return null;
   }
 
-  let ambiguous: ResolveMatch | null = null;
+  let fallback: ResolveMatch | null = null;
   for (const selector of candidates) {
     const matches = querySelectorAllInScope(index, selector, scope);
     if (matches.length === 1) {
@@ -213,17 +214,17 @@ export function resolveDomPathInScope(
         count: 1,
       };
     }
-    if (matches.length > 1 && ambiguous === null) {
-      ambiguous = {
+    if (matches.length > 1 && fallback === null) {
+      fallback = {
         node: matches[0]!,
         selector,
-        mode: "ambiguous",
+        mode: "fallback",
         count: matches.length,
       };
     }
   }
 
-  return ambiguous;
+  return fallback;
 }
 
 export function queryAllDomPathInScope(
@@ -288,7 +289,7 @@ export function resolveStructuralAnchorInScope(
   return {
     node: matches[0]!,
     selector: buildPathSelectorHint({ nodes: anchorNodes }),
-    mode: matches.length === 1 ? "unique" : "ambiguous",
+    mode: matches.length === 1 ? "unique" : "fallback",
     count: matches.length,
   };
 }
@@ -518,6 +519,10 @@ function cloneMatchClause(clause: MatchClause): MatchClause {
       };
 }
 
+function serializeMatchClause(clause: MatchClause): string {
+  return JSON.stringify(clause);
+}
+
 function normalizeMatch(
   rawMatch: unknown,
   attrs: Record<string, string>,
@@ -692,6 +697,15 @@ function finalizeScopedReplayNodes(
 
   const pools = nodes.map((node) => {
     const cloned = [...buildLocalClausePool(node)];
+    const seen = new Set(cloned.map(serializeMatchClause));
+    for (const clause of collectDeferredMatchClauses(node)) {
+      const key = serializeMatchClause(clause);
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      cloned.push(clause);
+    }
     node.match = [];
     return cloned;
   });

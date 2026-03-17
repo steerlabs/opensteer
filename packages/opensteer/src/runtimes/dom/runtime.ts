@@ -35,9 +35,7 @@ import {
   sanitizeElementPath,
   sanitizeReplayElementPath,
   sanitizeStructuralElementAnchor,
-  throwContextHostNotUnique,
   throwTargetNotFound,
-  throwTargetNotUnique,
 } from "./path.js";
 import {
   findIframeHostNode,
@@ -592,9 +590,6 @@ class DefaultDomRuntime implements DomRuntime {
     if (!target) {
       throwTargetNotFound(context.index, path.nodes, context.scope);
     }
-    if (target.mode === "ambiguous") {
-      throwTargetNotUnique(context.index, path.nodes, context.scope);
-    }
     if (target.node.nodeRef === undefined) {
       throw new Error(
         `resolved path "${buildPathSelectorHint(path)}" does not point to a live element`,
@@ -668,9 +663,6 @@ class DefaultDomRuntime implements DomRuntime {
           "ERR_PATH_CONTEXT_HOST_NOT_FOUND",
           "Unable to resolve context host from stored match selectors.",
         );
-      }
-      if (host.mode === "ambiguous") {
-        throwContextHostNotUnique(index, hop.host, scope);
       }
 
       if (hop.kind === "iframe") {

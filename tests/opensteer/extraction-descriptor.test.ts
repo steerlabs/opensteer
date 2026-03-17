@@ -86,7 +86,7 @@ describe("Extraction descriptor replay paths", () => {
     }
   }, 60_000);
 
-  test("replay stays strict and rejects ambiguous persisted extraction paths", async () => {
+  test("replays ambiguous persisted extraction paths by choosing the first match", async () => {
     const engine = await createPlaywrightBrowserCoreEngine({
       launch: { headless: true },
     });
@@ -128,9 +128,73 @@ describe("Extraction descriptor replay paths", () => {
             },
           },
         }),
-      ).rejects.toMatchObject({
-        name: "ElementPathError",
-        code: "ERR_PATH_TARGET_NOT_UNIQUE",
+      ).resolves.toEqual({
+        value: "One",
+      });
+    } finally {
+      await engine.dispose();
+    }
+  }, 60_000);
+
+  test("compiles and replays array descriptors when row classes normalize differently", async () => {
+    const engine = await createPlaywrightBrowserCoreEngine({
+      launch: { headless: true },
+    });
+
+    try {
+      const dom = createDomRuntime({ engine });
+      const sessionRef = await engine.createSession();
+      const created = await engine.createPage({
+        sessionRef,
+        url: dataUrl(
+          `
+            <ul id="products">
+              <li class="product card lazyloaded">
+                <a class="title" href="/item-1">One</a>
+                <span class="price">$1</span>
+              </li>
+              <li class="card product lazyloaded">
+                <a class="title" href="/item-2">Two</a>
+                <span class="price">$2</span>
+              </li>
+            </ul>
+          `,
+          "Extraction array class normalization",
+        ),
+      });
+
+      await wait(300);
+
+      const payload = await compileOpensteerExtractionPayload({
+        dom,
+        pageRef: created.data.pageRef,
+        schema: {
+          items: [
+            {
+              title: { selector: "#products li:nth-child(1) a.title" },
+              url: { selector: "#products li:nth-child(1) a.title", attribute: "href" },
+              price: { selector: "#products li:nth-child(1) .price" },
+            },
+            {
+              title: { selector: "#products li:nth-child(2) a.title" },
+              url: { selector: "#products li:nth-child(2) a.title", attribute: "href" },
+              price: { selector: "#products li:nth-child(2) .price" },
+            },
+          ],
+        },
+      });
+
+      await expect(
+        replayOpensteerExtractionPayload({
+          dom,
+          pageRef: created.data.pageRef,
+          payload,
+        }),
+      ).resolves.toEqual({
+        items: [
+          { title: "One", url: "/item-1", price: "$1" },
+          { title: "Two", url: "/item-2", price: "$2" },
+        ],
       });
     } finally {
       await engine.dispose();

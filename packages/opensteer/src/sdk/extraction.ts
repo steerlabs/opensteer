@@ -7,9 +7,6 @@ import { canonicalJsonString, toCanonicalJsonValue } from "../json.js";
 import type { DescriptorRecord, DescriptorRegistryStore } from "../registry.js";
 import type { FilesystemOpensteerRoot } from "../root.js";
 import {
-  STABLE_PRIMARY_ATTR_KEYS,
-  VOLATILE_CLASS_TOKENS,
-  VOLATILE_LAZY_CLASS_TOKENS,
 } from "../runtimes/dom/match-policy.js";
 import {
   sanitizeElementPath,
@@ -17,12 +14,13 @@ import {
   type DomArraySelector,
   type DomRuntime,
   type ElementPath,
-  type MatchClause,
-  type PathNode,
 } from "../runtimes/dom/index.js";
+import {
+  buildPersistedOpensteerExtractionPayload,
+  type PersistableOpensteerExtractionField,
+} from "./extraction-consolidation.js";
+import { appendDataPathIndex } from "./extraction-data-path.js";
 import type { CompiledOpensteerSnapshotCounterRecord } from "./snapshot/compiler.js";
-
-const ALLOWED_ARRAY_ATTR_KEYS = new Set<string>(["class", ...STABLE_PRIMARY_ATTR_KEYS]);
 
 interface OpensteerSchemaFieldByElement {
   readonly element: number;
@@ -111,41 +109,6 @@ interface OpensteerExtractionDescriptorStore {
   }): Promise<OpensteerExtractionDescriptorRecord>;
 }
 
-interface CompiledLeafField {
-  readonly key: string;
-  readonly kind: "path";
-  readonly path: ElementPath;
-  readonly attribute?: string;
-}
-
-interface CompiledSourceField {
-  readonly key: string;
-  readonly kind: "source";
-  readonly source: "current_url";
-}
-
-type CompiledField = CompiledLeafField | CompiledSourceField;
-
-interface RelativeArrayPathField {
-  readonly key: string;
-  readonly kind: "path";
-  readonly path?: ElementPath;
-  readonly attribute?: string;
-}
-
-interface RelativeArraySourceField {
-  readonly key: string;
-  readonly kind: "source";
-  readonly source: "current_url";
-}
-
-type RelativeArrayField = RelativeArrayPathField | RelativeArraySourceField;
-
-interface ArrayVariantExample {
-  readonly itemPath: ElementPath;
-  readonly fields: readonly RelativeArrayField[];
-}
-
 interface ArrayItemPathDescriptor {
   readonly kind: "path";
   readonly path: string;
@@ -217,26 +180,17 @@ export async function compileOpensteerExtractionPayload(options: {
   readonly latestSnapshotCounters?: ReadonlyMap<number, CompiledOpensteerSnapshotCounterRecord>;
 }): Promise<PersistedOpensteerExtractionPayload> {
   assertValidOpensteerExtractionSchemaRoot(options.schema);
-
-  const compiled = await compileSchemaObject({
+  const fields: PersistableOpensteerExtractionField[] = [];
+  await collectPersistableFieldsFromSchemaObject({
     dom: options.dom,
     pageRef: options.pageRef,
     latestSnapshotCounters: options.latestSnapshotCounters,
     value: options.schema,
     path: "",
+    fields,
     insideArray: false,
   });
-
-  if (
-    compiled === undefined ||
-    isPersistedOpensteerExtractionValueNode(compiled) ||
-    isPersistedOpensteerExtractionSourceNode(compiled) ||
-    isPersistedOpensteerExtractionArrayNode(compiled)
-  ) {
-    throw new Error("Extraction schema must compile to an object payload.");
-  }
-
-  return compiled;
+  return buildPersistedOpensteerExtractionPayload(fields);
 }
 
 export async function replayOpensteerExtractionPayload(options: {
@@ -259,7 +213,7 @@ export function createOpensteerExtractionDescriptorStore(options: {
   return new MemoryOpensteerExtractionDescriptorStore(namespace);
 }
 
-async function compileSchemaObject(options: {
+async function collectPersistableFieldsFromSchemaObject(options: {
   readonly dom: DomRuntime;
   readonly pageRef: PageRef;
   readonly latestSnapshotCounters: ReadonlyMap<
@@ -268,33 +222,28 @@ async function compileSchemaObject(options: {
   > | undefined;
   readonly value: Record<string, unknown>;
   readonly path: string;
+  readonly fields: PersistableOpensteerExtractionField[];
   readonly insideArray: boolean;
-}): Promise<PersistedOpensteerExtractionObjectNode | undefined> {
-  const out: Record<string, PersistedOpensteerExtractionNode> = {};
-
+}): Promise<void> {
   for (const [key, childValue] of Object.entries(options.value)) {
     const normalizedKey = normalizeKey(key);
     if (!normalizedKey) {
       continue;
     }
 
-    const child = await compileSchemaNode({
+    await collectPersistableFieldsFromSchemaValue({
       dom: options.dom,
       pageRef: options.pageRef,
       latestSnapshotCounters: options.latestSnapshotCounters,
       value: childValue,
       path: joinDataPath(options.path, normalizedKey),
+      fields: options.fields,
       insideArray: options.insideArray,
     });
-    if (child !== undefined) {
-      out[normalizedKey] = child;
-    }
   }
-
-  return Object.keys(out).length === 0 ? undefined : out;
 }
 
-async function compileSchemaNode(options: {
+async function collectPersistableFieldsFromSchemaValue(options: {
   readonly dom: DomRuntime;
   readonly pageRef: PageRef;
   readonly latestSnapshotCounters: ReadonlyMap<
@@ -303,17 +252,21 @@ async function compileSchemaNode(options: {
   > | undefined;
   readonly value: unknown;
   readonly path: string;
+  readonly fields: PersistableOpensteerExtractionField[];
   readonly insideArray: boolean;
-}): Promise<PersistedOpensteerExtractionNode | undefined> {
+}): Promise<void> {
   const normalizedField = normalizeSchemaField(options.value);
   if (normalizedField !== null) {
-    return compileSchemaField({
-      dom: options.dom,
-      pageRef: options.pageRef,
-      latestSnapshotCounters: options.latestSnapshotCounters,
-      field: normalizedField,
-      path: options.path,
-    });
+    options.fields.push(
+      await compilePersistableSchemaField({
+        dom: options.dom,
+        pageRef: options.pageRef,
+        latestSnapshotCounters: options.latestSnapshotCounters,
+        field: normalizedField,
+        path: options.path,
+      }),
+    );
+    return;
   }
 
   if (Array.isArray(options.value)) {
@@ -322,14 +275,39 @@ async function compileSchemaNode(options: {
         `Nested arrays are not supported in extraction schema at "${labelForPath(options.path)}".`,
       );
     }
+    if (options.value.length === 0) {
+      throw new Error(
+        `Extraction array "${labelForPath(options.path)}" must include at least one representative item.`,
+      );
+    }
 
-    return compileArraySchemaNode({
-      dom: options.dom,
-      pageRef: options.pageRef,
-      latestSnapshotCounters: options.latestSnapshotCounters,
-      value: options.value,
-      path: options.path,
-    });
+    for (let index = 0; index < options.value.length; index += 1) {
+      const itemValue = options.value[index];
+      if (!itemValue || typeof itemValue !== "object" || Array.isArray(itemValue)) {
+        throw new Error(
+          `Extraction array "${labelForPath(options.path)}" item ${String(index)} must be an object.`,
+        );
+      }
+
+      const fieldCountBeforeItem = options.fields.length;
+      await collectPersistableFieldsFromSchemaObject({
+        dom: options.dom,
+        pageRef: options.pageRef,
+        latestSnapshotCounters: options.latestSnapshotCounters,
+        value: itemValue as Record<string, unknown>,
+        path: appendDataPathIndex(options.path, index),
+        fields: options.fields,
+        insideArray: true,
+      });
+
+      const itemFields = options.fields.slice(fieldCountBeforeItem);
+      if (!itemFields.some((field) => "path" in field)) {
+        throw new Error(
+          `Extraction array "${labelForPath(options.path)}" item ${String(index)} must include at least one element- or selector-backed field.`,
+        );
+      }
+    }
+    return;
   }
 
   if (!options.value || typeof options.value !== "object") {
@@ -338,17 +316,18 @@ async function compileSchemaNode(options: {
     );
   }
 
-  return compileSchemaObject({
+  await collectPersistableFieldsFromSchemaObject({
     dom: options.dom,
     pageRef: options.pageRef,
     latestSnapshotCounters: options.latestSnapshotCounters,
     value: options.value as Record<string, unknown>,
     path: options.path,
+    fields: options.fields,
     insideArray: options.insideArray,
   });
 }
 
-async function compileSchemaField(options: {
+async function compilePersistableSchemaField(options: {
   readonly dom: DomRuntime;
   readonly pageRef: PageRef;
   readonly latestSnapshotCounters: ReadonlyMap<
@@ -357,10 +336,11 @@ async function compileSchemaField(options: {
   > | undefined;
   readonly field: OpensteerSchemaField;
   readonly path: string;
-}): Promise<PersistedOpensteerExtractionNode> {
+}): Promise<PersistableOpensteerExtractionField> {
   if ("source" in options.field) {
     return {
-      $source: "current_url",
+      key: options.path,
+      source: "current_url",
     };
   }
 
@@ -373,158 +353,10 @@ async function compileSchemaField(options: {
   });
 
   return {
-    $path: compiledPath,
+    key: options.path,
+    path: compiledPath,
     ...(options.field.attribute === undefined ? {} : { attribute: options.field.attribute }),
   };
-}
-
-async function compileArraySchemaNode(options: {
-  readonly dom: DomRuntime;
-  readonly pageRef: PageRef;
-  readonly latestSnapshotCounters: ReadonlyMap<
-    number,
-    CompiledOpensteerSnapshotCounterRecord
-  > | undefined;
-  readonly value: readonly unknown[];
-  readonly path: string;
-}): Promise<PersistedOpensteerExtractionArrayNode> {
-  if (options.value.length === 0) {
-    throw new Error(
-      `Extraction array "${labelForPath(options.path)}" must include at least one representative item.`,
-    );
-  }
-
-  const examples: Array<ArrayVariantExample> = [];
-  for (let index = 0; index < options.value.length; index += 1) {
-    const itemValue = options.value[index];
-    if (!itemValue || typeof itemValue !== "object" || Array.isArray(itemValue)) {
-      throw new Error(
-        `Extraction array "${labelForPath(options.path)}" item ${String(index)} must be an object.`,
-      );
-    }
-
-    const fields = await collectCompiledFields({
-      dom: options.dom,
-      pageRef: options.pageRef,
-      latestSnapshotCounters: options.latestSnapshotCounters,
-      value: itemValue as Record<string, unknown>,
-      path: "",
-    });
-    const pathFields = fields.filter(
-      (field): field is CompiledLeafField => field.kind === "path",
-    );
-    if (pathFields.length === 0) {
-      throw new Error(
-        `Extraction array "${labelForPath(options.path)}" item ${String(index)} must include at least one element- or selector-backed field.`,
-      );
-    }
-
-    const itemPath = inferArrayItemPath(pathFields.map((field) => field.path), options.path, index);
-    const relativeFields = fields.map<RelativeArrayField>((field) => {
-      if (field.kind === "source") {
-        return {
-          key: field.key,
-          kind: "source",
-          source: "current_url",
-        };
-      }
-
-      const relativePath = toRelativeArrayPath(itemPath, field.path, options.path, field.key);
-      return {
-        key: field.key,
-        kind: "path",
-        ...(relativePath === undefined ? {} : { path: relativePath }),
-        ...(field.attribute === undefined ? {} : { attribute: field.attribute }),
-      };
-    });
-
-    examples.push({
-      itemPath,
-      fields: relativeFields,
-    });
-  }
-
-  const variants = groupArrayExamples(examples).map((group) =>
-    consolidateArrayVariant(group, options.path),
-  );
-
-  return {
-    $array: {
-      variants,
-    },
-  };
-}
-
-async function collectCompiledFields(options: {
-  readonly dom: DomRuntime;
-  readonly pageRef: PageRef;
-  readonly latestSnapshotCounters: ReadonlyMap<
-    number,
-    CompiledOpensteerSnapshotCounterRecord
-  > | undefined;
-  readonly value: Record<string, unknown>;
-  readonly path: string;
-}): Promise<readonly CompiledField[]> {
-  const fields: CompiledField[] = [];
-
-  for (const [rawKey, childValue] of Object.entries(options.value)) {
-    const key = normalizeKey(rawKey);
-    if (!key) {
-      continue;
-    }
-
-    const fieldPath = joinDataPath(options.path, key);
-    const normalizedField = normalizeSchemaField(childValue);
-    if (normalizedField !== null) {
-      if ("source" in normalizedField) {
-        fields.push({
-          key: fieldPath,
-          kind: "source",
-          source: "current_url",
-        });
-        continue;
-      }
-
-      fields.push({
-        key: fieldPath,
-        kind: "path",
-        path: await resolveFieldPath({
-          dom: options.dom,
-          pageRef: options.pageRef,
-          latestSnapshotCounters: options.latestSnapshotCounters,
-          field: normalizedField,
-          path: fieldPath,
-        }),
-        ...(normalizedField.attribute === undefined
-          ? {}
-          : { attribute: normalizedField.attribute }),
-      });
-      continue;
-    }
-
-    if (Array.isArray(childValue)) {
-      throw new Error(
-        `Nested arrays are not supported in extraction schema at "${labelForPath(fieldPath)}".`,
-      );
-    }
-    if (!childValue || typeof childValue !== "object") {
-      throw new Error(
-        `Invalid extraction schema value at "${labelForPath(fieldPath)}": expected an object or field descriptor.`,
-      );
-    }
-
-    fields.push(
-      ...(await collectCompiledFields({
-        dom: options.dom,
-        pageRef: options.pageRef,
-        latestSnapshotCounters: options.latestSnapshotCounters,
-        value: childValue as Record<string, unknown>,
-        path: fieldPath,
-      })),
-    );
-  }
-
-  return fields;
 }
 
 async function resolveFieldPath(options: {
@@ -584,458 +416,6 @@ async function resolveFieldPath(options: {
       locator: resolved.locator,
     }))
   );
-}
-
-function inferArrayItemPath(
-  paths: readonly ElementPath[],
-  arrayPath: string,
-  itemIndex: number,
-): ElementPath {
-  if (paths.length === 0) {
-    throw new Error(
-      `Extraction array "${labelForPath(arrayPath)}" item ${String(itemIndex)} has no path-backed fields.`,
-    );
-  }
-
-  const contextLength = sharedContextPrefixLength(paths);
-  const nodeLength = sharedNodePrefixLength(paths);
-  if (nodeLength === 0) {
-    throw new Error(
-      `Extraction array "${labelForPath(arrayPath)}" item ${String(itemIndex)} does not share a common DOM ancestor across its fields.`,
-    );
-  }
-
-  return generalizePathCollection(
-    paths.map((path) => ({
-      resolution: "deterministic",
-      context: path.context.slice(0, contextLength),
-      nodes: path.nodes.slice(0, nodeLength),
-    })),
-    {
-      preserveAncestorPositions: true,
-      preserveLeafPosition: true,
-    },
-  );
-}
-
-function sharedContextPrefixLength(paths: readonly ElementPath[]): number {
-  const first = paths[0];
-  if (!first) {
-    return 0;
-  }
-
-  for (let index = 0; index < first.context.length; index += 1) {
-    const hop = first.context[index];
-    if (!hop) {
-      break;
-    }
-    const matchesAll = paths.every((path) =>
-      isCompatibleContextHop(path.context[index], hop),
-    );
-    if (!matchesAll) {
-      return index;
-    }
-  }
-
-  return first.context.length;
-}
-
-function sharedNodePrefixLength(paths: readonly ElementPath[]): number {
-  const first = paths[0];
-  if (!first) {
-    return 0;
-  }
-
-  for (let index = 0; index < first.nodes.length; index += 1) {
-    const node = first.nodes[index];
-    if (!node) {
-      break;
-    }
-    const matchesAll = paths.every((path) => isCompatiblePathNode(path.nodes[index], node));
-    if (!matchesAll) {
-      return index;
-    }
-  }
-
-  return first.nodes.length;
-}
-
-function toRelativeArrayPath(
-  itemPath: ElementPath,
-  fieldPath: ElementPath,
-  arrayPath: string,
-  fieldKey: string,
-): ElementPath | undefined {
-  if (!isContextPathPrefix(itemPath.context, fieldPath.context)) {
-    throw new Error(
-      `Extraction array "${labelForPath(arrayPath)}" field "${fieldKey}" crosses into a different DOM context and cannot be replayed as an array field.`,
-    );
-  }
-
-  if (!isNodePathPrefix(itemPath.nodes, fieldPath.nodes)) {
-    throw new Error(
-      `Extraction array "${labelForPath(arrayPath)}" field "${fieldKey}" is not contained within its inferred item root.`,
-    );
-  }
-
-  const relativeNodes = fieldPath.nodes.slice(itemPath.nodes.length).map(clonePathNode);
-  if (relativeNodes.length === 0) {
-    return undefined;
-  }
-
-  return sanitizeElementPath({
-    resolution: "deterministic",
-    context: [],
-    nodes: relativeNodes,
-  });
-}
-
-function groupArrayExamples(
-  examples: readonly ArrayVariantExample[],
-): readonly (readonly ArrayVariantExample[])[] {
-  const groups = new Map<string, Array<ArrayVariantExample>>();
-
-  for (const example of examples) {
-    const signature = [
-      stringifyContextStructure(example.itemPath.context),
-      stringifyNodeTagStructure(example.itemPath.nodes),
-      ...example.fields
-        .map((field) =>
-          field.kind === "source"
-            ? `${field.key}:source`
-            : `${field.key}:path:${stringifyNodeTagStructure(field.path?.nodes ?? [])}`,
-        )
-        .sort((left, right) => left.localeCompare(right)),
-    ].join("|");
-
-    const existing = groups.get(signature) ?? [];
-    existing.push(example);
-    groups.set(signature, existing);
-  }
-
-  return [...groups.values()];
-}
-
-function consolidateArrayVariant(
-  group: readonly ArrayVariantExample[],
-  arrayPath: string,
-): PersistedOpensteerExtractionArrayVariantNode {
-  const first = group[0];
-  if (!first) {
-    throw new Error(`Extraction array "${labelForPath(arrayPath)}" did not produce any variants.`);
-  }
-
-  const fieldMap = new Map<string, RelativeArrayField[]>();
-  for (const example of group) {
-    for (const field of example.fields) {
-      const list = fieldMap.get(field.key) ?? [];
-      list.push(field);
-      fieldMap.set(field.key, list);
-    }
-  }
-
-  const itemLeaves: RelativeArrayField[] = [];
-  for (const [fieldKey, fields] of [...fieldMap.entries()].sort((left, right) =>
-    left[0].localeCompare(right[0]),
-  )) {
-    const sourceFields = fields.filter(
-      (field): field is RelativeArraySourceField => field.kind === "source",
-    );
-    if (sourceFields.length > 0) {
-      itemLeaves.push({
-        key: fieldKey,
-        kind: "source",
-        source: "current_url",
-      });
-      continue;
-    }
-
-    const pathFields = fields.filter(
-      (field): field is RelativeArrayPathField => field.kind === "path",
-    );
-    if (pathFields.length === 0) {
-      continue;
-    }
-
-    const paths = pathFields
-      .map((field) => field.path)
-      .filter((path): path is ElementPath => path !== undefined);
-
-    itemLeaves.push({
-      key: fieldKey,
-      kind: "path",
-      ...(paths.length === 0
-        ? {}
-        : {
-            path: generalizePathCollection(paths, {
-              preserveAncestorPositions: true,
-              preserveLeafPosition: false,
-            }),
-          }),
-      ...(pathFields.find((field) => field.attribute !== undefined)?.attribute === undefined
-        ? {}
-        : {
-            attribute: pathFields.find((field) => field.attribute !== undefined)!.attribute,
-          }),
-    });
-  }
-
-  return {
-    itemParentPath: generalizePathCollection(
-      group.map((example) => example.itemPath),
-      {
-        preserveAncestorPositions: true,
-        preserveLeafPosition: false,
-      },
-    ),
-    item: buildPersistedArrayItemNode(itemLeaves),
-  };
-}
-
-function generalizePathCollection(
-  paths: readonly ElementPath[],
-  options: {
-    readonly preserveAncestorPositions: boolean;
-    readonly preserveLeafPosition: boolean;
-  },
-): ElementPath {
-  const first = paths[0];
-  if (!first) {
-    return sanitizeElementPath({
-      resolution: "deterministic",
-      context: [],
-      nodes: [],
-    });
-  }
-
-  const context = first.context.map((_, index) =>
-    generalizeContextHop(paths.map((path) => path.context[index]).filter(Boolean) as ElementPath["context"]),
-  );
-  const nodes = first.nodes.map((_, index) =>
-    generalizePathNode(
-      paths.map((path) => path.nodes[index]).filter(Boolean) as PathNode[],
-      index === first.nodes.length - 1
-        ? options.preserveLeafPosition
-        : options.preserveAncestorPositions,
-    ),
-  );
-
-  return sanitizeElementPath({
-    resolution: "deterministic",
-    context,
-    nodes,
-  });
-}
-
-function generalizeContextHop(hops: ElementPath["context"]): ElementPath["context"][number] {
-  const first = hops[0];
-  if (!first) {
-    return {
-      kind: "iframe",
-      host: [],
-    };
-  }
-
-  return {
-    kind: first.kind,
-    host: generalizePathCollection(
-      hops.map((hop) => ({
-        resolution: "deterministic",
-        context: [],
-        nodes: hop.host,
-      })),
-      {
-        preserveAncestorPositions: true,
-        preserveLeafPosition: true,
-      },
-    ).nodes,
-  };
-}
-
-function generalizePathNode(nodes: readonly PathNode[], keepPosition: boolean): PathNode {
-  const first = nodes[0];
-  if (!first) {
-    return {
-      tag: "*",
-      attrs: {},
-      position: {
-        nthChild: 1,
-        nthOfType: 1,
-      },
-      match: [],
-    };
-  }
-
-  const attrs = collectCommonPathAttributes(nodes);
-  const keepNthChild =
-    keepPosition && nodes.every((node) => node.position.nthChild === first.position.nthChild);
-  const keepNthOfType =
-    keepPosition && nodes.every((node) => node.position.nthOfType === first.position.nthOfType);
-  const match: MatchClause[] = [];
-
-  for (const [key, value] of Object.entries(attrs).sort((left, right) => left[0].localeCompare(right[0]))) {
-    match.push({
-      kind: "attr",
-      key,
-      op: "exact",
-      value,
-    });
-  }
-  if (keepNthOfType) {
-    match.push({
-      kind: "position",
-      axis: "nthOfType",
-    });
-  }
-  if (keepNthChild) {
-    match.push({
-      kind: "position",
-      axis: "nthChild",
-    });
-  }
-
-  return {
-    tag: first.tag,
-    attrs,
-    position: {
-      nthChild: keepNthChild ? first.position.nthChild : 1,
-      nthOfType: keepNthOfType ? first.position.nthOfType : 1,
-    },
-    match,
-  };
-}
-
-function collectCommonPathAttributes(nodes: readonly PathNode[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  const keys = new Set<string>();
-  for (const node of nodes) {
-    for (const key of Object.keys(node.attrs)) {
-      if (ALLOWED_ARRAY_ATTR_KEYS.has(key)) {
-        keys.add(key);
-      }
-    }
-  }
-
-  for (const key of [...keys].sort((left, right) => left.localeCompare(right))) {
-    if (key === "class") {
-      const commonClassValue = intersectClassValues(nodes.map((node) => node.attrs.class));
-      if (commonClassValue) {
-        out.class = commonClassValue;
-      }
-      continue;
-    }
-
-    const firstValue = firstDefined(nodes.map((node) => node.attrs[key]));
-    if (
-      firstValue !== undefined &&
-      nodes.every((node) => node.attrs[key] === firstValue)
-    ) {
-      out[key] = firstValue;
-    }
-  }
-
-  return out;
-}
-
-function intersectClassValues(values: readonly (string | undefined)[]): string | undefined {
-  const tokenSets = values
-    .map((value) =>
-      new Set(
-        String(value ?? "")
-          .split(/\s+/)
-          .map((token) => token.trim())
-          .filter(
-            (token) =>
-              token.length > 0 &&
-              !VOLATILE_CLASS_TOKENS.has(token) &&
-              !VOLATILE_LAZY_CLASS_TOKENS.has(token),
-          ),
-      ),
-    )
-    .filter((tokens) => tokens.size > 0);
-  const first = tokenSets[0];
-  if (!first) {
-    return undefined;
-  }
-
-  const common = [...first].filter((token) => tokenSets.every((set) => set.has(token)));
-  if (common.length === 0) {
-    return undefined;
-  }
-
-  return common.sort((left, right) => left.localeCompare(right)).join(" ");
-}
-
-function buildPersistedArrayItemNode(
-  fields: readonly RelativeArrayField[],
-): PersistedOpensteerExtractionNode {
-  const root: Record<string, PersistedOpensteerExtractionNode> = {};
-
-  for (const field of fields) {
-    insertPersistedNode(root, field.key, toPersistedLeafNode(field));
-  }
-
-  return root;
-}
-
-function toPersistedLeafNode(field: RelativeArrayField): PersistedOpensteerExtractionNode {
-  if (field.kind === "source") {
-    return {
-      $source: "current_url",
-    };
-  }
-
-  return field.path === undefined
-    ? {
-        $path: sanitizeElementPath({
-          resolution: "deterministic",
-          context: [],
-          nodes: [],
-        }),
-        ...(field.attribute === undefined ? {} : { attribute: field.attribute }),
-      }
-    : {
-        $path: field.path,
-        ...(field.attribute === undefined ? {} : { attribute: field.attribute }),
-      };
-}
-
-function insertPersistedNode(
-  root: Record<string, PersistedOpensteerExtractionNode>,
-  path: string,
-  value: PersistedOpensteerExtractionNode,
-): void {
-  const tokens = parseDataPath(path);
-  if (!tokens) {
-    throw new Error(`Invalid extraction data path "${path}".`);
-  }
-  if (tokens.length === 0) {
-    throw new Error("Persisted extraction data paths must not be empty.");
-  }
-
-  let current = root;
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index];
-    if (!token || token.kind !== "prop") {
-      throw new Error(`Extraction path "${path}" uses an unsupported array token outside array roots.`);
-    }
-
-    const isLast = index === tokens.length - 1;
-    if (isLast) {
-      current[token.key] = value;
-      return;
-    }
-
-    const next = current[token.key];
-    if (next && !isPersistedObjectNode(next)) {
-      throw new Error(`Extraction path "${path}" collides with an existing leaf node.`);
-    }
-
-    if (!next) {
-      current[token.key] = {};
-    }
-    current = current[token.key] as Record<string, PersistedOpensteerExtractionNode>;
-  }
 }
 
 function isPersistedObjectNode(
@@ -1543,144 +923,6 @@ class MemoryOpensteerExtractionDescriptorStore implements OpensteerExtractionDes
     this.latestByKey.set(key, record);
     return record;
   }
-}
-
-function isContextHopEqual(
-  left: ElementPath["context"][number] | undefined,
-  right: ElementPath["context"][number] | undefined,
-): boolean {
-  if (left === undefined || right === undefined) {
-    return left === right;
-  }
-  return left.kind === right.kind && isNodePathEqual(left.host, right.host);
-}
-
-function isCompatibleContextHop(
-  left: ElementPath["context"][number] | undefined,
-  right: ElementPath["context"][number] | undefined,
-): boolean {
-  if (left === undefined || right === undefined) {
-    return left === right;
-  }
-  return left.kind === right.kind && isCompatibleNodePath(left.host, right.host);
-}
-
-function isNodePathEqual(left: readonly PathNode[], right: readonly PathNode[]): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
-
-  return left.every((node, index) => isPathNodeEqual(node, right[index]));
-}
-
-function isCompatibleNodePath(left: readonly PathNode[], right: readonly PathNode[]): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
-
-  return left.every((node, index) => isCompatiblePathNode(node, right[index]));
-}
-
-function isPathNodeEqual(left: PathNode | undefined, right: PathNode | undefined): boolean {
-  if (left === undefined || right === undefined) {
-    return left === right;
-  }
-
-  return canonicalJsonString(left) === canonicalJsonString(right);
-}
-
-function isCompatiblePathNode(left: PathNode | undefined, right: PathNode | undefined): boolean {
-  if (left === undefined || right === undefined) {
-    return left === right;
-  }
-
-  return left.tag === right.tag;
-}
-
-function isContextPathPrefix(
-  prefix: readonly ElementPath["context"][number][],
-  value: readonly ElementPath["context"][number][],
-): boolean {
-  if (prefix.length > value.length) {
-    return false;
-  }
-
-  return prefix.every((hop, index) => isPrefixContextHop(hop, value[index]));
-}
-
-function isNodePathPrefix(prefix: readonly PathNode[], value: readonly PathNode[]): boolean {
-  if (prefix.length > value.length) {
-    return false;
-  }
-
-  return prefix.every((node, index) => isPrefixPathNode(node, value[index]));
-}
-
-function isPrefixContextHop(
-  prefix: ElementPath["context"][number] | undefined,
-  value: ElementPath["context"][number] | undefined,
-): boolean {
-  if (prefix === undefined || value === undefined) {
-    return prefix === value;
-  }
-
-  return prefix.kind === value.kind && isPrefixNodePath(prefix.host, value.host);
-}
-
-function isPrefixNodePath(prefix: readonly PathNode[], value: readonly PathNode[]): boolean {
-  if (prefix.length !== value.length) {
-    return false;
-  }
-
-  return prefix.every((node, index) => isPrefixPathNode(node, value[index]));
-}
-
-function isPrefixPathNode(prefix: PathNode | undefined, value: PathNode | undefined): boolean {
-  if (prefix === undefined || value === undefined) {
-    return prefix === value;
-  }
-
-  return (
-    prefix.tag === value.tag &&
-    prefix.position.nthChild === value.position.nthChild &&
-    prefix.position.nthOfType === value.position.nthOfType &&
-    Object.entries(prefix.attrs).every(([key, expected]) => value.attrs[key] === expected)
-  );
-}
-
-function clonePathNode(node: PathNode): PathNode {
-  return {
-    tag: node.tag,
-    attrs: { ...node.attrs },
-    position: {
-      nthChild: node.position.nthChild,
-      nthOfType: node.position.nthOfType,
-    },
-    match: node.match.map((clause) =>
-      clause.kind === "position"
-        ? { kind: "position", axis: clause.axis }
-        : {
-            kind: "attr",
-            key: clause.key,
-            ...(clause.op === undefined ? {} : { op: clause.op }),
-            ...(clause.value === undefined ? {} : { value: clause.value }),
-          },
-    ),
-  };
-}
-
-function stringifyContextStructure(context: readonly ElementPath["context"][number][]): string {
-  return context
-    .map((hop) => `${hop.kind}:${stringifyNodeTagStructure(hop.host)}`)
-    .join("/");
-}
-
-function stringifyNodeTagStructure(nodes: readonly PathNode[]): string {
-  return nodes.map((node) => node.tag).join("/");
-}
-
-function firstDefined<T>(values: readonly (T | undefined)[]): T | undefined {
-  return values.find((value) => value !== undefined);
 }
 
 function normalizeNonEmptyString(name: string, value: unknown): string {

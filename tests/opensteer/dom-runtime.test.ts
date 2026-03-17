@@ -341,7 +341,7 @@ describe("Phase 5 DOM runtime utilities", () => {
     ]);
   });
 
-  test("sanitizes element paths with stable deferred id clauses preserved", () => {
+  test("sanitizes element paths without appending deferred id clauses when primary attrs exist", () => {
     const sanitized = sanitizeElementPath({
       resolution: "deterministic",
       context: [],
@@ -375,7 +375,6 @@ describe("Phase 5 DOM runtime utilities", () => {
         { kind: "attr", key: "class", op: "exact", value: "primary action" },
         { kind: "position", axis: "nthOfType" },
         { kind: "position", axis: "nthChild" },
-        { kind: "attr", key: "id", op: "exact" },
       ],
     });
   });
@@ -777,7 +776,7 @@ describe("Phase 5 DOM runtime integration", () => {
   );
 
   test(
-    "buildPath falls back to id-like attributes when weaker primary attributes are not unique",
+    "buildPath uses deferred id-like attributes when no primary attributes are available",
     { timeout: 60_000 },
     async () => {
       const engine = await createPlaywrightBrowserCoreEngine({
@@ -788,21 +787,24 @@ describe("Phase 5 DOM runtime integration", () => {
         const sessionRef = await engine.createSession();
         const created = await engine.createPage({
           sessionRef,
-          url: `${baseUrl}/runtime/main`,
+          url: dataUrl(
+            html(
+              `
+                <button id="target-action" style="position:absolute;left:20px;top:20px;width:160px;height:40px">Target</button>
+                <button id="other-action" style="position:absolute;left:20px;top:80px;width:160px;height:40px">Other</button>
+              `,
+              "DOM runtime deferred id",
+            ),
+          ),
         });
 
-        await wait(400);
+        await wait(300);
 
-        const frames = await engine.listFrames({ pageRef: created.data.pageRef });
-        const mainFrame = requireValue(
-          frames.find((frame) => frame.isMainFrame),
-          "main frame not found",
-        );
         const snapshot = await engine.getDomSnapshot({
-          frameRef: mainFrame.frameRef,
+          frameRef: created.frameRef!,
         });
         const mainAction = requireValue(
-          findNodeById(snapshot.nodes, "main-action"),
+          findNodeById(snapshot.nodes, "target-action"),
           "main action not found",
         );
 
@@ -810,7 +812,7 @@ describe("Phase 5 DOM runtime integration", () => {
           locator: createLocator(snapshot, mainAction),
         });
 
-        expect(buildPathSelectorHint(path)).toBe("button#main-action");
+        expect(buildPathSelectorHint(path)).toBe("button#target-action");
 
         const resolved = await runtime.resolveTarget({
           pageRef: created.data.pageRef,
@@ -820,7 +822,7 @@ describe("Phase 5 DOM runtime integration", () => {
 
         expect(resolved.node.attributes).toContainEqual({
           name: "id",
-          value: "main-action",
+          value: "target-action",
         });
       } finally {
         await engine.dispose();
@@ -1077,7 +1079,7 @@ describe("Phase 5 DOM runtime integration", () => {
   );
 
   test(
-    "keeps deterministic replay strict after structural drift",
+    "falls back to the first deterministic match after structural drift",
     { timeout: 60_000 },
     async () => {
       const engine = await createPlaywrightBrowserCoreEngine({
@@ -1134,16 +1136,15 @@ describe("Phase 5 DOM runtime integration", () => {
         });
         await wait(150);
 
-        await expect(
-          runtime.resolveTarget({
-            pageRef: created.data.pageRef,
-            method: "click",
-            target: { kind: "path", path },
-          }),
-        ).rejects.toMatchObject({
-          name: "ElementPathError",
-          code: "ERR_PATH_TARGET_NOT_UNIQUE",
+        const resolved = await runtime.resolveTarget({
+          pageRef: created.data.pageRef,
+          method: "click",
+          target: { kind: "path", path },
         });
+
+        expect(await engine.readText(createLocator(resolved.snapshot, resolved.node))).toBe(
+          "Wrapped choice A",
+        );
       } finally {
         await engine.dispose();
       }
@@ -1214,7 +1215,7 @@ describe("Phase 5 DOM runtime integration", () => {
   );
 
   test(
-    "rejects ambiguous path replay instead of silently choosing the first match",
+    "replays ambiguous paths by choosing the first match",
     { timeout: 60_000 },
     async () => {
       const engine = await createPlaywrightBrowserCoreEngine({
@@ -1252,16 +1253,90 @@ describe("Phase 5 DOM runtime integration", () => {
           ],
         };
 
-        await expect(
-          runtime.resolveTarget({
-            pageRef: created.data.pageRef,
-            method: "click",
-            target: { kind: "path", path },
-          }),
-        ).rejects.toMatchObject({
-          name: "ElementPathError",
-          code: "ERR_PATH_TARGET_NOT_UNIQUE",
+        const resolved = await runtime.resolveTarget({
+          pageRef: created.data.pageRef,
+          method: "click",
+          target: { kind: "path", path },
         });
+
+        expect(await engine.readText(createLocator(resolved.snapshot, resolved.node))).toBe("A");
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "replays ambiguous context hosts by choosing the first matching host",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+
+      try {
+        const runtime = createDomRuntime({ engine });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: dataUrl(
+            html(
+              `
+                <div class="dup-host"></div>
+                <div class="dup-host"></div>
+                <script>
+                  for (const [index, host] of [...document.querySelectorAll(".dup-host")].entries()) {
+                    const root = host.attachShadow({ mode: "open" });
+                    root.innerHTML =
+                      '<button class="dup-button" data-label="' +
+                      (index === 0 ? "first" : "second") +
+                      '" type="button">' +
+                      (index === 0 ? "First" : "Second") +
+                      "</button>";
+                  }
+                </script>
+              `,
+              "DOM runtime context ambiguity",
+            ),
+          ),
+        });
+
+        await wait(300);
+
+        const path: ElementPath = {
+          resolution: "deterministic",
+          context: [
+            {
+              kind: "shadow",
+              host: [
+                {
+                  tag: "div",
+                  attrs: { class: "dup-host" },
+                  position: { nthChild: 1, nthOfType: 1 },
+                  match: [{ kind: "attr", key: "class", op: "exact", value: "dup-host" }],
+                },
+              ],
+            },
+          ],
+          nodes: [
+            {
+              tag: "button",
+              attrs: { class: "dup-button" },
+              position: { nthChild: 1, nthOfType: 1 },
+              match: [{ kind: "attr", key: "class", op: "exact", value: "dup-button" }],
+            },
+          ],
+        };
+
+        const resolved = await runtime.resolveTarget({
+          pageRef: created.data.pageRef,
+          method: "click",
+          target: { kind: "path", path },
+        });
+
+        expect(resolved.node.attributes.find((attribute) => attribute.name === "data-label")?.value).toBe(
+          "first",
+        );
       } finally {
         await engine.dispose();
       }
