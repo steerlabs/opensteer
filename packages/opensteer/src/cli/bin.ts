@@ -24,10 +24,7 @@ import { fileUriToPath } from "../internal/filesystem.js";
 import { OpensteerLocalProfileUnavailableError } from "../local-browser/profile-inspection.js";
 import { runOpensteerLocalProfileCli } from "./local-profile.js";
 import { runOpensteerProfileUploadCli } from "./profile-upload.js";
-import {
-  opensteerCliSchema,
-  parseCliArguments,
-} from "./schema.js";
+import { opensteerCliSchema, parseCliArguments } from "./schema.js";
 import {
   assertExecutionModeSupportsEngine,
   resolveOpensteerExecutionMode,
@@ -83,10 +80,7 @@ async function main(argv: readonly string[]): Promise<void> {
       ...(readOptionalString(options.engine) === undefined
         ? {}
         : {
-            engine: normalizeOpensteerEngineName(
-              readOptionalString(options.engine)!,
-              "--engine",
-            ),
+            engine: normalizeOpensteerEngineName(readOptionalString(options.engine)!, "--engine"),
           }),
     });
     return;
@@ -111,7 +105,9 @@ async function main(argv: readonly string[]): Promise<void> {
   }
 
   const sessionOptions = {
-    ...(readOptionalString(options.name) === undefined ? {} : { name: readOptionalString(options.name)! }),
+    ...(readOptionalString(options.name) === undefined
+      ? {}
+      : { name: readOptionalString(options.name)! }),
     ...(readOptionalString(options.rootDir) === undefined
       ? {}
       : { rootDir: readOptionalString(options.rootDir)! }),
@@ -248,7 +244,8 @@ async function main(argv: readonly string[]): Promise<void> {
     case "input": {
       const client = await requireOpensteerService(sessionOptions);
       const target = parseTargetInput(invocation.positionals, options);
-      const text = readOptionalString(options.text) ?? consumeTextPositional(invocation.positionals);
+      const text =
+        readOptionalString(options.text) ?? consumeTextPositional(invocation.positionals);
       if (!text) {
         throw new Error("input requires text");
       }
@@ -265,9 +262,14 @@ async function main(argv: readonly string[]): Promise<void> {
     case "scroll": {
       const client = await requireOpensteerService(sessionOptions);
       const target = parseTargetInput(invocation.positionals, options);
-      const direction = readOptionalString(options.direction) ?? consumeRemainingPositionals(invocation.positionals)[0];
+      const direction =
+        readOptionalString(options.direction) ??
+        consumeRemainingPositionals(invocation.positionals)[0];
       const amountValue = readOptionalNumber(options.amount);
-      const amountRaw = amountValue === undefined ? consumeRemainingPositionals(invocation.positionals)[1] : String(amountValue);
+      const amountRaw =
+        amountValue === undefined
+          ? consumeRemainingPositionals(invocation.positionals)[1]
+          : String(amountValue);
       if (!direction || !amountRaw) {
         throw new Error("scroll requires direction and amount");
       }
@@ -331,7 +333,9 @@ async function main(argv: readonly string[]): Promise<void> {
     case "network.clear": {
       const client = await requireOpensteerService(sessionOptions);
       const result = await client.invoke("network.clear", {
-        ...(readOptionalString(options.tag) === undefined ? {} : { tag: readOptionalString(options.tag) }),
+        ...(readOptionalString(options.tag) === undefined
+          ? {}
+          : { tag: readOptionalString(options.tag) }),
       });
       await writeJsonOutput(result, readOptionalString(options.output));
       return;
@@ -353,7 +357,9 @@ async function main(argv: readonly string[]): Promise<void> {
         throw new Error("plan write requires --payload or --payload-file");
       }
       const result = await client.invoke("request-plan.write", {
-        ...(readOptionalString(options.id) === undefined ? {} : { id: readOptionalString(options.id) }),
+        ...(readOptionalString(options.id) === undefined
+          ? {}
+          : { id: readOptionalString(options.id) }),
         key,
         version,
         ...(readOptionalString(options.lifecycle) === undefined
@@ -363,7 +369,9 @@ async function main(argv: readonly string[]): Promise<void> {
           ? {}
           : { tags: parseCsvOption(readOptionalString(options.tags)) }),
         payload,
-        ...(buildProvenanceInput(options) === undefined ? {} : { provenance: buildProvenanceInput(options) }),
+        ...(buildProvenanceInput(options) === undefined
+          ? {}
+          : { provenance: buildProvenanceInput(options) }),
       });
       await writeJsonOutput(result, readOptionalString(options.output));
       return;
@@ -424,7 +432,9 @@ async function main(argv: readonly string[]): Promise<void> {
       const headers = parseHeaderEntries(readOptionalStrings(options.header));
       const result = await client.invoke("request.raw", {
         url,
-        ...(readOptionalString(options.method) === undefined ? {} : { method: readOptionalString(options.method) }),
+        ...(readOptionalString(options.method) === undefined
+          ? {}
+          : { method: readOptionalString(options.method) }),
         ...(body === undefined ? {} : { body }),
         ...(readOptionalBoolean(options.noFollowRedirects) ? { followRedirects: false } : {}),
         ...(headers.length === 0 ? {} : { headers }),
@@ -460,7 +470,9 @@ async function main(argv: readonly string[]): Promise<void> {
 
     case "computer": {
       const client = await requireOpensteerService(sessionOptions);
-      const action = readOptionalJsonObject(options.action) ?? readJsonObjectPositional(invocation.positionals[0], "action");
+      const action =
+        readOptionalJsonObject(options.action) ??
+        readJsonObjectPositional(invocation.positionals[0], "action");
       if (!action) {
         throw new Error("computer requires an action JSON object");
       }
@@ -517,7 +529,9 @@ function resolveCliExecutionMode(options: ParsedCliOptions): "local" | "cloud" {
   return resolveOpensteerExecutionMode({
     local: readOptionalBoolean(options.local) === true,
     cloud: readOptionalBoolean(options.cloud) === true,
-    ...(process.env.OPENSTEER_MODE === undefined ? {} : { environment: process.env.OPENSTEER_MODE }),
+    ...(process.env.OPENSTEER_MODE === undefined
+      ? {}
+      : { environment: process.env.OPENSTEER_MODE }),
   });
 }
 
@@ -535,7 +549,8 @@ async function loadSessionMetadata(sessionOptions: {
   if (!raw) {
     return undefined;
   }
-  return parseOpensteerServiceMetadata(raw, getOpensteerServiceMetadataPath(rootPath, name)).metadata;
+  return parseOpensteerServiceMetadata(raw, getOpensteerServiceMetadataPath(rootPath, name))
+    .metadata;
 }
 
 function parseTargetInput(
@@ -588,9 +603,7 @@ function parseTargetInput(
   };
 }
 
-function parseBrowserOptions(
-  options: ParsedCliOptions,
-): Record<string, unknown> | undefined {
+function parseBrowserOptions(options: ParsedCliOptions): Record<string, unknown> | undefined {
   const browserJson = readOptionalJsonObject(options.browserJson);
   if (browserJson) {
     return browserJson;
@@ -624,16 +637,18 @@ function parseBrowserOptions(
   const cdpHeaders = parseHeaderEntries(readOptionalStrings(options.cdpHeader));
 
   const inferredKind =
-    browserKind
-    ?? (cdp !== undefined ? "cdp" : undefined)
-    ?? (autoConnect ? "auto-connect" : undefined)
-    ?? (userDataDir !== undefined ? "profile" : undefined);
+    browserKind ??
+    (cdp !== undefined ? "cdp" : undefined) ??
+    (autoConnect ? "auto-connect" : undefined) ??
+    (userDataDir !== undefined ? "profile" : undefined);
 
   if (cdp !== undefined && autoConnect) {
     throw new Error("Specify only one of --cdp or --auto-connect.");
   }
   if ((cdp !== undefined || autoConnect) && userDataDir !== undefined) {
-    throw new Error("Specify either attach flags (--cdp/--auto-connect) or launch flags (--user-data-dir), not both.");
+    throw new Error(
+      "Specify either attach flags (--cdp/--auto-connect) or launch flags (--user-data-dir), not both.",
+    );
   }
 
   if (inferredKind === "profile") {
@@ -656,7 +671,9 @@ function parseBrowserOptions(
       kind: "cdp" as const,
       endpoint: cdp,
       ...(freshTab === undefined ? {} : { freshTab }),
-      ...(cdpHeaders.length === 0 ? {} : { headers: Object.fromEntries(cdpHeaders.map((entry) => [entry.name, entry.value])) }),
+      ...(cdpHeaders.length === 0
+        ? {}
+        : { headers: Object.fromEntries(cdpHeaders.map((entry) => [entry.name, entry.value])) }),
     };
   }
 
@@ -668,7 +685,9 @@ function parseBrowserOptions(
   }
 
   if (inferredKind !== undefined && inferredKind !== "managed") {
-    throw new Error(`browser must be "managed", "profile", "cdp", or "auto-connect"; received "${inferredKind}"`);
+    throw new Error(
+      `browser must be "managed", "profile", "cdp", or "auto-connect"; received "${inferredKind}"`,
+    );
   }
 
   const parsed = {
@@ -678,9 +697,7 @@ function parseBrowserOptions(
   return Object.keys(parsed).length === 0 ? undefined : parsed;
 }
 
-function parseContextOptions(
-  options: ParsedCliOptions,
-): Record<string, unknown> | undefined {
+function parseContextOptions(options: ParsedCliOptions): Record<string, unknown> | undefined {
   const contextJson = readOptionalJsonObject(options.contextJson);
   if (contextJson) {
     return contextJson;
@@ -769,9 +786,7 @@ async function readJsonObjectOption(
   return undefined;
 }
 
-function buildProvenanceInput(
-  options: ParsedCliOptions,
-): Record<string, unknown> | undefined {
+function buildProvenanceInput(options: ParsedCliOptions): Record<string, unknown> | undefined {
   const provenance = {
     ...(readOptionalString(options.provenanceSource) === undefined
       ? {}
@@ -812,41 +827,59 @@ function parseHeaderEntries(values: readonly string[]): readonly {
   }));
 }
 
-function buildNetworkFilterInput(
-  options: ParsedCliOptions,
-): Record<string, unknown> {
+function buildNetworkFilterInput(options: ParsedCliOptions): Record<string, unknown> {
   return {
-    ...(readOptionalString(options.pageRef) === undefined ? {} : { pageRef: readOptionalString(options.pageRef) }),
-    ...(readOptionalString(options.recordId) === undefined ? {} : { recordId: readOptionalString(options.recordId) }),
-    ...(readOptionalString(options.requestId) === undefined ? {} : { requestId: readOptionalString(options.requestId) }),
-    ...(readOptionalString(options.actionId) === undefined ? {} : { actionId: readOptionalString(options.actionId) }),
-    ...(readOptionalString(options.url) === undefined ? {} : { url: readOptionalString(options.url) }),
-    ...(readOptionalString(options.hostname) === undefined ? {} : { hostname: readOptionalString(options.hostname) }),
-    ...(readOptionalString(options.path) === undefined ? {} : { path: readOptionalString(options.path) }),
-    ...(readOptionalString(options.method) === undefined ? {} : { method: readOptionalString(options.method) }),
-    ...(readOptionalString(options.status) === undefined ? {} : { status: readOptionalString(options.status) }),
+    ...(readOptionalString(options.pageRef) === undefined
+      ? {}
+      : { pageRef: readOptionalString(options.pageRef) }),
+    ...(readOptionalString(options.recordId) === undefined
+      ? {}
+      : { recordId: readOptionalString(options.recordId) }),
+    ...(readOptionalString(options.requestId) === undefined
+      ? {}
+      : { requestId: readOptionalString(options.requestId) }),
+    ...(readOptionalString(options.actionId) === undefined
+      ? {}
+      : { actionId: readOptionalString(options.actionId) }),
+    ...(readOptionalString(options.url) === undefined
+      ? {}
+      : { url: readOptionalString(options.url) }),
+    ...(readOptionalString(options.hostname) === undefined
+      ? {}
+      : { hostname: readOptionalString(options.hostname) }),
+    ...(readOptionalString(options.path) === undefined
+      ? {}
+      : { path: readOptionalString(options.path) }),
+    ...(readOptionalString(options.method) === undefined
+      ? {}
+      : { method: readOptionalString(options.method) }),
+    ...(readOptionalString(options.status) === undefined
+      ? {}
+      : { status: readOptionalString(options.status) }),
     ...(readOptionalString(options.resourceType) === undefined
       ? {}
       : { resourceType: readOptionalString(options.resourceType) }),
   };
 }
 
-function buildNetworkTagInput(
-  options: ParsedCliOptions,
-): Record<string, unknown> {
+function buildNetworkTagInput(options: ParsedCliOptions): Record<string, unknown> {
   return readOptionalString(options.networkTag) === undefined
     ? {}
     : { networkTag: readOptionalString(options.networkTag) };
 }
 
-function buildNetworkQueryInput(
-  options: ParsedCliOptions,
-): Record<string, unknown> {
+function buildNetworkQueryInput(options: ParsedCliOptions): Record<string, unknown> {
   return {
-    ...(readOptionalString(options.source) === undefined ? {} : { source: readOptionalString(options.source) }),
+    ...(readOptionalString(options.source) === undefined
+      ? {}
+      : { source: readOptionalString(options.source) }),
     ...(readOptionalBoolean(options.includeBodies) ? { includeBodies: true } : {}),
-    ...(readOptionalNumber(options.limit) === undefined ? {} : { limit: readOptionalNumber(options.limit) }),
-    ...(readOptionalString(options.tag) === undefined ? {} : { tag: readOptionalString(options.tag) }),
+    ...(readOptionalNumber(options.limit) === undefined
+      ? {}
+      : { limit: readOptionalNumber(options.limit) }),
+    ...(readOptionalString(options.tag) === undefined
+      ? {}
+      : { tag: readOptionalString(options.tag) }),
     ...buildNetworkFilterInput(options),
   };
 }
@@ -955,7 +988,9 @@ function readOptionalStrings(value: unknown): readonly string[] {
   if (value === undefined) {
     return [];
   }
-  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string")
+    : [];
 }
 
 function readOptionalJsonObject(value: unknown): Record<string, unknown> | undefined {

@@ -1,10 +1,6 @@
 import { resolveCloudConfig } from "../cloud/config.js";
 import { OpensteerCloudClient } from "../cloud/client.js";
-import {
-  parseCliArguments,
-  profileCliSchema,
-  renderHelp,
-} from "./schema.js";
+import { parseCliArguments, profileCliSchema, renderHelp } from "./schema.js";
 
 export interface ProfileUploadCliDeps {
   readonly writeStdout: (message: string) => void;
@@ -22,9 +18,7 @@ export type ParsedProfileUploadArgs =
       readonly profileDirectory?: string;
     };
 
-export function parseOpensteerProfileUploadArgs(
-  argv: readonly string[],
-): ParsedProfileUploadArgs {
+export function parseOpensteerProfileUploadArgs(argv: readonly string[]): ParsedProfileUploadArgs {
   try {
     const parsed = parseCliArguments({
       schema: profileCliSchema,

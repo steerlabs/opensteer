@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
 
-import { opensteerCliSchema, type CliCommandDefinition } from "../../packages/opensteer/src/cli/schema.js";
+import {
+  opensteerCliSchema,
+  type CliCommandDefinition,
+} from "../../packages/opensteer/src/cli/schema.js";
 
 describe("CLI schema contract", () => {
   test("declares only kebab-case long option names", () => {

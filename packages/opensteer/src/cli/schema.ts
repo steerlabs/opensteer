@@ -106,7 +106,12 @@ const NETWORK_TAG_OPTION: CliOptionDefinition = {
 };
 
 const SESSION_OPTIONS = [SESSION_NAME_OPTION, ROOT_DIR_OPTION] as const;
-const ACTION_TARGET_OPTIONS = [SESSION_NAME_OPTION, ROOT_DIR_OPTION, SELECTOR_OPTION, DESCRIPTION_OPTION] as const;
+const ACTION_TARGET_OPTIONS = [
+  SESSION_NAME_OPTION,
+  ROOT_DIR_OPTION,
+  SELECTOR_OPTION,
+  DESCRIPTION_OPTION,
+] as const;
 
 const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
   {
@@ -1155,7 +1160,10 @@ export function parseCliArguments(input: {
   }
 
   const resolved = resolveCommand(schema, argv);
-  if (resolved.command.subcommands !== undefined && resolved.command.defaultSubcommand === undefined) {
+  if (
+    resolved.command.subcommands !== undefined &&
+    resolved.command.defaultSubcommand === undefined
+  ) {
     if (resolved.remaining.length === 1 && isHelpToken(resolved.remaining[0]!)) {
       return createHelpResult(resolved.command, resolved.commandPath, programName);
     }
@@ -1341,7 +1349,8 @@ function parseLeafArguments(
 
     if (definition.multiple) {
       const existing = parsed[internalName];
-      const nextValues = existing === undefined ? [] : Array.isArray(existing) ? existing : [existing];
+      const nextValues =
+        existing === undefined ? [] : Array.isArray(existing) ? existing : [existing];
       parsed[internalName] = [...nextValues, consumed.value];
     } else {
       parsed[internalName] = consumed.value;
@@ -1473,7 +1482,9 @@ function buildUnknownOptionMessage(
 
 function suggestOption(name: string, candidates: readonly string[]): string | undefined {
   const normalized = normalizeOptionName(name);
-  const normalizedMatches = candidates.filter((candidate) => normalizeOptionName(candidate) === normalized);
+  const normalizedMatches = candidates.filter(
+    (candidate) => normalizeOptionName(candidate) === normalized,
+  );
   if (normalizedMatches.length === 1) {
     return normalizedMatches[0];
   }
@@ -1495,7 +1506,9 @@ function normalizeOptionName(value: string): string {
 }
 
 function levenshteinDistance(left: string, right: string): number {
-  const matrix = Array.from({ length: left.length + 1 }, () => new Array<number>(right.length + 1).fill(0));
+  const matrix = Array.from({ length: left.length + 1 }, () =>
+    new Array<number>(right.length + 1).fill(0),
+  );
   for (let row = 0; row <= left.length; row += 1) {
     matrix[row]![0] = row;
   }
@@ -1531,7 +1544,9 @@ function validatePositionalCount(
     return;
   }
 
-  const max = definitions.some((definition) => definition.variadic) ? Number.POSITIVE_INFINITY : definitions.length;
+  const max = definitions.some((definition) => definition.variadic)
+    ? Number.POSITIVE_INFINITY
+    : definitions.length;
   if (positionals.length > max) {
     throw new Error(
       `${formatCommandPath(programName, commandPath)} accepts at most ${String(max)} positional argument${max === 1 ? "" : "s"}.`,
@@ -1565,7 +1580,9 @@ function renderCommandHelp(
     lines.push("");
     lines.push("Commands:");
     for (const subcommand of command.subcommands) {
-      lines.push(`  ${padRight(subcommand.name, longestCommandName(command.subcommands))}  ${subcommand.summary}`);
+      lines.push(
+        `  ${padRight(subcommand.name, longestCommandName(command.subcommands))}  ${subcommand.summary}`,
+      );
     }
   }
 
@@ -1573,7 +1590,9 @@ function renderCommandHelp(
     lines.push("");
     lines.push("Positionals:");
     for (const positional of command.positionals) {
-      lines.push(`  ${padRight(renderPositional(positional), longestPositionalName(command.positionals))}  ${positional.description}`);
+      lines.push(
+        `  ${padRight(renderPositional(positional), longestPositionalName(command.positionals))}  ${positional.description}`,
+      );
     }
   }
 
@@ -1582,7 +1601,8 @@ function renderCommandHelp(
     lines.push("");
     lines.push("Options:");
     for (const option of options) {
-      const label = option.name === "help" ? "-h, --help" : `--${option.name}${renderValueLabel(option)}`;
+      const label =
+        option.name === "help" ? "-h, --help" : `--${option.name}${renderValueLabel(option)}`;
       lines.push(`  ${padRight(label, longestOptionLabel(options))}  ${option.description}`);
     }
   }
@@ -1597,7 +1617,8 @@ function renderCommandHelp(
 
   if (command.subcommands?.length) {
     lines.push("");
-    const helpTarget = commandPath.length === 0 ? "<command>" : `${commandPath.join(" ")} <command>`;
+    const helpTarget =
+      commandPath.length === 0 ? "<command>" : `${commandPath.join(" ")} <command>`;
     lines.push(`Use "${programName} help ${helpTarget}" for more information.`);
   }
 
@@ -1645,8 +1666,10 @@ function longestCommandName(commands: readonly CliCommandDefinition[]): number {
 
 function longestOptionLabel(options: readonly CliOptionDefinition[]): number {
   return Math.max(
-    ...options.map((option) =>
-      (option.name === "help" ? "-h, --help" : `--${option.name}${renderValueLabel(option)}`).length,
+    ...options.map(
+      (option) =>
+        (option.name === "help" ? "-h, --help" : `--${option.name}${renderValueLabel(option)}`)
+          .length,
     ),
   );
 }
@@ -1667,7 +1690,9 @@ function validateCliSchema(schema: CliCommandDefinition): void {
         throw new Error(`CLI option "${option.name}" must be kebab-case.`);
       }
       if (optionNames.has(option.name)) {
-        throw new Error(`CLI option "${option.name}" is duplicated on ${[...ancestors, command.name].join(" ")}.`);
+        throw new Error(
+          `CLI option "${option.name}" is duplicated on ${[...ancestors, command.name].join(" ")}.`,
+        );
       }
       optionNames.add(option.name);
     }
