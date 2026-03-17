@@ -1,6 +1,14 @@
 import { listLocalChromeProfiles } from "../local-browser/chrome-discovery.js";
+import {
+  inspectLocalBrowserProfile,
+  OpensteerLocalProfileUnavailableError,
+  unlockLocalBrowserProfile,
+} from "../local-browser/profile-inspection.js";
 
 export interface LocalProfileCliDeps {
+  readonly inspectProfile: typeof inspectLocalBrowserProfile;
+  readonly listProfiles: typeof listLocalChromeProfiles;
+  readonly unlockProfile: typeof unlockLocalBrowserProfile;
   readonly writeStdout: (message: string) => void;
   readonly writeStderr: (message: string) => void;
 }
@@ -12,6 +20,14 @@ export type ParsedLocalProfileArgs =
       readonly mode: "list";
       readonly json: boolean;
       readonly userDataDir?: string;
+    }
+  | {
+      readonly mode: "inspect";
+      readonly userDataDir?: string;
+    }
+  | {
+      readonly mode: "unlock";
+      readonly userDataDir: string;
     };
 
 const HELP_TEXT = `Usage: opensteer local-profile <command> [options]
@@ -20,6 +36,8 @@ Inspect local Chrome profiles for real-browser mode.
 
 Commands:
   list                      List available local Chrome profiles
+  inspect                   Inspect a local Chrome user-data-dir for launch ownership state
+  unlock                    Remove stale Chrome singleton artifacts from a user-data-dir
 
 Options:
   --json                    JSON output
@@ -31,13 +49,6 @@ export function parseOpensteerLocalProfileArgs(argv: readonly string[]): ParsedL
   const [command, ...rest] = argv;
   if (!command || command === "help" || command === "--help" || command === "-h") {
     return { mode: "help" };
-  }
-
-  if (command !== "list") {
-    return {
-      mode: "error",
-      error: `Unsupported local-profile command "${command}".`,
-    };
   }
 
   let json = false;
@@ -67,14 +78,41 @@ export function parseOpensteerLocalProfileArgs(argv: readonly string[]): ParsedL
 
     return {
       mode: "error",
-      error: `Unsupported option "${argument}" for "opensteer local-profile list".`,
+      error: `Unsupported option "${argument}" for "opensteer local-profile ${command}".`,
+    };
+  }
+
+  if (command === "list") {
+    return {
+      mode: "list",
+      json,
+      ...(userDataDir === undefined ? {} : { userDataDir }),
+    };
+  }
+
+  if (command === "inspect") {
+    return {
+      mode: "inspect",
+      ...(userDataDir === undefined ? {} : { userDataDir }),
+    };
+  }
+
+  if (command === "unlock") {
+    if (userDataDir === undefined) {
+      return {
+        mode: "error",
+        error: "--user-data-dir is required for unlock.",
+      };
+    }
+    return {
+      mode: "unlock",
+      userDataDir,
     };
   }
 
   return {
-    mode: "list",
-    json,
-    ...(userDataDir === undefined ? {} : { userDataDir }),
+    mode: "error",
+    error: `Unsupported local-profile command "${command}".`,
   };
 }
 
@@ -83,6 +121,9 @@ export async function runOpensteerLocalProfileCli(
   overrides: Partial<LocalProfileCliDeps> = {},
 ): Promise<number> {
   const deps: LocalProfileCliDeps = {
+    inspectProfile: inspectLocalBrowserProfile,
+    listProfiles: listLocalChromeProfiles,
+    unlockProfile: unlockLocalBrowserProfile,
     writeStdout: (message) => process.stdout.write(message),
     writeStderr: (message) => process.stderr.write(message),
     ...overrides,
@@ -98,7 +139,42 @@ export async function runOpensteerLocalProfileCli(
     return 1;
   }
 
-  const profiles = listLocalChromeProfiles(parsed.userDataDir);
+  if (parsed.mode === "inspect") {
+    const inspection = await deps.inspectProfile({
+      ...(parsed.userDataDir === undefined ? {} : { userDataDir: parsed.userDataDir }),
+    });
+    deps.writeStdout(JSON.stringify(inspection));
+    return 0;
+  }
+
+  if (parsed.mode === "unlock") {
+    try {
+      const result = await deps.unlockProfile({
+        userDataDir: parsed.userDataDir,
+      });
+      deps.writeStdout(JSON.stringify(result));
+      return 0;
+    } catch (error) {
+      if (error instanceof OpensteerLocalProfileUnavailableError) {
+        deps.writeStderr(
+          `${JSON.stringify({
+            error: {
+              code: error.code,
+              message: error.message,
+              name: error.name,
+              details: {
+                inspection: error.inspection,
+              },
+            },
+          })}\n`,
+        );
+        return 1;
+      }
+      throw error;
+    }
+  }
+
+  const profiles = deps.listProfiles(parsed.userDataDir);
   if (parsed.json) {
     deps.writeStdout(JSON.stringify({ profiles }, null, 2));
     return 0;

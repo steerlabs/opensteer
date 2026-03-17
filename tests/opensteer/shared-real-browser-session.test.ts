@@ -151,7 +151,7 @@ describe("local browser sessions", () => {
           connectBrowser: vi.fn(),
         }),
       ).rejects.toThrow(
-        "The selected Chrome user-data-dir appears to be in use. Attach with --auto-connect or --cdp instead of launching it again.",
+        "This profile is already owned by Opensteer. Reuse the existing session with Opensteer.attach(...) or the named CLI session.",
       );
     } finally {
       await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);

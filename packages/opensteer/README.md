@@ -120,6 +120,8 @@ opensteer open https://example.com --name docs-example --browser profile \
   --user-data-dir "~/Library/Application Support/Google/Chrome" \
   --profile-directory Default
 opensteer local-profile list
+opensteer local-profile inspect --user-data-dir "~/Library/Application Support/Opensteer Chrome"
+opensteer local-profile unlock --user-data-dir "~/Library/Application Support/Opensteer Chrome"
 opensteer profile upload --profile-id bp_123 --from-user-data-dir "~/Library/Application Support/Google/Chrome"
 opensteer open https://example.com --name docs-example --engine abp
 opensteer snapshot action --name docs-example
@@ -145,6 +147,13 @@ When using `--engine abp`, Opensteer accepts the ABP launch options it can actua
 and `executablePath`. Unsupported shared browser/context options fail fast instead of being
 ignored.
 
+`browser.kind="profile"` is an exclusive owned-launch mode. Opensteer will not launch against a
+known default Chrome/Chromium user-data-dir and will not implicitly fall back to CDP attachment or
+delete lock files during launch. Use `opensteer local-profile inspect` to diagnose profile
+ownership, `opensteer local-profile unlock` only when Opensteer proves the profile is in a
+`stale_lock` state, and `--browser cdp` or `--browser auto-connect` when an existing browser
+already owns the profile.
+
 ## Session Root
 
 By default, Opensteer writes into:
@@ -167,6 +176,8 @@ Important subtrees:
 ## Public Methods
 
 - `Opensteer.attach({ name?, rootDir? })`
+- `inspectLocalBrowserProfile({ userDataDir? })`
+- `unlockLocalBrowserProfile({ userDataDir })`
 - `open(url | { url?, name?, browser?, context? })`
 - `goto(url | { url, networkTag? })`
 - `snapshot("action" | "extraction")`
@@ -194,6 +205,11 @@ page before falling back to child frames.
 
 Use `disconnect()` for attached sessions when you want to release the SDK handle but keep the
 underlying session alive. Use `close()` when you want to destructively end the session.
+
+Profile inspection is independent from session ownership. `inspectLocalBrowserProfile()` returns a
+structured status union (`available`, `unsupported_default_user_data_dir`, `opensteer_owned`,
+`browser_owned`, `stale_lock`) that launch, CLI, and SDK all consume. Failed owned launches throw
+`OpensteerLocalProfileUnavailableError` with the inspection attached for programmatic handling.
 
 The reverse-engineering workflow is: perform a browser action, inspect traffic with
 `queryNetwork()`, experiment with `rawRequest()`, promote a record with `inferRequestPlan()`,

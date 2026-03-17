@@ -1,16 +1,14 @@
-import { copyFile, cp, mkdir, readdir, rm, stat } from "node:fs/promises";
+import { copyFile, cp, mkdir, readdir, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { expandHome } from "./chrome-discovery.js";
+import {
+  CHROME_SINGLETON_ARTIFACTS,
+  clearChromeSingletonEntries,
+} from "./chrome-singletons.js";
 
-const CHROME_SINGLETON_ENTRIES = new Set([
-  "SingletonCookie",
-  "SingletonLock",
-  "SingletonSocket",
-  "DevToolsActivePort",
-  "lockfile",
-]);
+const CHROME_SINGLETON_ENTRIES = new Set(CHROME_SINGLETON_ARTIFACTS);
 
 const SKIPPED_ROOT_DIRECTORIES = new Set([
   "Crash Reports",
@@ -29,17 +27,6 @@ const SKIPPED_ROOT_DIRECTORIES = new Set([
   "WidevineCdm",
   "pnacl",
 ]);
-
-export async function clearChromeSingletonEntries(userDataDir: string): Promise<void> {
-  await Promise.all(
-    [...CHROME_SINGLETON_ENTRIES].map((entry) =>
-      rm(join(userDataDir, entry), {
-        recursive: true,
-        force: true,
-      }).catch(() => undefined),
-    ),
-  );
-}
 
 export async function createBrowserProfileSnapshot(input: {
   readonly sourceUserDataDir: string;

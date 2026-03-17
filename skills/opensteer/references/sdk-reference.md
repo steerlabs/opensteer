@@ -59,6 +59,10 @@ interface OpensteerOptions {
 }
 ```
 
+`browser.kind="profile"` is an exclusive owned-launch mode. Opensteer will reject known default
+Chrome/Chromium user-data-dirs, will not auto-fallback to CDP attachment, and will not delete lock
+files during launch.
+
 ### OpensteerBrowserLaunchOptions
 
 ```typescript
@@ -130,6 +134,40 @@ Releases the SDK handle without destroying the session when the client was creat
 ```typescript
 await opensteer.disconnect();
 ```
+
+### Local Profile Inspection
+
+#### `inspectLocalBrowserProfile(input?: { userDataDir?: string }): Promise<OpensteerLocalProfileInspection>`
+
+Inspects a local Chrome/Chromium profile directory without creating a session.
+
+```typescript
+import { inspectLocalBrowserProfile } from "opensteer";
+
+const inspection = await inspectLocalBrowserProfile({
+  userDataDir: "~/Library/Application Support/Opensteer Chrome",
+});
+
+if (inspection.status === "stale_lock") {
+  console.log(inspection.artifacts);
+}
+```
+
+#### `unlockLocalBrowserProfile(input: { userDataDir: string }): Promise<OpensteerLocalProfileUnlockResult>`
+
+Removes stale singleton artifacts only when inspection proves the profile is stale.
+
+```typescript
+import { unlockLocalBrowserProfile } from "opensteer";
+
+await unlockLocalBrowserProfile({
+  userDataDir: "~/Library/Application Support/Opensteer Chrome",
+});
+```
+
+Failed owned launches and invalid unlock attempts throw
+`OpensteerLocalProfileUnavailableError`, which includes the structured `inspection` result for
+programmatic handling.
 
 ---
 

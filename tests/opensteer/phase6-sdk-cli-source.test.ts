@@ -1,7 +1,8 @@
 import { promisify } from "node:util";
 import { execFile as execFileCallback } from "node:child_process";
-import { access } from "node:fs/promises";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
@@ -83,6 +84,33 @@ describe("Phase 6 source-mode CLI", () => {
     );
     await expect(access(metadataPath)).rejects.toThrow();
   }, 60_000);
+
+  test("source CLI open surfaces structured profile inspection errors", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const userDataDir = await mkdtemp(path.join(tmpdir(), "opensteer-cli-profile-blocked-"));
+
+    try {
+      await writeFile(path.join(userDataDir, "lockfile"), "");
+
+      const { stdout, stderr } = await runFailingSourceCliCommand(rootDir, [
+        "open",
+        "https://example.com",
+        "--browser",
+        "profile",
+        "--user-data-dir",
+        userDataDir,
+        "--headless",
+        "true",
+      ]);
+
+      expect(stdout.trim()).toBe("");
+      expect(stderr).toContain('"code":"profile-unavailable"');
+      expect(stderr).toContain('"status":"browser_owned"');
+      expect(stderr).toContain('"evidence":"singleton_artifacts"');
+    } finally {
+      await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }, 60_000);
 });
 
 function requireFixtureServer(): Phase6FixtureServer {
@@ -104,7 +132,30 @@ function requireCounter(
 }
 
 async function runSourceCliCommand<T>(rootDir: string, args: readonly string[]): Promise<T> {
-  const { stdout, stderr } = await execFile(
+  const { stdout, stderr } = await runSourceCli(rootDir, args);
+  expect(stderr.trim()).toBe("");
+  return JSON.parse(stdout.trim()) as T;
+}
+
+async function runFailingSourceCliCommand(
+  rootDir: string,
+  args: readonly string[],
+): Promise<{ readonly stdout: string; readonly stderr: string }> {
+  try {
+    return await runSourceCli(rootDir, args);
+  } catch (error) {
+    return {
+      stdout: error instanceof Error && "stdout" in error && typeof error.stdout === "string" ? error.stdout : "",
+      stderr: error instanceof Error && "stderr" in error && typeof error.stderr === "string" ? error.stderr : "",
+    };
+  }
+}
+
+async function runSourceCli(
+  rootDir: string,
+  args: readonly string[],
+): Promise<{ readonly stdout: string; readonly stderr: string }> {
+  return execFile(
     process.execPath,
     ["--import", tsxLoaderPath, sourceCliScript, ...args],
     {
@@ -116,7 +167,4 @@ async function runSourceCliCommand<T>(rootDir: string, args: readonly string[]):
       maxBuffer: 1024 * 1024,
     },
   );
-
-  expect(stderr.trim()).toBe("");
-  return JSON.parse(stdout.trim()) as T;
 }

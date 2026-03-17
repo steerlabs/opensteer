@@ -83,6 +83,35 @@ opensteer local-profile list
 opensteer local-profile list --user-data-dir "~/Library/Application Support/Google/Chrome"
 ```
 
+### `opensteer local-profile inspect [--user-data-dir <path>]`
+
+Inspects a Chrome/Chromium user-data-dir and returns its ownership state as JSON.
+
+```bash
+opensteer local-profile inspect
+opensteer local-profile inspect --user-data-dir "~/Library/Application Support/Opensteer Chrome"
+```
+
+Returned `status` values:
+
+- `available`
+- `unsupported_default_user_data_dir`
+- `opensteer_owned`
+- `browser_owned`
+- `stale_lock`
+
+### `opensteer local-profile unlock --user-data-dir <path>`
+
+Removes stale Chrome singleton artifacts only when inspection proves the profile is in a
+`stale_lock` state.
+
+```bash
+opensteer local-profile unlock --user-data-dir "~/Library/Application Support/Opensteer Chrome"
+```
+
+`unlock` never runs implicitly during `open`. If the profile is live or ambiguous, the command
+fails with a structured JSON error on stderr.
+
 ### `opensteer profile upload --profile-id <id> --from-user-data-dir <path> [--profile-directory <name>]`
 
 Snapshots a local Chrome profile and uploads it into an existing cloud browser profile.
