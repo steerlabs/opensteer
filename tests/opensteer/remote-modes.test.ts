@@ -90,7 +90,7 @@ describe("Opensteer runtime modes", () => {
     expect(metadata).not.toHaveProperty("apiKey");
   });
 
-  test("CLI rejects removed --connect option", async () => {
+  test("CLI rejects unknown legacy --connect option", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "opensteer-cli-connect-"));
 
     await expect(runCliExpectFailure(rootDir, [
@@ -100,7 +100,7 @@ describe("Opensteer runtime modes", () => {
       "ws://127.0.0.1:9222/devtools/browser/test",
     ])).resolves.toMatchObject({
       error: {
-        message: expect.stringContaining("--connect has been removed"),
+        message: expect.stringContaining('unknown option "--connect"'),
       },
     });
   });
