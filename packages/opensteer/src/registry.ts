@@ -2,6 +2,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import {
+  type OpensteerAuthRecipePayload,
   type OpensteerRequestPlanFreshness,
   type OpensteerRequestPlanLifecycle,
   type OpensteerRequestPlanPayload,
@@ -44,6 +45,8 @@ export interface RegistryRecord<TPayload = JsonValue> {
 
 export type DescriptorRecord = RegistryRecord;
 
+export type AuthRecipeRecord = RegistryRecord<OpensteerAuthRecipePayload>;
+
 export type RequestPlanLifecycle = OpensteerRequestPlanLifecycle;
 
 export type RequestPlanFreshness = OpensteerRequestPlanFreshness;
@@ -74,6 +77,8 @@ export interface WriteRequestPlanInput extends WriteDescriptorInput<OpensteerReq
   readonly freshness?: RequestPlanFreshness;
 }
 
+export interface WriteAuthRecipeInput extends WriteDescriptorInput<OpensteerAuthRecipePayload> {}
+
 export interface ListRegistryRecordsInput {
   readonly key?: string;
 }
@@ -103,6 +108,16 @@ export interface RequestPlanRegistryStore {
   list(input?: ListRegistryRecordsInput): Promise<readonly RequestPlanRecord[]>;
   resolve(input: ResolveRegistryRecordInput): Promise<RequestPlanRecord | undefined>;
   updateMetadata(input: UpdateRequestPlanMetadataInput): Promise<RequestPlanRecord>;
+}
+
+export interface AuthRecipeRegistryStore {
+  readonly recordsDirectory: string;
+  readonly indexesDirectory: string;
+
+  write(input: WriteAuthRecipeInput): Promise<AuthRecipeRecord>;
+  getById(id: string): Promise<AuthRecipeRecord | undefined>;
+  list(input?: ListRegistryRecordsInput): Promise<readonly AuthRecipeRecord[]>;
+  resolve(input: ResolveRegistryRecordInput): Promise<AuthRecipeRecord | undefined>;
 }
 
 function normalizeTags(tags: readonly string[] | undefined): readonly string[] {
@@ -445,10 +460,62 @@ export class FilesystemRequestPlanRegistry
   }
 }
 
+export class FilesystemAuthRecipeRegistry
+  extends FilesystemRegistryStore<AuthRecipeRecord>
+  implements AuthRecipeRegistryStore
+{
+  constructor(rootPath: string) {
+    super(rootPath, ["registry", "auth-recipes"]);
+  }
+
+  async write(input: WriteAuthRecipeInput): Promise<AuthRecipeRecord> {
+    const id = normalizeNonEmptyString("id", input.id ?? `auth-recipe:${randomUUID()}`);
+    const key = normalizeNonEmptyString("key", input.key);
+    const version = normalizeNonEmptyString("version", input.version);
+    const createdAt = normalizeTimestamp("createdAt", input.createdAt ?? Date.now());
+    const updatedAt = normalizeTimestamp("updatedAt", input.updatedAt ?? createdAt);
+
+    if (updatedAt < createdAt) {
+      throw new RangeError("updatedAt must be greater than or equal to createdAt");
+    }
+
+    const payload = input.payload;
+    const contentHash = sha256Hex(Buffer.from(canonicalJsonString(payload), "utf8"));
+    const provenance = normalizeProvenance(input.provenance);
+    const record: AuthRecipeRecord = {
+      id,
+      key,
+      version,
+      createdAt,
+      updatedAt,
+      contentHash,
+      tags: normalizeTags(input.tags),
+      ...(provenance === undefined ? {} : { provenance }),
+      payload,
+    };
+
+    return this.writeRecord(record);
+  }
+
+  async list(input: ListRegistryRecordsInput = {}): Promise<readonly AuthRecipeRecord[]> {
+    const key = input.key === undefined ? undefined : normalizeNonEmptyString("key", input.key);
+    const records = await this.readAllRecords();
+    return key === undefined ? records : records.filter((record) => record.key === key);
+  }
+
+  protected isActive(_record: AuthRecipeRecord): boolean {
+    return true;
+  }
+}
+
 export function createDescriptorRegistry(rootPath: string): FilesystemDescriptorRegistry {
   return new FilesystemDescriptorRegistry(rootPath);
 }
 
 export function createRequestPlanRegistry(rootPath: string): FilesystemRequestPlanRegistry {
   return new FilesystemRequestPlanRegistry(rootPath);
+}
+
+export function createAuthRecipeRegistry(rootPath: string): FilesystemAuthRecipeRegistry {
+  return new FilesystemAuthRecipeRegistry(rootPath);
 }

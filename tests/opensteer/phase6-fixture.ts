@@ -146,6 +146,69 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
+  if (url.pathname === "/phase10/api/recovery-session") {
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    if (!(request.headers.cookie ?? "").includes("phase10-token=fresh")) {
+      response.statusCode = 401;
+      response.end(
+        JSON.stringify({
+          ok: false,
+          code: "auth-expired",
+        }),
+      );
+      return;
+    }
+    response.end(
+      JSON.stringify({
+        ok: true,
+        mode: "session-http",
+      }),
+    );
+    return;
+  }
+
+  if (url.pathname === "/phase10/api/refresh-cookie") {
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    response.setHeader("set-cookie", "phase10-token=fresh; Path=/; SameSite=Lax");
+    response.end(
+      JSON.stringify({
+        refreshed: true,
+      }),
+    );
+    return;
+  }
+
+  if (url.pathname === "/phase10/api/direct-protected") {
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    if (request.headers.authorization !== "Bearer phase10-refreshed") {
+      response.statusCode = 401;
+      response.end(
+        JSON.stringify({
+          ok: false,
+          code: "token-expired",
+        }),
+      );
+      return;
+    }
+    response.end(
+      JSON.stringify({
+        ok: true,
+        mode: "direct-http",
+      }),
+    );
+    return;
+  }
+
+  if (url.pathname === "/phase10/api/direct-refresh") {
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    response.end(
+      JSON.stringify({
+        token: "phase10-refreshed",
+      }),
+    );
+    return;
+  }
+
   const userOrderMatch = url.pathname.match(/^\/phase10\/api\/users\/([^/]+)\/orders$/);
   if (userOrderMatch) {
     const body = await readRequestBody(request);

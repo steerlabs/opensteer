@@ -9,8 +9,10 @@ import {
   writeJsonFileAtomic,
 } from "./internal/filesystem.js";
 import {
+  createAuthRecipeRegistry,
   createDescriptorRegistry,
   createRequestPlanRegistry,
+  type AuthRecipeRegistryStore,
   type DescriptorRegistryStore,
   type RequestPlanRegistryStore,
 } from "./registry.js";
@@ -45,6 +47,7 @@ export interface FilesystemOpensteerRoot {
   readonly registry: {
     readonly descriptors: DescriptorRegistryStore;
     readonly requestPlans: RequestPlanRegistryStore;
+    readonly authRecipes: AuthRecipeRegistryStore;
     readonly savedNetwork: SavedNetworkStore;
   };
 }
@@ -93,6 +96,9 @@ export async function createFilesystemOpensteerRoot(
   const requestPlans = createRequestPlanRegistry(options.rootPath);
   await requestPlans.initialize();
 
+  const authRecipes = createAuthRecipeRegistry(options.rootPath);
+  await authRecipes.initialize();
+
   const savedNetwork = createSavedNetworkStore(options.rootPath);
   await savedNetwork.initialize();
 
@@ -107,6 +113,7 @@ export async function createFilesystemOpensteerRoot(
     registry: {
       descriptors,
       requestPlans,
+      authRecipes,
       savedNetwork,
     },
   };

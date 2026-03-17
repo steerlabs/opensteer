@@ -32,7 +32,7 @@ void main().catch((error) => {
 ```
 
 **Rules:**
-- Always use `try/finally` with `close()` in finally.
+- Always use `try/finally` with `close()` in finally for owned sessions.
 - Set `headless: true` for production scrapers.
 - Give each scraper a unique `name` to isolate its session and storage.
 
@@ -69,7 +69,7 @@ if (submitBtn) {
 
 **When to use:** Initial exploration, unknown page structure, dynamic element discovery.
 
-**Limitation:** Counter numbers are ephemeral — they change after navigation or DOM mutations. Only use within the same snapshot's lifetime.
+**Limitation:** Counter numbers are ephemeral — they change after navigation or DOM mutations. This pattern is mainly useful for one-off exploration, not production scrapers. Prefer `selector` or `description` targeting for reusable scripts.
 
 ---
 
@@ -95,7 +95,7 @@ await opensteer.click({ selector: "button.search-submit" });
 
 ## Pattern 3: Description / Descriptor Replay
 
-Use for scripts that run repeatedly across sessions. Descriptors persist the element resolution path.
+Use for scripts that run repeatedly across sessions. Descriptors persist the element resolution path. Requires an API key.
 
 ### First run — teach the descriptor:
 
@@ -265,7 +265,7 @@ When pages need time to load after navigation or form submission:
 
 ```typescript
 // Option A: Navigate to the expected URL to ensure page load
-await opensteer.input({ description: "search box", text: "airpods", pressEnter: true });
+await opensteer.input({ selector: "input[name=q]", text: "airpods", pressEnter: true });
 await opensteer.goto("https://example.com/search?q=airpods");  // Forces navigation + wait
 
 // Option B: Use a simple delay (less reliable, use sparingly)
@@ -279,6 +279,110 @@ const data = await opensteer.extract({ description: "results" });
 ```
 
 **Prefer goto-based navigation** when the target URL is predictable. It ensures the page is fully loaded.
+
+---
+
+## Pattern 8: Real Chrome Profile
+
+Launch with a real Chrome user-data-dir to preserve cookies, extensions, and login state. Useful for sites that require authentication or have bot detection.
+
+```typescript
+const opensteer = new Opensteer({
+  name: "authenticated-scraper",
+  rootDir: process.cwd(),
+  browser: {
+    kind: "profile",
+    userDataDir: "/path/to/chrome-profile",
+  },
+});
+
+try {
+  // Opens Chrome with existing cookies/login state
+  await opensteer.open("https://authenticated-site.com/dashboard");
+
+  const data = await opensteer.extract({
+    description: "dashboard data",
+    schema: {
+      username: { selector: ".user-name" },
+      items: [{
+        name: { selector: ".item-name" },
+        value: { selector: ".item-value" },
+      }],
+    },
+  });
+
+  console.log(JSON.stringify(data, null, 2));
+} finally {
+  await opensteer.close();
+}
+```
+
+**Notes:**
+- Opensteer rejects default Chrome/Chromium user-data-dirs. Use a dedicated directory.
+- Use `profileDirectory` to select a specific Chrome profile within the user-data-dir (e.g., `"Default"`, `"Profile 1"`).
+- If the profile is locked by another Chrome instance, launch will fail with `OpensteerLocalProfileUnavailableError`. Use `inspectLocalBrowserProfile()` and `unlockLocalBrowserProfile()` to diagnose and resolve stale locks.
+
+---
+
+## Pattern 9: CDP Attachment
+
+Attach to an already-running Chrome instance via the DevTools Protocol. The SDK controls a tab but does not own the browser process.
+
+```typescript
+const opensteer = new Opensteer({
+  name: "cdp-session",
+  rootDir: process.cwd(),
+  browser: {
+    kind: "cdp",
+    endpoint: "ws://127.0.0.1:9222/devtools/browser/root",
+    freshTab: true,
+  },
+});
+
+try {
+  await opensteer.open("https://example.com");
+  // ... interactions ...
+} finally {
+  await opensteer.close();
+}
+```
+
+**Endpoint formats:** port number (`9222`), WebSocket URL (`ws://...`), or HTTP URL (`http://127.0.0.1:9222`).
+
+Use `freshTab: true` to open a new tab instead of reusing the active one.
+
+---
+
+## Pattern 10: Attach to an Existing Session
+
+Connect to a session started by the CLI or another process without owning the browser lifecycle.
+
+```typescript
+// Some other process already ran: opensteer open https://example.com
+const opensteer = Opensteer.attach({
+  name: "default",       // Match the CLI session name
+  rootDir: process.cwd(),
+});
+
+try {
+  // Use the existing session — browser is already open
+  await opensteer.open("https://example.com/page2");
+
+  const data = await opensteer.extract({
+    description: "page data",
+    schema: {
+      title: { selector: "h1" },
+    },
+  });
+
+  console.log(JSON.stringify(data, null, 2));
+} finally {
+  // disconnect() releases the handle WITHOUT closing the browser
+  await opensteer.disconnect();
+}
+```
+
+**Key difference:** `close()` destroys the browser. `disconnect()` just releases the SDK handle. Use `disconnect()` for attached sessions so other processes can continue using the browser.
 
 ---
 

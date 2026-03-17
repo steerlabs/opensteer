@@ -27,7 +27,7 @@ export interface SavedNetworkStore {
   readonly databasePath: string;
 
   initialize(): Promise<void>;
-  save(records: readonly NetworkQueryRecord[], tag: string): Promise<number>;
+  save(records: readonly NetworkQueryRecord[], tag?: string): Promise<number>;
   query(input?: SavedNetworkQueryInput): Promise<readonly NetworkQueryRecord[]>;
   getByRecordId(recordId: string, options?: { readonly includeBodies?: boolean }): Promise<
     NetworkQueryRecord | undefined
@@ -179,7 +179,7 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
     this.database = database;
   }
 
-  async save(records: readonly NetworkQueryRecord[], tag: string): Promise<number> {
+  async save(records: readonly NetworkQueryRecord[], tag?: string): Promise<number> {
     const database = this.requireDatabase();
     const readExisting = database.prepare(`
         SELECT record_id
@@ -312,12 +312,7 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
 
     return withSqliteTransaction(database, () => {
       let savedCount = 0;
-      const savedAt = Date.now();
       for (const entry of records) {
-        if (entry.source !== "live") {
-          throw new Error("saved network persistence accepts only live records");
-        }
-
         const url = new URL(entry.record.url);
         const pageRefKey = entry.record.pageRef ?? "";
         const existing =
@@ -368,14 +363,16 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
           response_body_error: entry.record.responseBodyError ?? null,
           redirect_from_request_id: entry.record.redirectFromRequestId ?? null,
           redirect_to_request_id: entry.record.redirectToRequestId ?? null,
-          saved_at: savedAt,
+          saved_at: entry.savedAt ?? Date.now(),
         });
 
-        const result = insertTag.run({
-          record_id: recordId,
-          tag,
-        }) as { readonly changes?: number };
-        savedCount += result.changes ?? 0;
+        if (tag !== undefined) {
+          const result = insertTag.run({
+            record_id: recordId,
+            tag,
+          }) as { readonly changes?: number };
+          savedCount += result.changes ?? 0;
+        }
       }
       return savedCount;
     });

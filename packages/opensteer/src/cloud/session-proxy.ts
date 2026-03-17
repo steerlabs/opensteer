@@ -1,4 +1,5 @@
 import type {
+  CookieRecord,
   OpensteerComputerExecuteInput,
   OpensteerComputerExecuteOutput,
   OpensteerDomClickInput,
@@ -7,8 +8,11 @@ import type {
   OpensteerDomHoverInput,
   OpensteerDomInputInput,
   OpensteerDomScrollInput,
+  OpensteerGetAuthRecipeInput,
   OpensteerGetRequestPlanInput,
   OpensteerInferRequestPlanInput,
+  OpensteerListAuthRecipesInput,
+  OpensteerListAuthRecipesOutput,
   OpensteerListRequestPlansInput,
   OpensteerListRequestPlansOutput,
   OpensteerNetworkClearInput,
@@ -25,14 +29,18 @@ import type {
   OpensteerRawRequestOutput,
   OpensteerRequestExecuteInput,
   OpensteerRequestExecuteOutput,
+  OpensteerRunAuthRecipeInput,
+  OpensteerRunAuthRecipeOutput,
   OpensteerSessionCloseOutput,
   OpensteerSessionOpenInput,
   OpensteerSessionOpenOutput,
+  OpensteerWriteAuthRecipeInput,
   OpensteerWriteRequestPlanInput,
   OpensteerActionResult,
+  StorageSnapshot,
 } from "@opensteer/protocol";
 
-import type { RequestPlanRecord } from "../registry.js";
+import type { AuthRecipeRecord, RequestPlanRecord } from "../registry.js";
 import {
   OpensteerCliServiceClient,
   type OpensteerServiceConnection,
@@ -110,6 +118,21 @@ export class CloudSessionProxy implements OpensteerSemanticRuntime {
     return this.requireClient().invoke("network.clear", input);
   }
 
+  async getCookies(input: { readonly urls?: readonly string[] } = {}): Promise<readonly CookieRecord[]> {
+    await this.ensureSession();
+    return this.requireClient().invoke("inspect.cookies", input);
+  }
+
+  async getStorageSnapshot(
+    input: {
+      readonly includeSessionStorage?: boolean;
+      readonly includeIndexedDb?: boolean;
+    } = {},
+  ): Promise<StorageSnapshot> {
+    await this.ensureSession();
+    return this.requireClient().invoke("inspect.storage", input);
+  }
+
   async rawRequest(input: OpensteerRawRequestInput): Promise<OpensteerRawRequestOutput> {
     await this.ensureSession();
     return this.requireClient().invoke("request.raw", input);
@@ -135,6 +158,28 @@ export class CloudSessionProxy implements OpensteerSemanticRuntime {
   ): Promise<OpensteerListRequestPlansOutput> {
     await this.ensureSession();
     return this.requireClient().invoke("request-plan.list", input);
+  }
+
+  async writeAuthRecipe(input: OpensteerWriteAuthRecipeInput): Promise<AuthRecipeRecord> {
+    await this.ensureSession();
+    return this.requireClient().invoke("auth-recipe.write", input);
+  }
+
+  async getAuthRecipe(input: OpensteerGetAuthRecipeInput): Promise<AuthRecipeRecord> {
+    await this.ensureSession();
+    return this.requireClient().invoke("auth-recipe.get", input);
+  }
+
+  async listAuthRecipes(
+    input: OpensteerListAuthRecipesInput = {},
+  ): Promise<OpensteerListAuthRecipesOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("auth-recipe.list", input);
+  }
+
+  async runAuthRecipe(input: OpensteerRunAuthRecipeInput): Promise<OpensteerRunAuthRecipeOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("auth-recipe.run", input);
   }
 
   async request(input: OpensteerRequestExecuteInput): Promise<OpensteerRequestExecuteOutput> {

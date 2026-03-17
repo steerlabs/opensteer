@@ -20,6 +20,8 @@ export {
   OPENSTEER_FILESYSTEM_ROOT_VERSION,
 } from "./root.js";
 export type {
+  AuthRecipeRecord,
+  AuthRecipeRegistryStore,
   DescriptorRecord,
   DescriptorRegistryStore,
   RegistryProvenance,
@@ -29,6 +31,7 @@ export type {
   RequestPlanRecord,
   RequestPlanRegistryStore,
   ResolveRegistryRecordInput,
+  WriteAuthRecipeInput,
   WriteDescriptorInput,
   WriteRequestPlanInput,
 } from "./registry.js";

@@ -3,9 +3,21 @@
 import path from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 
+import {
+  opensteerAuthRecipePayloadSchema,
+  opensteerRequestPlanPayloadSchema,
+  validateJsonSchema,
+} from "@opensteer/protocol";
+
 import type {
+  OpensteerAuthRecipePayload,
+  OpensteerComputerAction,
   OpensteerComputerExecuteInput,
   OpensteerComputerExecuteOutput,
+  OpensteerRequestBodyInput,
+  OpensteerRegistryProvenance,
+  OpensteerRequestPlanLifecycle,
+  OpensteerRequestPlanPayload,
 } from "@opensteer/protocol";
 
 import {
@@ -16,6 +28,7 @@ import {
 } from "./client.js";
 import { OpensteerCloudClient } from "../cloud/client.js";
 import { resolveCloudConfig } from "../cloud/config.js";
+import { toCanonicalJsonValue } from "../json.js";
 import {
   normalizeOpensteerEngineName,
   resolveOpensteerEngineName,
@@ -29,6 +42,8 @@ import {
   assertExecutionModeSupportsEngine,
   resolveOpensteerExecutionMode,
 } from "../mode/config.js";
+import { OpensteerSessionRuntime } from "../sdk/runtime.js";
+import { createOpensteerSemanticRuntime } from "../sdk/runtime-resolution.js";
 import {
   getOpensteerServiceMetadataPath,
   parseOpensteerServiceMetadata,
@@ -36,6 +51,7 @@ import {
   removeOpensteerServiceMetadata,
   writeOpensteerServiceMetadata,
 } from "./service-metadata.js";
+import { LocalOpensteerSessionProxy } from "../session-service/local-session-proxy.js";
 import { runOpensteerMcpServer } from "./mcp.js";
 import { runOpensteerServiceHost } from "./service-host.js";
 
@@ -342,7 +358,10 @@ async function main(argv: readonly string[]): Promise<void> {
     }
 
     case "plan.write": {
-      const client = await requireOpensteerService(sessionOptions);
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
       const key = readOptionalString(options.key);
       const version = readOptionalString(options.version);
       if (!key || !version) {
@@ -356,55 +375,74 @@ async function main(argv: readonly string[]): Promise<void> {
       if (payload === undefined) {
         throw new Error("plan write requires --payload or --payload-file");
       }
-      const result = await client.invoke("request-plan.write", {
-        ...(readOptionalString(options.id) === undefined
-          ? {}
-          : { id: readOptionalString(options.id) }),
+      const writePlanInput: {
+        id?: string;
+        key: string;
+        version: string;
+        lifecycle?: OpensteerRequestPlanLifecycle;
+        tags?: readonly string[];
+        provenance?: OpensteerRegistryProvenance;
+        payload: OpensteerRequestPlanPayload;
+      } = {
         key,
         version,
-        ...(readOptionalString(options.lifecycle) === undefined
-          ? {}
-          : { lifecycle: readOptionalString(options.lifecycle) }),
-        ...(parseCsvOption(readOptionalString(options.tags)) === undefined
-          ? {}
-          : { tags: parseCsvOption(readOptionalString(options.tags)) }),
-        payload,
-        ...(buildProvenanceInput(options) === undefined
-          ? {}
-          : { provenance: buildProvenanceInput(options) }),
-      });
+        payload: parseRequestPlanPayload(payload),
+      };
+      const id = readOptionalString(options.id);
+      if (id !== undefined) {
+        writePlanInput.id = id;
+      }
+      const lifecycle = readOptionalString(options.lifecycle);
+      if (lifecycle !== undefined) {
+        writePlanInput.lifecycle = parseRequestPlanLifecycle(lifecycle);
+      }
+      const tags = parseCsvOption(readOptionalString(options.tags));
+      if (tags !== undefined) {
+        writePlanInput.tags = tags;
+      }
+      const provenance = buildProvenanceInput(options);
+      if (provenance !== undefined) {
+        writePlanInput.provenance = provenance;
+      }
+      const result = await runtime.writeRequestPlan(writePlanInput);
       await writeJsonOutput(result, readOptionalString(options.output));
       return;
     }
 
     case "plan.infer": {
-      const client = await requireOpensteerService(sessionOptions);
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
       const recordId = readOptionalString(options.recordId);
       const key = readOptionalString(options.key);
       const version = readOptionalString(options.version);
       if (!recordId || !key || !version) {
         throw new Error("plan infer requires --record-id, --key, and --version");
       }
-      const result = await client.invoke("request-plan.infer", {
+      const result = await runtime.inferRequestPlan({
         recordId,
         key,
         version,
         ...(readOptionalString(options.lifecycle) === undefined
           ? {}
-          : { lifecycle: readOptionalString(options.lifecycle) }),
+          : { lifecycle: parseRequestPlanLifecycle(readOptionalString(options.lifecycle)!) }),
       });
       await writeJsonOutput(result, readOptionalString(options.output));
       return;
     }
 
     case "plan.get": {
-      const client = await requireOpensteerService(sessionOptions);
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
       const key = invocation.positionals[0] ?? readOptionalString(options.key);
       if (!key) {
         throw new Error("plan get requires a key");
       }
       const version = invocation.positionals[1] ?? readOptionalString(options.version);
-      const result = await client.invoke("request-plan.get", {
+      const result = await runtime.getRequestPlan({
         key,
         ...(version === undefined ? {} : { version }),
       });
@@ -413,38 +451,199 @@ async function main(argv: readonly string[]): Promise<void> {
     }
 
     case "plan.list": {
-      const client = await requireOpensteerService(sessionOptions);
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
       const key = invocation.positionals[0] ?? readOptionalString(options.key);
-      const result = await client.invoke("request-plan.list", {
+      const result = await runtime.listRequestPlans({
         ...(key === undefined ? {} : { key }),
       });
       await writeJsonOutput(result, readOptionalString(options.output));
       return;
     }
 
+    case "inspect.cookies": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const urls = readOptionalStrings(options.url);
+      const result = await runtime.getCookies(
+        urls.length === 0 ? {} : { urls },
+      );
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "inspect.storage": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const result = await runtime.getStorageSnapshot({
+        ...(readOptionalBoolean(options.includeSessionStorage) === true
+          ? { includeSessionStorage: true }
+          : {}),
+        ...(readOptionalBoolean(options.includeIndexedDb) === true
+          ? { includeIndexedDb: true }
+          : {}),
+      });
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "auth-recipe.write": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const key = readOptionalString(options.key);
+      const version = readOptionalString(options.version);
+      if (!key || !version) {
+        throw new Error("auth-recipe write requires --key and --version");
+      }
+      const payload = await readJsonObjectOption(options, {
+        inlineKey: "payload",
+        fileKey: "payloadFile",
+        label: "payload",
+      });
+      if (payload === undefined) {
+        throw new Error("auth-recipe write requires --payload or --payload-file");
+      }
+      const writeRecipeInput: {
+        id?: string;
+        key: string;
+        version: string;
+        tags?: readonly string[];
+        provenance?: OpensteerRegistryProvenance;
+        payload: OpensteerAuthRecipePayload;
+      } = {
+        key,
+        version,
+        payload: parseAuthRecipePayload(payload),
+      };
+      const recipeId = readOptionalString(options.id);
+      if (recipeId !== undefined) {
+        writeRecipeInput.id = recipeId;
+      }
+      const recipeTags = parseCsvOption(readOptionalString(options.tags));
+      if (recipeTags !== undefined) {
+        writeRecipeInput.tags = recipeTags;
+      }
+      const recipeProvenance = buildProvenanceInput(options);
+      if (recipeProvenance !== undefined) {
+        writeRecipeInput.provenance = recipeProvenance;
+      }
+      const result = await runtime.writeAuthRecipe(writeRecipeInput);
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "auth-recipe.get": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const key = invocation.positionals[0] ?? readOptionalString(options.key);
+      if (!key) {
+        throw new Error("auth-recipe get requires a key");
+      }
+      const version = invocation.positionals[1] ?? readOptionalString(options.version);
+      const result = await runtime.getAuthRecipe({
+        key,
+        ...(version === undefined ? {} : { version }),
+      });
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "auth-recipe.list": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const key = invocation.positionals[0] ?? readOptionalString(options.key);
+      const result = await runtime.listAuthRecipes({
+        ...(key === undefined ? {} : { key }),
+      });
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "auth-recipe.run": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const key = invocation.positionals[0] ?? readOptionalString(options.key);
+      if (!key) {
+        throw new Error("auth-recipe run requires a key");
+      }
+      const runRecipeInput: {
+        key: string;
+        version?: string;
+        variables?: Record<string, string>;
+      } = { key };
+      const recipeVersion = readOptionalString(options.version);
+      if (recipeVersion !== undefined) {
+        runRecipeInput.version = recipeVersion;
+      }
+      const initialVariables = readOptionalJsonObject(options.variablesJson);
+      if (initialVariables !== undefined) {
+        runRecipeInput.variables = parseStringRecord(initialVariables, "--variables");
+      }
+      const result = await runtime.runAuthRecipe(runRecipeInput);
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
     case "request.raw": {
-      const client = await requireOpensteerService(sessionOptions);
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
       const url = invocation.positionals[0] ?? readOptionalString(options.url);
       if (!url) {
         throw new Error("request raw requires a URL");
       }
       const body = await parseRequestBodyInput(options);
       const headers = parseHeaderEntries(readOptionalStrings(options.header));
-      const result = await client.invoke("request.raw", {
-        url,
-        ...(readOptionalString(options.method) === undefined
-          ? {}
-          : { method: readOptionalString(options.method) }),
-        ...(body === undefined ? {} : { body }),
-        ...(readOptionalBoolean(options.noFollowRedirects) ? { followRedirects: false } : {}),
-        ...(headers.length === 0 ? {} : { headers }),
-      });
+      const rawRequestInput: {
+        url: string;
+        transport?: "session-http" | "direct-http";
+        method?: string;
+        body?: OpensteerRequestBodyInput;
+        followRedirects?: boolean;
+        headers?: readonly { readonly name: string; readonly value: string }[];
+      } = { url };
+      const transport = readOptionalString(options.transport);
+      if (transport !== undefined) {
+        rawRequestInput.transport = parseRequestTransport(transport);
+      }
+      const method = readOptionalString(options.method);
+      if (method !== undefined) {
+        rawRequestInput.method = method;
+      }
+      if (body !== undefined) {
+        rawRequestInput.body = body;
+      }
+      if (readOptionalBoolean(options.noFollowRedirects)) {
+        rawRequestInput.followRedirects = false;
+      }
+      if (headers.length > 0) {
+        rawRequestInput.headers = headers;
+      }
+      const result = await runtime.rawRequest(rawRequestInput);
       await writeJsonOutput(result, readOptionalString(options.output));
       return;
     }
 
     case "request.execute": {
-      const client = await requireOpensteerService(sessionOptions);
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
       const key = invocation.positionals[0] ?? readOptionalString(options.key);
       if (!key) {
         throw new Error("request execute requires a plan key");
@@ -453,17 +652,35 @@ async function main(argv: readonly string[]): Promise<void> {
       const params = parseKeyValueOptions(readOptionalStrings(options.param));
       const query = parseKeyValueOptions(readOptionalStrings(options.query));
       const headers = parseKeyValueOptions(readOptionalStrings(options.header));
-      const result = await client.invoke("request.execute", {
-        key,
-        ...(readOptionalString(options.version) === undefined
-          ? {}
-          : { version: readOptionalString(options.version) }),
-        ...(params.size === 0 ? {} : { params: Object.fromEntries(params) }),
-        ...(query.size === 0 ? {} : { query: Object.fromEntries(query) }),
-        ...(headers.size === 0 ? {} : { headers: Object.fromEntries(headers) }),
-        ...(body === undefined ? {} : { body }),
-        ...(readOptionalBoolean(options.noValidate) === true ? { validateResponse: false } : {}),
-      });
+      const requestInput: {
+        key: string;
+        version?: string;
+        params?: Record<string, string>;
+        query?: Record<string, string>;
+        headers?: Record<string, string>;
+        body?: OpensteerRequestBodyInput;
+        validateResponse?: boolean;
+      } = { key };
+      const requestVersion = readOptionalString(options.version);
+      if (requestVersion !== undefined) {
+        requestInput.version = requestVersion;
+      }
+      if (params.size > 0) {
+        requestInput.params = Object.fromEntries(params);
+      }
+      if (query.size > 0) {
+        requestInput.query = Object.fromEntries(query);
+      }
+      if (headers.size > 0) {
+        requestInput.headers = Object.fromEntries(headers);
+      }
+      if (body !== undefined) {
+        requestInput.body = body;
+      }
+      if (readOptionalBoolean(options.noValidate) === true) {
+        requestInput.validateResponse = false;
+      }
+      const result = await runtime.request(requestInput);
       await writeJsonOutput(result, readOptionalString(options.output));
       return;
     }
@@ -481,7 +698,7 @@ async function main(argv: readonly string[]): Promise<void> {
         OpensteerComputerExecuteInput,
         OpensteerComputerExecuteOutput
       >("computer.execute", {
-        action: action as unknown as OpensteerComputerExecuteInput["action"],
+        action: parseComputerAction(action),
         ...(screenshot === undefined ? {} : { screenshot }),
         ...buildNetworkTagInput(options),
       });
@@ -532,6 +749,34 @@ function resolveCliExecutionMode(options: ParsedCliOptions): "local" | "cloud" {
     ...(process.env.OPENSTEER_MODE === undefined
       ? {}
       : { environment: process.env.OPENSTEER_MODE }),
+  });
+}
+
+async function resolveCliSemanticRuntime(
+  sessionOptions: {
+    readonly name?: string;
+    readonly rootDir?: string;
+  },
+  mode: "local" | "cloud",
+) {
+  if (mode === "cloud") {
+    return createOpensteerSemanticRuntime({
+      runtimeOptions: {
+        ...(sessionOptions.name === undefined ? {} : { name: sessionOptions.name }),
+        ...(sessionOptions.rootDir === undefined ? {} : { rootDir: sessionOptions.rootDir }),
+      },
+      cloud: true,
+    });
+  }
+
+  const attached = await connectOpensteerService(sessionOptions);
+  if (attached) {
+    return new LocalOpensteerSessionProxy(sessionOptions);
+  }
+
+  return new OpensteerSessionRuntime({
+    ...(sessionOptions.name === undefined ? {} : { name: sessionOptions.name }),
+    ...(sessionOptions.rootDir === undefined ? {} : { rootDir: sessionOptions.rootDir }),
   });
 }
 
@@ -786,23 +1031,26 @@ async function readJsonObjectOption(
   return undefined;
 }
 
-function buildProvenanceInput(options: ParsedCliOptions): Record<string, unknown> | undefined {
+function buildProvenanceInput(options: ParsedCliOptions): OpensteerRegistryProvenance | undefined {
+  const source = readOptionalString(options.provenanceSource);
+  const sourceId = readOptionalString(options.provenanceSourceId);
+  const capturedAt = readOptionalNumber(options.provenanceCapturedAt);
+  const notes = readOptionalString(options.provenanceNotes);
+  if (source === undefined) {
+    if (sourceId !== undefined || capturedAt !== undefined || notes !== undefined) {
+      throw new Error(
+        "--provenance-source is required when using --provenance-source-id, --provenance-captured-at, or --provenance-notes",
+      );
+    }
+    return undefined;
+  }
   const provenance = {
-    ...(readOptionalString(options.provenanceSource) === undefined
-      ? {}
-      : { source: readOptionalString(options.provenanceSource) }),
-    ...(readOptionalString(options.provenanceSourceId) === undefined
-      ? {}
-      : { sourceId: readOptionalString(options.provenanceSourceId) }),
-    ...(readOptionalNumber(options.provenanceCapturedAt) === undefined
-      ? {}
-      : { capturedAt: readOptionalNumber(options.provenanceCapturedAt) }),
-    ...(readOptionalString(options.provenanceNotes) === undefined
-      ? {}
-      : { notes: readOptionalString(options.provenanceNotes) }),
+    source,
+    ...(sourceId === undefined ? {} : { sourceId }),
+    ...(capturedAt === undefined ? {} : { capturedAt }),
+    ...(notes === undefined ? {} : { notes }),
   };
-
-  return Object.keys(provenance).length === 0 ? undefined : provenance;
+  return provenance;
 }
 
 function parseKeyValueOptions(values: readonly string[]): ReadonlyMap<string, string> {
@@ -886,7 +1134,7 @@ function buildNetworkQueryInput(options: ParsedCliOptions): Record<string, unkno
 
 async function parseRequestBodyInput(
   options: ParsedCliOptions,
-): Promise<Record<string, unknown> | undefined> {
+): Promise<OpensteerRequestBodyInput | undefined> {
   const bodyJson = options.bodyJson;
   const bodyText = readOptionalString(options.bodyText);
   const bodyBase64 = readOptionalString(options.bodyBase64);
@@ -902,7 +1150,7 @@ async function parseRequestBodyInput(
 
   if (bodyJson !== undefined) {
     return {
-      json: bodyJson,
+      json: toCanonicalJsonValue(bodyJson),
       ...(contentType === undefined ? {} : { contentType }),
     };
   }
@@ -931,7 +1179,7 @@ async function parseRequestBodyInput(
     contentType?.toLowerCase().startsWith("application/json") === true;
   if (shouldParseJson) {
     return {
-      json: JSON.parse(raw) as unknown,
+      json: toCanonicalJsonValue(JSON.parse(raw) as unknown),
       ...(contentType === undefined ? {} : { contentType }),
     };
   }
@@ -998,6 +1246,194 @@ function readOptionalJsonObject(value: unknown): Record<string, unknown> | undef
     return undefined;
   }
   return value as Record<string, unknown>;
+}
+
+function readRequiredString(value: unknown, label: string): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  throw new Error(`${label} must be a string`);
+}
+
+function readRequiredNumber(value: unknown, label: string): number {
+  if (typeof value === "number") {
+    return value;
+  }
+  throw new Error(`${label} must be a number`);
+}
+
+function readOptionalStringArray(value: unknown, label: string): readonly string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  if (value.some((entry) => typeof entry !== "string")) {
+    throw new Error(`${label} must be an array of strings`);
+  }
+  return value;
+}
+
+function parseMouseButton(value: unknown, label: string): "left" | "middle" | "right" | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === "left" || value === "middle" || value === "right") {
+    return value;
+  }
+  throw new Error(`${label} must be left, middle, or right`);
+}
+
+function parseKeyModifiers(
+  value: unknown,
+  label: string,
+): readonly ("Shift" | "Control" | "Alt" | "Meta")[] | undefined {
+  const modifiers = readOptionalStringArray(value, label);
+  if (modifiers === undefined) {
+    return undefined;
+  }
+  const parsed: ("Shift" | "Control" | "Alt" | "Meta")[] = [];
+  for (const modifier of modifiers) {
+    if (modifier !== "Shift" && modifier !== "Control" && modifier !== "Alt" && modifier !== "Meta") {
+      throw new Error(`${label} contains invalid modifier "${modifier}"`);
+    }
+    parsed.push(modifier);
+  }
+  return parsed;
+}
+
+function parsePoint(value: unknown, label: string): { readonly x: number; readonly y: number } {
+  const point = readOptionalJsonObject(value);
+  if (point === undefined) {
+    throw new Error(`${label} must be an object`);
+  }
+  return {
+    x: readRequiredNumber(point.x, `${label}.x`),
+    y: readRequiredNumber(point.y, `${label}.y`),
+  };
+}
+
+function parseRequestPlanPayload(value: Record<string, unknown>): OpensteerRequestPlanPayload {
+  assertValidJsonObject<OpensteerRequestPlanPayload>(
+    value,
+    opensteerRequestPlanPayloadSchema,
+    "request plan payload",
+  );
+  return value;
+}
+
+function parseAuthRecipePayload(value: Record<string, unknown>): OpensteerAuthRecipePayload {
+  assertValidJsonObject<OpensteerAuthRecipePayload>(
+    value,
+    opensteerAuthRecipePayloadSchema,
+    "auth recipe payload",
+  );
+  return value;
+}
+
+function parseRequestPlanLifecycle(value: string): OpensteerRequestPlanLifecycle {
+  if (value === "draft" || value === "active" || value === "deprecated" || value === "retired") {
+    return value;
+  }
+  throw new Error(`invalid lifecycle "${value}"`);
+}
+
+function parseRequestTransport(value: string): "session-http" | "direct-http" {
+  if (value === "session-http" || value === "direct-http") {
+    return value;
+  }
+  throw new Error(`invalid transport "${value}"`);
+}
+
+function parseStringRecord(
+  value: Record<string, unknown>,
+  label: string,
+): Record<string, string> {
+  const parsed: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry !== "string") {
+      throw new Error(`${label} must be a JSON object of string values (invalid "${key}")`);
+    }
+    parsed[key] = entry;
+  }
+  return parsed;
+}
+
+function parseComputerAction(value: Record<string, unknown>): OpensteerComputerAction {
+  const type = readOptionalString(value.type);
+  switch (type) {
+    case "click": {
+      const button = parseMouseButton(value.button, "action.button");
+      const clickCount = readOptionalNumber(value.clickCount);
+      const modifiers = parseKeyModifiers(value.modifiers, "action.modifiers");
+      return {
+        type,
+        x: readRequiredNumber(value.x, "action.x"),
+        y: readRequiredNumber(value.y, "action.y"),
+        ...(button === undefined ? {} : { button }),
+        ...(clickCount === undefined ? {} : { clickCount }),
+        ...(modifiers === undefined ? {} : { modifiers }),
+      };
+    }
+    case "move":
+      return {
+        type,
+        x: readRequiredNumber(value.x, "action.x"),
+        y: readRequiredNumber(value.y, "action.y"),
+      };
+    case "scroll":
+      return {
+        type,
+        x: readRequiredNumber(value.x, "action.x"),
+        y: readRequiredNumber(value.y, "action.y"),
+        deltaX: readRequiredNumber(value.deltaX, "action.deltaX"),
+        deltaY: readRequiredNumber(value.deltaY, "action.deltaY"),
+      };
+    case "type":
+      return {
+        type,
+        text: readRequiredString(value.text, "action.text"),
+      };
+    case "key": {
+      const modifiers = parseKeyModifiers(value.modifiers, "action.modifiers");
+      return {
+        type,
+        key: readRequiredString(value.key, "action.key"),
+        ...(modifiers === undefined ? {} : { modifiers }),
+      };
+    }
+    case "drag": {
+      const steps = readOptionalNumber(value.steps);
+      return {
+        type,
+        start: parsePoint(value.start, "action.start"),
+        end: parsePoint(value.end, "action.end"),
+        ...(steps === undefined ? {} : { steps }),
+      };
+    }
+    case "screenshot":
+      return { type };
+    case "wait":
+      return {
+        type,
+        durationMs: readRequiredNumber(value.durationMs, "action.durationMs"),
+      };
+    default:
+      throw new Error(
+        "action.type must be one of click, move, scroll, type, key, drag, screenshot, or wait",
+      );
+  }
+}
+
+function assertValidJsonObject<T>(
+  value: unknown,
+  schema: Parameters<typeof validateJsonSchema>[0],
+  label: string,
+): asserts value is T {
+  const issues = validateJsonSchema(schema, value);
+  if (issues.length === 0) {
+    return;
+  }
+  const issue = issues[0]!;
+  throw new Error(`invalid ${label} at ${issue.path}: ${issue.message}`);
 }
 
 function readJsonObjectPositional(
