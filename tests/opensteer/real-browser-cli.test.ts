@@ -30,6 +30,24 @@ describe("local browser CLI surfaces", () => {
     });
   });
 
+  test("parses local-profile inspect mode", () => {
+    expect(
+      parseOpensteerLocalProfileArgs(["inspect", "--user-data-dir", "/tmp/chrome"]),
+    ).toEqual({
+      mode: "inspect",
+      userDataDir: "/tmp/chrome",
+    });
+  });
+
+  test("parses local-profile unlock mode", () => {
+    expect(
+      parseOpensteerLocalProfileArgs(["unlock", "--user-data-dir", "/tmp/chrome"]),
+    ).toEqual({
+      mode: "unlock",
+      userDataDir: "/tmp/chrome",
+    });
+  });
+
   test("local-profile runner prints discovered profiles with user-data-dir", async () => {
     const userDataDir = await mkdtemp(path.join(tmpdir(), "opensteer-local-profile-cli-"));
     await writeFile(
@@ -53,6 +71,57 @@ describe("local browser CLI surfaces", () => {
 
     expect(code).toBe(0);
     expect(stdout.join("")).toContain(`Default\tPersonal\t${userDataDir}`);
+  });
+
+  test("local-profile inspect prints structured inspection JSON", async () => {
+    const stdout: string[] = [];
+    const code = await runOpensteerLocalProfileCli(["inspect", "--user-data-dir", "/tmp/chrome"], {
+      inspectProfile: async () => ({
+        status: "available",
+        userDataDir: "/tmp/chrome",
+      }),
+      listProfiles: () => [],
+      unlockProfile: async () => ({
+        userDataDir: "/tmp/chrome",
+        removed: [],
+      }),
+      writeStdout: (message) => {
+        stdout.push(message);
+      },
+      writeStderr: () => undefined,
+    });
+
+    expect(code).toBe(0);
+    expect(stdout.join("")).toBe(JSON.stringify({ status: "available", userDataDir: "/tmp/chrome" }));
+  });
+
+  test("local-profile unlock prints structured JSON errors", async () => {
+    const stderr: string[] = [];
+    const { OpensteerLocalProfileUnavailableError } = await import(
+      "../../packages/opensteer/src/local-browser/profile-inspection.js"
+    );
+
+    const code = await runOpensteerLocalProfileCli(["unlock", "--user-data-dir", "/tmp/chrome"], {
+      inspectProfile: async () => ({
+        status: "available",
+        userDataDir: "/tmp/chrome",
+      }),
+      listProfiles: () => [],
+      unlockProfile: async () => {
+        throw new OpensteerLocalProfileUnavailableError({
+          status: "available",
+          userDataDir: "/tmp/chrome",
+        });
+      },
+      writeStdout: () => undefined,
+      writeStderr: (message) => {
+        stderr.push(message);
+      },
+    });
+
+    expect(code).toBe(1);
+    expect(stderr.join("")).toContain('"code":"profile-unavailable"');
+    expect(stderr.join("")).toContain('"status":"available"');
   });
 
   test("parses profile upload args", () => {

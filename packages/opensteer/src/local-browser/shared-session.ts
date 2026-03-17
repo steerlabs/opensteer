@@ -1,28 +1,23 @@
-import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import {
-  CURRENT_PROCESS_OWNER,
-  getProcessLiveness,
-  parseProcessOwner,
-  processOwnersEqual,
-} from "./process-owner.js";
-import { withDirLock } from "./dir-lock.js";
-import {
   clearChromeSingletonEntries,
-} from "./profile-clone.js";
+} from "./chrome-singletons.js";
 import {
   discoverAutoConnectCdpEndpoint,
   discoverBrowserWebSocketUrl,
   readDevToolsActivePort,
 } from "./chrome-discovery.js";
+import {
+  OpensteerLocalProfileUnavailableError,
+  inspectLocalBrowserProfile,
+} from "./profile-inspection.js";
+import { registerProfileLaunch, withProfileLaunchLock } from "./profile-launch-metadata.js";
 import type {
   ConnectCdpBrowserOptions,
-  LaunchMetadataRecord,
   LaunchOwnedBrowserOptions,
   LocalBrowserLease,
   OwnedLocalChromeProcess,
@@ -30,8 +25,6 @@ import type {
 
 const DEVTOOLS_POLL_INTERVAL_MS = 50;
 const PROFILE_DIRECTORY_DEFAULT = "Default";
-const PROFILE_IN_USE_ERROR =
-  "The selected Chrome user-data-dir appears to be in use. Attach with --auto-connect or --cdp instead of launching it again.";
 
 export async function launchManagedBrowserSession(
   options: LaunchOwnedBrowserOptions & {
@@ -361,93 +354,13 @@ async function waitForProcessExitOrKill(
 
 async function assertProfileLaunchAllowed(userDataDir: string): Promise<void> {
   await withProfileLaunchLock(userDataDir, async () => {
-    const existing = await readLaunchMetadata(userDataDir);
-    if (existing?.owner && (await getProcessLiveness(existing.owner)) === "live") {
-      throw new Error(PROFILE_IN_USE_ERROR);
-    }
-
-    const activePort = readDevToolsActivePort(userDataDir);
-    if (activePort) {
-      const discovered = await discoverBrowserWebSocketUrl(`http://127.0.0.1:${String(activePort.port)}`);
-      if (discovered) {
-        throw new Error(PROFILE_IN_USE_ERROR);
-      }
-    }
-
-    if (hasActiveSingletonArtifacts(userDataDir)) {
-      throw new Error(PROFILE_IN_USE_ERROR);
-    }
-  });
-}
-
-async function registerProfileLaunch(input: Omit<LaunchMetadataRecord, "owner">): Promise<() => Promise<void>> {
-  await withProfileLaunchLock(input.userDataDir, async () => {
-    await mkdir(join(getLaunchMetadataDir(input.userDataDir)), { recursive: true });
-    await writeFile(
-      getLaunchMetadataPath(input.userDataDir),
-      JSON.stringify({
-        ...input,
-        owner: CURRENT_PROCESS_OWNER,
-      } satisfies LaunchMetadataRecord),
-    );
-  });
-
-  return async () => {
-    await withProfileLaunchLock(input.userDataDir, async () => {
-      const metadata = await readLaunchMetadata(input.userDataDir);
-      if (!metadata?.owner || !processOwnersEqual(metadata.owner, CURRENT_PROCESS_OWNER)) {
-        return;
-      }
-      await rm(getLaunchMetadataPath(input.userDataDir), { force: true }).catch(() => undefined);
+    const inspection = await inspectLocalBrowserProfile({
+      userDataDir,
     });
-  };
-}
-
-function hasActiveSingletonArtifacts(userDataDir: string): boolean {
-  return [
-    "SingletonLock",
-    "SingletonSocket",
-    "lockfile",
-  ].some((entry) => existsSync(join(userDataDir, entry)));
-}
-
-async function readLaunchMetadata(userDataDir: string): Promise<LaunchMetadataRecord | null> {
-  try {
-    const raw = JSON.parse(
-      await readFile(getLaunchMetadataPath(userDataDir), "utf8"),
-    ) as Partial<LaunchMetadataRecord>;
-    const owner = parseProcessOwner(raw.owner);
-    return {
-      args: Array.isArray(raw.args) ? raw.args.filter((entry): entry is string => typeof entry === "string") : [],
-      executablePath: typeof raw.executablePath === "string" ? raw.executablePath : "",
-      headless: raw.headless === true,
-      owner: owner ?? undefined,
-      ...(typeof raw.profileDirectory === "string" ? { profileDirectory: raw.profileDirectory } : {}),
-      userDataDir: typeof raw.userDataDir === "string" ? raw.userDataDir : userDataDir,
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function withProfileLaunchLock<T>(userDataDir: string, action: () => Promise<T>): Promise<T> {
-  return withDirLock(getLaunchLockPath(userDataDir), action);
-}
-
-function getLaunchMetadataDir(userDataDir: string): string {
-  return join(homedir(), ".opensteer", "local-browser", "launches", buildLaunchKey(userDataDir));
-}
-
-function getLaunchMetadataPath(userDataDir: string): string {
-  return join(getLaunchMetadataDir(userDataDir), "launch.json");
-}
-
-function getLaunchLockPath(userDataDir: string): string {
-  return join(getLaunchMetadataDir(userDataDir), "lock");
-}
-
-function buildLaunchKey(userDataDir: string): string {
-  return createHash("sha256").update(resolve(userDataDir)).digest("hex").slice(0, 16);
+    if (inspection.status !== "available") {
+      throw new OpensteerLocalProfileUnavailableError(inspection);
+    }
+  });
 }
 
 function wrapLeaseClose(

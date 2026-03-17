@@ -21,6 +21,7 @@ import {
   resolveOpensteerEngineName,
 } from "../internal/engine-selection.js";
 import { fileUriToPath } from "../internal/filesystem.js";
+import { OpensteerLocalProfileUnavailableError } from "../local-browser/profile-inspection.js";
 import { runOpensteerLocalProfileCli } from "./local-profile.js";
 import { runOpensteerProfileUploadCli } from "./profile-upload.js";
 import {
@@ -1178,6 +1179,22 @@ function writeError(error: unknown): void {
   if (error instanceof OpensteerCliServiceError) {
     process.stderr.write(
       `${JSON.stringify({ error: error.opensteerError, statusCode: error.statusCode })}\n`,
+    );
+    return;
+  }
+
+  if (error instanceof OpensteerLocalProfileUnavailableError) {
+    process.stderr.write(
+      `${JSON.stringify({
+        error: {
+          code: error.code,
+          message: error.message,
+          name: error.name,
+          details: {
+            inspection: error.inspection,
+          },
+        },
+      })}\n`,
     );
     return;
   }

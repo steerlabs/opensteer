@@ -211,3 +211,12 @@ export { dispatchSemanticOperation } from "./cli/dispatch.js";
 export { ServiceOperationScheduler, parseRequestEnvelope } from "./cli/service-host.js";
 export type { LocalChromeProfileDescriptor } from "./local-browser/types.js";
 export { listLocalChromeProfiles } from "./local-browser/chrome-discovery.js";
+export type {
+  OpensteerLocalProfileInspection,
+  OpensteerLocalProfileUnlockResult,
+} from "./local-browser/profile-inspection.js";
+export {
+  inspectLocalBrowserProfile,
+  OpensteerLocalProfileUnavailableError,
+  unlockLocalBrowserProfile,
+} from "./local-browser/profile-inspection.js";

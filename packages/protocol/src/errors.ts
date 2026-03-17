@@ -18,6 +18,7 @@ export const opensteerErrorCodes = [
   "navigation-failed",
   "permission-denied",
   "conflict",
+  "profile-unavailable",
   "rate-limited",
   "operation-failed",
   "internal",
@@ -149,6 +150,7 @@ export function httpStatusForOpensteerError(error: OpensteerError): number {
     case "frame-detached":
       return 404;
     case "conflict":
+    case "profile-unavailable":
       return 409;
     case "rate-limited":
       return 429;
