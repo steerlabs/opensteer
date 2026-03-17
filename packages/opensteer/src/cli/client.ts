@@ -7,21 +7,26 @@ import {
   isErrorEnvelope,
   opensteerSemanticRestEndpoints,
   type OpensteerError,
-  type OpensteerRequestEnvelope,
   type OpensteerResponseEnvelope,
   type OpensteerSemanticOperationName,
 } from "@opensteer/protocol";
 
 import {
   getOpensteerServiceMetadataPath,
+  isCloudOpensteerServiceMetadata,
+  isLocalOpensteerServiceMetadata,
   isProcessAlive,
   parseOpensteerServiceMetadata,
   readOpensteerServiceMetadata,
   removeOpensteerServiceMetadata,
   writeOpensteerServiceMetadata,
+  type OpensteerCloudServiceMetadata,
+  type OpensteerLocalServiceMetadata,
   type OpensteerServiceMetadata,
 } from "./service-metadata.js";
 import { type OpensteerEngineName } from "../internal/engine-selection.js";
+import { OpensteerCloudClient } from "../cloud/client.js";
+import { resolveCloudConfig } from "../cloud/config.js";
 
 const PING_PATH = "/runtime/ping";
 const SERVICE_START_TIMEOUT_MS = 10_000;
@@ -40,10 +45,20 @@ export class OpensteerCliServiceError extends Error {
   }
 }
 
+export interface OpensteerServiceConnection {
+  readonly baseUrl: string;
+  readonly getAuthorizationHeader: () => Promise<string>;
+}
+
+export interface OpensteerConnectSessionOptions {
+  readonly url: string;
+}
+
 export interface OpensteerCliSessionOptions {
   readonly name?: string;
   readonly rootDir?: string;
   readonly engine?: OpensteerEngineName;
+  readonly connect?: OpensteerConnectSessionOptions;
 }
 
 export interface OpensteerServiceLaunchContext {
@@ -54,7 +69,15 @@ export interface OpensteerServiceLaunchContext {
 }
 
 export class OpensteerCliServiceClient {
-  constructor(private readonly metadata: OpensteerServiceMetadata) {}
+  constructor(private readonly connection: OpensteerServiceConnection) {}
+
+  static fromConnection(connection: OpensteerServiceConnection): OpensteerCliServiceClient {
+    return new OpensteerCliServiceClient(connection);
+  }
+
+  static fromMetadata(metadata: OpensteerServiceMetadata): OpensteerCliServiceClient {
+    return new OpensteerCliServiceClient(createConnectionFromMetadata(metadata));
+  }
 
   async invoke<TInput, TOutput>(
     operation: OpensteerSemanticOperationName,
@@ -68,10 +91,10 @@ export class OpensteerCliServiceClient {
     const request = createRequestEnvelope(operation, input, {
       requestId: `req:${randomUUID()}`,
     });
-    const response = await fetch(`${this.metadata.baseUrl}${endpoint.path}`, {
+    const response = await fetch(`${this.connection.baseUrl}${endpoint.path}`, {
       method: "POST",
       headers: {
-        authorization: `Bearer ${this.metadata.token}`,
+        authorization: await this.connection.getAuthorizationHeader(),
         "content-type": "application/json; charset=utf-8",
       },
       body: JSON.stringify(request),
@@ -95,7 +118,7 @@ export async function connectOpensteerService(
     return undefined;
   }
 
-  return new OpensteerCliServiceClient(metadata);
+  return OpensteerCliServiceClient.fromMetadata(metadata);
 }
 
 export async function ensureOpensteerService(
@@ -117,6 +140,7 @@ export async function ensureOpensteerService(
     name,
     ...(options.rootDir === undefined ? [] : ["--root-dir", options.rootDir]),
     ...(options.engine === undefined ? [] : ["--engine", options.engine]),
+    ...(options.connect === undefined ? [] : ["--connect", options.connect.url]),
   ];
   const child = spawn(options.launchContext.execPath, serviceArgs, {
     cwd: options.launchContext.cwd ?? process.cwd(),
@@ -129,7 +153,7 @@ export async function ensureOpensteerService(
   while (Date.now() - startedAt < SERVICE_START_TIMEOUT_MS) {
     const metadata = await resolveLiveOpensteerServiceMetadata(options);
     if (metadata) {
-      return new OpensteerCliServiceClient(metadata);
+      return OpensteerCliServiceClient.fromMetadata(metadata);
     }
 
     await wait(SERVICE_POLL_INTERVAL_MS);
@@ -155,14 +179,14 @@ export async function requireOpensteerService(
 }
 
 async function validateServiceMetadata(metadata: OpensteerServiceMetadata): Promise<boolean> {
-  if (!isProcessAlive(metadata.pid)) {
+  if (isLocalOpensteerServiceMetadata(metadata) && !isProcessAlive(metadata.pid)) {
     return false;
   }
 
   try {
     const response = await fetch(`${metadata.baseUrl}${PING_PATH}`, {
       headers: {
-        authorization: `Bearer ${metadata.token}`,
+        authorization: await createConnectionFromMetadata(metadata).getAuthorizationHeader(),
       },
       signal: AbortSignal.timeout(SERVICE_PING_TIMEOUT_MS),
     });
@@ -215,13 +239,52 @@ async function resolveLiveOpensteerServiceMetadata(
     await writeOpensteerServiceMetadata(rootPath, metadata);
   }
 
-  if (options.engine !== undefined && metadata.engine !== options.engine) {
+  if (isLocalOpensteerServiceMetadata(metadata) && options.engine !== undefined && metadata.engine !== options.engine) {
     throw new Error(
       `Opensteer session "${name}" is already running with engine "${metadata.engine}". Run "opensteer close --name ${name}" before reopening it with engine "${options.engine}".`,
     );
   }
 
+  if (isLocalOpensteerServiceMetadata(metadata)) {
+    const expectedMode = options.connect === undefined ? "local" : "connect";
+    if (metadata.mode !== expectedMode) {
+      throw new Error(
+        `Opensteer session "${name}" is already running in ${metadata.mode} mode. Close it before reopening in ${expectedMode} mode.`,
+      );
+    }
+    if (options.connect && metadata.connectUrl !== options.connect.url) {
+      throw new Error(
+        `Opensteer session "${name}" is already connected to ${metadata.connectUrl}. Close it before reopening with ${options.connect.url}.`,
+      );
+    }
+  }
+
   return metadata;
+}
+
+function createConnectionFromMetadata(metadata: OpensteerServiceMetadata): OpensteerServiceConnection {
+  if (isLocalOpensteerServiceMetadata(metadata)) {
+    return {
+      baseUrl: metadata.baseUrl,
+      getAuthorizationHeader: async () => `Bearer ${metadata.token}`,
+    };
+  }
+
+  return createCloudConnection(metadata);
+}
+
+function createCloudConnection(metadata: OpensteerCloudServiceMetadata): OpensteerServiceConnection {
+  const config = resolveCloudConfig({
+    enabled: true,
+  });
+  if (!config) {
+    throw new Error(`Cloud credentials for session "${metadata.name}" are unavailable.`);
+  }
+  const cloud = new OpensteerCloudClient(config);
+  return {
+    baseUrl: metadata.baseUrl,
+    getAuthorizationHeader: async () => cloud.buildAuthorizationHeader(),
+  };
 }
 
 function resolveRootPath(rootDir: string | undefined): string {

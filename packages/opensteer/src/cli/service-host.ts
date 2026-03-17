@@ -23,6 +23,7 @@ import {
   DEFAULT_OPENSTEER_ENGINE,
   type OpensteerEngineName,
 } from "../internal/engine-selection.js";
+import { createConnectedOpensteerEngineFactory } from "../connect/engine.js";
 import { OpensteerSessionRuntime } from "../sdk/runtime.js";
 import {
   isProcessAlive,
@@ -30,6 +31,7 @@ import {
   writeOpensteerServiceMetadata,
 } from "./service-metadata.js";
 import { dispatchSemanticOperation } from "./dispatch.js";
+import { assertExecutionModeSupportsEngine } from "../mode/config.js";
 
 const PING_PATH = "/runtime/ping";
 
@@ -37,12 +39,20 @@ export async function runOpensteerServiceHost(options: {
   readonly name: string;
   readonly rootDir?: string;
   readonly engine?: OpensteerEngineName;
+  readonly connectUrl?: string;
 }): Promise<void> {
   const engine = options.engine ?? DEFAULT_OPENSTEER_ENGINE;
+  const mode = options.connectUrl === undefined ? "local" : "connect";
+  assertExecutionModeSupportsEngine(mode, engine);
   const runtime = new OpensteerSessionRuntime({
     name: options.name,
     ...(options.rootDir === undefined ? {} : { rootDir: options.rootDir }),
-    engineFactory: createOpensteerEngineFactory(engine),
+    engineFactory:
+      options.connectUrl === undefined
+        ? createOpensteerEngineFactory(engine)
+        : createConnectedOpensteerEngineFactory({
+            url: options.connectUrl,
+          }),
   });
   const rootPath = runtime.rootPath;
   const token = randomBytes(24).toString("hex");
@@ -115,6 +125,7 @@ export async function runOpensteerServiceHost(options: {
 
   const baseUrl = `http://127.0.0.1:${String(address.port)}`;
   await writeOpensteerServiceMetadata(rootPath, {
+    mode,
     name: runtime.name,
     rootPath,
     pid: process.pid,
@@ -123,6 +134,7 @@ export async function runOpensteerServiceHost(options: {
     startedAt: Date.now(),
     baseUrl,
     engine,
+    ...(options.connectUrl === undefined ? {} : { connectUrl: options.connectUrl }),
   });
 
   await once(server, "close");
@@ -248,7 +260,7 @@ async function handleRequest(
   }
 }
 
-class ServiceOperationScheduler {
+export class ServiceOperationScheduler {
   private engineLane: Promise<void> = Promise.resolve();
 
   run<T>(options: {
@@ -288,7 +300,7 @@ function requiresEngineLane(operation: OpensteerSemanticOperationName, input: un
   }
 }
 
-function parseRequestEnvelope(value: unknown): OpensteerRequestEnvelope<unknown> {
+export function parseRequestEnvelope(value: unknown): OpensteerRequestEnvelope<unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw invalidRequest("request body must be a JSON object");
   }

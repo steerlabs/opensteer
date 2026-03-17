@@ -4,7 +4,7 @@ import {
   type BrowserCapabilities,
   type HeaderEntry,
 } from "@opensteer/browser-core";
-import type { Browser } from "playwright";
+import type { Browser, BrowserContext, Page } from "playwright";
 
 export const DEFAULT_BODY_CAPTURE_LIMIT_BYTES = 1024 * 1024;
 
@@ -98,6 +98,9 @@ export interface PlaywrightBrowserCoreEngineOptions {
   readonly closeBrowserOnDispose?: boolean;
   readonly launch?: PlaywrightChromiumLaunchOptions;
   readonly context?: PlaywrightBrowserContextOptions;
+  readonly attachedContext?: BrowserContext;
+  readonly attachedPage?: Page;
+  readonly closeAttachedContextOnSessionClose?: boolean;
   readonly bodyCaptureLimitBytes?: number;
 }
 
