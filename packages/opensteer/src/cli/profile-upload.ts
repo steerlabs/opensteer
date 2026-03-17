@@ -1,5 +1,10 @@
 import { resolveCloudConfig } from "../cloud/config.js";
 import { OpensteerCloudClient } from "../cloud/client.js";
+import {
+  parseCliArguments,
+  profileCliSchema,
+  renderHelp,
+} from "./schema.js";
 
 export interface ProfileUploadCliDeps {
   readonly writeStdout: (message: string) => void;
@@ -17,95 +22,56 @@ export type ParsedProfileUploadArgs =
       readonly profileDirectory?: string;
     };
 
-const HELP_TEXT = `Usage: opensteer profile upload [options]
-
-Snapshot a local Chrome profile and upload it into an existing OpenSteer cloud browser profile.
-
-Options:
-  --profile-id <id>                 Destination cloud browser profile ID
-  --from-user-data-dir <path>       Source Chrome user-data root
-  --profile-directory <name>        Source Chrome profile directory (for example "Default")
-  --json                            JSON output
-  -h, --help                        Show this help
-`;
-
 export function parseOpensteerProfileUploadArgs(
   argv: readonly string[],
 ): ParsedProfileUploadArgs {
-  const [command, ...rest] = argv;
-  if (!command || command === "help" || command === "--help" || command === "-h") {
-    return { mode: "help" };
-  }
+  try {
+    const parsed = parseCliArguments({
+      schema: profileCliSchema,
+      programName: "opensteer profile",
+      argv,
+    });
 
-  if (command !== "upload") {
-    return {
-      mode: "error",
-      error: `Unsupported profile command "${command}".`,
-    };
-  }
-
-  let json = false;
-  let profileId: string | undefined;
-  let fromUserDataDir: string | undefined;
-  let profileDirectory: string | undefined;
-
-  for (let index = 0; index < rest.length; index += 1) {
-    const argument = rest[index]!;
-    if (argument === "--json") {
-      json = true;
-      continue;
-    }
-    if (argument === "--help" || argument === "-h") {
+    if (parsed.kind === "help") {
       return { mode: "help" };
     }
-    if (argument === "--profile-id") {
-      const value = rest[index + 1];
-      if (!value) {
-        return { mode: "error", error: "--profile-id requires a value." };
-      }
-      profileId = value;
-      index += 1;
-      continue;
+
+    if (parsed.invocation.commandId !== "profile.upload") {
+      return {
+        mode: "error",
+        error: `Unsupported profile command "${parsed.invocation.commandId}".`,
+      };
     }
-    if (argument === "--from-user-data-dir") {
-      const value = rest[index + 1];
-      if (!value) {
-        return { mode: "error", error: "--from-user-data-dir requires a path value." };
-      }
-      fromUserDataDir = value;
-      index += 1;
-      continue;
+
+    const options = parsed.invocation.options as {
+      readonly json?: boolean;
+      readonly profileId?: string;
+      readonly fromUserDataDir?: string;
+      readonly profileDirectory?: string;
+    };
+
+    if (!options.profileId) {
+      return { mode: "error", error: "--profile-id is required." };
     }
-    if (argument === "--profile-directory") {
-      const value = rest[index + 1];
-      if (!value) {
-        return { mode: "error", error: "--profile-directory requires a value." };
-      }
-      profileDirectory = value;
-      index += 1;
-      continue;
+    if (!options.fromUserDataDir) {
+      return { mode: "error", error: "--from-user-data-dir is required." };
     }
 
     return {
+      mode: "upload",
+      json: options.json === true,
+      profileId: options.profileId,
+      fromUserDataDir: options.fromUserDataDir,
+      ...(options.profileDirectory === undefined
+        ? {}
+        : { profileDirectory: options.profileDirectory }),
+    };
+  } catch (error) {
+    return {
       mode: "error",
-      error: `Unsupported option "${argument}" for "opensteer profile upload".`,
+      error: error instanceof Error ? error.message : String(error),
     };
   }
-
-  if (!profileId) {
-    return { mode: "error", error: "--profile-id is required." };
-  }
-  if (!fromUserDataDir) {
-    return { mode: "error", error: "--from-user-data-dir is required." };
-  }
-
-  return {
-    mode: "upload",
-    json,
-    profileId,
-    fromUserDataDir,
-    ...(profileDirectory === undefined ? {} : { profileDirectory }),
-  };
 }
 
 export async function runOpensteerProfileUploadCli(
@@ -119,7 +85,12 @@ export async function runOpensteerProfileUploadCli(
   };
   const parsed = parseOpensteerProfileUploadArgs(argv);
   if (parsed.mode === "help") {
-    deps.writeStdout(HELP_TEXT);
+    deps.writeStdout(
+      renderHelp({
+        schema: profileCliSchema,
+        programName: "opensteer profile",
+      }),
+    );
     return 0;
   }
   if (parsed.mode === "error") {

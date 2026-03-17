@@ -132,7 +132,12 @@ opensteer computer '{"type":"screenshot"}' --name docs-example
 opensteer close --name docs-example
 ```
 
-Each CLI command prints JSON to stdout. Browser state does not live in the CLI process. It lives
+CLI long flags are canonical kebab-case, for example `--root-dir`, `--network-tag`, and
+`--press-enter`. Unknown flags and flags used on the wrong command fail fast instead of being
+silently ignored.
+
+Action and data commands print JSON to stdout. Help commands print human-readable usage text.
+Browser state does not live in the CLI process. It lives
 in the local session service recorded under `.opensteer/runtime/sessions/<name>/service.json`.
 `opensteer computer` prints compact screenshot metadata and points at the persisted image through
 `screenshot.path` for local shells and `screenshot.payload.uri` for the canonical file-backed

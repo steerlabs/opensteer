@@ -4,6 +4,11 @@ import {
   OpensteerLocalProfileUnavailableError,
   unlockLocalBrowserProfile,
 } from "../local-browser/profile-inspection.js";
+import {
+  localProfileCliSchema,
+  parseCliArguments,
+  renderHelp,
+} from "./schema.js";
 
 export interface LocalProfileCliDeps {
   readonly inspectProfile: typeof inspectLocalBrowserProfile;
@@ -30,90 +35,58 @@ export type ParsedLocalProfileArgs =
       readonly userDataDir: string;
     };
 
-const HELP_TEXT = `Usage: opensteer local-profile <command> [options]
-
-Inspect local Chrome profiles for real-browser mode.
-
-Commands:
-  list                      List available local Chrome profiles
-  inspect                   Inspect a local Chrome user-data-dir for launch ownership state
-  unlock                    Remove stale Chrome singleton artifacts from a user-data-dir
-
-Options:
-  --json                    JSON output
-  --user-data-dir <path>    Override Chrome user-data root
-  -h, --help                Show this help
-`;
-
 export function parseOpensteerLocalProfileArgs(argv: readonly string[]): ParsedLocalProfileArgs {
-  const [command, ...rest] = argv;
-  if (!command || command === "help" || command === "--help" || command === "-h") {
-    return { mode: "help" };
-  }
+  try {
+    const parsed = parseCliArguments({
+      schema: localProfileCliSchema,
+      programName: "opensteer local-profile",
+      argv,
+    });
 
-  let json = false;
-  let userDataDir: string | undefined;
-
-  for (let index = 0; index < rest.length; index += 1) {
-    const argument = rest[index]!;
-    if (argument === "--json") {
-      json = true;
-      continue;
-    }
-    if (argument === "--help" || argument === "-h") {
+    if (parsed.kind === "help") {
       return { mode: "help" };
     }
-    if (argument === "--user-data-dir") {
-      const value = rest[index + 1];
-      if (!value) {
+
+    const options = parsed.invocation.options as {
+      readonly json?: boolean;
+      readonly userDataDir?: string;
+    };
+
+    switch (parsed.invocation.commandId) {
+      case "local-profile.list":
+        return {
+          mode: "list",
+          json: options.json === true,
+          ...(options.userDataDir === undefined ? {} : { userDataDir: options.userDataDir }),
+        };
+      case "local-profile.inspect":
+        return {
+          mode: "inspect",
+          ...(options.userDataDir === undefined ? {} : { userDataDir: options.userDataDir }),
+        };
+      case "local-profile.unlock":
+        if (options.userDataDir === undefined) {
+          return {
+            mode: "error",
+            error: "--user-data-dir is required for unlock.",
+          };
+        }
+        return {
+          mode: "unlock",
+          userDataDir: options.userDataDir,
+        };
+      default:
         return {
           mode: "error",
-          error: "--user-data-dir requires a path value.",
+          error: `Unsupported local-profile command "${parsed.invocation.commandId}".`,
         };
-      }
-      userDataDir = value;
-      index += 1;
-      continue;
     }
-
+  } catch (error) {
     return {
       mode: "error",
-      error: `Unsupported option "${argument}" for "opensteer local-profile ${command}".`,
+      error: error instanceof Error ? error.message : String(error),
     };
   }
-
-  if (command === "list") {
-    return {
-      mode: "list",
-      json,
-      ...(userDataDir === undefined ? {} : { userDataDir }),
-    };
-  }
-
-  if (command === "inspect") {
-    return {
-      mode: "inspect",
-      ...(userDataDir === undefined ? {} : { userDataDir }),
-    };
-  }
-
-  if (command === "unlock") {
-    if (userDataDir === undefined) {
-      return {
-        mode: "error",
-        error: "--user-data-dir is required for unlock.",
-      };
-    }
-    return {
-      mode: "unlock",
-      userDataDir,
-    };
-  }
-
-  return {
-    mode: "error",
-    error: `Unsupported local-profile command "${command}".`,
-  };
 }
 
 export async function runOpensteerLocalProfileCli(
@@ -131,7 +104,12 @@ export async function runOpensteerLocalProfileCli(
 
   const parsed = parseOpensteerLocalProfileArgs(argv);
   if (parsed.mode === "help") {
-    deps.writeStdout(HELP_TEXT);
+    deps.writeStdout(
+      renderHelp({
+        schema: localProfileCliSchema,
+        programName: "opensteer local-profile",
+      }),
+    );
     return 0;
   }
   if (parsed.mode === "error") {

@@ -2,7 +2,8 @@
 
 All commands follow the pattern: `opensteer <command> [positionals] [--options]`
 
-Output is always JSON on stdout. Errors are JSON on stderr.
+Long flags are canonical kebab-case. Unknown flags and flags used on the wrong command fail fast.
+Action/data commands print JSON on stdout. Help commands print human-readable usage text. Errors are JSON on stderr.
 
 ## Global Options
 

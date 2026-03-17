@@ -158,6 +158,156 @@ describe("local browser CLI surfaces", () => {
     });
   });
 
+  test("local-profile parser rejects unknown camelCase flags", () => {
+    expect(
+      parseOpensteerLocalProfileArgs(["list", "--userDataDir", "/tmp/chrome"]),
+    ).toEqual({
+      mode: "error",
+      error: 'unknown option "--userDataDir". Did you mean "--user-data-dir"?',
+    });
+  });
+
+  test("built CLI prints root help", async () => {
+    const rootDir = await mkdtemp(path.join(tmpdir(), "opensteer-cli-help-"));
+
+    const result = await execFile(process.execPath, [CLI_SCRIPT, "help"], {
+      cwd: rootDir,
+      env: {
+        ...process.env,
+      },
+      maxBuffer: 1024 * 1024,
+    });
+
+    expect(result.stderr.trim()).toBe("");
+    expect(result.stdout).toContain("Usage: opensteer <command>");
+    expect(result.stdout).toContain("open");
+    expect(result.stdout).toContain("local-profile");
+  });
+
+  test("built CLI rejects unknown camelCase and command-inappropriate flags", async () => {
+    const rootDir = await mkdtemp(path.join(tmpdir(), "opensteer-cli-strict-"));
+
+    await expect(runCliExpectFailure(rootDir, [
+      "input",
+      "--selector",
+      "input#search",
+      "--text",
+      "airpods",
+      "--pressEnter",
+      "true",
+    ])).resolves.toMatchObject({
+      error: {
+        message: 'unknown option "--pressEnter". Did you mean "--press-enter"?',
+      },
+    });
+
+    await expect(runCliExpectFailure(rootDir, [
+      "goto",
+      "https://example.com",
+      "--networkTag",
+      "nav",
+    ])).resolves.toMatchObject({
+      error: {
+        message: 'unknown option "--networkTag". Did you mean "--network-tag"?',
+      },
+    });
+
+    await expect(runCliExpectFailure(rootDir, [
+      "open",
+      "https://example.com",
+      "--bogus",
+      "true",
+    ])).resolves.toMatchObject({
+      error: {
+        message: 'unknown option "--bogus".',
+      },
+    });
+
+    await expect(runCliExpectFailure(rootDir, [
+      "close",
+      "--headless",
+      "true",
+    ])).resolves.toMatchObject({
+      error: {
+        message: 'unknown option "--headless".',
+      },
+    });
+  });
+
+  test("built CLI submits input when --press-enter is provided", async () => {
+    const rootDir = await mkdtemp(path.join(tmpdir(), "opensteer-cli-press-enter-"));
+    const html = `<!doctype html><html><head><title>idle</title></head><body>
+<form action="#" onsubmit="event.preventDefault(); document.querySelector('#status').textContent = document.querySelector('#search').value; document.title = 'submitted:' + document.querySelector('#search').value;">
+  <input id="search" name="q" />
+  <button type="submit">Go</button>
+</form>
+<div id="status">idle</div>
+</body></html>`;
+    const url = `data:text/html,${encodeURIComponent(html)}`;
+
+    await execFile(
+      process.execPath,
+      [CLI_SCRIPT, "open", url, "--root-dir", rootDir, "--headless", "true"],
+      {
+        cwd: rootDir,
+        env: {
+          ...process.env,
+        },
+        maxBuffer: 1024 * 1024,
+      },
+    );
+
+    await execFile(
+      process.execPath,
+      [
+        CLI_SCRIPT,
+        "input",
+        "--selector",
+        "input#search",
+        "--text",
+        "airpods",
+        "--press-enter",
+        "true",
+        "--root-dir",
+        rootDir,
+      ],
+      {
+        cwd: rootDir,
+        env: {
+          ...process.env,
+        },
+        maxBuffer: 1024 * 1024,
+      },
+    );
+
+    const result = await execFile(
+      process.execPath,
+      [
+        CLI_SCRIPT,
+        "extract",
+        "--description",
+        "status",
+        "--schema",
+        '{"status":{"selector":"#status"},"title":{"selector":"title"}}',
+        "--root-dir",
+        rootDir,
+      ],
+      {
+        cwd: rootDir,
+        env: {
+          ...process.env,
+        },
+        maxBuffer: 1024 * 1024,
+      },
+    );
+
+    expect(result.stderr.trim()).toBe("");
+    expect(JSON.parse(result.stdout.trim())).toEqual({
+      status: "airpods",
+      title: "submitted:airpods",
+    });
+  });
+
   test("built CLI local-profile command lists profiles", async () => {
     const rootDir = await mkdtemp(path.join(tmpdir(), "opensteer-cli-local-profile-"));
     const userDataDir = await mkdtemp(path.join(tmpdir(), "opensteer-cli-user-data-"));
@@ -194,3 +344,35 @@ describe("local browser CLI surfaces", () => {
     expect(result.stdout).toContain(`Profile 1\tWork\t${userDataDir}`);
   });
 });
+
+async function runCliExpectFailure(
+  rootDir: string,
+  args: readonly string[],
+): Promise<{
+  readonly error: {
+    readonly message?: string;
+  };
+}> {
+  try {
+    await execFile(process.execPath, [CLI_SCRIPT, ...args], {
+      cwd: rootDir,
+      env: {
+        ...process.env,
+      },
+      maxBuffer: 1024 * 1024,
+    });
+  } catch (error) {
+    const result = error as {
+      readonly stdout?: string;
+      readonly stderr?: string;
+    };
+    expect((result.stdout ?? "").trim()).toBe("");
+    return JSON.parse((result.stderr ?? "").trim()) as {
+      readonly error: {
+        readonly message?: string;
+      };
+    };
+  }
+
+  throw new Error("expected CLI command to fail");
+}
