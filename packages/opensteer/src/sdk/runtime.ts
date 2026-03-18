@@ -23,6 +23,8 @@ import {
   createSessionRef,
   type CookieRecord,
   type OpensteerActionResult,
+  type OpensteerAddInitScriptInput,
+  type OpensteerAddInitScriptOutput,
   type OpensteerGetRecipeInput,
   type OpensteerAuthRecipeRetryOverrides,
   type OpensteerAuthRecipeStep,
@@ -30,6 +32,8 @@ import {
   type OpensteerBrowserLaunchOptions,
   type OpensteerComputerExecuteInput,
   type OpensteerComputerExecuteOutput,
+  type OpensteerCaptureScriptsInput,
+  type OpensteerCaptureScriptsOutput,
   type OpensteerDomClickInput,
   type OpensteerDomExtractInput,
   type OpensteerDomExtractOutput,
@@ -91,10 +95,12 @@ import {
   type OpensteerWriteAuthRecipeInput,
   type OpensteerWriteRequestPlanInput,
   type HeaderEntry,
+  type ScriptSourceArtifactData,
 } from "@opensteer/protocol";
 
 import { manifestToExternalBinaryLocation, type ArtifactManifest } from "../artifacts.js";
 import { normalizeThrownOpensteerError } from "../internal/errors.js";
+import { sha256Hex } from "../internal/filesystem.js";
 import { canonicalJsonString, toCanonicalJsonValue } from "../json.js";
 import {
   delayWithSignal,
@@ -123,6 +129,11 @@ import {
   defaultOpensteerEngineFactory,
   normalizeOpensteerBrowserContextOptions,
 } from "../internal/engine-selection.js";
+import type {
+  OpensteerInterceptScriptOptions,
+  OpensteerRouteOptions,
+  OpensteerRouteRegistration,
+} from "./instrumentation.js";
 import { inferRequestPlanFromNetworkRecord } from "../requests/inference.js";
 import { normalizeRequestPlanPayload } from "../requests/plans/index.js";
 import {
@@ -729,6 +740,56 @@ export class OpensteerSessionRuntime {
     }
   }
 
+  async addInitScript(
+    input: OpensteerAddInitScriptInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerAddInitScriptOutput> {
+    assertValidSemanticOperationInput("page.add-init-script", input);
+    const binding = await this.ensureBrowserTransportBinding();
+    const pageRef = input.pageRef ?? binding.pageRef;
+    const startedAt = Date.now();
+
+    try {
+      const output = await this.runWithOperationTimeout(
+        "page.add-init-script",
+        async () =>
+          this.requireEngine().addInitScript({
+            sessionRef: binding.sessionRef,
+            ...(input.pageRef === undefined ? {} : { pageRef }),
+            script: input.script,
+            ...(input.args === undefined ? {} : { args: input.args }),
+          }),
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "page.add-init-script",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: output,
+        context: buildRuntimeTraceContext({
+          sessionRef: binding.sessionRef,
+          pageRef,
+        }),
+      });
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "page.add-init-script",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+        context: buildRuntimeTraceContext({
+          sessionRef: binding.sessionRef,
+          pageRef,
+        }),
+      });
+      throw error;
+    }
+  }
+
   async snapshot(
     input: OpensteerPageSnapshotInput = {},
     options: RuntimeOperationOptions = {},
@@ -1220,6 +1281,52 @@ export class OpensteerSessionRuntime {
         completedAt: Date.now(),
         outcome: "error",
         error,
+      });
+      throw error;
+    }
+  }
+
+  async captureScripts(
+    input: OpensteerCaptureScriptsInput = {},
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerCaptureScriptsOutput> {
+    assertValidSemanticOperationInput("scripts.capture", input);
+    const pageRef = input.pageRef ?? (await this.ensurePageRef());
+    const startedAt = Date.now();
+
+    try {
+      const output = await this.runWithOperationTimeout(
+        "scripts.capture",
+        async (timeout) => this.captureScriptsInternal(pageRef, input, timeout),
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "scripts.capture",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          pageRef: output.pageRef,
+          scriptCount: output.scripts.length,
+        },
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef,
+        }),
+      });
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "scripts.capture",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef,
+        }),
       });
       throw error;
     }
@@ -1822,6 +1929,78 @@ export class OpensteerSessionRuntime {
     }
   }
 
+  async route(input: OpensteerRouteOptions): Promise<OpensteerRouteRegistration> {
+    const binding = await this.ensureBrowserTransportBinding();
+    const pageRef = input.pageRef ?? binding.pageRef;
+
+    return this.requireEngine().registerRoute({
+      sessionRef: binding.sessionRef,
+      ...(input.pageRef === undefined ? {} : { pageRef }),
+      urlPattern: input.urlPattern,
+      ...(input.resourceTypes === undefined ? {} : { resourceTypes: input.resourceTypes }),
+      ...(input.times === undefined ? {} : { times: input.times }),
+      handler: async ({ request, fetchOriginal }) => {
+        const decision = await input.handler({
+          request,
+          fetchOriginal,
+        });
+
+        if (decision.kind !== "fulfill") {
+          return decision;
+        }
+
+        const routeBody =
+          decision.body === undefined
+            ? undefined
+            : typeof decision.body === "string"
+              ? bodyPayloadFromUtf8(decision.body, {
+                  ...(decision.contentType === undefined
+                    ? {}
+                    : { mimeType: decision.contentType.split(";")[0] }),
+                })
+              : createBodyPayload(new Uint8Array(decision.body));
+
+        return {
+          kind: "fulfill",
+          ...(decision.status === undefined ? {} : { status: decision.status }),
+          ...(decision.headers === undefined ? {} : { headers: decision.headers }),
+          ...(routeBody === undefined ? {} : { body: routeBody }),
+          ...(decision.contentType === undefined ? {} : { contentType: decision.contentType }),
+        };
+      },
+    });
+  }
+
+  async interceptScript(input: OpensteerInterceptScriptOptions): Promise<OpensteerRouteRegistration> {
+    return this.route({
+      ...(input.pageRef === undefined ? {} : { pageRef: input.pageRef }),
+      urlPattern: input.urlPattern,
+      resourceTypes: ["script"],
+      ...(input.times === undefined ? {} : { times: input.times }),
+      handler: async ({ request, fetchOriginal }) => {
+        const original = await fetchOriginal();
+        const content = original.body === undefined
+          ? ""
+          : Buffer.from(original.body.bytes).toString("utf8");
+        const body = await input.handler({
+          url: request.url,
+          content,
+          headers: original.headers,
+          status: original.status,
+        });
+        return {
+          kind: "fulfill",
+          status: original.status,
+          headers: original.headers,
+          body,
+          contentType:
+            original.headers.find((header) => header.name.toLowerCase() === "content-type")?.value
+            ?? "application/javascript; charset=utf-8",
+        };
+      },
+    });
+  }
+
   async request(
     input: OpensteerRequestExecuteInput,
     options: RuntimeOperationOptions = {},
@@ -2324,6 +2503,214 @@ export class OpensteerSessionRuntime {
     );
     const byRequestId = new Map(withBodies.map((record) => [record.record.requestId, record]));
     return limited.map((record) => byRequestId.get(record.record.requestId) ?? record);
+  }
+
+  private async captureScriptsInternal(
+    pageRef: PageRef,
+    input: OpensteerCaptureScriptsInput,
+    timeout: TimeoutExecutionContext,
+  ): Promise<OpensteerCaptureScriptsOutput> {
+    const root = await this.ensureRoot();
+    const evaluated = await timeout.runStep(() =>
+      this.requireEngine().evaluatePage({
+        pageRef,
+        script: `() => {
+          const navigationEntry = performance.getEntriesByType("navigation")[0];
+          const loadEventStart =
+            navigationEntry && typeof navigationEntry.loadEventStart === "number"
+              ? navigationEntry.loadEventStart
+              : undefined;
+          const scripts = Array.from(document.scripts).map((script, index) => ({
+            loadOrder: index,
+            url: script.src || undefined,
+            type: script.type || undefined,
+            source: script.src ? "external" : "inline",
+            content: script.src ? "" : script.textContent || "",
+          }));
+          const resourceEntries = Array.from(performance.getEntriesByType("resource"))
+            .map((entry) => ({
+              url: entry.name,
+              initiatorType: entry.initiatorType || undefined,
+              startTime: typeof entry.startTime === "number" ? entry.startTime : undefined,
+            }))
+            .filter((entry) => typeof entry.url === "string" && entry.url.length > 0);
+          return { loadEventStart, scripts, resourceEntries };
+        }`,
+      }),
+    );
+    const pageScripts = normalizePageScriptScan(evaluated.data);
+    const resourceEntriesByUrl = new Map(pageScripts.resourceEntries.map((entry) => [entry.url, entry]));
+    const workerUrls = new Set(
+      pageScripts.resourceEntries
+        .filter((entry) => entry.initiatorType === "worker")
+        .map((entry) => entry.url),
+    );
+    const urlFilter = input.urlFilter?.trim();
+    const networkRecords = await this.queryLiveNetwork(
+      {
+        pageRef,
+        ...(input.includeWorkers === true ? {} : { resourceType: "script" }),
+        includeBodies: true,
+      },
+      timeout,
+      {
+        ignoreLimit: true,
+      },
+    );
+    const networkContentByUrl = new Map<string, string>();
+    for (const record of networkRecords) {
+      if (record.record.responseBody === undefined) {
+        continue;
+      }
+      networkContentByUrl.set(
+        record.record.url,
+        Buffer.from(record.record.responseBody.data, "base64").toString("utf8"),
+      );
+    }
+
+    const scripts: OpensteerCaptureScriptsOutput["scripts"][number][] = [];
+    const domUrls = new Set<string>();
+    let nextDynamicOrder = pageScripts.scripts.length;
+
+    for (const script of pageScripts.scripts) {
+      if (script.url !== undefined) {
+        domUrls.add(script.url);
+      }
+
+      if (script.source === "inline") {
+        if (input.includeInline === false) {
+          continue;
+        }
+        if (urlFilter !== undefined) {
+          continue;
+        }
+        scripts.push(
+          await this.materializeCapturedScript(
+            root,
+            pageRef,
+            {
+              source: "inline",
+              hash: sha256Hex(Buffer.from(script.content, "utf8")),
+              loadOrder: script.loadOrder,
+              content: script.content,
+              ...(script.type === undefined ? {} : { type: script.type }),
+            },
+            input.persist !== false,
+          ),
+        );
+        continue;
+      }
+
+      if (script.url === undefined) {
+        continue;
+      }
+      if (urlFilter !== undefined && !script.url.includes(urlFilter)) {
+        continue;
+      }
+      const resourceEntry = resourceEntriesByUrl.get(script.url);
+      const source =
+        workerUrls.has(script.url)
+          ? "worker"
+          : pageScripts.loadEventStart !== undefined &&
+              resourceEntry?.startTime !== undefined &&
+              resourceEntry.startTime >= pageScripts.loadEventStart
+            ? "dynamic"
+            : "external";
+      if (source === "external" && input.includeExternal === false) {
+        continue;
+      }
+      if (source === "worker" && input.includeWorkers !== true) {
+        continue;
+      }
+      if (source === "dynamic" && input.includeDynamic === false) {
+        continue;
+      }
+      const content = networkContentByUrl.get(script.url) ?? "";
+      scripts.push(
+        await this.materializeCapturedScript(
+          root,
+          pageRef,
+          {
+            source,
+            url: script.url,
+            hash: sha256Hex(Buffer.from(content, "utf8")),
+            loadOrder: script.loadOrder,
+            content,
+            ...(script.type === undefined ? {} : { type: script.type }),
+          },
+          input.persist !== false,
+        ),
+      );
+    }
+
+    if (input.includeDynamic !== false || input.includeWorkers === true) {
+      for (const record of networkRecords) {
+        if (record.record.resourceType !== "script") {
+          continue;
+        }
+        if (domUrls.has(record.record.url)) {
+          continue;
+        }
+        if (urlFilter !== undefined && !record.record.url.includes(urlFilter)) {
+          continue;
+        }
+        const source =
+          workerUrls.has(record.record.url) ||
+          record.record.source?.workerRef !== undefined ||
+          (input.includeWorkers === true &&
+            record.record.initiator?.type !== undefined &&
+            record.record.initiator.type !== "parser" &&
+            record.record.initiator.type !== "script")
+            ? "worker"
+            : "dynamic";
+        if (source === "worker" ? input.includeWorkers !== true : input.includeDynamic === false) {
+          continue;
+        }
+        const content = networkContentByUrl.get(record.record.url) ?? "";
+        scripts.push(
+          await this.materializeCapturedScript(
+            root,
+            pageRef,
+            {
+              source,
+              url: record.record.url,
+              hash: sha256Hex(Buffer.from(content, "utf8")),
+              loadOrder: nextDynamicOrder++,
+              content,
+            },
+            input.persist !== false,
+          ),
+        );
+      }
+    }
+
+    return {
+      pageRef,
+      scripts,
+    };
+  }
+
+  private async materializeCapturedScript(
+    root: FilesystemOpensteerRoot,
+    pageRef: PageRef,
+    data: ScriptSourceArtifactData,
+    persist: boolean,
+  ): Promise<OpensteerCaptureScriptsOutput["scripts"][number]> {
+    if (!persist) {
+      return data;
+    }
+    const manifest = await root.artifacts.writeStructured({
+      kind: "script-source",
+      scope: {
+        ...(this.sessionRef === undefined ? {} : { sessionRef: this.sessionRef }),
+        pageRef,
+      },
+      data,
+    });
+    return {
+      ...data,
+      artifactId: manifest.artifactId,
+    };
   }
 
   private beginMutationCapture(timeout: TimeoutExecutionContext): Promise<ReadonlySet<string>> {
@@ -4295,6 +4682,85 @@ function stringifyRecipeVariableValue(value: unknown): string {
   return JSON.stringify(toCanonicalJsonValue(value));
 }
 
+function normalizePageScriptScan(value: unknown): {
+  readonly loadEventStart?: number;
+  readonly scripts: readonly {
+    readonly source: "inline" | "external";
+    readonly url?: string;
+    readonly type?: string;
+    readonly loadOrder: number;
+    readonly content: string;
+  }[];
+  readonly resourceEntries: readonly {
+    readonly url: string;
+    readonly initiatorType?: string;
+    readonly startTime?: number;
+  }[];
+} {
+  if (value === null || typeof value !== "object") {
+    return {
+      scripts: [],
+      resourceEntries: [],
+    };
+  }
+  const source = value as {
+    readonly loadEventStart?: unknown;
+    readonly scripts?: readonly {
+      readonly source?: unknown;
+      readonly url?: unknown;
+      readonly type?: unknown;
+      readonly loadOrder?: unknown;
+      readonly content?: unknown;
+    }[];
+    readonly resourceEntries?: readonly {
+      readonly url?: unknown;
+      readonly initiatorType?: unknown;
+      readonly startTime?: unknown;
+    }[];
+  };
+
+  return {
+    ...(typeof source.loadEventStart === "number" ? { loadEventStart: source.loadEventStart } : {}),
+    scripts: (source.scripts ?? [])
+      .filter(
+        (
+          script,
+        ): script is {
+          readonly source: "inline" | "external";
+          readonly url?: string;
+          readonly type?: string;
+          readonly loadOrder: number;
+          readonly content: string;
+        } =>
+          (script?.source === "inline" || script?.source === "external") &&
+          typeof script.loadOrder === "number" &&
+          typeof script.content === "string" &&
+          (script.url === undefined || typeof script.url === "string") &&
+          (script.type === undefined || typeof script.type === "string"),
+      )
+      .sort((left, right) => left.loadOrder - right.loadOrder),
+    resourceEntries: (source.resourceEntries ?? [])
+      .filter(
+        (
+          entry,
+        ): entry is {
+          readonly url: string;
+          readonly initiatorType?: string;
+          readonly startTime?: number;
+        } =>
+          typeof entry?.url === "string" &&
+          entry.url.length > 0 &&
+          (entry.initiatorType === undefined || typeof entry.initiatorType === "string") &&
+          (entry.startTime === undefined || typeof entry.startTime === "number"),
+      )
+      .map((entry) => ({
+        url: entry.url,
+        ...(entry.initiatorType === undefined ? {} : { initiatorType: entry.initiatorType }),
+        ...(entry.startTime === undefined ? {} : { startTime: entry.startTime }),
+      })),
+  };
+}
+
 function normalizeTransportKind(
   value: "context-http" | "direct-http" | "page-eval-http" | "session-http",
 ): "context-http" | "direct-http" | "page-eval-http" {
@@ -4525,8 +4991,10 @@ function buildTransportRequestFromPlan(
   const headerParameters = parameters.filter((parameter) => parameter.in === "header");
 
   const resolvedPath = resolvePlanParameterValues(plan, pathParameters, input.params, "params");
-  const resolvedQuery = resolvePlanParameterValues(plan, queryParameters, input.query, "query");
-  const resolvedHeaders = resolvePlanParameterValues(plan, headerParameters, input.headers, "headers");
+  const resolvedQuery = resolvePlanParameterValues(plan, queryParameters, input.query);
+  const resolvedHeaders = resolvePlanParameterValues(plan, headerParameters, input.headers);
+  const extraQuery = resolveUnmappedExecutionValues(queryParameters, input.query);
+  const extraHeaders = resolveUnmappedExecutionValues(headerParameters, input.headers);
 
   let url = payload.endpoint.urlTemplate;
   for (const [name, value] of resolvedPath.entries()) {
@@ -4543,6 +5011,9 @@ function buildTransportRequestFromPlan(
       targetUrl.searchParams.set(parameter.wireName ?? parameter.name, value);
     }
   }
+  for (const [name, value] of extraQuery.entries()) {
+    targetUrl.searchParams.set(name, value);
+  }
 
   const headers = [...(payload.endpoint.defaultHeaders ?? [])];
   for (const parameter of headerParameters) {
@@ -4550,6 +5021,9 @@ function buildTransportRequestFromPlan(
     if (value !== undefined) {
       setHeaderValue(headers, parameter.wireName ?? parameter.name, value);
     }
+  }
+  for (const [name, value] of extraHeaders.entries()) {
+    setHeaderValue(headers, name, value);
   }
 
   const planBodyInput = buildPlanBodyInput(payload.body, input.body, input.bodyVars);
@@ -4624,26 +5098,28 @@ function resolvePlanParameterValues(
     readonly defaultValue?: string;
   }[],
   values: Readonly<Record<string, string | number | boolean>> | undefined,
-  fieldName: "params" | "query" | "headers",
+  fieldName?: "params",
 ): ReadonlyMap<string, string> {
   const normalizedValues = new Map(
     Object.entries(values ?? {}).map(([name, value]) => [name, String(value)]),
   );
-  const knownParameters = new Set(parameters.map((parameter) => parameter.name));
-  for (const name of normalizedValues.keys()) {
-    if (!knownParameters.has(name)) {
-      throw new OpensteerProtocolError(
-        "invalid-request",
-        `unknown ${fieldName} input "${name}" for request plan ${plan.key}@${plan.version}`,
-        {
-          details: {
-            key: plan.key,
-            version: plan.version,
-            field: fieldName,
-            name,
+  if (fieldName === "params") {
+    const knownParameters = new Set(parameters.map((parameter) => parameter.name));
+    for (const name of normalizedValues.keys()) {
+      if (!knownParameters.has(name)) {
+        throw new OpensteerProtocolError(
+          "invalid-request",
+          `unknown ${fieldName} input "${name}" for request plan ${plan.key}@${plan.version}`,
+          {
+            details: {
+              key: plan.key,
+              version: plan.version,
+              field: fieldName,
+              name,
+            },
           },
-        },
-      );
+        );
+      }
     }
   }
 
@@ -4672,6 +5148,20 @@ function resolvePlanParameterValues(
     resolved.set(parameter.name, value);
   }
   return resolved;
+}
+
+function resolveUnmappedExecutionValues(
+  parameters: readonly {
+    readonly name: string;
+  }[],
+  values: Readonly<Record<string, string | number | boolean>> | undefined,
+): ReadonlyMap<string, string> {
+  const knownParameters = new Set(parameters.map((parameter) => parameter.name));
+  return new Map(
+    Object.entries(values ?? {})
+      .filter(([name]) => !knownParameters.has(name))
+      .map(([name, value]) => [name, String(value)]),
+  );
 }
 
 function setHeaderValue(
@@ -5133,6 +5623,12 @@ function mergeExecutionInputOverrides(
     ...(overrides.params === undefined
       ? {}
       : { params: { ...(input.params ?? {}), ...overrides.params } }),
+    ...(overrides.query === undefined
+      ? {}
+      : { query: { ...(input.query ?? {}), ...overrides.query } }),
+    ...(overrides.headers === undefined
+      ? {}
+      : { headers: { ...(input.headers ?? {}), ...overrides.headers } }),
     ...(overrides.body === undefined
       ? {}
       : { bodyVars: { ...(input.bodyVars ?? {}), ...overrides.body } }),

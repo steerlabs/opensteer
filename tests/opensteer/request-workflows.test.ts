@@ -337,6 +337,137 @@ describe("Phase 10 request workflows", () => {
     }
   }, 60_000);
 
+  test("addInitScript runs before page scripts and captureScripts persists inline, external, dynamic, and worker sources", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const opensteer = new Opensteer({
+      name: "phase10-instrumentation-capture",
+      rootDir,
+      browser: {
+        headless: true,
+      },
+    });
+
+    try {
+      await opensteer.open();
+      await opensteer.addInitScript('() => { window.__phase10Init = "ready"; }');
+      await opensteer.goto(`${baseUrl}/phase10/init-script-target`);
+      await expect(opensteer.evaluate("() => window.phase10InitValue")).resolves.toBe("ready");
+
+      await opensteer.goto(`${baseUrl}/phase10/scripts?worker=1`);
+      await opensteer.waitForNetwork({
+        path: "/phase10/assets/script-dynamic.js",
+        resourceType: "script",
+      });
+      await opensteer.waitForNetwork({
+        path: "/phase10/assets/script-worker.js",
+        resourceType: "script",
+      });
+
+      const captured = await opensteer.captureScripts({
+        includeDynamic: true,
+        includeWorkers: true,
+      });
+
+      expect(captured.scripts.some((script) => script.source === "inline" && script.content.includes("phase10Inline"))).toBe(true);
+      expect(captured.scripts.some((script) => script.source === "external" && script.url?.includes("/phase10/assets/script-a.js"))).toBe(true);
+      expect(captured.scripts.some((script) => script.source === "dynamic" && script.url?.includes("/phase10/assets/script-dynamic.js"))).toBe(true);
+      expect(captured.scripts.some((script) => script.source === "worker" && script.url?.includes("/phase10/assets/script-worker.js"))).toBe(true);
+      expect(captured.scripts.every((script) => script.artifactId !== undefined)).toBe(true);
+
+      await runCliCommand(rootDir, [
+        "open",
+        `${baseUrl}/phase10/scripts`,
+        "--name",
+        "phase10-cli-capture",
+        "--root-dir",
+        rootDir,
+        "--headless",
+        "true",
+      ]);
+      const cliCaptured = await runCliCommand(rootDir, [
+        "scripts",
+        "capture",
+        "--name",
+        "phase10-cli-capture",
+        "--root-dir",
+        rootDir,
+        "--include-dynamic",
+        "true",
+      ]);
+      expect((cliCaptured as { scripts: readonly { source: string }[] }).scripts.length).toBeGreaterThan(0);
+      await runCliCommand(rootDir, [
+        "close",
+        "--name",
+        "phase10-cli-capture",
+        "--root-dir",
+        rootDir,
+      ]);
+    } finally {
+      await opensteer.close().catch(() => undefined);
+    }
+  }, 60_000);
+
+  test("route can continue, fulfill, and abort requests while interceptScript replaces script responses", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const opensteer = new Opensteer({
+      name: "phase10-routing",
+      rootDir,
+      browser: {
+        headless: true,
+      },
+    });
+
+    try {
+      await opensteer.open();
+      await opensteer.interceptScript({
+        urlPattern: `${baseUrl}/phase10/assets/route-script.js`,
+        handler: async ({ content }) => content.replace('"original"', '"replaced"'),
+      });
+      await opensteer.route({
+        urlPattern: `${baseUrl}/phase10/api/route-data`,
+        handler: async () => ({
+          kind: "fulfill",
+          contentType: "application/json; charset=utf-8",
+          body: JSON.stringify({ value: "fulfilled" }),
+        }),
+      });
+      await opensteer.goto(`${baseUrl}/phase10/route-target`);
+      await expect(opensteer.evaluate("() => window.phase10RouteScript")).resolves.toBe("replaced");
+      await expect(
+        opensteer.waitForNetwork({
+          path: "/phase10/api/route-data",
+          resourceType: "fetch",
+        }),
+      ).resolves.toBeDefined();
+      await expect(opensteer.evaluate("() => window.phase10RouteFetch")).resolves.toBe("fulfilled");
+
+      const aborted = new Opensteer({
+        name: "phase10-routing-abort",
+        rootDir,
+        browser: {
+          headless: true,
+        },
+      });
+      try {
+        await aborted.open();
+        await aborted.route({
+          urlPattern: `${baseUrl}/phase10/api/route-data`,
+          handler: async () => ({
+            kind: "abort",
+          }),
+        });
+        await aborted.goto(`${baseUrl}/phase10/route-target`);
+        await expect(aborted.evaluate("() => window.phase10RouteFetch")).resolves.toBe("aborted");
+      } finally {
+        await aborted.close().catch(() => undefined);
+      }
+    } finally {
+      await opensteer.close().catch(() => undefined);
+    }
+  }, 60_000);
+
   test("generic recipes can sync browser cookies, inject form body variables, and run through the recipe surface", async () => {
     const rootDir = await createPhase6TemporaryRoot();
     const baseUrl = requireFixtureServer().url;
@@ -485,6 +616,84 @@ describe("Phase 10 request workflows", () => {
         mode: "form-template",
         token: "phase10-refreshed",
         query: "recipe-prepare",
+      });
+
+      await opensteer.writeRecipe({
+        key: "phase10-kernel-overrides",
+        version: "1.0.0",
+        payload: {
+          steps: [
+            {
+              kind: "request",
+              request: {
+                transport: "direct-http",
+                url: `${baseUrl}/phase10/api/direct-refresh`,
+                method: "POST",
+              },
+              capture: {
+                bodyJsonPointer: {
+                  pointer: "/token",
+                  saveAs: "token",
+                },
+              },
+            },
+          ],
+          outputs: {
+            query: {
+              token: "{{token}}",
+            },
+            headers: {
+              "x-phase10-token": "{{token}}",
+            },
+            body: {
+              token: "{{token}}",
+            },
+          },
+        },
+      });
+
+      await opensteer.writeRequestPlan({
+        key: "phase10-kernel-overrides-plan",
+        version: "1.0.0",
+        payload: {
+          transport: {
+            kind: "direct-http",
+          },
+          endpoint: {
+            method: "POST",
+            urlTemplate: `${baseUrl}/phase10/api/kernel-parity`,
+          },
+          body: {
+            kind: "form",
+            fields: [
+              {
+                name: "token",
+                value: "{{token}}",
+              },
+            ],
+          },
+          response: {
+            status: 200,
+            contentType: "application/json",
+          },
+          recipes: {
+            prepare: {
+              recipe: {
+                key: "phase10-kernel-overrides",
+                version: "1.0.0",
+              },
+              cachePolicy: "none",
+            },
+          },
+        },
+      });
+
+      const parityResult = await opensteer.request("phase10-kernel-overrides-plan");
+      expect(parityResult.data).toMatchObject({
+        ok: true,
+        query: "phase10-refreshed",
+        header: "phase10-refreshed",
+        form: "phase10-refreshed",
       });
     } finally {
       await opensteer.close().catch(() => undefined);
@@ -1126,8 +1335,6 @@ describe("Phase 10 request workflows", () => {
           key: "phase10-service-order",
           params: {
             userId: "u_service",
-          },
-          query: {
             unexpected: "true",
           },
           headers: {

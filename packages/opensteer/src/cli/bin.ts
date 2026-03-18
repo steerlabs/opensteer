@@ -6,11 +6,13 @@ import { readFile, writeFile } from "node:fs/promises";
 import {
   opensteerAuthRecipePayloadSchema,
   opensteerRequestPlanPayloadSchema,
+  isPageRef,
   validateJsonSchema,
 } from "@opensteer/protocol";
 
 import type {
   OpensteerAuthRecipePayload,
+  OpensteerCaptureScriptsInput,
   OpensteerComputerAction,
   OpensteerComputerExecuteInput,
   OpensteerComputerExecuteOutput,
@@ -354,6 +356,34 @@ async function main(argv: readonly string[]): Promise<void> {
           ? {}
           : { tag: readOptionalString(options.tag) }),
       });
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "scripts.capture": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const pageRef = readOptionalString(options.pageRef);
+      if (pageRef !== undefined && !isPageRef(pageRef)) {
+        throw new Error("--page-ref must be a valid page reference");
+      }
+      const includeInline = readOptionalBoolean(options.includeInline);
+      const includeExternal = readOptionalBoolean(options.includeExternal);
+      const includeDynamic = readOptionalBoolean(options.includeDynamic);
+      const includeWorkers = readOptionalBoolean(options.includeWorkers);
+      const urlFilter = readOptionalString(options.urlFilter);
+      const captureInput: OpensteerCaptureScriptsInput = {
+        ...(pageRef === undefined ? {} : { pageRef }),
+        ...(includeInline === undefined ? {} : { includeInline }),
+        ...(includeExternal === undefined ? {} : { includeExternal }),
+        ...(includeDynamic === undefined ? {} : { includeDynamic }),
+        ...(includeWorkers === undefined ? {} : { includeWorkers }),
+        ...(urlFilter === undefined ? {} : { urlFilter }),
+        ...(readOptionalBoolean(options.noPersist) === true ? { persist: false } : {}),
+      };
+      const result = await runtime.captureScripts(captureInput);
       await writeJsonOutput(result, readOptionalString(options.output));
       return;
     }

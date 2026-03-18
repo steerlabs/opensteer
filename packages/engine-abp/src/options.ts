@@ -41,6 +41,10 @@ export const ABP_BROWSER_CORE_CAPABILITIES: BrowserCapabilities = mergeBrowserCa
     transport: {
       sessionHttp: true,
     },
+    instrumentation: {
+      initScripts: false,
+      routing: false,
+    },
     events: {
       pageLifecycle: true,
       dialog: true,

@@ -1,5 +1,9 @@
 import type {
   CookieRecord,
+  OpensteerAddInitScriptInput,
+  OpensteerAddInitScriptOutput,
+  OpensteerCaptureScriptsInput,
+  OpensteerCaptureScriptsOutput,
   OpensteerGetRecipeInput,
   OpensteerGetAuthRecipeInput,
   OpensteerActionResult,
@@ -58,7 +62,12 @@ import type {
   OpensteerDisconnectableRuntime,
   OpensteerSemanticRuntime,
 } from "./semantic-runtime.js";
-import { type OpensteerRuntimeOptions } from "./runtime.js";
+import { OpensteerSessionRuntime, type OpensteerRuntimeOptions } from "./runtime.js";
+import type {
+  OpensteerInterceptScriptOptions,
+  OpensteerRouteOptions,
+  OpensteerRouteRegistration,
+} from "./instrumentation.js";
 import {
   createOpensteerSemanticRuntime,
   type OpensteerCloudOptions,
@@ -112,6 +121,9 @@ export type OpensteerRawRequestOptions = OpensteerRawRequestInput;
 export type OpensteerRawRequestResult = OpensteerRawRequestOutput;
 export type OpensteerRequestOptions = Omit<OpensteerRequestExecuteInput, "key">;
 export type OpensteerRequestResult = OpensteerRequestExecuteOutput;
+export type OpensteerCaptureScriptsOptions = OpensteerCaptureScriptsInput;
+export type OpensteerCaptureScriptsResult = OpensteerCaptureScriptsOutput;
+export type OpensteerAddInitScriptOptions = OpensteerAddInitScriptInput;
 
 export interface OpensteerOptions extends OpensteerRuntimeOptions {
   readonly cloud?: boolean | OpensteerCloudOptions;
@@ -188,6 +200,18 @@ export class Opensteer {
     input: string | OpensteerPageEvaluateInput,
   ): Promise<OpensteerPageEvaluateOutput["value"]> {
     return this.evaluate(input);
+  }
+
+  async addInitScript(
+    input: string | OpensteerAddInitScriptInput,
+  ): Promise<OpensteerAddInitScriptOutput> {
+    const normalized =
+      typeof input === "string"
+        ? {
+            script: input,
+          }
+        : input;
+    return this.runtime.addInitScript(normalized);
   }
 
   async snapshot(
@@ -299,6 +323,12 @@ export class Opensteer {
     return this.runtime.clearNetwork(input);
   }
 
+  async captureScripts(
+    input: OpensteerCaptureScriptsOptions = {},
+  ): Promise<OpensteerCaptureScriptsResult> {
+    return this.runtime.captureScripts(input);
+  }
+
   async getCookies(input: { readonly urls?: readonly string[] } = {}): Promise<readonly CookieRecord[]> {
     return this.runtime.getCookies(input);
   }
@@ -375,6 +405,14 @@ export class Opensteer {
     return this.runtime.rawRequest(input);
   }
 
+  async route(input: OpensteerRouteOptions): Promise<OpensteerRouteRegistration> {
+    return this.requireOwnedInstrumentationRuntime("route").route(input);
+  }
+
+  async interceptScript(input: OpensteerInterceptScriptOptions): Promise<OpensteerRouteRegistration> {
+    return this.requireOwnedInstrumentationRuntime("interceptScript").interceptScript(input);
+  }
+
   async computerExecute(
     input: OpensteerComputerExecuteOptions,
   ): Promise<OpensteerComputerExecuteResult> {
@@ -404,6 +442,15 @@ export class Opensteer {
     instance.runtime = runtime;
     instance.ownership = ownership;
     return instance;
+  }
+
+  private requireOwnedInstrumentationRuntime(
+    method: "route" | "interceptScript",
+  ): OpensteerSessionRuntime {
+    if (this.runtime instanceof OpensteerSessionRuntime) {
+      return this.runtime;
+    }
+    throw new Error(`${method}() is only available on owned local SDK sessions.`);
   }
 }
 

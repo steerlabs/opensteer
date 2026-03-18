@@ -27,6 +27,10 @@ import type {
   OpensteerNetworkSaveOutput,
   OpensteerPageActivateInput,
   OpensteerPageActivateOutput,
+  OpensteerAddInitScriptInput,
+  OpensteerAddInitScriptOutput,
+  OpensteerCaptureScriptsInput,
+  OpensteerCaptureScriptsOutput,
   OpensteerPageCloseInput,
   OpensteerPageCloseOutput,
   OpensteerPageEvaluateInput,
@@ -91,6 +95,10 @@ export interface OpensteerSemanticRuntime {
     input: OpensteerPageEvaluateInput,
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerPageEvaluateOutput>;
+  addInitScript(
+    input: OpensteerAddInitScriptInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerAddInitScriptOutput>;
   snapshot(
     input?: OpensteerPageSnapshotInput,
     options?: OpensteerRuntimeOperationOptions,
@@ -127,6 +135,10 @@ export interface OpensteerSemanticRuntime {
     input?: OpensteerNetworkClearInput,
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerNetworkClearOutput>;
+  captureScripts(
+    input?: OpensteerCaptureScriptsInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerCaptureScriptsOutput>;
   getCookies(
     input?: {
       readonly urls?: readonly string[];

@@ -26,6 +26,8 @@ export const opensteerCapabilities = [
   "inspect.sessionStorage",
   "inspect.indexedDb",
   "transport.sessionHttp",
+  "instrumentation.initScripts",
+  "instrumentation.routing",
   "events.pageLifecycle",
   "events.dialog",
   "events.download",
@@ -168,6 +170,16 @@ export const opensteerCapabilityDescriptors: readonly OpensteerCapabilityDescrip
   {
     key: "transport.sessionHttp",
     description: "Execute HTTP requests inside the live browser session boundary.",
+    stability: "stable",
+  },
+  {
+    key: "instrumentation.initScripts",
+    description: "Inject scripts before page scripts execute inside a browser session.",
+    stability: "stable",
+  },
+  {
+    key: "instrumentation.routing",
+    description: "Intercept, continue, replace, or abort browser network requests.",
     stability: "stable",
   },
   {

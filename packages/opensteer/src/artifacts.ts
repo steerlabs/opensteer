@@ -10,6 +10,7 @@ import type {
   HtmlSnapshot,
   OpensteerArtifact,
   OpensteerArtifactKind,
+  ScriptSourceArtifactData,
   StorageSnapshot,
   TraceContext,
 } from "@opensteer/protocol";
@@ -56,6 +57,7 @@ interface StructuredArtifactDataByKind {
   readonly "dom-snapshot": DomSnapshot;
   readonly cookies: readonly CookieRecord[];
   readonly "storage-snapshot": StorageSnapshot;
+  readonly "script-source": ScriptSourceArtifactData;
 }
 
 type StructuredArtifactPayloadByKind = {
@@ -313,6 +315,15 @@ export class FilesystemArtifactStore implements OpensteerArtifactStore {
             data: await readStructuredPayload<StorageSnapshot>(objectPath),
           },
         };
+      case "script-source":
+        return {
+          manifest,
+          payload: {
+            kind: "script-source",
+            payloadType: "structured",
+            data: await readStructuredPayload<ScriptSourceArtifactData>(objectPath),
+          },
+        };
     }
   }
 
@@ -400,6 +411,15 @@ export class FilesystemArtifactStore implements OpensteerArtifactStore {
         return {
           ...artifactBase,
           kind: "storage-snapshot",
+          payload:
+            delivery === "inline-if-structured"
+              ? { delivery: "inline", data: record.payload.data }
+              : externalPayload,
+        };
+      case "script-source":
+        return {
+          ...artifactBase,
+          kind: "script-source",
           payload:
             delivery === "inline-if-structured"
               ? { delivery: "inline", data: record.payload.data }

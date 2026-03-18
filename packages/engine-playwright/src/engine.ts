@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import {
   createBodyPayload,
   createBrowserCoreError,
@@ -14,6 +16,7 @@ import {
   createPoint,
   createSessionRef,
   createSize,
+  hasCapability,
   createDialogRef,
   matchesNetworkRecordFilters,
   waitForCdpVisualStability,
@@ -23,6 +26,10 @@ import {
   closedSessionError,
   type GetNetworkRecordsInput,
   type BrowserCoreEngine,
+  type BrowserInitScriptInput,
+  type BrowserInitScriptRegistration,
+  type BrowserRouteRegistration,
+  type BrowserRouteRegistrationInput,
   type CoordinateSpace,
   type DocumentEpoch,
   type DocumentRef,
@@ -69,6 +76,7 @@ import type {
   Page,
   Request,
   Response,
+  Route,
 } from "playwright";
 
 import type {
@@ -1214,6 +1222,130 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     } catch (error) {
       throw normalizePlaywrightError(error, controller.pageRef);
     }
+  }
+
+  async addInitScript(input: BrowserInitScriptInput): Promise<BrowserInitScriptRegistration> {
+    if (!hasCapability(this.capabilities, "instrumentation.initScripts")) {
+      throw unsupportedCapabilityError("instrumentation.initScripts");
+    }
+
+    const session = this.requireSession(input.sessionRef);
+    const registrationId = `init-script:${randomUUID()}`;
+    const evaluator = ({ script, args }: { script: string; args: readonly unknown[] }) => {
+      const evaluated = (0, eval)(script) as unknown;
+      if (typeof evaluated === "function") {
+        return (evaluated as (...values: readonly unknown[]) => unknown)(...args);
+      }
+      return evaluated;
+    };
+
+    if (input.pageRef !== undefined) {
+      const controller = this.requirePage(input.pageRef);
+      await controller.page.addInitScript(evaluator, {
+        script: input.script,
+        args: input.args ?? [],
+      });
+    } else {
+      await session.context.addInitScript(evaluator, {
+        script: input.script,
+        args: input.args ?? [],
+      });
+    }
+
+    return {
+      registrationId,
+      sessionRef: input.sessionRef,
+      ...(input.pageRef === undefined ? {} : { pageRef: input.pageRef }),
+    };
+  }
+
+  async registerRoute(input: BrowserRouteRegistrationInput): Promise<BrowserRouteRegistration> {
+    if (!hasCapability(this.capabilities, "instrumentation.routing")) {
+      throw unsupportedCapabilityError("instrumentation.routing");
+    }
+
+    const session = this.requireSession(input.sessionRef);
+    const routeId = `route:${randomUUID()}`;
+    let remaining = input.times ?? Number.POSITIVE_INFINITY;
+
+    const handler = async (route: Route, request: Request) => {
+      if (remaining <= 0) {
+        await route.continue();
+        return;
+      }
+
+      const controller = this.pageByPlaywrightPage.get(request.frame().page());
+      if (input.pageRef !== undefined && controller?.pageRef !== input.pageRef) {
+        await route.continue();
+        return;
+      }
+
+      const resourceType = normalizeResourceType(request.resourceType());
+      if (input.resourceTypes !== undefined && !input.resourceTypes.includes(resourceType)) {
+        await route.continue();
+        return;
+      }
+
+      remaining -= 1;
+      const decision = await input.handler({
+        request: {
+          url: request.url(),
+          method: request.method(),
+          headers: Object.entries(request.headers()).map(([name, value]) => ({ name, value })),
+          resourceType,
+          ...(controller === undefined ? {} : { pageRef: controller.pageRef }),
+          ...(request.postDataBuffer() === null
+            ? {}
+            : { postData: createBodyPayload(new Uint8Array(request.postDataBuffer()!)) }),
+        },
+        fetchOriginal: async () => {
+          const original = await route.fetch();
+          const body = new Uint8Array(await original.body());
+          return {
+            url: original.url(),
+            status: original.status(),
+            statusText: original.statusText(),
+            headers: original
+              .headersArray()
+              .map((header) => ({ name: header.name, value: header.value })),
+            ...(body.byteLength === 0 ? {} : { body: createBodyPayload(body) }),
+            redirected: original.url() !== request.url(),
+          };
+        },
+      });
+
+      switch (decision.kind) {
+        case "continue":
+          await route.continue();
+          return;
+        case "abort":
+          await route.abort(decision.errorCode as never | undefined);
+          return;
+        case "fulfill": {
+          const headers = decision.headers === undefined
+            ? undefined
+            : Object.fromEntries(decision.headers.map((header) => [header.name, header.value]));
+          const body = decision.body === undefined
+            ? undefined
+            : Buffer.from(decision.body.bytes);
+          await route.fulfill({
+            status: decision.status ?? 200,
+            ...(decision.contentType === undefined ? {} : { contentType: decision.contentType }),
+            ...(headers === undefined ? {} : { headers }),
+            ...(body === undefined ? {} : { body }),
+          });
+        }
+      }
+    };
+
+    await session.context.route(input.urlPattern, handler);
+
+    return {
+      routeId,
+      sessionRef: input.sessionRef,
+      ...(input.pageRef === undefined ? {} : { pageRef: input.pageRef }),
+      urlPattern: input.urlPattern,
+    };
   }
 
   async executeRequest(input: {

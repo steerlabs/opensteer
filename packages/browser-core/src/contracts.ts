@@ -49,6 +49,65 @@ export interface SessionTransportResponse {
   readonly redirected: boolean;
 }
 
+export interface BrowserInitScriptInput {
+  readonly sessionRef: SessionRef;
+  readonly pageRef?: PageRef;
+  readonly script: string;
+  readonly args?: readonly unknown[];
+}
+
+export interface BrowserInitScriptRegistration {
+  readonly registrationId: string;
+  readonly sessionRef: SessionRef;
+  readonly pageRef?: PageRef;
+}
+
+export interface BrowserRouteRequest {
+  readonly url: string;
+  readonly method: string;
+  readonly headers: readonly HeaderEntry[];
+  readonly resourceType: NetworkRecord["resourceType"];
+  readonly pageRef?: PageRef;
+  readonly postData?: BodyPayload;
+}
+
+export interface BrowserRouteFetchResult extends SessionTransportResponse {}
+
+export type BrowserRouteHandlerResult =
+  | {
+      readonly kind: "continue";
+    }
+  | {
+      readonly kind: "fulfill";
+      readonly status?: number;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BodyPayload;
+      readonly contentType?: string;
+    }
+  | {
+      readonly kind: "abort";
+      readonly errorCode?: string;
+    };
+
+export interface BrowserRouteRegistrationInput {
+  readonly sessionRef: SessionRef;
+  readonly pageRef?: PageRef;
+  readonly urlPattern: string;
+  readonly resourceTypes?: readonly NetworkRecord["resourceType"][];
+  readonly times?: number;
+  readonly handler: (input: {
+    readonly request: BrowserRouteRequest;
+    fetchOriginal(): Promise<BrowserRouteFetchResult>;
+  }) => Promise<BrowserRouteHandlerResult> | BrowserRouteHandlerResult;
+}
+
+export interface BrowserRouteRegistration {
+  readonly routeId: string;
+  readonly sessionRef: SessionRef;
+  readonly pageRef?: PageRef;
+  readonly urlPattern: string;
+}
+
 export interface GetNetworkRecordsInput extends NetworkRecordFilterInput {
   readonly sessionRef: SessionRef;
   readonly pageRef?: PageRef;
@@ -195,8 +254,15 @@ export interface SessionTransportExecutor {
   }): Promise<StepResult<SessionTransportResponse>>;
 }
 
+export interface BrowserInstrumentation {
+  readonly capabilities: Readonly<BrowserCapabilities>;
+
+  addInitScript(input: BrowserInitScriptInput): Promise<BrowserInitScriptRegistration>;
+  registerRoute(input: BrowserRouteRegistrationInput): Promise<BrowserRouteRegistration>;
+}
+
 export interface BrowserCoreEngine
-  extends BrowserExecutor, BrowserInspector, SessionTransportExecutor {}
+  extends BrowserExecutor, BrowserInspector, SessionTransportExecutor, BrowserInstrumentation {}
 
 export interface FakeBrowserCorePageSeed {
   readonly url?: string;

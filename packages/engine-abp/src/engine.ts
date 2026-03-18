@@ -28,6 +28,10 @@ import {
   waitForCdpVisualStability,
   staleNodeRefError,
   unsupportedCapabilityError,
+  type BrowserInitScriptInput,
+  type BrowserInitScriptRegistration,
+  type BrowserRouteRegistrationInput,
+  type BrowserRouteRegistration,
   type GetNetworkRecordsInput,
   type BrowserCoreEngine,
   type BodyPayload,
@@ -2058,6 +2062,14 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     } catch (error) {
       throw normalizeAbpError(error, controller.pageRef);
     }
+  }
+
+  async addInitScript(_input: BrowserInitScriptInput): Promise<BrowserInitScriptRegistration> {
+    throw unsupportedCapabilityError("instrumentation.initScripts");
+  }
+
+  async registerRoute(_input: BrowserRouteRegistrationInput): Promise<BrowserRouteRegistration> {
+    throw unsupportedCapabilityError("instrumentation.routing");
   }
 
   async executeRequest(input: {

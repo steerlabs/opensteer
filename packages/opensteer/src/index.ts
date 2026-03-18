@@ -137,6 +137,9 @@ export type {
   TraceRunManifest,
 } from "./traces.js";
 export type {
+  OpensteerCaptureScriptsOptions,
+  OpensteerCaptureScriptsResult,
+  OpensteerAddInitScriptOptions,
   OpensteerAttachOptions,
   OpensteerComputerExecuteOptions,
   OpensteerComputerExecuteResult,
@@ -158,6 +161,13 @@ export type {
   OpensteerTargetOptions,
   OpensteerOptions,
 } from "./sdk/opensteer.js";
+export type {
+  OpensteerFetchedRouteResponse,
+  OpensteerInterceptScriptOptions,
+  OpensteerRouteHandlerResult,
+  OpensteerRouteOptions,
+  OpensteerRouteRegistration,
+} from "./sdk/instrumentation.js";
 export { Opensteer } from "./sdk/opensteer.js";
 export type { OpensteerCloudOptions } from "./sdk/runtime-resolution.js";
 export type {

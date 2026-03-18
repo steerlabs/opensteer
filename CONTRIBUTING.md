@@ -48,3 +48,7 @@ pnpm run opensteer:local -- close
 - Update docs when package boundaries, public contracts, or developer workflows
   change.
 - Call out assumptions and open questions in the pull request description.
+- Do not add a new stable top-level API without:
+  - one generic fixture test
+  - one documented example
+  - docs that explain capability requirements and failure behavior

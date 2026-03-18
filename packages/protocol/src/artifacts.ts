@@ -27,11 +27,21 @@ export type OpensteerArtifactKind =
   | "html-snapshot"
   | "dom-snapshot"
   | "cookies"
-  | "storage-snapshot";
+  | "storage-snapshot"
+  | "script-source";
 
 export type ArtifactRelation = "result" | "before" | "after" | "capture" | "evidence" | "snapshot";
 
 export type ArtifactExternalLocation = ExternalBinaryLocation;
+
+export interface ScriptSourceArtifactData {
+  readonly source: "inline" | "external" | "dynamic" | "worker";
+  readonly url?: string;
+  readonly type?: string;
+  readonly hash: string;
+  readonly loadOrder: number;
+  readonly content: string;
+}
 
 export interface ArtifactInline<TData> {
   readonly delivery: "inline";
@@ -77,12 +87,18 @@ export interface StorageSnapshotArtifactRecord extends OpensteerArtifactBase {
   readonly payload: ArtifactInline<StorageSnapshot> | ArtifactExternalLocation;
 }
 
+export interface ScriptSourceArtifactRecord extends OpensteerArtifactBase {
+  readonly kind: "script-source";
+  readonly payload: ArtifactInline<ScriptSourceArtifactData> | ArtifactExternalLocation;
+}
+
 export type OpensteerArtifact =
   | ScreenshotArtifactRecord
   | HtmlSnapshotArtifactRecord
   | DomSnapshotArtifactRecord
   | CookiesArtifactRecord
-  | StorageSnapshotArtifactRecord;
+  | StorageSnapshotArtifactRecord
+  | ScriptSourceArtifactRecord;
 
 export interface ArtifactReference {
   readonly artifactId: string;
@@ -97,6 +113,7 @@ const artifactKindSchema: JsonSchema = enumSchema(
     "dom-snapshot",
     "cookies",
     "storage-snapshot",
+    "script-source",
   ] as const,
   {
     title: "OpensteerArtifactKind",
@@ -206,6 +223,35 @@ const storageSnapshotArtifactRecordSchema: JsonSchema = objectSchema(
   },
 );
 
+export const scriptSourceArtifactDataSchema: JsonSchema = objectSchema(
+  {
+    source: enumSchema(["inline", "external", "dynamic", "worker"] as const),
+    url: stringSchema({ minLength: 1 }),
+    type: stringSchema({ minLength: 1 }),
+    hash: stringSchema({ minLength: 1 }),
+    loadOrder: integerSchema({ minimum: 0 }),
+    content: stringSchema(),
+  },
+  {
+    title: "ScriptSourceArtifactData",
+    required: ["source", "hash", "loadOrder", "content"],
+  },
+);
+
+const scriptSourceArtifactRecordSchema: JsonSchema = objectSchema(
+  {
+    ...artifactBaseSchema("script-source"),
+    payload: oneOfSchema([
+      inlineArtifactPayloadSchema(scriptSourceArtifactDataSchema, "InlineScriptSourceArtifact"),
+      externalBinaryLocationSchema,
+    ]),
+  },
+  {
+    title: "ScriptSourceArtifactRecord",
+    required: ["artifactId", "kind", "createdAt", "payload"],
+  },
+);
+
 export const opensteerArtifactSchema: JsonSchema = oneOfSchema(
   [
     screenshotArtifactRecordSchema,
@@ -213,6 +259,7 @@ export const opensteerArtifactSchema: JsonSchema = oneOfSchema(
     domSnapshotArtifactRecordSchema,
     cookiesArtifactRecordSchema,
     storageSnapshotArtifactRecordSchema,
+    scriptSourceArtifactRecordSchema,
   ],
   {
     title: "OpensteerArtifact",

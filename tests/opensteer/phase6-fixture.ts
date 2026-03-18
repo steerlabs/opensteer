@@ -145,6 +145,75 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
+  if (url.pathname === "/phase10/init-script-target") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(
+      html(
+        `
+          <div id="phase10-init-script">init script target</div>
+          <script>
+            window.phase10InitValue = window.__phase10Init ?? "missing";
+          </script>
+        `,
+        "Phase 10 init script",
+      ),
+    );
+    return;
+  }
+
+  if (url.pathname === "/phase10/scripts") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(
+      html(
+        `
+          <div id="phase10-scripts">script capture target</div>
+          <script>
+            window.phase10Inline = "inline";
+          </script>
+          <script src="/phase10/assets/script-a.js"></script>
+          <script>
+            window.addEventListener("load", () => {
+              const dynamic = document.createElement("script");
+              dynamic.src = "/phase10/assets/script-dynamic.js";
+              document.head.appendChild(dynamic);
+              if (${url.searchParams.get("worker") === "1"}) {
+                window.phase10Worker = new Worker("/phase10/assets/script-worker.js");
+              }
+            });
+          </script>
+        `,
+        "Phase 10 scripts",
+      ),
+    );
+    return;
+  }
+
+  if (url.pathname === "/phase10/route-target") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(
+      html(
+        `
+          <div id="phase10-route">route target</div>
+          <script src="/phase10/assets/route-script.js"></script>
+          <script>
+            window.phase10RouteFetch = "pending";
+            window.addEventListener("load", async () => {
+              try {
+                const response = await fetch("/phase10/api/route-data");
+                const data = await response.json();
+                window.phase10RouteFetch = data.value;
+              } catch (error) {
+                window.phase10RouteFetch = "aborted";
+              }
+            });
+          </script>
+        `,
+        "Phase 10 route target",
+      ),
+    );
+    return;
+  }
+
   if (url.pathname === "/phase10/api/capture") {
     response.setHeader("content-type", "application/json; charset=utf-8");
     response.setHeader("set-cookie", "phase10-capture=server; Path=/; SameSite=Lax");
@@ -304,6 +373,55 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
         mode: "page-eval-http",
       }),
     );
+    return;
+  }
+
+  if (url.pathname === "/phase10/api/route-data") {
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    response.end(
+      JSON.stringify({
+        value: "original",
+      }),
+    );
+    return;
+  }
+
+  if (url.pathname === "/phase10/api/kernel-parity") {
+    const body = (await readRequestBody(request)).toString("utf8");
+    const form = new URLSearchParams(body);
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    response.end(
+      JSON.stringify({
+        ok: true,
+        query: url.searchParams.get("token"),
+        header: request.headers["x-phase10-token"] ?? "",
+        form: form.get("token"),
+      }),
+    );
+    return;
+  }
+
+  if (url.pathname === "/phase10/assets/script-a.js") {
+    response.setHeader("content-type", "application/javascript; charset=utf-8");
+    response.end('window.phase10External = "external";');
+    return;
+  }
+
+  if (url.pathname === "/phase10/assets/script-dynamic.js") {
+    response.setHeader("content-type", "application/javascript; charset=utf-8");
+    response.end('window.phase10Dynamic = "dynamic";');
+    return;
+  }
+
+  if (url.pathname === "/phase10/assets/script-worker.js") {
+    response.setHeader("content-type", "application/javascript; charset=utf-8");
+    response.end('self.postMessage("phase10-worker");');
+    return;
+  }
+
+  if (url.pathname === "/phase10/assets/route-script.js") {
+    response.setHeader("content-type", "application/javascript; charset=utf-8");
+    response.end('window.phase10RouteScript = "original";');
     return;
   }
 

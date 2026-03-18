@@ -808,6 +808,59 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
     ],
   },
   {
+    name: "scripts",
+    summary: "Capture page script sources for reverse-engineering workflows.",
+    defaultSubcommand: "capture",
+    subcommands: [
+      {
+        name: "capture",
+        id: "scripts.capture",
+        summary: "Capture inline and external script sources from the current page and run.",
+        options: [
+          ...SESSION_OPTIONS,
+          OUTPUT_OPTION,
+          {
+            name: "page-ref",
+            description: "Capture against a specific page reference",
+            kind: "string",
+            valueLabel: "ref",
+          },
+          {
+            name: "include-inline",
+            description: "Include inline script tags",
+            kind: "boolean",
+          },
+          {
+            name: "include-external",
+            description: "Include external script requests",
+            kind: "boolean",
+          },
+          {
+            name: "include-dynamic",
+            description: "Include script requests observed outside the current DOM tree",
+            kind: "boolean",
+          },
+          {
+            name: "include-workers",
+            description: "Include worker script URLs observed during the current run",
+            kind: "boolean",
+          },
+          {
+            name: "url-filter",
+            description: "Only include script URLs containing this string",
+            kind: "string",
+            valueLabel: "text",
+          },
+          {
+            name: "no-persist",
+            description: "Return captured scripts without persisting script artifacts",
+            kind: "boolean",
+          },
+        ],
+      },
+    ],
+  },
+  {
     name: "plan",
     summary: "Manage request plans.",
     subcommands: [
