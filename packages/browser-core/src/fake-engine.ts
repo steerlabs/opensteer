@@ -6,6 +6,10 @@ import {
 } from "./capabilities.js";
 import type {
   BrowserCoreEngine,
+  BrowserInitScriptRegistration,
+  BrowserInitScriptInput,
+  BrowserRouteRegistration,
+  BrowserRouteRegistrationInput,
   FakeBrowserCoreEngineOptions,
   GetNetworkRecordsInput,
   SessionTransportRequest,
@@ -217,6 +221,31 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
   ): void {
     const session = this.requireSession(sessionRef);
     session.transportResponses.set(buildTransportKey(request), clone(response));
+  }
+
+  async addInitScript(input: BrowserInitScriptInput): Promise<BrowserInitScriptRegistration> {
+    if (!hasCapability(this.capabilities, "instrumentation.initScripts")) {
+      throw unsupportedCapabilityError("instrumentation.initScripts");
+    }
+    this.requireSession(input.sessionRef);
+    return {
+      registrationId: `fake-init-script-${String(++this.stepCounter)}`,
+      sessionRef: input.sessionRef,
+      ...(input.pageRef === undefined ? {} : { pageRef: input.pageRef }),
+    };
+  }
+
+  async registerRoute(input: BrowserRouteRegistrationInput): Promise<BrowserRouteRegistration> {
+    if (!hasCapability(this.capabilities, "instrumentation.routing")) {
+      throw unsupportedCapabilityError("instrumentation.routing");
+    }
+    this.requireSession(input.sessionRef);
+    return {
+      routeId: `fake-route-${String(++this.stepCounter)}`,
+      sessionRef: input.sessionRef,
+      ...(input.pageRef === undefined ? {} : { pageRef: input.pageRef }),
+      urlPattern: input.urlPattern,
+    };
   }
 
   async createSession(): Promise<SessionRef> {

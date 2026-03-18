@@ -42,6 +42,10 @@ export const PLAYWRIGHT_BROWSER_CORE_CAPABILITIES: BrowserCapabilities = mergeBr
     transport: {
       sessionHttp: true,
     },
+    instrumentation: {
+      initScripts: true,
+      routing: true,
+    },
     events: {
       pageLifecycle: true,
       dialog: true,

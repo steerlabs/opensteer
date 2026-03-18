@@ -1,7 +1,11 @@
 import type {
   CookieRecord,
+  OpensteerAddInitScriptInput,
+  OpensteerAddInitScriptOutput,
   OpensteerComputerExecuteInput,
   OpensteerComputerExecuteOutput,
+  OpensteerCaptureScriptsInput,
+  OpensteerCaptureScriptsOutput,
   OpensteerDomClickInput,
   OpensteerDomExtractInput,
   OpensteerDomExtractOutput,
@@ -114,6 +118,11 @@ export class CloudSessionProxy implements OpensteerSemanticRuntime {
     return this.requireClient().invoke("page.evaluate", input);
   }
 
+  async addInitScript(input: OpensteerAddInitScriptInput): Promise<OpensteerAddInitScriptOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("page.add-init-script", input);
+  }
+
   async snapshot(input: OpensteerPageSnapshotInput = {}): Promise<OpensteerPageSnapshotOutput> {
     await this.ensureSession();
     return this.requireClient().invoke("page.snapshot", input);
@@ -157,6 +166,13 @@ export class CloudSessionProxy implements OpensteerSemanticRuntime {
   async clearNetwork(input: OpensteerNetworkClearInput = {}): Promise<OpensteerNetworkClearOutput> {
     await this.ensureSession();
     return this.requireClient().invoke("network.clear", input);
+  }
+
+  async captureScripts(
+    input: OpensteerCaptureScriptsInput = {},
+  ): Promise<OpensteerCaptureScriptsOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("scripts.capture", input);
   }
 
   async getCookies(input: { readonly urls?: readonly string[] } = {}): Promise<readonly CookieRecord[]> {

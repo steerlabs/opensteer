@@ -14,6 +14,7 @@ import type {
 const DEFAULT_TIMEOUTS: Readonly<Record<string, number>> = {
   "session.open": 30_000,
   "page.goto": 30_000,
+  "page.add-init-script": 10_000,
   "page.snapshot": 15_000,
   "computer.execute": 30_000,
   "dom.click": 10_000,
@@ -24,6 +25,7 @@ const DEFAULT_TIMEOUTS: Readonly<Record<string, number>> = {
   "network.query": 15_000,
   "network.save": 15_000,
   "network.clear": 10_000,
+  "scripts.capture": 15_000,
   "request.raw": 30_000,
   "request-plan.infer": 15_000,
   "request-plan.write": 10_000,

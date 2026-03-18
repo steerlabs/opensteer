@@ -41,6 +41,11 @@ export async function dispatchSemanticOperation(
         input as Parameters<OpensteerSessionRuntime["evaluate"]>[0],
         options,
       );
+    case "page.add-init-script":
+      return runtime.addInitScript(
+        input as Parameters<OpensteerSessionRuntime["addInitScript"]>[0],
+        options,
+      );
     case "page.snapshot":
       return runtime.snapshot(
         (input ?? {}) as Parameters<OpensteerSessionRuntime["snapshot"]>[0],
@@ -66,6 +71,11 @@ export async function dispatchSemanticOperation(
     case "network.clear":
       return runtime.clearNetwork(
         (input ?? {}) as Parameters<OpensteerSessionRuntime["clearNetwork"]>[0],
+        options,
+      );
+    case "scripts.capture":
+      return runtime.captureScripts(
+        (input ?? {}) as Parameters<OpensteerSessionRuntime["captureScripts"]>[0],
         options,
       );
     case "inspect.cookies":

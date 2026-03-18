@@ -47,6 +47,7 @@ import {
   type CookieRecord,
   type StorageSnapshot,
 } from "./storage.js";
+import type { ScriptSourceArtifactData } from "./artifacts.js";
 import {
   opensteerGetAuthRecipeInputSchema,
   opensteerListAuthRecipesInputSchema,
@@ -275,6 +276,37 @@ export interface OpensteerPageEvaluateOutput {
   readonly value: JsonValue;
 }
 
+export interface OpensteerAddInitScriptInput {
+  readonly script: string;
+  readonly args?: readonly JsonValue[];
+  readonly pageRef?: PageRef;
+}
+
+export interface OpensteerAddInitScriptOutput {
+  readonly registrationId: string;
+  readonly sessionRef: SessionRef;
+  readonly pageRef?: PageRef;
+}
+
+export interface OpensteerCaptureScriptsInput {
+  readonly pageRef?: PageRef;
+  readonly includeInline?: boolean;
+  readonly includeExternal?: boolean;
+  readonly includeDynamic?: boolean;
+  readonly includeWorkers?: boolean;
+  readonly urlFilter?: string;
+  readonly persist?: boolean;
+}
+
+export interface OpensteerCapturedScript extends ScriptSourceArtifactData {
+  readonly artifactId?: string;
+}
+
+export interface OpensteerCaptureScriptsOutput {
+  readonly pageRef: PageRef;
+  readonly scripts: readonly OpensteerCapturedScript[];
+}
+
 export interface OpensteerPageSnapshotInput {
   readonly mode?: OpensteerSnapshotMode;
 }
@@ -466,6 +498,7 @@ export const opensteerSemanticOperationNames = [
   "page.close",
   "page.goto",
   "page.evaluate",
+  "page.add-init-script",
   "page.snapshot",
   "dom.click",
   "dom.hover",
@@ -477,6 +510,7 @@ export const opensteerSemanticOperationNames = [
   "network.clear",
   "inspect.cookies",
   "inspect.storage",
+  "scripts.capture",
   "request.raw",
   "request-plan.infer",
   "request-plan.write",
@@ -882,6 +916,72 @@ const opensteerPageEvaluateOutputSchema: JsonSchema = objectSchema(
   {
     title: "OpensteerPageEvaluateOutput",
     required: ["pageRef", "value"],
+  },
+);
+
+const opensteerAddInitScriptInputSchema: JsonSchema = objectSchema(
+  {
+    script: stringSchema({ minLength: 1 }),
+    args: arraySchema(defineSchema({ title: "OpensteerInitScriptArg" })),
+    pageRef: pageRefSchema,
+  },
+  {
+    title: "OpensteerAddInitScriptInput",
+    required: ["script"],
+  },
+);
+
+const opensteerAddInitScriptOutputSchema: JsonSchema = objectSchema(
+  {
+    registrationId: stringSchema({ minLength: 1 }),
+    sessionRef: sessionRefSchema,
+    pageRef: pageRefSchema,
+  },
+  {
+    title: "OpensteerAddInitScriptOutput",
+    required: ["registrationId", "sessionRef"],
+  },
+);
+
+const opensteerCapturedScriptSchema: JsonSchema = objectSchema(
+  {
+    source: enumSchema(["inline", "external", "dynamic", "worker"] as const),
+    url: stringSchema({ minLength: 1 }),
+    type: stringSchema({ minLength: 1 }),
+    hash: stringSchema({ minLength: 1 }),
+    loadOrder: integerSchema({ minimum: 0 }),
+    content: stringSchema(),
+    artifactId: stringSchema({ minLength: 1 }),
+  },
+  {
+    title: "OpensteerCapturedScript",
+    required: ["source", "hash", "loadOrder", "content"],
+  },
+);
+
+const opensteerCaptureScriptsInputSchema: JsonSchema = objectSchema(
+  {
+    pageRef: pageRefSchema,
+    includeInline: { type: "boolean" },
+    includeExternal: { type: "boolean" },
+    includeDynamic: { type: "boolean" },
+    includeWorkers: { type: "boolean" },
+    urlFilter: stringSchema({ minLength: 1 }),
+    persist: { type: "boolean" },
+  },
+  {
+    title: "OpensteerCaptureScriptsInput",
+  },
+);
+
+const opensteerCaptureScriptsOutputSchema: JsonSchema = objectSchema(
+  {
+    pageRef: pageRefSchema,
+    scripts: arraySchema(opensteerCapturedScriptSchema),
+  },
+  {
+    title: "OpensteerCaptureScriptsOutput",
+    required: ["pageRef", "scripts"],
   },
 );
 
@@ -1366,6 +1466,13 @@ export const opensteerSemanticOperationSpecifications = [
     outputSchema: opensteerPageEvaluateOutputSchema,
     requiredCapabilities: ["pages.manage"],
   }),
+  defineSemanticOperationSpec<OpensteerAddInitScriptInput, OpensteerAddInitScriptOutput>({
+    name: "page.add-init-script",
+    description: "Register a script that runs before page scripts in the current browser session.",
+    inputSchema: opensteerAddInitScriptInputSchema,
+    outputSchema: opensteerAddInitScriptOutputSchema,
+    requiredCapabilities: ["instrumentation.initScripts"],
+  }),
   defineSemanticOperationSpec<OpensteerPageSnapshotInput, OpensteerPageSnapshotOutput>({
     name: "page.snapshot",
     description: "Compile an HTML-first agent snapshot for the current page.",
@@ -1441,6 +1548,13 @@ export const opensteerSemanticOperationSpecifications = [
     inputSchema: opensteerNetworkClearInputSchema,
     outputSchema: opensteerNetworkClearOutputSchema,
     requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerCaptureScriptsInput, OpensteerCaptureScriptsOutput>({
+    name: "scripts.capture",
+    description: "Capture inline and external script sources from the current page and run.",
+    inputSchema: opensteerCaptureScriptsInputSchema,
+    outputSchema: opensteerCaptureScriptsOutputSchema,
+    requiredCapabilities: ["inspect.html", "inspect.network", "inspect.networkBodies"],
   }),
   defineSemanticOperationSpec<OpensteerInspectCookiesInput, readonly CookieRecord[]>({
     name: "inspect.cookies",

@@ -391,6 +391,12 @@ describe("semantic protocol descriptors", () => {
       opensteerSemanticOperationSpecificationMap["page.evaluate"]?.requiredCapabilities,
     ).toEqual(["pages.manage"]);
     expect(
+      opensteerSemanticOperationSpecificationMap["page.add-init-script"]?.requiredCapabilities,
+    ).toEqual(["instrumentation.initScripts"]);
+    expect(
+      opensteerSemanticOperationSpecificationMap["scripts.capture"]?.requiredCapabilities,
+    ).toEqual(["inspect.html", "inspect.network", "inspect.networkBodies"]);
+    expect(
       opensteerSemanticOperationSpecificationMap["request.execute"]?.requiredCapabilities,
     ).toEqual([]);
   });
@@ -478,6 +484,42 @@ describe("semantic protocol descriptors", () => {
         },
       ),
     ).toEqual(["pages.manage"]);
+    expect(
+      resolveSemanticRequiredCapabilities(
+        opensteerSemanticOperationSpecificationMap["page.add-init-script"]!,
+        {
+          script: "() => {}",
+        },
+      ),
+    ).toEqual(["instrumentation.initScripts"]);
+  });
+
+  test("validates stable instrumentation shapes at the semantic boundary", () => {
+    expect(() =>
+      assertValidSemanticOperationInput("page.add-init-script", {
+        script: "() => { window.__test = true; }",
+        args: ["phase10"],
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      assertValidSemanticOperationInput("scripts.capture", {
+        includeInline: true,
+        includeExternal: true,
+        includeDynamic: true,
+        includeWorkers: true,
+        persist: false,
+      }),
+    ).not.toThrow();
+
+    const captureSchema = opensteerSemanticOperationSpecificationMap["scripts.capture"]?.outputSchema;
+    expect(captureSchema?.properties?.scripts?.items?.properties).toMatchObject({
+      source: expect.any(Object),
+      hash: expect.any(Object),
+      loadOrder: expect.any(Object),
+      content: expect.any(Object),
+      artifactId: expect.any(Object),
+    });
   });
 
   test("validates the computer.execute action union at the semantic boundary", () => {
@@ -561,7 +603,7 @@ describe("semantic protocol descriptors", () => {
 describe("protocol trace and artifact schemas", () => {
   test("exports discriminated unions for public events and artifacts", () => {
     expect(opensteerEventSchema.oneOf).toHaveLength(18);
-    expect(opensteerArtifactSchema.oneOf).toHaveLength(5);
+    expect(opensteerArtifactSchema.oneOf).toHaveLength(6);
   });
 
   test("preserves shadow and iframe metadata in the public DOM snapshot schema", () => {

@@ -1,6 +1,10 @@
 import type {
   CookieRecord,
+  OpensteerAddInitScriptInput,
+  OpensteerAddInitScriptOutput,
   OpensteerActionResult,
+  OpensteerCaptureScriptsInput,
+  OpensteerCaptureScriptsOutput,
   OpensteerComputerExecuteInput,
   OpensteerComputerExecuteOutput,
   OpensteerDomClickInput,
@@ -110,6 +114,10 @@ export class LocalOpensteerSessionProxy implements OpensteerDisconnectableRuntim
     return (await this.ensureClient()).invoke("page.evaluate", input);
   }
 
+  async addInitScript(input: OpensteerAddInitScriptInput): Promise<OpensteerAddInitScriptOutput> {
+    return (await this.ensureClient()).invoke("page.add-init-script", input);
+  }
+
   async snapshot(input: OpensteerPageSnapshotInput = {}): Promise<OpensteerPageSnapshotOutput> {
     return (await this.ensureClient()).invoke("page.snapshot", input);
   }
@@ -144,6 +152,12 @@ export class LocalOpensteerSessionProxy implements OpensteerDisconnectableRuntim
 
   async clearNetwork(input: OpensteerNetworkClearInput = {}): Promise<OpensteerNetworkClearOutput> {
     return (await this.ensureClient()).invoke("network.clear", input);
+  }
+
+  async captureScripts(
+    input: OpensteerCaptureScriptsInput = {},
+  ): Promise<OpensteerCaptureScriptsOutput> {
+    return (await this.ensureClient()).invoke("scripts.capture", input);
   }
 
   async getCookies(input: { readonly urls?: readonly string[] } = {}): Promise<readonly CookieRecord[]> {

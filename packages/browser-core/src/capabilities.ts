@@ -33,6 +33,10 @@ export interface BrowserCapabilities {
   readonly transport: {
     readonly sessionHttp: boolean;
   };
+  readonly instrumentation: {
+    readonly initScripts: boolean;
+    readonly routing: boolean;
+  };
   readonly events: {
     readonly pageLifecycle: boolean;
     readonly dialog: boolean;
@@ -74,6 +78,8 @@ export type BrowserCapabilityPath =
   | "inspector.sessionStorage"
   | "inspector.indexedDb"
   | "transport.sessionHttp"
+  | "instrumentation.initScripts"
+  | "instrumentation.routing"
   | "events.pageLifecycle"
   | "events.dialog"
   | "events.download"
@@ -133,6 +139,10 @@ export function noBrowserCapabilities(): BrowserCapabilities {
     transport: {
       sessionHttp: false,
     },
+    instrumentation: {
+      initScripts: false,
+      routing: false,
+    },
     events: {
       pageLifecycle: false,
       dialog: false,
@@ -184,6 +194,10 @@ export function allBrowserCapabilities(): BrowserCapabilities {
     transport: {
       sessionHttp: true,
     },
+    instrumentation: {
+      initScripts: true,
+      routing: true,
+    },
     events: {
       pageLifecycle: true,
       dialog: true,
@@ -219,6 +233,10 @@ export function mergeBrowserCapabilities(
     transport: {
       ...base.transport,
       ...override.transport,
+    },
+    instrumentation: {
+      ...base.instrumentation,
+      ...override.instrumentation,
     },
     events: {
       ...base.events,
@@ -284,6 +302,10 @@ export function hasCapability(
       return capabilities.inspector.indexedDb;
     case "transport.sessionHttp":
       return capabilities.transport.sessionHttp;
+    case "instrumentation.initScripts":
+      return capabilities.instrumentation.initScripts;
+    case "instrumentation.routing":
+      return capabilities.instrumentation.routing;
     case "events.pageLifecycle":
       return capabilities.events.pageLifecycle;
     case "events.dialog":
