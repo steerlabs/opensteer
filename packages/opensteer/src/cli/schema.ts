@@ -113,6 +113,184 @@ const ACTION_TARGET_OPTIONS = [
   DESCRIPTION_OPTION,
 ] as const;
 
+function createRecipeCommandDefinition(input: {
+  readonly name: "recipe" | "auth-recipe";
+  readonly groupSummary: string;
+  readonly writeSummary: string;
+  readonly getSummary: string;
+  readonly listSummary: string;
+  readonly runSummary: string;
+  readonly payloadLabel: string;
+}): CliCommandDefinition {
+  return {
+    name: input.name,
+    summary: input.groupSummary,
+    defaultSubcommand: "list",
+    subcommands: [
+      {
+        name: "write",
+        id: `${input.name}.write`,
+        summary: input.writeSummary,
+        options: [
+          ...SESSION_OPTIONS,
+          OUTPUT_OPTION,
+          {
+            name: "id",
+            description: "Optional recipe id",
+            kind: "string",
+            valueLabel: "id",
+          },
+          {
+            name: "key",
+            description: "Recipe key",
+            kind: "string",
+            valueLabel: "key",
+          },
+          {
+            name: "version",
+            description: "Recipe version",
+            kind: "string",
+            valueLabel: "version",
+          },
+          {
+            name: "tags",
+            description: "Comma-separated tags",
+            kind: "string",
+            valueLabel: "tags",
+          },
+          {
+            name: "payload",
+            description: `Inline ${input.payloadLabel} payload JSON object`,
+            kind: "json-object",
+            valueLabel: "json",
+          },
+          {
+            name: "payload-file",
+            description: `Path to ${input.payloadLabel} payload JSON file`,
+            kind: "string",
+            valueLabel: "path",
+            internalName: "payloadFile",
+          },
+          {
+            name: "provenance-source",
+            description: "Provenance source label",
+            kind: "string",
+            valueLabel: "source",
+            internalName: "provenanceSource",
+          },
+          {
+            name: "provenance-source-id",
+            description: "Provenance source id",
+            kind: "string",
+            valueLabel: "id",
+            internalName: "provenanceSourceId",
+          },
+          {
+            name: "provenance-captured-at",
+            description: "Provenance capture timestamp (ms)",
+            kind: "number",
+            valueLabel: "ms",
+            internalName: "provenanceCapturedAt",
+          },
+          {
+            name: "provenance-notes",
+            description: "Provenance notes",
+            kind: "string",
+            valueLabel: "text",
+            internalName: "provenanceNotes",
+          },
+        ],
+      },
+      {
+        name: "get",
+        id: `${input.name}.get`,
+        summary: input.getSummary,
+        positionals: [
+          {
+            name: "key",
+            description: "Recipe key",
+          },
+          {
+            name: "version",
+            description: "Optional recipe version",
+          },
+        ],
+        options: [
+          ...SESSION_OPTIONS,
+          OUTPUT_OPTION,
+          {
+            name: "key",
+            description: "Recipe key",
+            kind: "string",
+            valueLabel: "key",
+          },
+          {
+            name: "version",
+            description: "Recipe version",
+            kind: "string",
+            valueLabel: "version",
+          },
+        ],
+      },
+      {
+        name: "list",
+        id: `${input.name}.list`,
+        summary: input.listSummary,
+        positionals: [
+          {
+            name: "key",
+            description: "Optional recipe key filter",
+          },
+        ],
+        options: [
+          ...SESSION_OPTIONS,
+          OUTPUT_OPTION,
+          {
+            name: "key",
+            description: "Recipe key filter",
+            kind: "string",
+            valueLabel: "key",
+          },
+        ],
+      },
+      {
+        name: "run",
+        id: `${input.name}.run`,
+        summary: input.runSummary,
+        positionals: [
+          {
+            name: "key",
+            description: "Recipe key",
+          },
+        ],
+        options: [
+          ...SESSION_OPTIONS,
+          OUTPUT_OPTION,
+          {
+            name: "key",
+            description: "Recipe key",
+            kind: "string",
+            valueLabel: "key",
+          },
+          {
+            name: "version",
+            description: "Recipe version",
+            kind: "string",
+            valueLabel: "version",
+          },
+          {
+            name: "variables-json",
+            description: "JSON object of initial recipe variables",
+            kind: "json-object",
+            valueLabel: "json",
+            internalName: "variablesJson",
+          },
+        ],
+      },
+    ],
+  };
+}
+
 const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
   {
     name: "open",
@@ -824,7 +1002,7 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
             description: "Transport mode for raw requests",
             kind: "enum",
             valueLabel: "kind",
-            values: ["session-http", "direct-http"],
+            values: ["context-http", "direct-http", "page-eval-http", "session-http"],
           },
           {
             name: "method",
@@ -1003,173 +1181,24 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
       },
     ],
   },
-  {
+  createRecipeCommandDefinition({
+    name: "recipe",
+    groupSummary: "Manage reusable recipes.",
+    writeSummary: "Write a reusable recipe.",
+    getSummary: "Read a recipe.",
+    listSummary: "List recipes.",
+    runSummary: "Run a recipe.",
+    payloadLabel: "recipe",
+  }),
+  createRecipeCommandDefinition({
     name: "auth-recipe",
-    summary: "Manage auth recovery recipes.",
-    defaultSubcommand: "list",
-    subcommands: [
-      {
-        name: "write",
-        id: "auth-recipe.write",
-        summary: "Write an auth recovery recipe.",
-        options: [
-          ...SESSION_OPTIONS,
-          OUTPUT_OPTION,
-          {
-            name: "id",
-            description: "Optional recipe id",
-            kind: "string",
-            valueLabel: "id",
-          },
-          {
-            name: "key",
-            description: "Recipe key",
-            kind: "string",
-            valueLabel: "key",
-          },
-          {
-            name: "version",
-            description: "Recipe version",
-            kind: "string",
-            valueLabel: "version",
-          },
-          {
-            name: "tags",
-            description: "Comma-separated tags",
-            kind: "string",
-            valueLabel: "tags",
-          },
-          {
-            name: "payload",
-            description: "Inline auth recipe payload JSON object",
-            kind: "json-object",
-            valueLabel: "json",
-          },
-          {
-            name: "payload-file",
-            description: "Path to auth recipe payload JSON file",
-            kind: "string",
-            valueLabel: "path",
-            internalName: "payloadFile",
-          },
-          {
-            name: "provenance-source",
-            description: "Provenance source label",
-            kind: "string",
-            valueLabel: "source",
-            internalName: "provenanceSource",
-          },
-          {
-            name: "provenance-source-id",
-            description: "Provenance source id",
-            kind: "string",
-            valueLabel: "id",
-            internalName: "provenanceSourceId",
-          },
-          {
-            name: "provenance-captured-at",
-            description: "Provenance capture timestamp (ms)",
-            kind: "number",
-            valueLabel: "ms",
-            internalName: "provenanceCapturedAt",
-          },
-          {
-            name: "provenance-notes",
-            description: "Provenance notes",
-            kind: "string",
-            valueLabel: "text",
-            internalName: "provenanceNotes",
-          },
-        ],
-      },
-      {
-        name: "get",
-        id: "auth-recipe.get",
-        summary: "Read an auth recovery recipe.",
-        positionals: [
-          {
-            name: "key",
-            description: "Recipe key",
-          },
-          {
-            name: "version",
-            description: "Optional recipe version",
-          },
-        ],
-        options: [
-          ...SESSION_OPTIONS,
-          OUTPUT_OPTION,
-          {
-            name: "key",
-            description: "Recipe key",
-            kind: "string",
-            valueLabel: "key",
-          },
-          {
-            name: "version",
-            description: "Recipe version",
-            kind: "string",
-            valueLabel: "version",
-          },
-        ],
-      },
-      {
-        name: "list",
-        id: "auth-recipe.list",
-        summary: "List auth recovery recipes.",
-        positionals: [
-          {
-            name: "key",
-            description: "Optional recipe key filter",
-          },
-        ],
-        options: [
-          ...SESSION_OPTIONS,
-          OUTPUT_OPTION,
-          {
-            name: "key",
-            description: "Recipe key filter",
-            kind: "string",
-            valueLabel: "key",
-          },
-        ],
-      },
-      {
-        name: "run",
-        id: "auth-recipe.run",
-        summary: "Run an auth recovery recipe.",
-        positionals: [
-          {
-            name: "key",
-            description: "Recipe key",
-          },
-        ],
-        options: [
-          ...SESSION_OPTIONS,
-          OUTPUT_OPTION,
-          {
-            name: "key",
-            description: "Recipe key",
-            kind: "string",
-            valueLabel: "key",
-          },
-          {
-            name: "version",
-            description: "Recipe version",
-            kind: "string",
-            valueLabel: "version",
-          },
-          {
-            name: "variables-json",
-            description: "JSON object of initial recipe variables",
-            kind: "json-object",
-            valueLabel: "json",
-            internalName: "variablesJson",
-          },
-        ],
-      },
-    ],
-  },
+    groupSummary: "Manage auth recovery recipes.",
+    writeSummary: "Write an auth recovery recipe.",
+    getSummary: "Read an auth recovery recipe.",
+    listSummary: "List auth recovery recipes.",
+    runSummary: "Run an auth recovery recipe.",
+    payloadLabel: "auth recipe",
+  }),
   {
     name: "computer",
     id: "computer",

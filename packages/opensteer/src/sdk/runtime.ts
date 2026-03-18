@@ -23,6 +23,7 @@ import {
   createSessionRef,
   type CookieRecord,
   type OpensteerActionResult,
+  type OpensteerGetRecipeInput,
   type OpensteerAuthRecipeRetryOverrides,
   type OpensteerAuthRecipeStep,
   type OpensteerBrowserContextOptions,
@@ -38,6 +39,8 @@ import {
   type OpensteerGetAuthRecipeInput,
   type OpensteerGetRequestPlanInput,
   type OpensteerInferRequestPlanInput,
+  type OpensteerListRecipesInput,
+  type OpensteerListRecipesOutput,
   type OpensteerListAuthRecipesInput,
   type OpensteerListAuthRecipesOutput,
   type OpensteerNetworkClearInput,
@@ -46,8 +49,18 @@ import {
   type OpensteerNetworkQueryOutput,
   type OpensteerNetworkSaveInput,
   type OpensteerNetworkSaveOutput,
+  type OpensteerPageActivateInput,
+  type OpensteerPageActivateOutput,
+  type OpensteerPageCloseInput,
+  type OpensteerPageCloseOutput,
+  type OpensteerPageEvaluateInput,
+  type OpensteerPageEvaluateOutput,
   type OpensteerPageGotoInput,
   type OpensteerPageGotoOutput,
+  type OpensteerPageListInput,
+  type OpensteerPageListOutput,
+  type OpensteerPageNewInput,
+  type OpensteerPageNewOutput,
   type OpensteerPageSnapshotInput,
   type OpensteerPageSnapshotOutput,
   type OpensteerListRequestPlansInput,
@@ -57,6 +70,8 @@ import {
   type OpensteerRequestFailurePolicy,
   type OpensteerRequestExecuteInput,
   type OpensteerRequestExecuteOutput,
+  type OpensteerRunRecipeInput,
+  type OpensteerRunRecipeOutput,
   type OpensteerRequestTransportResult,
   type OpensteerRequestResponseResult,
   type OpensteerRunAuthRecipeInput,
@@ -70,6 +85,7 @@ import {
   type OpensteerSnapshotMode,
   type OpensteerTargetInput,
   type OpensteerEvent,
+  type OpensteerWriteRecipeInput,
   type StorageSnapshot,
   type TraceContext,
   type OpensteerWriteAuthRecipeInput,
@@ -81,6 +97,7 @@ import { manifestToExternalBinaryLocation, type ArtifactManifest } from "../arti
 import { normalizeThrownOpensteerError } from "../internal/errors.js";
 import { canonicalJsonString, toCanonicalJsonValue } from "../json.js";
 import {
+  delayWithSignal,
   defaultPolicy,
   runWithPolicyTimeout,
   settleWithPolicy,
@@ -123,7 +140,7 @@ import {
   type OpensteerExtractionDescriptorRecord,
 } from "./extraction.js";
 import { compileOpensteerSnapshot, type CompiledOpensteerSnapshot } from "./snapshot/compiler.js";
-import type { AuthRecipeRecord, RequestPlanRecord } from "../registry.js";
+import type { AuthRecipeRecord, RecipeRecord, RequestPlanRecord } from "../registry.js";
 
 type DisposableBrowserCoreEngine = BrowserCoreEngine & {
   dispose?: () => Promise<void>;
@@ -180,6 +197,15 @@ interface RuntimeBrowserBinding {
   readonly pageRef: PageRef;
 }
 
+interface CookieJarEntry {
+  readonly name: string;
+  readonly value: string;
+  readonly domain: string;
+  readonly path: string;
+  readonly secure: boolean;
+  readonly expiresAt?: number;
+}
+
 export class OpensteerSessionRuntime {
   readonly name: string;
   readonly rootPath: string;
@@ -203,6 +229,8 @@ export class OpensteerSessionRuntime {
   private runId: string | undefined;
   private latestSnapshot: CompiledOpensteerSnapshot | undefined;
   private readonly backgroundNetworkPersistence = new Set<Promise<void>>();
+  private readonly cookieJars = new Map<string, CookieJarEntry[]>();
+  private readonly recipeCache = new Map<string, OpensteerRunRecipeOutput>();
   private ownsEngine = false;
 
   constructor(options: OpensteerRuntimeOptions = {}) {
@@ -318,6 +346,257 @@ export class OpensteerSessionRuntime {
     }
   }
 
+  async listPages(
+    input: OpensteerPageListInput = {},
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerPageListOutput> {
+    assertValidSemanticOperationInput("page.list", input);
+
+    if ((await this.ensureLiveRuntimeBinding()) === "unbound") {
+      return { pages: [] };
+    }
+
+    const startedAt = Date.now();
+    try {
+      const output = await this.runWithOperationTimeout(
+        "page.list",
+        async (timeout) => {
+          const pages = await timeout.runStep(() =>
+            this.requireEngine().listPages({ sessionRef: this.requireSessionRef() }),
+          );
+          return {
+            ...(this.pageRef === undefined ? {} : { activePageRef: this.pageRef }),
+            pages,
+          } satisfies OpensteerPageListOutput;
+        },
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "page.list",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          count: output.pages.length,
+          ...(output.activePageRef === undefined ? {} : { activePageRef: output.activePageRef }),
+        },
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "page.list",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+      throw error;
+    }
+  }
+
+  async newPage(
+    input: OpensteerPageNewInput = {},
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerPageNewOutput> {
+    assertValidSemanticOperationInput("page.new", input);
+
+    if ((await this.ensureLiveRuntimeBinding()) === "unbound") {
+      if (input.openerPageRef !== undefined) {
+        throw new OpensteerProtocolError(
+          "invalid-request",
+          "page.new cannot use openerPageRef before a session exists",
+        );
+      }
+      return this.open(input.url === undefined ? {} : { url: input.url }, options);
+    }
+
+    const startedAt = Date.now();
+    try {
+      const output = await this.runWithOperationTimeout(
+        "page.new",
+        async (timeout) => {
+          const created = await timeout.runStep(() =>
+            this.requireEngine().createPage({
+              sessionRef: this.requireSessionRef(),
+              ...(input.openerPageRef === undefined ? {} : { openerPageRef: input.openerPageRef }),
+              ...(input.url === undefined ? {} : { url: input.url }),
+            }),
+          );
+          this.pageRef = created.data.pageRef;
+          this.latestSnapshot = undefined;
+          return this.readSessionState();
+        },
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "page.new",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: output,
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "page.new",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+      throw error;
+    }
+  }
+
+  async activatePage(
+    input: OpensteerPageActivateInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerPageActivateOutput> {
+    assertValidSemanticOperationInput("page.activate", input);
+    const startedAt = Date.now();
+
+    try {
+      const output = await this.runWithOperationTimeout(
+        "page.activate",
+        async (timeout) => {
+          await timeout.runStep(() => this.requireEngine().activatePage({ pageRef: input.pageRef }));
+          this.pageRef = input.pageRef;
+          this.latestSnapshot = undefined;
+          return this.readSessionState();
+        },
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "page.activate",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: output,
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "page.activate",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+      throw error;
+    }
+  }
+
+  async closePage(
+    input: OpensteerPageCloseInput = {},
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerPageCloseOutput> {
+    assertValidSemanticOperationInput("page.close", input);
+    const targetPageRef = input.pageRef ?? (await this.ensurePageRef());
+    const startedAt = Date.now();
+
+    try {
+      const output = await this.runWithOperationTimeout(
+        "page.close",
+        async (timeout) => {
+          await timeout.runStep(() => this.requireEngine().closePage({ pageRef: targetPageRef }));
+          let pages = await timeout.runStep(() =>
+            this.requireEngine().listPages({ sessionRef: this.requireSessionRef() }),
+          );
+          let activePageRef =
+            pages.find((page) => page.pageRef === this.pageRef)?.pageRef ??
+            pages.at(-1)?.pageRef;
+
+          if (pages.length === 0) {
+            const created = await timeout.runStep(() =>
+              this.requireEngine().createPage({
+                sessionRef: this.requireSessionRef(),
+              }),
+            );
+            activePageRef = created.data.pageRef;
+            pages = await timeout.runStep(() =>
+              this.requireEngine().listPages({ sessionRef: this.requireSessionRef() }),
+            );
+          }
+
+          if (activePageRef !== undefined) {
+            await timeout.runStep(() =>
+              this.requireEngine().activatePage({
+                pageRef: activePageRef,
+              }),
+            );
+          }
+
+          this.pageRef = activePageRef;
+          this.latestSnapshot = undefined;
+
+          return {
+            closedPageRef: targetPageRef,
+            ...(activePageRef === undefined ? {} : { activePageRef }),
+            pages,
+          } satisfies OpensteerPageCloseOutput;
+        },
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "page.close",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          closedPageRef: output.closedPageRef,
+          ...(output.activePageRef === undefined ? {} : { activePageRef: output.activePageRef }),
+          count: output.pages.length,
+        },
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "page.close",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+      throw error;
+    }
+  }
+
   async goto(
     input: OpensteerPageGotoInput,
     options: RuntimeOperationOptions = {},
@@ -376,6 +655,67 @@ export class OpensteerSessionRuntime {
     } catch (error) {
       await this.appendTrace({
         operation: "page.goto",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef,
+        }),
+      });
+      throw error;
+    }
+  }
+
+  async evaluate(
+    input: OpensteerPageEvaluateInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerPageEvaluateOutput> {
+    assertValidSemanticOperationInput("page.evaluate", input);
+    const pageRef = input.pageRef ?? (await this.ensurePageRef());
+    const startedAt = Date.now();
+
+    try {
+      const output = await this.runWithOperationTimeout(
+        "page.evaluate",
+        async (timeout) => {
+          const remainingMs = timeout.remainingMs();
+          const evaluated = await timeout.runStep(() =>
+            this.requireEngine().evaluatePage({
+              pageRef,
+              script: input.script,
+              ...(input.args === undefined ? {} : { args: input.args }),
+              ...(remainingMs === undefined ? {} : { timeoutMs: remainingMs }),
+            }),
+          );
+
+          return {
+            pageRef,
+            value: toJsonValueOrNull(evaluated.data),
+          } satisfies OpensteerPageEvaluateOutput;
+        },
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "page.evaluate",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          pageRef: output.pageRef,
+          value: output.value,
+        },
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef,
+        }),
+      });
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "page.evaluate",
         startedAt,
         completedAt: Date.now(),
         outcome: "error",
@@ -1127,6 +1467,14 @@ export class OpensteerSessionRuntime {
     }
   }
 
+  async writeRecipe(
+    input: OpensteerWriteRecipeInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<RecipeRecord> {
+    assertValidSemanticOperationInput("recipe.write", input);
+    return this.writeAuthRecipe(input, options);
+  }
+
   async getAuthRecipe(
     input: OpensteerGetAuthRecipeInput,
     options: RuntimeOperationOptions = {},
@@ -1182,6 +1530,14 @@ export class OpensteerSessionRuntime {
     }
   }
 
+  async getRecipe(
+    input: OpensteerGetRecipeInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<RecipeRecord> {
+    assertValidSemanticOperationInput("recipe.get", input);
+    return this.getAuthRecipe(input, options);
+  }
+
   async listAuthRecipes(
     input: OpensteerListAuthRecipesInput = {},
     options: RuntimeOperationOptions = {},
@@ -1221,6 +1577,14 @@ export class OpensteerSessionRuntime {
       });
       throw error;
     }
+  }
+
+  async listRecipes(
+    input: OpensteerListRecipesInput = {},
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerListRecipesOutput> {
+    assertValidSemanticOperationInput("recipe.list", input);
+    return this.listAuthRecipes(input, options);
   }
 
   async getCookies(
@@ -1387,15 +1751,23 @@ export class OpensteerSessionRuntime {
     }
   }
 
+  async runRecipe(
+    input: OpensteerRunRecipeInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerRunRecipeOutput> {
+    assertValidSemanticOperationInput("recipe.run", input);
+    return this.runAuthRecipe(input, options);
+  }
+
   async rawRequest(
     input: OpensteerRawRequestInput,
     options: RuntimeOperationOptions = {},
   ): Promise<OpensteerRawRequestOutput> {
     assertValidSemanticOperationInput("request.raw", input);
 
-    const transport = input.transport ?? "session-http";
+    const transport = normalizeTransportKind(input.transport ?? "context-http");
     const binding =
-      transport === "session-http" ? await this.ensureBrowserTransportBinding() : this.currentBinding();
+      transport === "direct-http" ? this.currentBinding() : await this.ensureBrowserTransportBinding();
     const startedAt = Date.now();
 
     try {
@@ -1477,9 +1849,9 @@ export class OpensteerSessionRuntime {
       );
     }
     const binding =
-      plan.payload.transport.kind === "session-http"
-        ? await this.ensureBrowserTransportBinding()
-        : this.currentBinding();
+      normalizeTransportKind(plan.payload.transport.kind) === "direct-http"
+        ? this.currentBinding()
+        : await this.ensureBrowserTransportBinding();
     const startedAt = Date.now();
 
     try {
@@ -2204,15 +2576,30 @@ export class OpensteerSessionRuntime {
     timeout: TimeoutExecutionContext,
     binding: RuntimeBrowserBinding | undefined,
   ): Promise<OpensteerRawRequestOutput> {
-    const request = buildRawTransportRequest(input);
-    if ((input.transport ?? "session-http") === "session-http") {
-      if (binding === undefined) {
-        throw new Error("Opensteer session is not initialized");
-      }
-      return this.executeTransportRequestWithJournal(request, timeout, binding.sessionRef);
+    const transport = normalizeTransportKind(input.transport ?? "context-http");
+    const request = this.applyCookieJarToTransportRequest(buildRawTransportRequest(input), input.cookieJar);
+
+    if (transport === "direct-http") {
+      return this.executeDirectTransportRequestWithPersistence(request, timeout, input.cookieJar);
     }
 
-    return this.executeDirectTransportRequestWithPersistence(request, timeout);
+    if (transport === "page-eval-http") {
+      const pageBinding = await this.resolvePageEvalBinding(request.url, input.pageRef);
+      return this.executePageEvalTransportRequestWithPersistence(
+        request,
+        timeout,
+        pageBinding,
+        input.cookieJar,
+      );
+    }
+
+    if (binding === undefined) {
+      throw new Error("Opensteer session is not initialized");
+    }
+
+    const output = await this.executeTransportRequestWithJournal(request, timeout, binding.sessionRef);
+    this.updateCookieJarFromResponse(input.cookieJar, output.response, request.url);
+    return output;
   }
 
   private async executeDirectTransportRequestWithPersistence(
@@ -2224,10 +2611,12 @@ export class OpensteerSessionRuntime {
       readonly followRedirects?: boolean;
     },
     timeout: TimeoutExecutionContext,
+    cookieJarName?: string,
   ): Promise<OpensteerRawRequestOutput> {
     const response = await timeout.runStep(() =>
       executeDirectTransportRequest(request, timeout.signal),
     );
+    this.updateCookieJarFromResponse(cookieJarName, toProtocolRequestResponseResult(response), request.url);
     const recordId = await this.persistDirectTransportRecord(request, response, undefined);
     return {
       recordId,
@@ -2237,6 +2626,72 @@ export class OpensteerSessionRuntime {
         ? {}
         : { data: parseStructuredResponseData(response) }),
     };
+  }
+
+  private async executePageEvalTransportRequestWithPersistence(
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly followRedirects?: boolean;
+    },
+    timeout: TimeoutExecutionContext,
+    binding: RuntimeBrowserBinding,
+    cookieJarName?: string,
+  ): Promise<OpensteerRawRequestOutput> {
+    const response = await this.executePageEvalTransportRequest(request, timeout, binding);
+    this.updateCookieJarFromResponse(cookieJarName, toProtocolRequestResponseResult(response), request.url);
+    const recordId = await this.persistDirectTransportRecord(request, response, undefined);
+    return {
+      recordId,
+      request: toProtocolRequestTransportResult(request),
+      response: toProtocolRequestResponseResult(response),
+      ...(parseStructuredResponseData(response) === undefined
+        ? {}
+        : { data: parseStructuredResponseData(response) }),
+    };
+  }
+
+  private async executePageEvalTransportRequest(
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly followRedirects?: boolean;
+    },
+    timeout: TimeoutExecutionContext,
+    binding: RuntimeBrowserBinding,
+  ): Promise<{
+    readonly url: string;
+    readonly status: number;
+    readonly statusText: string;
+    readonly headers: readonly HeaderEntry[];
+    readonly body?: BrowserBodyPayload;
+    readonly redirected: boolean;
+  }> {
+    const remainingMs = timeout.remainingMs();
+    const result = await timeout.runStep(() =>
+      this.requireEngine().evaluatePage({
+        pageRef: binding.pageRef,
+        script: PAGE_EVAL_HTTP_SCRIPT,
+        args: [
+          {
+            url: request.url,
+            method: request.method,
+            headers: request.headers ?? [],
+            bodyBase64:
+              request.body === undefined
+                ? undefined
+                : Buffer.from(request.body.bytes).toString("base64"),
+            followRedirects: request.followRedirects !== false,
+          },
+        ],
+        ...(remainingMs === undefined ? {} : { timeoutMs: remainingMs }),
+      }),
+    );
+    return toPageEvalTransportResponse(result.data);
   }
 
   private async persistDirectTransportRecord(
@@ -2299,108 +2754,132 @@ export class OpensteerSessionRuntime {
     timeout: TimeoutExecutionContext,
     binding: RuntimeBrowserBinding | undefined,
   ): Promise<OpensteerRequestExecuteOutput> {
-    const transportRequest = buildTransportRequestFromPlan(plan, input);
-    const initial = await this.executePlanTransportRequest(plan, transportRequest, timeout, binding);
-    const validateResponse = input.validateResponse ?? true;
-    const failurePolicy = plan.payload.auth?.failurePolicy;
-    const matchedFailurePolicy =
-      failurePolicy !== undefined && matchesFailurePolicy(failurePolicy, initial.output.response);
-    if (!matchedFailurePolicy) {
-      if (validateResponse) {
-        assertResponseMatchesPlan(plan, initial.transportResponse);
-        await this.touchRequestPlanFreshness(plan);
-      }
-      return {
-        ...initial.output,
-        ...(failurePolicy === undefined
-          ? {}
-          : {
-              recovery: {
-                attempted: false,
-                succeeded: false,
-                matchedFailurePolicy,
-              },
-            }),
-      };
+    const prepareBinding = plan.payload.recipes?.prepare;
+    let resolvedInput = input;
+    let executionOverrides: OpensteerAuthRecipeRetryOverrides | undefined;
+    if (prepareBinding !== undefined) {
+      const prepareOutput = await this.executeConfiguredRecipeBinding(prepareBinding, timeout);
+      resolvedInput = mergeExecutionInputOverrides(resolvedInput, prepareOutput.overrides);
+      executionOverrides = mergeAuthRecipeOverrides(executionOverrides, prepareOutput.overrides);
     }
 
-    const recipeRef = plan.payload.auth?.recipe;
-    if (recipeRef === undefined) {
-      throw new OpensteerProtocolError(
-        "auth-failure",
-        `request plan ${plan.key}@${plan.version} matched its auth failure policy but has no recovery recipe configured`,
-        {
-          details: {
-            key: plan.key,
-            version: plan.version,
-            failurePolicy,
-          },
-        },
-      );
-    }
-
-    let recoveryOutput: OpensteerRunAuthRecipeOutput;
-    try {
-      recoveryOutput = await this.executeAuthRecipeRecord(
-        await this.resolveAuthRecipe(recipeRef.key, recipeRef.version),
-        timeout,
-        {},
-      );
-    } catch (error) {
-      if (error instanceof OpensteerProtocolError && error.code === "browser-required") {
-        throw error;
-      }
-      throw new OpensteerProtocolError(
-        "auth-recovery-failed",
-        `request plan ${plan.key}@${plan.version} failed during auth recovery`,
-        {
-          cause: error,
-          details: {
-            key: plan.key,
-            version: plan.version,
-            recipe: recipeRef,
-          },
-        },
-      );
-    }
-
-    const retriedRequest = applyTransportRequestOverrides(
-      buildTransportRequestFromPlan(plan, input),
-      recoveryOutput.overrides,
+    const cookieJarName = resolvedInput.cookieJar ?? plan.payload.transport.cookieJar;
+    let transportRequest = this.applyCookieJarToTransportRequest(
+      applyTransportRequestOverrides(
+        buildTransportRequestFromPlan(plan, resolvedInput),
+        executionOverrides,
+      ),
+      cookieJarName,
     );
-    const retried = await this.executePlanTransportRequest(plan, retriedRequest, timeout, binding);
-    if (matchesFailurePolicy(failurePolicy, retried.output.response)) {
-      throw new OpensteerProtocolError(
-        "auth-recovery-failed",
-        `request plan ${plan.key}@${plan.version} still matched its auth failure policy after deterministic recovery`,
-        {
-          details: {
-            key: plan.key,
-            version: plan.version,
-            recipe: {
-              key: recoveryOutput.recipe.key,
-              version: recoveryOutput.recipe.version,
+    let current = await this.executePlanTransportRequest(
+      plan,
+      transportRequest,
+      timeout,
+      binding,
+      cookieJarName,
+    );
+    const validateResponse = input.validateResponse ?? true;
+    const recoverBinding = resolveRecoverRecipeBinding(plan);
+    const matchedFailurePolicy =
+      recoverBinding !== undefined &&
+      matchesFailurePolicy(recoverBinding.failurePolicy, current.output.response);
+
+    let recoveryOutput: OpensteerRunRecipeOutput | undefined;
+    if (matchedFailurePolicy) {
+      if (prepareBinding?.cachePolicy === "untilFailure") {
+        this.clearRecipeBindingCache(prepareBinding);
+      }
+
+      try {
+        recoveryOutput = await this.executeConfiguredRecipeBinding(recoverBinding, timeout);
+      } catch (error) {
+        if (error instanceof OpensteerProtocolError && error.code === "browser-required") {
+          throw error;
+        }
+        throw new OpensteerProtocolError(
+          "auth-recovery-failed",
+          `request plan ${plan.key}@${plan.version} failed during deterministic recovery`,
+          {
+            cause: error,
+            details: {
+              key: plan.key,
+              version: plan.version,
+              recipe: recoverBinding.recipe,
             },
           },
-        },
+        );
+      }
+
+      resolvedInput = mergeExecutionInputOverrides(resolvedInput, recoveryOutput.overrides);
+      executionOverrides = mergeAuthRecipeOverrides(executionOverrides, recoveryOutput.overrides);
+      transportRequest = this.applyCookieJarToTransportRequest(
+        applyTransportRequestOverrides(
+          buildTransportRequestFromPlan(plan, resolvedInput),
+          executionOverrides,
+        ),
+        cookieJarName,
+      );
+      current = await this.executePlanTransportRequest(
+        plan,
+        transportRequest,
+        timeout,
+        binding,
+        cookieJarName,
+      );
+      if (matchesFailurePolicy(recoverBinding.failurePolicy, current.output.response)) {
+        throw new OpensteerProtocolError(
+          "auth-recovery-failed",
+          `request plan ${plan.key}@${plan.version} still matched its recovery failure policy after deterministic recovery`,
+          {
+            details: {
+              key: plan.key,
+              version: plan.version,
+              recipe: {
+                key: recoveryOutput.recipe.key,
+                version: recoveryOutput.recipe.version,
+              },
+            },
+          },
+        );
+      }
+    }
+
+    if (plan.payload.retryPolicy !== undefined) {
+      current = await this.retryResolvedRequestPlan(
+        plan,
+        plan.payload.retryPolicy,
+        current,
+        transportRequest,
+        timeout,
+        binding,
+        cookieJarName,
       );
     }
+
     if (validateResponse) {
-      assertResponseMatchesPlan(plan, retried.transportResponse);
+      assertResponseMatchesPlan(plan, current.transportResponse);
       await this.touchRequestPlanFreshness(plan);
     }
 
     return {
-      ...retried.output,
-      recovery: {
-        attempted: true,
-        succeeded: true,
-        matchedFailurePolicy: true,
-        recipe: {
-          key: recoveryOutput.recipe.key,
-          version: recoveryOutput.recipe.version,
-        },
-      },
+      ...current.output,
+      ...(recoverBinding === undefined
+        ? {}
+        : {
+            recovery: {
+              attempted: matchedFailurePolicy,
+              succeeded: matchedFailurePolicy,
+              matchedFailurePolicy,
+              ...(recoveryOutput === undefined
+                ? {}
+                : {
+                    recipe: {
+                      key: recoveryOutput.recipe.key,
+                      version: recoveryOutput.recipe.version,
+                    },
+                  }),
+            },
+          }),
     };
   }
 
@@ -2415,6 +2894,7 @@ export class OpensteerSessionRuntime {
     },
     timeout: TimeoutExecutionContext,
     binding: RuntimeBrowserBinding | undefined,
+    cookieJarName: string | undefined,
   ): Promise<{
     readonly output: OpensteerRequestExecuteOutput;
     readonly transportResponse: {
@@ -2426,7 +2906,8 @@ export class OpensteerSessionRuntime {
       readonly redirected: boolean;
     };
   }> {
-    if (plan.payload.transport.kind === "session-http") {
+    const transportKind = normalizeTransportKind(plan.payload.transport.kind);
+    if (transportKind === "context-http") {
       const liveBinding = binding ?? (await this.ensureBrowserTransportBinding());
       const baselineRequestIds = await this.readLiveRequestIds(timeout, {
         includeCurrentPageOnly: false,
@@ -2441,13 +2922,25 @@ export class OpensteerSessionRuntime {
       await this.observeLiveTransportDelta(timeout, baselineRequestIds, {
         includeCurrentPageOnly: false,
       });
+      this.updateCookieJarFromResponse(cookieJarName, toProtocolRequestResponseResult(response.data), request.url);
       return {
         output: buildPlanExecuteOutput(plan, request, response.data),
         transportResponse: response.data,
       };
     }
 
+    if (transportKind === "page-eval-http") {
+      const pageBinding = await this.resolvePageEvalBinding(request.url, binding?.pageRef);
+      const response = await this.executePageEvalTransportRequest(request, timeout, pageBinding);
+      this.updateCookieJarFromResponse(cookieJarName, toProtocolRequestResponseResult(response), request.url);
+      return {
+        output: buildPlanExecuteOutput(plan, request, response),
+        transportResponse: response,
+      };
+    }
+
     const response = await timeout.runStep(() => executeDirectTransportRequest(request, timeout.signal));
+    this.updateCookieJarFromResponse(cookieJarName, toProtocolRequestResponseResult(response), request.url);
     return {
       output: buildPlanExecuteOutput(plan, request, response),
       transportResponse: response,
@@ -2460,6 +2953,99 @@ export class OpensteerSessionRuntime {
       id: plan.id,
       ...(freshness === undefined ? {} : { freshness }),
     });
+  }
+
+  private async executeConfiguredRecipeBinding(
+    binding: {
+      readonly recipe: {
+        readonly key: string;
+        readonly version?: string;
+      };
+      readonly cachePolicy?: "none" | "untilFailure";
+    },
+    timeout: TimeoutExecutionContext,
+  ): Promise<OpensteerRunRecipeOutput> {
+    const cacheKey = `${binding.recipe.key}@${binding.recipe.version ?? "latest"}`;
+    if (binding.cachePolicy === "untilFailure") {
+      const cached = this.recipeCache.get(cacheKey);
+      if (cached !== undefined) {
+        return cached;
+      }
+    }
+
+    const output = await this.executeAuthRecipeRecord(
+      await this.resolveAuthRecipe(binding.recipe.key, binding.recipe.version),
+      timeout,
+      {},
+    );
+    if (binding.cachePolicy === "untilFailure") {
+      this.recipeCache.set(cacheKey, output);
+    }
+    return output;
+  }
+
+  private clearRecipeBindingCache(binding: {
+    readonly recipe: {
+      readonly key: string;
+      readonly version?: string;
+    };
+  }): void {
+    const cacheKey = `${binding.recipe.key}@${binding.recipe.version ?? "latest"}`;
+    this.recipeCache.delete(cacheKey);
+  }
+
+  private async retryResolvedRequestPlan(
+    plan: RequestPlanRecord,
+    retryPolicy: NonNullable<RequestPlanRecord["payload"]["retryPolicy"]>,
+    current: {
+      readonly output: OpensteerRequestExecuteOutput;
+      readonly transportResponse: {
+        readonly url: string;
+        readonly status: number;
+        readonly statusText: string;
+        readonly headers: readonly HeaderEntry[];
+        readonly body?: BrowserBodyPayload;
+        readonly redirected: boolean;
+      };
+    },
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly followRedirects?: boolean;
+    },
+    timeout: TimeoutExecutionContext,
+    binding: RuntimeBrowserBinding | undefined,
+    cookieJarName: string | undefined,
+  ) {
+    if (
+      retryPolicy.failurePolicy === undefined ||
+      retryPolicy.maxRetries <= 0 ||
+      !matchesFailurePolicy(retryPolicy.failurePolicy, current.output.response)
+    ) {
+      return current;
+    }
+
+    let latest = current;
+    for (let attempt = 0; attempt < retryPolicy.maxRetries; attempt += 1) {
+      const delayMs = resolveRetryDelayMs(retryPolicy, latest.output.response, attempt);
+      if (delayMs > 0) {
+        await delayWithSignal(delayMs, timeout.signal);
+      }
+      latest = await this.executePlanTransportRequest(
+        plan,
+        request,
+        timeout,
+        binding,
+        cookieJarName,
+      );
+      if (!matchesFailurePolicy(retryPolicy.failurePolicy, latest.output.response)) {
+        break;
+      }
+    }
+
+    return latest;
   }
 
   private async resolveAuthRecipe(key: string, version: string | undefined): Promise<AuthRecipeRecord> {
@@ -2663,15 +3249,56 @@ export class OpensteerSessionRuntime {
           },
         };
       }
+      case "evaluate": {
+        const pageRef = step.pageRef ?? this.requireExistingBrowserBindingForRecovery().pageRef;
+        const remainingMs = timeout.remainingMs();
+        const evaluated = await timeout.runStep(() =>
+          this.requireEngine().evaluatePage({
+            pageRef,
+            script: interpolateTemplate(step.script, variables),
+            ...(step.args === undefined
+              ? {}
+              : { args: step.args.map((entry) => interpolateJsonValue(entry, variables)) }),
+            ...(remainingMs === undefined ? {} : { timeoutMs: remainingMs }),
+          }),
+        );
+        if (step.saveAs === undefined) {
+          return {};
+        }
+        return {
+          variables: {
+            [step.saveAs]: stringifyRecipeVariableValue(evaluated.data),
+          },
+        };
+      }
+      case "syncCookiesToJar": {
+        await this.syncBrowserCookiesToJar(step.jar, step.urls, variables);
+        return {};
+      }
+      case "request": {
+        const output = await this.executeRecipeRequest(step.request, variables, timeout);
+        return captureRecipeResponse(step, output.response, output.data);
+      }
       case "sessionRequest": {
-        const binding = this.requireExistingBrowserBindingForRecovery();
-        const request = buildRecipeRequest(step.request, variables);
-        const output = await this.executeTransportRequestWithJournal(request, timeout, binding.sessionRef);
+        const output = await this.executeRecipeRequest(
+          {
+            ...step.request,
+            transport: "context-http",
+          },
+          variables,
+          timeout,
+        );
         return captureRecipeResponse(step, output.response, output.data);
       }
       case "directRequest": {
-        const request = buildRecipeRequest(step.request, variables);
-        const output = await this.executeDirectTransportRequestWithPersistence(request, timeout);
+        const output = await this.executeRecipeRequest(
+          {
+            ...step.request,
+            transport: "direct-http",
+          },
+          variables,
+          timeout,
+        );
         return captureRecipeResponse(step, output.response, output.data);
       }
       case "hook":
@@ -2769,6 +3396,146 @@ export class OpensteerSessionRuntime {
       },
     });
     return result ?? {};
+  }
+
+  private async executeRecipeRequest(
+    requestInput: {
+      readonly url: string;
+      readonly transport?: "context-http" | "direct-http" | "page-eval-http" | "session-http";
+      readonly pageRef?: PageRef;
+      readonly cookieJar?: string;
+      readonly method?: string;
+      readonly headers?: Readonly<Record<string, string>>;
+      readonly query?: Readonly<Record<string, string>>;
+      readonly body?: OpensteerRawRequestInput["body"];
+      readonly followRedirects?: boolean;
+    },
+    variables: ReadonlyMap<string, string>,
+    timeout: TimeoutExecutionContext,
+  ): Promise<OpensteerRawRequestOutput> {
+    const transport = normalizeTransportKind(requestInput.transport ?? "context-http");
+    const cookieJar =
+      requestInput.cookieJar === undefined
+        ? undefined
+        : interpolateTemplate(requestInput.cookieJar, variables);
+    const request = this.applyCookieJarToTransportRequest(
+      buildRecipeRequest(requestInput, variables),
+      cookieJar,
+    );
+
+    switch (transport) {
+      case "direct-http":
+        return this.executeDirectTransportRequestWithPersistence(request, timeout, cookieJar);
+      case "page-eval-http": {
+        const binding = await this.resolvePageEvalBinding(request.url, requestInput.pageRef);
+        return this.executePageEvalTransportRequestWithPersistence(request, timeout, binding, cookieJar);
+      }
+      case "context-http": {
+        const binding = this.requireExistingBrowserBindingForRecovery();
+        const output = await this.executeTransportRequestWithJournal(request, timeout, binding.sessionRef);
+        this.updateCookieJarFromResponse(cookieJar, output.response, request.url);
+        return output;
+      }
+    }
+  }
+
+  private async resolvePageEvalBinding(
+    requestUrl: string,
+    explicitPageRef: PageRef | undefined,
+  ): Promise<RuntimeBrowserBinding> {
+    const pageRef = explicitPageRef ?? (await this.ensurePageRef());
+    const pageInfo = await this.requireEngine().getPageInfo({ pageRef });
+    if (new URL(pageInfo.url).origin !== new URL(requestUrl).origin) {
+      throw new OpensteerProtocolError(
+        "invalid-request",
+        `page-eval-http requires a bound page on the same origin as ${requestUrl}`,
+        {
+          details: {
+            pageRef,
+            pageUrl: pageInfo.url,
+            requestUrl,
+          },
+        },
+      );
+    }
+    return {
+      sessionRef: pageInfo.sessionRef,
+      pageRef,
+    };
+  }
+
+  private async syncBrowserCookiesToJar(
+    jarName: string,
+    urls: readonly string[] | undefined,
+    variables: ReadonlyMap<string, string>,
+  ): Promise<void> {
+    const binding = this.requireExistingBrowserBindingForRecovery();
+    const cookies = await this.requireEngine().getCookies({
+      sessionRef: binding.sessionRef,
+      ...(urls === undefined ? {} : { urls: urls.map((url) => interpolateTemplate(url, variables)) }),
+    });
+    this.cookieJars.set(
+      interpolateTemplate(jarName, variables),
+      cookies.map((cookie) => ({
+        name: cookie.name,
+        value: cookie.value,
+        domain: cookie.domain,
+        path: cookie.path,
+        secure: cookie.secure,
+        ...(cookie.expiresAt === undefined || cookie.expiresAt === null || cookie.expiresAt <= 0
+          ? {}
+          : { expiresAt: cookie.expiresAt }),
+      })),
+    );
+  }
+
+  private applyCookieJarToTransportRequest(
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly followRedirects?: boolean;
+    },
+    jarName: string | undefined,
+  ) {
+    if (jarName === undefined) {
+      return request;
+    }
+
+    const cookieHeader = serializeCookieJarHeader(
+      this.cookieJars.get(jarName) ?? [],
+      request.url,
+    );
+    if (cookieHeader === undefined) {
+      return request;
+    }
+
+    const headers = [...(request.headers ?? [])];
+    setHeaderValue(headers, "cookie", cookieHeader);
+    return {
+      ...request,
+      headers,
+    };
+  }
+
+  private updateCookieJarFromResponse(
+    jarName: string | undefined,
+    response: OpensteerRequestResponseResult,
+    requestUrl: string,
+  ): void {
+    if (jarName === undefined) {
+      return;
+    }
+
+    const current = this.cookieJars.get(jarName) ?? [];
+    const merged = mergeCookieJarEntries(
+      current,
+      response.headers
+        .filter((header) => header.name.toLowerCase() === "set-cookie")
+        .flatMap((header) => parseSetCookieHeader(header.value, requestUrl)),
+    );
+    this.cookieJars.set(jarName, merged);
   }
 
   private async readCookieValue(
@@ -3508,6 +4275,240 @@ function parseContentType(contentType: string | undefined): {
   };
 }
 
+function toJsonValueOrNull(value: unknown) {
+  return (toCanonicalJsonValue(value) ?? null) as Exclude<
+    OpensteerPageEvaluateOutput["value"],
+    undefined
+  >;
+}
+
+function stringifyRecipeVariableValue(value: unknown): string {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return JSON.stringify(toCanonicalJsonValue(value));
+}
+
+function normalizeTransportKind(
+  value: "context-http" | "direct-http" | "page-eval-http" | "session-http",
+): "context-http" | "direct-http" | "page-eval-http" {
+  return value === "session-http" ? "context-http" : value;
+}
+
+function serializeCookieJarHeader(
+  entries: readonly CookieJarEntry[],
+  requestUrl: string,
+): string | undefined {
+  const validEntries = entries.filter((entry) => cookieAppliesToUrl(entry, requestUrl));
+  if (validEntries.length === 0) {
+    return undefined;
+  }
+  return validEntries.map((entry) => `${entry.name}=${entry.value}`).join("; ");
+}
+
+function cookieAppliesToUrl(entry: CookieJarEntry, requestUrl: string): boolean {
+  if (entry.expiresAt !== undefined && entry.expiresAt <= Date.now()) {
+    return false;
+  }
+
+  const url = new URL(requestUrl);
+  if (entry.secure && url.protocol !== "https:") {
+    return false;
+  }
+  if (!cookieDomainMatches(entry.domain, url.hostname)) {
+    return false;
+  }
+  return url.pathname.startsWith(entry.path);
+}
+
+function cookieDomainMatches(domain: string, hostname: string): boolean {
+  const normalizedDomain = domain.startsWith(".") ? domain.slice(1) : domain;
+  return hostname === normalizedDomain || hostname.endsWith(`.${normalizedDomain}`);
+}
+
+function parseSetCookieHeader(value: string, requestUrl: string): readonly CookieJarEntry[] {
+  const [nameValue, ...attributeParts] = value.split(";");
+  const [rawName, ...rawValueParts] = (nameValue ?? "").split("=");
+  const name = rawName?.trim();
+  if (!name) {
+    return [];
+  }
+
+  const url = new URL(requestUrl);
+  let domain = url.hostname;
+  let path = defaultCookiePath(url.pathname);
+  let secure = url.protocol === "https:";
+  let expiresAt: number | undefined;
+  const cookieValue = rawValueParts.join("=").trim();
+
+  for (const attribute of attributeParts) {
+    const [rawKey, ...rawAttributeValueParts] = attribute.split("=");
+    const key = rawKey?.trim().toLowerCase();
+    const attributeValue = rawAttributeValueParts.join("=").trim();
+    if (key === "domain" && attributeValue.length > 0) {
+      domain = attributeValue.startsWith(".") ? attributeValue : `.${attributeValue}`;
+      continue;
+    }
+    if (key === "path" && attributeValue.length > 0) {
+      path = attributeValue;
+      continue;
+    }
+    if (key === "secure") {
+      secure = true;
+      continue;
+    }
+    if (key === "expires") {
+      const timestamp = Date.parse(attributeValue);
+      if (Number.isFinite(timestamp)) {
+        expiresAt = timestamp;
+      }
+      continue;
+    }
+    if (key === "max-age") {
+      const maxAge = Number.parseInt(attributeValue, 10);
+      if (Number.isFinite(maxAge)) {
+        expiresAt = Date.now() + maxAge * 1000;
+      }
+    }
+  }
+
+  return [
+    {
+      name,
+      value: cookieValue,
+      domain,
+      path,
+      secure,
+      ...(expiresAt === undefined ? {} : { expiresAt }),
+    },
+  ];
+}
+
+function defaultCookiePath(pathname: string): string {
+  if (!pathname.startsWith("/") || pathname === "/") {
+    return "/";
+  }
+  const index = pathname.lastIndexOf("/");
+  return index <= 0 ? "/" : pathname.slice(0, index);
+}
+
+function mergeCookieJarEntries(
+  current: readonly CookieJarEntry[],
+  updates: readonly CookieJarEntry[],
+): CookieJarEntry[] {
+  const merged = new Map<string, CookieJarEntry>();
+  for (const entry of current) {
+    merged.set(cookieJarKey(entry), entry);
+  }
+  for (const entry of updates) {
+    merged.set(cookieJarKey(entry), entry);
+  }
+  return [...merged.values()].filter(
+    (entry) => entry.expiresAt === undefined || entry.expiresAt > Date.now(),
+  );
+}
+
+function cookieJarKey(entry: CookieJarEntry): string {
+  return `${entry.domain}\u0000${entry.path}\u0000${entry.name}`;
+}
+
+const PAGE_EVAL_HTTP_SCRIPT = `(async (input) => {
+  const decodeBase64 = (value) => {
+    if (typeof value !== "string" || value.length === 0) {
+      return undefined;
+    }
+    const binary = atob(value);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+  };
+
+  const encodeBase64 = (bytes) => {
+    let binary = "";
+    const chunkSize = 0x8000;
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      const chunk = bytes.subarray(offset, offset + chunkSize);
+      binary += String.fromCharCode(...chunk);
+    }
+    return btoa(binary);
+  };
+
+  const headers = new Headers();
+  for (const header of input.headers ?? []) {
+    headers.set(header.name, header.value);
+  }
+
+  const response = await fetch(input.url, {
+    method: input.method,
+    headers,
+    ...(input.bodyBase64 === undefined ? {} : { body: decodeBase64(input.bodyBase64) }),
+    redirect: input.followRedirects === false ? "manual" : "follow",
+  });
+
+  const bodyBuffer = new Uint8Array(await response.arrayBuffer());
+  return {
+    url: response.url,
+    status: response.status,
+    statusText: response.statusText,
+    headers: Array.from(response.headers.entries()).map(([name, value]) => ({ name, value })),
+    bodyBase64: bodyBuffer.byteLength === 0 ? undefined : encodeBase64(bodyBuffer),
+    redirected: response.redirected,
+  };
+})`;
+
+function toPageEvalTransportResponse(value: unknown): {
+  readonly url: string;
+  readonly status: number;
+  readonly statusText: string;
+  readonly headers: readonly HeaderEntry[];
+  readonly body?: BrowserBodyPayload;
+  readonly redirected: boolean;
+} {
+  if (value === null || typeof value !== "object") {
+    throw new OpensteerProtocolError(
+      "operation-failed",
+      "page-eval-http returned an invalid response payload",
+    );
+  }
+
+  const response = value as {
+    readonly url?: unknown;
+    readonly status?: unknown;
+    readonly statusText?: unknown;
+    readonly headers?: readonly { readonly name?: unknown; readonly value?: unknown }[];
+    readonly bodyBase64?: unknown;
+    readonly redirected?: unknown;
+  };
+  const headers = (response.headers ?? [])
+    .filter(
+      (header): header is { readonly name: string; readonly value: string } =>
+        typeof header?.name === "string" && typeof header?.value === "string",
+    )
+    .map((header) => ({ name: header.name, value: header.value }));
+  const contentType = headers.find((header) => header.name.toLowerCase() === "content-type")?.value;
+  const body =
+    typeof response.bodyBase64 === "string"
+      ? createBodyPayload(new Uint8Array(Buffer.from(response.bodyBase64, "base64")), parseContentType(contentType))
+      : undefined;
+
+  return {
+    url: typeof response.url === "string" ? response.url : "",
+    status: typeof response.status === "number" ? response.status : 0,
+    statusText: typeof response.statusText === "string" ? response.statusText : "",
+    headers,
+    ...(body === undefined ? {} : { body }),
+    redirected: response.redirected === true,
+  };
+}
+
 function buildTransportRequestFromPlan(
   plan: RequestPlanRecord,
   input: OpensteerRequestExecuteInput,
@@ -3551,7 +4552,8 @@ function buildTransportRequestFromPlan(
     }
   }
 
-  const body = input.body === undefined ? undefined : toBrowserRequestBody(input.body);
+  const planBodyInput = buildPlanBodyInput(payload.body, input.body, input.bodyVars);
+  const body = planBodyInput === undefined ? undefined : toBrowserRequestBody(planBodyInput);
   if (
     body?.contentType !== undefined &&
     !headers.some((header) => header.name.toLowerCase() === "content-type")
@@ -3568,6 +4570,48 @@ function buildTransportRequestFromPlan(
     ...(headers.length === 0 ? {} : { headers }),
     ...(body === undefined ? {} : { body: body.payload }),
   };
+}
+
+function buildPlanBodyInput(
+  planBody: RequestPlanRecord["payload"]["body"],
+  overrideBody: OpensteerRequestExecuteInput["body"],
+  bodyVariables: OpensteerRequestExecuteInput["bodyVars"],
+): OpensteerRawRequestInput["body"] | undefined {
+  if (overrideBody !== undefined) {
+    return overrideBody;
+  }
+  if (planBody === undefined || planBody.kind === undefined) {
+    return undefined;
+  }
+
+  const variables = new Map(
+    Object.entries(bodyVariables ?? {}).map(([name, value]) => [name, String(value)]),
+  );
+  switch (planBody.kind) {
+    case "json":
+      return {
+        json: toCanonicalJsonValue(interpolateJsonValue(planBody.template ?? null, variables)),
+        ...(planBody.contentType === undefined ? {} : { contentType: planBody.contentType }),
+      };
+    case "text":
+      return {
+        text: interpolateTemplate(String(planBody.template ?? ""), variables),
+        ...(planBody.contentType === undefined ? {} : { contentType: planBody.contentType }),
+      };
+    case "form": {
+      const fields = Object.fromEntries(
+        (planBody.fields ?? []).map((entry) => [
+          entry.name,
+          interpolateTemplate(entry.value, variables),
+        ]),
+      );
+      return {
+        text: new URLSearchParams(fields).toString(),
+        contentType:
+          planBody.contentType ?? "application/x-www-form-urlencoded; charset=utf-8",
+      };
+    }
+  }
 }
 
 function resolvePlanParameterValues(
@@ -3958,6 +5002,7 @@ function interpolateJsonValue(value: unknown, variables: ReadonlyMap<string, str
 
 function captureRecipeResponse(
   step:
+    | Extract<OpensteerAuthRecipeStep, { readonly kind: "request" }>
     | Extract<OpensteerAuthRecipeStep, { readonly kind: "sessionRequest" }>
     | Extract<OpensteerAuthRecipeStep, { readonly kind: "directRequest" }>,
   response: OpensteerRequestResponseResult,
@@ -4025,11 +5070,15 @@ function renderOverrides(
   if (overrides === undefined) {
     return undefined;
   }
+  const params = overrides.params === undefined ? undefined : interpolateRecord(overrides.params, variables);
   const headers = overrides.headers === undefined ? undefined : interpolateRecord(overrides.headers, variables);
   const query = overrides.query === undefined ? undefined : interpolateRecord(overrides.query, variables);
+  const body = overrides.body === undefined ? undefined : interpolateRecord(overrides.body, variables);
   return {
+    ...(params === undefined ? {} : { params }),
     ...(headers === undefined ? {} : { headers }),
     ...(query === undefined ? {} : { query }),
+    ...(body === undefined ? {} : { body }),
   };
 }
 
@@ -4056,13 +5105,99 @@ function mergeAuthRecipeOverrides(
     return base;
   }
   return {
+    ...(base.params === undefined && next.params === undefined
+      ? {}
+      : { params: { ...(base.params ?? {}), ...(next.params ?? {}) } }),
     ...(base.headers === undefined && next.headers === undefined
       ? {}
       : { headers: { ...(base.headers ?? {}), ...(next.headers ?? {}) } }),
     ...(base.query === undefined && next.query === undefined
       ? {}
       : { query: { ...(base.query ?? {}), ...(next.query ?? {}) } }),
+    ...(base.body === undefined && next.body === undefined
+      ? {}
+      : { body: { ...(base.body ?? {}), ...(next.body ?? {}) } }),
   };
+}
+
+function mergeExecutionInputOverrides(
+  input: OpensteerRequestExecuteInput,
+  overrides: OpensteerAuthRecipeRetryOverrides | undefined,
+): OpensteerRequestExecuteInput {
+  if (overrides === undefined) {
+    return input;
+  }
+
+  return {
+    ...input,
+    ...(overrides.params === undefined
+      ? {}
+      : { params: { ...(input.params ?? {}), ...overrides.params } }),
+    ...(overrides.body === undefined
+      ? {}
+      : { bodyVars: { ...(input.bodyVars ?? {}), ...overrides.body } }),
+  };
+}
+
+function resolveRecoverRecipeBinding(
+  plan: RequestPlanRecord,
+): NonNullable<RequestPlanRecord["payload"]["recipes"]>["recover"] | undefined {
+  if (plan.payload.recipes?.recover !== undefined) {
+    return plan.payload.recipes.recover;
+  }
+  if (plan.payload.auth?.recipe !== undefined && plan.payload.auth.failurePolicy !== undefined) {
+    return {
+      recipe: plan.payload.auth.recipe,
+      failurePolicy: plan.payload.auth.failurePolicy,
+      cachePolicy: "none",
+    };
+  }
+  return undefined;
+}
+
+function resolveRetryDelayMs(
+  retryPolicy: NonNullable<RequestPlanRecord["payload"]["retryPolicy"]>,
+  response: OpensteerRequestExecuteOutput["response"],
+  attempt: number,
+): number {
+  if (retryPolicy.respectRetryAfter) {
+    const retryAfter = response.headers.find((header) => header.name.toLowerCase() === "retry-after")?.value;
+    const retryAfterMs = parseRetryAfterDelayMs(retryAfter);
+    if (retryAfterMs !== undefined) {
+      return retryAfterMs;
+    }
+  }
+
+  const baseDelayMs = retryPolicy.backoff?.delayMs ?? 0;
+  if (baseDelayMs <= 0) {
+    return 0;
+  }
+
+  if (retryPolicy.backoff?.strategy === "exponential") {
+    const value = baseDelayMs * 2 ** attempt;
+    return retryPolicy.backoff.maxDelayMs === undefined
+      ? value
+      : Math.min(value, retryPolicy.backoff.maxDelayMs);
+  }
+
+  return retryPolicy.backoff?.maxDelayMs === undefined
+    ? baseDelayMs
+    : Math.min(baseDelayMs, retryPolicy.backoff.maxDelayMs);
+}
+
+function parseRetryAfterDelayMs(value: string | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) {
+    return Math.max(0, seconds * 1000);
+  }
+  const timestamp = Date.parse(value);
+  if (Number.isFinite(timestamp)) {
+    return Math.max(0, timestamp - Date.now());
+  }
+  return undefined;
 }
 
 async function pollUntil(

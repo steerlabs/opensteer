@@ -1,5 +1,6 @@
 import type {
   CookieRecord,
+  OpensteerGetRecipeInput,
   OpensteerGetAuthRecipeInput,
   OpensteerActionResult,
   OpensteerComputerExecuteInput,
@@ -7,6 +8,8 @@ import type {
   OpensteerDomExtractOutput,
   OpensteerGetRequestPlanInput,
   OpensteerInferRequestPlanInput,
+  OpensteerListRecipesInput,
+  OpensteerListRecipesOutput,
   OpensteerListAuthRecipesInput,
   OpensteerListAuthRecipesOutput,
   OpensteerNetworkClearInput,
@@ -15,8 +18,18 @@ import type {
   OpensteerNetworkQueryOutput,
   OpensteerNetworkSaveInput,
   OpensteerNetworkSaveOutput,
+  OpensteerPageActivateInput,
+  OpensteerPageActivateOutput,
+  OpensteerPageCloseInput,
+  OpensteerPageCloseOutput,
+  OpensteerPageEvaluateInput,
+  OpensteerPageEvaluateOutput,
   OpensteerPageGotoInput,
   OpensteerPageGotoOutput,
+  OpensteerPageListInput,
+  OpensteerPageListOutput,
+  OpensteerPageNewInput,
+  OpensteerPageNewOutput,
   OpensteerPageSnapshotOutput,
   OpensteerListRequestPlansInput,
   OpensteerListRequestPlansOutput,
@@ -24,6 +37,8 @@ import type {
   OpensteerRawRequestOutput,
   OpensteerRequestExecuteInput,
   OpensteerRequestExecuteOutput,
+  OpensteerRunRecipeInput,
+  OpensteerRunRecipeOutput,
   OpensteerRunAuthRecipeInput,
   OpensteerRunAuthRecipeOutput,
   OpensteerSessionCloseOutput,
@@ -31,12 +46,13 @@ import type {
   OpensteerSessionOpenOutput,
   OpensteerSnapshotMode,
   OpensteerTargetInput,
+  OpensteerWriteRecipeInput,
   OpensteerWriteAuthRecipeInput,
   OpensteerWriteRequestPlanInput,
   StorageSnapshot,
 } from "@opensteer/protocol";
 
-import type { AuthRecipeRecord, RequestPlanRecord } from "../registry.js";
+import type { AuthRecipeRecord, RecipeRecord, RequestPlanRecord } from "../registry.js";
 import { LocalOpensteerSessionProxy } from "../session-service/local-session-proxy.js";
 import type {
   OpensteerDisconnectableRuntime,
@@ -68,6 +84,18 @@ export interface OpensteerScrollOptions extends OpensteerTargetOptions {
 export interface OpensteerExtractOptions {
   readonly description: string;
   readonly schema?: Record<string, unknown>;
+}
+
+export interface OpensteerWaitForNetworkOptions extends OpensteerNetworkQueryInput {
+  readonly timeoutMs?: number;
+  readonly pollIntervalMs?: number;
+}
+
+export interface OpensteerWaitForPageOptions {
+  readonly openerPageRef?: string;
+  readonly urlIncludes?: string;
+  readonly timeoutMs?: number;
+  readonly pollIntervalMs?: number;
 }
 
 export type OpensteerGotoOptions = OpensteerPageGotoInput;
@@ -125,8 +153,41 @@ export class Opensteer {
     return this.runtime.open(normalized);
   }
 
+  async listPages(input: OpensteerPageListInput = {}): Promise<OpensteerPageListOutput> {
+    return this.runtime.listPages(input);
+  }
+
+  async newPage(input: OpensteerPageNewInput = {}): Promise<OpensteerPageNewOutput> {
+    return this.runtime.newPage(input);
+  }
+
+  async activatePage(input: OpensteerPageActivateInput): Promise<OpensteerPageActivateOutput> {
+    return this.runtime.activatePage(input);
+  }
+
+  async closePage(input: OpensteerPageCloseInput = {}): Promise<OpensteerPageCloseOutput> {
+    return this.runtime.closePage(input);
+  }
+
   async goto(input: string | OpensteerGotoOptions): Promise<OpensteerPageGotoOutput> {
     return this.runtime.goto(typeof input === "string" ? { url: input } : input);
+  }
+
+  async evaluate(input: string | OpensteerPageEvaluateInput): Promise<OpensteerPageEvaluateOutput["value"]> {
+    const normalized =
+      typeof input === "string"
+        ? {
+            script: input,
+          }
+        : input;
+    const result = await this.runtime.evaluate(normalized);
+    return result.value;
+  }
+
+  async evaluateJson(
+    input: string | OpensteerPageEvaluateInput,
+  ): Promise<OpensteerPageEvaluateOutput["value"]> {
+    return this.evaluate(input);
   }
 
   async snapshot(
@@ -175,6 +236,59 @@ export class Opensteer {
     return this.runtime.queryNetwork(input);
   }
 
+  async waitForNetwork(input: OpensteerWaitForNetworkOptions): Promise<OpensteerNetworkQueryResult["records"][number]> {
+    const { timeoutMs, pollIntervalMs, ...query } = input;
+    const timeoutAt = Date.now() + (timeoutMs ?? 30_000);
+    const pollInterval = pollIntervalMs ?? 100;
+
+    while (true) {
+      const { records } = await this.runtime.queryNetwork({
+        ...query,
+        limit: 1,
+      });
+      if (records[0] !== undefined) {
+        return records[0];
+      }
+      if (Date.now() >= timeoutAt) {
+        throw new Error("waitForNetwork timed out");
+      }
+      await delay(pollInterval);
+    }
+  }
+
+  async waitForResponse(input: OpensteerWaitForNetworkOptions): Promise<OpensteerNetworkQueryResult["records"][number]> {
+    return this.waitForNetwork(input);
+  }
+
+  async waitForPage(input: OpensteerWaitForPageOptions = {}): Promise<OpensteerPageListOutput["pages"][number]> {
+    const baseline = new Set((await this.runtime.listPages()).pages.map((page) => page.pageRef));
+    const timeoutAt = Date.now() + (input.timeoutMs ?? 30_000);
+    const pollIntervalMs = input.pollIntervalMs ?? 100;
+
+    while (true) {
+      const { pages } = await this.runtime.listPages();
+      const match = pages.find((page) => {
+        if (baseline.has(page.pageRef)) {
+          return false;
+        }
+        if (input.openerPageRef !== undefined && page.openerPageRef !== input.openerPageRef) {
+          return false;
+        }
+        if (input.urlIncludes !== undefined && !page.url.includes(input.urlIncludes)) {
+          return false;
+        }
+        return true;
+      });
+      if (match !== undefined) {
+        return match;
+      }
+      if (Date.now() >= timeoutAt) {
+        throw new Error("waitForPage timed out");
+      }
+      await delay(pollIntervalMs);
+    }
+  }
+
   async saveNetwork(input: OpensteerNetworkSaveOptions): Promise<OpensteerNetworkSaveResult> {
     return this.runtime.saveNetwork(input);
   }
@@ -220,8 +334,16 @@ export class Opensteer {
     return this.runtime.writeAuthRecipe(input);
   }
 
+  async writeRecipe(input: OpensteerWriteRecipeInput): Promise<RecipeRecord> {
+    return this.runtime.writeRecipe(input);
+  }
+
   async getAuthRecipe(input: OpensteerGetAuthRecipeInput): Promise<AuthRecipeRecord> {
     return this.runtime.getAuthRecipe(input);
+  }
+
+  async getRecipe(input: OpensteerGetRecipeInput): Promise<RecipeRecord> {
+    return this.runtime.getRecipe(input);
   }
 
   async listAuthRecipes(
@@ -230,8 +352,16 @@ export class Opensteer {
     return this.runtime.listAuthRecipes(input);
   }
 
+  async listRecipes(input: OpensteerListRecipesInput = {}): Promise<OpensteerListRecipesOutput> {
+    return this.runtime.listRecipes(input);
+  }
+
   async runAuthRecipe(input: OpensteerRunAuthRecipeInput): Promise<OpensteerRunAuthRecipeOutput> {
     return this.runtime.runAuthRecipe(input);
+  }
+
+  async runRecipe(input: OpensteerRunRecipeInput): Promise<OpensteerRunRecipeOutput> {
+    return this.runtime.runRecipe(input);
   }
 
   async request(key: string, input: OpensteerRequestOptions = {}): Promise<OpensteerRequestResult> {
@@ -335,4 +465,8 @@ function normalizeTargetOptions(input: OpensteerTargetOptions): {
     },
     ...(input.networkTag === undefined ? {} : { networkTag: input.networkTag }),
   };
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

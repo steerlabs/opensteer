@@ -71,7 +71,7 @@ describe("Phase 10 request workflows", () => {
 
     expect(normalized).toMatchObject({
       transport: {
-        kind: "session-http",
+        kind: "context-http",
         requiresBrowser: true,
       },
       endpoint: {
@@ -204,6 +204,332 @@ describe("Phase 10 request workflows", () => {
       { name: "content-type", value: "application/json" },
       { name: "x-client-version", value: "web-2026.03" },
     ]);
+  });
+
+  test("SDK exposes page lifecycle, evaluate, and wait primitives for browser-first flows", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const opensteer = new Opensteer({
+      name: "phase10-page-primitives",
+      rootDir,
+      browser: {
+        headless: true,
+      },
+    });
+
+    try {
+      const opened = await opensteer.open(`${baseUrl}/phase6/main`);
+      const initialPages = await opensteer.listPages();
+      expect(initialPages.activePageRef).toBe(opened.pageRef);
+      expect(initialPages.pages.map((page) => page.pageRef)).toContain(opened.pageRef);
+      const initialPageCount = initialPages.pages.length;
+
+      const waitedPagePromise = opensteer.waitForPage({
+        openerPageRef: opened.pageRef,
+        urlIncludes: "/phase10/page-eval",
+        timeoutMs: 10_000,
+      });
+      const created = await opensteer.newPage({
+        openerPageRef: opened.pageRef,
+        url: `${baseUrl}/phase10/page-eval`,
+      });
+      const waitedPage = await waitedPagePromise;
+      expect(waitedPage.pageRef).toBe(created.pageRef);
+      expect(waitedPage.openerPageRef).toBe(opened.pageRef);
+
+      const pagesAfterCreate = await opensteer.listPages();
+      expect(pagesAfterCreate.activePageRef).toBe(created.pageRef);
+      expect(pagesAfterCreate.pages).toHaveLength(initialPageCount + 1);
+
+      const pageEvalData = await opensteer.evaluateJson({
+        pageRef: created.pageRef,
+        script:
+          "() => ({ href: window.location.href, marker: document.querySelector('#phase10-page-eval')?.textContent?.trim() ?? '' })",
+      });
+      expect(pageEvalData).toEqual({
+        href: `${baseUrl}/phase10/page-eval`,
+        marker: "page eval ready",
+      });
+
+      await opensteer.activatePage({
+        pageRef: opened.pageRef,
+      });
+      expect(await opensteer.evaluate("() => document.title")).toBe("Phase 6 main");
+
+      const networkRecordPromise = opensteer.waitForNetwork({
+        path: "/phase10/api/capture",
+        method: "POST",
+        includeBodies: true,
+        timeoutMs: 10_000,
+      });
+      const responseRecordPromise = opensteer.waitForResponse({
+        path: "/phase10/api/capture",
+        status: "200",
+        includeBodies: true,
+        timeoutMs: 10_000,
+      });
+      await opensteer.goto({
+        url: `${baseUrl}/phase10/capture`,
+      });
+      const networkRecord = await networkRecordPromise;
+      const responseRecord = await responseRecordPromise;
+      expect(networkRecord.record.url).toBe(`${baseUrl}/phase10/api/capture?step=load`);
+      expect(responseRecord.record.url).toBe(networkRecord.record.url);
+      expect(decodeBody(networkRecord.record.requestBody)).toContain('"hello":"capture"');
+
+      const closed = await opensteer.closePage({
+        pageRef: created.pageRef,
+      });
+      expect(closed.closedPageRef).toBe(created.pageRef);
+      expect(closed.activePageRef).toBe(opened.pageRef);
+      expect(closed.pages).toHaveLength(initialPageCount);
+    } finally {
+      await opensteer.close().catch(() => undefined);
+    }
+  }, 60_000);
+
+  test("page-eval-http runs inside the live page context while context-http does not", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const opensteer = new Opensteer({
+      name: "phase10-page-eval-transport",
+      rootDir,
+      browser: {
+        headless: true,
+      },
+    });
+
+    try {
+      await opensteer.open(`${baseUrl}/phase10/page-eval`);
+
+      const contextResult = await opensteer.rawRequest({
+        url: `${baseUrl}/phase10/api/page-eval-protected`,
+        transport: "context-http",
+      });
+      expect(contextResult.response.status).toBe(403);
+      expect(contextResult.data).toMatchObject({
+        ok: false,
+        code: "missing-page-context",
+      });
+
+      const pageEvalResult = await opensteer.rawRequest({
+        url: `${baseUrl}/phase10/api/page-eval-protected`,
+        transport: "page-eval-http",
+      });
+      expect(pageEvalResult.response.status).toBe(200);
+      expect(pageEvalResult.data).toMatchObject({
+        ok: true,
+        mode: "page-eval-http",
+      });
+
+      const crossOriginUrl = new URL(`${baseUrl}/phase10/api/page-eval-protected`);
+      crossOriginUrl.hostname = "localhost";
+      await expect(
+        opensteer.rawRequest({
+          url: crossOriginUrl.toString(),
+          transport: "page-eval-http",
+        }),
+      ).rejects.toMatchObject({
+        code: "invalid-request",
+      });
+    } finally {
+      await opensteer.close().catch(() => undefined);
+    }
+  }, 60_000);
+
+  test("generic recipes can sync browser cookies, inject form body variables, and run through the recipe surface", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const opensteer = new Opensteer({
+      name: "phase10-generic-recipes",
+      rootDir,
+      browser: {
+        headless: true,
+      },
+    });
+
+    try {
+      await opensteer.open(`${baseUrl}/phase10/session`);
+
+      await opensteer.writeRecipe({
+        key: "phase10-cookie-jar-sync",
+        version: "1.0.0",
+        payload: {
+          steps: [
+            {
+              kind: "syncCookiesToJar",
+              jar: "phase10-browser-jar",
+              urls: [baseUrl],
+            },
+          ],
+        },
+      });
+
+      await opensteer.writeRequestPlan({
+        key: "phase10-cookie-jar-plan",
+        version: "1.0.0",
+        payload: {
+          transport: {
+            kind: "direct-http",
+            cookieJar: "phase10-browser-jar",
+          },
+          endpoint: {
+            method: "GET",
+            urlTemplate: `${baseUrl}/phase10/api/session-http?source=jar-sync`,
+          },
+          response: {
+            status: 200,
+            contentType: "application/json",
+          },
+          recipes: {
+            prepare: {
+              recipe: {
+                key: "phase10-cookie-jar-sync",
+                version: "1.0.0",
+              },
+              cachePolicy: "untilFailure",
+            },
+          },
+        },
+      });
+
+      const cookieResult = await opensteer.request("phase10-cookie-jar-plan");
+      expect(cookieResult.data).toMatchObject({
+        cookie: expect.stringContaining("phase10-session=abc123"),
+        source: "jar-sync",
+      });
+
+      await opensteer.writeRecipe({
+        key: "phase10-form-token",
+        version: "1.0.0",
+        payload: {
+          steps: [
+            {
+              kind: "request",
+              request: {
+                transport: "direct-http",
+                url: `${baseUrl}/phase10/api/direct-refresh`,
+                method: "POST",
+              },
+              capture: {
+                bodyJsonPointer: {
+                  pointer: "/token",
+                  saveAs: "token",
+                },
+              },
+            },
+          ],
+          outputs: {
+            body: {
+              "recaptcha-token": "{{token}}",
+            },
+          },
+        },
+      });
+
+      const storedRecipe = await opensteer.getRecipe({
+        key: "phase10-form-token",
+        version: "1.0.0",
+      });
+      expect(storedRecipe.key).toBe("phase10-form-token");
+      expect((await opensteer.listRecipes()).recipes.map((recipe) => recipe.key)).toContain(
+        "phase10-form-token",
+      );
+
+      const recipeRun = await opensteer.runRecipe({
+        key: "phase10-form-token",
+        version: "1.0.0",
+      });
+      expect(recipeRun.variables.token).toBe("phase10-refreshed");
+      expect(recipeRun.overrides?.body?.["recaptcha-token"]).toBe("phase10-refreshed");
+
+      await opensteer.writeRequestPlan({
+        key: "phase10-form-template",
+        version: "1.0.0",
+        payload: {
+          transport: {
+            kind: "direct-http",
+          },
+          endpoint: {
+            method: "POST",
+            urlTemplate: `${baseUrl}/phase10/api/form-protected?source=recipe-prepare`,
+          },
+          body: {
+            kind: "form",
+            fields: [
+              {
+                name: "recaptcha-token",
+                value: "{{recaptcha-token}}",
+              },
+            ],
+          },
+          response: {
+            status: 200,
+            contentType: "application/json",
+          },
+          recipes: {
+            prepare: {
+              recipe: {
+                key: "phase10-form-token",
+                version: "1.0.0",
+              },
+              cachePolicy: "none",
+            },
+          },
+        },
+      });
+
+      const formResult = await opensteer.request("phase10-form-template");
+      expect(formResult.data).toMatchObject({
+        ok: true,
+        mode: "form-template",
+        token: "phase10-refreshed",
+        query: "recipe-prepare",
+      });
+    } finally {
+      await opensteer.close().catch(() => undefined);
+    }
+  }, 60_000);
+
+  test("request plans retry transient failures after recovery handling", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const opensteer = new Opensteer({
+      name: "phase10-retry-policy",
+      rootDir,
+    });
+
+    await opensteer.writeRequestPlan({
+      key: "phase10-retry-plan",
+      version: "1.0.0",
+      payload: {
+        transport: {
+          kind: "direct-http",
+        },
+        endpoint: {
+          method: "GET",
+          urlTemplate: `${baseUrl}/phase10/api/retry-once?key=phase10-retry-plan`,
+        },
+        response: {
+          status: 200,
+          contentType: "application/json",
+        },
+        retryPolicy: {
+          maxRetries: 1,
+          respectRetryAfter: true,
+          failurePolicy: {
+            statusCodes: [429],
+          },
+        },
+      },
+    });
+
+    const result = await opensteer.request("phase10-retry-plan");
+    expect(result.data).toMatchObject({
+      ok: true,
+      mode: "retry-policy",
+      attempt: 2,
+    });
   });
 
   test("SDK retries session-http plans with a deterministic auth recipe in the same browser session", async () => {
@@ -410,12 +736,12 @@ describe("Phase 10 request workflows", () => {
     });
   });
 
-  test("CLI supports auth-recipe CRUD and direct-http execution without a browser session", async () => {
+  test("CLI supports recipe CRUD and direct-http execution without a browser session", async () => {
     const rootDir = await createPhase6TemporaryRoot();
     const baseUrl = requireFixtureServer().url;
 
     await runCliCommand(rootDir, [
-      "auth-recipe",
+      "recipe",
       "write",
       "--key",
       "phase10-cli-direct-refresh",
@@ -447,7 +773,7 @@ describe("Phase 10 request workflows", () => {
     ]);
 
     const listed = (await runCliCommand(rootDir, [
-      "auth-recipe",
+      "recipe",
       "list",
     ])) as {
       readonly recipes: readonly { readonly key: string }[];
@@ -455,7 +781,7 @@ describe("Phase 10 request workflows", () => {
     expect(listed.recipes.map((entry) => entry.key)).toContain("phase10-cli-direct-refresh");
 
     const recipe = (await runCliCommand(rootDir, [
-      "auth-recipe",
+      "recipe",
       "run",
       "phase10-cli-direct-refresh",
     ])) as {

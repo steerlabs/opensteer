@@ -120,6 +120,7 @@ export function normalizeRequestPlanPayload(
       ? {}
       : {
           body: {
+            ...(payload.body.kind === undefined ? {} : { kind: payload.body.kind }),
             ...(payload.body.contentType === undefined
               ? {}
               : {
@@ -135,6 +136,14 @@ export function normalizeRequestPlanPayload(
                   description: normalizeTrimmedString(
                     "body.description",
                     payload.body.description,
+                  ),
+                }),
+            ...(payload.body.template === undefined ? {} : { template: payload.body.template }),
+            ...(payload.body.fields === undefined || payload.body.fields.length === 0
+              ? {}
+              : {
+                  fields: payload.body.fields.map((entry, index) =>
+                    normalizeRequestEntry(entry, `body.fields[${index}]`, "query"),
                   ),
                 }),
           },
@@ -154,6 +163,73 @@ export function normalizeRequestPlanPayload(
                 }),
           },
         }),
+    ...(payload.recipes === undefined
+      ? {}
+      : {
+          recipes: {
+            ...(payload.recipes.prepare === undefined
+              ? {}
+              : {
+                  prepare: {
+                    recipe: normalizeRecipeRef(
+                      payload.recipes.prepare.recipe,
+                      "recipes.prepare.recipe",
+                    ),
+                    ...(payload.recipes.prepare.cachePolicy === undefined
+                      ? {}
+                      : { cachePolicy: payload.recipes.prepare.cachePolicy }),
+                  },
+                }),
+            ...(payload.recipes.recover === undefined
+              ? {}
+              : {
+                  recover: {
+                    recipe: normalizeRecipeRef(
+                      payload.recipes.recover.recipe,
+                      "recipes.recover.recipe",
+                    ),
+                    ...(payload.recipes.recover.cachePolicy === undefined
+                      ? {}
+                      : { cachePolicy: payload.recipes.recover.cachePolicy }),
+                    failurePolicy: normalizeFailurePolicy(
+                      payload.recipes.recover.failurePolicy,
+                      "recipes.recover.failurePolicy",
+                    )!,
+                  },
+                }),
+          },
+        }),
+    ...(payload.retryPolicy === undefined
+      ? {}
+      : {
+          retryPolicy: {
+            maxRetries: payload.retryPolicy.maxRetries,
+            ...(payload.retryPolicy.backoff === undefined
+              ? {}
+              : {
+                  backoff: {
+                    ...(payload.retryPolicy.backoff.strategy === undefined
+                      ? {}
+                      : { strategy: payload.retryPolicy.backoff.strategy }),
+                    delayMs: payload.retryPolicy.backoff.delayMs,
+                    ...(payload.retryPolicy.backoff.maxDelayMs === undefined
+                      ? {}
+                      : { maxDelayMs: payload.retryPolicy.backoff.maxDelayMs }),
+                  },
+                }),
+            ...(payload.retryPolicy.respectRetryAfter === undefined
+              ? {}
+              : { respectRetryAfter: payload.retryPolicy.respectRetryAfter }),
+            ...(payload.retryPolicy.failurePolicy === undefined
+              ? {}
+              : {
+                  failurePolicy: normalizeFailurePolicy(
+                    payload.retryPolicy.failurePolicy,
+                    "retryPolicy.failurePolicy",
+                  )!,
+                }),
+          },
+        }),
     ...(payload.auth === undefined
       ? {}
       : {
@@ -162,68 +238,15 @@ export function normalizeRequestPlanPayload(
             ...(payload.auth.recipe === undefined
               ? {}
               : {
-                  recipe: {
-                    key: normalizeTrimmedString("auth.recipe.key", payload.auth.recipe.key),
-                    ...(payload.auth.recipe.version === undefined
-                      ? {}
-                      : {
-                          version: normalizeTrimmedString(
-                            "auth.recipe.version",
-                            payload.auth.recipe.version,
-                          ),
-                        }),
-                  },
+                  recipe: normalizeRecipeRef(payload.auth.recipe, "auth.recipe"),
                 }),
             ...(payload.auth.failurePolicy === undefined
               ? {}
               : {
-                  failurePolicy: {
-                    ...(payload.auth.failurePolicy.statusCodes === undefined
-                      ? {}
-                      : {
-                          statusCodes: [...payload.auth.failurePolicy.statusCodes].sort(
-                            (left, right) => left - right,
-                          ),
-                        }),
-                    ...(payload.auth.failurePolicy.finalUrlIncludes === undefined
-                      ? {}
-                      : {
-                          finalUrlIncludes: payload.auth.failurePolicy.finalUrlIncludes.map(
-                            (value, index) =>
-                              normalizeTrimmedString(
-                                `auth.failurePolicy.finalUrlIncludes[${index}]`,
-                                value,
-                              ),
-                          ),
-                        }),
-                    ...(payload.auth.failurePolicy.responseHeaders === undefined
-                      ? {}
-                      : {
-                          responseHeaders: payload.auth.failurePolicy.responseHeaders.map(
-                            (match, index) => ({
-                              name: normalizeHttpHeaderName(
-                                `auth.failurePolicy.responseHeaders[${index}].name`,
-                                match.name,
-                              ),
-                              valueIncludes: normalizeTrimmedString(
-                                `auth.failurePolicy.responseHeaders[${index}].valueIncludes`,
-                                match.valueIncludes,
-                              ),
-                            }),
-                          ),
-                        }),
-                    ...(payload.auth.failurePolicy.responseBodyIncludes === undefined
-                      ? {}
-                      : {
-                          responseBodyIncludes: payload.auth.failurePolicy.responseBodyIncludes.map(
-                            (value, index) =>
-                              normalizeTrimmedString(
-                                `auth.failurePolicy.responseBodyIncludes[${index}]`,
-                                value,
-                              ),
-                          ),
-                        }),
-                  },
+                  failurePolicy: normalizeFailurePolicy(
+                    payload.auth.failurePolicy,
+                    "auth.failurePolicy",
+                  )!,
                 }),
             ...(payload.auth.description === undefined
               ? {}
@@ -236,6 +259,20 @@ export function normalizeRequestPlanPayload(
           },
         }),
   } satisfies OpensteerRequestPlanPayload;
+
+  if (
+    normalizedPayload.recipes === undefined &&
+    normalizedPayload.auth?.recipe !== undefined &&
+    normalizedPayload.auth.failurePolicy !== undefined
+  ) {
+    normalizedPayload.recipes = {
+      recover: {
+        recipe: normalizedPayload.auth.recipe,
+        failurePolicy: normalizedPayload.auth.failurePolicy,
+        cachePolicy: "none",
+      },
+    };
+  }
 
   assertValidRequestPlanPayload(normalizedPayload);
   return normalizedPayload;
@@ -338,20 +375,89 @@ function normalizeParameters(
   });
 }
 
+function normalizeRecipeRef(
+  recipe: { readonly key: string; readonly version?: string },
+  fieldPrefix: string,
+) {
+  return {
+    key: normalizeTrimmedString(`${fieldPrefix}.key`, recipe.key),
+    ...(recipe.version === undefined
+      ? {}
+      : { version: normalizeTrimmedString(`${fieldPrefix}.version`, recipe.version) }),
+  };
+}
+
+function normalizeFailurePolicy(
+  failurePolicy: NonNullable<OpensteerRequestPlanPayload["auth"]>["failurePolicy"],
+  fieldPrefix: string,
+) {
+  if (failurePolicy === undefined) {
+    return undefined;
+  }
+
+  return {
+    ...(failurePolicy.statusCodes === undefined
+      ? {}
+      : {
+          statusCodes: [...failurePolicy.statusCodes].sort((left, right) => left - right),
+        }),
+    ...(failurePolicy.finalUrlIncludes === undefined
+      ? {}
+      : {
+          finalUrlIncludes: failurePolicy.finalUrlIncludes.map((value, index) =>
+            normalizeTrimmedString(`${fieldPrefix}.finalUrlIncludes[${index}]`, value),
+          ),
+        }),
+    ...(failurePolicy.responseHeaders === undefined
+      ? {}
+      : {
+          responseHeaders: failurePolicy.responseHeaders.map((match, index) => ({
+            name: normalizeHttpHeaderName(`${fieldPrefix}.responseHeaders[${index}].name`, match.name),
+            valueIncludes: normalizeTrimmedString(
+              `${fieldPrefix}.responseHeaders[${index}].valueIncludes`,
+              match.valueIncludes,
+            ),
+          })),
+        }),
+    ...(failurePolicy.responseBodyIncludes === undefined
+      ? {}
+      : {
+          responseBodyIncludes: failurePolicy.responseBodyIncludes.map((value, index) =>
+            normalizeTrimmedString(`${fieldPrefix}.responseBodyIncludes[${index}]`, value),
+          ),
+        }),
+  };
+}
+
 function normalizeTransport(
   transport: OpensteerRequestPlanPayload["transport"],
 ): OpensteerRequestPlanPayload["transport"] {
   switch (transport.kind) {
+    case "context-http":
     case "session-http":
       if (transport.requiresBrowser === false) {
-        throw invalidRequestPlanError("session-http transport always requiresBrowser", {
+        throw invalidRequestPlanError(`${transport.kind} transport always requiresBrowser`, {
           field: "transport.requiresBrowser",
           transport: transport.kind,
         });
       }
       return {
-        kind: "session-http",
+        kind: "context-http",
         requiresBrowser: true,
+        ...(transport.cookieJar === undefined ? {} : { cookieJar: transport.cookieJar }),
+      };
+    case "page-eval-http":
+      if (transport.requiresBrowser === false) {
+        throw invalidRequestPlanError("page-eval-http transport always requiresBrowser", {
+          field: "transport.requiresBrowser",
+          transport: transport.kind,
+        });
+      }
+      return {
+        kind: "page-eval-http",
+        requiresBrowser: true,
+        requireSameOrigin: transport.requireSameOrigin ?? true,
+        ...(transport.cookieJar === undefined ? {} : { cookieJar: transport.cookieJar }),
       };
     case "direct-http":
       return {
@@ -359,6 +465,7 @@ function normalizeTransport(
         ...(transport.requiresBrowser === undefined
           ? { requiresBrowser: false }
           : { requiresBrowser: transport.requiresBrowser }),
+        ...(transport.cookieJar === undefined ? {} : { cookieJar: transport.cookieJar }),
       };
   }
 }

@@ -8,9 +8,12 @@ import type {
   OpensteerDomHoverInput,
   OpensteerDomInputInput,
   OpensteerDomScrollInput,
+  OpensteerGetRecipeInput,
   OpensteerGetAuthRecipeInput,
   OpensteerGetRequestPlanInput,
   OpensteerInferRequestPlanInput,
+  OpensteerListRecipesInput,
+  OpensteerListRecipesOutput,
   OpensteerListAuthRecipesInput,
   OpensteerListAuthRecipesOutput,
   OpensteerListRequestPlansInput,
@@ -21,26 +24,39 @@ import type {
   OpensteerNetworkQueryOutput,
   OpensteerNetworkSaveInput,
   OpensteerNetworkSaveOutput,
+  OpensteerPageActivateInput,
+  OpensteerPageActivateOutput,
+  OpensteerPageCloseInput,
+  OpensteerPageCloseOutput,
+  OpensteerPageEvaluateInput,
+  OpensteerPageEvaluateOutput,
   OpensteerPageGotoInput,
   OpensteerPageGotoOutput,
+  OpensteerPageListInput,
+  OpensteerPageListOutput,
+  OpensteerPageNewInput,
+  OpensteerPageNewOutput,
   OpensteerPageSnapshotInput,
   OpensteerPageSnapshotOutput,
   OpensteerRawRequestInput,
   OpensteerRawRequestOutput,
   OpensteerRequestExecuteInput,
   OpensteerRequestExecuteOutput,
+  OpensteerRunRecipeInput,
+  OpensteerRunRecipeOutput,
   OpensteerRunAuthRecipeInput,
   OpensteerRunAuthRecipeOutput,
   OpensteerSessionCloseOutput,
   OpensteerSessionOpenInput,
   OpensteerSessionOpenOutput,
+  OpensteerWriteRecipeInput,
   OpensteerWriteAuthRecipeInput,
   OpensteerWriteRequestPlanInput,
   OpensteerActionResult,
   StorageSnapshot,
 } from "@opensteer/protocol";
 
-import type { AuthRecipeRecord, RequestPlanRecord } from "../registry.js";
+import type { AuthRecipeRecord, RecipeRecord, RequestPlanRecord } from "../registry.js";
 import {
   OpensteerCliServiceClient,
   type OpensteerServiceConnection,
@@ -68,9 +84,34 @@ export class CloudSessionProxy implements OpensteerSemanticRuntime {
     });
   }
 
+  async listPages(input: OpensteerPageListInput = {}): Promise<OpensteerPageListOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("page.list", input);
+  }
+
+  async newPage(input: OpensteerPageNewInput = {}): Promise<OpensteerPageNewOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("page.new", input);
+  }
+
+  async activatePage(input: OpensteerPageActivateInput): Promise<OpensteerPageActivateOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("page.activate", input);
+  }
+
+  async closePage(input: OpensteerPageCloseInput = {}): Promise<OpensteerPageCloseOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("page.close", input);
+  }
+
   async goto(input: OpensteerPageGotoInput): Promise<OpensteerPageGotoOutput> {
     await this.ensureSession();
     return this.requireClient().invoke("page.goto", input);
+  }
+
+  async evaluate(input: OpensteerPageEvaluateInput): Promise<OpensteerPageEvaluateOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("page.evaluate", input);
   }
 
   async snapshot(input: OpensteerPageSnapshotInput = {}): Promise<OpensteerPageSnapshotOutput> {
@@ -165,9 +206,19 @@ export class CloudSessionProxy implements OpensteerSemanticRuntime {
     return this.requireClient().invoke("auth-recipe.write", input);
   }
 
+  async writeRecipe(input: OpensteerWriteRecipeInput): Promise<RecipeRecord> {
+    await this.ensureSession();
+    return this.requireClient().invoke("recipe.write", input);
+  }
+
   async getAuthRecipe(input: OpensteerGetAuthRecipeInput): Promise<AuthRecipeRecord> {
     await this.ensureSession();
     return this.requireClient().invoke("auth-recipe.get", input);
+  }
+
+  async getRecipe(input: OpensteerGetRecipeInput): Promise<RecipeRecord> {
+    await this.ensureSession();
+    return this.requireClient().invoke("recipe.get", input);
   }
 
   async listAuthRecipes(
@@ -177,9 +228,21 @@ export class CloudSessionProxy implements OpensteerSemanticRuntime {
     return this.requireClient().invoke("auth-recipe.list", input);
   }
 
+  async listRecipes(
+    input: OpensteerListRecipesInput = {},
+  ): Promise<OpensteerListRecipesOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("recipe.list", input);
+  }
+
   async runAuthRecipe(input: OpensteerRunAuthRecipeInput): Promise<OpensteerRunAuthRecipeOutput> {
     await this.ensureSession();
     return this.requireClient().invoke("auth-recipe.run", input);
+  }
+
+  async runRecipe(input: OpensteerRunRecipeInput): Promise<OpensteerRunRecipeOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("recipe.run", input);
   }
 
   async request(input: OpensteerRequestExecuteInput): Promise<OpensteerRequestExecuteOutput> {

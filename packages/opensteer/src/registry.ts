@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   type OpensteerAuthRecipePayload,
+  type OpensteerRecipePayload,
   type OpensteerRequestPlanFreshness,
   type OpensteerRequestPlanLifecycle,
   type OpensteerRequestPlanPayload,
@@ -46,6 +47,7 @@ export interface RegistryRecord<TPayload = JsonValue> {
 export type DescriptorRecord = RegistryRecord;
 
 export type AuthRecipeRecord = RegistryRecord<OpensteerAuthRecipePayload>;
+export type RecipeRecord = RegistryRecord<OpensteerRecipePayload>;
 
 export type RequestPlanLifecycle = OpensteerRequestPlanLifecycle;
 
@@ -78,6 +80,7 @@ export interface WriteRequestPlanInput extends WriteDescriptorInput<OpensteerReq
 }
 
 export interface WriteAuthRecipeInput extends WriteDescriptorInput<OpensteerAuthRecipePayload> {}
+export interface WriteRecipeInput extends WriteDescriptorInput<OpensteerRecipePayload> {}
 
 export interface ListRegistryRecordsInput {
   readonly key?: string;
@@ -118,6 +121,13 @@ export interface AuthRecipeRegistryStore {
   getById(id: string): Promise<AuthRecipeRecord | undefined>;
   list(input?: ListRegistryRecordsInput): Promise<readonly AuthRecipeRecord[]>;
   resolve(input: ResolveRegistryRecordInput): Promise<AuthRecipeRecord | undefined>;
+}
+
+export interface RecipeRegistryStore extends AuthRecipeRegistryStore {
+  write(input: WriteRecipeInput): Promise<RecipeRecord>;
+  getById(id: string): Promise<RecipeRecord | undefined>;
+  list(input?: ListRegistryRecordsInput): Promise<readonly RecipeRecord[]>;
+  resolve(input: ResolveRegistryRecordInput): Promise<RecipeRecord | undefined>;
 }
 
 function normalizeTags(tags: readonly string[] | undefined): readonly string[] {

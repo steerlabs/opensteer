@@ -1,6 +1,7 @@
 import type {
   CookieRecord,
   OpensteerActionResult,
+  OpensteerGetRecipeInput,
   OpensteerGetAuthRecipeInput,
   OpensteerComputerExecuteInput,
   OpensteerComputerExecuteOutput,
@@ -12,6 +13,8 @@ import type {
   OpensteerDomScrollInput,
   OpensteerGetRequestPlanInput,
   OpensteerInferRequestPlanInput,
+  OpensteerListRecipesInput,
+  OpensteerListRecipesOutput,
   OpensteerListAuthRecipesInput,
   OpensteerListAuthRecipesOutput,
   OpensteerListRequestPlansInput,
@@ -22,25 +25,38 @@ import type {
   OpensteerNetworkQueryOutput,
   OpensteerNetworkSaveInput,
   OpensteerNetworkSaveOutput,
+  OpensteerPageActivateInput,
+  OpensteerPageActivateOutput,
+  OpensteerPageCloseInput,
+  OpensteerPageCloseOutput,
+  OpensteerPageEvaluateInput,
+  OpensteerPageEvaluateOutput,
   OpensteerPageGotoInput,
   OpensteerPageGotoOutput,
+  OpensteerPageListInput,
+  OpensteerPageListOutput,
+  OpensteerPageNewInput,
+  OpensteerPageNewOutput,
   OpensteerPageSnapshotInput,
   OpensteerPageSnapshotOutput,
   OpensteerRawRequestInput,
   OpensteerRawRequestOutput,
   OpensteerRequestExecuteInput,
   OpensteerRequestExecuteOutput,
+  OpensteerRunRecipeInput,
+  OpensteerRunRecipeOutput,
   OpensteerRunAuthRecipeInput,
   OpensteerRunAuthRecipeOutput,
   OpensteerSessionCloseOutput,
   OpensteerSessionOpenInput,
   OpensteerSessionOpenOutput,
+  OpensteerWriteRecipeInput,
   OpensteerWriteAuthRecipeInput,
   OpensteerWriteRequestPlanInput,
   StorageSnapshot,
 } from "@opensteer/protocol";
 
-import type { AuthRecipeRecord, RequestPlanRecord } from "../registry.js";
+import type { AuthRecipeRecord, RecipeRecord, RequestPlanRecord } from "../registry.js";
 
 export interface OpensteerRuntimeOperationOptions {
   readonly signal?: AbortSignal;
@@ -51,10 +67,30 @@ export interface OpensteerSemanticRuntime {
     input?: OpensteerSessionOpenInput,
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerSessionOpenOutput>;
+  listPages(
+    input?: OpensteerPageListInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerPageListOutput>;
+  newPage(
+    input?: OpensteerPageNewInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerPageNewOutput>;
+  activatePage(
+    input: OpensteerPageActivateInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerPageActivateOutput>;
+  closePage(
+    input?: OpensteerPageCloseInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerPageCloseOutput>;
   goto(
     input: OpensteerPageGotoInput,
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerPageGotoOutput>;
+  evaluate(
+    input: OpensteerPageEvaluateInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerPageEvaluateOutput>;
   snapshot(
     input?: OpensteerPageSnapshotInput,
     options?: OpensteerRuntimeOperationOptions,
@@ -128,18 +164,34 @@ export interface OpensteerSemanticRuntime {
     input: OpensteerWriteAuthRecipeInput,
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<AuthRecipeRecord>;
+  writeRecipe(
+    input: OpensteerWriteRecipeInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<RecipeRecord>;
   getAuthRecipe(
     input: OpensteerGetAuthRecipeInput,
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<AuthRecipeRecord>;
+  getRecipe(
+    input: OpensteerGetRecipeInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<RecipeRecord>;
   listAuthRecipes(
     input?: OpensteerListAuthRecipesInput,
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerListAuthRecipesOutput>;
+  listRecipes(
+    input?: OpensteerListRecipesInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerListRecipesOutput>;
   runAuthRecipe(
     input: OpensteerRunAuthRecipeInput,
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerRunAuthRecipeOutput>;
+  runRecipe(
+    input: OpensteerRunRecipeInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerRunRecipeOutput>;
   request(
     input: OpensteerRequestExecuteInput,
     options?: OpensteerRuntimeOperationOptions,

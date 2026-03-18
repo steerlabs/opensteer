@@ -8,7 +8,7 @@ import {
   clearChromeSingletonEntries,
 } from "./chrome-singletons.js";
 
-const CHROME_SINGLETON_ENTRIES = new Set(CHROME_SINGLETON_ARTIFACTS);
+const CHROME_SINGLETON_ENTRIES = new Set<string>(CHROME_SINGLETON_ARTIFACTS);
 
 const SKIPPED_ROOT_DIRECTORIES = new Set([
   "Crash Reports",
