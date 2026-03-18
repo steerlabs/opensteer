@@ -10,6 +10,7 @@ export interface Phase6FixtureServer {
 }
 
 const temporaryRoots: string[] = [];
+const retryAttemptCounts = new Map<string, number>();
 
 export async function createPhase6TemporaryRoot(): Promise<string> {
   const rootPath = await mkdtemp(path.join(tmpdir(), "opensteer-phase6-"));
@@ -120,6 +121,30 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
+  if (url.pathname === "/phase10/page-eval") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(
+      html(
+        `
+          <div id="phase10-page-eval">page eval ready</div>
+          <script>
+            const originalFetch = window.fetch.bind(window);
+            window.fetch = (input, init = {}) => {
+              const headers = new Headers(init.headers ?? {});
+              headers.set("x-page-eval", "active");
+              return originalFetch(input, {
+                ...init,
+                headers
+              });
+            };
+          </script>
+        `,
+        "Phase 10 page eval",
+      ),
+    );
+    return;
+  }
+
   if (url.pathname === "/phase10/api/capture") {
     response.setHeader("content-type", "application/json; charset=utf-8");
     response.setHeader("set-cookie", "phase10-capture=server; Path=/; SameSite=Lax");
@@ -204,6 +229,79 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     response.end(
       JSON.stringify({
         token: "phase10-refreshed",
+      }),
+    );
+    return;
+  }
+
+  if (url.pathname === "/phase10/api/form-protected") {
+    const body = (await readRequestBody(request)).toString("utf8");
+    const fields = new URLSearchParams(body);
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    if (fields.get("recaptcha-token") !== "phase10-refreshed") {
+      response.statusCode = 401;
+      response.end(
+        JSON.stringify({
+          ok: false,
+          code: "token-expired",
+        }),
+      );
+      return;
+    }
+    response.end(
+      JSON.stringify({
+        ok: true,
+        mode: "form-template",
+        token: fields.get("recaptcha-token"),
+        query: url.searchParams.get("source"),
+      }),
+    );
+    return;
+  }
+
+  if (url.pathname === "/phase10/api/retry-once") {
+    const key = url.searchParams.get("key") ?? "default";
+    const attempt = (retryAttemptCounts.get(key) ?? 0) + 1;
+    retryAttemptCounts.set(key, attempt);
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    if (attempt === 1) {
+      response.statusCode = 429;
+      response.setHeader("retry-after", "0");
+      response.end(
+        JSON.stringify({
+          ok: false,
+          code: "rate-limited",
+          attempt,
+        }),
+      );
+      return;
+    }
+    response.end(
+      JSON.stringify({
+        ok: true,
+        mode: "retry-policy",
+        attempt,
+      }),
+    );
+    return;
+  }
+
+  if (url.pathname === "/phase10/api/page-eval-protected") {
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    if (request.headers["x-page-eval"] !== "active") {
+      response.statusCode = 403;
+      response.end(
+        JSON.stringify({
+          ok: false,
+          code: "missing-page-context",
+        }),
+      );
+      return;
+    }
+    response.end(
+      JSON.stringify({
+        ok: true,
+        mode: "page-eval-http",
       }),
     );
     return;

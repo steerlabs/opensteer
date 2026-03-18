@@ -2009,6 +2009,57 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     };
   }
 
+  async evaluatePage(input: {
+    readonly pageRef: PageRef;
+    readonly script: string;
+    readonly args?: readonly unknown[];
+    readonly timeoutMs?: number;
+  }): Promise<StepResult<unknown>> {
+    const controller = this.requirePage(input.pageRef);
+    const session = this.requireSession(controller.sessionRef);
+    const startedAt = Date.now();
+    const mainFrame = this.requireMainFrame(controller);
+    const serialized = JSON.stringify({
+      script: input.script,
+      args: input.args ?? [],
+    });
+
+    try {
+      const result = await withTimeout(
+        session.rest.executeScript<unknown>(
+          controller.tabId,
+          `(() => {
+            const input = ${serialized};
+            const evaluated = (0, eval)(input.script);
+            if (typeof evaluated === "function") {
+              return evaluated(...(input.args ?? []));
+            }
+            return evaluated;
+          })()`,
+          {
+            wait_until: {
+              type: "immediate",
+            },
+            screenshot: {
+              area: "none",
+            },
+          },
+        ),
+        input.timeoutMs,
+      );
+
+      return this.createStepResult(session.sessionRef, controller.pageRef, startedAt, {
+        frameRef: mainFrame.frameRef,
+        documentRef: mainFrame.currentDocument.documentRef,
+        documentEpoch: mainFrame.currentDocument.documentEpoch,
+        events: this.drainQueuedEvents(controller.pageRef),
+        data: result,
+      });
+    } catch (error) {
+      throw normalizeAbpError(error, controller.pageRef);
+    }
+  }
+
   async executeRequest(input: {
     readonly sessionRef: SessionRef;
     readonly request: SessionTransportRequest;
@@ -3688,6 +3739,21 @@ function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined):
         },
         { once: true },
       );
+    }),
+  ]);
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number | undefined): Promise<T> {
+  if (timeoutMs === undefined) {
+    return promise;
+  }
+
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => {
+        reject(createBrowserCoreError("timeout", `page evaluation timed out after ${String(timeoutMs)}ms`));
+      }, timeoutMs);
     }),
   ]);
 }

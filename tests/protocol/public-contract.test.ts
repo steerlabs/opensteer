@@ -388,8 +388,11 @@ describe("semantic protocol descriptors", () => {
       opensteerSemanticOperationSpecificationMap["computer.execute"]?.requiredCapabilities,
     ).toEqual(["artifacts.screenshot", "inspect.viewportMetrics"]);
     expect(
+      opensteerSemanticOperationSpecificationMap["page.evaluate"]?.requiredCapabilities,
+    ).toEqual(["pages.manage"]);
+    expect(
       opensteerSemanticOperationSpecificationMap["request.execute"]?.requiredCapabilities,
-    ).toEqual(["transport.sessionHttp"]);
+    ).toEqual([]);
   });
 
   test("uses the dedicated semantic REST namespace and capability resolution rules", () => {
@@ -457,6 +460,24 @@ describe("semantic protocol descriptors", () => {
         },
       ),
     ).toEqual(["input.keyboard", "artifacts.screenshot", "inspect.viewportMetrics"]);
+    expect(
+      resolveSemanticRequiredCapabilities(
+        opensteerSemanticOperationSpecificationMap["request.raw"]!,
+        {
+          url: "https://example.com/api/data",
+          transport: "context-http",
+        },
+      ),
+    ).toEqual(["transport.sessionHttp"]);
+    expect(
+      resolveSemanticRequiredCapabilities(
+        opensteerSemanticOperationSpecificationMap["request.raw"]!,
+        {
+          url: "https://example.com/api/data",
+          transport: "page-eval-http",
+        },
+      ),
+    ).toEqual(["pages.manage"]);
   });
 
   test("validates the computer.execute action union at the semantic boundary", () => {

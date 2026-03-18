@@ -14,8 +14,33 @@ export async function dispatchSemanticOperation(
   switch (operation) {
     case "session.open":
       return runtime.open((input ?? {}) as Parameters<OpensteerSessionRuntime["open"]>[0], options);
+    case "page.list":
+      return runtime.listPages(
+        (input ?? {}) as Parameters<OpensteerSessionRuntime["listPages"]>[0],
+        options,
+      );
+    case "page.new":
+      return runtime.newPage(
+        (input ?? {}) as Parameters<OpensteerSessionRuntime["newPage"]>[0],
+        options,
+      );
+    case "page.activate":
+      return runtime.activatePage(
+        input as Parameters<OpensteerSessionRuntime["activatePage"]>[0],
+        options,
+      );
+    case "page.close":
+      return runtime.closePage(
+        (input ?? {}) as Parameters<OpensteerSessionRuntime["closePage"]>[0],
+        options,
+      );
     case "page.goto":
       return runtime.goto(input as Parameters<OpensteerSessionRuntime["goto"]>[0], options);
+    case "page.evaluate":
+      return runtime.evaluate(
+        input as Parameters<OpensteerSessionRuntime["evaluate"]>[0],
+        options,
+      );
     case "page.snapshot":
       return runtime.snapshot(
         (input ?? {}) as Parameters<OpensteerSessionRuntime["snapshot"]>[0],
@@ -70,6 +95,26 @@ export async function dispatchSemanticOperation(
     case "request-plan.list":
       return runtime.listRequestPlans(
         (input ?? {}) as Parameters<OpensteerSessionRuntime["listRequestPlans"]>[0],
+        options,
+      );
+    case "recipe.write":
+      return runtime.writeRecipe(
+        input as Parameters<OpensteerSessionRuntime["writeRecipe"]>[0],
+        options,
+      );
+    case "recipe.get":
+      return runtime.getRecipe(
+        input as Parameters<OpensteerSessionRuntime["getRecipe"]>[0],
+        options,
+      );
+    case "recipe.list":
+      return runtime.listRecipes(
+        (input ?? {}) as Parameters<OpensteerSessionRuntime["listRecipes"]>[0],
+        options,
+      );
+    case "recipe.run":
+      return runtime.runRecipe(
+        input as Parameters<OpensteerSessionRuntime["runRecipe"]>[0],
         options,
       );
     case "auth-recipe.write":

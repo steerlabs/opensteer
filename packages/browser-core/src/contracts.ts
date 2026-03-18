@@ -177,6 +177,12 @@ export interface BrowserInspector {
     readonly includeSessionStorage?: boolean;
     readonly includeIndexedDb?: boolean;
   }): Promise<StorageSnapshot>;
+  evaluatePage(input: {
+    readonly pageRef: PageRef;
+    readonly script: string;
+    readonly args?: readonly unknown[];
+    readonly timeoutMs?: number;
+  }): Promise<StepResult<unknown>>;
 }
 
 export interface SessionTransportExecutor {

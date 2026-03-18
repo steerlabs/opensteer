@@ -1176,6 +1176,46 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     };
   }
 
+  async evaluatePage(input: {
+    readonly pageRef: PageRef;
+    readonly script: string;
+    readonly args?: readonly unknown[];
+    readonly timeoutMs?: number;
+  }): Promise<StepResult<unknown>> {
+    const controller = this.requirePage(input.pageRef);
+    const startedAt = Date.now();
+    const mainFrame = this.requireMainFrame(controller);
+
+    try {
+      const result = await withTimeout(
+        controller.page.evaluate(
+          ({ script, args }) => {
+            const evaluated = (0, eval)(script) as unknown;
+            if (typeof evaluated === "function") {
+              return (evaluated as (...args: readonly unknown[]) => unknown)(...(args ?? []));
+            }
+            return evaluated;
+          },
+          {
+            script: input.script,
+            args: input.args ?? [],
+          },
+        ),
+        input.timeoutMs,
+      );
+
+      return this.createStepResult(controller.sessionRef, controller.pageRef, startedAt, {
+        frameRef: mainFrame.frameRef,
+        documentRef: mainFrame.currentDocument.documentRef,
+        documentEpoch: mainFrame.currentDocument.documentEpoch,
+        events: this.drainQueuedEvents(controller.pageRef),
+        data: result,
+      });
+    } catch (error) {
+      throw normalizePlaywrightError(error, controller.pageRef);
+    }
+  }
+
   async executeRequest(input: {
     readonly sessionRef: SessionRef;
     readonly request: SessionTransportRequest;
@@ -3014,6 +3054,21 @@ function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined):
         },
         { once: true },
       );
+    }),
+  ]);
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number | undefined): Promise<T> {
+  if (timeoutMs === undefined) {
+    return promise;
+  }
+
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => {
+        reject(createBrowserCoreError("timeout", `page evaluation timed out after ${String(timeoutMs)}ms`));
+      }, timeoutMs);
     }),
   ]);
 }

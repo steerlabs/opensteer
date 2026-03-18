@@ -14,6 +14,7 @@ import type {
   OpensteerComputerAction,
   OpensteerComputerExecuteInput,
   OpensteerComputerExecuteOutput,
+  OpensteerRecipePayload,
   OpensteerRequestBodyInput,
   OpensteerRegistryProvenance,
   OpensteerRequestPlanLifecycle,
@@ -493,15 +494,18 @@ async function main(argv: readonly string[]): Promise<void> {
       return;
     }
 
+    case "recipe.write":
     case "auth-recipe.write": {
       const runtime = await resolveCliSemanticRuntime(
         sessionOptions,
         resolveCliExecutionMode(options),
       );
+      const recipeCommandName =
+        invocation.commandId === "recipe.write" ? "recipe write" : "auth-recipe write";
       const key = readOptionalString(options.key);
       const version = readOptionalString(options.version);
       if (!key || !version) {
-        throw new Error("auth-recipe write requires --key and --version");
+        throw new Error(`${recipeCommandName} requires --key and --version`);
       }
       const payload = await readJsonObjectOption(options, {
         inlineKey: "payload",
@@ -509,7 +513,7 @@ async function main(argv: readonly string[]): Promise<void> {
         label: "payload",
       });
       if (payload === undefined) {
-        throw new Error("auth-recipe write requires --payload or --payload-file");
+        throw new Error(`${recipeCommandName} requires --payload or --payload-file`);
       }
       const writeRecipeInput: {
         id?: string;
@@ -517,11 +521,11 @@ async function main(argv: readonly string[]): Promise<void> {
         version: string;
         tags?: readonly string[];
         provenance?: OpensteerRegistryProvenance;
-        payload: OpensteerAuthRecipePayload;
+        payload: OpensteerRecipePayload;
       } = {
         key,
         version,
-        payload: parseAuthRecipePayload(payload),
+        payload: parseRecipePayload(payload),
       };
       const recipeId = readOptionalString(options.id);
       if (recipeId !== undefined) {
@@ -535,50 +539,68 @@ async function main(argv: readonly string[]): Promise<void> {
       if (recipeProvenance !== undefined) {
         writeRecipeInput.provenance = recipeProvenance;
       }
-      const result = await runtime.writeAuthRecipe(writeRecipeInput);
+      const result =
+        invocation.commandId === "recipe.write"
+          ? await runtime.writeRecipe(writeRecipeInput)
+          : await runtime.writeAuthRecipe(writeRecipeInput);
       await writeJsonOutput(result, readOptionalString(options.output));
       return;
     }
 
+    case "recipe.get":
     case "auth-recipe.get": {
       const runtime = await resolveCliSemanticRuntime(
         sessionOptions,
         resolveCliExecutionMode(options),
       );
+      const recipeCommandName =
+        invocation.commandId === "recipe.get" ? "recipe get" : "auth-recipe get";
       const key = invocation.positionals[0] ?? readOptionalString(options.key);
       if (!key) {
-        throw new Error("auth-recipe get requires a key");
+        throw new Error(`${recipeCommandName} requires a key`);
       }
       const version = invocation.positionals[1] ?? readOptionalString(options.version);
-      const result = await runtime.getAuthRecipe({
+      const recipeRef = {
         key,
         ...(version === undefined ? {} : { version }),
-      });
+      };
+      const result =
+        invocation.commandId === "recipe.get"
+          ? await runtime.getRecipe(recipeRef)
+          : await runtime.getAuthRecipe(recipeRef);
       await writeJsonOutput(result, readOptionalString(options.output));
       return;
     }
 
+    case "recipe.list":
     case "auth-recipe.list": {
       const runtime = await resolveCliSemanticRuntime(
         sessionOptions,
         resolveCliExecutionMode(options),
       );
       const key = invocation.positionals[0] ?? readOptionalString(options.key);
-      const result = await runtime.listAuthRecipes({
+      const listInput = {
         ...(key === undefined ? {} : { key }),
-      });
+      };
+      const result =
+        invocation.commandId === "recipe.list"
+          ? await runtime.listRecipes(listInput)
+          : await runtime.listAuthRecipes(listInput);
       await writeJsonOutput(result, readOptionalString(options.output));
       return;
     }
 
+    case "recipe.run":
     case "auth-recipe.run": {
       const runtime = await resolveCliSemanticRuntime(
         sessionOptions,
         resolveCliExecutionMode(options),
       );
+      const recipeCommandName =
+        invocation.commandId === "recipe.run" ? "recipe run" : "auth-recipe run";
       const key = invocation.positionals[0] ?? readOptionalString(options.key);
       if (!key) {
-        throw new Error("auth-recipe run requires a key");
+        throw new Error(`${recipeCommandName} requires a key`);
       }
       const runRecipeInput: {
         key: string;
@@ -593,7 +615,10 @@ async function main(argv: readonly string[]): Promise<void> {
       if (initialVariables !== undefined) {
         runRecipeInput.variables = parseStringRecord(initialVariables, "--variables");
       }
-      const result = await runtime.runAuthRecipe(runRecipeInput);
+      const result =
+        invocation.commandId === "recipe.run"
+          ? await runtime.runRecipe(runRecipeInput)
+          : await runtime.runAuthRecipe(runRecipeInput);
       await writeJsonOutput(result, readOptionalString(options.output));
       return;
     }
@@ -611,7 +636,7 @@ async function main(argv: readonly string[]): Promise<void> {
       const headers = parseHeaderEntries(readOptionalStrings(options.header));
       const rawRequestInput: {
         url: string;
-        transport?: "session-http" | "direct-http";
+        transport?: "context-http" | "direct-http" | "page-eval-http" | "session-http";
         method?: string;
         body?: OpensteerRequestBodyInput;
         followRedirects?: boolean;
@@ -1320,11 +1345,11 @@ function parseRequestPlanPayload(value: Record<string, unknown>): OpensteerReque
   return value;
 }
 
-function parseAuthRecipePayload(value: Record<string, unknown>): OpensteerAuthRecipePayload {
-  assertValidJsonObject<OpensteerAuthRecipePayload>(
+function parseRecipePayload(value: Record<string, unknown>): OpensteerRecipePayload {
+  assertValidJsonObject<OpensteerRecipePayload>(
     value,
     opensteerAuthRecipePayloadSchema,
-    "auth recipe payload",
+    "recipe payload",
   );
   return value;
 }
@@ -1336,8 +1361,15 @@ function parseRequestPlanLifecycle(value: string): OpensteerRequestPlanLifecycle
   throw new Error(`invalid lifecycle "${value}"`);
 }
 
-function parseRequestTransport(value: string): "session-http" | "direct-http" {
-  if (value === "session-http" || value === "direct-http") {
+function parseRequestTransport(
+  value: string,
+): "context-http" | "direct-http" | "page-eval-http" | "session-http" {
+  if (
+    value === "context-http" ||
+    value === "direct-http" ||
+    value === "page-eval-http" ||
+    value === "session-http"
+  ) {
     return value;
   }
   throw new Error(`invalid transport "${value}"`);

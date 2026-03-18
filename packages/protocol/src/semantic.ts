@@ -1,6 +1,7 @@
 import type { JsonSchema, JsonValue } from "./json.js";
 import {
   arraySchema,
+  defineSchema,
   enumSchema,
   integerSchema,
   literalSchema,
@@ -30,6 +31,7 @@ import type {
 } from "./identity.js";
 import { pointSchema, viewportMetricsSchema } from "./geometry.js";
 import type { Point, ViewportMetrics } from "./geometry.js";
+import { pageInfoSchema } from "./metadata.js";
 import { opensteerEventSchema, type OpensteerEvent } from "./events.js";
 import { requestEnvelopeSchema, responseEnvelopeSchema } from "./envelopes.js";
 import {
@@ -225,12 +227,53 @@ export interface OpensteerSessionOpenInput {
 
 export interface OpensteerSessionOpenOutput extends OpensteerSessionState {}
 
+export interface OpensteerPageListInput {}
+
+export interface OpensteerPageListOutput {
+  readonly activePageRef?: PageRef;
+  readonly pages: readonly import("./metadata.js").PageInfo[];
+}
+
+export interface OpensteerPageNewInput {
+  readonly url?: string;
+  readonly openerPageRef?: PageRef;
+}
+
+export interface OpensteerPageNewOutput extends OpensteerSessionState {}
+
+export interface OpensteerPageActivateInput {
+  readonly pageRef: PageRef;
+}
+
+export interface OpensteerPageActivateOutput extends OpensteerSessionState {}
+
+export interface OpensteerPageCloseInput {
+  readonly pageRef?: PageRef;
+}
+
+export interface OpensteerPageCloseOutput {
+  readonly closedPageRef: PageRef;
+  readonly activePageRef?: PageRef;
+  readonly pages: readonly import("./metadata.js").PageInfo[];
+}
+
 export interface OpensteerPageGotoInput {
   readonly url: string;
   readonly networkTag?: string;
 }
 
 export interface OpensteerPageGotoOutput extends OpensteerSessionState {}
+
+export interface OpensteerPageEvaluateInput {
+  readonly script: string;
+  readonly args?: readonly JsonValue[];
+  readonly pageRef?: PageRef;
+}
+
+export interface OpensteerPageEvaluateOutput {
+  readonly pageRef: PageRef;
+  readonly value: JsonValue;
+}
 
 export interface OpensteerPageSnapshotInput {
   readonly mode?: OpensteerSnapshotMode;
@@ -417,7 +460,12 @@ export interface OpensteerComputerExecuteOutput {
 
 export const opensteerSemanticOperationNames = [
   "session.open",
+  "page.list",
+  "page.new",
+  "page.activate",
+  "page.close",
   "page.goto",
+  "page.evaluate",
   "page.snapshot",
   "dom.click",
   "dom.hover",
@@ -434,6 +482,10 @@ export const opensteerSemanticOperationNames = [
   "request-plan.write",
   "request-plan.get",
   "request-plan.list",
+  "recipe.write",
+  "recipe.get",
+  "recipe.list",
+  "recipe.run",
   "auth-recipe.write",
   "auth-recipe.get",
   "auth-recipe.list",
@@ -723,6 +775,65 @@ const opensteerSessionOpenInputSchema: JsonSchema = objectSchema(
   },
 );
 
+const opensteerPageListInputSchema: JsonSchema = objectSchema(
+  {},
+  {
+    title: "OpensteerPageListInput",
+  },
+);
+
+const opensteerPageListOutputSchema: JsonSchema = objectSchema(
+  {
+    activePageRef: pageRefSchema,
+    pages: arraySchema(pageInfoSchema),
+  },
+  {
+    title: "OpensteerPageListOutput",
+    required: ["pages"],
+  },
+);
+
+const opensteerPageNewInputSchema: JsonSchema = objectSchema(
+  {
+    url: stringSchema(),
+    openerPageRef: pageRefSchema,
+  },
+  {
+    title: "OpensteerPageNewInput",
+  },
+);
+
+const opensteerPageActivateInputSchema: JsonSchema = objectSchema(
+  {
+    pageRef: pageRefSchema,
+  },
+  {
+    title: "OpensteerPageActivateInput",
+    required: ["pageRef"],
+  },
+);
+
+const opensteerPageCloseInputSchema: JsonSchema = objectSchema(
+  {
+    pageRef: pageRefSchema,
+  },
+  {
+    title: "OpensteerPageCloseInput",
+  },
+);
+
+const opensteerPageCloseOutputSchema: JsonSchema = objectSchema(
+  {
+    closedPageRef: pageRefSchema,
+    activePageRef: pageRefSchema,
+    pages: arraySchema(pageInfoSchema),
+  },
+  {
+    title: "OpensteerPageCloseOutput",
+    required: ["closedPageRef", "pages"],
+  },
+);
+
 const opensteerPageGotoInputSchema: JsonSchema = objectSchema(
   {
     url: stringSchema(),
@@ -731,6 +842,46 @@ const opensteerPageGotoInputSchema: JsonSchema = objectSchema(
   {
     title: "OpensteerPageGotoInput",
     required: ["url"],
+  },
+);
+
+const opensteerPageEvaluateInputSchema: JsonSchema = objectSchema(
+  {
+    script: stringSchema({ minLength: 1 }),
+    args: arraySchema(
+      defineSchema({
+        title: "JsonValue",
+      }),
+    ),
+    pageRef: pageRefSchema,
+  },
+  {
+    title: "OpensteerPageEvaluateInput",
+    required: ["script"],
+  },
+);
+
+const opensteerPageEvaluateOutputSchema: JsonSchema = objectSchema(
+  {
+    pageRef: pageRefSchema,
+    value: oneOfSchema(
+      [
+        defineSchema({
+          title: "JsonValue",
+        }),
+        arraySchema({}),
+        stringSchema(),
+        numberSchema(),
+        enumSchema([true, false, null] as const),
+      ],
+      {
+        title: "OpensteerPageEvaluateValue",
+      },
+    ),
+  },
+  {
+    title: "OpensteerPageEvaluateOutput",
+    required: ["pageRef", "value"],
   },
 );
 
@@ -1171,12 +1322,49 @@ export const opensteerSemanticOperationSpecifications = [
         ? ["sessions.manage", "pages.manage"]
         : ["sessions.manage", "pages.manage", "pages.navigate"],
   }),
+  defineSemanticOperationSpec<OpensteerPageListInput, OpensteerPageListOutput>({
+    name: "page.list",
+    description: "List top-level pages for the current Opensteer session.",
+    inputSchema: opensteerPageListInputSchema,
+    outputSchema: opensteerPageListOutputSchema,
+    requiredCapabilities: ["inspect.pages"],
+  }),
+  defineSemanticOperationSpec<OpensteerPageNewInput, OpensteerPageNewOutput>({
+    name: "page.new",
+    description: "Create and optionally navigate a new top-level page in the current session.",
+    inputSchema: opensteerPageNewInputSchema,
+    outputSchema: opensteerSessionStateSchema,
+    requiredCapabilities: ["pages.manage"],
+    resolveRequiredCapabilities: (input) =>
+      input.url === undefined ? ["pages.manage"] : ["pages.manage", "pages.navigate"],
+  }),
+  defineSemanticOperationSpec<OpensteerPageActivateInput, OpensteerPageActivateOutput>({
+    name: "page.activate",
+    description: "Activate an existing top-level page in the current session.",
+    inputSchema: opensteerPageActivateInputSchema,
+    outputSchema: opensteerSessionStateSchema,
+    requiredCapabilities: ["pages.manage", "inspect.pages"],
+  }),
+  defineSemanticOperationSpec<OpensteerPageCloseInput, OpensteerPageCloseOutput>({
+    name: "page.close",
+    description: "Close a top-level page in the current session.",
+    inputSchema: opensteerPageCloseInputSchema,
+    outputSchema: opensteerPageCloseOutputSchema,
+    requiredCapabilities: ["pages.manage", "inspect.pages"],
+  }),
   defineSemanticOperationSpec<OpensteerPageGotoInput, OpensteerPageGotoOutput>({
     name: "page.goto",
     description: "Navigate the current Opensteer page to a new URL.",
     inputSchema: opensteerPageGotoInputSchema,
     outputSchema: opensteerSessionStateSchema,
     requiredCapabilities: ["pages.navigate"],
+  }),
+  defineSemanticOperationSpec<OpensteerPageEvaluateInput, OpensteerPageEvaluateOutput>({
+    name: "page.evaluate",
+    description: "Execute JavaScript in the live page context and return a structured result.",
+    inputSchema: opensteerPageEvaluateInputSchema,
+    outputSchema: opensteerPageEvaluateOutputSchema,
+    requiredCapabilities: ["pages.manage"],
   }),
   defineSemanticOperationSpec<OpensteerPageSnapshotInput, OpensteerPageSnapshotOutput>({
     name: "page.snapshot",
@@ -1284,8 +1472,16 @@ export const opensteerSemanticOperationSpecifications = [
     inputSchema: opensteerRawRequestInputSchema,
     outputSchema: opensteerRawRequestOutputSchema,
     requiredCapabilities: [],
-    resolveRequiredCapabilities: (input) =>
-      (input.transport ?? "session-http") === "direct-http" ? [] : ["transport.sessionHttp"],
+    resolveRequiredCapabilities: (input) => {
+      const transport = input.transport ?? "context-http";
+      if (transport === "direct-http") {
+        return [];
+      }
+      if (transport === "page-eval-http") {
+        return ["pages.manage"];
+      }
+      return ["transport.sessionHttp"];
+    },
   }),
   defineSemanticOperationSpec<OpensteerInferRequestPlanInput, OpensteerRequestPlanRecord>({
     name: "request-plan.infer",
@@ -1313,6 +1509,34 @@ export const opensteerSemanticOperationSpecifications = [
     description: "List request plans from the local registry.",
     inputSchema: opensteerListRequestPlansInputSchema,
     outputSchema: opensteerListRequestPlansOutputSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerWriteAuthRecipeInput, OpensteerAuthRecipeRecord>({
+    name: "recipe.write",
+    description: "Validate and persist a reusable recipe in the local registry.",
+    inputSchema: opensteerWriteAuthRecipeInputSchema,
+    outputSchema: opensteerAuthRecipeRecordSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerGetAuthRecipeInput, OpensteerAuthRecipeRecord>({
+    name: "recipe.get",
+    description: "Resolve a recipe by key and optional version.",
+    inputSchema: opensteerGetAuthRecipeInputSchema,
+    outputSchema: opensteerAuthRecipeRecordSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerListAuthRecipesInput, OpensteerListAuthRecipesOutput>({
+    name: "recipe.list",
+    description: "List recipes from the local registry.",
+    inputSchema: opensteerListAuthRecipesInputSchema,
+    outputSchema: opensteerListAuthRecipesOutputSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerRunAuthRecipeInput, OpensteerRunAuthRecipeOutput>({
+    name: "recipe.run",
+    description: "Run a stored recipe deterministically against the current runtime.",
+    inputSchema: opensteerRunAuthRecipeInputSchema,
+    outputSchema: opensteerRunAuthRecipeOutputSchema,
     requiredCapabilities: [],
   }),
   defineSemanticOperationSpec<OpensteerWriteAuthRecipeInput, OpensteerAuthRecipeRecord>({

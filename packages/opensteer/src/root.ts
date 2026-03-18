@@ -13,6 +13,7 @@ import {
   createDescriptorRegistry,
   createRequestPlanRegistry,
   type AuthRecipeRegistryStore,
+  type RecipeRegistryStore,
   type DescriptorRegistryStore,
   type RequestPlanRegistryStore,
 } from "./registry.js";
@@ -48,6 +49,7 @@ export interface FilesystemOpensteerRoot {
     readonly descriptors: DescriptorRegistryStore;
     readonly requestPlans: RequestPlanRegistryStore;
     readonly authRecipes: AuthRecipeRegistryStore;
+    readonly recipes: RecipeRegistryStore;
     readonly savedNetwork: SavedNetworkStore;
   };
 }
@@ -114,6 +116,7 @@ export async function createFilesystemOpensteerRoot(
       descriptors,
       requestPlans,
       authRecipes,
+      recipes: authRecipes,
       savedNetwork,
     },
   };

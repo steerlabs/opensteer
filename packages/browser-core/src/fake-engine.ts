@@ -836,6 +836,31 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
     };
   }
 
+  async evaluatePage(input: {
+    readonly pageRef: PageRef;
+    readonly script: string;
+    readonly args?: readonly unknown[];
+    readonly timeoutMs?: number;
+  }): Promise<StepResult<unknown>> {
+    const page = this.requirePage(input.pageRef);
+    const mainFrame = this.getMainFrameInfo(page.pageRef);
+    const value = await Promise.resolve().then(() => {
+      const evaluated = (0, eval)(input.script) as unknown;
+      if (typeof evaluated === "function") {
+        return (evaluated as (...args: readonly unknown[]) => unknown)(...(input.args ?? []));
+      }
+      return evaluated;
+    });
+
+    return this.createStepResult(page.sessionRef, page.pageRef, {
+      frameRef: mainFrame.frameRef,
+      documentRef: mainFrame.documentRef,
+      documentEpoch: mainFrame.documentEpoch,
+      events: this.drainQueuedEvents(page.pageRef),
+      data: clone(value),
+    });
+  }
+
   async executeRequest(input: {
     readonly sessionRef: SessionRef;
     readonly request: SessionTransportRequest;
