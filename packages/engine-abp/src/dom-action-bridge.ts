@@ -22,6 +22,7 @@ import {
   clampAbpActionSettleTimeout,
   type AbpActionBoundaryOptions,
 } from "./action-settle.js";
+import { buildInputActionRequest } from "./rest-client.js";
 
 interface AbpDomActionBridgeContext {
   resolveController(pageRef: PageRef): PageController;
@@ -365,6 +366,22 @@ export function createAbpDomActionBridge(context: AbpDomActionBridgeContext): Do
       const nodeId = await resolveFrontendNodeId(controller, document, locator, backendNodeId);
       await withTemporaryExecutionResume(context, controller, async () => {
         await controller.cdp.send("DOM.focus", { nodeId });
+        await context.flushDomUpdateTask(controller);
+      });
+    },
+
+    async pressKey(locator, input) {
+      const { controller, document, backendNodeId } = await prepareLiveNodeContext(context, locator);
+      const nodeId = await resolveFrontendNodeId(controller, document, locator, backendNodeId);
+      await withTemporaryExecutionResume(context, controller, async () => {
+        await controller.cdp.send("DOM.focus", { nodeId });
+        await context.flushDomUpdateTask(controller);
+        const session = context.resolveSession(controller.sessionRef);
+        await session.rest.keyPressTab(controller.tabId, {
+          key: input.key,
+          ...(input.modifiers === undefined ? {} : { modifiers: [...input.modifiers] }),
+          ...buildInputActionRequest(),
+        });
         await context.flushDomUpdateTask(controller);
       });
     },

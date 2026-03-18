@@ -412,23 +412,43 @@ const plan = await opensteer.inferRequestPlan({
   recordId: "rec_abc123",   // From queryNetwork result
   key: "search-api",
   version: "1.0",
-  lifecycle: "active",      // Optional: "draft" | "active" | "deprecated"
+  lifecycle: "active",      // "draft" | "active" | "deprecated" | "retired"
 });
 ```
 
+Inference auto-detects transport (`session-http`), auth strategy, default headers, and query parameters from the captured request.
+
 #### `writeRequestPlan(input: OpensteerWriteRequestPlanInput): Promise<RequestPlanRecord>`
 
-Writes a request plan manually.
+Writes a request plan manually with full control over the plan structure.
 
 ```typescript
 const plan = await opensteer.writeRequestPlan({
   key: "my-api",
   version: "1.0",
+  lifecycle: "active",
   payload: {
-    method: "POST",
-    url: "https://api.example.com/search",
-    headers: [{ name: "Content-Type", value: "application/json" }],
-    body: { json: { query: "{{q}}" } },
+    transport: { kind: "session-http" },
+    endpoint: {
+      method: "GET",
+      urlTemplate: "https://api.example.com/v2/items/{itemId}",
+      defaultHeaders: [
+        { name: "Accept", value: "application/json" },
+      ],
+    },
+    parameters: [
+      { name: "itemId", in: "path", required: true },
+      { name: "fields", in: "query", defaultValue: "name,price" },
+    ],
+    response: {
+      statusCodes: [200],
+      contentType: "application/json",
+    },
+    auth: {
+      strategy: "bearer-token",
+      recipe: { key: "refresh-token", version: "1.0.0" },
+      failurePolicy: { statusCodes: [401, 403] },
+    },
   },
 });
 ```
@@ -457,7 +477,7 @@ const plans = await opensteer.listRequestPlans({ key: "search-api" });
 
 #### `request(key: string, input?: OpensteerRequestOptions): Promise<OpensteerRequestResult>`
 
-Executes a stored request plan with parameter substitution.
+Executes a stored request plan with parameter substitution. If the plan has an auth failure policy with a linked recipe, Opensteer runs the recipe and retries once on auth failure.
 
 ```typescript
 const result = await opensteer.request("search-api", {
@@ -467,32 +487,98 @@ const result = await opensteer.request("search-api", {
 
 // result.response — HTTP response
 // result.data — parsed response body (if JSON)
+// result.recovery — auth recovery info (if attempted)
 ```
 
 **Options:**
 ```typescript
 interface OpensteerRequestOptions {
   version?: string;
-  params?: Record<string, string>;   // URL path parameters
-  query?: Record<string, string>;    // Query string parameters
-  headers?: Record<string, string>;  // Request headers
-  body?: unknown;                    // Override request body
-  validateResponse?: boolean;        // Validate response (default: true)
+  params?: Record<string, OpensteerRequestScalar>;   // URL path parameters
+  query?: Record<string, OpensteerRequestScalar>;    // Query string parameters
+  headers?: Record<string, OpensteerRequestScalar>;  // Request headers
+  body?: OpensteerRequestBodyInput;                  // Override request body
+  validateResponse?: boolean;                        // Validate response (default: true)
 }
 ```
 
+- `session-http` plans require an open browser session.
+- `direct-http` plans can run without a browser.
+
 #### `rawRequest(input: OpensteerRawRequestOptions): Promise<OpensteerRawRequestResult>`
 
-Executes a raw HTTP request through the browser's network context.
+Executes a raw HTTP request. Defaults to `session-http` (through the browser session). Use `transport: "direct-http"` to bypass the browser.
 
 ```typescript
+// Through browser session (default)
 const result = await opensteer.rawRequest({
   url: "https://api.example.com/data",
   method: "POST",
   headers: [{ name: "Content-Type", value: "application/json" }],
   body: { json: { key: "value" } },
-  followRedirects: true,
 });
+
+// Direct HTTP (no browser)
+const result = await opensteer.rawRequest({
+  transport: "direct-http",
+  url: "https://api.example.com/data",
+});
+```
+
+---
+
+### Auth Recipes
+
+#### `writeAuthRecipe(input: OpensteerWriteAuthRecipeInput): Promise<AuthRecipeRecord>`
+
+Writes a deterministic auth recovery recipe.
+
+```typescript
+const recipe = await opensteer.writeAuthRecipe({
+  key: "refresh-session",
+  version: "1.0.0",
+  payload: {
+    steps: [
+      {
+        kind: "sessionRequest",
+        request: { url: "https://example.com/auth/refresh", method: "POST" },
+        capture: { bodyJsonPointer: { pointer: "/access_token", saveAs: "token" } },
+      },
+    ],
+    outputs: {
+      headers: { Authorization: "Bearer ${token}" },
+    },
+  },
+});
+```
+
+#### `getAuthRecipe(input: { key: string; version?: string }): Promise<AuthRecipeRecord>`
+
+Retrieves a stored auth recipe.
+
+```typescript
+const recipe = await opensteer.getAuthRecipe({ key: "refresh-session" });
+```
+
+#### `listAuthRecipes(input?: { key?: string }): Promise<OpensteerListAuthRecipesOutput>`
+
+Lists available auth recipes.
+
+```typescript
+const recipes = await opensteer.listAuthRecipes();
+```
+
+#### `runAuthRecipe(input: OpensteerRunAuthRecipeInput): Promise<OpensteerRunAuthRecipeOutput>`
+
+Runs an auth recipe manually and returns captured variables and overrides.
+
+```typescript
+const result = await opensteer.runAuthRecipe({
+  key: "refresh-session",
+  variables: { csrf: "seed-value" },   // Optional seed variables
+});
+console.log(result.variables);   // Captured variables
+console.log(result.overrides);   // Headers/query for retry
 ```
 
 ---
@@ -533,6 +619,7 @@ Opensteer stores data in `.opensteer/` relative to `rootDir`:
 ├── registry/
 │   ├── descriptors/    # Persisted element descriptors
 │   ├── request-plans/  # Stored request plans
+│   ├── auth-recipes/   # Stored auth recovery recipes
 │   └── saved-network.sqlite  # Saved network traffic
 └── runtime/
     └── sessions/       # Active session metadata

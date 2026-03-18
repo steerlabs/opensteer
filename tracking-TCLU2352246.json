@@ -1,0 +1,167 @@
+{
+  "has_import_shipment": false,
+  "is_container_search": true,
+  "is_split_combine_part_load": false,
+  "is_cancelled_shipment": false,
+  "unassigned_containers": 0,
+  "last_update_time": "2026-03-04T19:42:52.000Z",
+  "origin": {
+    "terminal": "NINGBO MEISHAN TERMINAL",
+    "geo_site": "3JZPDO9X1OI32",
+    "city": "NINGBO",
+    "state": "33",
+    "country": "CHINA",
+    "country_code": "CN",
+    "geoid_city": "3JZPDO9X1OI32",
+    "site_type": "TERMINAL",
+    "location_code": "CNNPOMT"
+  },
+  "destination": {
+    "terminal": "LSA APM TERMINAL PIER 400( W185 )",
+    "geo_site": "3KNWBA31FUU5K",
+    "city": "LOS ANGELES",
+    "state": "CA",
+    "country": "UNITED STATES",
+    "country_code": "US",
+    "geoid_city": "3KNWBA31FUU5K",
+    "site_type": "TERMINAL",
+    "location_code": "USLSATM"
+  },
+  "containers": [
+    {
+      "container_num": "TCLU2352246",
+      "container_size": "20",
+      "container_type": "DRY",
+      "iso_code": "22G1",
+      "operator": "MAEU",
+      "locations": [
+        {
+          "terminal": "Ningbo CIMC Container Co., Ltd.",
+          "geo_site": "06BDV2RGNGNUP",
+          "city": "Ningbo",
+          "state": "Zhejiang",
+          "country": "China",
+          "country_code": "CN",
+          "geoid_city": "06BDV2RGNGNUP",
+          "site_type": "DEPOT",
+          "location_code": "CNNPOZJ",
+          "events": [
+            {
+              "type": "EQUIPMENT",
+              "eventId": "14351411774",
+              "locationCode": "CNNPOZJ",
+              "activity": "GATE-OUT",
+              "stempty": true,
+              "actfor": "EXP",
+              "event_time": "2026-02-10T08:34:00.000",
+              "event_time_type": "ACTUAL"
+            }
+          ]
+        },
+        {
+          "terminal": "NINGBO MEISHAN TERMINAL",
+          "geo_site": "3JZPDO9X1OI32",
+          "city": "NINGBO",
+          "state": "33",
+          "country": "CHINA",
+          "country_code": "CN",
+          "geoid_city": "3JZPDO9X1OI32",
+          "site_type": "TERMINAL",
+          "location_code": "CNNPOMT",
+          "events": [
+            {
+              "type": "EQUIPMENT",
+              "eventId": "14355928246",
+              "locationCode": "CNNPOMT",
+              "activity": "GATE-IN",
+              "stempty": false,
+              "actfor": "EXP",
+              "event_time": "2026-02-10T21:06:00.000",
+              "event_time_type": "ACTUAL"
+            },
+            {
+              "type": "EQUIPMENT",
+              "eventId": "14383961637",
+              "locationCode": "CNNPOMT",
+              "activity": "LOAD",
+              "stempty": false,
+              "vessel_name": "HUDSON EXPRESS",
+              "voyage_num": "607E",
+              "vessel_num": "IG7",
+              "transport_mode": "MVS",
+              "event_time": "2026-02-17T04:03:00.000",
+              "event_time_type": "ACTUAL"
+            },
+            {
+              "type": "EQUIPMENT",
+              "eventId": "14405502985_TCLU2352246_CNNPOMT",
+              "locationCode": "CNNPOMT",
+              "activity": "FRTRELEA",
+              "stempty": false,
+              "actfor": "null-CR",
+              "event_time": "2026-02-17T04:03:00.000",
+              "event_time_type": "ACTUAL"
+            },
+            {
+              "type": "EQUIPMENT",
+              "eventId": "62b8b844-ce8f-31f9-94a7-9276622da58a",
+              "locationCode": "CNNPOMT",
+              "activity": "CONTAINER DEPARTURE",
+              "stempty": false,
+              "vessel_name": "HUDSON EXPRESS",
+              "voyage_num": "607E",
+              "vessel_num": "IG7",
+              "transport_mode": "MVS",
+              "event_time": "2026-02-18T10:55:00.000",
+              "event_time_type": "ACTUAL"
+            }
+          ]
+        },
+        {
+          "terminal": "LSA APM TERMINAL PIER 400( W185 )",
+          "geo_site": "3KNWBA31FUU5K",
+          "city": "LOS ANGELES",
+          "state": "CA",
+          "country": "UNITED STATES",
+          "country_code": "US",
+          "geoid_city": "3KNWBA31FUU5K",
+          "site_type": "TERMINAL",
+          "location_code": "USLSATM",
+          "events": [
+            {
+              "type": "EQUIPMENT",
+              "eventId": "7bf37490-adec-3874-882e-714657ba81c5",
+              "locationCode": "USLSATM",
+              "activity": "CONTAINER ARRIVAL",
+              "stempty": false,
+              "vessel_name": "HUDSON EXPRESS",
+              "voyage_num": "607E",
+              "vessel_num": "IG7",
+              "transport_mode": "MVS",
+              "event_time": "2026-03-03T15:17:00.000",
+              "event_time_type": "ACTUAL"
+            },
+            {
+              "type": "EQUIPMENT",
+              "eventId": "14455890396",
+              "locationCode": "USLSATM",
+              "activity": "DISCHARG",
+              "stempty": false,
+              "vessel_name": "HUDSON EXPRESS",
+              "voyage_num": "607E",
+              "vessel_num": "IG7",
+              "transport_mode": "MVS",
+              "event_time": "2026-03-04T10:56:00.000",
+              "event_time_type": "ACTUAL"
+            }
+          ]
+        }
+      ],
+      "eta_final_delivery": "2026-03-04T10:56:00.000",
+      "status": "IN_PROGRESS",
+      "last_update_time": "2026-03-04T19:42:52Z",
+      "service_type_origin": "CONTAINER_YARD",
+      "service_type_destination": "CONTAINER_YARD"
+    }
+  ]
+}

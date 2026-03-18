@@ -1,5 +1,6 @@
 import type {
   BrowserCoreEngine,
+  KeyModifier,
   NodeLocator,
   PageRef,
   Point,
@@ -24,6 +25,11 @@ export interface DomActionTargetInspection {
 export interface DomActionScrollOptions {
   readonly block?: DomActionScrollAlignment;
   readonly inline?: DomActionScrollAlignment;
+}
+
+export interface DomActionKeyPressInput {
+  readonly key: string;
+  readonly modifiers?: readonly KeyModifier[];
 }
 
 export interface DomActionSettleOptions {
@@ -59,6 +65,7 @@ export interface DomActionBridge {
   }): Promise<DomPointerHitAssessment>;
   scrollNodeIntoView(locator: NodeLocator, options?: DomActionScrollOptions): Promise<void>;
   focusNode(locator: NodeLocator): Promise<void>;
+  pressKey(locator: NodeLocator, input: DomActionKeyPressInput): Promise<void>;
   finalizeDomAction(pageRef: PageRef, options: DomActionSettleOptions): Promise<void>;
 }
 

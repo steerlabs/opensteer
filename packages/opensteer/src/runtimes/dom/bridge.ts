@@ -6,6 +6,7 @@ import {
 export type {
   DomActionBridge,
   DomActionBridgeProvider,
+  DomActionKeyPressInput,
   DomPointerHitAssessment,
   DomPointerHitRelation,
   DomActionScrollAlignment,

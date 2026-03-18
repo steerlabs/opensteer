@@ -3,6 +3,7 @@ import {
   createRect,
   quadBounds,
   staleNodeRefError,
+  type KeyModifier,
   type NodeLocator,
   type PageRef,
   type Quad,
@@ -383,6 +384,18 @@ export function createPlaywrightDomActionBridge(
       });
     },
 
+    async pressKey(locator, input) {
+      return withLiveNode(context, locator, async ({ controller, document, backendNodeId }) => {
+        const nodeId = await resolveFrontendNodeId(controller, document, locator, backendNodeId);
+        await sendNodeIdCommand(controller, document, locator, "DOM.focus", { nodeId });
+        await context.flushDomUpdateTask(controller);
+        await withKeyboardModifiers(controller, input.modifiers, async () => {
+          await controller.page.keyboard.press(input.key);
+        });
+        await context.flushDomUpdateTask(controller);
+      });
+    },
+
     async finalizeDomAction(pageRef, options) {
       const controller = context.resolveController(pageRef);
       await context.flushPendingPageTasks(controller.sessionRef);
@@ -405,6 +418,29 @@ async function withLiveNode<T>(
   const liveNode = context.requireLiveNode(locator);
   await context.flushDomUpdateTask(liveNode.controller);
   return callback(liveNode);
+}
+
+async function withKeyboardModifiers(
+  controller: PageController,
+  modifiers: readonly KeyModifier[] | undefined,
+  action: () => Promise<void>,
+): Promise<void> {
+  if (modifiers === undefined || modifiers.length === 0) {
+    await action();
+    return;
+  }
+
+  for (const modifier of modifiers) {
+    await controller.page.keyboard.down(modifier);
+  }
+
+  try {
+    await action();
+  } finally {
+    for (const modifier of [...modifiers].reverse()) {
+      await controller.page.keyboard.up(modifier);
+    }
+  }
 }
 
 async function callNodeFunctionForLocator(
