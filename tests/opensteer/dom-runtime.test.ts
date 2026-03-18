@@ -1873,6 +1873,251 @@ describe("Phase 5 DOM runtime integration", () => {
   );
 
   test(
+    "settles typing before pressEnter submits reactive form state",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+
+      try {
+        const runtime = createDomRuntime({ engine });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: dataUrl(
+            html(
+              `
+                <form id="search-form" style="position:absolute;left:20px;top:20px">
+                  <input id="search-input" type="text" style="width:220px;height:36px" />
+                </form>
+                <div id="result" style="position:absolute;left:20px;top:80px">idle</div>
+                <script>
+                  const input = document.getElementById("search-input");
+                  const form = document.getElementById("search-form");
+                  const result = document.getElementById("result");
+                  let committedValue = "";
+
+                  input.addEventListener("input", () => {
+                    const nextValue = input.value;
+                    setTimeout(() => {
+                      committedValue = nextValue;
+                    }, 0);
+                  });
+
+                  form.addEventListener("submit", (event) => {
+                    event.preventDefault();
+                    result.textContent =
+                      committedValue === input.value
+                        ? "submitted:" + committedValue
+                        : "stale:" + committedValue + ":" + input.value;
+                  });
+                </script>
+              `,
+              "DOM input pressEnter settle",
+            ),
+          ),
+        });
+
+        await wait(300);
+
+        await runtime.input({
+          pageRef: created.data.pageRef,
+          target: { kind: "selector", selector: "#search-input" },
+          text: "MSCU5715955",
+          pressEnter: true,
+        });
+
+        const snapshot = await engine.getDomSnapshot({
+          frameRef: created.frameRef!,
+        });
+        const resultNode = requireValue(findNodeById(snapshot.nodes, "result"), "result missing");
+        expect(await engine.readText(createLocator(snapshot, resultNode))).toBe(
+          "submitted:MSCU5715955",
+        );
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "re-resolves same-selector replacement before pressEnter",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+
+      try {
+        const runtime = createDomRuntime({ engine });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: dataUrl(
+            html(
+              `
+                <div id="slot" style="position:absolute;left:20px;top:20px"></div>
+                <div id="result" style="position:absolute;left:20px;top:100px">idle</div>
+                <script>
+                  const slot = document.getElementById("slot");
+                  const result = document.getElementById("result");
+                  let replaceTimer = 0;
+
+                  function render(generation, value) {
+                    slot.innerHTML =
+                      '<form id="search-form" data-generation="' + generation + '">' +
+                      '<input id="search-input" type="text" style="width:220px;height:36px" value="' + value + '" />' +
+                      '</form>';
+
+                    const form = document.getElementById("search-form");
+                    const input = document.getElementById("search-input");
+
+                    input.addEventListener(
+                      "input",
+                      () => {
+                        if (generation !== 1) {
+                          return;
+                        }
+                        clearTimeout(replaceTimer);
+                        replaceTimer = setTimeout(() => {
+                          render(2, input.value);
+                        }, 25);
+                      },
+                    );
+
+                    form.addEventListener("submit", (event) => {
+                      event.preventDefault();
+                      result.textContent = generation + ":" + document.getElementById("search-input").value;
+                    });
+                  }
+
+                  render(1, "");
+                </script>
+              `,
+              "DOM input replacement",
+            ),
+          ),
+        });
+
+        await wait(300);
+
+        const initialSnapshot = await engine.getDomSnapshot({
+          frameRef: created.frameRef!,
+        });
+        const initialInputNode = requireValue(
+          findNodeById(initialSnapshot.nodes, "search-input"),
+          "initial input missing",
+        );
+        const initialNodeRef = requireValue(initialInputNode.nodeRef, "initial node ref missing");
+
+        const resolved = await runtime.input({
+          pageRef: created.data.pageRef,
+          target: { kind: "selector", selector: "#search-input" },
+          text: "MSCU5715955",
+          pressEnter: true,
+        });
+
+        const finalSnapshot = await engine.getDomSnapshot({
+          frameRef: created.frameRef!,
+        });
+        const resultNode = requireValue(findNodeById(finalSnapshot.nodes, "result"), "result missing");
+        expect(await engine.readText(createLocator(finalSnapshot, resultNode))).toBe(
+          "2:MSCU5715955",
+        );
+        expect(resolved.nodeRef).not.toBe(initialNodeRef);
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "uses the DOM action bridge instead of engine.keyPress for pressEnter",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+
+      try {
+        const baseBridge = resolveDomActionBridge(engine)!;
+        let bridgePressKeyCalls = 0;
+        let engineKeyPressCalls = 0;
+        const wrappedEngine = Object.create(engine) as BrowserCoreEngine;
+
+        Object.defineProperty(wrappedEngine, "keyPress", {
+          configurable: true,
+          value: async (...args: Parameters<BrowserCoreEngine["keyPress"]>) => {
+            engineKeyPressCalls += 1;
+            return engine.keyPress(...args);
+          },
+        });
+
+        Object.defineProperty(wrappedEngine, OPENSTEER_DOM_ACTION_BRIDGE_SYMBOL, {
+          configurable: true,
+          value() {
+            return {
+              ...baseBridge,
+              async pressKey(locator, input) {
+                bridgePressKeyCalls += 1;
+                return baseBridge.pressKey(locator, input);
+              },
+            };
+          },
+        });
+
+        const runtime = createDomRuntime({ engine: wrappedEngine });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: dataUrl(
+            html(
+              `
+                <form id="search-form" style="position:absolute;left:20px;top:20px">
+                  <input id="search-input" type="text" style="width:220px;height:36px" />
+                </form>
+                <div id="result" style="position:absolute;left:20px;top:80px">idle</div>
+                <script>
+                  const form = document.getElementById("search-form");
+                  const input = document.getElementById("search-input");
+                  const result = document.getElementById("result");
+                  form.addEventListener("submit", (event) => {
+                    event.preventDefault();
+                    result.textContent = "submitted:" + input.value;
+                  });
+                </script>
+              `,
+              "DOM input bridge press",
+            ),
+          ),
+        });
+
+        await wait(300);
+
+        await runtime.input({
+          pageRef: created.data.pageRef,
+          target: { kind: "selector", selector: "#search-input" },
+          text: "MSCU5715955",
+          pressEnter: true,
+        });
+
+        const snapshot = await engine.getDomSnapshot({
+          frameRef: created.frameRef!,
+        });
+        const resultNode = requireValue(findNodeById(snapshot.nodes, "result"), "result missing");
+        expect(await engine.readText(createLocator(snapshot, resultNode))).toBe(
+          "submitted:MSCU5715955",
+        );
+        expect(bridgePressKeyCalls).toBe(1);
+        expect(engineKeyPressCalls).toBe(0);
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
     "snapshot compilation succeeds on pages with many identical repeated siblings that cannot be uniquely finalized",
     { timeout: 60_000 },
     async () => {

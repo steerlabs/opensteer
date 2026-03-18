@@ -199,17 +199,35 @@ export class DomActionExecutor {
               text: input.text,
             }),
           );
+          let finalResolved = resolved;
           if (input.pressEnter) {
+            await this.settle(resolved.pageRef, "dom.input", timeout);
+
+            const enterSession = this.options.createResolutionSession();
+            const enterResolved = await timeout.runStep(() =>
+              this.options.resolveTarget(enterSession, {
+                pageRef: input.pageRef,
+                method: "dom.input",
+                target: input.target,
+                descriptorWriter: (writeInput) =>
+                  timeout.runStep(() => this.options.writeDescriptor(writeInput)),
+              }),
+            );
+            const inspectionBeforeEnter = await timeout.runStep(() =>
+              bridge.inspectActionTarget(enterResolved.locator),
+            );
+            this.assertKeyboardActionable("dom.input", enterResolved, inspectionBeforeEnter);
+
             await timeout.runStep(() =>
-              this.options.engine.keyPress({
-                pageRef: resolved.pageRef,
+              bridge.pressKey(enterResolved.locator, {
                 key: "Enter",
               }),
             );
+            finalResolved = enterResolved;
           }
 
-          await this.settle(resolved.pageRef, "dom.input", timeout);
-          return resolved;
+          await this.settle(finalResolved.pageRef, "dom.input", timeout);
+          return finalResolved;
         } catch (error) {
           lastError = error;
           if (!this.shouldRetry(error) || attempt === MAX_DOM_ACTION_ATTEMPTS - 1) {

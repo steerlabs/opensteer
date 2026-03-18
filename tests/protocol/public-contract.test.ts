@@ -92,10 +92,19 @@ describe("DOM action bridge contract", () => {
       async inspectActionTarget() {
         throw new Error("not called");
       },
+      async canonicalizePointerTarget() {
+        throw new Error("not called");
+      },
+      async classifyPointerHit() {
+        throw new Error("not called");
+      },
       async scrollNodeIntoView() {
         throw new Error("not called");
       },
       async focusNode() {
+        throw new Error("not called");
+      },
+      async pressKey() {
         throw new Error("not called");
       },
       async finalizeDomAction() {

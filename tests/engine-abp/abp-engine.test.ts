@@ -533,6 +533,66 @@ describe.sequential("AbpBrowserCoreEngine", () => {
     );
 
     test.sequential(
+      "presses keys on the resolved target instead of the current page focus",
+      async () => {
+        const engine = await createAbpTestEngine();
+
+        try {
+          const sessionRef = await engine.createSession();
+          const created = await engine.createPage({
+            sessionRef,
+            url: `data:text/html,${encodeURIComponent(
+              html(
+                `
+                  <form id="search-form" style="position:absolute;left:20px;top:20px">
+                    <input id="search-input" type="text" value="MSCU5715955" style="width:220px;height:36px" />
+                  </form>
+                  <button id="other-focus" type="button" autofocus style="position:absolute;left:20px;top:80px;width:160px;height:40px">Other focus</button>
+                  <div id="result" style="position:absolute;left:20px;top:140px">idle</div>
+                  <script>
+                    document.getElementById("search-form").addEventListener("submit", (event) => {
+                      event.preventDefault();
+                      document.getElementById("result").textContent =
+                        document.activeElement.id + ":" + document.getElementById("search-input").value;
+                    });
+                  </script>
+                `,
+                "ABP DOM bridge pressKey",
+              ),
+            )}`,
+          });
+
+          await wait(400);
+
+          const snapshot = await engine.getDomSnapshot({
+            frameRef: created.frameRef!,
+          });
+          const inputNode = findNodeById(snapshot.nodes, "search-input")!;
+          const bridge = resolveDomActionBridge(engine)!;
+
+          await bridge.pressKey(createLocator(snapshot, inputNode), { key: "Enter" });
+          await bridge.finalizeDomAction(created.data.pageRef, {
+            operation: "dom.input",
+            signal: new AbortController().signal,
+            remainingMs: () => 10_000,
+            policySettle: async () => {},
+          });
+
+          const settledSnapshot = await engine.getDomSnapshot({
+            frameRef: created.frameRef!,
+          });
+          const resultNode = findNodeById(settledSnapshot.nodes, "result")!;
+          expect(await engine.readText(createLocator(settledSnapshot, resultNode))).toBe(
+            "search-input:MSCU5715955",
+          );
+        } finally {
+          await engine.dispose();
+        }
+      },
+      20_000,
+    );
+
+    test.sequential(
       "captures network, popup, dialog, storage, session HTTP, and execution control",
       async () => {
         const engine = await createAbpTestEngine();
