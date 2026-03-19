@@ -175,7 +175,9 @@ export class CloudSessionProxy implements OpensteerSemanticRuntime {
     return this.requireClient().invoke("scripts.capture", input);
   }
 
-  async getCookies(input: { readonly urls?: readonly string[] } = {}): Promise<readonly CookieRecord[]> {
+  async getCookies(
+    input: { readonly urls?: readonly string[] } = {},
+  ): Promise<readonly CookieRecord[]> {
     await this.ensureSession();
     return this.requireClient().invoke("inspect.cookies", input);
   }
@@ -244,9 +246,7 @@ export class CloudSessionProxy implements OpensteerSemanticRuntime {
     return this.requireClient().invoke("auth-recipe.list", input);
   }
 
-  async listRecipes(
-    input: OpensteerListRecipesInput = {},
-  ): Promise<OpensteerListRecipesOutput> {
+  async listRecipes(input: OpensteerListRecipesInput = {}): Promise<OpensteerListRecipesOutput> {
     await this.ensureSession();
     return this.requireClient().invoke("recipe.list", input);
   }
@@ -278,7 +278,6 @@ export class CloudSessionProxy implements OpensteerSemanticRuntime {
       return { closed: true };
     }
 
-    await this.client.invoke("session.close", {}).catch(() => undefined);
     await this.cloud.closeSession(this.sessionId);
     this.client = undefined;
     this.sessionId = undefined;

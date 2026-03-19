@@ -3,36 +3,7 @@
 Opensteer is an open-source browser-native reverse-engineering and replay toolkit
 for AI agents and humans.
 
-This repository is a clean-slate rewrite. The goal is not to preserve the old
-monolith or maintain backwards compatibility. The goal is to produce a small,
-replaceable engine boundary, a first-class public protocol, and a product layer
-that owns Opensteer's actual semantics.
-
-## Current Status
-
-`Phase 0`, `Phase 1`, `Phase 2`, `Phase 3`, `Phase 4`, `Phase 5`, `Phase 6`,
-`Phase 7`, `Phase 8`, `Phase 9`, and `Phase 10` are complete. `Phase 11` is not
-started.
-
-The repository now has:
-
-- the monorepo layout, OSS docs, and shared tooling are in place
-- the `packages/browser-core` Phase 1 contract is implemented and tested
-- the `packages/protocol` Phase 2 public wire contract is implemented and tested
-- the `packages/opensteer` Phase 3 filesystem root for traces, artifacts, and registries is
-  implemented and tested
-- the `packages/engine-playwright` Phase 4 Chromium-first backend is implemented and tested
-- the `packages/opensteer/src/runtimes/dom` Phase 5 DOM runtime is implemented and tested
-- the `packages/opensteer` Phase 6 semantic SDK, HTML-first snapshot compiler, and thin CLI
-  service boundary are implemented and tested
-- the `packages/opensteer/src/policy` Phase 7 policy layer is implemented and tested
-- the `packages/engine-abp` Phase 8 ABP backend is implemented, with ABP execution and a
-  read-only CDP inspection sidecar
-- the `packages/opensteer/src/runtimes/computer-use` Phase 9 computer-use runtime is
-  implemented and tested, with engine-specific adapters for Playwright and ABP
-- the `packages/opensteer/src/requests` Phase 10 request workflow system is implemented and tested
-
-The current public standard is organized around three lanes:
+This monorepo is organized around three lanes:
 
 - `Interact`: open pages, navigate, evaluate, inspect DOM state, manage pages, use computer actions
 - `Observe / Instrument`: capture network, capture scripts, install init scripts, route requests, replace scripts
@@ -40,6 +11,15 @@ The current public standard is organized around three lanes:
 
 Browser-backed replay is a first-class success case. `direct-http` is an optimization
 path when the target really permits it.
+
+## Packages
+
+- `packages/browser-core`: engine-neutral contracts, identity, events, storage, geometry, and test helpers
+- `packages/protocol`: public wire contracts and shared schema types
+- `packages/engine-playwright`: Playwright-backed browser engine
+- `packages/engine-abp`: Agent Browser Protocol backend with CDP inspection support
+- `packages/opensteer`: public SDK, CLI, request workflows, traces, registry, and artifacts
+- `apps/opensteer-cloud`: cloud entrypoint package for hosted session infrastructure
 ## Repository Layout
 
 ```text
@@ -93,12 +73,22 @@ runtime/
   sessions/
 ```
 
+Opensteer writes local runtime state under `<cwd>/.opensteer`. That directory is
+for local sessions, traces, and artifacts, and should not be committed.
+
 ## Key Documents
 
 - [Documentation index](docs/README.md)
 - [Workflow guide](docs/workflows.md)
 - [Instrumentation guide](docs/instrumentation.md)
 - [Governance](docs/governance.md)
+
+## Community
+
+- [Contributing](CONTRIBUTING.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Security Policy](SECURITY.md)
+- [License](LICENSE)
 
 ## Local Development
 
@@ -134,8 +124,8 @@ The current public surface lives in `packages/opensteer`:
 - Snapshot mode: HTML-first action and extraction snapshots with in-memory element counters
 - Computer-use mode: pixel-space actions with automatic post-action screenshots and trace data
 
-See [packages/opensteer/README.md](packages/opensteer/README.md) and
-[`examples/phase6-sdk.ts`](examples/phase6-sdk.ts) for the public usage flow.
+See [packages/opensteer/README.md](packages/opensteer/README.md) for the public
+SDK and CLI usage flow.
 
 ## Principles
 

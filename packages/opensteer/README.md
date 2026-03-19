@@ -1,6 +1,6 @@
 # Opensteer Package
 
-`opensteer` is the product surface for the rewrite. It exposes:
+`opensteer` is the main product surface for the repository. It exposes:
 
 - a semantic SDK with session continuity inside one process
 - a thin JSON-first CLI
