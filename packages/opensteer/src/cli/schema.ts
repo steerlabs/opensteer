@@ -326,7 +326,7 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
         description: "Browser mode",
         kind: "enum",
         valueLabel: "kind",
-        values: ["managed", "profile", "cdp", "auto-connect"],
+        values: ["managed", "profile", "cloned", "attach"],
       },
       {
         name: "headed",
@@ -358,22 +358,20 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
         valueLabel: "ms",
       },
       {
-        name: "cdp",
-        description: "Chrome DevTools endpoint for browser cdp mode",
+        name: "attach-endpoint",
+        description: "Chrome DevTools endpoint for browser attach mode",
         kind: "string",
         valueLabel: "endpoint",
+        internalName: "attachEndpoint",
       },
       {
-        name: "cdp-header",
-        description: "Extra CDP header in NAME=VALUE form (repeatable)",
+        name: "attach-header",
+        description:
+          "Extra attach header in NAME=VALUE form for explicit attach endpoint mode (repeatable)",
         kind: "string",
         valueLabel: "name=value",
         multiple: true,
-      },
-      {
-        name: "auto-connect",
-        description: "Auto-discover a running Chrome/Chromium instance",
-        kind: "boolean",
+        internalName: "attachHeader",
       },
       {
         name: "user-data-dir",
@@ -388,8 +386,22 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
         valueLabel: "name",
       },
       {
+        name: "clone-from",
+        description: "Source Chrome user-data root for browser cloned mode",
+        kind: "string",
+        valueLabel: "path",
+        internalName: "cloneFrom",
+      },
+      {
+        name: "clone-profile-directory",
+        description: "Chrome profile directory inside the cloned source user-data-dir",
+        kind: "string",
+        valueLabel: "name",
+        internalName: "cloneProfileDirectory",
+      },
+      {
         name: "fresh-tab",
-        description: "Open a fresh tab when attaching through CDP/auto-connect",
+        description: "Open a fresh tab when attaching through browser attach",
         kind: "boolean",
       },
       {
@@ -471,7 +483,7 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
     ],
     examples: [
       "opensteer open https://example.com --headless true",
-      "opensteer open https://example.com --browser auto-connect --fresh-tab",
+      "opensteer open https://example.com --browser attach --fresh-tab",
     ],
   },
   {
@@ -1026,11 +1038,11 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
       },
     ],
   },
-      {
-        name: "request",
-        summary: "Execute request plans or raw requests.",
-        defaultSubcommand: "execute",
-        subcommands: [
+  {
+    name: "request",
+    summary: "Execute request plans or raw requests.",
+    defaultSubcommand: "execute",
+    subcommands: [
       {
         name: "raw",
         id: "request.raw",
@@ -1422,7 +1434,7 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
         summary: "Inspect a CDP endpoint and resolve its browser websocket URL.",
         options: [
           {
-            name: "cdp",
+            name: "endpoint",
             description: "Chrome DevTools endpoint to inspect",
             kind: "string",
             valueLabel: "port|ws-url|http-url",

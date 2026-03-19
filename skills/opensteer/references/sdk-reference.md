@@ -33,9 +33,9 @@ const opensteer = Opensteer.attach({
 
 ```typescript
 interface OpensteerOptions {
-  name?: string;          // Session name (default: auto-generated)
-  rootDir?: string;       // Project root for .opensteer/ storage (default: cwd)
-  engine?: "playwright";  // Browser engine
+  name?: string; // Session name (default: auto-generated)
+  rootDir?: string; // Project root for .opensteer/ storage (default: cwd)
+  engine?: "playwright"; // Browser engine
   browser?: OpensteerBrowserLaunchOptions;
   context?: {
     viewport?: { width: number; height: number } | null;
@@ -64,8 +64,9 @@ Chrome/Chromium user-data-dirs, will not auto-fallback to CDP attachment, and wi
 files during launch.
 
 `browser.kind="managed"` already launches a fresh isolated real local Chrome/Chromium process for
-you. Use `browser.kind="auto-connect"` only when you want to attach to an existing locally
-discoverable browser. Use `browser.kind="cdp"` when you need exact endpoint selection.
+you. Use `browser.kind="cloned"` when you need to launch from a temporary copy of an existing
+browser profile. Use `browser.kind="attach"` when you want to reuse an existing browser, with or
+without an explicit endpoint.
 
 ### OpensteerBrowserLaunchOptions
 
@@ -88,13 +89,18 @@ type OpensteerBrowserLaunchOptions =
       timeoutMs?: number;
     }
   | {
-      kind: "cdp";
-      endpoint: string;
-      headers?: Record<string, string>;
-      freshTab?: boolean;
+      kind: "cloned";
+      headless?: boolean;
+      executablePath?: string;
+      sourceUserDataDir: string;
+      sourceProfileDirectory?: string;
+      args?: readonly string[];
+      timeoutMs?: number;
     }
   | {
-      kind: "auto-connect";
+      kind: "attach";
+      endpoint?: string;
+      headers?: Record<string, string>;
       freshTab?: boolean;
     };
 ```
@@ -115,7 +121,7 @@ await opensteer.open("https://example.com");
 await opensteer.open({
   url: "https://example.com",
   browser: {
-    kind: "cdp",
+    kind: "attach",
     endpoint: "ws://127.0.0.1:9222/devtools/browser/root",
     freshTab: false,
   },
@@ -229,14 +235,15 @@ const snap = await opensteer.snapshot("extraction");
 ```
 
 **Return shape** (action mode):
+
 ```typescript
 {
   counters: Array<{
-    element: number;      // Counter number for targeting
-    tagName: string;      // HTML tag name
-    pathHint: string;     // CSS-like path hint (e.g., "#search-input")
+    element: number; // Counter number for targeting
+    tagName: string; // HTML tag name
+    pathHint: string; // CSS-like path hint (e.g., "#search-input")
   }>;
-  html: string;           // Annotated HTML snapshot
+  html: string; // Annotated HTML snapshot
 }
 ```
 
@@ -252,14 +259,15 @@ Every action method accepts a target via one of three mutually exclusive fields:
 
 ```typescript
 interface OpensteerTargetOptions {
-  element?: number;       // Counter from snapshot
-  selector?: string;      // CSS selector
-  description?: string;   // Semantic descriptor key
-  networkTag?: string;    // Tag network traffic triggered by this action
+  element?: number; // Counter from snapshot
+  selector?: string; // CSS selector
+  description?: string; // Semantic descriptor key
+  networkTag?: string; // Tag network traffic triggered by this action
 }
 ```
 
 **Rules:**
+
 - Specify exactly one of `element`, `selector`, or `description`.
 - When using `element` or `selector`, you may also pass `description` — this saves the resolved element path as a descriptor for future replay.
 - `networkTag` is independent and can always be added.
@@ -284,8 +292,8 @@ await opensteer.hover({ selector: ".menu-trigger" });
 
 ```typescript
 interface OpensteerInputOptions extends OpensteerTargetOptions {
-  text: string;           // Text to type (required)
-  pressEnter?: boolean;   // Press Enter after typing
+  text: string; // Text to type (required)
+  pressEnter?: boolean; // Press Enter after typing
 }
 ```
 
@@ -299,7 +307,7 @@ await opensteer.input({ description: "search box", text: "airpods", pressEnter: 
 ```typescript
 interface OpensteerScrollOptions extends OpensteerTargetOptions {
   direction: "up" | "down" | "left" | "right";
-  amount: number;         // Scroll amount (positive number)
+  amount: number; // Scroll amount (positive number)
 }
 ```
 
@@ -317,8 +325,8 @@ Extracts structured data from the page.
 
 ```typescript
 interface OpensteerExtractOptions {
-  description: string;                   // Extraction descriptor key (required)
-  schema?: Record<string, unknown>;      // Extraction schema
+  description: string; // Extraction descriptor key (required)
+  schema?: Record<string, unknown>; // Extraction schema
 }
 ```
 
@@ -329,11 +337,13 @@ const data = await opensteer.extract({
   schema: {
     title: { selector: "h1" },
     url: { source: "current_url" },
-    items: [{
-      name: { selector: ".product-name" },
-      price: { selector: ".product-price" },
-      link: { selector: ".product-link", attribute: "href" },
-    }],
+    items: [
+      {
+        name: { selector: ".product-name" },
+        price: { selector: ".product-price" },
+        link: { selector: ".product-link", attribute: "href" },
+      },
+    ],
   },
 });
 
@@ -343,12 +353,12 @@ const data = await opensteer.extract({ description: "product list" });
 
 **Schema field types:**
 
-| Field definition | Extracts |
-|:-----------------|:---------|
-| `{ selector: ".class" }` | Text content of the matched element |
-| `{ selector: "a", attribute: "href" }` | Attribute value of the matched element |
-| `{ source: "current_url" }` | The current page URL |
-| `[{ field: { selector: ".item" } }]` | Array of objects from repeating elements |
+| Field definition                       | Extracts                                 |
+| :------------------------------------- | :--------------------------------------- |
+| `{ selector: ".class" }`               | Text content of the matched element      |
+| `{ selector: "a", attribute: "href" }` | Attribute value of the matched element   |
+| `{ source: "current_url" }`            | The current page URL                     |
+| `[{ field: { selector: ".item" } }]`   | Array of objects from repeating elements |
 
 ---
 
@@ -377,9 +387,10 @@ const records = await opensteer.queryNetwork({
 ```
 
 **Query options:**
+
 ```typescript
 interface OpensteerNetworkQueryOptions {
-  source?: "journal" | "saved";  // Default: "journal" (in-memory)
+  source?: "journal" | "saved"; // Default: "journal" (in-memory)
   tag?: string;
   includeBodies?: boolean;
   limit?: number;
@@ -397,6 +408,7 @@ interface OpensteerNetworkQueryOptions {
 ```
 
 **Record shape:**
+
 ```typescript
 {
   recordId: string;
@@ -424,7 +436,7 @@ await opensteer.saveNetwork({ tag: "api-calls", hostname: "api.example.com" });
 Clears network records.
 
 ```typescript
-await opensteer.clearNetwork();            // Clear all
+await opensteer.clearNetwork(); // Clear all
 await opensteer.clearNetwork({ tag: "old" }); // Clear by tag
 ```
 
@@ -438,10 +450,10 @@ Promotes a captured network record to a reusable request plan.
 
 ```typescript
 const plan = await opensteer.inferRequestPlan({
-  recordId: "rec_abc123",   // From queryNetwork result
+  recordId: "rec_abc123", // From queryNetwork result
   key: "search-api",
   version: "1.0",
-  lifecycle: "active",      // "draft" | "active" | "deprecated" | "retired"
+  lifecycle: "active", // "draft" | "active" | "deprecated" | "retired"
 });
 ```
 
@@ -461,9 +473,7 @@ const plan = await opensteer.writeRequestPlan({
     endpoint: {
       method: "GET",
       urlTemplate: "https://api.example.com/v2/items/{itemId}",
-      defaultHeaders: [
-        { name: "Accept", value: "application/json" },
-      ],
+      defaultHeaders: [{ name: "Accept", value: "application/json" }],
     },
     parameters: [
       { name: "itemId", in: "path", required: true },
@@ -520,14 +530,15 @@ const result = await opensteer.request("search-api", {
 ```
 
 **Options:**
+
 ```typescript
 interface OpensteerRequestOptions {
   version?: string;
-  params?: Record<string, OpensteerRequestScalar>;   // URL path parameters
-  query?: Record<string, OpensteerRequestScalar>;    // Query string parameters
-  headers?: Record<string, OpensteerRequestScalar>;  // Request headers
-  body?: OpensteerRequestBodyInput;                  // Override request body
-  validateResponse?: boolean;                        // Validate response (default: true)
+  params?: Record<string, OpensteerRequestScalar>; // URL path parameters
+  query?: Record<string, OpensteerRequestScalar>; // Query string parameters
+  headers?: Record<string, OpensteerRequestScalar>; // Request headers
+  body?: OpensteerRequestBodyInput; // Override request body
+  validateResponse?: boolean; // Validate response (default: true)
 }
 ```
 
@@ -604,10 +615,10 @@ Runs an auth recipe manually and returns captured variables and overrides.
 ```typescript
 const result = await opensteer.runAuthRecipe({
   key: "refresh-session",
-  variables: { csrf: "seed-value" },   // Optional seed variables
+  variables: { csrf: "seed-value" }, // Optional seed variables
 });
-console.log(result.variables);   // Captured variables
-console.log(result.overrides);   // Headers/query for retry
+console.log(result.variables); // Captured variables
+console.log(result.overrides); // Headers/query for retry
 ```
 
 ---
@@ -630,12 +641,12 @@ const result = await opensteer.computerExecute({
 
 ## Environment Variables
 
-| Variable | Description |
-|:---------|:-----------|
-| `OPENSTEER_ENGINE` | Default engine: `playwright` or `abp` |
-| `OPENSTEER_MODE` | Execution mode: `local` or `cloud` |
-| `OPENSTEER_API_KEY` | Cloud API key |
-| `OPENSTEER_BASE_URL` | Cloud base URL |
+| Variable             | Description                           |
+| :------------------- | :------------------------------------ |
+| `OPENSTEER_ENGINE`   | Default engine: `playwright` or `abp` |
+| `OPENSTEER_MODE`     | Execution mode: `local` or `cloud`    |
+| `OPENSTEER_API_KEY`  | Cloud API key                         |
+| `OPENSTEER_BASE_URL` | Cloud base URL                        |
 
 ## Storage
 

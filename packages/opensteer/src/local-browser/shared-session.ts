@@ -3,26 +3,22 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import {
-  clearChromeSingletonEntries,
-} from "./chrome-singletons.js";
-import {
-  inspectCdpEndpoint,
-  selectAutoConnectBrowserCandidate,
-} from "./cdp-discovery.js";
-import {
-  readDevToolsActivePort,
-} from "./chrome-discovery.js";
+import { clearChromeSingletonEntries } from "./chrome-singletons.js";
+import { inspectCdpEndpoint, selectAttachBrowserCandidate } from "./cdp-discovery.js";
+import { readDevToolsActivePort } from "./chrome-discovery.js";
 import {
   OpensteerLocalProfileUnavailableError,
   inspectLocalBrowserProfile,
 } from "./profile-inspection.js";
 import { registerProfileLaunch, withProfileLaunchLock } from "./profile-launch-metadata.js";
+import { createBrowserProfileSnapshot } from "./profile-clone.js";
 import type {
+  ConnectAttachBrowserOptions,
   ConnectCdpBrowserOptions,
   LaunchOwnedBrowserOptions,
   LocalBrowserLease,
   OwnedLocalChromeProcess,
+  PreparedOwnedBrowserLaunch,
 } from "./types.js";
 
 const DEVTOOLS_POLL_INTERVAL_MS = 50;
@@ -33,25 +29,10 @@ export async function launchManagedBrowserSession(
     readonly connectBrowser: ConnectCdpBrowserOptions["connectBrowser"];
   },
 ): Promise<LocalBrowserLease> {
-  const tempUserDataDir = await mkdtemp(join(tmpdir(), "opensteer-managed-chrome-"));
-  await clearChromeSingletonEntries(tempUserDataDir);
-
-  try {
-    const ownedBrowser = await launchOwnedChrome({
-      ...options,
-      userDataDir: tempUserDataDir,
-    });
-    return await connectBrowserSession({
-      connectBrowser: options.connectBrowser,
-      endpoint: ownedBrowser.browserEndpoint,
-      freshTab: false,
-      ownedBrowser,
-      timeoutMs: options.timeoutMs,
-    });
-  } catch (error) {
-    await rm(tempUserDataDir, { recursive: true, force: true }).catch(() => undefined);
-    throw error;
-  }
+  return launchPreparedOwnedBrowserSession(
+    await prepareManagedOwnedBrowserLaunch(options),
+    options.connectBrowser,
+  );
 }
 
 export async function launchProfileBrowserSession(
@@ -61,52 +42,36 @@ export async function launchProfileBrowserSession(
     readonly connectBrowser: ConnectCdpBrowserOptions["connectBrowser"];
   },
 ): Promise<LocalBrowserLease> {
-  const userDataDir = resolve(options.userDataDir);
-  await assertProfileLaunchAllowed(userDataDir);
+  return launchPreparedOwnedBrowserSession(
+    await prepareProfileOwnedBrowserLaunch(options),
+    options.connectBrowser,
+  );
+}
 
-  const releaseLaunchRegistration = await registerProfileLaunch({
-    args: options.args,
-    executablePath: options.executablePath,
-    headless: options.headless,
-    ...(options.profileDirectory === undefined
-      ? {}
-      : { profileDirectory: options.profileDirectory }),
-    userDataDir,
-  });
+export async function launchClonedBrowserSession(
+  options: LaunchOwnedBrowserOptions & {
+    readonly sourceProfileDirectory: string;
+    readonly sourceUserDataDir: string;
+    readonly connectBrowser: ConnectCdpBrowserOptions["connectBrowser"];
+  },
+): Promise<LocalBrowserLease> {
+  return launchPreparedOwnedBrowserSession(
+    await prepareClonedOwnedBrowserLaunch(options),
+    options.connectBrowser,
+  );
+}
 
-  try {
-    const ownedBrowser = await launchOwnedChrome({
+export async function connectAttachBrowserSession(
+  options: ConnectAttachBrowserOptions,
+): Promise<LocalBrowserLease> {
+  if (options.endpoint !== undefined) {
+    return connectBrowserSession({
       ...options,
-      profileDirectory: options.profileDirectory ?? PROFILE_DIRECTORY_DEFAULT,
-      userDataDir,
+      endpoint: options.endpoint,
     });
-    const lease = await connectBrowserSession({
-      connectBrowser: options.connectBrowser,
-      endpoint: ownedBrowser.browserEndpoint,
-      freshTab: false,
-      ownedBrowser,
-      timeoutMs: options.timeoutMs,
-    });
-
-    return wrapLeaseClose(lease, async () => {
-      await releaseLaunchRegistration();
-    });
-  } catch (error) {
-    await releaseLaunchRegistration().catch(() => undefined);
-    throw error;
   }
-}
 
-export async function connectCdpBrowserSession(
-  options: ConnectCdpBrowserOptions,
-): Promise<LocalBrowserLease> {
-  return connectBrowserSession(options);
-}
-
-export async function connectAutoBrowserSession(
-  options: Omit<ConnectCdpBrowserOptions, "endpoint" | "headers">,
-): Promise<LocalBrowserLease> {
-  const selection = await selectAutoConnectBrowserCandidate({
+  const selection = await selectAttachBrowserCandidate({
     timeoutMs: options.timeoutMs,
   });
 
@@ -116,7 +81,7 @@ export async function connectAutoBrowserSession(
     const retrySelection = await retryAutoConnectCandidate(selection.endpoint, options.timeoutMs);
     if (retrySelection === null) {
       throw new Error(
-        "Auto-connect target disappeared or selection changed before attach. Re-run discovery or use --browser cdp --cdp <endpoint>.",
+        "Attach target disappeared or selection changed before attach. Re-run discovery or use --browser attach --attach-endpoint <endpoint>.",
         {
           cause: error,
         },
@@ -127,12 +92,104 @@ export async function connectAutoBrowserSession(
       return await connectBrowserSessionWithEndpoint(options, retrySelection.endpoint);
     } catch (retryError) {
       throw new Error(
-        "Auto-connect target disappeared before attach. Re-run discovery or use --browser cdp --cdp <endpoint>.",
+        "Attach target disappeared before attach. Re-run discovery or use --browser attach --attach-endpoint <endpoint>.",
         {
           cause: retryError,
         },
       );
     }
+  }
+}
+
+async function prepareManagedOwnedBrowserLaunch(
+  options: LaunchOwnedBrowserOptions,
+): Promise<PreparedOwnedBrowserLaunch> {
+  const userDataDir = await mkdtemp(join(tmpdir(), "opensteer-managed-chrome-"));
+  await clearChromeSingletonEntries(userDataDir);
+  return {
+    ...options,
+    userDataDir,
+    cleanupUserDataDir: userDataDir,
+  };
+}
+
+async function prepareProfileOwnedBrowserLaunch(
+  options: LaunchOwnedBrowserOptions & {
+    readonly profileDirectory?: string;
+    readonly userDataDir: string;
+  },
+): Promise<PreparedOwnedBrowserLaunch> {
+  const userDataDir = resolve(options.userDataDir);
+  await assertProfileLaunchAllowed(userDataDir);
+
+  const profileDirectory = options.profileDirectory ?? PROFILE_DIRECTORY_DEFAULT;
+  const release = await registerProfileLaunch({
+    args: options.args,
+    executablePath: options.executablePath,
+    headless: options.headless,
+    profileDirectory,
+    userDataDir,
+  });
+
+  return {
+    ...options,
+    userDataDir,
+    profileDirectory,
+    release,
+  };
+}
+
+async function prepareClonedOwnedBrowserLaunch(
+  options: LaunchOwnedBrowserOptions & {
+    readonly sourceProfileDirectory: string;
+    readonly sourceUserDataDir: string;
+  },
+): Promise<PreparedOwnedBrowserLaunch> {
+  const userDataDir = await mkdtemp(join(tmpdir(), "opensteer-cloned-chrome-"));
+  await clearChromeSingletonEntries(userDataDir);
+
+  try {
+    await createBrowserProfileSnapshot({
+      sourceUserDataDir: options.sourceUserDataDir,
+      targetUserDataDir: userDataDir,
+      profileDirectory: options.sourceProfileDirectory,
+      copyMode: "session",
+    });
+    return {
+      ...options,
+      userDataDir,
+      profileDirectory: options.sourceProfileDirectory,
+      cleanupUserDataDir: userDataDir,
+    };
+  } catch (error) {
+    await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function launchPreparedOwnedBrowserSession(
+  options: PreparedOwnedBrowserLaunch,
+  connectBrowser: ConnectCdpBrowserOptions["connectBrowser"],
+): Promise<LocalBrowserLease> {
+  try {
+    const ownedBrowser = await launchOwnedChrome(options);
+    const lease = await connectBrowserSession({
+      connectBrowser,
+      endpoint: ownedBrowser.browserEndpoint,
+      freshTab: false,
+      ownedBrowser,
+      timeoutMs: options.timeoutMs,
+    });
+
+    return wrapLeaseClose(lease, async () => {
+      await options.release?.();
+    });
+  } catch (error) {
+    await options.release?.().catch(() => undefined);
+    if (options.cleanupUserDataDir !== undefined) {
+      await rm(options.cleanupUserDataDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+    throw error;
   }
 }
 
@@ -157,25 +214,21 @@ async function connectBrowserSession(
       close: async () => {
         await closeBrowserSession({
           browser,
-          ...(options.ownedBrowser === undefined
-            ? {}
-            : { ownedBrowser: options.ownedBrowser }),
+          ...(options.ownedBrowser === undefined ? {} : { ownedBrowser: options.ownedBrowser }),
         });
       },
     };
   } catch (error) {
     await closeBrowserSession({
       browser,
-      ...(options.ownedBrowser === undefined
-        ? {}
-        : { ownedBrowser: options.ownedBrowser }),
+      ...(options.ownedBrowser === undefined ? {} : { ownedBrowser: options.ownedBrowser }),
     }).catch(() => undefined);
     throw error;
   }
 }
 
 function connectBrowserSessionWithEndpoint(
-  options: Omit<ConnectCdpBrowserOptions, "endpoint" | "headers">,
+  options: Omit<ConnectAttachBrowserOptions, "endpoint" | "headers">,
   endpoint: string,
 ): Promise<LocalBrowserLease> {
   return connectBrowserSession({
@@ -185,7 +238,7 @@ function connectBrowserSessionWithEndpoint(
 }
 
 async function launchOwnedChrome(
-  options: LaunchOwnedBrowserOptions,
+  options: PreparedOwnedBrowserLaunch,
 ): Promise<OwnedLocalChromeProcess & { readonly browserEndpoint: string }> {
   const args = buildChromeArgs(options);
   const stderrLines: string[] = [];
@@ -217,10 +270,9 @@ async function launchOwnedChrome(
   return {
     browserEndpoint,
     pid: child.pid ?? 0,
-    ...(options.userDataDir !== undefined
-      && options.userDataDir.startsWith(join(tmpdir(), "opensteer-managed-chrome-"))
-      ? { cleanupUserDataDir: options.userDataDir }
-      : {}),
+    ...(options.cleanupUserDataDir === undefined
+      ? {}
+      : { cleanupUserDataDir: options.cleanupUserDataDir }),
     close: async () => {
       await waitForProcessExitOrKill(child);
     },
@@ -230,7 +282,7 @@ async function launchOwnedChrome(
   };
 }
 
-function buildChromeArgs(options: LaunchOwnedBrowserOptions): readonly string[] {
+function buildChromeArgs(options: PreparedOwnedBrowserLaunch): readonly string[] {
   const args = [
     "--remote-debugging-port=0",
     "--no-first-run",
@@ -248,7 +300,7 @@ function buildChromeArgs(options: LaunchOwnedBrowserOptions): readonly string[] 
     "--metrics-recording-only",
     "--password-store=basic",
     "--use-mock-keychain",
-    `--user-data-dir=${options.userDataDir ?? ""}`,
+    `--user-data-dir=${options.userDataDir}`,
   ];
 
   if (options.profileDirectory) {
@@ -299,9 +351,7 @@ async function waitForDevToolsEndpoint(input: {
   throw new Error(formatChromeLaunchError(input.stderrLines));
 }
 
-async function resolveConnectBrowserUrl(
-  options: ConnectCdpBrowserOptions,
-): Promise<string> {
+async function resolveConnectBrowserUrl(options: ConnectCdpBrowserOptions): Promise<string> {
   if (options.endpoint.startsWith("ws://") || options.endpoint.startsWith("wss://")) {
     return options.endpoint;
   }
@@ -319,7 +369,7 @@ async function retryAutoConnectCandidate(
   timeoutMs: number,
 ): Promise<{ readonly endpoint: string } | null> {
   try {
-    const selection = await selectAutoConnectBrowserCandidate({ timeoutMs });
+    const selection = await selectAttachBrowserCandidate({ timeoutMs });
     return selection.endpoint === previousEndpoint ? selection : null;
   } catch {
     return null;
@@ -402,9 +452,7 @@ async function requestBrowserShutdown(browser: LocalBrowserLease["browser"]): Pr
   }
 }
 
-async function waitForProcessExitOrKill(
-  child: ReturnType<typeof spawn>,
-): Promise<void> {
+async function waitForProcessExitOrKill(child: ReturnType<typeof spawn>): Promise<void> {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
     const exitCode = child.exitCode;

@@ -36,9 +36,8 @@ describe("local CDP discovery", () => {
       }),
     );
 
-    const { inspectCdpEndpoint } = await import(
-      "../../packages/opensteer/src/local-browser/cdp-discovery.js"
-    );
+    const { inspectCdpEndpoint } =
+      await import("../../packages/opensteer/src/local-browser/cdp-discovery.js");
 
     await expect(inspectCdpEndpoint({ endpoint: "9222" })).resolves.toEqual({
       endpoint: "ws://127.0.0.1:9222/devtools/browser/root",
@@ -68,9 +67,8 @@ describe("local CDP discovery", () => {
       }),
     );
 
-    const { inspectCdpEndpoint } = await import(
-      "../../packages/opensteer/src/local-browser/cdp-discovery.js"
-    );
+    const { inspectCdpEndpoint } =
+      await import("../../packages/opensteer/src/local-browser/cdp-discovery.js");
 
     await expect(
       inspectCdpEndpoint({ endpoint: "ws://localhost:9222/devtools/browser/root" }),
@@ -92,7 +90,7 @@ describe("local CDP discovery", () => {
     chromeDiscoveryState.readDevToolsActivePort.mockImplementation((userDataDir: string) =>
       userDataDir === "/tmp/chrome"
         ? { port: 9222, webSocketPath: "/devtools/browser/root" }
-        : null
+        : null,
     );
     vi.stubGlobal(
       "fetch",
@@ -107,9 +105,8 @@ describe("local CDP discovery", () => {
       }),
     );
 
-    const { discoverLocalCdpBrowsers } = await import(
-      "../../packages/opensteer/src/local-browser/cdp-discovery.js"
-    );
+    const { discoverLocalCdpBrowsers } =
+      await import("../../packages/opensteer/src/local-browser/cdp-discovery.js");
 
     await expect(discoverLocalCdpBrowsers()).resolves.toEqual([
       {
@@ -135,7 +132,7 @@ describe("local CDP discovery", () => {
     chromeDiscoveryState.readDevToolsActivePort.mockImplementation((userDataDir: string) =>
       userDataDir === "/tmp/chrome"
         ? { port: 9223, webSocketPath: "/devtools/browser/devtools" }
-        : null
+        : null,
     );
     vi.stubGlobal(
       "fetch",
@@ -154,11 +151,10 @@ describe("local CDP discovery", () => {
       }),
     );
 
-    const { selectAutoConnectBrowserCandidate } = await import(
-      "../../packages/opensteer/src/local-browser/cdp-discovery.js"
-    );
+    const { selectAttachBrowserCandidate } =
+      await import("../../packages/opensteer/src/local-browser/cdp-discovery.js");
 
-    await expect(selectAutoConnectBrowserCandidate()).resolves.toMatchObject({
+    await expect(selectAttachBrowserCandidate()).resolves.toMatchObject({
       endpoint: "ws://127.0.0.1:9223/devtools/browser/devtools",
       source: "devtools-active-port",
     });
@@ -203,13 +199,11 @@ describe("local CDP discovery", () => {
       }),
     );
 
-    const {
-      OpensteerAutoConnectAmbiguousError,
-      selectAutoConnectBrowserCandidate,
-    } = await import("../../packages/opensteer/src/local-browser/cdp-discovery.js");
+    const { OpensteerAttachAmbiguousError, selectAttachBrowserCandidate } =
+      await import("../../packages/opensteer/src/local-browser/cdp-discovery.js");
 
-    await expect(selectAutoConnectBrowserCandidate()).rejects.toBeInstanceOf(
-      OpensteerAutoConnectAmbiguousError,
+    await expect(selectAttachBrowserCandidate()).rejects.toBeInstanceOf(
+      OpensteerAttachAmbiguousError,
     );
   });
 });

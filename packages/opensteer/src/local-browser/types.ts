@@ -1,6 +1,6 @@
 import type {
-  OpensteerAutoConnectBrowserLaunchOptions,
-  OpensteerCdpBrowserLaunchOptions,
+  OpensteerAttachBrowserLaunchOptions,
+  OpensteerClonedBrowserLaunchOptions,
   OpensteerManagedBrowserLaunchOptions,
   OpensteerProfileBrowserLaunchOptions,
 } from "@opensteer/protocol";
@@ -43,14 +43,15 @@ export interface ResolvedProfileBrowserLaunch extends ResolvedManagedBrowserLaun
   readonly userDataDir: string;
 }
 
-export interface ResolvedCdpBrowserLaunch {
-  readonly endpoint: string;
-  readonly freshTab: boolean;
-  readonly headers?: Readonly<Record<string, string>>;
+export interface ResolvedClonedBrowserLaunch extends ResolvedManagedBrowserLaunch {
+  readonly sourceProfileDirectory: string;
+  readonly sourceUserDataDir: string;
 }
 
-export interface ResolvedAutoConnectBrowserLaunch {
+export interface ResolvedAttachBrowserLaunch {
+  readonly endpoint?: string;
   readonly freshTab: boolean;
+  readonly headers?: Readonly<Record<string, string>>;
 }
 
 export interface ConnectedCdpSession {
@@ -93,8 +94,13 @@ export interface LaunchOwnedBrowserOptions {
   readonly headless: boolean;
   readonly args: readonly string[];
   readonly timeoutMs: number;
-  readonly userDataDir?: string;
+}
+
+export interface PreparedOwnedBrowserLaunch extends LaunchOwnedBrowserOptions {
+  readonly userDataDir: string;
   readonly profileDirectory?: string;
+  readonly cleanupUserDataDir?: string;
+  readonly release?: () => Promise<void>;
 }
 
 export interface ConnectCdpBrowserOptions {
@@ -108,6 +114,14 @@ export interface ConnectCdpBrowserOptions {
     readonly timeoutMs: number;
     readonly headers?: Readonly<Record<string, string>>;
   }) => Promise<ConnectedCdpBrowser>;
+}
+
+export interface ConnectAttachBrowserOptions extends Omit<
+  ConnectCdpBrowserOptions,
+  "endpoint" | "headers"
+> {
+  readonly endpoint?: string;
+  readonly headers?: Readonly<Record<string, string>>;
 }
 
 export interface OwnedLocalChromeProcess {
@@ -134,11 +148,11 @@ export interface LaunchMetadataRecord {
 export type ResolvedLocalBrowserLaunch =
   | ResolvedManagedBrowserLaunch
   | ResolvedProfileBrowserLaunch
-  | ResolvedCdpBrowserLaunch
-  | ResolvedAutoConnectBrowserLaunch;
+  | ResolvedClonedBrowserLaunch
+  | ResolvedAttachBrowserLaunch;
 
 export type LocalBrowserLaunchInput =
   | OpensteerManagedBrowserLaunchOptions
   | OpensteerProfileBrowserLaunchOptions
-  | OpensteerCdpBrowserLaunchOptions
-  | OpensteerAutoConnectBrowserLaunchOptions;
+  | OpensteerClonedBrowserLaunchOptions
+  | OpensteerAttachBrowserLaunchOptions;

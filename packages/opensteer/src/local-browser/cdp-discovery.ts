@@ -1,14 +1,8 @@
-import {
-  detectLocalChromeInstallations,
-  readDevToolsActivePort,
-} from "./chrome-discovery.js";
-import type {
-  InspectedCdpEndpoint,
-  LocalCdpBrowserCandidate,
-} from "./types.js";
+import { detectLocalChromeInstallations, readDevToolsActivePort } from "./chrome-discovery.js";
+import type { InspectedCdpEndpoint, LocalCdpBrowserCandidate } from "./types.js";
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS = 2_000;
-const AUTO_CONNECT_FALLBACK_PORT = 9222;
+const DISCOVERY_FALLBACK_PORT = 9222;
 
 interface InspectCdpEndpointInput {
   readonly endpoint: string;
@@ -31,14 +25,14 @@ interface CdpVersionResponse {
   readonly webSocketDebuggerUrl?: string;
 }
 
-export class OpensteerAutoConnectAmbiguousError extends Error {
-  readonly code = "auto-connect-ambiguous";
+export class OpensteerAttachAmbiguousError extends Error {
+  readonly code = "attach-ambiguous";
 
   constructor(readonly candidates: readonly LocalCdpBrowserCandidate[]) {
     super(
-      `Multiple running Chrome DevTools endpoints were discovered. Use --browser cdp --cdp <endpoint> to select one explicitly.`,
+      `Multiple running Chrome DevTools endpoints were discovered. Use --browser attach --attach-endpoint <endpoint> to select one explicitly.`,
     );
-    this.name = "OpensteerAutoConnectAmbiguousError";
+    this.name = "OpensteerAttachAmbiguousError";
   }
 }
 
@@ -84,7 +78,7 @@ export async function discoverLocalCdpBrowsers(
   }
 
   const fallbackCandidate = await probeCdpEndpoint({
-    endpoint: String(AUTO_CONNECT_FALLBACK_PORT),
+    endpoint: String(DISCOVERY_FALLBACK_PORT),
     timeoutMs,
   });
   if (fallbackCandidate !== null) {
@@ -97,7 +91,7 @@ export async function discoverLocalCdpBrowsers(
   return dedupeAndSortCandidates(candidates);
 }
 
-export async function selectAutoConnectBrowserCandidate(
+export async function selectAttachBrowserCandidate(
   input: {
     readonly timeoutMs?: number;
   } = {},
@@ -105,19 +99,19 @@ export async function selectAutoConnectBrowserCandidate(
   const candidates = await discoverLocalCdpBrowsers(input);
   if (candidates.length === 0) {
     throw new Error(
-      "No running Chrome instance found. Enable remote debugging and use --auto-connect or pass --cdp.",
+      "No running Chrome instance found. Enable remote debugging and use --browser attach or pass --attach-endpoint.",
     );
   }
 
-  const highestPriority = Math.max(...candidates.map(getAutoConnectCandidatePriority));
-  const winners = candidates.filter((candidate) =>
-    getAutoConnectCandidatePriority(candidate) === highestPriority
+  const highestPriority = Math.max(...candidates.map(getAttachCandidatePriority));
+  const winners = candidates.filter(
+    (candidate) => getAttachCandidatePriority(candidate) === highestPriority,
   );
   if (winners.length === 1) {
     return winners[0]!;
   }
 
-  throw new OpensteerAutoConnectAmbiguousError(candidates);
+  throw new OpensteerAttachAmbiguousError(candidates);
 }
 
 async function probeCdpEndpoint(
@@ -138,9 +132,15 @@ async function probeCdpEndpoint(
   );
   if (versionPayload !== null) {
     const payload = versionPayload;
-    if (typeof payload.webSocketDebuggerUrl === "string" && payload.webSocketDebuggerUrl.length > 0) {
+    if (
+      typeof payload.webSocketDebuggerUrl === "string" &&
+      payload.webSocketDebuggerUrl.length > 0
+    ) {
       return createInspectedCdpEndpoint({
-        browserWebSocketUrl: rewriteBrowserWebSocketHost(payload.webSocketDebuggerUrl, target.httpUrl),
+        browserWebSocketUrl: rewriteBrowserWebSocketHost(
+          payload.webSocketDebuggerUrl,
+          target.httpUrl,
+        ),
         httpUrl: target.httpUrl,
         ...(payload.Browser === undefined ? {} : { browser: payload.Browser }),
         ...(payload["Protocol-Version"] === undefined
@@ -158,26 +158,35 @@ async function probeCdpEndpoint(
   >(new URL("/json/list", target.httpUrl), input.headers, timeoutMs);
   if (listPayload !== null) {
     const browserTarget =
-      listPayload.find((candidate) => candidate.type === "browser")
-      ?? listPayload.find((candidate) => typeof candidate.webSocketDebuggerUrl === "string");
+      listPayload.find((candidate) => candidate.type === "browser") ??
+      listPayload.find((candidate) => typeof candidate.webSocketDebuggerUrl === "string");
     if (typeof browserTarget?.webSocketDebuggerUrl === "string") {
       return createInspectedCdpEndpoint({
-        browserWebSocketUrl: rewriteBrowserWebSocketHost(browserTarget.webSocketDebuggerUrl, target.httpUrl),
+        browserWebSocketUrl: rewriteBrowserWebSocketHost(
+          browserTarget.webSocketDebuggerUrl,
+          target.httpUrl,
+        ),
         httpUrl: target.httpUrl,
       });
     }
   }
 
-  if (input.fallbackBrowserWebSocketPath !== undefined && await isHttpEndpointReachable(target.httpUrl, timeoutMs)) {
+  if (
+    input.fallbackBrowserWebSocketPath !== undefined &&
+    (await isHttpEndpointReachable(target.httpUrl, timeoutMs))
+  ) {
     return createInspectedCdpEndpoint({
-      browserWebSocketUrl: buildBrowserWebSocketUrl(target.httpUrl, input.fallbackBrowserWebSocketPath),
+      browserWebSocketUrl: buildBrowserWebSocketUrl(
+        target.httpUrl,
+        input.fallbackBrowserWebSocketPath,
+      ),
       httpUrl: target.httpUrl,
     });
   }
 
   if (
-    target.fallbackBrowserWebSocketUrl !== undefined
-    && await isHttpEndpointReachable(target.httpUrl, timeoutMs)
+    target.fallbackBrowserWebSocketUrl !== undefined &&
+    (await isHttpEndpointReachable(target.httpUrl, timeoutMs))
   ) {
     return createInspectedCdpEndpoint({
       browserWebSocketUrl: target.fallbackBrowserWebSocketUrl,
@@ -208,13 +217,13 @@ function compareCandidates(
   right: LocalCdpBrowserCandidate,
 ): number {
   return (
-    getAutoConnectCandidatePriority(right) - getAutoConnectCandidatePriority(left)
-    || left.endpoint.localeCompare(right.endpoint)
-    || (left.userDataDir ?? "").localeCompare(right.userDataDir ?? "")
+    getAttachCandidatePriority(right) - getAttachCandidatePriority(left) ||
+    left.endpoint.localeCompare(right.endpoint) ||
+    (left.userDataDir ?? "").localeCompare(right.userDataDir ?? "")
   );
 }
 
-function getAutoConnectCandidatePriority(candidate: LocalCdpBrowserCandidate): number {
+function getAttachCandidatePriority(candidate: LocalCdpBrowserCandidate): number {
   return candidate.source === "devtools-active-port" ? 2 : 1;
 }
 
@@ -250,9 +259,10 @@ function normalizeProbeTarget(endpoint: string): NormalizedProbeTarget {
   }
 
   try {
-    const url = endpoint.startsWith("http://") || endpoint.startsWith("https://")
-      ? new URL(endpoint)
-      : new URL(`http://${endpoint}`);
+    const url =
+      endpoint.startsWith("http://") || endpoint.startsWith("https://")
+        ? new URL(endpoint)
+        : new URL(`http://${endpoint}`);
     return {
       httpUrl: new URL(`${url.protocol}//${url.host}`),
     };

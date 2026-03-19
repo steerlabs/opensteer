@@ -236,7 +236,7 @@ export { listLocalChromeProfiles } from "./local-browser/chrome-discovery.js";
 export {
   discoverLocalCdpBrowsers,
   inspectCdpEndpoint,
-  OpensteerAutoConnectAmbiguousError,
+  OpensteerAttachAmbiguousError,
 } from "./local-browser/cdp-discovery.js";
 export type {
   OpensteerLocalProfileInspection,

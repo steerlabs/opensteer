@@ -33,9 +33,9 @@ describe("local browser CLI surfaces", () => {
   });
 
   test("parses browser inspect mode", () => {
-    expect(parseOpensteerBrowserArgs(["inspect", "--cdp", "9222"])).toEqual({
+    expect(parseOpensteerBrowserArgs(["inspect", "--endpoint", "9222"])).toEqual({
       mode: "inspect",
-      cdp: "9222",
+      endpoint: "9222",
       json: false,
     });
   });
@@ -66,7 +66,7 @@ describe("local browser CLI surfaces", () => {
 
   test("browser inspect runner prints structured endpoint JSON", async () => {
     const stdout: string[] = [];
-    const code = await runOpensteerBrowserCli(["inspect", "--cdp", "9222"], {
+    const code = await runOpensteerBrowserCli(["inspect", "--endpoint", "9222"], {
       discoverBrowsers: async () => [],
       inspectBrowser: async () => ({
         endpoint: "ws://127.0.0.1:9222/devtools/browser/root",
@@ -81,7 +81,9 @@ describe("local browser CLI surfaces", () => {
 
     expect(code).toBe(0);
     expect(stdout.join("")).toContain('"endpoint":"ws://127.0.0.1:9222/devtools/browser/root"');
-    expect(stdout.join("")).toContain('"attachHint":"opensteer open --browser cdp --cdp \\"9222\\""');
+    expect(stdout.join("")).toContain(
+      '"attachHint":"opensteer open --browser attach --attach-endpoint \\"9222\\""',
+    );
   });
 
   test("parses local-profile list mode with json output", () => {

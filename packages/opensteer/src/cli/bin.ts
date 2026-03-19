@@ -509,9 +509,7 @@ async function main(argv: readonly string[]): Promise<void> {
         resolveCliExecutionMode(options),
       );
       const urls = readOptionalStrings(options.url);
-      const result = await runtime.getCookies(
-        urls.length === 0 ? {} : { urls },
-      );
+      const result = await runtime.getCookies(urls.length === 0 ? {} : { urls });
       await writeJsonOutput(result, readOptionalString(options.output));
       return;
     }
@@ -938,29 +936,38 @@ function parseBrowserOptions(options: ParsedCliOptions): Record<string, unknown>
       : { timeoutMs: readOptionalNumber(options.timeoutMs) }),
   };
 
-  const cdp = readOptionalString(options.cdp);
-  const autoConnect = readOptionalBoolean(options.autoConnect) === true;
+  const attachEndpoint = readOptionalString(options.attachEndpoint);
   const userDataDir = readOptionalString(options.userDataDir);
   const profileDirectory = readOptionalString(options.profileDirectory);
+  const cloneFrom = readOptionalString(options.cloneFrom);
+  const cloneProfileDirectory = readOptionalString(options.cloneProfileDirectory);
   const freshTab = readOptionalBoolean(options.freshTab);
-  const cdpHeaders = parseHeaderEntries(readOptionalStrings(options.cdpHeader));
+  const attachHeaders = parseHeaderEntries(readOptionalStrings(options.attachHeader));
 
   const inferredKind =
     browserKind ??
-    (cdp !== undefined ? "cdp" : undefined) ??
-    (autoConnect ? "auto-connect" : undefined) ??
+    (attachEndpoint !== undefined ? "attach" : undefined) ??
     (userDataDir !== undefined ? "profile" : undefined);
+  const inferredWithClone = inferredKind ?? (cloneFrom !== undefined ? "cloned" : undefined);
 
-  if (cdp !== undefined && autoConnect) {
-    throw new Error("Specify only one of --cdp or --auto-connect.");
-  }
-  if ((cdp !== undefined || autoConnect) && userDataDir !== undefined) {
+  if ((attachEndpoint !== undefined || attachHeaders.length > 0) && userDataDir !== undefined) {
     throw new Error(
-      "Specify either attach flags (--cdp/--auto-connect) or launch flags (--user-data-dir), not both.",
+      "Specify either attach flags (--attach-endpoint/--attach-header) or launch flags (--user-data-dir), not both.",
     );
   }
+  if ((attachEndpoint !== undefined || attachHeaders.length > 0) && cloneFrom !== undefined) {
+    throw new Error(
+      "Specify either attach flags (--attach-endpoint/--attach-header) or cloned launch flags (--clone-from), not both.",
+    );
+  }
+  if (attachHeaders.length > 0 && attachEndpoint === undefined) {
+    throw new Error("--attach-header requires --attach-endpoint.");
+  }
+  if (cloneFrom !== undefined && userDataDir !== undefined) {
+    throw new Error("Specify either --clone-from or --user-data-dir, not both.");
+  }
 
-  if (inferredKind === "profile") {
+  if (inferredWithClone === "profile") {
     if (userDataDir === undefined) {
       throw new Error('browser kind "profile" requires --user-data-dir.');
     }
@@ -972,30 +979,36 @@ function parseBrowserOptions(options: ParsedCliOptions): Record<string, unknown>
     };
   }
 
-  if (inferredKind === "cdp") {
-    if (cdp === undefined) {
-      throw new Error('browser kind "cdp" requires --cdp.');
+  if (inferredWithClone === "cloned") {
+    if (cloneFrom === undefined) {
+      throw new Error('browser kind "cloned" requires --clone-from.');
     }
     return {
-      kind: "cdp" as const,
-      endpoint: cdp,
-      ...(freshTab === undefined ? {} : { freshTab }),
-      ...(cdpHeaders.length === 0
+      kind: "cloned" as const,
+      ...managed,
+      sourceUserDataDir: cloneFrom,
+      ...(cloneProfileDirectory === undefined
         ? {}
-        : { headers: Object.fromEntries(cdpHeaders.map((entry) => [entry.name, entry.value])) }),
+        : { sourceProfileDirectory: cloneProfileDirectory }),
     };
   }
 
-  if (inferredKind === "auto-connect") {
+  if (inferredWithClone === "attach") {
     return {
-      kind: "auto-connect" as const,
+      kind: "attach" as const,
+      ...(attachEndpoint === undefined ? {} : { endpoint: attachEndpoint }),
       ...(freshTab === undefined ? {} : { freshTab }),
+      ...(attachHeaders.length === 0
+        ? {}
+        : {
+            headers: Object.fromEntries(attachHeaders.map((entry) => [entry.name, entry.value])),
+          }),
     };
   }
 
-  if (inferredKind !== undefined && inferredKind !== "managed") {
+  if (inferredWithClone !== undefined && inferredWithClone !== "managed") {
     throw new Error(
-      `browser must be "managed", "profile", "cdp", or "auto-connect"; received "${inferredKind}"`,
+      `browser must be "managed", "profile", "cloned", or "attach"; received "${inferredWithClone}"`,
     );
   }
 
@@ -1356,7 +1369,12 @@ function parseKeyModifiers(
   }
   const parsed: ("Shift" | "Control" | "Alt" | "Meta")[] = [];
   for (const modifier of modifiers) {
-    if (modifier !== "Shift" && modifier !== "Control" && modifier !== "Alt" && modifier !== "Meta") {
+    if (
+      modifier !== "Shift" &&
+      modifier !== "Control" &&
+      modifier !== "Alt" &&
+      modifier !== "Meta"
+    ) {
       throw new Error(`${label} contains invalid modifier "${modifier}"`);
     }
     parsed.push(modifier);
@@ -1414,10 +1432,7 @@ function parseRequestTransport(
   throw new Error(`invalid transport "${value}"`);
 }
 
-function parseStringRecord(
-  value: Record<string, unknown>,
-  label: string,
-): Record<string, string> {
+function parseStringRecord(value: Record<string, unknown>, label: string): Record<string, string> {
   const parsed: Record<string, string> = {};
   for (const [key, entry] of Object.entries(value)) {
     if (typeof entry !== "string") {

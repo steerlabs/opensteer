@@ -119,23 +119,28 @@ export interface OpensteerProfileBrowserLaunchOptions {
   readonly timeoutMs?: number;
 }
 
-export interface OpensteerCdpBrowserLaunchOptions {
-  readonly kind: "cdp";
-  readonly endpoint: string;
-  readonly headers?: Readonly<Record<string, string>>;
-  readonly freshTab?: boolean;
+export interface OpensteerClonedBrowserLaunchOptions {
+  readonly kind: "cloned";
+  readonly headless?: boolean;
+  readonly executablePath?: string;
+  readonly sourceUserDataDir: string;
+  readonly sourceProfileDirectory?: string;
+  readonly args?: readonly string[];
+  readonly timeoutMs?: number;
 }
 
-export interface OpensteerAutoConnectBrowserLaunchOptions {
-  readonly kind: "auto-connect";
+export interface OpensteerAttachBrowserLaunchOptions {
+  readonly kind: "attach";
+  readonly endpoint?: string;
+  readonly headers?: Readonly<Record<string, string>>;
   readonly freshTab?: boolean;
 }
 
 export type OpensteerBrowserLaunchOptions =
   | OpensteerManagedBrowserLaunchOptions
   | OpensteerProfileBrowserLaunchOptions
-  | OpensteerCdpBrowserLaunchOptions
-  | OpensteerAutoConnectBrowserLaunchOptions;
+  | OpensteerClonedBrowserLaunchOptions
+  | OpensteerAttachBrowserLaunchOptions;
 
 export interface OpensteerBrowserContextOptions {
   readonly ignoreHTTPSErrors?: boolean;
@@ -607,28 +612,33 @@ const profileBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
   },
 );
 
-const cdpBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
+const clonedBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
   {
-    kind: enumSchema(["cdp"] as const),
+    kind: enumSchema(["cloned"] as const),
+    headless: { type: "boolean" },
+    executablePath: stringSchema(),
+    sourceUserDataDir: stringSchema(),
+    sourceProfileDirectory: stringSchema(),
+    args: arraySchema(stringSchema()),
+    timeoutMs: integerSchema({ minimum: 0 }),
+  },
+  {
+    title: "OpensteerClonedBrowserLaunchOptions",
+    required: ["kind", "sourceUserDataDir"],
+  },
+);
+
+const attachBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
+  {
+    kind: enumSchema(["attach"] as const),
     endpoint: stringSchema(),
     headers: recordSchema(stringSchema(), {
-      title: "OpensteerCdpBrowserHeaders",
+      title: "OpensteerAttachBrowserHeaders",
     }),
     freshTab: { type: "boolean" },
   },
   {
-    title: "OpensteerCdpBrowserLaunchOptions",
-    required: ["kind", "endpoint"],
-  },
-);
-
-const autoConnectBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
-  {
-    kind: enumSchema(["auto-connect"] as const),
-    freshTab: { type: "boolean" },
-  },
-  {
-    title: "OpensteerAutoConnectBrowserLaunchOptions",
+    title: "OpensteerAttachBrowserLaunchOptions",
     required: ["kind"],
   },
 );
@@ -637,8 +647,8 @@ const opensteerBrowserLaunchOptionsSchema: JsonSchema = oneOfSchema(
   [
     managedBrowserLaunchOptionsSchema,
     profileBrowserLaunchOptionsSchema,
-    cdpBrowserLaunchOptionsSchema,
-    autoConnectBrowserLaunchOptionsSchema,
+    clonedBrowserLaunchOptionsSchema,
+    attachBrowserLaunchOptionsSchema,
   ],
   {
     title: "OpensteerBrowserLaunchOptions",
@@ -1582,7 +1592,8 @@ export const opensteerSemanticOperationSpecifications = [
   }),
   defineSemanticOperationSpec<OpensteerRawRequestInput, OpensteerRawRequestOutput>({
     name: "request.raw",
-    description: "Execute a raw HTTP request through either the current browser session or a direct HTTP transport.",
+    description:
+      "Execute a raw HTTP request through either the current browser session or a direct HTTP transport.",
     inputSchema: opensteerRawRequestInputSchema,
     outputSchema: opensteerRawRequestOutputSchema,
     requiredCapabilities: [],
@@ -1683,7 +1694,8 @@ export const opensteerSemanticOperationSpecifications = [
   }),
   defineSemanticOperationSpec<OpensteerRequestExecuteInput, OpensteerRequestExecuteOutput>({
     name: "request.execute",
-    description: "Execute a request plan through its configured transport and deterministic auth recovery policy.",
+    description:
+      "Execute a request plan through its configured transport and deterministic auth recovery policy.",
     inputSchema: opensteerRequestExecuteInputSchema,
     outputSchema: opensteerRequestExecuteOutputSchema,
     requiredCapabilities: [],

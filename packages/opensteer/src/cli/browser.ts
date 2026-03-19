@@ -1,7 +1,4 @@
-import {
-  discoverLocalCdpBrowsers,
-  inspectCdpEndpoint,
-} from "../local-browser/cdp-discovery.js";
+import { discoverLocalCdpBrowsers, inspectCdpEndpoint } from "../local-browser/cdp-discovery.js";
 import { browserCliSchema, parseCliArguments, renderHelp } from "./schema.js";
 
 export interface BrowserCliDeps {
@@ -21,7 +18,7 @@ export type ParsedBrowserArgs =
     }
   | {
       readonly mode: "inspect";
-      readonly cdp: string;
+      readonly endpoint: string;
       readonly json: boolean;
       readonly timeoutMs?: number;
     };
@@ -39,7 +36,7 @@ export function parseOpensteerBrowserArgs(argv: readonly string[]): ParsedBrowse
     }
 
     const options = parsed.invocation.options as {
-      readonly cdp?: string;
+      readonly endpoint?: string;
       readonly json?: boolean;
       readonly timeoutMs?: number;
     };
@@ -52,15 +49,15 @@ export function parseOpensteerBrowserArgs(argv: readonly string[]): ParsedBrowse
           ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
         };
       case "browser.inspect":
-        if (options.cdp === undefined) {
+        if (options.endpoint === undefined) {
           return {
             mode: "error",
-            error: "--cdp is required for inspect.",
+            error: "--endpoint is required for inspect.",
           };
         }
         return {
           mode: "inspect",
-          cdp: options.cdp,
+          endpoint: options.endpoint,
           json: options.json === true,
           ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
         };
@@ -108,14 +105,16 @@ export async function runOpensteerBrowserCli(
 
   if (parsed.mode === "inspect") {
     const inspection = await deps.inspectBrowser({
-      endpoint: parsed.cdp,
+      endpoint: parsed.endpoint,
       ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: parsed.timeoutMs }),
     });
     const payload = {
       ...inspection,
-      attachHint: `opensteer open --browser cdp --cdp ${JSON.stringify(parsed.cdp)}`,
+      attachHint: `opensteer open --browser attach --attach-endpoint ${JSON.stringify(parsed.endpoint)}`,
     };
-    deps.writeStdout(parsed.json ? `${JSON.stringify(payload, null, 2)}\n` : `${JSON.stringify(payload)}\n`);
+    deps.writeStdout(
+      parsed.json ? `${JSON.stringify(payload, null, 2)}\n` : `${JSON.stringify(payload)}\n`,
+    );
     return 0;
   }
 

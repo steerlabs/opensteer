@@ -10,7 +10,7 @@ const childProcessState = vi.hoisted(() => ({
 
 const cdpDiscoveryState = vi.hoisted(() => ({
   inspectCdpEndpoint: vi.fn(),
-  selectAutoConnectBrowserCandidate: vi.fn(),
+  selectAttachBrowserCandidate: vi.fn(),
 }));
 
 const processOwnerState = vi.hoisted(() => ({
@@ -24,7 +24,7 @@ vi.mock("node:child_process", () => ({
 
 vi.mock("../../packages/opensteer/src/local-browser/cdp-discovery.js", () => ({
   inspectCdpEndpoint: cdpDiscoveryState.inspectCdpEndpoint,
-  selectAutoConnectBrowserCandidate: cdpDiscoveryState.selectAutoConnectBrowserCandidate,
+  selectAttachBrowserCandidate: cdpDiscoveryState.selectAttachBrowserCandidate,
 }));
 
 vi.mock("../../packages/opensteer/src/local-browser/process-owner.js", async () => {
@@ -50,8 +50,8 @@ afterEach(() => {
   cdpDiscoveryState.inspectCdpEndpoint.mockResolvedValue({
     endpoint: "ws://127.0.0.1:9222/devtools/browser/root",
   });
-  cdpDiscoveryState.selectAutoConnectBrowserCandidate.mockReset();
-  cdpDiscoveryState.selectAutoConnectBrowserCandidate.mockRejectedValue(new Error("not found"));
+  cdpDiscoveryState.selectAttachBrowserCandidate.mockReset();
+  cdpDiscoveryState.selectAttachBrowserCandidate.mockRejectedValue(new Error("not found"));
   processOwnerState.getProcessLiveness.mockReset();
   processOwnerState.getProcessLiveness.mockResolvedValue("live");
   processOwnerState.isProcessRunning.mockReset();
@@ -70,12 +70,12 @@ describe("local profile inspection", () => {
       ],
       expandHome: (value: string) => value,
       readDevToolsActivePort: vi.fn(() => null),
-      resolveChromeUserDataDir: (userDataDir?: string) => path.resolve(userDataDir ?? "/tmp/missing"),
+      resolveChromeUserDataDir: (userDataDir?: string) =>
+        path.resolve(userDataDir ?? "/tmp/missing"),
     }));
 
-    const { inspectLocalBrowserProfile } = await import(
-      "../../packages/opensteer/src/local-browser/profile-inspection.js"
-    );
+    const { inspectLocalBrowserProfile } =
+      await import("../../packages/opensteer/src/local-browser/profile-inspection.js");
 
     await expect(
       inspectLocalBrowserProfile({
@@ -99,9 +99,8 @@ describe("local profile inspection", () => {
     }));
 
     try {
-      const { getProfileLaunchMetadataPath } = await import(
-        "../../packages/opensteer/src/local-browser/profile-launch-metadata.js"
-      );
+      const { getProfileLaunchMetadataPath } =
+        await import("../../packages/opensteer/src/local-browser/profile-launch-metadata.js");
       await mkdir(path.dirname(getProfileLaunchMetadataPath(userDataDir)), {
         recursive: true,
       });
@@ -119,9 +118,8 @@ describe("local profile inspection", () => {
         }),
       );
 
-      const { inspectLocalBrowserProfile } = await import(
-        "../../packages/opensteer/src/local-browser/profile-inspection.js"
-      );
+      const { inspectLocalBrowserProfile } =
+        await import("../../packages/opensteer/src/local-browser/profile-inspection.js");
 
       await expect(inspectLocalBrowserProfile({ userDataDir })).resolves.toMatchObject({
         status: "opensteer_owned",
@@ -133,9 +131,8 @@ describe("local profile inspection", () => {
       });
     } finally {
       await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
-      const { getProfileLaunchMetadataDir } = await import(
-        "../../packages/opensteer/src/local-browser/profile-launch-metadata.js"
-      );
+      const { getProfileLaunchMetadataDir } =
+        await import("../../packages/opensteer/src/local-browser/profile-launch-metadata.js");
       await rm(getProfileLaunchMetadataDir(userDataDir), {
         recursive: true,
         force: true,
@@ -148,7 +145,7 @@ describe("local profile inspection", () => {
     cdpDiscoveryState.inspectCdpEndpoint.mockResolvedValue({
       endpoint: "ws://127.0.0.1:9222/devtools/browser/root",
     });
-    cdpDiscoveryState.selectAutoConnectBrowserCandidate.mockResolvedValue({
+    cdpDiscoveryState.selectAttachBrowserCandidate.mockResolvedValue({
       endpoint: "ws://127.0.0.1:9222/devtools/browser/root",
       source: "devtools-active-port",
     });
@@ -164,28 +161,27 @@ describe("local profile inspection", () => {
     }));
 
     try {
-      const { inspectLocalBrowserProfile } = await import(
-        "../../packages/opensteer/src/local-browser/profile-inspection.js"
-      );
+      const { inspectLocalBrowserProfile } =
+        await import("../../packages/opensteer/src/local-browser/profile-inspection.js");
 
       await expect(inspectLocalBrowserProfile({ userDataDir })).resolves.toEqual({
         status: "browser_owned",
         userDataDir,
         evidence: "devtools",
         cdpEndpoint: "ws://127.0.0.1:9222/devtools/browser/root",
-        attachMode: "auto-connect",
+        attachMode: "attach",
       });
     } finally {
       await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
     }
   });
 
-  test("classifies reachable DevToolsActivePort as cdp-only when auto-connect would not discover it", async () => {
+  test("classifies reachable DevToolsActivePort as attachable even when discovery is ambiguous", async () => {
     const userDataDir = await mkdtemp(path.join(tmpdir(), "opensteer-profile-devtools-cdp-"));
     cdpDiscoveryState.inspectCdpEndpoint.mockResolvedValue({
       endpoint: "ws://127.0.0.1:9333/devtools/browser/root",
     });
-    cdpDiscoveryState.selectAutoConnectBrowserCandidate.mockRejectedValue(new Error("ambiguous"));
+    cdpDiscoveryState.selectAttachBrowserCandidate.mockRejectedValue(new Error("ambiguous"));
 
     vi.doMock("../../packages/opensteer/src/local-browser/chrome-discovery.js", () => ({
       detectLocalChromeInstallations: () => [],
@@ -198,16 +194,15 @@ describe("local profile inspection", () => {
     }));
 
     try {
-      const { inspectLocalBrowserProfile } = await import(
-        "../../packages/opensteer/src/local-browser/profile-inspection.js"
-      );
+      const { inspectLocalBrowserProfile } =
+        await import("../../packages/opensteer/src/local-browser/profile-inspection.js");
 
       await expect(inspectLocalBrowserProfile({ userDataDir })).resolves.toEqual({
         status: "browser_owned",
         userDataDir,
         evidence: "devtools",
         cdpEndpoint: "ws://127.0.0.1:9333/devtools/browser/root",
-        attachMode: "cdp",
+        attachMode: "attach",
       });
     } finally {
       await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
@@ -234,9 +229,8 @@ describe("local profile inspection", () => {
 
     try {
       await symlink(`${hostname()}-4321`, path.join(userDataDir, "SingletonLock"));
-      const { inspectLocalBrowserProfile } = await import(
-        "../../packages/opensteer/src/local-browser/profile-inspection.js"
-      );
+      const { inspectLocalBrowserProfile } =
+        await import("../../packages/opensteer/src/local-browser/profile-inspection.js");
 
       await expect(inspectLocalBrowserProfile({ userDataDir })).resolves.toEqual({
         status: "browser_owned",
@@ -263,9 +257,8 @@ describe("local profile inspection", () => {
     try {
       await symlink(`${hostname()}-987654`, path.join(userDataDir, "SingletonLock"));
       await writeFile(path.join(userDataDir, "SingletonSocket"), "");
-      const { inspectLocalBrowserProfile } = await import(
-        "../../packages/opensteer/src/local-browser/profile-inspection.js"
-      );
+      const { inspectLocalBrowserProfile } =
+        await import("../../packages/opensteer/src/local-browser/profile-inspection.js");
 
       await expect(inspectLocalBrowserProfile({ userDataDir })).resolves.toEqual({
         status: "stale_lock",
@@ -290,9 +283,8 @@ describe("local profile inspection", () => {
 
     try {
       await writeFile(path.join(userDataDir, "lockfile"), "");
-      const { inspectLocalBrowserProfile } = await import(
-        "../../packages/opensteer/src/local-browser/profile-inspection.js"
-      );
+      const { inspectLocalBrowserProfile } =
+        await import("../../packages/opensteer/src/local-browser/profile-inspection.js");
 
       await expect(inspectLocalBrowserProfile({ userDataDir })).resolves.toEqual({
         status: "browser_owned",
@@ -318,9 +310,8 @@ describe("local profile inspection", () => {
     try {
       await symlink(`${hostname()}-987655`, path.join(userDataDir, "SingletonLock"));
       await writeFile(path.join(userDataDir, "SingletonCookie"), "");
-      const {
-        unlockLocalBrowserProfile,
-      } = await import("../../packages/opensteer/src/local-browser/profile-inspection.js");
+      const { unlockLocalBrowserProfile } =
+        await import("../../packages/opensteer/src/local-browser/profile-inspection.js");
 
       await expect(unlockLocalBrowserProfile({ userDataDir })).resolves.toEqual({
         userDataDir,
@@ -342,10 +333,8 @@ describe("local profile inspection", () => {
     }));
 
     try {
-      const {
-        OpensteerLocalProfileUnavailableError,
-        unlockLocalBrowserProfile,
-      } = await import("../../packages/opensteer/src/local-browser/profile-inspection.js");
+      const { OpensteerLocalProfileUnavailableError, unlockLocalBrowserProfile } =
+        await import("../../packages/opensteer/src/local-browser/profile-inspection.js");
 
       await expect(unlockLocalBrowserProfile({ userDataDir })).rejects.toBeInstanceOf(
         OpensteerLocalProfileUnavailableError,

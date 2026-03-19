@@ -10,15 +10,9 @@ import {
   readDevToolsActivePort,
   resolveChromeUserDataDir,
 } from "./chrome-discovery.js";
-import { inspectCdpEndpoint, selectAutoConnectBrowserCandidate } from "./cdp-discovery.js";
-import {
-  CHROME_SINGLETON_ARTIFACTS,
-  type ChromeSingletonArtifact,
-} from "./chrome-singletons.js";
-import {
-  readLiveProfileLaunchMetadata,
-  withProfileLaunchLock,
-} from "./profile-launch-metadata.js";
+import { inspectCdpEndpoint } from "./cdp-discovery.js";
+import { CHROME_SINGLETON_ARTIFACTS, type ChromeSingletonArtifact } from "./chrome-singletons.js";
+import { readLiveProfileLaunchMetadata, withProfileLaunchLock } from "./profile-launch-metadata.js";
 import { isProcessRunning } from "./process-owner.js";
 import type { LaunchMetadataRecord } from "./types.js";
 
@@ -53,7 +47,7 @@ export type OpensteerLocalProfileInspection =
       readonly evidence: "devtools" | "singleton_owner" | "singleton_artifacts";
       readonly ownerPid?: number;
       readonly cdpEndpoint?: string;
-      readonly attachMode: "auto-connect" | "cdp" | null;
+      readonly attachMode: "attach" | null;
     }
   | {
       readonly status: "stale_lock";
@@ -76,9 +70,11 @@ export class OpensteerLocalProfileUnavailableError extends Error {
   }
 }
 
-export async function inspectLocalBrowserProfile(input: {
-  readonly userDataDir?: string;
-} = {}): Promise<OpensteerLocalProfileInspection> {
+export async function inspectLocalBrowserProfile(
+  input: {
+    readonly userDataDir?: string;
+  } = {},
+): Promise<OpensteerLocalProfileInspection> {
   const userDataDir = resolveChromeUserDataDir(input.userDataDir);
   const defaultInstallation = findDefaultChromeInstallation(userDataDir);
   if (defaultInstallation) {
@@ -177,14 +173,14 @@ export function formatLocalProfileInspectionMessage(
 ): string {
   switch (inspection.status) {
     case "unsupported_default_user_data_dir":
-      return 'The selected Chrome/Chromium user-data-dir is a default browser profile. Use a dedicated automation profile dir for browser.kind="profile", or attach to an already-debuggable browser with cdp/auto-connect.';
+      return 'The selected Chrome/Chromium user-data-dir is a default browser profile. Use a dedicated automation profile dir for browser.kind="profile", or attach to an already-debuggable browser with browser.kind="attach".';
     case "opensteer_owned":
       return "This profile is already owned by Opensteer. Reuse the existing session with Opensteer.attach(...) or the named CLI session.";
     case "browser_owned":
-      if (inspection.attachMode === "auto-connect") {
-        return 'Chrome is already running with remote debugging. Attach with --browser auto-connect or browser.kind="auto-connect".';
+      if (inspection.attachMode === "attach") {
+        return 'Chrome is already running with remote debugging. Attach with --browser attach or browser.kind="attach".';
       }
-      return "Chrome appears to own this profile, but it is not exposing CDP. Close Chrome or start it with remote debugging, then attach with cdp/auto-connect.";
+      return 'Chrome appears to own this profile, but it is not exposing CDP. Close Chrome or start it with remote debugging, then attach with browser.kind="attach".';
     case "stale_lock":
       return `This profile has stale Chrome lock artifacts. Run opensteer local-profile unlock --user-data-dir ${JSON.stringify(inspection.userDataDir)} and retry.`;
     case "available":
@@ -195,7 +191,7 @@ export function formatLocalProfileInspectionMessage(
 async function discoverActivePortBrowserEndpoint(userDataDir: string): Promise<
   | {
       readonly endpoint: string;
-      readonly attachMode: "auto-connect" | "cdp";
+      readonly attachMode: "attach";
     }
   | undefined
 > {
@@ -206,31 +202,24 @@ async function discoverActivePortBrowserEndpoint(userDataDir: string): Promise<
 
   let endpoint = `ws://127.0.0.1:${String(activePort.port)}${activePort.webSocketPath}`;
   try {
-    endpoint = (await inspectCdpEndpoint({
-      endpoint: `http://127.0.0.1:${String(activePort.port)}`,
-    })).endpoint;
+    endpoint = (
+      await inspectCdpEndpoint({
+        endpoint: `http://127.0.0.1:${String(activePort.port)}`,
+      })
+    ).endpoint;
   } catch {}
 
   return {
     endpoint,
-    attachMode: await deriveAttachMode(endpoint),
+    attachMode: "attach",
   };
 }
 
-async function deriveAttachMode(endpoint: string): Promise<"auto-connect" | "cdp"> {
-  try {
-    const selected = await selectAutoConnectBrowserCandidate();
-    return selected.endpoint === endpoint ? "auto-connect" : "cdp";
-  } catch {
-    return "cdp";
-  }
-}
-
-function findDefaultChromeInstallation(
-  userDataDir: string,
-): {
-  readonly brand: "chrome" | "chromium";
-} | undefined {
+function findDefaultChromeInstallation(userDataDir: string):
+  | {
+      readonly brand: "chrome" | "chromium";
+    }
+  | undefined {
   const normalized = resolve(userDataDir);
   const installation = detectLocalChromeInstallations().find(
     (candidate) => resolve(candidate.userDataDir) === normalized,
@@ -253,9 +242,7 @@ async function listSingletonArtifacts(userDataDir: string): Promise<ChromeSingle
   return artifacts.filter((artifact): artifact is ChromeSingletonArtifact => artifact !== null);
 }
 
-async function inspectSingletonOwner(
-  userDataDir: string,
-): Promise<
+async function inspectSingletonOwner(userDataDir: string): Promise<
   | {
       readonly kind: "live";
       readonly pid: number;
@@ -295,9 +282,7 @@ async function inspectSingletonOwner(
   return undefined;
 }
 
-async function readSingletonLockOwner(
-  userDataDir: string,
-): Promise<
+async function readSingletonLockOwner(userDataDir: string): Promise<
   | {
       readonly host: string;
       readonly pid: number;
@@ -326,12 +311,10 @@ async function readSingletonLockOwner(
   return parsed ?? undefined;
 }
 
-function parseSingletonLockTarget(target: string):
-  | {
-      readonly host: string;
-      readonly pid: number;
-    }
-  | null {
+function parseSingletonLockTarget(target: string): {
+  readonly host: string;
+  readonly pid: number;
+} | null {
   const normalizedTarget = basename(target);
   const match = /^(.*)-(\d+)$/.exec(normalizedTarget);
   if (!match) {
@@ -354,7 +337,10 @@ function isLocalHostname(candidate: string): boolean {
 }
 
 function normalizeHostname(value: string): string {
-  return value.trim().toLowerCase().replace(/\.local$/, "");
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\.local$/, "");
 }
 
 async function isChromeLikeProcess(pid: number): Promise<boolean> {
