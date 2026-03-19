@@ -101,6 +101,7 @@ export interface PreparedOwnedBrowserLaunch extends LaunchOwnedBrowserOptions {
   readonly profileDirectory?: string;
   readonly cleanupUserDataDir?: string;
   readonly release?: () => Promise<void>;
+  readonly useRealKeychain?: boolean;
 }
 
 export interface ConnectCdpBrowserOptions {

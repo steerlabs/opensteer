@@ -136,6 +136,7 @@ async function prepareProfileOwnedBrowserLaunch(
     userDataDir,
     profileDirectory,
     release,
+    useRealKeychain: true,
   };
 }
 
@@ -160,6 +161,7 @@ async function prepareClonedOwnedBrowserLaunch(
       userDataDir,
       profileDirectory: options.sourceProfileDirectory,
       cleanupUserDataDir: userDataDir,
+      useRealKeychain: true,
     };
   } catch (error) {
     await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
@@ -298,8 +300,7 @@ function buildChromeArgs(options: PreparedOwnedBrowserLaunch): readonly string[]
     "--disable-features=Translate",
     "--enable-features=NetworkService,NetworkServiceInProcess",
     "--metrics-recording-only",
-    "--password-store=basic",
-    "--use-mock-keychain",
+    ...(options.useRealKeychain ? [] : ["--password-store=basic", "--use-mock-keychain"]),
     `--user-data-dir=${options.userDataDir}`,
   ];
 

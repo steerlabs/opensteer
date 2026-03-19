@@ -161,19 +161,31 @@ opensteer close                                    # End session
 
 **Critical: always re-snapshot before using counter numbers.** Any action (click, input, scroll, goto) can mutate the DOM, making previous counters stale. A counter from an old snapshot may point to the wrong element or fail entirely.
 
-**With a real Chrome profile:**
+**With a dedicated automation profile (persists between sessions):**
 
 ```bash
 opensteer open https://example.com --browser profile \
-  --user-data-dir "~/Library/Application Support/Google/Chrome"
+  --user-data-dir ~/opensteer-chrome-profile --headed
 ```
 
-**Attach to a running Chrome:**
+**Clone your daily browser's cookies/logins into an isolated session:**
 
 ```bash
-opensteer open https://example.com --browser attach --attach-endpoint 9222
-opensteer open https://example.com --browser attach
-opensteer open https://example.com --browser cloned --clone-from "~/Library/Application Support/Google/Chrome"
+opensteer open https://example.com --clone-from "~/Library/Application Support/Google/Chrome" --headed
+opensteer open https://example.com --clone-from "~/Library/Application Support/net.imput.helium" \
+  --executable-path /Applications/Helium.app/Contents/MacOS/Helium --headed
+```
+
+**Attach to an already-running browser:**
+
+```bash
+opensteer open https://example.com --attach-endpoint 9222 --fresh-tab  # explicit endpoint
+opensteer open https://example.com --browser attach                     # auto-discover
+```
+
+**Discover and inspect running browsers:**
+
+```bash
 opensteer browser discover
 opensteer browser inspect --endpoint 9222
 ```
