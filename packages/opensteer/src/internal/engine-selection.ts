@@ -14,7 +14,7 @@ import {
   resolveCdpBrowserLaunch,
   resolveManagedBrowserLaunch,
   resolveProfileBrowserLaunch,
-} from "../local-browser/chrome-discovery.js";
+} from "../local-browser/launch-resolution.js";
 import {
   connectAutoBrowserSession,
   connectCdpBrowserSession,

@@ -5,6 +5,16 @@ import path from "node:path";
 
 import { afterEach, describe, expect, test, vi } from "vitest";
 
+const cdpDiscoveryState = vi.hoisted(() => ({
+  inspectCdpEndpoint: vi.fn(async ({ endpoint }: { readonly endpoint: string }) => ({
+    endpoint,
+  })),
+  selectAutoConnectBrowserCandidate: vi.fn(async () => ({
+    endpoint: "ws://127.0.0.1:9222/devtools/browser/root",
+    source: "devtools-active-port" as const,
+  })),
+}));
+
 const processOwnerState = vi.hoisted(() => {
   const currentOwner = {
     pid: 1001,
@@ -61,9 +71,23 @@ vi.mock("../../packages/opensteer/src/local-browser/process-owner.js", () => ({
   processOwnersEqual: processOwnerState.processOwnersEqual,
 }));
 
+vi.mock("../../packages/opensteer/src/local-browser/cdp-discovery.js", () => ({
+  inspectCdpEndpoint: cdpDiscoveryState.inspectCdpEndpoint,
+  selectAutoConnectBrowserCandidate: cdpDiscoveryState.selectAutoConnectBrowserCandidate,
+}));
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.resetModules();
+  cdpDiscoveryState.inspectCdpEndpoint.mockReset();
+  cdpDiscoveryState.inspectCdpEndpoint.mockImplementation(async ({ endpoint }) => ({
+    endpoint,
+  }));
+  cdpDiscoveryState.selectAutoConnectBrowserCandidate.mockReset();
+  cdpDiscoveryState.selectAutoConnectBrowserCandidate.mockResolvedValue({
+    endpoint: "ws://127.0.0.1:9222/devtools/browser/root",
+    source: "devtools-active-port",
+  });
 });
 
 describe("local browser sessions", () => {
@@ -157,5 +181,72 @@ describe("local browser sessions", () => {
       await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
       await rm(launchDir, { recursive: true, force: true }).catch(() => undefined);
     }
+  });
+
+  test("connectAutoBrowserSession attaches to the selected local CDP candidate", async () => {
+    const page = {
+      bringToFront: vi.fn(async () => undefined),
+    };
+    const context = {
+      pages: vi.fn(() => [page]),
+      newPage: vi.fn(async () => page),
+    };
+    const browser = {
+      close: vi.fn(async () => undefined),
+      contexts: vi.fn(() => [context]),
+      newBrowserCDPSession: vi.fn(async () => ({
+        send: vi.fn(async () => undefined),
+        detach: vi.fn(async () => undefined),
+      })),
+    };
+    const connectBrowser = vi.fn(async () => browser);
+
+    const { connectAutoBrowserSession } = await import(
+      "../../packages/opensteer/src/local-browser/shared-session.js"
+    );
+
+    const lease = await connectAutoBrowserSession({
+      freshTab: true,
+      timeoutMs: 1_000,
+      connectBrowser,
+    });
+
+    expect(cdpDiscoveryState.selectAutoConnectBrowserCandidate).toHaveBeenCalledWith({
+      timeoutMs: 1_000,
+    });
+    expect(connectBrowser).toHaveBeenCalledWith({
+      url: "ws://127.0.0.1:9222/devtools/browser/root",
+      timeoutMs: 1_000,
+    });
+
+    await lease.close();
+  });
+
+  test("connectAutoBrowserSession fails clearly when the selected browser changes before attach", async () => {
+    cdpDiscoveryState.selectAutoConnectBrowserCandidate
+      .mockResolvedValueOnce({
+        endpoint: "ws://127.0.0.1:9222/devtools/browser/root",
+        source: "devtools-active-port",
+      })
+      .mockResolvedValueOnce({
+        endpoint: "ws://127.0.0.1:9223/devtools/browser/root",
+        source: "devtools-active-port",
+      });
+
+    const { connectAutoBrowserSession } = await import(
+      "../../packages/opensteer/src/local-browser/shared-session.js"
+    );
+
+    await expect(
+      connectAutoBrowserSession({
+        freshTab: true,
+        timeoutMs: 1_000,
+        connectBrowser: vi.fn(async () => {
+          throw new Error("connect failed");
+        }),
+      }),
+    ).rejects.toThrow(
+      "Auto-connect target disappeared or selection changed before attach. Re-run discovery or use --browser cdp --cdp <endpoint>.",
+    );
   });
 });

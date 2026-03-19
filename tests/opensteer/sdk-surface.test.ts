@@ -127,11 +127,14 @@ describe("Opensteer SDK surface", () => {
     expect(runtimeState.attachedRuntime.close).not.toHaveBeenCalled();
   });
 
-  test("index exports the local profile inspection surface", async () => {
+  test("index exports the local browser inspection surface", async () => {
     const index = await import("../../packages/opensteer/src/index.js");
 
+    expect(typeof index.discoverLocalCdpBrowsers).toBe("function");
+    expect(typeof index.inspectCdpEndpoint).toBe("function");
     expect(typeof index.inspectLocalBrowserProfile).toBe("function");
     expect(typeof index.unlockLocalBrowserProfile).toBe("function");
+    expect(index.OpensteerAutoConnectAmbiguousError).toBeDefined();
     expect(index.OpensteerLocalProfileUnavailableError).toBeDefined();
   });
 });

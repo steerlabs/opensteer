@@ -15,6 +15,7 @@ import { resolveCloudConfig } from "../cloud/config.js";
 import { type OpensteerEngineName } from "../internal/engine-selection.js";
 import {
   getOpensteerServiceMetadataPath,
+  isCloudOpensteerServiceMetadata,
   isLocalOpensteerServiceMetadata,
   isProcessAlive,
   normalizeOpensteerSessionName,
@@ -30,6 +31,7 @@ import {
 
 const PING_PATH = "/runtime/ping";
 const SERVICE_PING_TIMEOUT_MS = 1_000;
+type ServiceMetadataValidationStatus = "live" | "stale" | "unreachable";
 
 export class OpensteerCliServiceError extends Error {
   readonly opensteerError: OpensteerError;
@@ -188,7 +190,8 @@ export async function resolveLiveOpensteerServiceMetadata(
   }
 
   const { metadata } = parsed;
-  if (!(await validateServiceMetadata(metadata))) {
+  const validationStatus = await validateServiceMetadata(metadata);
+  if (validationStatus === "stale") {
     await removeOpensteerServiceMetadata(rootPath, name);
     return undefined;
   }
@@ -210,9 +213,11 @@ export async function resolveLiveOpensteerServiceMetadata(
   return metadata;
 }
 
-async function validateServiceMetadata(metadata: OpensteerServiceMetadata): Promise<boolean> {
+async function validateServiceMetadata(
+  metadata: OpensteerServiceMetadata,
+): Promise<ServiceMetadataValidationStatus> {
   if (isLocalOpensteerServiceMetadata(metadata) && !isProcessAlive(metadata.pid)) {
-    return false;
+    return "stale";
   }
 
   try {
@@ -223,13 +228,20 @@ async function validateServiceMetadata(metadata: OpensteerServiceMetadata): Prom
       signal: AbortSignal.timeout(SERVICE_PING_TIMEOUT_MS),
     });
     if (!response.ok) {
-      return false;
+      if (isCloudOpensteerServiceMetadata(metadata)) {
+        return response.status === 404 || response.status === 409 ? "stale" : "unreachable";
+      }
+      return "stale";
     }
 
     const body = (await response.json()) as { readonly ok?: unknown };
-    return body.ok === true;
+    if (body.ok === true) {
+      return "live";
+    }
+
+    return isCloudOpensteerServiceMetadata(metadata) ? "unreachable" : "stale";
   } catch {
-    return false;
+    return isCloudOpensteerServiceMetadata(metadata) ? "unreachable" : "stale";
   }
 }
 
@@ -265,4 +277,3 @@ function isFetchFailure(error: unknown): boolean {
 
   return error.name === "TypeError" || /fetch failed/i.test(error.message);
 }
-

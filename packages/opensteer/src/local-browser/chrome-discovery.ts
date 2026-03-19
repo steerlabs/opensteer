@@ -6,74 +6,13 @@ import { basename, join, resolve } from "node:path";
 import type {
   LocalChromeInstallation,
   LocalChromeProfileDescriptor,
-  ResolvedAutoConnectBrowserLaunch,
-  ResolvedCdpBrowserLaunch,
-  ResolvedManagedBrowserLaunch,
-  ResolvedProfileBrowserLaunch,
 } from "./types.js";
-import type {
-  OpensteerAutoConnectBrowserLaunchOptions,
-  OpensteerCdpBrowserLaunchOptions,
-  OpensteerManagedBrowserLaunchOptions,
-  OpensteerProfileBrowserLaunchOptions,
-} from "@opensteer/protocol";
-
-const DEFAULT_PROFILE_DIRECTORY = "Default";
-const DEFAULT_TIMEOUT_MS = 30_000;
-const AUTO_CONNECT_PORT_CANDIDATES = [9222, 9229] as const;
 
 export function expandHome(value: string): string {
   if (value === "~" || value.startsWith("~/")) {
     return join(homedir(), value.slice(1));
   }
   return value;
-}
-
-export function resolveManagedBrowserLaunch(
-  input: OpensteerManagedBrowserLaunchOptions = {},
-): ResolvedManagedBrowserLaunch {
-  return {
-    executablePath: resolveChromeExecutablePath(input.executablePath),
-    headless: input.headless ?? true,
-    timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    args: [...(input.args ?? [])],
-  };
-}
-
-export function resolveProfileBrowserLaunch(
-  input: OpensteerProfileBrowserLaunchOptions,
-): ResolvedProfileBrowserLaunch {
-  return {
-    executablePath: resolveChromeExecutablePath(input.executablePath),
-    headless: input.headless ?? true,
-    timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    args: [...(input.args ?? [])],
-    userDataDir: resolve(expandHome(input.userDataDir)),
-    profileDirectory: input.profileDirectory?.trim() || DEFAULT_PROFILE_DIRECTORY,
-  };
-}
-
-export function resolveCdpBrowserLaunch(
-  input: OpensteerCdpBrowserLaunchOptions,
-): ResolvedCdpBrowserLaunch {
-  const endpoint = input.endpoint.trim();
-  if (!endpoint) {
-    throw new Error("browser.endpoint must be a non-empty CDP port or URL.");
-  }
-
-  return {
-    endpoint,
-    freshTab: input.freshTab ?? true,
-    ...(input.headers === undefined ? {} : { headers: input.headers }),
-  };
-}
-
-export function resolveAutoConnectBrowserLaunch(
-  input: OpensteerAutoConnectBrowserLaunchOptions,
-): ResolvedAutoConnectBrowserLaunch {
-  return {
-    freshTab: input.freshTab ?? true,
-  };
 }
 
 export function resolveChromeUserDataDir(userDataDir: string | undefined): string {
@@ -250,115 +189,6 @@ export function readDevToolsActivePort(userDataDir: string): {
   } catch {
     return null;
   }
-}
-
-export async function discoverAutoConnectCdpEndpoint(): Promise<string> {
-  for (const installation of detectLocalChromeInstallations()) {
-    const activePort = readDevToolsActivePort(installation.userDataDir);
-    if (!activePort) {
-      continue;
-    }
-
-    const discovered = await discoverBrowserWebSocketUrl(`http://127.0.0.1:${String(activePort.port)}`);
-    if (discovered) {
-      return discovered;
-    }
-
-    if (await isPortReachable(activePort.port)) {
-      return `ws://127.0.0.1:${String(activePort.port)}${activePort.webSocketPath}`;
-    }
-  }
-
-  for (const port of AUTO_CONNECT_PORT_CANDIDATES) {
-    const discovered = await discoverBrowserWebSocketUrl(`http://127.0.0.1:${String(port)}`);
-    if (discovered) {
-      return discovered;
-    }
-  }
-
-  throw new Error(
-    "No running Chrome instance found. Enable remote debugging and use --auto-connect or pass --cdp.",
-  );
-}
-
-export async function discoverBrowserWebSocketUrl(
-  endpoint: string,
-  headers?: Readonly<Record<string, string>>,
-): Promise<string | null> {
-  const trimmedEndpoint = endpoint.trim();
-  if (!trimmedEndpoint) {
-    return null;
-  }
-
-  if (/^\d+$/.test(trimmedEndpoint)) {
-    return discoverBrowserWebSocketUrl(`http://127.0.0.1:${trimmedEndpoint}`, headers);
-  }
-
-  if (trimmedEndpoint.startsWith("ws://") || trimmedEndpoint.startsWith("wss://")) {
-    return trimmedEndpoint;
-  }
-
-  let url: URL;
-  try {
-    url = trimmedEndpoint.startsWith("http://") || trimmedEndpoint.startsWith("https://")
-      ? new URL(trimmedEndpoint)
-      : new URL(`http://${trimmedEndpoint}`);
-  } catch {
-    throw new Error(`Invalid CDP endpoint "${endpoint}".`);
-  }
-
-  const versionUrl = new URL("/json/version", url);
-  const response = await fetch(versionUrl, {
-    ...(headers === undefined ? {} : { headers }),
-    signal: AbortSignal.timeout(2_000),
-  }).catch(() => null);
-  if (response?.ok) {
-    const payload = (await response.json()) as {
-      readonly webSocketDebuggerUrl?: unknown;
-    };
-    if (typeof payload.webSocketDebuggerUrl === "string" && payload.webSocketDebuggerUrl.length > 0) {
-      return rewriteBrowserWebSocketHost(payload.webSocketDebuggerUrl, url);
-    }
-  }
-
-  const listUrl = new URL("/json/list", url);
-  const listResponse = await fetch(listUrl, {
-    ...(headers === undefined ? {} : { headers }),
-    signal: AbortSignal.timeout(2_000),
-  }).catch(() => null);
-  if (!listResponse?.ok) {
-    return null;
-  }
-
-  const targets = (await listResponse.json()) as readonly {
-    readonly type?: unknown;
-    readonly webSocketDebuggerUrl?: unknown;
-  }[];
-  const browserTarget =
-    targets.find((target) => target.type === "browser")
-    ?? targets.find((target) => typeof target.webSocketDebuggerUrl === "string");
-  return typeof browserTarget?.webSocketDebuggerUrl === "string"
-    ? rewriteBrowserWebSocketHost(browserTarget.webSocketDebuggerUrl, url)
-    : null;
-}
-
-function rewriteBrowserWebSocketHost(browserWsUrl: string, requestedUrl: URL): string {
-  try {
-    const parsed = new URL(browserWsUrl);
-    parsed.protocol = requestedUrl.protocol === "https:" ? "wss:" : "ws:";
-    parsed.hostname = requestedUrl.hostname;
-    parsed.port = requestedUrl.port;
-    return parsed.toString();
-  } catch {
-    return browserWsUrl;
-  }
-}
-
-async function isPortReachable(port: number): Promise<boolean> {
-  const result = await fetch(`http://127.0.0.1:${String(port)}/json/version`, {
-    signal: AbortSignal.timeout(500),
-  }).catch(() => null);
-  return result !== null;
 }
 
 function firstExistingPath(candidates: readonly (string | null | undefined)[]): string | null {

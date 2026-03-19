@@ -159,6 +159,8 @@ opensteer open https://example.com --name docs-example --browser cdp --cdp 9222
 opensteer open https://example.com --name docs-example --browser profile \
   --user-data-dir "~/Library/Application Support/Google/Chrome" \
   --profile-directory Default
+opensteer browser discover
+opensteer browser inspect --cdp 9222
 opensteer local-profile list
 opensteer local-profile inspect --user-data-dir "~/Library/Application Support/Opensteer Chrome"
 opensteer local-profile unlock --user-data-dir "~/Library/Application Support/Opensteer Chrome"
@@ -199,6 +201,23 @@ ownership, `opensteer local-profile unlock` only when Opensteer proves the profi
 `stale_lock` state, and `--browser cdp` or `--browser auto-connect` when an existing browser
 already owns the profile.
 
+## Connect To Real Browser
+
+- `managed` is the default local-browser mode. It launches a fresh isolated Chrome/Chromium process with a temporary `user-data-dir` and an OS-assigned remote debugging port, then attaches automatically.
+- `profile` is still an owned launch, but against a dedicated non-default Chrome profile directory. Use it when you need persisted cookies, extensions, or login state that Opensteer should own.
+- `auto-connect` only attaches to locally discoverable running browsers. It is intentionally conservative: if Opensteer cannot identify a unique best local target, it fails and asks you to use `cdp`.
+- `cdp` is the explicit attach path. Use it for custom ports, remote endpoints, or any situation where you want exact browser selection.
+
+When you are launching a browser yourself for `cdp`, prefer a dedicated profile directory:
+
+```bash
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+  --user-data-dir="$HOME/Library/Application Support/Opensteer Chrome" \
+  --remote-debugging-port=9222
+```
+
+When attaching to an existing browser, Opensteer may land on an already-open tab such as `chrome://newtab`. Pass `--fresh-tab` when you want a clean working page immediately after attach.
+
 ## Transport Guide
 
 - `direct-http`: use when the request is replayable without a browser
@@ -230,6 +249,8 @@ Important subtrees:
 ## Public Methods
 
 - `Opensteer.attach({ name?, rootDir? })`
+- `discoverLocalCdpBrowsers({ timeoutMs? })`
+- `inspectCdpEndpoint({ endpoint, headers?, timeoutMs? })`
 - `inspectLocalBrowserProfile({ userDataDir? })`
 - `unlockLocalBrowserProfile({ userDataDir })`
 - `open(url | { url?, name?, browser?, context? })`

@@ -1393,6 +1393,57 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
     ],
   },
   {
+    name: "browser",
+    summary: "Inspect local CDP browser discovery and endpoints.",
+    defaultSubcommand: "discover",
+    subcommands: [
+      {
+        name: "discover",
+        id: "browser.discover",
+        summary: "Discover locally attachable Chrome/Chromium DevTools endpoints.",
+        options: [
+          {
+            name: "json",
+            description: "Print JSON output",
+            kind: "boolean",
+          },
+          {
+            name: "timeout-ms",
+            description: "Probe timeout in milliseconds",
+            kind: "number",
+            valueLabel: "ms",
+            internalName: "timeoutMs",
+          },
+        ],
+      },
+      {
+        name: "inspect",
+        id: "browser.inspect",
+        summary: "Inspect a CDP endpoint and resolve its browser websocket URL.",
+        options: [
+          {
+            name: "cdp",
+            description: "Chrome DevTools endpoint to inspect",
+            kind: "string",
+            valueLabel: "port|ws-url|http-url",
+          },
+          {
+            name: "json",
+            description: "Print JSON output",
+            kind: "boolean",
+          },
+          {
+            name: "timeout-ms",
+            description: "Probe timeout in milliseconds",
+            kind: "number",
+            valueLabel: "ms",
+            internalName: "timeoutMs",
+          },
+        ],
+      },
+    ],
+  },
+  {
     name: "profile",
     summary: "Manage cloud browser profile uploads.",
     subcommands: [
@@ -1436,6 +1487,7 @@ export const opensteerCliSchema: CliCommandDefinition = {
   subcommands: ROOT_COMMANDS,
 };
 
+export const browserCliSchema = requireSubcommand(opensteerCliSchema, "browser");
 export const localProfileCliSchema = requireSubcommand(opensteerCliSchema, "local-profile");
 export const profileCliSchema = requireSubcommand(opensteerCliSchema, "profile");
 

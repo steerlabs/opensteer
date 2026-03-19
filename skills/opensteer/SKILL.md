@@ -33,10 +33,27 @@ Every action (click, hover, input, scroll) accepts a target in one of these form
 
 Opensteer supports four browser launch modes:
 
-- **`managed`** (default) — launches a fresh Chromium instance. Best for headless scraping.
-- **`profile`** — launches Chrome with a real user-data-dir. Preserves cookies, extensions, and login state.
+- **`managed`** (default) — launches a fresh isolated local Chrome/Chromium process that Opensteer owns. This is the right default for most automation.
+- **`profile`** — launches Chrome with a real dedicated user-data-dir that Opensteer owns. Preserves cookies, extensions, and login state.
 - **`cdp`** — attaches to an already-running Chrome via DevTools Protocol. Pass a port, WebSocket URL, or HTTP URL.
-- **`auto-connect`** — auto-discovers a running Chrome/Chromium instance on the system.
+- **`auto-connect`** — conservatively auto-discovers a locally attachable running Chrome/Chromium instance. If discovery is ambiguous, use `cdp` explicitly.
+
+### Connect To Real Browser
+
+- Use **`managed`** when you want Opensteer to launch a fresh real local browser on an unused debugging port.
+- Use **`profile`** when you need a persistent dedicated automation profile that Opensteer owns.
+- Use **`auto-connect`** only when a local running browser should be attached without specifying a port and you expect discovery to be unambiguous.
+- Use **`cdp`** when you already know the exact browser endpoint or you launched Chrome manually with a custom port.
+
+**Recommended manual launch for `cdp`:**
+
+```bash
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+  --user-data-dir="$HOME/Library/Application Support/Opensteer Chrome" \
+  --remote-debugging-port=9222
+```
+
+When attaching to an existing browser, `chrome://newtab` or another already-open tab is normal. Pass `--fresh-tab` if you want Opensteer to create a clean tab after attaching.
 
 ### Session Ownership
 
@@ -148,6 +165,8 @@ opensteer open https://example.com --browser profile \
 ```bash
 opensteer open https://example.com --browser cdp --cdp 9222
 opensteer open https://example.com --browser auto-connect
+opensteer browser discover
+opensteer browser inspect --cdp 9222
 ```
 
 ## Reference Files
@@ -174,3 +193,4 @@ opensteer open https://example.com --browser auto-connect
 - Scripts are TypeScript files. Use `import { Opensteer } from "opensteer"` (not require).
 - Use `browser: { kind: "profile", userDataDir: "..." }` to launch with a real Chrome profile that preserves cookies, extensions, and login state.
 - Opensteer rejects default Chrome user-data-dirs in profile mode — use a dedicated directory.
+- `managed` already launches a fresh real local browser for you; do not reach for `auto-connect` when you actually want a brand-new browser.

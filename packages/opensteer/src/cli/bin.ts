@@ -38,6 +38,7 @@ import {
 } from "../internal/engine-selection.js";
 import { fileUriToPath } from "../internal/filesystem.js";
 import { OpensteerLocalProfileUnavailableError } from "../local-browser/profile-inspection.js";
+import { runOpensteerBrowserCli } from "./browser.js";
 import { runOpensteerLocalProfileCli } from "./local-profile.js";
 import { runOpensteerProfileUploadCli } from "./profile-upload.js";
 import { opensteerCliSchema, parseCliArguments } from "./schema.js";
@@ -61,6 +62,14 @@ import { runOpensteerServiceHost } from "./service-host.js";
 type ParsedCliOptions = Readonly<Record<string, unknown>>;
 
 async function main(argv: readonly string[]): Promise<void> {
+  if (argv[0] === "browser") {
+    const exitCode = await runOpensteerBrowserCli(argv.slice(1));
+    if (exitCode !== 0) {
+      process.exitCode = exitCode;
+    }
+    return;
+  }
+
   if (argv[0] === "local-profile") {
     const exitCode = await runOpensteerLocalProfileCli(argv.slice(1));
     if (exitCode !== 0) {

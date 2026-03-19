@@ -30,6 +30,8 @@ opensteer open https://example.com --browser auto-connect --fresh-tab
 opensteer open https://example.com --browser profile \
   --user-data-dir "~/Library/Application Support/Google/Chrome" \
   --profile-directory Default
+opensteer browser discover
+opensteer browser inspect --cdp 9222
 opensteer open https://example.com --cloud --cloud-profile-id bp_123
 ```
 
@@ -75,6 +77,26 @@ opensteer close
 opensteer close --name my-session
 ```
 
+### `opensteer browser discover`
+
+Discovers locally attachable Chrome/Chromium DevTools endpoints.
+
+```bash
+opensteer browser discover
+opensteer browser discover --json
+opensteer browser discover --timeout-ms 4000
+```
+
+### `opensteer browser inspect --cdp <endpoint>`
+
+Inspects an explicit CDP endpoint and resolves its browser websocket URL.
+
+```bash
+opensteer browser inspect --cdp 9222
+opensteer browser inspect --cdp http://127.0.0.1:9222
+opensteer browser inspect --cdp ws://127.0.0.1:9222/devtools/browser/root
+```
+
 ### `opensteer local-profile list [--user-data-dir <path>]`
 
 Lists discovered local Chrome/Chromium profiles.
@@ -112,6 +134,15 @@ opensteer local-profile unlock --user-data-dir "~/Library/Application Support/Op
 
 `unlock` never runs implicitly during `open`. If the profile is live or ambiguous, the command
 fails with a structured JSON error on stderr.
+
+## Real Browser Modes
+
+- `managed` launches a fresh isolated local Chrome/Chromium process and attaches automatically. This is the default when you want a brand-new browser.
+- `profile` launches and owns a dedicated non-default Chrome profile directory.
+- `auto-connect` attaches only when Opensteer can identify a unique best local browser candidate.
+- `cdp` attaches to the exact endpoint you pass and is the right choice for custom ports or remote browser targets.
+
+If you are launching Chrome manually, use a dedicated `--user-data-dir` and a known port. When attaching to an already-running browser, pass `--fresh-tab` if you want Opensteer to open a clean tab instead of reusing the current one.
 
 ### `opensteer profile upload --profile-id <id> --from-user-data-dir <path> [--profile-directory <name>]`
 

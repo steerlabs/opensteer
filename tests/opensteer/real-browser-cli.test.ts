@@ -7,6 +7,10 @@ import { promisify } from "node:util";
 import { beforeAll, describe, expect, test } from "vitest";
 
 import {
+  parseOpensteerBrowserArgs,
+  runOpensteerBrowserCli,
+} from "../../packages/opensteer/src/cli/browser.js";
+import {
   parseOpensteerLocalProfileArgs,
   runOpensteerLocalProfileCli,
 } from "../../packages/opensteer/src/cli/local-profile.js";
@@ -21,6 +25,65 @@ beforeAll(async () => {
 });
 
 describe("local browser CLI surfaces", () => {
+  test("parses browser discover mode with json output", () => {
+    expect(parseOpensteerBrowserArgs(["discover", "--json"])).toEqual({
+      mode: "discover",
+      json: true,
+    });
+  });
+
+  test("parses browser inspect mode", () => {
+    expect(parseOpensteerBrowserArgs(["inspect", "--cdp", "9222"])).toEqual({
+      mode: "inspect",
+      cdp: "9222",
+      json: false,
+    });
+  });
+
+  test("browser discover runner prints discovered endpoints", async () => {
+    const stdout: string[] = [];
+    const code = await runOpensteerBrowserCli(["discover"], {
+      discoverBrowsers: async () => [
+        {
+          endpoint: "ws://127.0.0.1:9222/devtools/browser/root",
+          source: "devtools-active-port",
+          userDataDir: "/tmp/chrome",
+        },
+      ],
+      inspectBrowser: async () => ({
+        endpoint: "ws://127.0.0.1:9222/devtools/browser/root",
+      }),
+      writeStdout: (message) => {
+        stdout.push(message);
+      },
+      writeStderr: () => undefined,
+    });
+
+    expect(code).toBe(0);
+    expect(stdout.join("")).toContain("ws://127.0.0.1:9222/devtools/browser/root");
+    expect(stdout.join("")).toContain("devtools-active-port");
+  });
+
+  test("browser inspect runner prints structured endpoint JSON", async () => {
+    const stdout: string[] = [];
+    const code = await runOpensteerBrowserCli(["inspect", "--cdp", "9222"], {
+      discoverBrowsers: async () => [],
+      inspectBrowser: async () => ({
+        endpoint: "ws://127.0.0.1:9222/devtools/browser/root",
+        httpUrl: "http://127.0.0.1:9222/",
+        port: 9222,
+      }),
+      writeStdout: (message) => {
+        stdout.push(message);
+      },
+      writeStderr: () => undefined,
+    });
+
+    expect(code).toBe(0);
+    expect(stdout.join("")).toContain('"endpoint":"ws://127.0.0.1:9222/devtools/browser/root"');
+    expect(stdout.join("")).toContain('"attachHint":"opensteer open --browser cdp --cdp \\"9222\\""');
+  });
+
   test("parses local-profile list mode with json output", () => {
     expect(parseOpensteerLocalProfileArgs(["list", "--json"])).toEqual({
       mode: "list",
@@ -169,6 +232,7 @@ describe("local browser CLI surfaces", () => {
 
     expect(result.stderr.trim()).toBe("");
     expect(result.stdout).toContain("Usage: opensteer <command>");
+    expect(result.stdout).toContain("browser");
     expect(result.stdout).toContain("open");
     expect(result.stdout).toContain("local-profile");
   });
