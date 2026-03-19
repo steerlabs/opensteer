@@ -20,6 +20,7 @@ coverage/
 
 # Local runtime state
 .opensteer/
+**/.opensteer/
 $HOME/
 
 # Local editor and agent state

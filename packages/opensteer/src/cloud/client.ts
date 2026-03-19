@@ -1,5 +1,8 @@
 import type { OpensteerCloudConfig } from "./config.js";
-import type { OpensteerBrowserContextOptions, OpensteerBrowserLaunchOptions } from "@opensteer/protocol";
+import type {
+  OpensteerBrowserContextOptions,
+  OpensteerBrowserLaunchOptions,
+} from "@opensteer/protocol";
 import type {
   BrowserProfileImportCreateRequest,
   BrowserProfileImportCreateResponse,
@@ -24,6 +27,17 @@ export interface OpensteerCloudSessionDescriptor {
   readonly baseUrl: string;
   readonly status?: string;
 }
+
+interface OpensteerCloudSessionState {
+  readonly status?: string;
+}
+
+interface OpensteerCloudSessionCloseDescriptor {
+  readonly status?: string;
+}
+
+const CLOUD_CLOSE_TIMEOUT_MS = 60_000;
+const CLOUD_CLOSE_POLL_INTERVAL_MS = 250;
 
 export type { UploadLocalBrowserProfileInput };
 
@@ -57,17 +71,27 @@ export class OpensteerCloudClient {
     return response.json();
   }
 
-  async getSession(sessionId: string): Promise<unknown> {
+  async getSession(sessionId: string): Promise<OpensteerCloudSessionState> {
     const response = await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}`, {
       method: "GET",
     });
-    return response.json();
+    return (await response.json()) as OpensteerCloudSessionState;
   }
 
   async closeSession(sessionId: string): Promise<void> {
-    await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}`, {
+    const response = await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}`, {
       method: "DELETE",
     });
+    const payload = (await response.json()) as OpensteerCloudSessionCloseDescriptor;
+    if (payload.status === "closed") {
+      return;
+    }
+
+    if (payload.status !== "closing") {
+      throw new Error(`Unexpected cloud close status "${String(payload.status)}".`);
+    }
+
+    await this.waitForSessionClosed(sessionId);
   }
 
   async createBrowserProfileImport(
@@ -167,4 +191,29 @@ export class OpensteerCloudClient {
     }
     return response;
   }
+
+  private async waitForSessionClosed(sessionId: string): Promise<void> {
+    const deadline = Date.now() + CLOUD_CLOSE_TIMEOUT_MS;
+
+    while (Date.now() < deadline) {
+      const session = await this.getSession(sessionId);
+      if (session.status === "closed") {
+        return;
+      }
+      if (session.status !== "closing") {
+        throw new Error(
+          `Unexpected cloud session status "${String(session.status)}" while waiting for close.`,
+        );
+      }
+      await delay(CLOUD_CLOSE_POLL_INTERVAL_MS);
+    }
+
+    throw new Error(`Timed out waiting for cloud session ${sessionId} to close.`);
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }

@@ -5,9 +5,11 @@ import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { OpensteerCloudClient } from "../../packages/opensteer/src/cloud/client.js";
+import { CloudSessionProxy } from "../../packages/opensteer/src/cloud/session-proxy.js";
 import { resolveOpensteerRuntimeConfig } from "../../packages/opensteer/src/sdk/runtime-resolution.js";
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
 });
@@ -265,5 +267,91 @@ describe("cloud browser-profile integration", () => {
     } finally {
       await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
     }
+  });
+
+  test("OpensteerCloudClient waits for closing sessions to reach closed", async () => {
+    vi.useFakeTimers();
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          sessionId: "session_123",
+          status: "closing",
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          sessionId: "session_123",
+          status: "closing",
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          sessionId: "session_123",
+          status: "closed",
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new OpensteerCloudClient({
+      apiKey: "osk_test",
+      baseUrl: "https://api.opensteer.dev",
+    });
+
+    const closePromise = client.closeSession("session_123");
+
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://api.opensteer.dev/v1/sessions/session_123",
+      expect.objectContaining({
+        method: "DELETE",
+      }),
+    );
+
+    await vi.advanceTimersByTimeAsync(250);
+    await expect(closePromise).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://api.opensteer.dev/v1/sessions/session_123",
+      expect.objectContaining({
+        method: "GET",
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "https://api.opensteer.dev/v1/sessions/session_123",
+      expect.objectContaining({
+        method: "GET",
+      }),
+    );
+  });
+
+  test("CloudSessionProxy close only uses the cloud control-plane close path", async () => {
+    const invoke = vi.fn();
+    const cloud = new OpensteerCloudClient({
+      apiKey: "osk_test",
+      baseUrl: "https://api.opensteer.dev",
+    });
+    const closeSession = vi.spyOn(cloud, "closeSession").mockResolvedValue(undefined);
+    const proxy = new CloudSessionProxy(cloud);
+
+    Reflect.set(proxy, "sessionId", "session_123");
+    Reflect.set(proxy, "client", {
+      invoke,
+    });
+
+    await expect(proxy.close()).resolves.toEqual({ closed: true });
+
+    expect(closeSession).toHaveBeenCalledWith("session_123");
+    expect(invoke).not.toHaveBeenCalled();
+    expect(Reflect.get(proxy, "sessionId")).toBeUndefined();
+    expect(Reflect.get(proxy, "client")).toBeUndefined();
   });
 });
