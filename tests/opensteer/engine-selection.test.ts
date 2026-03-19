@@ -85,7 +85,7 @@ describe("Opensteer engine selection", () => {
       dispose: vi.fn(async () => undefined),
     }));
 
-    vi.doMock("../../packages/opensteer/src/local-browser/chrome-discovery.js", () => ({
+    vi.doMock("../../packages/opensteer/src/local-browser/launch-resolution.js", () => ({
       resolveManagedBrowserLaunch,
       resolveProfileBrowserLaunch: vi.fn(),
       resolveCdpBrowserLaunch: vi.fn(),
@@ -167,7 +167,7 @@ describe("Opensteer engine selection", () => {
       dispose: vi.fn(async () => undefined),
     }));
 
-    vi.doMock("../../packages/opensteer/src/local-browser/chrome-discovery.js", () => ({
+    vi.doMock("../../packages/opensteer/src/local-browser/launch-resolution.js", () => ({
       resolveManagedBrowserLaunch: vi.fn(),
       resolveProfileBrowserLaunch,
       resolveCdpBrowserLaunch: vi.fn(),
@@ -224,7 +224,7 @@ describe("Opensteer engine selection", () => {
     }));
     const connectCdpBrowserSession = vi.fn(async () => lease);
 
-    vi.doMock("../../packages/opensteer/src/local-browser/chrome-discovery.js", () => ({
+    vi.doMock("../../packages/opensteer/src/local-browser/launch-resolution.js", () => ({
       resolveManagedBrowserLaunch: vi.fn(),
       resolveProfileBrowserLaunch: vi.fn(),
       resolveCdpBrowserLaunch,
@@ -279,7 +279,7 @@ describe("Opensteer engine selection", () => {
     }));
     const connectAutoBrowserSession = vi.fn(async () => lease);
 
-    vi.doMock("../../packages/opensteer/src/local-browser/chrome-discovery.js", () => ({
+    vi.doMock("../../packages/opensteer/src/local-browser/launch-resolution.js", () => ({
       resolveManagedBrowserLaunch: vi.fn(),
       resolveProfileBrowserLaunch: vi.fn(),
       resolveCdpBrowserLaunch: vi.fn(),

@@ -63,6 +63,10 @@ interface OpensteerOptions {
 Chrome/Chromium user-data-dirs, will not auto-fallback to CDP attachment, and will not delete lock
 files during launch.
 
+`browser.kind="managed"` already launches a fresh isolated real local Chrome/Chromium process for
+you. Use `browser.kind="auto-connect"` only when you want to attach to an existing locally
+discoverable browser. Use `browser.kind="cdp"` when you need exact endpoint selection.
+
 ### OpensteerBrowserLaunchOptions
 
 ```typescript
@@ -136,6 +140,31 @@ await opensteer.disconnect();
 ```
 
 ### Local Profile Inspection
+
+#### `discoverLocalCdpBrowsers(input?: { timeoutMs?: number }): Promise<readonly LocalCdpBrowserCandidate[]>`
+
+Discovers locally attachable Chrome/Chromium DevTools endpoints.
+
+```typescript
+import { discoverLocalCdpBrowsers } from "opensteer";
+
+const browsers = await discoverLocalCdpBrowsers();
+console.log(browsers);
+```
+
+#### `inspectCdpEndpoint(input: { endpoint: string; headers?: Record<string, string>; timeoutMs?: number }): Promise<InspectedCdpEndpoint>`
+
+Inspects a specific CDP endpoint and resolves the browser websocket URL that Opensteer will use.
+
+```typescript
+import { inspectCdpEndpoint } from "opensteer";
+
+const endpoint = await inspectCdpEndpoint({
+  endpoint: "9222",
+});
+
+console.log(endpoint.endpoint);
+```
 
 #### `inspectLocalBrowserProfile(input?: { userDataDir?: string }): Promise<OpensteerLocalProfileInspection>`
 

@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 
 import { writeOpensteerServiceMetadata } from "../../packages/opensteer/src/cli/service-metadata.js";
+import { resolveLiveOpensteerServiceMetadata } from "../../packages/opensteer/src/session-service/client.js";
 import {
   createOpensteerSemanticRuntime,
   resolveOpensteerRuntimeConfig,
@@ -22,6 +23,7 @@ beforeAll(async () => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
 });
 
 describe("Opensteer runtime modes", () => {
@@ -88,6 +90,93 @@ describe("Opensteer runtime modes", () => {
     expect(metadata.baseUrl).toBe("https://api.opensteer.dev/v1/sessions/session-123");
     expect(metadata).not.toHaveProperty("token");
     expect(metadata).not.toHaveProperty("apiKey");
+  });
+
+  test("transient cloud ping failures do not purge live session metadata", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "opensteer-cloud-liveness-"));
+    const opensteerRoot = path.join(rootDir, ".opensteer");
+    const metadataPath = path.join(
+      opensteerRoot,
+      "runtime",
+      "sessions",
+      "remote",
+      "service.json",
+    );
+
+    vi.stubEnv("OPENSTEER_MODE", "cloud");
+    vi.stubEnv("OPENSTEER_API_KEY", "osk_test");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("fetch failed");
+      }),
+    );
+
+    await writeOpensteerServiceMetadata(opensteerRoot, {
+      mode: "cloud",
+      name: "remote",
+      rootPath: opensteerRoot,
+      startedAt: 1,
+      baseUrl: "https://api.opensteer.dev/v1/sessions/session-123",
+      sessionId: "session-123",
+      authSource: "env",
+    });
+
+    await expect(
+      resolveLiveOpensteerServiceMetadata({
+        name: "remote",
+        rootDir,
+      }),
+    ).resolves.toMatchObject({
+      mode: "cloud",
+      name: "remote",
+      sessionId: "session-123",
+    });
+
+    await expect(readFile(metadataPath, "utf8")).resolves.toContain("\"mode\": \"cloud\"");
+  });
+
+  test("stale cloud ping responses still purge stale session metadata", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "opensteer-cloud-stale-"));
+    const opensteerRoot = path.join(rootDir, ".opensteer");
+    const metadataPath = path.join(
+      opensteerRoot,
+      "runtime",
+      "sessions",
+      "remote",
+      "service.json",
+    );
+
+    vi.stubEnv("OPENSTEER_MODE", "cloud");
+    vi.stubEnv("OPENSTEER_API_KEY", "osk_test");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: false,
+        status: 409,
+      })),
+    );
+
+    await writeOpensteerServiceMetadata(opensteerRoot, {
+      mode: "cloud",
+      name: "remote",
+      rootPath: opensteerRoot,
+      startedAt: 1,
+      baseUrl: "https://api.opensteer.dev/v1/sessions/session-123",
+      sessionId: "session-123",
+      authSource: "env",
+    });
+
+    await expect(
+      resolveLiveOpensteerServiceMetadata({
+        name: "remote",
+        rootDir,
+      }),
+    ).resolves.toBeUndefined();
+
+    await expect(readFile(metadataPath, "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
 
   test("CLI rejects unknown legacy --connect option", async () => {

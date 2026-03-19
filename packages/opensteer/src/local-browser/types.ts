@@ -17,6 +17,20 @@ export interface LocalChromeInstallation {
   readonly userDataDir: string;
 }
 
+export interface InspectedCdpEndpoint {
+  readonly endpoint: string;
+  readonly browser?: string;
+  readonly protocolVersion?: string;
+  readonly httpUrl?: string;
+  readonly port?: number;
+}
+
+export interface LocalCdpBrowserCandidate extends InspectedCdpEndpoint {
+  readonly source: "devtools-active-port" | "fallback-port";
+  readonly installationBrand?: "chrome" | "chromium";
+  readonly userDataDir?: string;
+}
+
 export interface ResolvedManagedBrowserLaunch {
   readonly executablePath: string;
   readonly headless: boolean;

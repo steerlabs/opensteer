@@ -6,11 +6,11 @@ import { promisify } from "node:util";
 
 import {
   detectLocalChromeInstallations,
-  discoverBrowserWebSocketUrl,
   expandHome,
   readDevToolsActivePort,
   resolveChromeUserDataDir,
 } from "./chrome-discovery.js";
+import { inspectCdpEndpoint, selectAutoConnectBrowserCandidate } from "./cdp-discovery.js";
 import {
   CHROME_SINGLETON_ARTIFACTS,
   type ChromeSingletonArtifact,
@@ -99,14 +99,14 @@ export async function inspectLocalBrowserProfile(input: {
     };
   }
 
-  const cdpEndpoint = await discoverActivePortBrowserEndpoint(userDataDir);
-  if (cdpEndpoint) {
+  const cdpInspection = await discoverActivePortBrowserEndpoint(userDataDir);
+  if (cdpInspection) {
     return {
       status: "browser_owned",
       userDataDir,
       evidence: "devtools",
-      cdpEndpoint,
-      attachMode: "auto-connect",
+      cdpEndpoint: cdpInspection.endpoint,
+      attachMode: cdpInspection.attachMode,
     };
   }
 
@@ -192,13 +192,38 @@ export function formatLocalProfileInspectionMessage(
   }
 }
 
-async function discoverActivePortBrowserEndpoint(userDataDir: string): Promise<string | undefined> {
+async function discoverActivePortBrowserEndpoint(userDataDir: string): Promise<
+  | {
+      readonly endpoint: string;
+      readonly attachMode: "auto-connect" | "cdp";
+    }
+  | undefined
+> {
   const activePort = readDevToolsActivePort(userDataDir);
   if (!activePort) {
     return undefined;
   }
 
-  return (await discoverBrowserWebSocketUrl(`http://127.0.0.1:${String(activePort.port)}`)) ?? undefined;
+  let endpoint = `ws://127.0.0.1:${String(activePort.port)}${activePort.webSocketPath}`;
+  try {
+    endpoint = (await inspectCdpEndpoint({
+      endpoint: `http://127.0.0.1:${String(activePort.port)}`,
+    })).endpoint;
+  } catch {}
+
+  return {
+    endpoint,
+    attachMode: await deriveAttachMode(endpoint),
+  };
+}
+
+async function deriveAttachMode(endpoint: string): Promise<"auto-connect" | "cdp"> {
+  try {
+    const selected = await selectAutoConnectBrowserCandidate();
+    return selected.endpoint === endpoint ? "auto-connect" : "cdp";
+  } catch {
+    return "cdp";
+  }
 }
 
 function findDefaultChromeInstallation(

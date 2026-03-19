@@ -7,8 +7,10 @@ import {
   clearChromeSingletonEntries,
 } from "./chrome-singletons.js";
 import {
-  discoverAutoConnectCdpEndpoint,
-  discoverBrowserWebSocketUrl,
+  inspectCdpEndpoint,
+  selectAutoConnectBrowserCandidate,
+} from "./cdp-discovery.js";
+import {
   readDevToolsActivePort,
 } from "./chrome-discovery.js";
 import {
@@ -104,18 +106,40 @@ export async function connectCdpBrowserSession(
 export async function connectAutoBrowserSession(
   options: Omit<ConnectCdpBrowserOptions, "endpoint" | "headers">,
 ): Promise<LocalBrowserLease> {
-  return connectBrowserSession({
-    ...options,
-    endpoint: await discoverAutoConnectCdpEndpoint(),
+  const selection = await selectAutoConnectBrowserCandidate({
+    timeoutMs: options.timeoutMs,
   });
+
+  try {
+    return await connectBrowserSessionWithEndpoint(options, selection.endpoint);
+  } catch (error) {
+    const retrySelection = await retryAutoConnectCandidate(selection.endpoint, options.timeoutMs);
+    if (retrySelection === null) {
+      throw new Error(
+        "Auto-connect target disappeared or selection changed before attach. Re-run discovery or use --browser cdp --cdp <endpoint>.",
+        {
+          cause: error,
+        },
+      );
+    }
+
+    try {
+      return await connectBrowserSessionWithEndpoint(options, retrySelection.endpoint);
+    } catch (retryError) {
+      throw new Error(
+        "Auto-connect target disappeared before attach. Re-run discovery or use --browser cdp --cdp <endpoint>.",
+        {
+          cause: retryError,
+        },
+      );
+    }
+  }
 }
 
 async function connectBrowserSession(
   options: ConnectCdpBrowserOptions,
 ): Promise<LocalBrowserLease> {
-  const browserWsUrl =
-    (await discoverBrowserWebSocketUrl(options.endpoint, options.headers))
-    ?? options.endpoint;
+  const browserWsUrl = await resolveConnectBrowserUrl(options);
   const browser = await options.connectBrowser({
     url: browserWsUrl,
     timeoutMs: options.timeoutMs,
@@ -148,6 +172,16 @@ async function connectBrowserSession(
     }).catch(() => undefined);
     throw error;
   }
+}
+
+function connectBrowserSessionWithEndpoint(
+  options: Omit<ConnectCdpBrowserOptions, "endpoint" | "headers">,
+  endpoint: string,
+): Promise<LocalBrowserLease> {
+  return connectBrowserSession({
+    ...options,
+    endpoint,
+  });
 }
 
 async function launchOwnedChrome(
@@ -243,11 +277,15 @@ async function waitForDevToolsEndpoint(input: {
   while (Date.now() < deadline) {
     const activePort = readDevToolsActivePort(input.userDataDir);
     if (activePort) {
-      const discovered = await discoverBrowserWebSocketUrl(`http://127.0.0.1:${String(activePort.port)}`);
-      if (discovered) {
-        return discovered;
+      try {
+        const inspected = await inspectCdpEndpoint({
+          endpoint: `http://127.0.0.1:${String(activePort.port)}`,
+          timeoutMs: Math.min(2_000, input.timeoutMs),
+        });
+        return inspected.endpoint;
+      } catch {
+        return `ws://127.0.0.1:${String(activePort.port)}${activePort.webSocketPath}`;
       }
-      return `ws://127.0.0.1:${String(activePort.port)}${activePort.webSocketPath}`;
     }
 
     const exitCode = await input.childExited();
@@ -259,6 +297,33 @@ async function waitForDevToolsEndpoint(input: {
   }
 
   throw new Error(formatChromeLaunchError(input.stderrLines));
+}
+
+async function resolveConnectBrowserUrl(
+  options: ConnectCdpBrowserOptions,
+): Promise<string> {
+  if (options.endpoint.startsWith("ws://") || options.endpoint.startsWith("wss://")) {
+    return options.endpoint;
+  }
+
+  const inspected = await inspectCdpEndpoint({
+    endpoint: options.endpoint,
+    ...(options.headers === undefined ? {} : { headers: options.headers }),
+    timeoutMs: Math.min(2_000, options.timeoutMs),
+  });
+  return inspected.endpoint;
+}
+
+async function retryAutoConnectCandidate(
+  previousEndpoint: string,
+  timeoutMs: number,
+): Promise<{ readonly endpoint: string } | null> {
+  try {
+    const selection = await selectAutoConnectBrowserCandidate({ timeoutMs });
+    return selection.endpoint === previousEndpoint ? selection : null;
+  } catch {
+    return null;
+  }
 }
 
 function formatChromeLaunchError(stderrLines: readonly string[]): string {
