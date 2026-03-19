@@ -25,13 +25,16 @@ opensteer open                                   # Open browser only
 opensteer open https://example.com               # Open and navigate
 opensteer open https://example.com --headless    # Headless mode
 opensteer open https://example.com --engine abp  # Use ABP engine
-opensteer open https://example.com --browser cdp --cdp 9222
-opensteer open https://example.com --browser auto-connect --fresh-tab
+opensteer open https://example.com --browser attach --attach-endpoint 9222
+opensteer open https://example.com --browser attach --fresh-tab
 opensteer open https://example.com --browser profile \
   --user-data-dir "~/Library/Application Support/Google/Chrome" \
   --profile-directory Default
+opensteer open https://example.com --browser cloned \
+  --clone-from "~/Library/Application Support/Google/Chrome" \
+  --clone-profile-directory "Profile 1"
 opensteer browser discover
-opensteer browser inspect --cdp 9222
+opensteer browser inspect --endpoint 9222
 opensteer open https://example.com --cloud --cloud-profile-id bp_123
 ```
 
@@ -41,15 +44,16 @@ opensteer open https://example.com --cloud --cloud-profile-id bp_123
 | `--engine <name>` | Browser engine: `playwright` (default) or `abp` |
 | `--headless` | Run browser in headless mode |
 | `--headed` | Force a visible browser window |
-| `--browser <kind>` | Browser mode: `managed`, `profile`, `cdp`, or `auto-connect` |
+| `--browser <kind>` | Browser mode: `managed`, `profile`, `cloned`, or `attach` |
 | `--executable-path <path>` | Custom browser executable |
 | `--browser-arg <arg>` | Extra Chrome/Chromium argument (repeatable) |
 | `--user-data-dir <path>` | Chrome user-data root for `--browser profile` |
 | `--profile-directory <name>` | Chrome profile directory for `--browser profile` |
-| `--cdp <port|ws-url|http-url>` | Existing Chrome DevTools endpoint for `--browser cdp` |
-| `--cdp-header <name:value>` | Extra CDP header (repeatable) |
-| `--auto-connect` | Auto-discover a running Chrome/Chromium instance |
-| `--fresh-tab` | Open a fresh tab when attaching through CDP/auto-connect |
+| `--clone-from <path>` | Source Chrome user-data root for `--browser cloned` |
+| `--clone-profile-directory <name>` | Chrome profile directory inside `--clone-from` |
+| `--attach-endpoint <port\|ws-url\|http-url>` | Existing Chrome DevTools endpoint for `--browser attach` |
+| `--attach-header <name:value>` | Extra attach header for `--attach-endpoint` (repeatable) |
+| `--fresh-tab` | Open a fresh tab when attaching through `attach` |
 | `--timeout-ms <ms>` | Session timeout |
 | `--viewport <WxH>` | Viewport size (e.g., `1280x720`, `null` for no viewport) |
 | `--locale <locale>` | Browser locale (e.g., `en-US`) |
@@ -87,14 +91,14 @@ opensteer browser discover --json
 opensteer browser discover --timeout-ms 4000
 ```
 
-### `opensteer browser inspect --cdp <endpoint>`
+### `opensteer browser inspect --endpoint <endpoint>`
 
 Inspects an explicit CDP endpoint and resolves its browser websocket URL.
 
 ```bash
-opensteer browser inspect --cdp 9222
-opensteer browser inspect --cdp http://127.0.0.1:9222
-opensteer browser inspect --cdp ws://127.0.0.1:9222/devtools/browser/root
+opensteer browser inspect --endpoint 9222
+opensteer browser inspect --endpoint http://127.0.0.1:9222
+opensteer browser inspect --endpoint ws://127.0.0.1:9222/devtools/browser/root
 ```
 
 ### `opensteer local-profile list [--user-data-dir <path>]`
@@ -139,8 +143,8 @@ fails with a structured JSON error on stderr.
 
 - `managed` launches a fresh isolated local Chrome/Chromium process and attaches automatically. This is the default when you want a brand-new browser.
 - `profile` launches and owns a dedicated non-default Chrome profile directory.
-- `auto-connect` attaches only when Opensteer can identify a unique best local browser candidate.
-- `cdp` attaches to the exact endpoint you pass and is the right choice for custom ports or remote browser targets.
+- `cloned` snapshots a source profile into a temporary owned directory and launches from the copy.
+- `attach` connects to an existing browser. Omit `--attach-endpoint` for local auto-discovery or pass it for an explicit endpoint.
 
 If you are launching Chrome manually, use a dedicated `--user-data-dir` and a known port. When attaching to an already-running browser, pass `--fresh-tab` if you want Opensteer to open a clean tab instead of reusing the current one.
 
@@ -280,9 +284,9 @@ opensteer inspect cookies --url https://example.com
 opensteer inspect cookies --url https://example.com --url https://api.example.com
 ```
 
-| Option        | Description                     |
-| :------------ | :------------------------------ |
-| `--url <url>` | Restrict cookies to URL scopes  |
+| Option        | Description                    |
+| :------------ | :----------------------------- |
+| `--url <url>` | Restrict cookies to URL scopes |
 
 ### `opensteer inspect storage`
 
@@ -426,17 +430,17 @@ opensteer request raw https://api.example.com/data --header "Authorization=Beare
 opensteer request raw https://api.example.com/data --transport direct-http
 ```
 
-| Option                  | Description                 |
-| :---------------------- | :-------------------------- |
+| Option                  | Description                     |
+| :---------------------- | :------------------------------ |
 | `--transport <kind>`    | `session-http` or `direct-http` |
-| `--method <method>`     | HTTP method (default: GET)  |
-| `--header <name=value>` | Request header (repeatable) |
-| `--body-json <json>`    | JSON request body           |
-| `--body-text <text>`    | Text request body           |
-| `--body-base64 <data>`  | Base64-encoded request body |
-| `--body-file <path>`    | Request body from file      |
-| `--content-type <type>` | Content-Type header         |
-| `--no-follow-redirects` | Do not follow redirects     |
+| `--method <method>`     | HTTP method (default: GET)      |
+| `--header <name=value>` | Request header (repeatable)     |
+| `--body-json <json>`    | JSON request body               |
+| `--body-text <text>`    | Text request body               |
+| `--body-base64 <data>`  | Base64-encoded request body     |
+| `--body-file <path>`    | Request body from file          |
+| `--content-type <type>` | Content-Type header             |
+| `--no-follow-redirects` | Do not follow redirects         |
 
 ### `opensteer request [execute] <key>`
 
@@ -473,13 +477,13 @@ opensteer auth-recipe write --key "refresh-session" --version "1.0.0" --payload 
 opensteer auth-recipe write --key "refresh-token" --version "1.0.0" --payload-file recipe.json
 ```
 
-| Option                  | Description                          |
-| :---------------------- | :----------------------------------- |
-| `--key <key>`           | **(required)** Recipe key            |
-| `--version <version>`   | **(required)** Recipe version        |
-| `--payload <json>`      | Recipe payload as inline JSON        |
-| `--payload-file <path>` | Recipe payload from file             |
-| `--tags <csv>`          | Comma-separated tags                 |
+| Option                  | Description                   |
+| :---------------------- | :---------------------------- |
+| `--key <key>`           | **(required)** Recipe key     |
+| `--version <version>`   | **(required)** Recipe version |
+| `--payload <json>`      | Recipe payload as inline JSON |
+| `--payload-file <path>` | Recipe payload from file      |
+| `--tags <csv>`          | Comma-separated tags          |
 
 ### `opensteer auth-recipe get <key> [version]`
 
@@ -508,10 +512,10 @@ opensteer auth-recipe run refresh-session
 opensteer auth-recipe run refresh-session --version 1.0.0 --variables '{"csrf":"seed"}'
 ```
 
-| Option                | Description                         |
-| :-------------------- | :---------------------------------- |
-| `--version <version>` | Recipe version to run               |
-| `--variables <json>`  | Seed variables for interpolation    |
+| Option                | Description                      |
+| :-------------------- | :------------------------------- |
+| `--version <version>` | Recipe version to run            |
+| `--variables <json>`  | Seed variables for interpolation |
 
 ---
 

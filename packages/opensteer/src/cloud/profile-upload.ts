@@ -29,9 +29,8 @@ export async function uploadLocalBrowserProfile(
     await createBrowserProfileSnapshot({
       sourceUserDataDir: input.fromUserDataDir,
       targetUserDataDir: snapshotDir,
-      ...(input.profileDirectory === undefined
-        ? {}
-        : { profileDirectory: input.profileDirectory }),
+      copyMode: "full",
+      ...(input.profileDirectory === undefined ? {} : { profileDirectory: input.profileDirectory }),
     });
     await execFile("tar", ["-czf", archivePath, "-C", snapshotDir, "."]);
     const archiveStat = await stat(archivePath);
@@ -85,4 +84,3 @@ async function waitForBrowserProfileImport(
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
-

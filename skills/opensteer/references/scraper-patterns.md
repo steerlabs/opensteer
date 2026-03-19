@@ -18,20 +18,20 @@ async function main(): Promise<void> {
     await opensteer.open("https://target-site.com");
 
     // ... interactions and extraction ...
-
   } finally {
     await opensteer.close();
   }
 }
 
 void main().catch((error) => {
-  const message = error instanceof Error ? error.stack ?? error.message : String(error);
+  const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
   process.stderr.write(`${message}\n`);
   process.exitCode = 1;
 });
 ```
 
 **Rules:**
+
 - Always use `try/finally` with `close()` in finally for owned sessions.
 - Set `headless: true` for production scrapers.
 - Give each scraper a unique `name` to isolate its session and storage.
@@ -50,7 +50,7 @@ const snapshot = await opensteer.snapshot("action");
 
 // Find a specific element by tag or path hint
 const searchInput = snapshot.counters.find(
-  (c) => c.tagName === "INPUT" && c.pathHint.includes("search")
+  (c) => c.tagName === "INPUT" && c.pathHint.includes("search"),
 );
 
 if (searchInput) {
@@ -59,7 +59,7 @@ if (searchInput) {
 
 // Find and click a button
 const submitBtn = snapshot.counters.find(
-  (c) => c.tagName === "BUTTON" && c.pathHint.includes("submit")
+  (c) => c.tagName === "BUTTON" && c.pathHint.includes("submit"),
 );
 
 if (submitBtn) {
@@ -107,7 +107,7 @@ const searchBox = snap.counters.find((c) => c.pathHint.includes("search"));
 // Click by counter, but also save as "search box" descriptor
 await opensteer.input({
   element: searchBox!.element,
-  description: "search box",  // Saves the path as a descriptor
+  description: "search box", // Saves the path as a descriptor
   text: "airpods",
   pressEnter: true,
 });
@@ -152,12 +152,14 @@ const data = await opensteer.extract({
 const data = await opensteer.extract({
   description: "search results",
   schema: {
-    results: [{
-      name: { selector: ".result-title" },
-      price: { selector: ".result-price" },
-      url: { selector: ".result-link", attribute: "href" },
-      rating: { selector: ".result-rating" },
-    }],
+    results: [
+      {
+        name: { selector: ".result-title" },
+        price: { selector: ".result-price" },
+        url: { selector: ".result-link", attribute: "href" },
+        rating: { selector: ".result-rating" },
+      },
+    ],
   },
 });
 // data = { results: [{ name: "...", price: "...", url: "...", rating: "..." }, ...] }
@@ -171,16 +173,19 @@ const data = await opensteer.extract({
   schema: {
     categoryName: { selector: "h1" },
     totalResults: { selector: ".result-count" },
-    products: [{
-      name: { selector: ".product-name" },
-      price: { selector: ".product-price" },
-      inStock: { selector: ".stock-status" },
-    }],
+    products: [
+      {
+        name: { selector: ".product-name" },
+        price: { selector: ".product-price" },
+        inStock: { selector: ".stock-status" },
+      },
+    ],
   },
 });
 ```
 
 **Schema rules:**
+
 - Each field uses `{ selector: "css" }` for text content.
 - Add `attribute: "attrName"` to extract an attribute instead of text.
 - Use `{ source: "current_url" }` for the page URL.
@@ -201,10 +206,12 @@ await opensteer.input({ selector: "input[name=q]", text: "laptops", pressEnter: 
 const page1 = await opensteer.extract({
   description: "search results",
   schema: {
-    products: [{
-      name: { selector: ".product-name" },
-      price: { selector: ".product-price" },
-    }],
+    products: [
+      {
+        name: { selector: ".product-name" },
+        price: { selector: ".product-price" },
+      },
+    ],
   },
 });
 
@@ -215,10 +222,12 @@ await opensteer.click({ selector: ".pagination .next" });
 const page2 = await opensteer.extract({
   description: "search results",
   schema: {
-    products: [{
-      name: { selector: ".product-name" },
-      price: { selector: ".product-price" },
-    }],
+    products: [
+      {
+        name: { selector: ".product-name" },
+        price: { selector: ".product-price" },
+      },
+    ],
   },
 });
 
@@ -250,7 +259,7 @@ const records = await opensteer.queryNetwork({
 
 // Find the API call
 const apiCall = records.records.find(
-  (r) => r.resourceType === "xhr" && r.url.includes("/api/search")
+  (r) => r.resourceType === "xhr" && r.url.includes("/api/search"),
 );
 
 console.log("Found API:", apiCall?.url);
@@ -266,7 +275,7 @@ When pages need time to load after navigation or form submission:
 ```typescript
 // Option A: Navigate to the expected URL to ensure page load
 await opensteer.input({ selector: "input[name=q]", text: "airpods", pressEnter: true });
-await opensteer.goto("https://example.com/search?q=airpods");  // Forces navigation + wait
+await opensteer.goto("https://example.com/search?q=airpods"); // Forces navigation + wait
 
 // Option B: Use a simple delay (less reliable, use sparingly)
 function delay(ms: number): Promise<void> {
@@ -304,10 +313,12 @@ try {
     description: "dashboard data",
     schema: {
       username: { selector: ".user-name" },
-      items: [{
-        name: { selector: ".item-name" },
-        value: { selector: ".item-value" },
-      }],
+      items: [
+        {
+          name: { selector: ".item-name" },
+          value: { selector: ".item-value" },
+        },
+      ],
     },
   });
 
@@ -318,22 +329,23 @@ try {
 ```
 
 **Notes:**
+
 - Opensteer rejects default Chrome/Chromium user-data-dirs. Use a dedicated directory.
 - Use `profileDirectory` to select a specific Chrome profile within the user-data-dir (e.g., `"Default"`, `"Profile 1"`).
 - If the profile is locked by another Chrome instance, launch will fail with `OpensteerLocalProfileUnavailableError`. Use `inspectLocalBrowserProfile()` and `unlockLocalBrowserProfile()` to diagnose and resolve stale locks.
 
 ---
 
-## Pattern 9: CDP Attachment
+## Pattern 9: Attach to an Existing Browser
 
 Attach to an already-running Chrome instance via the DevTools Protocol. The SDK controls a tab but does not own the browser process.
 
 ```typescript
 const opensteer = new Opensteer({
-  name: "cdp-session",
+  name: "attach-session",
   rootDir: process.cwd(),
   browser: {
-    kind: "cdp",
+    kind: "attach",
     endpoint: "ws://127.0.0.1:9222/devtools/browser/root",
     freshTab: true,
   },
@@ -349,7 +361,7 @@ try {
 
 **Endpoint formats:** port number (`9222`), WebSocket URL (`ws://...`), or HTTP URL (`http://127.0.0.1:9222`).
 
-Use `freshTab: true` to open a new tab instead of reusing the active one.
+Omit `endpoint` to auto-discover a locally attachable browser. Use `freshTab: true` to open a new tab instead of reusing the active one.
 
 ---
 
@@ -360,7 +372,7 @@ Connect to a session started by the CLI or another process without owning the br
 ```typescript
 // Some other process already ran: opensteer open https://example.com
 const opensteer = Opensteer.attach({
-  name: "default",       // Match the CLI session name
+  name: "default", // Match the CLI session name
   rootDir: process.cwd(),
 });
 
@@ -416,13 +428,15 @@ async function scrapeProducts(): Promise<void> {
       description: "headphone search results",
       schema: {
         query: { source: "current_url" },
-        products: [{
-          name: { selector: ".product-card .title" },
-          price: { selector: ".product-card .price" },
-          rating: { selector: ".product-card .stars" },
-          url: { selector: ".product-card a", attribute: "href" },
-          image: { selector: ".product-card img", attribute: "src" },
-        }],
+        products: [
+          {
+            name: { selector: ".product-card .title" },
+            price: { selector: ".product-card .price" },
+            rating: { selector: ".product-card .stars" },
+            url: { selector: ".product-card a", attribute: "href" },
+            image: { selector: ".product-card img", attribute: "src" },
+          },
+        ],
       },
     });
 
@@ -434,7 +448,7 @@ async function scrapeProducts(): Promise<void> {
 }
 
 void scrapeProducts().catch((error) => {
-  const message = error instanceof Error ? error.stack ?? error.message : String(error);
+  const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
   process.stderr.write(`${message}\n`);
   process.exitCode = 1;
 });

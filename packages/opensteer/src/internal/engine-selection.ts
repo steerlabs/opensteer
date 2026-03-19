@@ -1,23 +1,23 @@
 import type { BrowserCoreEngine } from "@opensteer/browser-core";
 import type {
-  OpensteerAutoConnectBrowserLaunchOptions,
+  OpensteerAttachBrowserLaunchOptions,
   OpensteerBrowserContextOptions,
   OpensteerBrowserLaunchOptions,
-  OpensteerCdpBrowserLaunchOptions,
+  OpensteerClonedBrowserLaunchOptions,
   OpensteerManagedBrowserLaunchOptions,
   OpensteerProfileBrowserLaunchOptions,
 } from "@opensteer/protocol";
 
 import { OPENSTEER_COMPUTER_DISPLAY_PROFILE } from "../runtimes/computer-use/display.js";
 import {
-  resolveAutoConnectBrowserLaunch,
-  resolveCdpBrowserLaunch,
+  resolveAttachBrowserLaunch,
+  resolveClonedBrowserLaunch,
   resolveManagedBrowserLaunch,
   resolveProfileBrowserLaunch,
 } from "../local-browser/launch-resolution.js";
 import {
-  connectAutoBrowserSession,
-  connectCdpBrowserSession,
+  connectAttachBrowserSession,
+  launchClonedBrowserSession,
   launchManagedBrowserSession,
   launchProfileBrowserSession,
 } from "../local-browser/shared-session.js";
@@ -71,13 +71,11 @@ const OPENSTEER_ENGINE_REGISTRY = {
     createFactory: (importers) => async (options) => {
       const playwrightModule = await importers.importPlaywrightModule();
       const normalizedContext = normalizeOpensteerBrowserContextOptions(options.context);
-      return createPlaywrightBrowserEngine(
-        {
-          playwrightModule,
-          ...(options.browser === undefined ? {} : { browser: options.browser }),
-          ...(normalizedContext === undefined ? {} : { context: normalizedContext }),
-        },
-      );
+      return createPlaywrightBrowserEngine({
+        playwrightModule,
+        ...(options.browser === undefined ? {} : { browser: options.browser }),
+        ...(normalizedContext === undefined ? {} : { context: normalizedContext }),
+      });
     },
   },
   abp: {
@@ -213,21 +211,27 @@ async function acquireLocalBrowserLease(input: {
     });
   }
 
-  if (isCdpBrowserLaunchOptions(browser)) {
-    const resolved = resolveCdpBrowserLaunch(browser);
-    return connectCdpBrowserSession({
+  if (isClonedBrowserLaunchOptions(browser)) {
+    const resolved = resolveClonedBrowserLaunch(browser);
+    return launchClonedBrowserSession({
+      ...resolved,
+      args: mergeManagedLaunchArgs(resolved.args, input.context?.viewport) ?? [],
+      connectBrowser: input.connectBrowser,
+    });
+  }
+
+  if (isAttachBrowserLaunchOptions(browser)) {
+    const resolved = resolveAttachBrowserLaunch(browser);
+    return connectAttachBrowserSession({
       ...resolved,
       timeoutMs: 15_000,
       connectBrowser: input.connectBrowser,
     });
   }
 
-  const resolved = resolveAutoConnectBrowserLaunch(browser);
-  return connectAutoBrowserSession({
-    ...resolved,
-    timeoutMs: 15_000,
-    connectBrowser: input.connectBrowser,
-  });
+  throw new Error(
+    `Unsupported browser launch kind "${(browser as { kind?: string }).kind ?? ""}".`,
+  );
 }
 
 async function loadAbpEngineModule(importers: OpensteerEngineModuleImporters) {
@@ -292,7 +296,7 @@ function toAbpLaunchOptions(
 function assertSupportedAbpEngineOptions(options: OpensteerNamedEngineFactoryOptions): void {
   if (options.browser && !isManagedBrowserLaunchOptions(options.browser)) {
     throw new Error(
-      'ABP engine only supports managed local browser launches. Use the Playwright engine for browser.kind="profile", "cdp", or "auto-connect".',
+      'ABP engine only supports managed local browser launches. Use the Playwright engine for browser.kind="profile", "cloned", or "attach".',
     );
   }
 
@@ -404,14 +408,22 @@ function isProfileBrowserLaunchOptions(
   return options.kind === "profile";
 }
 
-function isCdpBrowserLaunchOptions(
+function isClonedBrowserLaunchOptions(
   options: OpensteerBrowserLaunchOptions,
-): options is OpensteerCdpBrowserLaunchOptions {
-  return options.kind === "cdp";
+): options is OpensteerClonedBrowserLaunchOptions {
+  return options.kind === "cloned";
+}
+
+function isAttachBrowserLaunchOptions(
+  options: OpensteerBrowserLaunchOptions,
+): options is OpensteerAttachBrowserLaunchOptions {
+  return options.kind === "attach";
 }
 
 function asConnectedCdpBrowser(
-  browser: Awaited<ReturnType<(typeof import("@opensteer/engine-playwright"))["connectPlaywrightChromiumBrowser"]>>,
+  browser: Awaited<
+    ReturnType<(typeof import("@opensteer/engine-playwright"))["connectPlaywrightChromiumBrowser"]>
+  >,
 ): ConnectedCdpBrowser {
   return browser as unknown as ConnectedCdpBrowser;
 }
@@ -461,10 +473,7 @@ function asAttachedPage(
   >;
 }
 
-function wrapBrowserLease(
-  engine: BrowserCoreEngine,
-  lease: LocalBrowserLease,
-): BrowserCoreEngine {
+function wrapBrowserLease(engine: BrowserCoreEngine, lease: LocalBrowserLease): BrowserCoreEngine {
   const disposableEngine = engine as BrowserCoreEngine & {
     dispose?: () => Promise<void>;
     [Symbol.asyncDispose]?: () => Promise<void>;

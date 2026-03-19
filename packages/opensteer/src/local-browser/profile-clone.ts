@@ -1,12 +1,9 @@
 import { copyFile, cp, mkdir, readdir, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 
 import { expandHome } from "./chrome-discovery.js";
-import {
-  CHROME_SINGLETON_ARTIFACTS,
-  clearChromeSingletonEntries,
-} from "./chrome-singletons.js";
+import { CHROME_SINGLETON_ARTIFACTS, clearChromeSingletonEntries } from "./chrome-singletons.js";
 
 const CHROME_SINGLETON_ENTRIES = new Set<string>(CHROME_SINGLETON_ARTIFACTS);
 
@@ -28,14 +25,28 @@ const SKIPPED_ROOT_DIRECTORIES = new Set([
   "pnacl",
 ]);
 
+const SESSION_ROOT_FILES = new Set(["Local State"]);
+
+const SESSION_SKIPPED_PROFILE_DIRECTORIES = new Set([
+  "Cache",
+  "Code Cache",
+  "GPUCache",
+  "Service Worker",
+  "File System",
+  "blob_storage",
+  "Network",
+]);
+
 export async function createBrowserProfileSnapshot(input: {
   readonly sourceUserDataDir: string;
   readonly targetUserDataDir: string;
   readonly profileDirectory?: string;
+  readonly copyMode?: "full" | "session";
 }): Promise<void> {
   const sourceUserDataDir = resolve(expandHome(input.sourceUserDataDir));
   const targetUserDataDir = resolve(expandHome(input.targetUserDataDir));
   const profileDirectory = input.profileDirectory?.trim();
+  const copyMode = input.copyMode ?? "full";
 
   await mkdir(targetUserDataDir, { recursive: true });
   await clearChromeSingletonEntries(targetUserDataDir);
@@ -50,11 +61,17 @@ export async function createBrowserProfileSnapshot(input: {
 
     await cp(sourceProfileDir, join(targetUserDataDir, profileDirectory), {
       recursive: true,
-      filter: (candidate) => shouldCopyEntry(candidate),
+      filter: (candidate) =>
+        shouldCopyEntry({
+          candidatePath: candidate,
+          copyMode,
+          rootPath: sourceProfileDir,
+        }),
     });
   }
 
   await copyRootLevelEntries({
+    copyMode,
     sourceUserDataDir,
     targetUserDataDir,
     ...(profileDirectory === undefined ? {} : { selectedProfileDirectory: profileDirectory }),
@@ -63,6 +80,7 @@ export async function createBrowserProfileSnapshot(input: {
 }
 
 async function copyRootLevelEntries(input: {
+  readonly copyMode: "full" | "session";
   readonly sourceUserDataDir: string;
   readonly targetUserDataDir: string;
   readonly selectedProfileDirectory?: string;
@@ -83,6 +101,9 @@ async function copyRootLevelEntries(input: {
     }
 
     if (entryStat.isFile()) {
+      if (input.copyMode === "session" && !SESSION_ROOT_FILES.has(entry)) {
+        continue;
+      }
       await copyFile(sourcePath, targetPath).catch(() => undefined);
       continue;
     }
@@ -95,9 +116,18 @@ async function copyRootLevelEntries(input: {
       continue;
     }
 
+    if (input.copyMode === "session") {
+      continue;
+    }
+
     await cp(sourcePath, targetPath, {
       recursive: true,
-      filter: (candidate) => shouldCopyEntry(candidate),
+      filter: (candidate) =>
+        shouldCopyEntry({
+          candidatePath: candidate,
+          copyMode: input.copyMode,
+          rootPath: sourcePath,
+        }),
     }).catch(() => undefined);
   }
 }
@@ -106,7 +136,26 @@ function isProfileDirectory(userDataDir: string, entry: string): boolean {
   return existsSync(join(userDataDir, entry, "Preferences"));
 }
 
-function shouldCopyEntry(candidatePath: string): boolean {
-  const entryName = candidatePath.split("/").at(-1)?.split("\\").at(-1) ?? candidatePath;
-  return !CHROME_SINGLETON_ENTRIES.has(entryName);
+function shouldCopyEntry(input: {
+  readonly candidatePath: string;
+  readonly copyMode: "full" | "session";
+  readonly rootPath: string;
+}): boolean {
+  const entryName =
+    input.candidatePath.split("/").at(-1)?.split("\\").at(-1) ?? input.candidatePath;
+  if (CHROME_SINGLETON_ENTRIES.has(entryName)) {
+    return false;
+  }
+
+  if (input.copyMode !== "session") {
+    return true;
+  }
+
+  const relativePath = relative(input.rootPath, input.candidatePath);
+  if (relativePath.length === 0) {
+    return true;
+  }
+
+  const firstSegment = relativePath.split("/").at(0)?.split("\\").at(0) ?? relativePath;
+  return !SESSION_SKIPPED_PROFILE_DIRECTORIES.has(firstSegment);
 }

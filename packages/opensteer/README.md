@@ -155,12 +155,15 @@ await client.uploadLocalBrowserProfile({
 
 ```bash
 opensteer open https://example.com --name docs-example --headless true
-opensteer open https://example.com --name docs-example --browser cdp --cdp 9222
+opensteer open https://example.com --name docs-example --browser attach --attach-endpoint 9222
 opensteer open https://example.com --name docs-example --browser profile \
   --user-data-dir "~/Library/Application Support/Google/Chrome" \
   --profile-directory Default
+opensteer open https://example.com --name docs-example --browser cloned \
+  --clone-from "~/Library/Application Support/Google/Chrome" \
+  --clone-profile-directory "Profile 1"
 opensteer browser discover
-opensteer browser inspect --cdp 9222
+opensteer browser inspect --endpoint 9222
 opensteer local-profile list
 opensteer local-profile inspect --user-data-dir "~/Library/Application Support/Opensteer Chrome"
 opensteer local-profile unlock --user-data-dir "~/Library/Application Support/Opensteer Chrome"
@@ -198,17 +201,17 @@ ignored.
 known default Chrome/Chromium user-data-dir and will not implicitly fall back to CDP attachment or
 delete lock files during launch. Use `opensteer local-profile inspect` to diagnose profile
 ownership, `opensteer local-profile unlock` only when Opensteer proves the profile is in a
-`stale_lock` state, and `--browser cdp` or `--browser auto-connect` when an existing browser
+`stale_lock` state, and `--browser attach` when an existing browser
 already owns the profile.
 
 ## Connect To Real Browser
 
 - `managed` is the default local-browser mode. It launches a fresh isolated Chrome/Chromium process with a temporary `user-data-dir` and an OS-assigned remote debugging port, then attaches automatically.
 - `profile` is still an owned launch, but against a dedicated non-default Chrome profile directory. Use it when you need persisted cookies, extensions, or login state that Opensteer should own.
-- `auto-connect` only attaches to locally discoverable running browsers. It is intentionally conservative: if Opensteer cannot identify a unique best local target, it fails and asks you to use `cdp`.
-- `cdp` is the explicit attach path. Use it for custom ports, remote endpoints, or any situation where you want exact browser selection.
+- `cloned` copies a source browser profile into a temporary owned user-data-dir, skips volatile caches for speed, then launches from the copy. Use it when you need existing auth state without letting Opensteer own or mutate the source profile.
+- `attach` connects to an already-running Chrome/Chromium instance. Pass `endpoint` for an explicit CDP target, or omit it to auto-discover a locally attachable browser.
 
-When you are launching a browser yourself for `cdp`, prefer a dedicated profile directory:
+When you are launching a browser yourself for `attach`, prefer a dedicated profile directory:
 
 ```bash
 /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \

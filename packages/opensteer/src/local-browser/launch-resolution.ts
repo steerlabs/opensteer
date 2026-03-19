@@ -1,17 +1,14 @@
 import type {
-  OpensteerAutoConnectBrowserLaunchOptions,
-  OpensteerCdpBrowserLaunchOptions,
+  OpensteerAttachBrowserLaunchOptions,
+  OpensteerClonedBrowserLaunchOptions,
   OpensteerManagedBrowserLaunchOptions,
   OpensteerProfileBrowserLaunchOptions,
 } from "@opensteer/protocol";
 
-import {
-  expandHome,
-  resolveChromeExecutablePath,
-} from "./chrome-discovery.js";
+import { expandHome, resolveChromeExecutablePath } from "./chrome-discovery.js";
 import type {
-  ResolvedAutoConnectBrowserLaunch,
-  ResolvedCdpBrowserLaunch,
+  ResolvedAttachBrowserLaunch,
+  ResolvedClonedBrowserLaunch,
   ResolvedManagedBrowserLaunch,
   ResolvedProfileBrowserLaunch,
 } from "./types.js";
@@ -44,25 +41,33 @@ export function resolveProfileBrowserLaunch(
   };
 }
 
-export function resolveCdpBrowserLaunch(
-  input: OpensteerCdpBrowserLaunchOptions,
-): ResolvedCdpBrowserLaunch {
-  const endpoint = input.endpoint.trim();
-  if (!endpoint) {
-    throw new Error("browser.endpoint must be a non-empty CDP port or URL.");
-  }
-
+export function resolveClonedBrowserLaunch(
+  input: OpensteerClonedBrowserLaunchOptions,
+): ResolvedClonedBrowserLaunch {
   return {
-    endpoint,
-    freshTab: input.freshTab ?? true,
-    ...(input.headers === undefined ? {} : { headers: input.headers }),
+    executablePath: resolveChromeExecutablePath(input.executablePath),
+    headless: input.headless ?? true,
+    timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    args: [...(input.args ?? [])],
+    sourceUserDataDir: resolve(expandHome(input.sourceUserDataDir)),
+    sourceProfileDirectory: input.sourceProfileDirectory?.trim() || DEFAULT_PROFILE_DIRECTORY,
   };
 }
 
-export function resolveAutoConnectBrowserLaunch(
-  input: OpensteerAutoConnectBrowserLaunchOptions,
-): ResolvedAutoConnectBrowserLaunch {
+export function resolveAttachBrowserLaunch(
+  input: OpensteerAttachBrowserLaunchOptions,
+): ResolvedAttachBrowserLaunch {
+  const endpoint = input.endpoint?.trim();
+  if (endpoint !== undefined && endpoint.length === 0) {
+    throw new Error("browser.endpoint must be a non-empty CDP port or URL.");
+  }
+  if (endpoint === undefined && input.headers !== undefined) {
+    throw new Error("browser.headers requires browser.endpoint.");
+  }
+
   return {
+    ...(endpoint === undefined ? {} : { endpoint }),
     freshTab: input.freshTab ?? true,
+    ...(input.headers === undefined ? {} : { headers: input.headers }),
   };
 }

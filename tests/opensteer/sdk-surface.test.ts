@@ -25,9 +25,7 @@ const runtimeState = vi.hoisted(() => {
     ownedRuntime,
     attachedRuntime,
     createRuntime: vi.fn(() => ownedRuntime),
-    attachFactory: vi.fn(function (
-      options: Record<string, unknown>,
-    ) {
+    attachFactory: vi.fn(function (options: Record<string, unknown>) {
       void options;
       return attachedRuntime;
     }),
@@ -134,7 +132,7 @@ describe("Opensteer SDK surface", () => {
     expect(typeof index.inspectCdpEndpoint).toBe("function");
     expect(typeof index.inspectLocalBrowserProfile).toBe("function");
     expect(typeof index.unlockLocalBrowserProfile).toBe("function");
-    expect(index.OpensteerAutoConnectAmbiguousError).toBeDefined();
+    expect(index.OpensteerAttachAmbiguousError).toBeDefined();
     expect(index.OpensteerLocalProfileUnavailableError).toBeDefined();
   });
 });

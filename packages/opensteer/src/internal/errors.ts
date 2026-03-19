@@ -5,7 +5,7 @@ import {
   toOpensteerError,
   type OpensteerError,
 } from "@opensteer/protocol";
-import { OpensteerAutoConnectAmbiguousError } from "../local-browser/cdp-discovery.js";
+import { OpensteerAttachAmbiguousError } from "../local-browser/cdp-discovery.js";
 import { OpensteerLocalProfileUnavailableError } from "../local-browser/profile-inspection.js";
 
 export function normalizeThrownOpensteerError(
@@ -32,7 +32,7 @@ export function normalizeThrownOpensteerError(
     });
   }
 
-  if (error instanceof OpensteerAutoConnectAmbiguousError) {
+  if (error instanceof OpensteerAttachAmbiguousError) {
     return createOpensteerError("conflict", error.message, {
       details: {
         candidates: error.candidates,

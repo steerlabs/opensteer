@@ -42,7 +42,9 @@ function cliJson(cmd) {
   const out = cli(cmd);
   const lines = out.trim().split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
-    try { return JSON.parse(lines[i]); } catch {}
+    try {
+      return JSON.parse(lines[i]);
+    } catch {}
   }
   throw new Error(`Failed to parse CLI output for: ${cmd}`);
 }
@@ -68,9 +70,7 @@ async function fetchTracking(trackingId) {
 
   // Capture the API response from network traffic
   const netData = cliJsonToFile("network query --resource-type fetch --include-bodies");
-  const record = netData.records?.find(
-    (r) => r.record?.url?.includes("synergy/tracking"),
-  );
+  const record = netData.records?.find((r) => r.record?.url?.includes("synergy/tracking"));
 
   if (!record) {
     console.error(`  No tracking API response found for ${trackingId}`);
@@ -90,9 +90,7 @@ async function fetchTracking(trackingId) {
   }
   if (typeof body === "string") {
     const parsed = JSON.parse(body);
-    return parsed.data
-      ? JSON.parse(Buffer.from(parsed.data, "base64").toString("utf-8"))
-      : parsed;
+    return parsed.data ? JSON.parse(Buffer.from(parsed.data, "base64").toString("utf-8")) : parsed;
   }
   return body;
 }
@@ -111,9 +109,10 @@ function printTracking(trackingId, data) {
 
   if (c) {
     console.log(`  Container:   ${c.container_size}ft ${c.container_type} (${c.iso_code})`);
-    const events = c.locations?.flatMap((loc) =>
-      (loc.events || []).map((e) => ({ ...e, loc: `${loc.city}, ${loc.country}` })),
-    ) || [];
+    const events =
+      c.locations?.flatMap((loc) =>
+        (loc.events || []).map((e) => ({ ...e, loc: `${loc.city}, ${loc.country}` })),
+      ) || [];
     console.log(`\n  ${events.length} events:`);
     for (const e of events) {
       const t = e.event_time?.replace("T", " ").replace(".000", "");
@@ -126,7 +125,7 @@ function printTracking(trackingId, data) {
 
 async function main() {
   // Open a browser session (attach to running Chrome with remote debugging)
-  cliJson(`open "https://www.maersk.com/tracking" --browser auto-connect --fresh-tab`);
+  cliJson(`open "https://www.maersk.com/tracking" --browser attach --fresh-tab`);
 
   try {
     for (const id of trackingIds) {
@@ -145,6 +144,8 @@ async function main() {
 
 main().catch((err) => {
   console.error("Error:", err.message);
-  try { cliJson("close"); } catch {}
+  try {
+    cliJson("close");
+  } catch {}
   process.exit(1);
 });
