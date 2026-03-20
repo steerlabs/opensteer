@@ -148,14 +148,45 @@ fails with a structured JSON error on stderr.
 
 If you are launching Chrome manually, use a dedicated `--user-data-dir` and a known port. When attaching to an already-running browser, pass `--fresh-tab` if you want Opensteer to open a clean tab instead of reusing the current one.
 
-### `opensteer profile upload --profile-id <id> --from-user-data-dir <path> [--profile-directory <name>]`
+### `opensteer profile sync --profile-id <id> [capture options] [--domain <domain> ... | --all-domains]`
 
-Snapshots a local Chrome profile and uploads it into an existing cloud browser profile.
+Syncs cookies from a Chromium-family browser profile into an existing cloud browser profile.
+`opensteer` chooses the best available capture strategy automatically:
+
+- `attach` when the profile is already exposing CDP
+- `headless` when the browser is not running
+- `managed-relaunch` when the browser is running but not debuggable
 
 ```bash
-opensteer profile upload --profile-id bp_123 --from-user-data-dir "~/Library/Application Support/Google/Chrome"
-opensteer profile upload --profile-id bp_123 --from-user-data-dir "~/Library/Application Support/Google/Chrome" --profile-directory "Profile 1"
+opensteer profile sync --profile-id bp_123 --domain github.com
+opensteer profile sync --profile-id bp_123 --browser brave --all-domains
+opensteer profile sync --profile-id bp_123 \
+  --user-data-dir "~/Library/Application Support/Google/Chrome" \
+  --profile-directory "Profile 1" \
+  --domain example.com
+opensteer profile sync --profile-id bp_123 --dry-run
+opensteer profile sync --profile-id bp_123 --attach-endpoint 9222 --domain github.com
+opensteer profile sync --profile-id bp_123 --browser chrome --all-domains --yes
 ```
+
+**Options:**
+| Option | Description |
+| :----- | :---------- |
+| `--profile-id <id>` | Destination cloud browser profile ID |
+| `--browser <brand>` | Source browser brand: `chrome`, `chrome-canary`, `chromium`, `brave`, `edge`, `vivaldi`, or `helium` |
+| `--attach-endpoint <endpoint>` | Explicit DevTools endpoint to attach to |
+| `--user-data-dir <path>` | Explicit browser user-data-dir |
+| `--profile-directory <name>` | Profile directory inside the selected user-data-dir |
+| `--executable-path <path>` | Explicit browser executable override |
+| `--strategy <mode>` | Capture strategy: `auto`, `attach`, `headless`, or `managed-relaunch` |
+| `--restore-browser` | Explicitly keep browser restoration enabled after managed-relaunch (default behavior) |
+| `--no-restore-browser` | Leave the browser closed after managed-relaunch capture |
+| `--domain <domain>` | Restrict sync to a domain (repeatable) |
+| `--all-domains` | Sync cookies for all domains |
+| `--dry-run` | Print the resolved capture plan as JSON without syncing |
+| `--yes` | Skip interactive confirmations |
+| `--timeout-ms <ms>` | Capture planning timeout |
+| `--json` | Print JSON output |
 
 ---
 

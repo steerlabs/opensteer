@@ -40,7 +40,7 @@ import { fileUriToPath } from "../internal/filesystem.js";
 import { OpensteerLocalProfileUnavailableError } from "../local-browser/profile-inspection.js";
 import { runOpensteerBrowserCli } from "./browser.js";
 import { runOpensteerLocalProfileCli } from "./local-profile.js";
-import { runOpensteerProfileUploadCli } from "./profile-upload.js";
+import { runOpensteerProfileSyncCli } from "./profile-sync.js";
 import { opensteerCliSchema, parseCliArguments } from "./schema.js";
 import {
   assertExecutionModeSupportsEngine,
@@ -79,7 +79,7 @@ async function main(argv: readonly string[]): Promise<void> {
   }
 
   if (argv[0] === "profile") {
-    const exitCode = await runOpensteerProfileUploadCli(argv.slice(1));
+    const exitCode = await runOpensteerProfileSyncCli(argv.slice(1));
     if (exitCode !== 0) {
       process.exitCode = exitCode;
     }

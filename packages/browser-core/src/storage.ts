@@ -29,10 +29,18 @@ export interface IndexedDbRecord {
   readonly value: unknown;
 }
 
+export interface IndexedDbIndexSnapshot {
+  readonly name: string;
+  readonly keyPath?: string | readonly string[];
+  readonly multiEntry: boolean;
+  readonly unique: boolean;
+}
+
 export interface IndexedDbObjectStoreSnapshot {
   readonly name: string;
   readonly keyPath?: string | readonly string[];
   readonly autoIncrement: boolean;
+  readonly indexes: readonly IndexedDbIndexSnapshot[];
   readonly records: readonly IndexedDbRecord[];
 }
 

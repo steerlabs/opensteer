@@ -134,6 +134,7 @@ import {
   captureLayoutViewportScreenshotArtifact,
   getViewportMetricsFromCdp,
 } from "./viewport-screenshot.js";
+import { capturePlaywrightStorageOrigins } from "./storage-capture.js";
 
 export type {
   PlaywrightChromiumLaunchOptions,
@@ -1137,40 +1138,18 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       indexedDB: includeIndexedDb,
     })) as ExtendedStorageState;
 
-    const origins = state.origins.map((origin) => {
-      const normalized = {
-        origin: origin.origin,
-        localStorage: origin.localStorage.map((entry) => ({
-          key: entry.name,
-          value: entry.value,
-        })),
-      };
-
-      if (!includeIndexedDb || !origin.indexedDB) {
-        return normalized;
-      }
-
-      return {
-        ...normalized,
-        indexedDb: origin.indexedDB.map((database) => ({
-          name: database.name,
-          version: database.version,
-          objectStores: database.stores.map((store) => ({
-            name: store.name,
-            ...((store.keyPathArray?.length ?? 0) > 0
-              ? { keyPath: [...store.keyPathArray!] }
-              : store.keyPath === undefined
-                ? {}
-                : { keyPath: store.keyPath }),
-            autoIncrement: store.autoIncrement,
-            records: store.records.map((record) => ({
-              key: record.key ?? record.keyEncoded ?? null,
-              value: record.value ?? record.valueEncoded ?? null,
-            })),
+    const origins = includeIndexedDb
+      ? await capturePlaywrightStorageOrigins(
+          session.context,
+          state.origins.map((origin) => origin.origin),
+        )
+      : state.origins.map((origin) => ({
+          origin: origin.origin,
+          localStorage: origin.localStorage.map((entry) => ({
+            key: entry.name,
+            value: entry.value,
           })),
-        })),
-      };
-    });
+        }));
 
     const sessionStorage = includeSessionStorage
       ? await this.collectSessionStorageSnapshots(session)

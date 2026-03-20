@@ -1,3 +1,5 @@
+import { getAllBrowserBrands } from "../local-browser/browser-brands.js";
+
 interface CliOptionDefinition {
   readonly name: string;
   readonly description: string;
@@ -112,6 +114,8 @@ const ACTION_TARGET_OPTIONS = [
   SELECTOR_OPTION,
   DESCRIPTION_OPTION,
 ] as const;
+const PROFILE_SYNC_BROWSER_VALUES = getAllBrowserBrands().map((brand) => brand.id);
+const PROFILE_SYNC_STRATEGY_VALUES = ["auto", "attach", "headless", "managed-relaunch"] as const;
 
 function createRecipeCommandDefinition(input: {
   readonly name: "recipe" | "auth-recipe";
@@ -1457,12 +1461,13 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
   },
   {
     name: "profile",
-    summary: "Manage cloud browser profile uploads.",
+    summary: "Manage cloud browser profile cookie sync.",
     subcommands: [
       {
-        name: "upload",
-        id: "profile.upload",
-        summary: "Upload a local Chrome profile into an existing Opensteer cloud profile.",
+        name: "sync",
+        id: "profile.sync",
+        summary:
+          "Sync cookies from a live Chromium browser into an existing Opensteer cloud profile.",
         options: [
           {
             name: "profile-id",
@@ -1471,16 +1476,91 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
             valueLabel: "id",
           },
           {
-            name: "from-user-data-dir",
-            description: "Source Chrome user-data root",
+            name: "browser",
+            description: "Source Chromium-family browser brand",
+            kind: "enum",
+            valueLabel: "brand",
+            values: PROFILE_SYNC_BROWSER_VALUES,
+            internalName: "brandId",
+          },
+          {
+            name: "attach-endpoint",
+            description: "DevTools endpoint for the source browser; auto-discovered when omitted",
+            kind: "string",
+            valueLabel: "endpoint",
+            internalName: "attachEndpoint",
+          },
+          {
+            name: "user-data-dir",
+            description: "Explicit browser user-data-dir",
             kind: "string",
             valueLabel: "path",
+            internalName: "userDataDir",
           },
           {
             name: "profile-directory",
-            description: 'Source Chrome profile directory, for example "Default"',
+            description:
+              'Profile directory name inside the selected user-data-dir (for example "Default")',
             kind: "string",
             valueLabel: "name",
+            internalName: "profileDirectory",
+          },
+          {
+            name: "executable-path",
+            description: "Explicit browser executable override",
+            kind: "string",
+            valueLabel: "path",
+            internalName: "executablePath",
+          },
+          {
+            name: "strategy",
+            description: "Cookie capture strategy",
+            kind: "enum",
+            valueLabel: "mode",
+            values: PROFILE_SYNC_STRATEGY_VALUES,
+          },
+          {
+            name: "domain",
+            description: "Restrict sync to a domain (repeatable)",
+            kind: "string",
+            valueLabel: "domain",
+            multiple: true,
+          },
+          {
+            name: "all-domains",
+            description: "Sync cookies for all domains",
+            kind: "boolean",
+            internalName: "allDomains",
+          },
+          {
+            name: "restore-browser",
+            description: "Re-launch the browser after managed-relaunch capture (default: true)",
+            kind: "boolean",
+            internalName: "restoreBrowser",
+          },
+          {
+            name: "no-restore-browser",
+            description: "Do not re-launch the browser after managed-relaunch capture",
+            kind: "boolean",
+            internalName: "noRestoreBrowser",
+          },
+          {
+            name: "yes",
+            description: "Skip interactive confirmations",
+            kind: "boolean",
+          },
+          {
+            name: "timeout-ms",
+            description: "Capture planning timeout in milliseconds",
+            kind: "number",
+            valueLabel: "ms",
+            internalName: "timeoutMs",
+          },
+          {
+            name: "dry-run",
+            description: "Print the resolved capture plan without syncing",
+            kind: "boolean",
+            internalName: "dryRun",
           },
           {
             name: "json",

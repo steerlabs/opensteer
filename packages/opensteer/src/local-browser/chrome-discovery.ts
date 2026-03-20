@@ -3,7 +3,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
+import { detectInstalledBrowserBrands } from "./browser-brands.js";
 import type {
+  LocalBrowserInstallation,
   LocalChromeInstallation,
   LocalChromeProfileDescriptor,
 } from "./types.js";
@@ -20,8 +22,9 @@ export function resolveChromeUserDataDir(userDataDir: string | undefined): strin
     return resolve(expandHome(userDataDir));
   }
 
-  const installation = detectLocalChromeInstallations().find((candidate) =>
-    existsSync(join(candidate.userDataDir, "Local State")) || candidate.executablePath !== null,
+  const installation = detectLocalChromeInstallations().find(
+    (candidate) =>
+      existsSync(join(candidate.userDataDir, "Local State")) || candidate.executablePath !== null,
   );
   if (!installation) {
     throw new Error("Could not find a local Chrome or Chromium profile directory.");
@@ -62,9 +65,7 @@ export function detectLocalChromeInstallations(): readonly LocalChromeInstallati
       },
       {
         brand: "chromium",
-        executablePath: firstExistingPath([
-          "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        ]),
+        executablePath: firstExistingPath(["/Applications/Chromium.app/Contents/MacOS/Chromium"]),
         userDataDir: join(homedir(), "Library", "Application Support", "Chromium"),
       },
     ];
@@ -118,6 +119,14 @@ export function detectLocalChromeInstallations(): readonly LocalChromeInstallati
       userDataDir: join(homedir(), ".config", "chromium"),
     },
   ];
+}
+
+export function detectLocalBrowserInstallations(): readonly LocalBrowserInstallation[] {
+  return detectInstalledBrowserBrands().map((installation) => ({
+    brand: installation.brandId,
+    executablePath: installation.executablePath,
+    userDataDir: installation.userDataDir,
+  }));
 }
 
 export function listLocalChromeProfiles(
@@ -191,7 +200,9 @@ export function readDevToolsActivePort(userDataDir: string): {
   }
 }
 
-function firstExistingPath(candidates: readonly (string | null | undefined)[]): string | null {
+export function firstExistingPath(
+  candidates: readonly (string | null | undefined)[],
+): string | null {
   for (const candidate of candidates) {
     if (candidate && existsSync(candidate)) {
       return candidate;
@@ -200,7 +211,7 @@ function firstExistingPath(candidates: readonly (string | null | undefined)[]): 
   return null;
 }
 
-function resolveBinaryFromPath(name: string): string | null {
+export function resolveBinaryFromPath(name: string): string | null {
   try {
     const output = execFileSync("which", [name], {
       encoding: "utf8",

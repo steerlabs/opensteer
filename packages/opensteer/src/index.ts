@@ -187,7 +187,6 @@ export type {
   BrowserProfileImportCreateRequest,
   BrowserProfileImportCreateResponse,
   BrowserProfileImportDescriptor,
-  BrowserProfileImportFinalizeRequest,
   BrowserProfileImportStatus,
   BrowserProfileListResponse,
   BrowserProfileStatus,
@@ -218,7 +217,7 @@ export {
   OpensteerCloudClient,
   type OpensteerCloudSessionCreateInput,
   type OpensteerCloudSessionDescriptor,
-  type UploadLocalBrowserProfileInput,
+  type SyncBrowserProfileCookiesInput,
 } from "./cloud/client.js";
 export { CloudSessionProxy } from "./cloud/session-proxy.js";
 export type {
@@ -228,11 +227,23 @@ export type {
 export { dispatchSemanticOperation } from "./cli/dispatch.js";
 export { ServiceOperationScheduler, parseRequestEnvelope } from "./cli/service-host.js";
 export type {
+  LocalBrowserInstallation,
   InspectedCdpEndpoint,
   LocalCdpBrowserCandidate,
   LocalChromeProfileDescriptor,
 } from "./local-browser/types.js";
 export { listLocalChromeProfiles } from "./local-browser/chrome-discovery.js";
+export type { BrowserBrandId, BrowserBrandRecord } from "./local-browser/browser-brands.js";
+export {
+  detectInstalledBrowserBrands,
+  getAllBrowserBrands,
+  getBrowserBrand,
+} from "./local-browser/browser-brands.js";
+export type {
+  CookieCaptureSourceInput,
+  CookieCaptureStrategy,
+} from "./local-browser/cookie-capture.js";
+export { resolveCookieCaptureStrategy } from "./local-browser/cookie-capture.js";
 export {
   discoverLocalCdpBrowsers,
   inspectCdpEndpoint,

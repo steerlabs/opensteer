@@ -1050,6 +1050,7 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
                   name: "messages",
                   keyPath: "id",
                   autoIncrement: false,
+                  indexes: [],
                   records: [
                     {
                       key: "1",

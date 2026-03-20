@@ -298,7 +298,8 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
               request.onupgradeneeded = () => {
                 const db = request.result;
                 if (!db.objectStoreNames.contains("messages")) {
-                  db.createObjectStore("messages", { keyPath: "id" });
+                  const store = db.createObjectStore("messages", { keyPath: "id" });
+                  store.createIndex("byText", "text", { unique: false });
                 }
               };
               request.onerror = () => reject(request.error);
@@ -1276,6 +1277,14 @@ test("captures network, cookies, storage, and async page events", { timeout: 60_
       objectStores: [
         {
           name: "messages",
+          indexes: [
+            {
+              name: "byText",
+              keyPath: "text",
+              multiEntry: false,
+              unique: false,
+            },
+          ],
           records: [{ value: { id: "1", text: "hello" } }],
         },
       ],

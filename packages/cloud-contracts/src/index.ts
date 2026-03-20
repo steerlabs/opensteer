@@ -1,3 +1,5 @@
+import type { CookieRecord } from "@opensteer/browser-core";
+
 export const cloudActionMethods = [
   "goto",
   "snapshot",
@@ -57,6 +59,7 @@ export const cloudErrorCodes = [
   "CLOUD_BROWSER_PROFILE_NOT_FOUND",
   "CLOUD_BROWSER_PROFILE_BUSY",
   "CLOUD_BROWSER_PROFILE_DISABLED",
+  "CLOUD_BROWSER_PROFILE_NOT_READY",
   "CLOUD_BROWSER_PROFILE_PROXY_UNAVAILABLE",
   "CLOUD_BROWSER_PROFILE_SYNC_FAILED",
   "CLOUD_INTERNAL",
@@ -93,11 +96,38 @@ export type CloudFingerprintMode = "off" | "auto";
 export type BrowserProfileStatus = "active" | "archived" | "error";
 export type BrowserProfileProxyPolicy = "strict_sticky";
 export type BrowserProfileArchiveFormat = "tar.gz";
+export type PortableBrowserProfileSnapshotFormat = "portable-cookies-v1+json.gz";
+export type PortableBrowserFamily = "chromium";
 export type BrowserProfileImportStatus =
   | "awaiting_upload"
+  | "queued"
   | "processing"
   | "ready"
   | "failed";
+
+export interface PortableBrowserProfileSnapshotSource {
+  readonly browserFamily: PortableBrowserFamily;
+  readonly browserName?: string;
+  readonly browserMajor?: string;
+  readonly browserBrand?: string;
+  readonly captureMethod?: string;
+  readonly platform?: string;
+  readonly capturedAt: number;
+}
+
+export type PortableBrowserProfileCookieRecord = Omit<CookieRecord, "sessionRef">;
+
+export interface PortableBrowserProfileSnapshot {
+  readonly version: "portable-cookies-v1";
+  readonly source: PortableBrowserProfileSnapshotSource;
+  readonly cookies: readonly PortableBrowserProfileCookieRecord[];
+}
+
+export interface BrowserProfileImportSnapshotSummary {
+  readonly source: PortableBrowserProfileSnapshotSource;
+  readonly cookieCount: number;
+  readonly domainCount: number;
+}
 
 export interface CloudViewport {
   readonly width: number;
@@ -335,7 +365,6 @@ export interface BrowserProfileCreateRequest {
 
 export interface BrowserProfileImportCreateRequest {
   readonly profileId: string;
-  readonly archiveFormat?: BrowserProfileArchiveFormat;
 }
 
 export interface BrowserProfileImportCreateResponse {
@@ -343,22 +372,20 @@ export interface BrowserProfileImportCreateResponse {
   readonly profileId: string;
   readonly status: BrowserProfileImportStatus;
   readonly uploadUrl: string;
-  readonly uploadMethod: "POST";
+  readonly uploadMethod: "PUT";
+  readonly uploadFormat: PortableBrowserProfileSnapshotFormat;
   readonly maxUploadBytes: number;
-}
-
-export interface BrowserProfileImportFinalizeRequest {
-  readonly storageId: string;
 }
 
 export interface BrowserProfileImportDescriptor {
   readonly importId: string;
   readonly profileId: string;
   readonly status: BrowserProfileImportStatus;
-  readonly archiveFormat: BrowserProfileArchiveFormat;
+  readonly uploadFormat: PortableBrowserProfileSnapshotFormat;
   readonly storageId?: string;
   readonly revision?: number;
   readonly error?: string;
+  readonly snapshotSummary?: BrowserProfileImportSnapshotSummary;
   readonly createdAt: number;
   readonly updatedAt: number;
 }
@@ -377,7 +404,9 @@ export function isCloudErrorCode(value: unknown): value is CloudErrorCode {
 }
 
 export function isCloudSessionSourceType(value: unknown): value is CloudSessionSourceType {
-  return typeof value === "string" && cloudSessionSourceTypeSet.has(value as CloudSessionSourceType);
+  return (
+    typeof value === "string" && cloudSessionSourceTypeSet.has(value as CloudSessionSourceType)
+  );
 }
 
 export function isCloudSessionStatus(value: unknown): value is CloudSessionStatus {

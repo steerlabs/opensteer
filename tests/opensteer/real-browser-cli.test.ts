@@ -14,7 +14,7 @@ import {
   parseOpensteerLocalProfileArgs,
   runOpensteerLocalProfileCli,
 } from "../../packages/opensteer/src/cli/local-profile.js";
-import { parseOpensteerProfileUploadArgs } from "../../packages/opensteer/src/cli/profile-upload.js";
+import { parseOpensteerProfileSyncArgs } from "../../packages/opensteer/src/cli/profile-sync.js";
 import { ensureCliArtifactsBuilt } from "./cli-artifacts.js";
 
 const execFile = promisify(execFileCallback);
@@ -184,31 +184,58 @@ describe("local browser CLI surfaces", () => {
     expect(stderr.join("")).toContain('"status":"available"');
   });
 
-  test("parses profile upload args", () => {
+  test("parses profile sync args", () => {
     expect(
-      parseOpensteerProfileUploadArgs([
-        "upload",
+      parseOpensteerProfileSyncArgs([
+        "sync",
         "--profile-id",
         "bp_123",
-        "--from-user-data-dir",
-        "/tmp/chrome",
+        "--browser",
+        "brave",
+        "--user-data-dir",
+        "/tmp/brave",
         "--profile-directory",
         "Profile 1",
+        "--executable-path",
+        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+        "--strategy",
+        "headless",
+        "--domain",
+        "github.com",
+        "--domain",
+        ".github.com",
+        "--dry-run",
         "--json",
       ]),
     ).toEqual({
-      mode: "upload",
+      mode: "sync",
+      allDomains: false,
+      brandId: "brave",
+      userDataDir: "/tmp/brave",
+      profileDirectory: "Profile 1",
+      executablePath: "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+      strategy: "headless",
+      restoreBrowser: true,
+      dryRun: true,
+      domains: ["github.com"],
+      yes: false,
       json: true,
       profileId: "bp_123",
-      fromUserDataDir: "/tmp/chrome",
-      profileDirectory: "Profile 1",
     });
   });
 
-  test("profile upload parser requires a profile id", () => {
+  test("profile sync parser validates browser enum values", () => {
     expect(
-      parseOpensteerProfileUploadArgs(["upload", "--from-user-data-dir", "/tmp/chrome"]),
+      parseOpensteerProfileSyncArgs(["sync", "--profile-id", "bp_123", "--browser", "opera"]),
     ).toEqual({
+      mode: "error",
+      error:
+        'Option "--browser" must be one of: chrome, chrome-canary, chromium, brave, edge, vivaldi, helium.',
+    });
+  });
+
+  test("profile sync parser requires a profile id", () => {
+    expect(parseOpensteerProfileSyncArgs(["sync", "--attach-endpoint", "9222"])).toEqual({
       mode: "error",
       error: "--profile-id is required.",
     });
