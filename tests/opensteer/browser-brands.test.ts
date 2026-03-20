@@ -93,13 +93,16 @@ describe("browser brand registry", () => {
   });
 
   test("resolveBrandExecutablePath honors explicit paths and brand defaults", async () => {
-    const { getBrowserBrand, resolveBrandExecutablePath } =
+    const { getBrowserBrand, resolveBrandExecutablePath, resolveBrandUserDataDir } =
       await import("../../packages/opensteer/src/local-browser/browser-brands.js");
 
     expect(resolveBrandExecutablePath(getBrowserBrand("chrome"), "/custom/chrome")).toBe(
       "/custom/chrome",
     );
     expect(resolveBrandExecutablePath(getBrowserBrand("brave"))).toContain("Brave Browser");
+    expect(resolveBrandUserDataDir(getBrowserBrand("helium"))).toBe(
+      "/Users/test/Library/Application Support/net.imput.helium",
+    );
 
     expect(() => resolveBrandExecutablePath(getBrowserBrand("chrome"), "/missing/chrome")).toThrow(
       'Google Chrome executable was not found at "/missing/chrome".',

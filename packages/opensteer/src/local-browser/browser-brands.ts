@@ -219,7 +219,7 @@ const BROWSER_BRANDS: readonly BrowserBrandRecord[] = [
     displayName: "Helium",
     darwin: {
       executableCandidates: ["/Applications/Helium.app/Contents/MacOS/Helium"],
-      userDataDir: "~/Library/Application Support/Helium",
+      userDataDir: "~/Library/Application Support/net.imput.helium",
       processNames: ["/Applications/Helium.app/Contents/MacOS/Helium"],
     },
   },
