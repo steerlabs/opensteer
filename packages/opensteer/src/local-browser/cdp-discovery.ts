@@ -1,4 +1,4 @@
-import { detectLocalChromeInstallations, readDevToolsActivePort } from "./chrome-discovery.js";
+import { detectLocalBrowserInstallations, readDevToolsActivePort } from "./chrome-discovery.js";
 import type { InspectedCdpEndpoint, LocalCdpBrowserCandidate } from "./types.js";
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS = 2_000;
@@ -30,7 +30,7 @@ export class OpensteerAttachAmbiguousError extends Error {
 
   constructor(readonly candidates: readonly LocalCdpBrowserCandidate[]) {
     super(
-      `Multiple running Chrome DevTools endpoints were discovered. Use --browser attach --attach-endpoint <endpoint> to select one explicitly.`,
+      `Multiple running Chromium DevTools endpoints were discovered. Use --browser attach --attach-endpoint <endpoint> to select one explicitly.`,
     );
     this.name = "OpensteerAttachAmbiguousError";
   }
@@ -54,7 +54,7 @@ export async function discoverLocalCdpBrowsers(
   const timeoutMs = input.timeoutMs ?? DEFAULT_DISCOVERY_TIMEOUT_MS;
   const candidates: LocalCdpBrowserCandidate[] = [];
 
-  for (const installation of detectLocalChromeInstallations()) {
+  for (const installation of detectLocalBrowserInstallations()) {
     const activePort = readDevToolsActivePort(installation.userDataDir);
     if (!activePort) {
       continue;
@@ -99,7 +99,7 @@ export async function selectAttachBrowserCandidate(
   const candidates = await discoverLocalCdpBrowsers(input);
   if (candidates.length === 0) {
     throw new Error(
-      "No running Chrome instance found. Enable remote debugging and use --browser attach or pass --attach-endpoint.",
+      "No running Chromium browser instance found. Enable remote debugging and use --browser attach or pass --attach-endpoint.",
     );
   }
 

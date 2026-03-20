@@ -67,14 +67,29 @@ export function createPlaywrightComputerUseBridge(context: {
             await actionController.page.keyboard.press(action.key);
           });
           break;
-        case "drag":
+        case "drag": {
+          const steps = action.steps ?? 10;
           await actionController.page.mouse.move(action.start.x, action.start.y);
+          await new Promise<void>((r) => setTimeout(r, 40 + Math.random() * 30));
           await actionController.page.mouse.down();
-          await actionController.page.mouse.move(action.end.x, action.end.y, {
-            steps: action.steps ?? 10,
-          });
+          for (let i = 1; i <= steps; i++) {
+            const t = i / steps;
+            const eased = 1 - Math.pow(1 - t, 3);
+            const jitterFade = Math.max(0, 1 - i / (steps * 0.85));
+            const jx = i < steps ? (Math.random() - 0.5) * 1.6 * jitterFade : 0;
+            const jy = i < steps ? (Math.random() - 0.5) * 2.4 * jitterFade : 0;
+            const x = action.start.x + (action.end.x - action.start.x) * eased + jx;
+            const y = action.start.y + (action.end.y - action.start.y) * eased + jy;
+            await actionController.page.mouse.move(Math.round(x), Math.round(y));
+            if (i < steps) {
+              const baseMs = t < 0.15 ? 22 : t > 0.85 ? 20 : 10;
+              await new Promise<void>((r) => setTimeout(r, baseMs + Math.random() * 14));
+            }
+          }
+          await new Promise<void>((r) => setTimeout(r, 30 + Math.random() * 40));
           await actionController.page.mouse.up();
           break;
+        }
         case "screenshot":
           break;
         case "wait":

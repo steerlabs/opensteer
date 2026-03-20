@@ -40,6 +40,22 @@ importers:
 
   packages/browser-core: {}
 
+  packages/cloud-contracts:
+    dependencies:
+      '@opensteer/browser-core':
+        specifier: workspace:*
+        version: link:../browser-core
+    devDependencies:
+      rimraf:
+        specifier: ^6.1.3
+        version: 6.1.3
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(postcss@8.5.8)(tsx@4.21.0)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
   packages/engine-abp:
     dependencies:
       '@opensteer/browser-core':
@@ -76,15 +92,6 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.27.1
         version: 1.27.1(zod@4.3.6)
-      '@opensteer/browser-core':
-        specifier: workspace:*
-        version: link:../browser-core
-      '@opensteer/engine-playwright':
-        specifier: workspace:*
-        version: link:../engine-playwright
-      '@opensteer/protocol':
-        specifier: workspace:*
-        version: link:../protocol
       cheerio:
         specifier: ^1.1.2
         version: 1.2.0
@@ -98,9 +105,21 @@ importers:
         specifier: ^0.34.5
         version: 0.34.5
     devDependencies:
+      '@opensteer/browser-core':
+        specifier: workspace:*
+        version: link:../browser-core
+      '@opensteer/cloud-contracts':
+        specifier: workspace:*
+        version: link:../cloud-contracts
       '@opensteer/engine-abp':
         specifier: workspace:*
         version: link:../engine-abp
+      '@opensteer/engine-playwright':
+        specifier: workspace:*
+        version: link:../engine-playwright
+      '@opensteer/protocol':
+        specifier: workspace:*
+        version: link:../protocol
 
   packages/protocol:
     dependencies:

@@ -224,6 +224,13 @@ export interface AbpIndexedDbObjectStore {
   readonly keyPath?: string;
   readonly keyPathArray?: readonly string[];
   readonly autoIncrement?: boolean;
+  readonly indexes?: readonly {
+    readonly name: string;
+    readonly keyPath?: string;
+    readonly keyPathArray?: readonly string[];
+    readonly multiEntry?: boolean;
+    readonly unique?: boolean;
+  }[];
 }
 
 export interface AbpIndexedDbDatabaseResult {

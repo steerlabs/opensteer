@@ -1,17 +1,33 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
-
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { OpensteerCloudClient } from "../../packages/opensteer/src/cloud/client.js";
 import { CloudSessionProxy } from "../../packages/opensteer/src/cloud/session-proxy.js";
 import { resolveOpensteerRuntimeConfig } from "../../packages/opensteer/src/sdk/runtime-resolution.js";
 
+const capturePortableBrowserProfileSnapshotMock = vi.fn();
+const encodePortableBrowserProfileSnapshotMock = vi.fn();
+const resolveCookieCaptureStrategyMock = vi.fn();
+const acquireCdpEndpointMock = vi.fn();
+const relaunchBrowserNormallyMock = vi.fn();
+
+vi.mock("../../packages/opensteer/src/cloud/portable-cookie-snapshot.js", () => ({
+  capturePortableBrowserProfileSnapshot: (...args: unknown[]) =>
+    capturePortableBrowserProfileSnapshotMock(...args),
+  encodePortableBrowserProfileSnapshot: (...args: unknown[]) =>
+    encodePortableBrowserProfileSnapshotMock(...args),
+}));
+
+vi.mock("../../packages/opensteer/src/local-browser/cookie-capture.js", () => ({
+  resolveCookieCaptureStrategy: (...args: unknown[]) => resolveCookieCaptureStrategyMock(...args),
+  acquireCdpEndpoint: (...args: unknown[]) => acquireCdpEndpointMock(...args),
+  relaunchBrowserNormally: (...args: unknown[]) => relaunchBrowserNormallyMock(...args),
+}));
+
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
+  vi.clearAllMocks();
 });
 
 describe("cloud browser-profile integration", () => {
@@ -92,14 +108,9 @@ describe("cloud browser-profile integration", () => {
           profileId: "bp_123",
           status: "awaiting_upload",
           uploadUrl: "https://storage.example/upload",
-          uploadMethod: "POST",
+          uploadMethod: "PUT",
+          uploadFormat: "portable-cookies-v1+json.gz",
           maxUploadBytes: 1024,
-        }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          storageId: "storage_123",
         }),
       })
       .mockResolvedValueOnce({
@@ -108,8 +119,8 @@ describe("cloud browser-profile integration", () => {
           importId: "bpi_123",
           profileId: "bp_123",
           status: "ready",
-          archiveFormat: "tar.gz",
-          storageId: "storage_final",
+          uploadFormat: "portable-cookies-v1+json.gz",
+          storageId: "storage_123",
           revision: 3,
           createdAt: 1,
           updatedAt: 2,
@@ -124,17 +135,13 @@ describe("cloud browser-profile integration", () => {
 
     const created = await client.createBrowserProfileImport({
       profileId: "bp_123",
-      archiveFormat: "tar.gz",
     });
     const uploaded = await client.uploadBrowserProfileImportPayload({
       uploadUrl: created.uploadUrl,
       payload: Buffer.from("test"),
     });
-    const finalized = await client.finalizeBrowserProfileImport(created.importId, {
-      storageId: uploaded.storageId,
-    });
 
-    expect(finalized).toMatchObject({
+    expect(uploaded).toMatchObject({
       importId: "bpi_123",
       status: "ready",
       revision: 3,
@@ -146,7 +153,6 @@ describe("cloud browser-profile integration", () => {
         method: "POST",
         body: JSON.stringify({
           profileId: "bp_123",
-          archiveFormat: "tar.gz",
         }),
       }),
     );
@@ -154,35 +160,45 @@ describe("cloud browser-profile integration", () => {
       2,
       "https://storage.example/upload",
       expect.objectContaining({
-        method: "POST",
-      }),
-    );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
-      "https://api.opensteer.dev/v1/browser-profiles/imports/bpi_123/finalize",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({
-          storageId: "storage_123",
-        }),
+        method: "PUT",
       }),
     );
   });
 
-  test("OpensteerCloudClient uploads a local browser profile snapshot", async () => {
-    const userDataDir = await mkdtemp(path.join(tmpdir(), "opensteer-cloud-profile-upload-"));
-    await mkdir(path.join(userDataDir, "Default"), { recursive: true });
-    await writeFile(
-      path.join(userDataDir, "Local State"),
-      JSON.stringify({
-        profile: {
-          info_cache: {
-            Default: { name: "Personal" },
-          },
+  test("OpensteerCloudClient syncs cookies into a cloud browser profile", async () => {
+    resolveCookieCaptureStrategyMock.mockResolvedValueOnce({
+      strategy: "attach",
+      attachEndpoint: "9222",
+      timeoutMs: 30_000,
+    });
+    acquireCdpEndpointMock.mockResolvedValueOnce({
+      strategy: "attach",
+      cdpEndpoint: "ws://127.0.0.1:9222/devtools/browser/root",
+      cleanup: vi.fn(async () => undefined),
+    });
+    capturePortableBrowserProfileSnapshotMock.mockResolvedValueOnce({
+      version: "portable-cookies-v1",
+      source: {
+        browserFamily: "chromium",
+        browserName: "Chromium",
+        browserMajor: "136",
+        platform: "macos",
+        capturedAt: 123,
+      },
+      cookies: [
+        {
+          name: "session",
+          value: "abc",
+          domain: ".example.com",
+          path: "/",
+          secure: true,
+          httpOnly: true,
+          session: true,
+          expiresAt: null,
         },
-      }),
-    );
-    await writeFile(path.join(userDataDir, "Default", "Preferences"), "{}");
+      ],
+    });
+    encodePortableBrowserProfileSnapshotMock.mockResolvedValueOnce(Buffer.from("compressed-state"));
 
     const fetchMock = vi
       .fn()
@@ -193,14 +209,9 @@ describe("cloud browser-profile integration", () => {
           profileId: "bp_456",
           status: "awaiting_upload",
           uploadUrl: "https://storage.example/upload",
-          uploadMethod: "POST",
+          uploadMethod: "PUT",
+          uploadFormat: "portable-cookies-v1+json.gz",
           maxUploadBytes: 1024 * 1024,
-        }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          storageId: "storage_456",
         }),
       })
       .mockResolvedValueOnce({
@@ -209,7 +220,7 @@ describe("cloud browser-profile integration", () => {
           importId: "bpi_456",
           profileId: "bp_456",
           status: "ready",
-          archiveFormat: "tar.gz",
+          uploadFormat: "portable-cookies-v1+json.gz",
           storageId: "storage_456",
           revision: 7,
           createdAt: 1,
@@ -223,50 +234,43 @@ describe("cloud browser-profile integration", () => {
       baseUrl: "https://api.opensteer.dev",
     });
 
-    try {
-      const result = await client.uploadLocalBrowserProfile({
-        profileId: "bp_456",
-        fromUserDataDir: userDataDir,
-        profileDirectory: "Default",
-      });
+    const result = await client.syncBrowserProfileCookies({
+      attachEndpoint: "9222",
+      domains: ["example.com"],
+      profileId: "bp_456",
+    });
 
-      expect(result).toMatchObject({
-        importId: "bpi_456",
-        status: "ready",
-        revision: 7,
-      });
-      expect(fetchMock).toHaveBeenNthCalledWith(
-        1,
-        "https://api.opensteer.dev/v1/browser-profiles/imports",
-        expect.objectContaining({
-          method: "POST",
-          body: JSON.stringify({
-            profileId: "bp_456",
-            archiveFormat: "tar.gz",
-          }),
+    expect(result).toMatchObject({
+      importId: "bpi_456",
+      status: "ready",
+      revision: 7,
+    });
+    expect(resolveCookieCaptureStrategyMock).toHaveBeenCalledWith({
+      attachEndpoint: "9222",
+    });
+    expect(capturePortableBrowserProfileSnapshotMock).toHaveBeenCalledWith({
+      attachEndpoint: "ws://127.0.0.1:9222/devtools/browser/root",
+      captureMethod: "attach",
+      domains: ["example.com"],
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://api.opensteer.dev/v1/browser-profiles/imports",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          profileId: "bp_456",
         }),
-      );
-      expect(fetchMock).toHaveBeenNthCalledWith(
-        2,
-        "https://storage.example/upload",
-        expect.objectContaining({
-          method: "POST",
-          body: expect.any(Uint8Array),
-        }),
-      );
-      expect(fetchMock).toHaveBeenNthCalledWith(
-        3,
-        "https://api.opensteer.dev/v1/browser-profiles/imports/bpi_456/finalize",
-        expect.objectContaining({
-          method: "POST",
-          body: JSON.stringify({
-            storageId: "storage_456",
-          }),
-        }),
-      );
-    } finally {
-      await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
-    }
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://storage.example/upload",
+      expect.objectContaining({
+        method: "PUT",
+        body: expect.any(Uint8Array),
+      }),
+    );
   });
 
   test("OpensteerCloudClient waits for closing sessions to reach closed", async () => {

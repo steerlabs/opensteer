@@ -23,6 +23,9 @@
     "clean": "rimraf dist",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
+  "dependencies": {
+    "@opensteer/browser-core": "workspace:*"
+  },
   "devDependencies": {
     "rimraf": "^6.1.3",
     "tsup": "^8.5.1",

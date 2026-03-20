@@ -5,11 +5,12 @@ import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import {
-  detectLocalChromeInstallations,
+  detectLocalBrowserInstallations,
   expandHome,
   readDevToolsActivePort,
   resolveChromeUserDataDir,
 } from "./chrome-discovery.js";
+import { type BrowserBrandId, getAllBrowserBrands, isBrandProcess } from "./browser-brands.js";
 import { inspectCdpEndpoint } from "./cdp-discovery.js";
 import { CHROME_SINGLETON_ARTIFACTS, type ChromeSingletonArtifact } from "./chrome-singletons.js";
 import { readLiveProfileLaunchMetadata, withProfileLaunchLock } from "./profile-launch-metadata.js";
@@ -28,7 +29,7 @@ export type OpensteerLocalProfileInspection =
   | {
       readonly status: "unsupported_default_user_data_dir";
       readonly userDataDir: string;
-      readonly installationBrand: "chrome" | "chromium" | "unknown";
+      readonly installationBrand: BrowserBrandId | "unknown";
     }
   | {
       readonly status: "opensteer_owned";
@@ -76,7 +77,7 @@ export async function inspectLocalBrowserProfile(
   } = {},
 ): Promise<OpensteerLocalProfileInspection> {
   const userDataDir = resolveChromeUserDataDir(input.userDataDir);
-  const defaultInstallation = findDefaultChromeInstallation(userDataDir);
+  const defaultInstallation = findDefaultBrowserInstallation(userDataDir);
   if (defaultInstallation) {
     return {
       status: "unsupported_default_user_data_dir",
@@ -173,14 +174,14 @@ export function formatLocalProfileInspectionMessage(
 ): string {
   switch (inspection.status) {
     case "unsupported_default_user_data_dir":
-      return 'The selected Chrome/Chromium user-data-dir is a default browser profile. Use a dedicated automation profile dir for browser.kind="profile", or attach to an already-debuggable browser with browser.kind="attach".';
+      return 'The selected user-data-dir is a default Chromium-family browser profile. Use a dedicated automation profile dir for browser.kind="profile", or attach to an already-debuggable browser with browser.kind="attach".';
     case "opensteer_owned":
       return "This profile is already owned by Opensteer. Reuse the existing session with Opensteer.attach(...) or the named CLI session.";
     case "browser_owned":
       if (inspection.attachMode === "attach") {
-        return 'Chrome is already running with remote debugging. Attach with --browser attach or browser.kind="attach".';
+        return 'The browser is already running with remote debugging. Attach with --browser attach or browser.kind="attach".';
       }
-      return 'Chrome appears to own this profile, but it is not exposing CDP. Close Chrome or start it with remote debugging, then attach with browser.kind="attach".';
+      return 'The browser appears to own this profile, but it is not exposing CDP. Close it or start it with remote debugging, then attach with browser.kind="attach".';
     case "stale_lock":
       return `This profile has stale Chrome lock artifacts. Run opensteer local-profile unlock --user-data-dir ${JSON.stringify(inspection.userDataDir)} and retry.`;
     case "available":
@@ -215,13 +216,13 @@ async function discoverActivePortBrowserEndpoint(userDataDir: string): Promise<
   };
 }
 
-function findDefaultChromeInstallation(userDataDir: string):
+function findDefaultBrowserInstallation(userDataDir: string):
   | {
-      readonly brand: "chrome" | "chromium";
+      readonly brand: BrowserBrandId;
     }
   | undefined {
   const normalized = resolve(userDataDir);
-  const installation = detectLocalChromeInstallations().find(
+  const installation = detectLocalBrowserInstallations().find(
     (candidate) => resolve(candidate.userDataDir) === normalized,
   );
   return installation ? { brand: installation.brand } : undefined;
@@ -272,7 +273,7 @@ async function inspectSingletonOwner(userDataDir: string): Promise<
     };
   }
 
-  if (await isChromeLikeProcess(owner.pid)) {
+  if (await isKnownBrowserProcess(owner.pid)) {
     return {
       kind: "live",
       pid: owner.pid,
@@ -343,18 +344,13 @@ function normalizeHostname(value: string): string {
     .replace(/\.local$/, "");
 }
 
-async function isChromeLikeProcess(pid: number): Promise<boolean> {
+async function isKnownBrowserProcess(pid: number): Promise<boolean> {
   const command = await readProcessCommandLine(pid);
   if (!command) {
     return false;
   }
 
-  const lower = command.toLowerCase();
-  if (lower.includes("crashpad_handler")) {
-    return false;
-  }
-
-  return /\b(google chrome|chrome|chromium)\b/.test(lower);
+  return getAllBrowserBrands().some((brand) => isBrandProcess(brand, command));
 }
 
 async function readProcessCommandLine(pid: number): Promise<string | null> {

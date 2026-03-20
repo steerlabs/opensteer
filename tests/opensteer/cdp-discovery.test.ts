@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 const chromeDiscoveryState = vi.hoisted(() => ({
-  detectLocalChromeInstallations: vi.fn(() => []),
+  detectLocalBrowserInstallations: vi.fn(() => []),
   readDevToolsActivePort: vi.fn(() => null),
 }));
 
 vi.mock("../../packages/opensteer/src/local-browser/chrome-discovery.js", () => ({
-  detectLocalChromeInstallations: chromeDiscoveryState.detectLocalChromeInstallations,
+  detectLocalBrowserInstallations: chromeDiscoveryState.detectLocalBrowserInstallations,
   readDevToolsActivePort: chromeDiscoveryState.readDevToolsActivePort,
 }));
 
@@ -14,8 +14,8 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.resetModules();
   vi.unstubAllGlobals();
-  chromeDiscoveryState.detectLocalChromeInstallations.mockReset();
-  chromeDiscoveryState.detectLocalChromeInstallations.mockReturnValue([]);
+  chromeDiscoveryState.detectLocalBrowserInstallations.mockReset();
+  chromeDiscoveryState.detectLocalBrowserInstallations.mockReturnValue([]);
   chromeDiscoveryState.readDevToolsActivePort.mockReset();
   chromeDiscoveryState.readDevToolsActivePort.mockReturnValue(null);
 });
@@ -80,7 +80,7 @@ describe("local CDP discovery", () => {
   });
 
   test("deduplicates the same browser discovered via DevToolsActivePort and the fallback probe", async () => {
-    chromeDiscoveryState.detectLocalChromeInstallations.mockReturnValue([
+    chromeDiscoveryState.detectLocalBrowserInstallations.mockReturnValue([
       {
         brand: "chrome",
         executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -122,7 +122,7 @@ describe("local CDP discovery", () => {
   });
 
   test("selects the unique highest-priority DevToolsActivePort candidate over the fallback port", async () => {
-    chromeDiscoveryState.detectLocalChromeInstallations.mockReturnValue([
+    chromeDiscoveryState.detectLocalBrowserInstallations.mockReturnValue([
       {
         brand: "chrome",
         executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -161,7 +161,7 @@ describe("local CDP discovery", () => {
   });
 
   test("throws a structured ambiguity error when multiple top-ranked browsers are discoverable", async () => {
-    chromeDiscoveryState.detectLocalChromeInstallations.mockReturnValue([
+    chromeDiscoveryState.detectLocalBrowserInstallations.mockReturnValue([
       {
         brand: "chrome",
         executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",

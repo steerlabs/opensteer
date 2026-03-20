@@ -61,7 +61,7 @@ afterEach(() => {
 describe("local profile inspection", () => {
   test("classifies known default Chrome user-data-dir as unsupported", async () => {
     vi.doMock("../../packages/opensteer/src/local-browser/chrome-discovery.js", () => ({
-      detectLocalChromeInstallations: () => [
+      detectLocalBrowserInstallations: () => [
         {
           brand: "chrome" as const,
           executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -69,7 +69,9 @@ describe("local profile inspection", () => {
         },
       ],
       expandHome: (value: string) => value,
+      firstExistingPath: () => null,
       readDevToolsActivePort: vi.fn(() => null),
+      resolveBinaryFromPath: () => null,
       resolveChromeUserDataDir: (userDataDir?: string) =>
         path.resolve(userDataDir ?? "/tmp/missing"),
     }));
@@ -92,9 +94,11 @@ describe("local profile inspection", () => {
     const userDataDir = await mkdtemp(path.join(tmpdir(), "opensteer-profile-owned-"));
 
     vi.doMock("../../packages/opensteer/src/local-browser/chrome-discovery.js", () => ({
-      detectLocalChromeInstallations: () => [],
+      detectLocalBrowserInstallations: () => [],
       expandHome: (value: string) => value,
+      firstExistingPath: () => null,
       readDevToolsActivePort: vi.fn(() => null),
+      resolveBinaryFromPath: () => null,
       resolveChromeUserDataDir: (input?: string) => path.resolve(input ?? userDataDir),
     }));
 
@@ -151,12 +155,14 @@ describe("local profile inspection", () => {
     });
 
     vi.doMock("../../packages/opensteer/src/local-browser/chrome-discovery.js", () => ({
-      detectLocalChromeInstallations: () => [],
+      detectLocalBrowserInstallations: () => [],
       expandHome: (value: string) => value,
+      firstExistingPath: () => null,
       readDevToolsActivePort: vi.fn(() => ({
         port: 9222,
         webSocketPath: "/devtools/browser/root",
       })),
+      resolveBinaryFromPath: () => null,
       resolveChromeUserDataDir: (input?: string) => path.resolve(input ?? userDataDir),
     }));
 
@@ -184,12 +190,14 @@ describe("local profile inspection", () => {
     cdpDiscoveryState.selectAttachBrowserCandidate.mockRejectedValue(new Error("ambiguous"));
 
     vi.doMock("../../packages/opensteer/src/local-browser/chrome-discovery.js", () => ({
-      detectLocalChromeInstallations: () => [],
+      detectLocalBrowserInstallations: () => [],
       expandHome: (value: string) => value,
+      firstExistingPath: () => null,
       readDevToolsActivePort: vi.fn(() => ({
         port: 9333,
         webSocketPath: "/devtools/browser/root",
       })),
+      resolveBinaryFromPath: () => null,
       resolveChromeUserDataDir: (input?: string) => path.resolve(input ?? userDataDir),
     }));
 
@@ -213,9 +221,11 @@ describe("local profile inspection", () => {
     const userDataDir = await mkdtemp(path.join(tmpdir(), "opensteer-profile-singleton-live-"));
 
     vi.doMock("../../packages/opensteer/src/local-browser/chrome-discovery.js", () => ({
-      detectLocalChromeInstallations: () => [],
+      detectLocalBrowserInstallations: () => [],
       expandHome: (value: string) => value,
+      firstExistingPath: () => null,
       readDevToolsActivePort: vi.fn(() => null),
+      resolveBinaryFromPath: () => null,
       resolveChromeUserDataDir: (input?: string) => path.resolve(input ?? userDataDir),
     }));
     processOwnerState.isProcessRunning.mockReturnValue(true);
@@ -248,9 +258,11 @@ describe("local profile inspection", () => {
     const userDataDir = await mkdtemp(path.join(tmpdir(), "opensteer-profile-singleton-stale-"));
 
     vi.doMock("../../packages/opensteer/src/local-browser/chrome-discovery.js", () => ({
-      detectLocalChromeInstallations: () => [],
+      detectLocalBrowserInstallations: () => [],
       expandHome: (value: string) => value,
+      firstExistingPath: () => null,
       readDevToolsActivePort: vi.fn(() => null),
+      resolveBinaryFromPath: () => null,
       resolveChromeUserDataDir: (input?: string) => path.resolve(input ?? userDataDir),
     }));
 
@@ -275,9 +287,11 @@ describe("local profile inspection", () => {
     const userDataDir = await mkdtemp(path.join(tmpdir(), "opensteer-profile-singleton-artifact-"));
 
     vi.doMock("../../packages/opensteer/src/local-browser/chrome-discovery.js", () => ({
-      detectLocalChromeInstallations: () => [],
+      detectLocalBrowserInstallations: () => [],
       expandHome: (value: string) => value,
+      firstExistingPath: () => null,
       readDevToolsActivePort: vi.fn(() => null),
+      resolveBinaryFromPath: () => null,
       resolveChromeUserDataDir: (input?: string) => path.resolve(input ?? userDataDir),
     }));
 
@@ -301,9 +315,11 @@ describe("local profile inspection", () => {
     const userDataDir = await mkdtemp(path.join(tmpdir(), "opensteer-profile-unlock-"));
 
     vi.doMock("../../packages/opensteer/src/local-browser/chrome-discovery.js", () => ({
-      detectLocalChromeInstallations: () => [],
+      detectLocalBrowserInstallations: () => [],
       expandHome: (value: string) => value,
+      firstExistingPath: () => null,
       readDevToolsActivePort: vi.fn(() => null),
+      resolveBinaryFromPath: () => null,
       resolveChromeUserDataDir: (input?: string) => path.resolve(input ?? userDataDir),
     }));
 
@@ -326,9 +342,11 @@ describe("local profile inspection", () => {
     const userDataDir = await mkdtemp(path.join(tmpdir(), "opensteer-profile-unlock-reject-"));
 
     vi.doMock("../../packages/opensteer/src/local-browser/chrome-discovery.js", () => ({
-      detectLocalChromeInstallations: () => [],
+      detectLocalBrowserInstallations: () => [],
       expandHome: (value: string) => value,
+      firstExistingPath: () => null,
       readDevToolsActivePort: vi.fn(() => null),
+      resolveBinaryFromPath: () => null,
       resolveChromeUserDataDir: (input?: string) => path.resolve(input ?? userDataDir),
     }));
 

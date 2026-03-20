@@ -134,7 +134,7 @@ const opensteer = new Opensteer({
 });
 ```
 
-Upload a local Chrome profile into an existing cloud profile:
+Sync cookies from a live Chromium browser into an existing cloud profile:
 
 ```ts
 import { OpensteerCloudClient } from "opensteer";
@@ -144,10 +144,10 @@ const client = new OpensteerCloudClient({
   baseUrl: process.env.OPENSTEER_BASE_URL ?? "https://api.opensteer.dev",
 });
 
-await client.uploadLocalBrowserProfile({
+await client.syncBrowserProfileCookies({
   profileId: "bp_123",
-  fromUserDataDir: "~/Library/Application Support/Google/Chrome",
-  profileDirectory: "Default",
+  attachEndpoint: "9222",
+  domains: ["github.com"],
 });
 ```
 
@@ -167,7 +167,10 @@ opensteer browser inspect --endpoint 9222
 opensteer local-profile list
 opensteer local-profile inspect --user-data-dir "~/Library/Application Support/Opensteer Chrome"
 opensteer local-profile unlock --user-data-dir "~/Library/Application Support/Opensteer Chrome"
-opensteer profile upload --profile-id bp_123 --from-user-data-dir "~/Library/Application Support/Google/Chrome"
+opensteer profile sync \
+  --profile-id bp_123 \
+  --attach-endpoint 9222 \
+  --domain github.com
 opensteer open https://example.com --name docs-example --engine abp
 opensteer snapshot action --name docs-example
 opensteer click 3 --name docs-example --description "primary button"

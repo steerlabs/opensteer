@@ -4,6 +4,7 @@ export type {
   CookieRecord,
   StorageEntry,
   IndexedDbRecord,
+  IndexedDbIndexSnapshot,
   IndexedDbObjectStoreSnapshot,
   IndexedDbDatabaseSnapshot,
   StorageOriginSnapshot,
@@ -84,6 +85,25 @@ export const indexedDbRecordSchema: JsonSchema = objectSchema(
   },
 );
 
+export const indexedDbIndexSnapshotSchema: JsonSchema = objectSchema(
+  {
+    name: stringSchema(),
+    keyPath: {
+      oneOf: [stringSchema(), arraySchema(stringSchema())],
+    },
+    multiEntry: {
+      type: "boolean",
+    },
+    unique: {
+      type: "boolean",
+    },
+  },
+  {
+    title: "IndexedDbIndexSnapshot",
+    required: ["name", "multiEntry", "unique"],
+  },
+);
+
 export const indexedDbObjectStoreSnapshotSchema: JsonSchema = objectSchema(
   {
     name: stringSchema(),
@@ -93,11 +113,12 @@ export const indexedDbObjectStoreSnapshotSchema: JsonSchema = objectSchema(
     autoIncrement: {
       type: "boolean",
     },
+    indexes: arraySchema(indexedDbIndexSnapshotSchema),
     records: arraySchema(indexedDbRecordSchema),
   },
   {
     title: "IndexedDbObjectStoreSnapshot",
-    required: ["name", "autoIncrement", "records"],
+    required: ["name", "autoIncrement", "indexes", "records"],
   },
 );
 

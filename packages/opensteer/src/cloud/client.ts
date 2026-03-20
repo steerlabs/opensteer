@@ -7,13 +7,12 @@ import type {
   BrowserProfileImportCreateRequest,
   BrowserProfileImportCreateResponse,
   BrowserProfileImportDescriptor,
-  BrowserProfileImportFinalizeRequest,
   CloudBrowserProfilePreference,
 } from "@opensteer/cloud-contracts";
 import {
-  uploadLocalBrowserProfile,
-  type UploadLocalBrowserProfileInput,
-} from "./profile-upload.js";
+  syncBrowserProfileCookies,
+  type SyncBrowserProfileCookiesInput,
+} from "./profile-sync.js";
 
 export interface OpensteerCloudSessionCreateInput {
   readonly name?: string;
@@ -39,7 +38,7 @@ interface OpensteerCloudSessionCloseDescriptor {
 const CLOUD_CLOSE_TIMEOUT_MS = 60_000;
 const CLOUD_CLOSE_POLL_INTERVAL_MS = 250;
 
-export type { UploadLocalBrowserProfileInput };
+export type { SyncBrowserProfileCookiesInput };
 
 export class OpensteerCloudClient {
   constructor(private readonly config: OpensteerCloudConfig) {}
@@ -107,42 +106,20 @@ export class OpensteerCloudClient {
   async uploadBrowserProfileImportPayload(input: {
     readonly uploadUrl: string;
     readonly payload: Buffer | Uint8Array;
-  }): Promise<{ readonly storageId: string }> {
+  }): Promise<BrowserProfileImportDescriptor> {
     const response = await fetch(input.uploadUrl, {
-      method: "POST",
+      method: "PUT",
       headers: {
+        authorization: this.buildAuthorizationHeader(),
         "content-type": "application/octet-stream",
       },
       body: input.payload,
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(10 * 60_000),
     });
     if (!response.ok) {
-      throw new Error(`POST ${input.uploadUrl} failed with ${String(response.status)}.`);
+      throw new Error(`PUT ${input.uploadUrl} failed with ${String(response.status)}.`);
     }
 
-    const payload = (await response.json()) as {
-      readonly storageId?: unknown;
-    };
-    if (typeof payload.storageId !== "string" || payload.storageId.trim().length === 0) {
-      throw new Error("Profile upload response did not include storageId.");
-    }
-
-    return {
-      storageId: payload.storageId,
-    };
-  }
-
-  async finalizeBrowserProfileImport(
-    importId: string,
-    input: BrowserProfileImportFinalizeRequest,
-  ): Promise<BrowserProfileImportDescriptor> {
-    const response = await this.request(
-      `/v1/browser-profiles/imports/${encodeURIComponent(importId)}/finalize`,
-      {
-        method: "POST",
-        body: input,
-      },
-    );
     return (await response.json()) as BrowserProfileImportDescriptor;
   }
 
@@ -156,10 +133,10 @@ export class OpensteerCloudClient {
     return (await response.json()) as BrowserProfileImportDescriptor;
   }
 
-  async uploadLocalBrowserProfile(
-    input: UploadLocalBrowserProfileInput,
+  async syncBrowserProfileCookies(
+    input: SyncBrowserProfileCookiesInput,
   ): Promise<BrowserProfileImportDescriptor> {
-    return uploadLocalBrowserProfile(this, input);
+    return syncBrowserProfileCookies(this, input);
   }
 
   buildAuthorizationHeader(): string {

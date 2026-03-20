@@ -190,11 +190,20 @@ export interface NormalizedIndexedDbRecord {
   readonly valueEncoded?: unknown;
 }
 
+export interface NormalizedIndexedDbIndex {
+  readonly name: string;
+  readonly keyPath?: string;
+  readonly keyPathArray?: readonly string[];
+  readonly multiEntry: boolean;
+  readonly unique: boolean;
+}
+
 export interface NormalizedIndexedDbStore {
   readonly name: string;
   readonly keyPath?: string;
   readonly keyPathArray?: readonly string[];
   readonly autoIncrement: boolean;
+  readonly indexes?: readonly NormalizedIndexedDbIndex[];
   readonly records: readonly NormalizedIndexedDbRecord[];
 }
 

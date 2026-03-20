@@ -4,6 +4,7 @@ import type {
   OpensteerManagedBrowserLaunchOptions,
   OpensteerProfileBrowserLaunchOptions,
 } from "@opensteer/protocol";
+import type { BrowserBrandId } from "./browser-brands.js";
 
 export interface LocalChromeProfileDescriptor {
   readonly directory: string;
@@ -11,11 +12,13 @@ export interface LocalChromeProfileDescriptor {
   readonly userDataDir: string;
 }
 
-export interface LocalChromeInstallation {
-  readonly brand: "chrome" | "chromium";
+export interface LocalBrowserInstallation {
+  readonly brand: BrowserBrandId;
   readonly executablePath: string | null;
   readonly userDataDir: string;
 }
+
+export type LocalChromeInstallation = LocalBrowserInstallation;
 
 export interface InspectedCdpEndpoint {
   readonly endpoint: string;
@@ -27,7 +30,7 @@ export interface InspectedCdpEndpoint {
 
 export interface LocalCdpBrowserCandidate extends InspectedCdpEndpoint {
   readonly source: "devtools-active-port" | "fallback-port";
-  readonly installationBrand?: "chrome" | "chromium";
+  readonly installationBrand?: BrowserBrandId;
   readonly userDataDir?: string;
 }
 
@@ -74,6 +77,7 @@ export interface ConnectedCdpPage {
 export interface ConnectedCdpBrowserContext {
   readonly pages: () => readonly ConnectedCdpPage[];
   readonly newPage: () => Promise<ConnectedCdpPage>;
+  readonly addInitScript?: (script: { readonly content: string }) => Promise<void>;
 }
 
 export interface ConnectedCdpBrowser {
@@ -94,6 +98,7 @@ export interface LaunchOwnedBrowserOptions {
   readonly headless: boolean;
   readonly args: readonly string[];
   readonly timeoutMs: number;
+  readonly useRealKeychain?: boolean;
 }
 
 export interface PreparedOwnedBrowserLaunch extends LaunchOwnedBrowserOptions {

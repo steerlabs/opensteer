@@ -12,6 +12,7 @@ import {
 } from "./profile-inspection.js";
 import { registerProfileLaunch, withProfileLaunchLock } from "./profile-launch-metadata.js";
 import { createBrowserProfileSnapshot } from "./profile-clone.js";
+import { injectBrowserStealthScripts } from "./stealth.js";
 import type {
   ConnectAttachBrowserOptions,
   ConnectCdpBrowserOptions,
@@ -110,6 +111,7 @@ async function prepareManagedOwnedBrowserLaunch(
     ...options,
     userDataDir,
     cleanupUserDataDir: userDataDir,
+    useRealKeychain: options.useRealKeychain ?? false,
   };
 }
 
@@ -136,7 +138,7 @@ async function prepareProfileOwnedBrowserLaunch(
     userDataDir,
     profileDirectory,
     release,
-    useRealKeychain: true,
+    useRealKeychain: options.useRealKeychain ?? true,
   };
 }
 
@@ -161,7 +163,7 @@ async function prepareClonedOwnedBrowserLaunch(
       userDataDir,
       profileDirectory: options.sourceProfileDirectory,
       cleanupUserDataDir: userDataDir,
-      useRealKeychain: true,
+      useRealKeychain: options.useRealKeychain ?? false,
     };
   } catch (error) {
     await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
@@ -207,6 +209,7 @@ async function connectBrowserSession(
 
   try {
     const context = getPrimaryContext(browser);
+    await injectBrowserStealthScripts(context);
     const page = await getSessionPage(context, options.freshTab);
 
     return {
@@ -289,6 +292,7 @@ function buildChromeArgs(options: PreparedOwnedBrowserLaunch): readonly string[]
     "--remote-debugging-port=0",
     "--no-first-run",
     "--no-default-browser-check",
+    "--disable-blink-features=AutomationControlled",
     "--disable-background-networking",
     "--disable-backgrounding-occluded-windows",
     "--disable-component-update",
@@ -299,7 +303,6 @@ function buildChromeArgs(options: PreparedOwnedBrowserLaunch): readonly string[]
     "--disable-sync",
     "--disable-features=Translate",
     "--enable-features=NetworkService,NetworkServiceInProcess",
-    "--metrics-recording-only",
     ...(options.useRealKeychain ? [] : ["--password-store=basic", "--use-mock-keychain"]),
     `--user-data-dir=${options.userDataDir}`,
   ];

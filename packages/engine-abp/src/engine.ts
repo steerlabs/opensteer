@@ -3349,6 +3349,16 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
                 ? {}
                 : { keyPath: store.keyPath }),
             autoIncrement: store.autoIncrement ?? false,
+            indexes: (store.indexes ?? []).map((index) => ({
+              name: index.name,
+              ...(index.keyPathArray && index.keyPathArray.length > 0
+                ? { keyPath: [...index.keyPathArray] }
+                : index.keyPath === undefined
+                  ? {}
+                  : { keyPath: index.keyPath }),
+              multiEntry: index.multiEntry ?? false,
+              unique: index.unique ?? false,
+            })),
             records,
           });
         }
