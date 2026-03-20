@@ -1,5 +1,7 @@
 import type {
   CookieRecord,
+  OpensteerCaptchaSolveInput,
+  OpensteerCaptchaSolveOutput,
   OpensteerActionResult,
   OpensteerGetRecipeInput,
   OpensteerGetAuthRecipeInput,
@@ -21,16 +23,28 @@ import type {
   OpensteerListRequestPlansOutput,
   OpensteerNetworkClearInput,
   OpensteerNetworkClearOutput,
+  OpensteerNetworkDiffInput,
+  OpensteerNetworkDiffOutput,
+  OpensteerNetworkMinimizeInput,
+  OpensteerNetworkMinimizeOutput,
   OpensteerNetworkQueryInput,
   OpensteerNetworkQueryOutput,
   OpensteerNetworkSaveInput,
   OpensteerNetworkSaveOutput,
+  OpensteerTransportProbeInput,
+  OpensteerTransportProbeOutput,
   OpensteerPageActivateInput,
   OpensteerPageActivateOutput,
   OpensteerAddInitScriptInput,
   OpensteerAddInitScriptOutput,
   OpensteerCaptureScriptsInput,
   OpensteerCaptureScriptsOutput,
+  OpensteerScriptBeautifyInput,
+  OpensteerScriptBeautifyOutput,
+  OpensteerScriptDeobfuscateInput,
+  OpensteerScriptDeobfuscateOutput,
+  OpensteerScriptSandboxInput,
+  OpensteerScriptSandboxOutput,
   OpensteerPageCloseInput,
   OpensteerPageCloseOutput,
   OpensteerPageEvaluateInput,
@@ -131,6 +145,18 @@ export interface OpensteerSemanticRuntime {
     input: OpensteerNetworkSaveInput,
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerNetworkSaveOutput>;
+  minimizeNetwork(
+    input: OpensteerNetworkMinimizeInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerNetworkMinimizeOutput>;
+  diffNetwork(
+    input: OpensteerNetworkDiffInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerNetworkDiffOutput>;
+  probeNetwork(
+    input: OpensteerTransportProbeInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerTransportProbeOutput>;
   clearNetwork(
     input?: OpensteerNetworkClearInput,
     options?: OpensteerRuntimeOperationOptions,
@@ -139,6 +165,22 @@ export interface OpensteerSemanticRuntime {
     input?: OpensteerCaptureScriptsInput,
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerCaptureScriptsOutput>;
+  beautifyScript(
+    input: OpensteerScriptBeautifyInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerScriptBeautifyOutput>;
+  deobfuscateScript(
+    input: OpensteerScriptDeobfuscateInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerScriptDeobfuscateOutput>;
+  sandboxScript(
+    input: OpensteerScriptSandboxInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerScriptSandboxOutput>;
+  solveCaptcha(
+    input: OpensteerCaptchaSolveInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerCaptchaSolveOutput>;
   getCookies(
     input?: {
       readonly urls?: readonly string[];

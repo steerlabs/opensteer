@@ -71,7 +71,7 @@ describe("Phase 10 request workflows", () => {
 
     expect(normalized).toMatchObject({
       transport: {
-        kind: "context-http",
+        kind: "session-http",
         requiresBrowser: true,
       },
       endpoint: {

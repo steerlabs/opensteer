@@ -3,6 +3,8 @@ import type {
   OpensteerAddInitScriptInput,
   OpensteerAddInitScriptOutput,
   OpensteerActionResult,
+  OpensteerCaptchaSolveInput,
+  OpensteerCaptchaSolveOutput,
   OpensteerCaptureScriptsInput,
   OpensteerCaptureScriptsOutput,
   OpensteerComputerExecuteInput,
@@ -25,6 +27,10 @@ import type {
   OpensteerListRequestPlansOutput,
   OpensteerNetworkClearInput,
   OpensteerNetworkClearOutput,
+  OpensteerNetworkDiffInput,
+  OpensteerNetworkDiffOutput,
+  OpensteerNetworkMinimizeInput,
+  OpensteerNetworkMinimizeOutput,
   OpensteerNetworkQueryInput,
   OpensteerNetworkQueryOutput,
   OpensteerNetworkSaveInput,
@@ -51,9 +57,17 @@ import type {
   OpensteerRunRecipeOutput,
   OpensteerRunAuthRecipeInput,
   OpensteerRunAuthRecipeOutput,
+  OpensteerScriptBeautifyInput,
+  OpensteerScriptBeautifyOutput,
+  OpensteerScriptDeobfuscateInput,
+  OpensteerScriptDeobfuscateOutput,
+  OpensteerScriptSandboxInput,
+  OpensteerScriptSandboxOutput,
   OpensteerSessionCloseOutput,
   OpensteerSessionOpenInput,
   OpensteerSessionOpenOutput,
+  OpensteerTransportProbeInput,
+  OpensteerTransportProbeOutput,
   OpensteerWriteRecipeInput,
   OpensteerWriteAuthRecipeInput,
   OpensteerWriteRequestPlanInput,
@@ -150,6 +164,22 @@ export class LocalOpensteerSessionProxy implements OpensteerDisconnectableRuntim
     return (await this.ensureClient()).invoke("network.save", input);
   }
 
+  async minimizeNetwork(
+    input: OpensteerNetworkMinimizeInput,
+  ): Promise<OpensteerNetworkMinimizeOutput> {
+    return (await this.ensureClient()).invoke("network.minimize", input);
+  }
+
+  async diffNetwork(input: OpensteerNetworkDiffInput): Promise<OpensteerNetworkDiffOutput> {
+    return (await this.ensureClient()).invoke("network.diff", input);
+  }
+
+  async probeNetwork(
+    input: OpensteerTransportProbeInput,
+  ): Promise<OpensteerTransportProbeOutput> {
+    return (await this.ensureClient()).invoke("network.probe", input);
+  }
+
   async clearNetwork(input: OpensteerNetworkClearInput = {}): Promise<OpensteerNetworkClearOutput> {
     return (await this.ensureClient()).invoke("network.clear", input);
   }
@@ -158,6 +188,26 @@ export class LocalOpensteerSessionProxy implements OpensteerDisconnectableRuntim
     input: OpensteerCaptureScriptsInput = {},
   ): Promise<OpensteerCaptureScriptsOutput> {
     return (await this.ensureClient()).invoke("scripts.capture", input);
+  }
+
+  async beautifyScript(
+    input: OpensteerScriptBeautifyInput,
+  ): Promise<OpensteerScriptBeautifyOutput> {
+    return (await this.ensureClient()).invoke("scripts.beautify", input);
+  }
+
+  async deobfuscateScript(
+    input: OpensteerScriptDeobfuscateInput,
+  ): Promise<OpensteerScriptDeobfuscateOutput> {
+    return (await this.ensureClient()).invoke("scripts.deobfuscate", input);
+  }
+
+  async sandboxScript(input: OpensteerScriptSandboxInput): Promise<OpensteerScriptSandboxOutput> {
+    return (await this.ensureClient()).invoke("scripts.sandbox", input);
+  }
+
+  async solveCaptcha(input: OpensteerCaptchaSolveInput): Promise<OpensteerCaptchaSolveOutput> {
+    return (await this.ensureClient()).invoke("captcha.solve", input);
   }
 
   async getCookies(input: { readonly urls?: readonly string[] } = {}): Promise<readonly CookieRecord[]> {

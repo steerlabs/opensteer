@@ -93,9 +93,48 @@ import {
   type OpensteerRunAuthRecipeInput,
   type OpensteerRunAuthRecipeOutput,
   type OpensteerRequestPlanRecord,
+  type TransportKind,
   type OpensteerWriteAuthRecipeInput,
   type OpensteerWriteRequestPlanInput,
 } from "./requests.js";
+import {
+  opensteerNetworkDiffInputSchema,
+  opensteerNetworkDiffOutputSchema,
+  type OpensteerNetworkDiffInput,
+  type OpensteerNetworkDiffOutput,
+} from "./diff.js";
+import {
+  opensteerNetworkMinimizeInputSchema,
+  opensteerNetworkMinimizeOutputSchema,
+  type OpensteerNetworkMinimizeInput,
+  type OpensteerNetworkMinimizeOutput,
+} from "./minimize.js";
+import {
+  opensteerTransportProbeInputSchema,
+  opensteerTransportProbeOutputSchema,
+  type OpensteerTransportProbeInput,
+  type OpensteerTransportProbeOutput,
+} from "./probe.js";
+import {
+  opensteerScriptBeautifyInputSchema,
+  opensteerScriptBeautifyOutputSchema,
+  opensteerScriptDeobfuscateInputSchema,
+  opensteerScriptDeobfuscateOutputSchema,
+  opensteerScriptSandboxInputSchema,
+  opensteerScriptSandboxOutputSchema,
+  type OpensteerScriptBeautifyInput,
+  type OpensteerScriptBeautifyOutput,
+  type OpensteerScriptDeobfuscateInput,
+  type OpensteerScriptDeobfuscateOutput,
+  type OpensteerScriptSandboxInput,
+  type OpensteerScriptSandboxOutput,
+} from "./scripts.js";
+import {
+  opensteerCaptchaSolveInputSchema,
+  opensteerCaptchaSolveOutputSchema,
+  type OpensteerCaptchaSolveInput,
+  type OpensteerCaptchaSolveOutput,
+} from "./captcha.js";
 import { validateJsonSchema } from "./validation.js";
 import { OPENSTEER_PROTOCOL_REST_BASE_PATH } from "./version.js";
 
@@ -155,6 +194,32 @@ export interface OpensteerBrowserContextOptions {
   readonly bypassCSP?: boolean;
   readonly reducedMotion?: "reduce" | "no-preference";
   readonly colorScheme?: "light" | "dark" | "no-preference";
+  readonly stealthProfile?: OpensteerStealthProfileInput;
+}
+
+export interface OpensteerStealthProfileInput {
+  readonly id?: string;
+  readonly platform?: "macos" | "windows" | "linux";
+  readonly browserBrand?: "chrome" | "edge";
+  readonly browserVersion?: string;
+  readonly userAgent?: string;
+  readonly viewport?: {
+    readonly width: number;
+    readonly height: number;
+  };
+  readonly screenResolution?: {
+    readonly width: number;
+    readonly height: number;
+  };
+  readonly devicePixelRatio?: number;
+  readonly maxTouchPoints?: number;
+  readonly webglVendor?: string;
+  readonly webglRenderer?: string;
+  readonly fonts?: readonly string[];
+  readonly canvasNoiseSeed?: number;
+  readonly audioNoiseSeed?: number;
+  readonly locale?: string;
+  readonly timezoneId?: string;
 }
 
 export interface OpensteerTargetByElement {
@@ -513,9 +578,16 @@ export const opensteerSemanticOperationNames = [
   "network.query",
   "network.save",
   "network.clear",
+  "network.minimize",
+  "network.diff",
+  "network.probe",
   "inspect.cookies",
   "inspect.storage",
   "scripts.capture",
+  "scripts.beautify",
+  "scripts.deobfuscate",
+  "scripts.sandbox",
+  "captcha.solve",
   "request.raw",
   "request-plan.infer",
   "request-plan.write",
@@ -558,6 +630,23 @@ function defineSemanticOperationSpec<TInput, TOutput>(
   spec: OpensteerSemanticOperationSpec<TInput, TOutput>,
 ): OpensteerSemanticOperationSpec<TInput, TOutput> {
   return spec;
+}
+
+function resolveTransportRequiredCapabilities(
+  transport: TransportKind | undefined,
+  fallback: TransportKind,
+): readonly OpensteerCapability[] {
+  switch (transport ?? fallback) {
+    case "direct-http":
+      return [];
+    case "matched-tls":
+    case "context-http":
+      return ["inspect.cookies"];
+    case "page-eval-http":
+      return ["pages.manage"];
+    case "session-http":
+      return ["transport.sessionHttp"];
+  }
 }
 
 const snapshotModeSchema: JsonSchema = enumSchema(["action", "extraction"] as const, {
@@ -666,6 +755,29 @@ const opensteerBrowserContextOptionsSchema: JsonSchema = objectSchema(
     bypassCSP: { type: "boolean" },
     reducedMotion: enumSchema(["reduce", "no-preference"] as const),
     colorScheme: enumSchema(["light", "dark", "no-preference"] as const),
+    stealthProfile: objectSchema(
+      {
+        id: stringSchema(),
+        platform: enumSchema(["macos", "windows", "linux"] as const),
+        browserBrand: enumSchema(["chrome", "edge"] as const),
+        browserVersion: stringSchema(),
+        userAgent: stringSchema(),
+        viewport: viewportSchema,
+        screenResolution: viewportSchema,
+        devicePixelRatio: { type: "number", minimum: 0.5 },
+        maxTouchPoints: integerSchema({ minimum: 0 }),
+        webglVendor: stringSchema(),
+        webglRenderer: stringSchema(),
+        fonts: arraySchema(stringSchema()),
+        canvasNoiseSeed: integerSchema({ minimum: 0 }),
+        audioNoiseSeed: integerSchema({ minimum: 0 }),
+        locale: stringSchema(),
+        timezoneId: stringSchema(),
+      },
+      {
+        title: "OpensteerStealthProfileInput",
+      },
+    ),
   },
   {
     title: "OpensteerBrowserContextOptions",
@@ -1559,12 +1671,69 @@ export const opensteerSemanticOperationSpecifications = [
     outputSchema: opensteerNetworkClearOutputSchema,
     requiredCapabilities: [],
   }),
+  defineSemanticOperationSpec<OpensteerNetworkMinimizeInput, OpensteerNetworkMinimizeOutput>({
+    name: "network.minimize",
+    description:
+      "Minimize a saved captured request by identifying the smallest viable header, cookie, query, and body-field set.",
+    inputSchema: opensteerNetworkMinimizeInputSchema,
+    outputSchema: opensteerNetworkMinimizeOutputSchema,
+    requiredCapabilities: [],
+    resolveRequiredCapabilities: (input) =>
+      resolveTransportRequiredCapabilities(input.transport, "session-http"),
+  }),
+  defineSemanticOperationSpec<OpensteerNetworkDiffInput, OpensteerNetworkDiffOutput>({
+    name: "network.diff",
+    description:
+      "Compare two captured requests and responses field-by-field with entropy analysis for likely encrypted values.",
+    inputSchema: opensteerNetworkDiffInputSchema,
+    outputSchema: opensteerNetworkDiffOutputSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerTransportProbeInput, OpensteerTransportProbeOutput>({
+    name: "network.probe",
+    description:
+      "Probe a captured request across transport layers and recommend the lightest working execution path.",
+    inputSchema: opensteerTransportProbeInputSchema,
+    outputSchema: opensteerTransportProbeOutputSchema,
+    requiredCapabilities: [],
+  }),
   defineSemanticOperationSpec<OpensteerCaptureScriptsInput, OpensteerCaptureScriptsOutput>({
     name: "scripts.capture",
     description: "Capture inline and external script sources from the current page and run.",
     inputSchema: opensteerCaptureScriptsInputSchema,
     outputSchema: opensteerCaptureScriptsOutputSchema,
     requiredCapabilities: ["inspect.html", "inspect.network", "inspect.networkBodies"],
+  }),
+  defineSemanticOperationSpec<OpensteerScriptBeautifyInput, OpensteerScriptBeautifyOutput>({
+    name: "scripts.beautify",
+    description: "Beautify captured or inline JavaScript through Prettier and optionally persist the transformed artifact.",
+    inputSchema: opensteerScriptBeautifyInputSchema,
+    outputSchema: opensteerScriptBeautifyOutputSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerScriptDeobfuscateInput, OpensteerScriptDeobfuscateOutput>({
+    name: "scripts.deobfuscate",
+    description:
+      "Deobfuscate captured or inline JavaScript through webcrack and optionally persist the transformed artifact.",
+    inputSchema: opensteerScriptDeobfuscateInputSchema,
+    outputSchema: opensteerScriptDeobfuscateOutputSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerScriptSandboxInput, OpensteerScriptSandboxOutput>({
+    name: "scripts.sandbox",
+    description:
+      "Execute captured or inline JavaScript inside a controlled VM sandbox with browser-style shims and AJAX interception.",
+    inputSchema: opensteerScriptSandboxInputSchema,
+    outputSchema: opensteerScriptSandboxOutputSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerCaptchaSolveInput, OpensteerCaptchaSolveOutput>({
+    name: "captcha.solve",
+    description:
+      "Detect, solve, and inject a supported CAPTCHA token into the current page through a pluggable solver provider.",
+    inputSchema: opensteerCaptchaSolveInputSchema,
+    outputSchema: opensteerCaptchaSolveOutputSchema,
+    requiredCapabilities: ["pages.manage"],
   }),
   defineSemanticOperationSpec<OpensteerInspectCookiesInput, readonly CookieRecord[]>({
     name: "inspect.cookies",
@@ -1597,16 +1766,8 @@ export const opensteerSemanticOperationSpecifications = [
     inputSchema: opensteerRawRequestInputSchema,
     outputSchema: opensteerRawRequestOutputSchema,
     requiredCapabilities: [],
-    resolveRequiredCapabilities: (input) => {
-      const transport = input.transport ?? "context-http";
-      if (transport === "direct-http") {
-        return [];
-      }
-      if (transport === "page-eval-http") {
-        return ["pages.manage"];
-      }
-      return ["transport.sessionHttp"];
-    },
+    resolveRequiredCapabilities: (input) =>
+      resolveTransportRequiredCapabilities(input.transport, "context-http"),
   }),
   defineSemanticOperationSpec<OpensteerInferRequestPlanInput, OpensteerRequestPlanRecord>({
     name: "request-plan.infer",

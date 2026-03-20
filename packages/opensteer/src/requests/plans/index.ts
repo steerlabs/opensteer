@@ -434,7 +434,6 @@ function normalizeTransport(
 ): OpensteerRequestPlanPayload["transport"] {
   switch (transport.kind) {
     case "context-http":
-    case "session-http":
       if (transport.requiresBrowser === false) {
         throw invalidRequestPlanError(`${transport.kind} transport always requiresBrowser`, {
           field: "transport.requiresBrowser",
@@ -443,6 +442,18 @@ function normalizeTransport(
       }
       return {
         kind: "context-http",
+        requiresBrowser: true,
+        ...(transport.cookieJar === undefined ? {} : { cookieJar: transport.cookieJar }),
+      };
+    case "session-http":
+      if (transport.requiresBrowser === false) {
+        throw invalidRequestPlanError("session-http transport always requiresBrowser", {
+          field: "transport.requiresBrowser",
+          transport: transport.kind,
+        });
+      }
+      return {
+        kind: "session-http",
         requiresBrowser: true,
         ...(transport.cookieJar === undefined ? {} : { cookieJar: transport.cookieJar }),
       };
@@ -457,6 +468,18 @@ function normalizeTransport(
         kind: "page-eval-http",
         requiresBrowser: true,
         requireSameOrigin: transport.requireSameOrigin ?? true,
+        ...(transport.cookieJar === undefined ? {} : { cookieJar: transport.cookieJar }),
+      };
+    case "matched-tls":
+      if (transport.requiresBrowser === false) {
+        throw invalidRequestPlanError("matched-tls transport always requiresBrowser", {
+          field: "transport.requiresBrowser",
+          transport: transport.kind,
+        });
+      }
+      return {
+        kind: "matched-tls",
+        requiresBrowser: true,
         ...(transport.cookieJar === undefined ? {} : { cookieJar: transport.cookieJar }),
       };
     case "direct-http":

@@ -258,3 +258,12 @@ export {
   OpensteerLocalProfileUnavailableError,
   unlockLocalBrowserProfile,
 } from "./local-browser/profile-inspection.js";
+export type { StealthProfile, StealthProfileOverrides } from "./local-browser/stealth-profiles.js";
+export { generateStealthProfile } from "./local-browser/stealth-profiles.js";
+export { generateStealthInitScript } from "./local-browser/stealth-init-script.js";
+export type { MousePath, MousePathPoint } from "./behavior/mouse.js";
+export { generateDragTrail, generateMousePath } from "./behavior/mouse.js";
+export type { TypingCadenceSample } from "./behavior/typing.js";
+export { generateTypingCadence } from "./behavior/typing.js";
+export type { ScrollPattern, ScrollPatternPoint } from "./behavior/scroll.js";
+export { generateScrollPattern } from "./behavior/scroll.js";

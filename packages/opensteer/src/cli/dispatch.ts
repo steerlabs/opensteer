@@ -68,6 +68,21 @@ export async function dispatchSemanticOperation(
       );
     case "network.save":
       return runtime.saveNetwork(input as Parameters<OpensteerSessionRuntime["saveNetwork"]>[0], options);
+    case "network.minimize":
+      return runtime.minimizeNetwork(
+        input as Parameters<OpensteerSessionRuntime["minimizeNetwork"]>[0],
+        options,
+      );
+    case "network.diff":
+      return runtime.diffNetwork(
+        input as Parameters<OpensteerSessionRuntime["diffNetwork"]>[0],
+        options,
+      );
+    case "network.probe":
+      return runtime.probeNetwork(
+        input as Parameters<OpensteerSessionRuntime["probeNetwork"]>[0],
+        options,
+      );
     case "network.clear":
       return runtime.clearNetwork(
         (input ?? {}) as Parameters<OpensteerSessionRuntime["clearNetwork"]>[0],
@@ -76,6 +91,26 @@ export async function dispatchSemanticOperation(
     case "scripts.capture":
       return runtime.captureScripts(
         (input ?? {}) as Parameters<OpensteerSessionRuntime["captureScripts"]>[0],
+        options,
+      );
+    case "scripts.beautify":
+      return runtime.beautifyScript(
+        input as Parameters<OpensteerSessionRuntime["beautifyScript"]>[0],
+        options,
+      );
+    case "scripts.deobfuscate":
+      return runtime.deobfuscateScript(
+        input as Parameters<OpensteerSessionRuntime["deobfuscateScript"]>[0],
+        options,
+      );
+    case "scripts.sandbox":
+      return runtime.sandboxScript(
+        input as Parameters<OpensteerSessionRuntime["sandboxScript"]>[0],
+        options,
+      );
+    case "captcha.solve":
+      return runtime.solveCaptcha(
+        input as Parameters<OpensteerSessionRuntime["solveCaptcha"]>[0],
         options,
       );
     case "inspect.cookies":

@@ -2,6 +2,8 @@ import type {
   CookieRecord,
   OpensteerAddInitScriptInput,
   OpensteerAddInitScriptOutput,
+  OpensteerCaptchaSolveInput,
+  OpensteerCaptchaSolveOutput,
   OpensteerCaptureScriptsInput,
   OpensteerCaptureScriptsOutput,
   OpensteerGetRecipeInput,
@@ -18,6 +20,10 @@ import type {
   OpensteerListAuthRecipesOutput,
   OpensteerNetworkClearInput,
   OpensteerNetworkClearOutput,
+  OpensteerNetworkDiffInput,
+  OpensteerNetworkDiffOutput,
+  OpensteerNetworkMinimizeInput,
+  OpensteerNetworkMinimizeOutput,
   OpensteerNetworkQueryInput,
   OpensteerNetworkQueryOutput,
   OpensteerNetworkSaveInput,
@@ -45,11 +51,19 @@ import type {
   OpensteerRunRecipeOutput,
   OpensteerRunAuthRecipeInput,
   OpensteerRunAuthRecipeOutput,
+  OpensteerScriptBeautifyInput,
+  OpensteerScriptBeautifyOutput,
+  OpensteerScriptDeobfuscateInput,
+  OpensteerScriptDeobfuscateOutput,
+  OpensteerScriptSandboxInput,
+  OpensteerScriptSandboxOutput,
   OpensteerSessionCloseOutput,
   OpensteerSessionOpenInput,
   OpensteerSessionOpenOutput,
   OpensteerSnapshotMode,
   OpensteerTargetInput,
+  OpensteerTransportProbeInput,
+  OpensteerTransportProbeOutput,
   OpensteerWriteRecipeInput,
   OpensteerWriteAuthRecipeInput,
   OpensteerWriteRequestPlanInput,
@@ -115,6 +129,12 @@ export type OpensteerNetworkQueryOptions = OpensteerNetworkQueryInput;
 export type OpensteerNetworkQueryResult = OpensteerNetworkQueryOutput;
 export type OpensteerNetworkSaveOptions = OpensteerNetworkSaveInput;
 export type OpensteerNetworkSaveResult = OpensteerNetworkSaveOutput;
+export type OpensteerNetworkMinimizeOptions = OpensteerNetworkMinimizeInput;
+export type OpensteerNetworkMinimizeResult = OpensteerNetworkMinimizeOutput;
+export type OpensteerNetworkDiffOptions = OpensteerNetworkDiffInput;
+export type OpensteerNetworkDiffResult = OpensteerNetworkDiffOutput;
+export type OpensteerNetworkProbeOptions = OpensteerTransportProbeInput;
+export type OpensteerNetworkProbeResult = OpensteerTransportProbeOutput;
 export type OpensteerNetworkClearOptions = OpensteerNetworkClearInput;
 export type OpensteerNetworkClearResult = OpensteerNetworkClearOutput;
 export type OpensteerRawRequestOptions = OpensteerRawRequestInput;
@@ -123,6 +143,14 @@ export type OpensteerRequestOptions = Omit<OpensteerRequestExecuteInput, "key">;
 export type OpensteerRequestResult = OpensteerRequestExecuteOutput;
 export type OpensteerCaptureScriptsOptions = OpensteerCaptureScriptsInput;
 export type OpensteerCaptureScriptsResult = OpensteerCaptureScriptsOutput;
+export type OpensteerScriptBeautifyOptions = OpensteerScriptBeautifyInput;
+export type OpensteerScriptBeautifyResult = OpensteerScriptBeautifyOutput;
+export type OpensteerScriptDeobfuscateOptions = OpensteerScriptDeobfuscateInput;
+export type OpensteerScriptDeobfuscateResult = OpensteerScriptDeobfuscateOutput;
+export type OpensteerScriptSandboxOptions = OpensteerScriptSandboxInput;
+export type OpensteerScriptSandboxResult = OpensteerScriptSandboxOutput;
+export type OpensteerCaptchaSolveOptions = OpensteerCaptchaSolveInput;
+export type OpensteerCaptchaSolveResult = OpensteerCaptchaSolveOutput;
 export type OpensteerAddInitScriptOptions = OpensteerAddInitScriptInput;
 
 export interface OpensteerOptions extends OpensteerRuntimeOptions {
@@ -317,6 +345,20 @@ export class Opensteer {
     return this.runtime.saveNetwork(input);
   }
 
+  async minimizeNetwork(
+    input: OpensteerNetworkMinimizeOptions,
+  ): Promise<OpensteerNetworkMinimizeResult> {
+    return this.runtime.minimizeNetwork(input);
+  }
+
+  async diffNetwork(input: OpensteerNetworkDiffOptions): Promise<OpensteerNetworkDiffResult> {
+    return this.runtime.diffNetwork(input);
+  }
+
+  async probeNetwork(input: OpensteerNetworkProbeOptions): Promise<OpensteerNetworkProbeResult> {
+    return this.runtime.probeNetwork(input);
+  }
+
   async clearNetwork(
     input: OpensteerNetworkClearOptions = {},
   ): Promise<OpensteerNetworkClearResult> {
@@ -327,6 +369,26 @@ export class Opensteer {
     input: OpensteerCaptureScriptsOptions = {},
   ): Promise<OpensteerCaptureScriptsResult> {
     return this.runtime.captureScripts(input);
+  }
+
+  async beautifyScript(
+    input: OpensteerScriptBeautifyOptions,
+  ): Promise<OpensteerScriptBeautifyResult> {
+    return this.runtime.beautifyScript(input);
+  }
+
+  async deobfuscateScript(
+    input: OpensteerScriptDeobfuscateOptions,
+  ): Promise<OpensteerScriptDeobfuscateResult> {
+    return this.runtime.deobfuscateScript(input);
+  }
+
+  async sandboxScript(input: OpensteerScriptSandboxOptions): Promise<OpensteerScriptSandboxResult> {
+    return this.runtime.sandboxScript(input);
+  }
+
+  async solveCaptcha(input: OpensteerCaptchaSolveOptions): Promise<OpensteerCaptchaSolveResult> {
+    return this.runtime.solveCaptcha(input);
   }
 
   async getCookies(input: { readonly urls?: readonly string[] } = {}): Promise<readonly CookieRecord[]> {

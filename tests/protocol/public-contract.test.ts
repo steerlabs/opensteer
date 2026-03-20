@@ -474,6 +474,15 @@ describe("semantic protocol descriptors", () => {
           transport: "context-http",
         },
       ),
+    ).toEqual(["inspect.cookies"]);
+    expect(
+      resolveSemanticRequiredCapabilities(
+        opensteerSemanticOperationSpecificationMap["request.raw"]!,
+        {
+          url: "https://example.com/api/data",
+          transport: "session-http",
+        },
+      ),
     ).toEqual(["transport.sessionHttp"]);
     expect(
       resolveSemanticRequiredCapabilities(

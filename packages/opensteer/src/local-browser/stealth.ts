@@ -1,3 +1,5 @@
+import { generateStealthInitScript } from "./stealth-init-script.js";
+import type { StealthProfile } from "./stealth-profiles.js";
 import type { ConnectedCdpBrowserContext } from "./types.js";
 
 /**
@@ -57,8 +59,16 @@ const STEALTH_INIT_SCRIPT = `(() => {
  */
 export async function injectBrowserStealthScripts(
   context: ConnectedCdpBrowserContext,
+  input: {
+    readonly profile?: StealthProfile;
+  } = {},
 ): Promise<void> {
   if (typeof context.addInitScript === "function") {
-    await context.addInitScript({ content: STEALTH_INIT_SCRIPT });
+    await context.addInitScript({
+      content:
+        input.profile === undefined
+          ? STEALTH_INIT_SCRIPT
+          : generateStealthInitScript(input.profile),
+    });
   }
 }

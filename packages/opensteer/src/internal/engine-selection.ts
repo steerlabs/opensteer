@@ -21,6 +21,10 @@ import {
   launchManagedBrowserSession,
   launchProfileBrowserSession,
 } from "../local-browser/shared-session.js";
+import {
+  generateStealthProfile,
+  type StealthProfile,
+} from "../local-browser/stealth-profiles.js";
 import type {
   ConnectedCdpBrowser,
   ConnectedCdpBrowserContext,
@@ -141,9 +145,20 @@ export const defaultOpensteerEngineFactory = createOpensteerEngineFactory(DEFAUL
 export function normalizeOpensteerBrowserContextOptions(
   context: OpensteerBrowserContextOptions | undefined,
 ): OpensteerBrowserContextOptions | undefined {
+  const stealthProfile = resolveStealthProfile(context?.stealthProfile);
+  const locale = context?.locale ?? stealthProfile?.locale;
+  const timezoneId = context?.timezoneId ?? stealthProfile?.timezoneId;
+  const userAgent = context?.userAgent ?? stealthProfile?.userAgent;
   return {
     ...(context ?? {}),
-    viewport: context?.viewport ?? OPENSTEER_COMPUTER_DISPLAY_PROFILE.preferredViewport,
+    ...(stealthProfile === undefined ? {} : { stealthProfile }),
+    ...(locale === undefined ? {} : { locale }),
+    ...(timezoneId === undefined ? {} : { timezoneId }),
+    ...(userAgent === undefined ? {} : { userAgent }),
+    viewport:
+      context?.viewport
+      ?? stealthProfile?.viewport
+      ?? OPENSTEER_COMPUTER_DISPLAY_PROFILE.preferredViewport,
   };
 }
 
@@ -173,7 +188,9 @@ async function createPlaywrightBrowserEngine(input: {
       attachedPage: asAttachedPage(input.playwrightModule, lease.page),
       closeAttachedContextOnSessionClose: false,
       closeBrowserOnDispose: false,
-      ...(input.context === undefined ? {} : { context: input.context }),
+      ...(input.context === undefined
+        ? {}
+        : { context: toEngineBrowserContextOptions(input.context) }),
     });
 
     return wrapBrowserLease(engine, lease);
@@ -193,11 +210,13 @@ async function acquireLocalBrowserLease(input: {
   }) => Promise<ConnectedCdpBrowser>;
 }): Promise<LocalBrowserLease> {
   const browser = input.browser;
+  const stealthProfile = resolveStealthProfile(input.context?.stealthProfile);
   if (browser === undefined || isManagedBrowserLaunchOptions(browser)) {
     const resolved = resolveManagedBrowserLaunch(browser ?? {});
     return launchManagedBrowserSession({
       ...resolved,
       args: mergeManagedLaunchArgs(resolved.args, input.context?.viewport) ?? [],
+      ...(stealthProfile === undefined ? {} : { stealthProfile }),
       connectBrowser: input.connectBrowser,
     });
   }
@@ -207,6 +226,7 @@ async function acquireLocalBrowserLease(input: {
     return launchProfileBrowserSession({
       ...resolved,
       args: mergeManagedLaunchArgs(resolved.args, input.context?.viewport) ?? [],
+      ...(stealthProfile === undefined ? {} : { stealthProfile }),
       connectBrowser: input.connectBrowser,
     });
   }
@@ -216,6 +236,7 @@ async function acquireLocalBrowserLease(input: {
     return launchClonedBrowserSession({
       ...resolved,
       args: mergeManagedLaunchArgs(resolved.args, input.context?.viewport) ?? [],
+      ...(stealthProfile === undefined ? {} : { stealthProfile }),
       connectBrowser: input.connectBrowser,
     });
   }
@@ -224,6 +245,7 @@ async function acquireLocalBrowserLease(input: {
     const resolved = resolveAttachBrowserLaunch(browser);
     return connectAttachBrowserSession({
       ...resolved,
+      ...(stealthProfile === undefined ? {} : { stealthProfile }),
       timeoutMs: 15_000,
       connectBrowser: input.connectBrowser,
     });
@@ -385,6 +407,50 @@ function stripWindowSizeArgs(args: readonly string[] | undefined): readonly stri
   }
 
   return filtered;
+}
+
+function toEngineBrowserContextOptions(
+  context: OpensteerBrowserContextOptions,
+): Omit<OpensteerBrowserContextOptions, "stealthProfile"> {
+  const { stealthProfile: _stealthProfile, ...engineContext } = context;
+  return engineContext;
+}
+
+function resolveStealthProfile(
+  input: OpensteerBrowserContextOptions["stealthProfile"] | undefined,
+): StealthProfile | undefined {
+  if (input === undefined) {
+    return undefined;
+  }
+
+  if (isStealthProfile(input)) {
+    return input;
+  }
+
+  return generateStealthProfile(input);
+}
+
+function isStealthProfile(
+  input: NonNullable<OpensteerBrowserContextOptions["stealthProfile"]>,
+): input is StealthProfile {
+  return (
+    input.id !== undefined
+    && input.platform !== undefined
+    && input.browserBrand !== undefined
+    && input.browserVersion !== undefined
+    && input.userAgent !== undefined
+    && input.viewport !== undefined
+    && input.screenResolution !== undefined
+    && input.devicePixelRatio !== undefined
+    && input.maxTouchPoints !== undefined
+    && input.webglVendor !== undefined
+    && input.webglRenderer !== undefined
+    && input.fonts !== undefined
+    && input.canvasNoiseSeed !== undefined
+    && input.audioNoiseSeed !== undefined
+    && input.locale !== undefined
+    && input.timezoneId !== undefined
+  );
 }
 
 function isMissingPackageError(error: unknown, packageName: string): boolean {
