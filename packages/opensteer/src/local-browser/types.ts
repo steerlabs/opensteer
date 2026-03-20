@@ -5,6 +5,7 @@ import type {
   OpensteerProfileBrowserLaunchOptions,
 } from "@opensteer/protocol";
 import type { BrowserBrandId } from "./browser-brands.js";
+import type { StealthProfile } from "./stealth-profiles.js";
 
 export interface LocalChromeProfileDescriptor {
   readonly directory: string;
@@ -99,6 +100,7 @@ export interface LaunchOwnedBrowserOptions {
   readonly args: readonly string[];
   readonly timeoutMs: number;
   readonly useRealKeychain?: boolean;
+  readonly stealthProfile?: StealthProfile;
 }
 
 export interface PreparedOwnedBrowserLaunch extends LaunchOwnedBrowserOptions {
@@ -115,6 +117,7 @@ export interface ConnectCdpBrowserOptions {
   readonly headers?: Readonly<Record<string, string>>;
   readonly freshTab: boolean;
   readonly ownedBrowser?: OwnedLocalChromeProcess;
+  readonly stealthProfile?: StealthProfile;
   readonly connectBrowser: (input: {
     readonly url: string;
     readonly timeoutMs: number;

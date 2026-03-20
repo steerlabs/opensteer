@@ -101,6 +101,7 @@ describe("Opensteer MCP server", () => {
         name: "opensteer_request_raw",
         arguments: {
           url: `${fixtureServer.url}/phase10/api/session-http?source=mcp`,
+          transport: "session-http",
           method: "POST",
           headers: [{ name: "x-csrf-token", value: "csrf-mcp" }],
           body: {

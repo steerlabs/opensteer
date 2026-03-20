@@ -21,7 +21,10 @@ import {
   assertValidSemanticOperationInput,
   createNetworkRequestId,
   createSessionRef,
+  type CaptchaDetectionResult,
   type CookieRecord,
+  type OpensteerCaptchaSolveInput,
+  type OpensteerCaptchaSolveOutput,
   type OpensteerActionResult,
   type OpensteerAddInitScriptInput,
   type OpensteerAddInitScriptOutput,
@@ -49,6 +52,10 @@ import {
   type OpensteerListAuthRecipesOutput,
   type OpensteerNetworkClearInput,
   type OpensteerNetworkClearOutput,
+  type OpensteerNetworkDiffInput,
+  type OpensteerNetworkDiffOutput,
+  type OpensteerNetworkMinimizeInput,
+  type OpensteerNetworkMinimizeOutput,
   type OpensteerNetworkQueryInput,
   type OpensteerNetworkQueryOutput,
   type OpensteerNetworkSaveInput,
@@ -86,12 +93,21 @@ import {
   type OpensteerSessionCloseOutput,
   type OpensteerSessionOpenInput,
   type OpensteerSessionOpenOutput,
+  type OpensteerScriptBeautifyInput,
+  type OpensteerScriptBeautifyOutput,
+  type OpensteerScriptDeobfuscateInput,
+  type OpensteerScriptDeobfuscateOutput,
+  type OpensteerScriptSandboxInput,
+  type OpensteerScriptSandboxOutput,
   type OpensteerSnapshotMode,
   type OpensteerTargetInput,
+  type OpensteerTransportProbeInput,
+  type OpensteerTransportProbeOutput,
   type OpensteerEvent,
   type OpensteerWriteRecipeInput,
   type StorageSnapshot,
   type TraceContext,
+  type TransportKind,
   type OpensteerWriteAuthRecipeInput,
   type OpensteerWriteRequestPlanInput,
   type HeaderEntry,
@@ -137,12 +153,25 @@ import type {
 import { inferRequestPlanFromNetworkRecord } from "../requests/inference.js";
 import { normalizeRequestPlanPayload } from "../requests/plans/index.js";
 import {
+  headerValue,
   parseStructuredResponseData,
   toProtocolBodyPayload,
   toProtocolRequestResponseResult,
   toProtocolRequestTransportResult,
 } from "../requests/shared.js";
+import { diffNetworkRecords } from "../network/diff.js";
 import { NetworkJournal } from "../network/journal.js";
+import {
+  materializePreparedMinimizationRequest,
+  minimizePreparedRequest,
+  prepareMinimizationRequest,
+  type PreparedMinimizationRequest,
+} from "../network/minimize.js";
+import {
+  TRANSPORT_PROBE_LADDER,
+  selectTransportProbeRecommendation,
+} from "../network/probe.js";
+import { executeMatchedTlsTransportRequest as executeMatchedTlsTransportRequestWithCurl } from "../requests/execution/matched-tls/index.js";
 import {
   assertValidOpensteerExtractionSchemaRoot,
   compileOpensteerExtractionPayload,
@@ -152,6 +181,13 @@ import {
 } from "./extraction.js";
 import { compileOpensteerSnapshot, type CompiledOpensteerSnapshot } from "./snapshot/compiler.js";
 import type { AuthRecipeRecord, RecipeRecord, RequestPlanRecord } from "../registry.js";
+import { beautifyScriptContent } from "../scripts/beautify.js";
+import { deobfuscateScriptContent } from "../scripts/deobfuscate.js";
+import { runScriptSandbox } from "../scripts/sandbox.js";
+import { createCapSolver } from "../captcha/solver-capsolver.js";
+import { createTwoCaptchaSolver } from "../captcha/solver-2captcha.js";
+import { detectCaptchaOnPage } from "../captcha/detect.js";
+import { injectCaptchaToken } from "../captcha/inject.js";
 
 type DisposableBrowserCoreEngine = BrowserCoreEngine & {
   dispose?: () => Promise<void>;
@@ -215,6 +251,13 @@ interface CookieJarEntry {
   readonly path: string;
   readonly secure: boolean;
   readonly expiresAt?: number;
+}
+
+interface ScriptTransformSource {
+  readonly content: string;
+  readonly artifactId?: string;
+  readonly data?: ScriptSourceArtifactData;
+  readonly scope?: ArtifactManifest["scope"];
 }
 
 export class OpensteerSessionRuntime {
@@ -1208,7 +1251,7 @@ export class OpensteerSessionRuntime {
               ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
             },
             timeout,
-            { ignoreLimit: true },
+            { ignoreLimit: true, redactSecretHeaders: false },
           );
           this.networkJournal.addTag(records, input.tag);
           return {
@@ -1327,6 +1370,458 @@ export class OpensteerSessionRuntime {
           sessionRef: this.sessionRef,
           pageRef,
         }),
+      });
+      throw error;
+    }
+  }
+
+  async minimizeNetwork(
+    input: OpensteerNetworkMinimizeInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerNetworkMinimizeOutput> {
+    assertValidSemanticOperationInput("network.minimize", input);
+
+    const transport = normalizeTransportKind(input.transport ?? "session-http");
+    const startedAt = Date.now();
+    try {
+      const output = await this.runWithOperationTimeout(
+        "network.minimize",
+        async (timeout) => {
+          const record = await this.resolveNetworkRecordByRecordId(input.recordId, timeout, {
+            includeBodies: true,
+            redactSecretHeaders: false,
+          });
+          const prepared = prepareMinimizationRequest(record, input.preserve);
+          const fullKeepState = createFullMinimizationKeepState(prepared);
+          const referenceRequest = materializePreparedMinimizationRequest(prepared, fullKeepState);
+          const baselineResponse = await this.executeAnalysisTransportRequest(
+            transport,
+            referenceRequest,
+            timeout,
+          );
+          const baselineFingerprint = buildSuccessFingerprint(baselineResponse);
+          const maxTrials = Math.max(1, input.maxTrials ?? 50);
+          const preserve = input.preserve;
+          const analysis = await minimizePreparedRequest({
+            prepared,
+            ...(preserve === undefined ? {} : { preserve }),
+            maxTrials: Math.max(0, maxTrials - 1),
+            test: async (request) => {
+              const response = await this.executeAnalysisTransportRequest(
+                transport,
+                request,
+                timeout,
+              );
+              return matchesSuccessFingerprint(
+                response,
+                baselineFingerprint,
+                input.successPolicy,
+              );
+            },
+          });
+
+          return {
+            recordId: input.recordId,
+            totalTrials: analysis.totalTrials + 1,
+            fields: analysis.fields,
+            minimizedPlan: buildMinimizedRequestPlan({
+              record,
+              request: analysis.minimizedRequest,
+              transport,
+              kept: analysis.kept,
+            }),
+          } satisfies OpensteerNetworkMinimizeOutput;
+        },
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "network.minimize",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          recordId: input.recordId,
+          totalTrials: output.totalTrials,
+          fieldCount: output.fields.length,
+        },
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "network.minimize",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+      throw error;
+    }
+  }
+
+  async diffNetwork(
+    input: OpensteerNetworkDiffInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerNetworkDiffOutput> {
+    assertValidSemanticOperationInput("network.diff", input);
+
+    const startedAt = Date.now();
+    try {
+      const output = await this.runWithOperationTimeout(
+        "network.diff",
+        async (timeout) => {
+          const [left, right] = await Promise.all([
+            this.resolveNetworkRecordByRecordId(input.leftRecordId, timeout, {
+              includeBodies: true,
+              redactSecretHeaders: false,
+            }),
+            this.resolveNetworkRecordByRecordId(input.rightRecordId, timeout, {
+              includeBodies: true,
+              redactSecretHeaders: false,
+            }),
+          ]);
+          return diffNetworkRecords(left, right, input);
+        },
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "network.diff",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          leftRecordId: input.leftRecordId,
+          rightRecordId: input.rightRecordId,
+          summary: output.summary,
+        },
+      });
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "network.diff",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+      });
+      throw error;
+    }
+  }
+
+  async probeNetwork(
+    input: OpensteerTransportProbeInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerTransportProbeOutput> {
+    assertValidSemanticOperationInput("network.probe", input);
+
+    const startedAt = Date.now();
+    try {
+      const output = await this.runWithOperationTimeout(
+        "network.probe",
+        async (timeout) => {
+          const record = await this.resolveNetworkRecordByRecordId(input.recordId, timeout, {
+            includeBodies: true,
+            redactSecretHeaders: false,
+          });
+          const prepared = prepareMinimizationRequest(record);
+          const request = materializePreparedMinimizationRequest(
+            prepared,
+            createFullMinimizationKeepState(prepared),
+          );
+          const baselineTransport =
+            this.currentBinding() === undefined ? "direct-http" : "session-http";
+          const baselineResponse = await this.executeAnalysisTransportRequest(
+            baselineTransport,
+            request,
+            timeout,
+          );
+          const baselineFingerprint = buildSuccessFingerprint(baselineResponse);
+
+          const results: OpensteerTransportProbeOutput["results"][number][] = [];
+          for (const transport of TRANSPORT_PROBE_LADDER) {
+            const trialStartedAt = Date.now();
+            try {
+              const response =
+                transport === baselineTransport
+                  ? baselineResponse
+                  : await this.executeAnalysisTransportRequest(
+                      transport,
+                      request,
+                      timeout,
+                    );
+              results.push({
+                transport,
+                status: response.status,
+                success: matchesSuccessFingerprint(response, baselineFingerprint),
+                durationMs: Date.now() - trialStartedAt,
+              });
+            } catch (error) {
+              results.push({
+                transport,
+                status: null,
+                success: false,
+                durationMs: Date.now() - trialStartedAt,
+                error: normalizeRuntimeErrorMessage(error),
+              });
+            }
+          }
+
+          return {
+            results,
+            recommendation: selectTransportProbeRecommendation(results),
+          } satisfies OpensteerTransportProbeOutput;
+        },
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "network.probe",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          recordId: input.recordId,
+          recommendation: output.recommendation,
+        },
+      });
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "network.probe",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+      });
+      throw error;
+    }
+  }
+
+  async beautifyScript(
+    input: OpensteerScriptBeautifyInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerScriptBeautifyOutput> {
+    assertValidSemanticOperationInput("scripts.beautify", input);
+
+    const startedAt = Date.now();
+    try {
+      const output = await this.runWithOperationTimeout(
+        "scripts.beautify",
+        async () => {
+          const source = await this.resolveScriptTransformSource(input);
+          const content = await beautifyScriptContent(source.content);
+          return this.buildScriptTransformOutput({
+            source,
+            transformedContent: content,
+            persist: input.persist !== false,
+            transform: "beautify",
+          });
+        },
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "scripts.beautify",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          bytesBefore: output.bytesBefore,
+          bytesAfter: output.bytesAfter,
+          ...(output.artifactId === undefined ? {} : { artifactId: output.artifactId }),
+        },
+      });
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "scripts.beautify",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+      });
+      throw error;
+    }
+  }
+
+  async deobfuscateScript(
+    input: OpensteerScriptDeobfuscateInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerScriptDeobfuscateOutput> {
+    assertValidSemanticOperationInput("scripts.deobfuscate", input);
+
+    const startedAt = Date.now();
+    try {
+      const output = await this.runWithOperationTimeout(
+        "scripts.deobfuscate",
+        async () => {
+          const source = await this.resolveScriptTransformSource(input);
+          const transformed = await deobfuscateScriptContent({
+            content: source.content,
+          });
+          const persisted = await this.buildScriptTransformOutput({
+            source,
+            transformedContent: transformed.content,
+            persist: input.persist !== false,
+            transform: "deobfuscate",
+          });
+          return {
+            ...persisted,
+            transforms: transformed.transforms,
+          } satisfies OpensteerScriptDeobfuscateOutput;
+        },
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "scripts.deobfuscate",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          bytesBefore: output.bytesBefore,
+          bytesAfter: output.bytesAfter,
+          transforms: output.transforms,
+          ...(output.artifactId === undefined ? {} : { artifactId: output.artifactId }),
+        },
+      });
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "scripts.deobfuscate",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+      });
+      throw error;
+    }
+  }
+
+  async sandboxScript(
+    input: OpensteerScriptSandboxInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerScriptSandboxOutput> {
+    assertValidSemanticOperationInput("scripts.sandbox", input);
+
+    const startedAt = Date.now();
+    try {
+      const output = await this.runWithOperationTimeout(
+        "scripts.sandbox",
+        async () => {
+          const source = await this.resolveScriptTransformSource(input);
+          return runScriptSandbox({
+            ...input,
+            content: source.content,
+          });
+        },
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "scripts.sandbox",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          capturedAjax: output.capturedAjax.length,
+          errors: output.errors.length,
+          durationMs: output.durationMs,
+        },
+      });
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "scripts.sandbox",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+      });
+      throw error;
+    }
+  }
+
+  async solveCaptcha(
+    input: OpensteerCaptchaSolveInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerCaptchaSolveOutput> {
+    assertValidSemanticOperationInput("captcha.solve", input);
+
+    const startedAt = Date.now();
+    try {
+      const output = await this.runWithOperationTimeout(
+        "captcha.solve",
+        async (timeout) => {
+          const pageRef = input.pageRef ?? (await this.ensurePageRef());
+          const captcha =
+            resolveExplicitCaptchaInput(input) ??
+            (await detectCaptchaOnPage(this.requireEngine(), pageRef));
+          if (captcha === undefined) {
+            throw new OpensteerProtocolError(
+              "not-found",
+              "no supported CAPTCHA challenge was detected on the current page",
+            );
+          }
+
+          const solver =
+            input.provider === "2captcha"
+              ? createTwoCaptchaSolver(input.apiKey)
+              : createCapSolver(input.apiKey);
+          const solved = await solver.solve({
+            type: captcha.type,
+            siteKey: captcha.siteKey,
+            pageUrl: captcha.pageUrl,
+            signal: timeout.signal,
+          });
+          const injected = await injectCaptchaToken({
+            engine: this.requireEngine(),
+            pageRef,
+            type: captcha.type,
+            token: solved.token,
+          });
+          return {
+            captcha,
+            token: solved.token,
+            injected,
+            provider: input.provider,
+          } satisfies OpensteerCaptchaSolveOutput;
+        },
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "captcha.solve",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          provider: output.provider,
+          captcha: output.captcha.type,
+          injected: output.injected,
+        },
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: input.pageRef ?? this.pageRef,
+        }),
+      });
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "captcha.solve",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
       });
       throw error;
     }
@@ -1874,7 +2369,9 @@ export class OpensteerSessionRuntime {
 
     const transport = normalizeTransportKind(input.transport ?? "context-http");
     const binding =
-      transport === "direct-http" ? this.currentBinding() : await this.ensureBrowserTransportBinding();
+      transportRequiresBrowserBinding(transport)
+        ? await this.ensureBrowserTransportBinding()
+        : this.currentBinding();
     const startedAt = Date.now();
 
     try {
@@ -2028,9 +2525,9 @@ export class OpensteerSessionRuntime {
       );
     }
     const binding =
-      normalizeTransportKind(plan.payload.transport.kind) === "direct-http"
-        ? this.currentBinding()
-        : await this.ensureBrowserTransportBinding();
+      transportRequiresBrowserBinding(normalizeTransportKind(plan.payload.transport.kind))
+        ? await this.ensureBrowserTransportBinding()
+        : this.currentBinding();
     const startedAt = Date.now();
 
     try {
@@ -2447,6 +2944,7 @@ export class OpensteerSessionRuntime {
     timeout: TimeoutExecutionContext,
     options: {
       readonly ignoreLimit?: boolean;
+      readonly redactSecretHeaders?: boolean;
     } = {},
   ): Promise<readonly NetworkQueryRecord[]> {
     const requestIds = resolveLiveQueryRequestIds(input, this.networkJournal);
@@ -2463,6 +2961,9 @@ export class OpensteerSessionRuntime {
           includeBodies: false,
           includeCurrentPageOnly,
           ...(requestIds === undefined ? {} : { requestIds }),
+          ...(options.redactSecretHeaders === undefined
+            ? {}
+            : { redactSecretHeaders: options.redactSecretHeaders }),
           ...buildEngineNetworkRecordFilters(input),
         },
         timeout.signal,
@@ -2497,6 +2998,9 @@ export class OpensteerSessionRuntime {
           includeBodies: true,
           requestIds: limited.map((record) => record.record.requestId),
           includeCurrentPageOnly,
+          ...(options.redactSecretHeaders === undefined
+            ? {}
+            : { redactSecretHeaders: options.redactSecretHeaders }),
         },
         timeout.signal,
       ),
@@ -2755,6 +3259,7 @@ export class OpensteerSessionRuntime {
     timeout: TimeoutExecutionContext,
     options: {
       readonly includeBodies: boolean;
+      readonly redactSecretHeaders?: boolean;
     },
   ): Promise<NetworkQueryRecord> {
     const root = await this.ensureRoot();
@@ -2766,7 +3271,12 @@ export class OpensteerSessionRuntime {
         limit: 1,
       },
       timeout,
-      { ignoreLimit: true },
+      {
+        ignoreLimit: true,
+        ...(options.redactSecretHeaders === undefined
+          ? {}
+          : { redactSecretHeaders: options.redactSecretHeaders }),
+      },
     );
     if (live.length > 0) {
       return live[0]!;
@@ -2801,6 +3311,7 @@ export class OpensteerSessionRuntime {
       readonly resourceType?: NetworkQueryRecord["record"]["resourceType"];
       readonly includeBodies: boolean;
       readonly includeCurrentPageOnly?: boolean;
+      readonly redactSecretHeaders?: boolean;
     },
     signal: AbortSignal,
   ): Promise<readonly NetworkQueryRecord[]> {
@@ -2829,7 +3340,7 @@ export class OpensteerSessionRuntime {
       signal,
     });
     return this.networkJournal.sync(records, {
-      redactSecretHeaders: true,
+      redactSecretHeaders: input.redactSecretHeaders ?? true,
     });
   }
 
@@ -2970,6 +3481,14 @@ export class OpensteerSessionRuntime {
       return this.executeDirectTransportRequestWithPersistence(request, timeout, input.cookieJar);
     }
 
+    if (transport === "matched-tls") {
+      return this.executeMatchedTlsTransportRequestWithPersistence(request, timeout, binding, input.cookieJar);
+    }
+
+    if (transport === "context-http") {
+      return this.executeContextTransportRequestWithPersistence(request, timeout, binding, input.cookieJar);
+    }
+
     if (transport === "page-eval-http") {
       const pageBinding = await this.resolvePageEvalBinding(request.url, input.pageRef);
       return this.executePageEvalTransportRequestWithPersistence(
@@ -3029,7 +3548,63 @@ export class OpensteerSessionRuntime {
   ): Promise<OpensteerRawRequestOutput> {
     const response = await this.executePageEvalTransportRequest(request, timeout, binding);
     this.updateCookieJarFromResponse(cookieJarName, toProtocolRequestResponseResult(response), request.url);
-    const recordId = await this.persistDirectTransportRecord(request, response, undefined);
+    const recordId = await this.persistDirectTransportRecord(
+      request,
+      response,
+      undefined,
+      "page-eval-http",
+      binding,
+    );
+    return {
+      recordId,
+      request: toProtocolRequestTransportResult(request),
+      response: toProtocolRequestResponseResult(response),
+      ...(parseStructuredResponseData(response) === undefined
+        ? {}
+        : { data: parseStructuredResponseData(response) }),
+    };
+  }
+
+  private async executeContextTransportRequestWithPersistence(
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly followRedirects?: boolean;
+    },
+    timeout: TimeoutExecutionContext,
+    binding: RuntimeBrowserBinding | undefined,
+    cookieJarName?: string,
+  ): Promise<OpensteerRawRequestOutput> {
+    const response = await this.executeContextTransportRequest(request, timeout, binding);
+    this.updateCookieJarFromResponse(cookieJarName, toProtocolRequestResponseResult(response), request.url);
+    const recordId = await this.persistDirectTransportRecord(request, response, undefined, "context-http", binding);
+    return {
+      recordId,
+      request: toProtocolRequestTransportResult(request),
+      response: toProtocolRequestResponseResult(response),
+      ...(parseStructuredResponseData(response) === undefined
+        ? {}
+        : { data: parseStructuredResponseData(response) }),
+    };
+  }
+
+  private async executeMatchedTlsTransportRequestWithPersistence(
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly followRedirects?: boolean;
+    },
+    timeout: TimeoutExecutionContext,
+    binding: RuntimeBrowserBinding | undefined,
+    cookieJarName?: string,
+  ): Promise<OpensteerRawRequestOutput> {
+    const response = await this.executeMatchedTlsTransportRequest(request, timeout, binding);
+    this.updateCookieJarFromResponse(cookieJarName, toProtocolRequestResponseResult(response), request.url);
+    const recordId = await this.persistDirectTransportRecord(request, response, undefined, "matched-tls", binding);
     return {
       recordId,
       request: toProtocolRequestTransportResult(request),
@@ -3081,6 +3656,67 @@ export class OpensteerSessionRuntime {
     return toPageEvalTransportResponse(result.data);
   }
 
+  private async executeContextTransportRequest(
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly followRedirects?: boolean;
+    },
+    timeout: TimeoutExecutionContext,
+    binding: RuntimeBrowserBinding | undefined,
+  ): Promise<{
+    readonly url: string;
+    readonly status: number;
+    readonly statusText: string;
+    readonly headers: readonly HeaderEntry[];
+    readonly body?: BrowserBodyPayload;
+    readonly redirected: boolean;
+  }> {
+    const liveBinding = binding ?? (await this.ensureBrowserTransportBinding());
+    const cookies = await this.requireEngine().getCookies({
+      sessionRef: liveBinding.sessionRef,
+      urls: [request.url],
+    });
+    const requestWithCookies = applyBrowserCookiesToTransportRequest(request, cookies);
+    return timeout.runStep(() => executeDirectTransportRequest(requestWithCookies, timeout.signal));
+  }
+
+  private async executeMatchedTlsTransportRequest(
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly followRedirects?: boolean;
+    },
+    timeout: TimeoutExecutionContext,
+    binding: RuntimeBrowserBinding | undefined,
+  ): Promise<{
+    readonly url: string;
+    readonly status: number;
+    readonly statusText: string;
+    readonly headers: readonly HeaderEntry[];
+    readonly body?: BrowserBodyPayload;
+    readonly redirected: boolean;
+  }> {
+    const liveBinding = binding ?? (await this.ensureBrowserTransportBinding());
+    const cookies = await this.requireEngine().getCookies({
+      sessionRef: liveBinding.sessionRef,
+      urls: [request.url],
+    });
+    const requestWithCookies = applyBrowserCookiesToTransportRequest(request, cookies);
+    const cookieHeader = headerValue(requestWithCookies.headers ?? [], "cookie");
+    return timeout.runStep(() =>
+      executeMatchedTlsTransportRequestWithCurl({
+        request: omitTransportRequestHeader(requestWithCookies, "cookie"),
+        cookies: cookieHeaderToCookieRecords(cookieHeader, request.url, liveBinding.sessionRef),
+        signal: timeout.signal,
+      }),
+    );
+  }
+
   private async persistDirectTransportRecord(
     request: {
       readonly method: string;
@@ -3097,12 +3733,15 @@ export class OpensteerSessionRuntime {
       readonly redirected: boolean;
     },
     tag: string | undefined,
+    transportLabel = "direct-http",
+    binding?: RuntimeBrowserBinding,
   ): Promise<string> {
     const root = await this.ensureRoot();
     const now = Date.now();
     const recordId = `record:${randomUUID()}`;
-    const requestId = createNetworkRequestId(`direct-http-${randomUUID()}`);
-    const syntheticSessionRef = createSessionRef(`direct-http-${this.name}`);
+    const requestId = createNetworkRequestId(`${transportLabel}-${randomUUID()}`);
+    const syntheticSessionRef =
+      binding?.sessionRef ?? createSessionRef(`${transportLabel}-${this.name}`);
     const record: NetworkQueryRecord = {
       recordId,
       source: "saved",
@@ -3111,6 +3750,7 @@ export class OpensteerSessionRuntime {
         kind: "http",
         requestId,
         sessionRef: syntheticSessionRef,
+        ...(binding?.pageRef === undefined ? {} : { pageRef: binding.pageRef }),
         method: request.method,
         url: request.url,
         requestHeaders: request.headers ?? [],
@@ -3294,7 +3934,7 @@ export class OpensteerSessionRuntime {
     };
   }> {
     const transportKind = normalizeTransportKind(plan.payload.transport.kind);
-    if (transportKind === "context-http") {
+    if (transportKind === "session-http") {
       const liveBinding = binding ?? (await this.ensureBrowserTransportBinding());
       const baselineRequestIds = await this.readLiveRequestIds(timeout, {
         includeCurrentPageOnly: false,
@@ -3313,6 +3953,24 @@ export class OpensteerSessionRuntime {
       return {
         output: buildPlanExecuteOutput(plan, request, response.data),
         transportResponse: response.data,
+      };
+    }
+
+    if (transportKind === "context-http") {
+      const response = await this.executeContextTransportRequest(request, timeout, binding);
+      this.updateCookieJarFromResponse(cookieJarName, toProtocolRequestResponseResult(response), request.url);
+      return {
+        output: buildPlanExecuteOutput(plan, request, response),
+        transportResponse: response,
+      };
+    }
+
+    if (transportKind === "matched-tls") {
+      const response = await this.executeMatchedTlsTransportRequest(request, timeout, binding);
+      this.updateCookieJarFromResponse(cookieJarName, toProtocolRequestResponseResult(response), request.url);
+      return {
+        output: buildPlanExecuteOutput(plan, request, response),
+        transportResponse: response,
       };
     }
 
@@ -3670,7 +4328,7 @@ export class OpensteerSessionRuntime {
         const output = await this.executeRecipeRequest(
           {
             ...step.request,
-            transport: "context-http",
+            transport: "session-http",
           },
           variables,
           timeout,
@@ -3687,6 +4345,27 @@ export class OpensteerSessionRuntime {
           timeout,
         );
         return captureRecipeResponse(step, output.response, output.data);
+      }
+      case "solveCaptcha": {
+        const output = await this.solveCaptcha(
+          {
+            provider: step.provider,
+            apiKey: interpolateTemplate(step.apiKey, variables),
+            ...(step.pageRef === undefined ? {} : { pageRef: step.pageRef }),
+            ...(step.timeoutMs === undefined ? {} : { timeoutMs: step.timeoutMs }),
+            ...(step.type === undefined ? {} : { type: step.type }),
+            ...(step.siteKey === undefined
+              ? {}
+              : { siteKey: interpolateTemplate(step.siteKey, variables) }),
+            ...(step.pageUrl === undefined
+              ? {}
+              : { pageUrl: interpolateTemplate(step.pageUrl, variables) }),
+          },
+          {
+            signal: timeout.signal,
+          },
+        );
+        return step.saveAs === undefined ? {} : { variables: { [step.saveAs]: output.token } };
       }
       case "hook":
         return this.executeAuthRecipeHook(step, variables);
@@ -3788,7 +4467,7 @@ export class OpensteerSessionRuntime {
   private async executeRecipeRequest(
     requestInput: {
       readonly url: string;
-      readonly transport?: "context-http" | "direct-http" | "page-eval-http" | "session-http";
+      readonly transport?: TransportKind;
       readonly pageRef?: PageRef;
       readonly cookieJar?: string;
       readonly method?: string;
@@ -3813,11 +4492,26 @@ export class OpensteerSessionRuntime {
     switch (transport) {
       case "direct-http":
         return this.executeDirectTransportRequestWithPersistence(request, timeout, cookieJar);
+      case "matched-tls":
+        return this.executeMatchedTlsTransportRequestWithPersistence(
+          request,
+          timeout,
+          this.requireExistingBrowserBindingForRecovery(),
+          cookieJar,
+        );
       case "page-eval-http": {
         const binding = await this.resolvePageEvalBinding(request.url, requestInput.pageRef);
         return this.executePageEvalTransportRequestWithPersistence(request, timeout, binding, cookieJar);
       }
       case "context-http": {
+        return this.executeContextTransportRequestWithPersistence(
+          request,
+          timeout,
+          this.requireExistingBrowserBindingForRecovery(),
+          cookieJar,
+        );
+      }
+      case "session-http": {
         const binding = this.requireExistingBrowserBindingForRecovery();
         const output = await this.executeTransportRequestWithJournal(request, timeout, binding.sessionRef);
         this.updateCookieJarFromResponse(cookieJar, output.response, request.url);
@@ -3874,6 +4568,164 @@ export class OpensteerSessionRuntime {
           : { expiresAt: cookie.expiresAt }),
       })),
     );
+  }
+
+  private async executeAnalysisTransportRequest(
+    transport: TransportKind,
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly followRedirects?: boolean;
+    },
+    timeout: TimeoutExecutionContext,
+  ): Promise<{
+    readonly url: string;
+    readonly status: number;
+    readonly statusText: string;
+    readonly headers: readonly HeaderEntry[];
+    readonly body?: BrowserBodyPayload;
+    readonly redirected: boolean;
+  }> {
+    switch (transport) {
+      case "direct-http":
+        return timeout.runStep(() => executeDirectTransportRequest(request, timeout.signal));
+      case "matched-tls":
+        return this.executeMatchedTlsTransportRequest(request, timeout, this.currentBinding());
+      case "context-http":
+        return this.executeContextTransportRequest(request, timeout, this.currentBinding());
+      case "page-eval-http":
+        return this.executePageEvalTransportRequest(
+          request,
+          timeout,
+          await this.resolvePageEvalBinding(request.url, this.currentBinding()?.pageRef),
+        );
+      case "session-http": {
+        const binding = this.currentBinding() ?? (await this.ensureBrowserTransportBinding());
+        const output = await this.executeTransportRequestWithJournal(
+          request,
+          timeout,
+          binding.sessionRef,
+        );
+        return {
+          url: output.response.url,
+          status: output.response.status,
+          statusText: output.response.statusText,
+          headers: output.response.headers,
+          ...(output.response.body === undefined
+            ? {}
+            : {
+                body: createBodyPayload(
+                  new Uint8Array(Buffer.from(output.response.body.data, "base64")),
+                  {
+                    encoding: output.response.body.encoding,
+                    ...(output.response.body.mimeType === undefined
+                      ? {}
+                      : { mimeType: output.response.body.mimeType }),
+                    ...(output.response.body.charset === undefined
+                      ? {}
+                      : { charset: output.response.body.charset }),
+                    truncated: output.response.body.truncated,
+                    ...(output.response.body.originalByteLength === undefined
+                      ? {}
+                      : { originalByteLength: output.response.body.originalByteLength }),
+                  },
+                ),
+              }),
+          redirected: output.response.redirected,
+        };
+      }
+    }
+  }
+
+  private async resolveScriptTransformSource(
+    input: {
+      readonly artifactId?: string;
+      readonly content?: string;
+    },
+  ): Promise<ScriptTransformSource> {
+    if (typeof input.content === "string") {
+      return {
+        content: input.content,
+      };
+    }
+
+    if (input.artifactId === undefined) {
+      throw new OpensteerProtocolError(
+        "invalid-request",
+        "script transforms require either content or artifactId",
+      );
+    }
+
+    const root = await this.ensureRoot();
+    const artifact = await root.artifacts.read(input.artifactId);
+    if (artifact === undefined || artifact.payload.kind !== "script-source") {
+      throw new OpensteerProtocolError(
+        "not-found",
+        `script artifact ${input.artifactId} was not found`,
+        {
+          details: {
+            artifactId: input.artifactId,
+            kind: "script-source",
+          },
+        },
+      );
+    }
+
+    return {
+      content: artifact.payload.data.content,
+      artifactId: artifact.manifest.artifactId,
+      data: artifact.payload.data,
+      scope: artifact.manifest.scope,
+    };
+  }
+
+  private async buildScriptTransformOutput(input: {
+    readonly source: ScriptTransformSource;
+    readonly transformedContent: string;
+    readonly persist: boolean;
+    readonly transform: "beautify" | "deobfuscate";
+  }): Promise<OpensteerScriptBeautifyOutput> {
+    const root = await this.ensureRoot();
+    const bytesBefore = Buffer.byteLength(input.source.content, "utf8");
+    const bytesAfter = Buffer.byteLength(input.transformedContent, "utf8");
+    if (!input.persist) {
+      return {
+        content: input.transformedContent,
+        bytesBefore,
+        bytesAfter,
+      };
+    }
+
+    const scriptArtifact: ScriptSourceArtifactData = {
+      source: input.source.data?.source ?? "inline",
+      ...(input.source.data?.url === undefined ? {} : { url: input.source.data.url }),
+      ...(input.source.data?.type === undefined ? {} : { type: input.source.data.type }),
+      hash: sha256Hex(Buffer.from(input.transformedContent, "utf8")),
+      loadOrder: input.source.data?.loadOrder ?? 0,
+      content: input.transformedContent,
+    };
+    const provenance =
+      input.source.artifactId === undefined
+        ? undefined
+        : {
+            sourceArtifactId: input.source.artifactId,
+            transform: input.transform,
+          };
+    const manifest = await root.artifacts.writeStructured({
+      kind: "script-source",
+      ...(input.source.scope === undefined ? {} : { scope: input.source.scope }),
+      ...(provenance === undefined ? {} : { provenance }),
+      data: scriptArtifact,
+    });
+
+    return {
+      content: input.transformedContent,
+      artifactId: manifest.artifactId,
+      bytesBefore,
+      bytesAfter,
+    };
   }
 
   private applyCookieJarToTransportRequest(
@@ -3981,6 +4833,7 @@ export class OpensteerSessionRuntime {
           includeCurrentPageOnly: false,
           ...(this.pageRef === undefined ? {} : { pageRef: this.pageRef }),
           requestIds,
+          redactSecretHeaders: false,
         },
         new AbortController().signal,
       );
@@ -4762,9 +5615,388 @@ function normalizePageScriptScan(value: unknown): {
 }
 
 function normalizeTransportKind(
-  value: "context-http" | "direct-http" | "page-eval-http" | "session-http",
-): "context-http" | "direct-http" | "page-eval-http" {
-  return value === "session-http" ? "context-http" : value;
+  value: TransportKind,
+): TransportKind {
+  return value;
+}
+
+function transportRequiresBrowserBinding(value: TransportKind): boolean {
+  return value !== "direct-http";
+}
+
+function createFullMinimizationKeepState(
+  prepared: PreparedMinimizationRequest,
+): Parameters<typeof materializePreparedMinimizationRequest>[1] {
+  return {
+    headers: new Set(prepared.headerGroups.map((header) => `header:${header.name.trim().toLowerCase()}`)),
+    cookies: new Set(prepared.cookies.map((cookie) => `cookie:${cookie.name.trim().toLowerCase()}`)),
+    query: new Set(prepared.queryEntries.map((entry) => `query:${entry.name}`)),
+    bodyFields: new Set(prepared.bodyJsonEntries.map(([name]) => `body-field:${name}`)),
+  };
+}
+
+function buildSuccessFingerprint(response: {
+  readonly status: number;
+  readonly body?: BrowserBodyPayload;
+}): {
+  readonly status: number;
+  readonly structureHash?: string;
+} {
+  const bodyText = decodeBrowserBody(response.body);
+  return {
+    status: response.status,
+    ...(bodyText === undefined
+      ? {}
+      : (() => {
+          const structureHash = jsonStructureHash(bodyText);
+          return structureHash === undefined ? {} : { structureHash };
+        })()),
+  };
+}
+
+function matchesSuccessFingerprint(
+  response: {
+    readonly status: number;
+    readonly body?: BrowserBodyPayload;
+  },
+  fingerprint: {
+    readonly status: number;
+    readonly structureHash?: string;
+  },
+  policy?: OpensteerNetworkMinimizeInput["successPolicy"],
+): boolean {
+  const expectedStatuses = policy?.statusCodes ?? [fingerprint.status];
+  if (!expectedStatuses.includes(response.status)) {
+    return false;
+  }
+
+  const bodyText = decodeBrowserBody(response.body);
+  if (policy?.responseBodyIncludes?.some((value) => !(bodyText?.includes(value) ?? false))) {
+    return false;
+  }
+
+  const mustMatchStructure = policy?.responseStructureMatch ?? fingerprint.structureHash !== undefined;
+  if (!mustMatchStructure) {
+    return true;
+  }
+  return jsonStructureHash(bodyText) === fingerprint.structureHash;
+}
+
+function jsonStructureHash(bodyText: string | undefined): string | undefined {
+  if (bodyText === undefined) {
+    return undefined;
+  }
+  try {
+    return sha256Hex(Buffer.from(canonicalJsonString(jsonStructureShape(JSON.parse(bodyText))), "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+function jsonStructureShape(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => jsonStructureShape(entry));
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value as Record<string, unknown>)
+        .sort()
+        .map((key) => [key, jsonStructureShape((value as Record<string, unknown>)[key])]),
+    );
+  }
+  return typeof value;
+}
+
+function decodeBrowserBody(body: BrowserBodyPayload | undefined): string | undefined {
+  if (body === undefined) {
+    return undefined;
+  }
+  return Buffer.from(body.bytes).toString(resolveBrowserBodyEncoding(body.charset));
+}
+
+function resolveBrowserBodyEncoding(charset: string | undefined): BufferEncoding {
+  switch (charset?.trim().toLowerCase()) {
+    case "ascii":
+    case "latin1":
+    case "utf16le":
+    case "utf-16le":
+      return charset.replace("-", "").toLowerCase() as BufferEncoding;
+    case "utf8":
+    case "utf-8":
+    default:
+      return "utf8";
+  }
+}
+
+function buildMinimizedRequestPlan(input: {
+  readonly record: NetworkQueryRecord;
+  readonly request: {
+    readonly method: string;
+    readonly url: string;
+    readonly headers?: readonly HeaderEntry[];
+    readonly body?: BrowserBodyPayload;
+  };
+  readonly transport: TransportKind;
+  readonly kept: {
+    readonly headers: readonly string[];
+    readonly cookies: readonly string[];
+    readonly query: readonly string[];
+    readonly bodyFields: readonly string[];
+  };
+}): OpensteerWriteRequestPlanInput {
+  const url = new URL(input.request.url);
+  const headers = input.request.headers ?? [];
+  const requestContentType = headerValue(headers, "content-type") ?? input.request.body?.mimeType;
+  const body = buildMinimizedRequestPlanBody(input.request.body, requestContentType);
+  const responseContentType = headerValue(input.record.record.responseHeaders, "content-type");
+
+  return {
+    key: buildMinimizedRequestPlanKey(input.record),
+    version: "1.0.0",
+    ...(input.record.tags === undefined || input.record.tags.length === 0 ? {} : { tags: input.record.tags }),
+    provenance: {
+      source: "network-minimize",
+      sourceId: input.record.recordId,
+      ...(input.record.source === "saved" && input.record.savedAt !== undefined
+        ? { capturedAt: input.record.savedAt }
+        : {}),
+    },
+    lifecycle: "draft",
+    payload: normalizeRequestPlanPayload({
+      transport: {
+        kind: input.transport,
+      },
+      endpoint: {
+        method: input.request.method,
+        urlTemplate: `${url.origin}${url.pathname}`,
+        ...(url.searchParams.size === 0
+          ? {}
+          : {
+              defaultQuery: Array.from(url.searchParams.entries()).map(([name, value]) => ({
+                name,
+                value,
+              })),
+            }),
+        ...(headers.length === 0
+          ? {}
+          : {
+              defaultHeaders: headers.map((header) => ({
+                name: header.name,
+                value: header.value,
+              })),
+            }),
+      },
+      ...(body === undefined ? {} : { body }),
+      ...(typeof input.record.record.status !== "number"
+        ? {}
+        : {
+            response: {
+              status: input.record.record.status,
+              ...(responseContentType === undefined ? {} : { contentType: responseContentType }),
+            },
+          }),
+      ...(inferMinimizedPlanAuth(headers) === undefined
+        ? {}
+        : { auth: inferMinimizedPlanAuth(headers)! }),
+    }),
+  };
+}
+
+function buildMinimizedRequestPlanBody(
+  body: BrowserBodyPayload | undefined,
+  contentType: string | undefined,
+): OpensteerWriteRequestPlanInput["payload"]["body"] | undefined {
+  if (body === undefined) {
+    return undefined;
+  }
+  const bodyText = decodeBrowserBody(body) ?? "";
+  const normalizedContentType = contentType?.toLowerCase();
+  if (normalizedContentType?.includes("application/json") === true || normalizedContentType?.includes("+json") === true) {
+    try {
+      return {
+        kind: "json",
+        required: true,
+        ...(contentType === undefined ? {} : { contentType }),
+        template: toCanonicalJsonValue(JSON.parse(bodyText)),
+      };
+    } catch {
+      // Fall through to text body handling.
+    }
+  }
+  if (normalizedContentType?.includes("application/x-www-form-urlencoded") === true) {
+    const params = new URLSearchParams(bodyText);
+    return {
+      kind: "form",
+      required: true,
+      ...(contentType === undefined ? {} : { contentType }),
+      fields: Array.from(params.entries()).map(([name, value]) => ({
+        name,
+        value,
+      })),
+    };
+  }
+  return {
+    kind: "text",
+    required: true,
+    ...(contentType === undefined ? {} : { contentType }),
+    template: bodyText,
+  };
+}
+
+function inferMinimizedPlanAuth(
+  headers: readonly HeaderEntry[],
+): OpensteerWriteRequestPlanInput["payload"]["auth"] | undefined {
+  const headerNames = new Set(headers.map((header) => header.name.trim().toLowerCase()));
+  if (headerNames.has("authorization")) {
+    return {
+      strategy: "bearer-token",
+      description: "Inferred from a required Authorization header in the minimized request.",
+    };
+  }
+  if (headerNames.has("cookie")) {
+    return {
+      strategy: "session-cookie",
+      description: "Inferred from required cookies in the minimized request.",
+    };
+  }
+  if (headerNames.has("api-key") || headerNames.has("x-api-key") || headerNames.has("x-auth-token")) {
+    return {
+      strategy: "api-key",
+      description: "Inferred from a required API key style header in the minimized request.",
+    };
+  }
+  return undefined;
+}
+
+function buildMinimizedRequestPlanKey(record: NetworkQueryRecord): string {
+  const url = new URL(record.record.url);
+  const slug = `${record.record.method}-${url.hostname}${url.pathname}`
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  return `minimized-${slug || "request"}`;
+}
+
+function normalizeRuntimeErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function applyBrowserCookiesToTransportRequest(
+  request: {
+    readonly method: string;
+    readonly url: string;
+    readonly headers?: readonly HeaderEntry[];
+    readonly body?: BrowserBodyPayload;
+    readonly followRedirects?: boolean;
+  },
+  cookies: readonly CookieRecord[],
+): {
+  readonly method: string;
+  readonly url: string;
+  readonly headers?: readonly HeaderEntry[];
+  readonly body?: BrowserBodyPayload;
+  readonly followRedirects?: boolean;
+} {
+  if (cookies.length === 0) {
+    return request;
+  }
+  const existingCookieMap = new Map<string, string>();
+  for (const [name, value] of parseCookiePairs(headerValue(request.headers ?? [], "cookie"))) {
+    existingCookieMap.set(name, value);
+  }
+  for (const cookie of cookies) {
+    if (!existingCookieMap.has(cookie.name)) {
+      existingCookieMap.set(cookie.name, cookie.value);
+    }
+  }
+
+  const mergedCookieHeader = [...existingCookieMap.entries()]
+    .map(([name, value]) => `${name}=${value}`)
+    .join("; ");
+  const headers = [...(request.headers ?? [])];
+  setHeaderValue(headers, "cookie", mergedCookieHeader);
+  return {
+    ...request,
+    headers,
+  };
+}
+
+function omitTransportRequestHeader(
+  request: {
+    readonly method: string;
+    readonly url: string;
+    readonly headers?: readonly HeaderEntry[];
+    readonly body?: BrowserBodyPayload;
+    readonly followRedirects?: boolean;
+  },
+  headerName: string,
+): {
+  readonly method: string;
+  readonly url: string;
+  readonly headers?: readonly HeaderEntry[];
+  readonly body?: BrowserBodyPayload;
+  readonly followRedirects?: boolean;
+} {
+  const headers = (request.headers ?? []).filter(
+    (header) => header.name.toLowerCase() !== headerName.toLowerCase(),
+  );
+  return {
+    ...request,
+    ...(headers.length === 0 ? {} : { headers }),
+  };
+}
+
+function cookieHeaderToCookieRecords(
+  cookieHeader: string | undefined,
+  requestUrl: string,
+  sessionRef: SessionRef,
+): readonly CookieRecord[] {
+  const url = new URL(requestUrl);
+  return parseCookiePairs(cookieHeader).map(([name, value]) => ({
+    sessionRef,
+    name,
+    value,
+    domain: url.hostname,
+    path: defaultCookiePath(url.pathname),
+    secure: url.protocol === "https:",
+    httpOnly: false,
+    session: true,
+    expiresAt: null,
+  }));
+}
+
+function parseCookiePairs(cookieHeader: string | undefined): readonly [string, string][] {
+  if (cookieHeader === undefined || cookieHeader.trim().length === 0) {
+    return [];
+  }
+  return cookieHeader
+    .split(";")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0 && entry.includes("="))
+    .map((entry) => {
+      const separator = entry.indexOf("=");
+      return [entry.slice(0, separator).trim(), entry.slice(separator + 1).trim()] as const;
+    });
+}
+
+function resolveExplicitCaptchaInput(
+  input: OpensteerCaptchaSolveInput,
+): CaptchaDetectionResult | undefined {
+  if (input.type === undefined && input.siteKey === undefined && input.pageUrl === undefined) {
+    return undefined;
+  }
+  if (input.type === undefined || input.siteKey === undefined || input.pageUrl === undefined) {
+    throw new OpensteerProtocolError(
+      "invalid-request",
+      "explicit CAPTCHA solve input requires type, siteKey, and pageUrl together",
+    );
+  }
+  return {
+    type: input.type,
+    siteKey: input.siteKey,
+    pageUrl: input.pageUrl,
+  };
 }
 
 function serializeCookieJarHeader(

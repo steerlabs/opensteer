@@ -2,6 +2,8 @@ import type {
   CookieRecord,
   OpensteerAddInitScriptInput,
   OpensteerAddInitScriptOutput,
+  OpensteerCaptchaSolveInput,
+  OpensteerCaptchaSolveOutput,
   OpensteerComputerExecuteInput,
   OpensteerComputerExecuteOutput,
   OpensteerCaptureScriptsInput,
@@ -24,6 +26,10 @@ import type {
   OpensteerListRequestPlansOutput,
   OpensteerNetworkClearInput,
   OpensteerNetworkClearOutput,
+  OpensteerNetworkDiffInput,
+  OpensteerNetworkDiffOutput,
+  OpensteerNetworkMinimizeInput,
+  OpensteerNetworkMinimizeOutput,
   OpensteerNetworkQueryInput,
   OpensteerNetworkQueryOutput,
   OpensteerNetworkSaveInput,
@@ -50,9 +56,17 @@ import type {
   OpensteerRunRecipeOutput,
   OpensteerRunAuthRecipeInput,
   OpensteerRunAuthRecipeOutput,
+  OpensteerScriptBeautifyInput,
+  OpensteerScriptBeautifyOutput,
+  OpensteerScriptDeobfuscateInput,
+  OpensteerScriptDeobfuscateOutput,
+  OpensteerScriptSandboxInput,
+  OpensteerScriptSandboxOutput,
   OpensteerSessionCloseOutput,
   OpensteerSessionOpenInput,
   OpensteerSessionOpenOutput,
+  OpensteerTransportProbeInput,
+  OpensteerTransportProbeOutput,
   OpensteerWriteRecipeInput,
   OpensteerWriteAuthRecipeInput,
   OpensteerWriteRequestPlanInput,
@@ -163,6 +177,25 @@ export class CloudSessionProxy implements OpensteerSemanticRuntime {
     return this.requireClient().invoke("network.save", input);
   }
 
+  async minimizeNetwork(
+    input: OpensteerNetworkMinimizeInput,
+  ): Promise<OpensteerNetworkMinimizeOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("network.minimize", input);
+  }
+
+  async diffNetwork(input: OpensteerNetworkDiffInput): Promise<OpensteerNetworkDiffOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("network.diff", input);
+  }
+
+  async probeNetwork(
+    input: OpensteerTransportProbeInput,
+  ): Promise<OpensteerTransportProbeOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("network.probe", input);
+  }
+
   async clearNetwork(input: OpensteerNetworkClearInput = {}): Promise<OpensteerNetworkClearOutput> {
     await this.ensureSession();
     return this.requireClient().invoke("network.clear", input);
@@ -173,6 +206,30 @@ export class CloudSessionProxy implements OpensteerSemanticRuntime {
   ): Promise<OpensteerCaptureScriptsOutput> {
     await this.ensureSession();
     return this.requireClient().invoke("scripts.capture", input);
+  }
+
+  async beautifyScript(
+    input: OpensteerScriptBeautifyInput,
+  ): Promise<OpensteerScriptBeautifyOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("scripts.beautify", input);
+  }
+
+  async deobfuscateScript(
+    input: OpensteerScriptDeobfuscateInput,
+  ): Promise<OpensteerScriptDeobfuscateOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("scripts.deobfuscate", input);
+  }
+
+  async sandboxScript(input: OpensteerScriptSandboxInput): Promise<OpensteerScriptSandboxOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("scripts.sandbox", input);
+  }
+
+  async solveCaptcha(input: OpensteerCaptchaSolveInput): Promise<OpensteerCaptchaSolveOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("captcha.solve", input);
   }
 
   async getCookies(

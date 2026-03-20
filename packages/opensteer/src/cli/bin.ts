@@ -7,6 +7,7 @@ import {
   opensteerAuthRecipePayloadSchema,
   opensteerRequestPlanPayloadSchema,
   isPageRef,
+  sandboxAjaxRouteSchema,
   validateJsonSchema,
 } from "@opensteer/protocol";
 
@@ -21,6 +22,8 @@ import type {
   OpensteerRegistryProvenance,
   OpensteerRequestPlanLifecycle,
   OpensteerRequestPlanPayload,
+  SandboxAjaxRoute,
+  TransportKind,
 } from "@opensteer/protocol";
 
 import {
@@ -369,6 +372,84 @@ async function main(argv: readonly string[]): Promise<void> {
       return;
     }
 
+    case "network.minimize": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const recordId = readOptionalString(options.recordId);
+      if (!recordId) {
+        throw new Error("network minimize requires --record-id");
+      }
+      const statusCodes = parseIntegerCsvOption(readOptionalString(options.statusCodes));
+      const responseBodyIncludes = parseCsvOption(readOptionalString(options.responseBodyIncludes));
+      const preserve = parseCsvOption(readOptionalString(options.preserve));
+      const maxTrials = readOptionalNumber(options.maxTrials);
+      const result = await runtime.minimizeNetwork({
+        recordId,
+        ...(readOptionalString(options.transport) === undefined
+          ? {}
+          : { transport: parseRequestTransport(readOptionalString(options.transport)!) }),
+        ...(maxTrials === undefined ? {} : { maxTrials }),
+        ...(preserve === undefined ? {} : { preserve }),
+        ...(statusCodes === undefined &&
+        responseBodyIncludes === undefined &&
+        readOptionalBoolean(options.responseStructureMatch) !== true
+          ? {}
+          : {
+              successPolicy: {
+                ...(statusCodes === undefined ? {} : { statusCodes }),
+                ...(responseBodyIncludes === undefined ? {} : { responseBodyIncludes }),
+                ...(readOptionalBoolean(options.responseStructureMatch) === true
+                  ? { responseStructureMatch: true }
+                  : {}),
+              },
+            }),
+      });
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "network.diff": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const leftRecordId = readOptionalString(options.left);
+      const rightRecordId = readOptionalString(options.right);
+      if (!leftRecordId || !rightRecordId) {
+        throw new Error("network diff requires --left and --right");
+      }
+      const result = await runtime.diffNetwork({
+        leftRecordId,
+        rightRecordId,
+        ...(readOptionalString(options.scope) === undefined
+          ? {}
+          : { scope: readOptionalString(options.scope) as "headers" | "body" | "all" }),
+        ...(readOptionalBoolean(options.includeUnchanged) === true
+          ? { includeUnchanged: true }
+          : {}),
+      });
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "network.probe": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const recordId = readOptionalString(options.recordId);
+      if (!recordId) {
+        throw new Error("network probe requires --record-id");
+      }
+      const result = await runtime.probeNetwork({
+        recordId,
+      });
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
     case "scripts.capture": {
       const runtime = await resolveCliSemanticRuntime(
         sessionOptions,
@@ -393,6 +474,95 @@ async function main(argv: readonly string[]): Promise<void> {
         ...(readOptionalBoolean(options.noPersist) === true ? { persist: false } : {}),
       };
       const result = await runtime.captureScripts(captureInput);
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "scripts.beautify":
+    case "scripts.deobfuscate": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const artifactId = readOptionalString(options.artifactId);
+      const content = readOptionalString(options.content);
+      if (artifactId === undefined && content === undefined) {
+        throw new Error(`${invocation.commandId} requires --artifact-id or --content`);
+      }
+      const transformInput = {
+        ...(artifactId === undefined ? {} : { artifactId }),
+        ...(content === undefined ? {} : { content }),
+        ...(readOptionalBoolean(options.noPersist) === true ? { persist: false } : {}),
+      };
+      const result =
+        invocation.commandId === "scripts.beautify"
+          ? await runtime.beautifyScript(transformInput)
+          : await runtime.deobfuscateScript(transformInput);
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "scripts.sandbox": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const artifactId = readOptionalString(options.artifactId);
+      const content = readOptionalString(options.content);
+      if (artifactId === undefined && content === undefined) {
+        throw new Error("scripts sandbox requires --artifact-id or --content");
+      }
+      const pageCookies = readOptionalJsonObject(options.cookies);
+      const globals = readOptionalJsonObject(options.globals);
+      const ajaxRoutes = readOptionalJsonArray(options.ajaxRoutes, "--ajax-routes");
+      const timeoutMs = readOptionalNumber(options.timeoutMs);
+      const result = await runtime.sandboxScript({
+        ...(artifactId === undefined ? {} : { artifactId }),
+        ...(content === undefined ? {} : { content }),
+        ...(readOptionalString(options.fidelity) === undefined
+          ? {}
+          : { fidelity: readOptionalString(options.fidelity) as "minimal" | "standard" | "full" }),
+        ...(ajaxRoutes === undefined ? {} : { ajaxRoutes: parseSandboxAjaxRoutes(ajaxRoutes) }),
+        ...(pageCookies === undefined ? {} : { cookies: parseStringRecord(pageCookies, "--cookies") }),
+        ...(globals === undefined ? {} : { globals }),
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+        ...(readOptionalString(options.clockMode) === undefined
+          ? {}
+          : { clockMode: readOptionalString(options.clockMode) as "real" | "manual" }),
+      });
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "captcha.solve": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const provider = readOptionalString(options.provider);
+      const apiKey = readOptionalString(options.apiKey);
+      if (!provider || !apiKey) {
+        throw new Error("captcha solve requires --provider and --api-key");
+      }
+      const pageRef = readOptionalString(options.pageRef);
+      if (pageRef !== undefined && !isPageRef(pageRef)) {
+        throw new Error("--page-ref must be a valid page reference");
+      }
+      const timeoutMs = readOptionalNumber(options.timeoutMs);
+      const captchaType = readOptionalString(options.type);
+      const siteKey = readOptionalString(options.siteKey);
+      const pageUrl = readOptionalString(options.pageUrl);
+      const result = await runtime.solveCaptcha({
+        provider: provider as "2captcha" | "capsolver",
+        apiKey,
+        ...(pageRef === undefined ? {} : { pageRef }),
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+        ...(captchaType === undefined
+          ? {}
+          : { type: captchaType as "recaptcha-v2" | "hcaptcha" | "turnstile" }),
+        ...(siteKey === undefined ? {} : { siteKey }),
+        ...(pageUrl === undefined ? {} : { pageUrl }),
+      });
       await writeJsonOutput(result, readOptionalString(options.output));
       return;
     }
@@ -673,7 +843,7 @@ async function main(argv: readonly string[]): Promise<void> {
       const headers = parseHeaderEntries(readOptionalStrings(options.header));
       const rawRequestInput: {
         url: string;
-        transport?: "context-http" | "direct-http" | "page-eval-http" | "session-http";
+        transport?: TransportKind;
         method?: string;
         body?: OpensteerRequestBodyInput;
         followRedirects?: boolean;
@@ -1325,6 +1495,16 @@ function readOptionalJsonObject(value: unknown): Record<string, unknown> | undef
   return value as Record<string, unknown>;
 }
 
+function readOptionalJsonArray(value: unknown, label: string): readonly unknown[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be a JSON array`);
+  }
+  return value;
+}
+
 function readRequiredString(value: unknown, label: string): string {
   if (typeof value === "string") {
     return value;
@@ -1420,10 +1600,11 @@ function parseRequestPlanLifecycle(value: string): OpensteerRequestPlanLifecycle
 
 function parseRequestTransport(
   value: string,
-): "context-http" | "direct-http" | "page-eval-http" | "session-http" {
+): TransportKind {
   if (
-    value === "context-http" ||
     value === "direct-http" ||
+    value === "matched-tls" ||
+    value === "context-http" ||
     value === "page-eval-http" ||
     value === "session-http"
   ) {
@@ -1441,6 +1622,17 @@ function parseStringRecord(value: Record<string, unknown>, label: string): Recor
     parsed[key] = entry;
   }
   return parsed;
+}
+
+function parseSandboxAjaxRoutes(value: readonly unknown[]): readonly SandboxAjaxRoute[] {
+  return value.map((entry, index) => {
+    assertValidJsonObject<SandboxAjaxRoute>(
+      entry,
+      sandboxAjaxRouteSchema,
+      `--ajax-routes[${index}]`,
+    );
+    return entry;
+  });
 }
 
 function parseComputerAction(value: Record<string, unknown>): OpensteerComputerAction {
@@ -1550,6 +1742,20 @@ function parseCsvOption(value: string | undefined): readonly string[] | undefine
     .filter((entry) => entry.length > 0);
 
   return entries;
+}
+
+function parseIntegerCsvOption(value: string | undefined): readonly number[] | undefined {
+  const entries = parseCsvOption(value);
+  if (entries === undefined) {
+    return undefined;
+  }
+  return entries.map((entry) => {
+    const parsed = Number.parseInt(entry, 10);
+    if (!Number.isFinite(parsed)) {
+      throw new Error(`invalid integer value "${entry}"`);
+    }
+    return parsed;
+  });
 }
 
 function consumeTextPositional(positionals: readonly string[]): string | undefined {

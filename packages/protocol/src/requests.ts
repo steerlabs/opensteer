@@ -8,6 +8,8 @@ import {
   type NetworkQueryRecord,
   type NetworkResourceType,
 } from "./network.js";
+import type { CaptchaProvider, CaptchaType } from "./captcha.js";
+import { captchaProviderSchema, captchaTypeSchema } from "./captcha.js";
 import type { JsonSchema, JsonValue } from "./json.js";
 import { pageRefSchema, type PageRef } from "./identity.js";
 import {
@@ -22,6 +24,12 @@ import {
 } from "./json.js";
 
 export type OpensteerRequestScalar = string | number | boolean;
+export type TransportKind =
+  | "direct-http"
+  | "matched-tls"
+  | "context-http"
+  | "page-eval-http"
+  | "session-http";
 
 export interface OpensteerRequestEntry {
   readonly name: string;
@@ -40,7 +48,7 @@ export interface OpensteerRequestPlanParameter {
 }
 
 export interface OpensteerRequestPlanTransport {
-  readonly kind: "context-http" | "direct-http" | "page-eval-http" | "session-http";
+  readonly kind: TransportKind;
   readonly requiresBrowser?: boolean;
   readonly requireSameOrigin?: boolean;
   readonly cookieJar?: string;
@@ -186,7 +194,7 @@ export interface OpensteerRecipeStepResponseCapture {
 
 export interface OpensteerRecipeRequestStepInput {
   readonly url: string;
-  readonly transport?: "context-http" | "direct-http" | "page-eval-http" | "session-http";
+  readonly transport?: TransportKind;
   readonly pageRef?: PageRef;
   readonly cookieJar?: string;
   readonly method?: string;
@@ -290,6 +298,18 @@ export interface OpensteerAuthRecipeDirectRequestStep {
   readonly capture?: OpensteerRecipeStepResponseCapture;
 }
 
+export interface OpensteerRecipeSolveCaptchaStep {
+  readonly kind: "solveCaptcha";
+  readonly provider: CaptchaProvider;
+  readonly apiKey: string;
+  readonly pageRef?: PageRef;
+  readonly timeoutMs?: number;
+  readonly type?: CaptchaType;
+  readonly siteKey?: string;
+  readonly pageUrl?: string;
+  readonly saveAs?: string;
+}
+
 export interface OpensteerRecipeHookRef {
   readonly specifier: string;
   readonly export: string;
@@ -316,6 +336,7 @@ export type OpensteerRecipeStep =
   | OpensteerRecipeRequestStep
   | OpensteerAuthRecipeSessionRequestStep
   | OpensteerAuthRecipeDirectRequestStep
+  | OpensteerRecipeSolveCaptchaStep
   | OpensteerRecipeHookStep;
 
 export type OpensteerAuthRecipeStep = OpensteerRecipeStep;
@@ -508,7 +529,7 @@ export interface OpensteerRequestExecuteInput {
 }
 
 export interface OpensteerRawRequestInput {
-  readonly transport?: "context-http" | "direct-http" | "page-eval-http" | "session-http";
+  readonly transport?: TransportKind;
   readonly pageRef?: PageRef;
   readonly cookieJar?: string;
   readonly url: string;
@@ -614,7 +635,9 @@ export const opensteerRequestPlanParameterSchema: JsonSchema = objectSchema(
 
 export const opensteerRequestPlanTransportSchema: JsonSchema = objectSchema(
   {
-    kind: enumSchema(["context-http", "direct-http", "page-eval-http", "session-http"] as const),
+    kind: enumSchema(
+      ["direct-http", "matched-tls", "context-http", "page-eval-http", "session-http"] as const,
+    ),
     requiresBrowser: { type: "boolean" },
     requireSameOrigin: { type: "boolean" },
     cookieJar: stringSchema({ minLength: 1 }),
@@ -651,6 +674,13 @@ export const opensteerRequestPlanBodySchema: JsonSchema = objectSchema(
   },
   {
     title: "OpensteerRequestPlanBody",
+  },
+);
+
+export const transportKindSchema: JsonSchema = enumSchema(
+  ["direct-http", "matched-tls", "context-http", "page-eval-http", "session-http"] as const,
+  {
+    title: "TransportKind",
   },
 );
 
@@ -987,7 +1017,7 @@ const opensteerRecipeStepResponseCaptureSchema: JsonSchema = objectSchema(
 const opensteerRecipeRequestStepInputSchema: JsonSchema = objectSchema(
   {
     url: stringSchema({ minLength: 1 }),
-    transport: enumSchema(["context-http", "direct-http", "page-eval-http", "session-http"] as const),
+    transport: transportKindSchema,
     pageRef: pageRefSchema,
     cookieJar: stringSchema({ minLength: 1 }),
     method: stringSchema({ minLength: 1 }),
@@ -1180,6 +1210,23 @@ export const opensteerRecipeStepSchema: JsonSchema = oneOfSchema(
       {
         title: "OpensteerAuthRecipeDirectRequestStep",
         required: ["kind", "request"],
+      },
+    ),
+    objectSchema(
+      {
+        kind: enumSchema(["solveCaptcha"] as const),
+        provider: captchaProviderSchema,
+        apiKey: stringSchema({ minLength: 1 }),
+        pageRef: pageRefSchema,
+        timeoutMs: integerSchema({ minimum: 1 }),
+        type: captchaTypeSchema,
+        siteKey: stringSchema({ minLength: 1 }),
+        pageUrl: stringSchema({ minLength: 1 }),
+        saveAs: stringSchema({ minLength: 1 }),
+      },
+      {
+        title: "OpensteerRecipeSolveCaptchaStep",
+        required: ["kind", "provider", "apiKey"],
       },
     ),
     objectSchema(
@@ -1488,7 +1535,7 @@ export const opensteerRequestExecuteInputSchema: JsonSchema = objectSchema(
 
 export const opensteerRawRequestInputSchema: JsonSchema = objectSchema(
   {
-    transport: enumSchema(["context-http", "direct-http", "page-eval-http", "session-http"] as const),
+    transport: transportKindSchema,
     pageRef: pageRefSchema,
     cookieJar: stringSchema({ minLength: 1 }),
     url: stringSchema({ minLength: 1 }),

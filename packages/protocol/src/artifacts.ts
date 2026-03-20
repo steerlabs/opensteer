@@ -34,6 +34,11 @@ export type ArtifactRelation = "result" | "before" | "after" | "capture" | "evid
 
 export type ArtifactExternalLocation = ExternalBinaryLocation;
 
+export interface ArtifactProvenance {
+  readonly sourceArtifactId?: string;
+  readonly transform?: string;
+}
+
 export interface ScriptSourceArtifactData {
   readonly source: "inline" | "external" | "dynamic" | "worker";
   readonly url?: string;
@@ -60,6 +65,7 @@ interface OpensteerArtifactBase extends ArtifactContext {
   readonly artifactId: string;
   readonly kind: OpensteerArtifactKind;
   readonly createdAt: number;
+  readonly provenance?: ArtifactProvenance;
 }
 
 export interface ScreenshotArtifactRecord extends OpensteerArtifactBase {
@@ -145,6 +151,15 @@ function artifactBaseSchema(kind: OpensteerArtifactKind): Record<string, JsonSch
     artifactId: stringSchema(),
     kind: enumSchema([kind] as const),
     createdAt: integerSchema({ minimum: 0 }),
+    provenance: objectSchema(
+      {
+        sourceArtifactId: stringSchema({ minLength: 1 }),
+        transform: stringSchema({ minLength: 1 }),
+      },
+      {
+        title: "ArtifactProvenance",
+      },
+    ),
     sessionRef: sessionRefSchema,
     pageRef: pageRefSchema,
     frameRef: frameRefSchema,

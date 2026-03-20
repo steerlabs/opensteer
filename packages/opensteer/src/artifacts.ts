@@ -2,6 +2,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import type {
+  ArtifactProvenance,
   ArtifactReference,
   ArtifactRelation,
   CookieRecord,
@@ -42,6 +43,7 @@ export interface ArtifactManifest {
   readonly artifactId: string;
   readonly kind: OpensteerArtifactKind;
   readonly createdAt: number;
+  readonly provenance?: ArtifactProvenance;
   readonly scope: ArtifactScope;
   readonly mediaType: string;
   readonly payloadType: ArtifactPayloadType;
@@ -87,6 +89,7 @@ type WriteStructuredArtifactInputByKind<K extends StructuredArtifactKind> = {
   readonly artifactId?: string;
   readonly kind: K;
   readonly createdAt?: number;
+  readonly provenance?: ArtifactProvenance;
   readonly scope?: ArtifactScope;
   readonly mediaType?: string;
   readonly data: StructuredArtifactDataByKind[K];
@@ -100,6 +103,7 @@ export interface WriteBinaryArtifactInput {
   readonly artifactId?: string;
   readonly kind: "screenshot";
   readonly createdAt?: number;
+  readonly provenance?: ArtifactProvenance;
   readonly scope?: ArtifactScope;
   readonly mediaType: string;
   readonly data: Uint8Array;
@@ -139,6 +143,23 @@ function normalizeScope(scope: ArtifactScope | undefined): ArtifactScope {
   };
 }
 
+function normalizeProvenance(
+  provenance: ArtifactProvenance | undefined,
+): ArtifactProvenance | undefined {
+  if (provenance === undefined) {
+    return undefined;
+  }
+
+  return {
+    ...(provenance.sourceArtifactId === undefined
+      ? {}
+      : { sourceArtifactId: normalizeNonEmptyString("provenance.sourceArtifactId", provenance.sourceArtifactId) }),
+    ...(provenance.transform === undefined
+      ? {}
+      : { transform: normalizeNonEmptyString("provenance.transform", provenance.transform) }),
+  };
+}
+
 async function readStructuredPayload<TData>(objectPath: string): Promise<TData> {
   return JSON.parse(Buffer.from(await readBinaryFile(objectPath)).toString("utf8")) as TData;
 }
@@ -172,10 +193,12 @@ export class FilesystemArtifactStore implements OpensteerArtifactStore {
 
     await writeBufferIfMissing(objectPath, objectBytes);
 
+    const provenance = normalizeProvenance(input.provenance);
     const manifest: ArtifactManifest = {
       artifactId,
       kind: input.kind,
       createdAt: normalizeTimestamp("createdAt", input.createdAt ?? Date.now()),
+      ...(provenance === undefined ? {} : { provenance }),
       scope: normalizeScope(input.scope),
       mediaType: input.mediaType ?? "application/json",
       payloadType: "structured",
@@ -218,10 +241,12 @@ export class FilesystemArtifactStore implements OpensteerArtifactStore {
 
     await writeBufferIfMissing(objectPath, data);
 
+    const provenance = normalizeProvenance(input.provenance);
     const manifest: ArtifactManifest = {
       artifactId,
       kind: input.kind,
       createdAt: normalizeTimestamp("createdAt", input.createdAt ?? Date.now()),
+      ...(provenance === undefined ? {} : { provenance }),
       scope: normalizeScope(input.scope),
       mediaType,
       payloadType: "binary",
@@ -360,6 +385,7 @@ export class FilesystemArtifactStore implements OpensteerArtifactStore {
     const artifactBase = {
       artifactId: record.manifest.artifactId,
       createdAt: record.manifest.createdAt,
+      ...(record.manifest.provenance === undefined ? {} : { provenance: record.manifest.provenance }),
       ...(record.manifest.scope.sessionRef === undefined
         ? {}
         : { sessionRef: record.manifest.scope.sessionRef }),

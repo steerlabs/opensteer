@@ -182,6 +182,7 @@ async function launchPreparedOwnedBrowserSession(
       endpoint: ownedBrowser.browserEndpoint,
       freshTab: false,
       ownedBrowser,
+      ...(options.stealthProfile === undefined ? {} : { stealthProfile: options.stealthProfile }),
       timeoutMs: options.timeoutMs,
     });
 
@@ -209,7 +210,10 @@ async function connectBrowserSession(
 
   try {
     const context = getPrimaryContext(browser);
-    await injectBrowserStealthScripts(context);
+    await injectBrowserStealthScripts(
+      context,
+      options.stealthProfile === undefined ? {} : { profile: options.stealthProfile },
+    );
     const page = await getSessionPage(context, options.freshTab);
 
     return {

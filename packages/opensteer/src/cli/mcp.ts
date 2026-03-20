@@ -115,14 +115,21 @@ export async function runOpensteerMcpServer(options: {
 }
 
 function toSdkTool(tool: OpensteerMcpToolDescriptor): Tool {
+  const outputSchema = toSdkToolOutputSchema(tool.outputSchema);
   return {
     name: tool.name,
     title: tool.title,
     description: tool.description,
     inputSchema: tool.inputSchema as Tool["inputSchema"],
-    outputSchema: tool.outputSchema as Tool["outputSchema"],
+    ...(outputSchema === undefined ? {} : { outputSchema }),
     ...(tool.annotations === undefined ? {} : { annotations: tool.annotations }),
   };
+}
+
+function toSdkToolOutputSchema(
+  schema: OpensteerMcpToolDescriptor["outputSchema"],
+): Tool["outputSchema"] | undefined {
+  return schema.type === "object" ? (schema as Tool["outputSchema"]) : undefined;
 }
 
 async function createToolResult(

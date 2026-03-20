@@ -944,7 +944,7 @@ describe("Phase 6 SDK and CLI surfaces", () => {
       runCliCommandExpectFailure(rootDir, ["snapshot", "action", "--engine", "abp"]),
     ).resolves.toMatchObject({
       error: {
-        message: '--engine is only supported on "open".',
+        message: 'unknown option "--engine".',
       },
     });
   });
