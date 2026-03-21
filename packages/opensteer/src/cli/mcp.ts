@@ -19,7 +19,10 @@ import {
 } from "@opensteer/protocol";
 
 import { normalizeThrownOpensteerError } from "../internal/errors.js";
-import { DEFAULT_OPENSTEER_ENGINE, type OpensteerEngineName } from "../internal/engine-selection.js";
+import {
+  DEFAULT_OPENSTEER_ENGINE,
+  type OpensteerEngineName,
+} from "../internal/engine-selection.js";
 import { fileUriToPath } from "../internal/filesystem.js";
 import { createOpensteerSemanticRuntime } from "../sdk/runtime-resolution.js";
 import { dispatchSemanticOperation } from "./dispatch.js";

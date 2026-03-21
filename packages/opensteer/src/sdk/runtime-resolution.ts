@@ -26,10 +26,12 @@ export interface OpensteerResolvedRuntimeConfig {
   readonly cloud?: OpensteerCloudConfig;
 }
 
-export function resolveOpensteerRuntimeConfig(input: {
-  readonly cloud?: boolean | OpensteerCloudOptions;
-  readonly environmentMode?: string;
-} = {}): OpensteerResolvedRuntimeConfig {
+export function resolveOpensteerRuntimeConfig(
+  input: {
+    readonly cloud?: boolean | OpensteerCloudOptions;
+    readonly environmentMode?: string;
+  } = {},
+): OpensteerResolvedRuntimeConfig {
   const environmentMode = input.environmentMode ?? process.env.OPENSTEER_MODE;
   const mode = resolveOpensteerExecutionMode({
     cloud: input.cloud !== undefined && input.cloud !== false,
@@ -52,11 +54,13 @@ export function resolveOpensteerRuntimeConfig(input: {
   };
 }
 
-export function createOpensteerSemanticRuntime(input: {
-  readonly runtimeOptions?: OpensteerRuntimeOptions;
-  readonly engine?: OpensteerEngineName;
-  readonly cloud?: boolean | OpensteerCloudOptions;
-} = {}): OpensteerSemanticRuntime {
+export function createOpensteerSemanticRuntime(
+  input: {
+    readonly runtimeOptions?: OpensteerRuntimeOptions;
+    readonly engine?: OpensteerEngineName;
+    readonly cloud?: boolean | OpensteerCloudOptions;
+  } = {},
+): OpensteerSemanticRuntime {
   const runtimeOptions = input.runtimeOptions ?? {};
   const engine = input.engine ?? DEFAULT_OPENSTEER_ENGINE;
   const config = resolveOpensteerRuntimeConfig({
@@ -70,8 +74,6 @@ export function createOpensteerSemanticRuntime(input: {
 
   return new OpensteerSessionRuntime({
     ...runtimeOptions,
-    engineFactory:
-      runtimeOptions.engineFactory
-        ?? createOpensteerEngineFactory(engine),
+    engineFactory: runtimeOptions.engineFactory ?? createOpensteerEngineFactory(engine),
   });
 }

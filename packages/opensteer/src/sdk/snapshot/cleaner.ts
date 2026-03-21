@@ -279,9 +279,7 @@ function serializeForExtraction($: CheerioAPI, root: AnyNode): string {
     const attrText =
       attrKeys.length === 0
         ? ""
-        : ` ${attrKeys
-            .map((key) => `${key}="${escapeAttribute(attrs[key] || "")}"`)
-            .join(" ")}`;
+        : ` ${attrKeys.map((key) => `${key}="${escapeAttribute(attrs[key] || "")}"`).join(" ")}`;
 
     if (VOID_TAGS.has(tagName)) {
       lines.push(`${"  ".repeat(depth)}<${tagName}${attrText} />`);
@@ -379,7 +377,12 @@ export function cleanForExtraction(html: string): string {
   removeNoise($);
   removeComments($);
 
-  const $clean = cheerio.load($.html().replace(/\n{2,}/g, "\n").trim(), { xmlMode: false });
+  const $clean = cheerio.load(
+    $.html()
+      .replace(/\n{2,}/g, "\n")
+      .trim(),
+    { xmlMode: false },
+  );
 
   $clean("*").each(function stripAndRestoreExtractionAttrs() {
     const el = $clean(this as Element);
@@ -485,7 +488,9 @@ export function cleanForAction(html: string): string {
       return;
     }
 
-    const semanticIndicator = el.find('[aria-label], [title], [data-icon], [role="img"], svg').first();
+    const semanticIndicator = el
+      .find('[aria-label], [title], [data-icon], [role="img"], svg')
+      .first();
     if (semanticIndicator.length) {
       semanticIndicator.attr(indicatorMark, "1");
     }

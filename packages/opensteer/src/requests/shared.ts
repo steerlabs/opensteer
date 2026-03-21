@@ -64,9 +64,11 @@ export function normalizeHeaderName(name: string): string {
 
 export function isValidHttpHeaderName(name: string): boolean {
   const normalized = name.trim();
-  return normalized.length > 0 &&
+  return (
+    normalized.length > 0 &&
     !normalized.startsWith(":") &&
-    HTTP_HEADER_NAME_PATTERN.test(normalized);
+    HTTP_HEADER_NAME_PATTERN.test(normalized)
+  );
 }
 
 export function isSecretHeaderName(name: string): boolean {
@@ -103,9 +105,7 @@ export function redactHeaderEntries(
   );
 }
 
-export function toProtocolBodyPayload(
-  body: BrowserBodyPayload,
-): ProtocolBodyPayload {
+export function toProtocolBodyPayload(body: BrowserBodyPayload): ProtocolBodyPayload {
   return createBodyPayload(Buffer.from(body.bytes).toString("base64"), {
     encoding: body.encoding,
     ...(body.mimeType === undefined ? {} : { mimeType: body.mimeType }),
@@ -123,7 +123,7 @@ export function toProtocolNetworkRecord(
     readonly redactSecretHeaders?: boolean;
   } = {},
 ): ProtocolNetworkRecord {
-  const headers = options.redactSecretHeaders ?? false ? redactHeaderEntries : cloneHeaders;
+  const headers = (options.redactSecretHeaders ?? false) ? redactHeaderEntries : cloneHeaders;
   const requestBody =
     record.requestBody === undefined ? undefined : toProtocolBodyPayload(record.requestBody);
   const responseBody =
@@ -163,9 +163,7 @@ export function toProtocolNetworkRecord(
     ...(record.responseBodySkipReason === undefined
       ? {}
       : { responseBodySkipReason: record.responseBodySkipReason }),
-    ...(record.requestBodyError === undefined
-      ? {}
-      : { requestBodyError: record.requestBodyError }),
+    ...(record.requestBodyError === undefined ? {} : { requestBodyError: record.requestBodyError }),
     ...(record.responseBodyError === undefined
       ? {}
       : { responseBodyError: record.responseBodyError }),
@@ -276,9 +274,7 @@ export function decodeBodyText(body: BrowserBodyPayload | undefined): string | u
   return Buffer.from(body.bytes).toString(resolveTextEncoding(body.charset));
 }
 
-export function parseStructuredResponseData(
-  response: SessionTransportResponse,
-): unknown {
+export function parseStructuredResponseData(response: SessionTransportResponse): unknown {
   const contentType = headerValue(response.headers, "content-type") ?? response.body?.mimeType;
   if (response.body === undefined || contentType === undefined) {
     return undefined;

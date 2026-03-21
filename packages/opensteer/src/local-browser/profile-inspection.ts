@@ -169,9 +169,7 @@ export async function unlockLocalBrowserProfile(input: {
   });
 }
 
-export function formatLocalProfileInspectionMessage(
-  inspection: OpensteerLocalProfileInspection,
-): string {
+function formatLocalProfileInspectionMessage(inspection: OpensteerLocalProfileInspection): string {
   switch (inspection.status) {
     case "unsupported_default_user_data_dir":
       return 'The selected user-data-dir is a default Chromium-family browser profile. Use browser.kind="snapshot-session" or browser.kind="snapshot-authenticated" to launch from a copy, or browser.kind="attach-live" to connect to an already-debuggable browser.';

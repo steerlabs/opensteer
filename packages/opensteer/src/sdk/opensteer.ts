@@ -261,7 +261,9 @@ export class Opensteer {
     return this.runtime.goto(typeof input === "string" ? { url: input } : input);
   }
 
-  async evaluate(input: string | OpensteerPageEvaluateInput): Promise<OpensteerPageEvaluateOutput["value"]> {
+  async evaluate(
+    input: string | OpensteerPageEvaluateInput,
+  ): Promise<OpensteerPageEvaluateOutput["value"]> {
     const normalized =
       typeof input === "string"
         ? {
@@ -336,7 +338,9 @@ export class Opensteer {
     return this.runtime.queryNetwork(input);
   }
 
-  async waitForNetwork(input: OpensteerWaitForNetworkOptions): Promise<OpensteerNetworkQueryResult["records"][number]> {
+  async waitForNetwork(
+    input: OpensteerWaitForNetworkOptions,
+  ): Promise<OpensteerNetworkQueryResult["records"][number]> {
     const { timeoutMs, pollIntervalMs, ...query } = input;
     const timeoutAt = Date.now() + (timeoutMs ?? 30_000);
     const pollInterval = pollIntervalMs ?? 100;
@@ -356,11 +360,15 @@ export class Opensteer {
     }
   }
 
-  async waitForResponse(input: OpensteerWaitForNetworkOptions): Promise<OpensteerNetworkQueryResult["records"][number]> {
+  async waitForResponse(
+    input: OpensteerWaitForNetworkOptions,
+  ): Promise<OpensteerNetworkQueryResult["records"][number]> {
     return this.waitForNetwork(input);
   }
 
-  async waitForPage(input: OpensteerWaitForPageOptions = {}): Promise<OpensteerPageListOutput["pages"][number]> {
+  async waitForPage(
+    input: OpensteerWaitForPageOptions = {},
+  ): Promise<OpensteerPageListOutput["pages"][number]> {
     const baseline = new Set((await this.runtime.listPages()).pages.map((page) => page.pageRef));
     const timeoutAt = Date.now() + (input.timeoutMs ?? 30_000);
     const pollIntervalMs = input.pollIntervalMs ?? 100;
@@ -413,21 +421,15 @@ export class Opensteer {
     return this.runtime.solveReverse(input);
   }
 
-  async reverseReplay(
-    input: OpensteerReverseReplayOptions,
-  ): Promise<OpensteerReverseReplayResult> {
+  async reverseReplay(input: OpensteerReverseReplayOptions): Promise<OpensteerReverseReplayResult> {
     return this.runtime.replayReverse(input);
   }
 
-  async reverseExport(
-    input: OpensteerReverseExportOptions,
-  ): Promise<OpensteerReverseExportResult> {
+  async reverseExport(input: OpensteerReverseExportOptions): Promise<OpensteerReverseExportResult> {
     return this.runtime.exportReverse(input);
   }
 
-  async reverseReport(
-    input: OpensteerReverseReportOptions,
-  ): Promise<OpensteerReverseReportResult> {
+  async reverseReport(input: OpensteerReverseReportOptions): Promise<OpensteerReverseReportResult> {
     return this.runtime.getReverseReport(input);
   }
 
@@ -485,9 +487,7 @@ export class Opensteer {
     return this.runtime.captureScripts(input);
   }
 
-  async readArtifact(
-    input: OpensteerArtifactReadOptions,
-  ): Promise<OpensteerArtifactReadResult> {
+  async readArtifact(input: OpensteerArtifactReadOptions): Promise<OpensteerArtifactReadResult> {
     return this.runtime.readArtifact(input);
   }
 
@@ -511,7 +511,9 @@ export class Opensteer {
     return this.runtime.solveCaptcha(input);
   }
 
-  async getCookies(input: { readonly urls?: readonly string[] } = {}): Promise<readonly CookieRecord[]> {
+  async getCookies(
+    input: { readonly urls?: readonly string[] } = {},
+  ): Promise<readonly CookieRecord[]> {
     return this.runtime.getCookies(input);
   }
 
@@ -591,7 +593,9 @@ export class Opensteer {
     return this.requireOwnedInstrumentationRuntime("route").route(input);
   }
 
-  async interceptScript(input: OpensteerInterceptScriptOptions): Promise<OpensteerRouteRegistration> {
+  async interceptScript(
+    input: OpensteerInterceptScriptOptions,
+  ): Promise<OpensteerRouteRegistration> {
     return this.requireOwnedInstrumentationRuntime("interceptScript").interceptScript(input);
   }
 

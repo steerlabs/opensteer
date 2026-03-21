@@ -22,11 +22,15 @@ export async function readProfileLaunchMetadata(
     ) as Partial<LaunchMetadataRecord>;
     const owner = parseProcessOwner(raw.owner);
     return {
-      args: Array.isArray(raw.args) ? raw.args.filter((entry): entry is string => typeof entry === "string") : [],
+      args: Array.isArray(raw.args)
+        ? raw.args.filter((entry): entry is string => typeof entry === "string")
+        : [],
       executablePath: typeof raw.executablePath === "string" ? raw.executablePath : "",
       headless: raw.headless === true,
       owner: owner ?? undefined,
-      ...(typeof raw.profileDirectory === "string" ? { profileDirectory: raw.profileDirectory } : {}),
+      ...(typeof raw.profileDirectory === "string"
+        ? { profileDirectory: raw.profileDirectory }
+        : {}),
       userDataDir: typeof raw.userDataDir === "string" ? raw.userDataDir : resolve(userDataDir),
     };
   } catch {
@@ -34,9 +38,7 @@ export async function readProfileLaunchMetadata(
   }
 }
 
-export async function readLiveProfileLaunchMetadata(
-  userDataDir: string,
-): Promise<
+export async function readLiveProfileLaunchMetadata(userDataDir: string): Promise<
   | {
       readonly launchMetadata: LaunchMetadataRecord;
       readonly owner: ProcessOwner | undefined;
@@ -93,7 +95,13 @@ export async function withProfileLaunchLock<T>(
 }
 
 export function getProfileLaunchMetadataDir(userDataDir: string): string {
-  return join(homedir(), ".opensteer", "local-browser", "launches", buildProfileLaunchKey(userDataDir));
+  return join(
+    homedir(),
+    ".opensteer",
+    "local-browser",
+    "launches",
+    buildProfileLaunchKey(userDataDir),
+  );
 }
 
 export function getProfileLaunchMetadataPath(userDataDir: string): string {

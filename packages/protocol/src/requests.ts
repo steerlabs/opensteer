@@ -635,9 +635,13 @@ export const opensteerRequestPlanParameterSchema: JsonSchema = objectSchema(
 
 export const opensteerRequestPlanTransportSchema: JsonSchema = objectSchema(
   {
-    kind: enumSchema(
-      ["direct-http", "matched-tls", "context-http", "page-http", "session-http"] as const,
-    ),
+    kind: enumSchema([
+      "direct-http",
+      "matched-tls",
+      "context-http",
+      "page-http",
+      "session-http",
+    ] as const),
     requiresBrowser: { type: "boolean" },
     requireSameOrigin: { type: "boolean" },
     cookieJar: stringSchema({ minLength: 1 }),

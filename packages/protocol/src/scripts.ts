@@ -121,9 +121,12 @@ export const opensteerScriptDeobfuscateOutputSchema: JsonSchema = objectSchema(
   },
 );
 
-export const sandboxFidelitySchema: JsonSchema = enumSchema(["minimal", "standard", "full"] as const, {
-  title: "SandboxFidelity",
-});
+export const sandboxFidelitySchema: JsonSchema = enumSchema(
+  ["minimal", "standard", "full"] as const,
+  {
+    title: "SandboxFidelity",
+  },
+);
 
 export const sandboxAjaxModeSchema: JsonSchema = enumSchema(
   ["passthrough", "capture", "mock"] as const,

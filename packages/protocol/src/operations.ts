@@ -26,12 +26,7 @@ import {
 } from "./identity.js";
 import type { FrameInfo, PageInfo } from "./metadata.js";
 import { frameInfoSchema, pageInfoSchema } from "./metadata.js";
-import type {
-  BodyPayload,
-  HeaderEntry,
-  NetworkRecord,
-  NetworkResourceType,
-} from "./network.js";
+import type { BodyPayload, HeaderEntry, NetworkRecord, NetworkResourceType } from "./network.js";
 import {
   bodyPayloadSchema,
   headerEntrySchema,

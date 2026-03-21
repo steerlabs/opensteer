@@ -13,7 +13,9 @@ export interface PreparedBrowserProfileSyncCookies {
 export function prepareBrowserProfileSyncCookies(
   input: PrepareBrowserProfileSyncCookiesInput,
 ): PreparedBrowserProfileSyncCookies {
-  const filteredDomains = [...new Set((input.domains ?? []).map(normalizeCookieDomain).filter(Boolean))];
+  const filteredDomains = [
+    ...new Set((input.domains ?? []).map(normalizeCookieDomain).filter(Boolean)),
+  ];
   const deduped = new Map<string, PortableBrowserProfileCookieRecord>();
 
   for (const cookie of input.cookies) {

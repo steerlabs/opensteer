@@ -16,8 +16,6 @@ export function selectTransportProbeRecommendation(
   results: readonly TransportProbeResult[],
 ): OpensteerTransportProbeOutput["recommendation"] {
   return (
-    results.find((entry) => entry.success)?.transport ??
-    results.at(-1)?.transport ??
-    "session-http"
+    results.find((entry) => entry.success)?.transport ?? results.at(-1)?.transport ?? "session-http"
   );
 }

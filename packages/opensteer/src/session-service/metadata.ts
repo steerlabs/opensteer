@@ -53,7 +53,7 @@ export interface ParsedOpensteerServiceMetadata {
   readonly needsRewrite: boolean;
 }
 
-export function getOpensteerServiceDirectory(rootPath: string, name: string): string {
+function getOpensteerServiceDirectory(rootPath: string, name: string): string {
   return path.join(rootPath, "runtime", "sessions", encodeURIComponent(normalizeName(name)));
 }
 
@@ -276,14 +276,17 @@ function readRequiredAuthSource(
 function readMetadataVersion(
   record: Readonly<Record<string, unknown>>,
   metadataPath: string,
-): typeof OPENSTEER_SERVICE_METADATA_VERSION | typeof OPENSTEER_LEGACY_SERVICE_METADATA_VERSION | undefined {
+):
+  | typeof OPENSTEER_SERVICE_METADATA_VERSION
+  | typeof OPENSTEER_LEGACY_SERVICE_METADATA_VERSION
+  | undefined {
   const value = record.version;
   if (value === undefined) {
     return undefined;
   }
   if (
-    value === OPENSTEER_SERVICE_METADATA_VERSION
-    || value === OPENSTEER_LEGACY_SERVICE_METADATA_VERSION
+    value === OPENSTEER_SERVICE_METADATA_VERSION ||
+    value === OPENSTEER_LEGACY_SERVICE_METADATA_VERSION
   ) {
     return value;
   }

@@ -7,8 +7,6 @@ import { canonicalJsonString, toCanonicalJsonValue } from "../json.js";
 import type { DescriptorRecord, DescriptorRegistryStore } from "../registry.js";
 import type { FilesystemOpensteerRoot } from "../root.js";
 import {
-} from "../runtimes/dom/match-policy.js";
-import {
   sanitizeElementPath,
   type DomArrayFieldSelector,
   type DomArraySelector,
@@ -19,7 +17,11 @@ import {
   buildPersistedOpensteerExtractionPayload,
   type PersistableOpensteerExtractionField,
 } from "./extraction-consolidation.js";
-import { appendDataPathIndex } from "./extraction-data-path.js";
+import {
+  appendDataPathIndex,
+  inflateDataPathObject,
+  joinDataPath,
+} from "./extraction-data-path.js";
 import type { CompiledOpensteerSnapshotCounterRecord } from "./snapshot/compiler.js";
 
 interface OpensteerSchemaFieldByElement {
@@ -137,9 +139,7 @@ export function assertValidOpensteerExtractionSchemaRoot(schema: unknown): asser
   readonly [key: string]: OpensteerSchemaNode;
 } {
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
-    throw new Error(
-      "Invalid extraction schema: expected a JSON object at the top level.",
-    );
+    throw new Error("Invalid extraction schema: expected a JSON object at the top level.");
   }
 }
 
@@ -207,7 +207,10 @@ export function createOpensteerExtractionDescriptorStore(options: {
 }): OpensteerExtractionDescriptorStore {
   const namespace = normalizeNamespace(options.namespace);
   if (options.root) {
-    return new FilesystemOpensteerExtractionDescriptorStore(options.root.registry.descriptors, namespace);
+    return new FilesystemOpensteerExtractionDescriptorStore(
+      options.root.registry.descriptors,
+      namespace,
+    );
   }
 
   return new MemoryOpensteerExtractionDescriptorStore(namespace);
@@ -216,10 +219,9 @@ export function createOpensteerExtractionDescriptorStore(options: {
 async function collectPersistableFieldsFromSchemaObject(options: {
   readonly dom: DomRuntime;
   readonly pageRef: PageRef;
-  readonly latestSnapshotCounters: ReadonlyMap<
-    number,
-    CompiledOpensteerSnapshotCounterRecord
-  > | undefined;
+  readonly latestSnapshotCounters:
+    | ReadonlyMap<number, CompiledOpensteerSnapshotCounterRecord>
+    | undefined;
   readonly value: Record<string, unknown>;
   readonly path: string;
   readonly fields: PersistableOpensteerExtractionField[];
@@ -246,10 +248,9 @@ async function collectPersistableFieldsFromSchemaObject(options: {
 async function collectPersistableFieldsFromSchemaValue(options: {
   readonly dom: DomRuntime;
   readonly pageRef: PageRef;
-  readonly latestSnapshotCounters: ReadonlyMap<
-    number,
-    CompiledOpensteerSnapshotCounterRecord
-  > | undefined;
+  readonly latestSnapshotCounters:
+    | ReadonlyMap<number, CompiledOpensteerSnapshotCounterRecord>
+    | undefined;
   readonly value: unknown;
   readonly path: string;
   readonly fields: PersistableOpensteerExtractionField[];
@@ -330,10 +331,9 @@ async function collectPersistableFieldsFromSchemaValue(options: {
 async function compilePersistableSchemaField(options: {
   readonly dom: DomRuntime;
   readonly pageRef: PageRef;
-  readonly latestSnapshotCounters: ReadonlyMap<
-    number,
-    CompiledOpensteerSnapshotCounterRecord
-  > | undefined;
+  readonly latestSnapshotCounters:
+    | ReadonlyMap<number, CompiledOpensteerSnapshotCounterRecord>
+    | undefined;
   readonly field: OpensteerSchemaField;
   readonly path: string;
 }): Promise<PersistableOpensteerExtractionField> {
@@ -362,10 +362,9 @@ async function compilePersistableSchemaField(options: {
 async function resolveFieldPath(options: {
   readonly dom: DomRuntime;
   readonly pageRef: PageRef;
-  readonly latestSnapshotCounters: ReadonlyMap<
-    number,
-    CompiledOpensteerSnapshotCounterRecord
-  > | undefined;
+  readonly latestSnapshotCounters:
+    | ReadonlyMap<number, CompiledOpensteerSnapshotCounterRecord>
+    | undefined;
   readonly field: OpensteerSchemaFieldByElement | OpensteerSchemaFieldBySelector;
   readonly path: string;
 }): Promise<ElementPath> {
@@ -418,9 +417,7 @@ async function resolveFieldPath(options: {
   );
 }
 
-function isPersistedObjectNode(
-  value: unknown,
-): value is PersistedOpensteerExtractionObjectNode {
+function isPersistedObjectNode(value: unknown): value is PersistedOpensteerExtractionObjectNode {
   return (
     !!value &&
     typeof value === "object" &&
@@ -517,9 +514,7 @@ async function extractPersistedArrayNode(
           : { attribute: descriptor.selector.attribute }),
       })) satisfies readonly DomArrayFieldSelector[];
     const sourceFields = descriptors
-      .filter(
-        (descriptor): descriptor is ArrayItemSourceDescriptor => descriptor.kind === "source",
-      )
+      .filter((descriptor): descriptor is ArrayItemSourceDescriptor => descriptor.kind === "source")
       .map((descriptor) => ({
         key: descriptor.path,
         source: "current_url",
@@ -646,7 +641,9 @@ function normalizeSchemaField(value: unknown): OpensteerSchemaField | null {
     return null;
   }
   if (targetCount !== 1) {
-    throw new Error("Extraction field descriptors must specify exactly one of element, selector, or source.");
+    throw new Error(
+      "Extraction field descriptors must specify exactly one of element, selector, or source.",
+    );
   }
 
   const attribute =
@@ -670,7 +667,9 @@ function normalizeSchemaField(value: unknown): OpensteerSchemaField | null {
 
   const element = Number(raw.element);
   if (!Number.isInteger(element) || element < 1) {
-    throw new Error(`Extraction field element must be a positive integer, received ${String(raw.element)}.`);
+    throw new Error(
+      `Extraction field element must be a positive integer, received ${String(raw.element)}.`,
+    );
   }
 
   return {
@@ -768,7 +767,9 @@ function normalizePersistedExtractionNode(
       $array: {
         variants: variantsRaw.map((variant, index) => {
           if (!variant || typeof variant !== "object" || Array.isArray(variant)) {
-            throw new Error(`Invalid persisted extraction array variant at "${label}[${String(index)}]".`);
+            throw new Error(
+              `Invalid persisted extraction array variant at "${label}[${String(index)}]".`,
+            );
           }
 
           const rawVariant = variant as Record<string, unknown>;
@@ -917,7 +918,8 @@ class MemoryOpensteerExtractionDescriptorStore implements OpensteerExtractionDes
       payload,
     };
 
-    const versions = this.recordsByKey.get(key) ?? new Map<string, OpensteerExtractionDescriptorRecord>();
+    const versions =
+      this.recordsByKey.get(key) ?? new Map<string, OpensteerExtractionDescriptorRecord>();
     versions.set(version, record);
     this.recordsByKey.set(key, versions);
     this.latestByKey.set(key, record);
@@ -956,159 +958,3 @@ interface DataPathIndexToken {
 }
 
 type DataPathToken = DataPathPropertyToken | DataPathIndexToken;
-
-function joinDataPath(base: string, key: string): string {
-  const normalizedBase = base.trim();
-  const normalizedKey = key.trim();
-  if (normalizedBase.length === 0) {
-    return normalizedKey;
-  }
-  if (normalizedKey.length === 0) {
-    return normalizedBase;
-  }
-  return `${normalizedBase}.${normalizedKey}`;
-}
-
-function parseDataPath(path: string): DataPathToken[] | null {
-  const input = path.trim();
-  if (input.length === 0) {
-    return [];
-  }
-  if (input.includes("..") || input.startsWith(".") || input.endsWith(".")) {
-    return null;
-  }
-
-  const tokens: DataPathToken[] = [];
-  let cursor = 0;
-  while (cursor < input.length) {
-    const char = input[cursor];
-    if (char === ".") {
-      cursor += 1;
-      continue;
-    }
-
-    if (char === "[") {
-      const close = input.indexOf("]", cursor + 1);
-      if (close === -1) {
-        return null;
-      }
-
-      const rawIndex = input.slice(cursor + 1, close).trim();
-      if (!/^\d+$/.test(rawIndex)) {
-        return null;
-      }
-
-      tokens.push({
-        kind: "index",
-        index: Number.parseInt(rawIndex, 10),
-      });
-      cursor = close + 1;
-      continue;
-    }
-
-    let end = cursor;
-    while (end < input.length && input[end] !== "." && input[end] !== "[") {
-      end += 1;
-    }
-
-    const key = input.slice(cursor, end).trim();
-    if (key.length === 0) {
-      return null;
-    }
-
-    tokens.push({
-      kind: "prop",
-      key,
-    });
-    cursor = end;
-  }
-
-  return tokens;
-}
-
-function inflateDataPathObject(flat: Readonly<Record<string, unknown>>): unknown {
-  let root: unknown = {};
-  let initialized = false;
-
-  for (const [path, value] of Object.entries(flat)) {
-    const tokens = parseDataPath(path);
-    if (!tokens || tokens.length === 0) {
-      continue;
-    }
-
-    if (!initialized) {
-      root = tokens[0]?.kind === "index" ? [] : {};
-      initialized = true;
-    }
-
-    assignDataPathValue(root, tokens, value);
-  }
-
-  return initialized ? root : {};
-}
-
-function assignDataPathValue(
-  root: unknown,
-  tokens: readonly DataPathToken[],
-  value: unknown,
-): void {
-  let current: unknown = root;
-
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index];
-    const next = tokens[index + 1];
-    const isLast = index === tokens.length - 1;
-    if (!token) {
-      return;
-    }
-
-    if (token.kind === "prop") {
-      if (!current || typeof current !== "object" || Array.isArray(current)) {
-        return;
-      }
-
-      const objectRef = current as Record<string, unknown>;
-      if (isLast) {
-        objectRef[token.key] = value;
-        return;
-      }
-
-      if (next?.kind === "index") {
-        if (!Array.isArray(objectRef[token.key])) {
-          objectRef[token.key] = [];
-        }
-      } else if (
-        !objectRef[token.key] ||
-        typeof objectRef[token.key] !== "object" ||
-        Array.isArray(objectRef[token.key])
-      ) {
-        objectRef[token.key] = {};
-      }
-
-      current = objectRef[token.key];
-      continue;
-    }
-
-    if (!Array.isArray(current)) {
-      return;
-    }
-    if (isLast) {
-      current[token.index] = value;
-      return;
-    }
-
-    if (next?.kind === "index") {
-      if (!Array.isArray(current[token.index])) {
-        current[token.index] = [];
-      }
-    } else if (
-      !current[token.index] ||
-      typeof current[token.index] !== "object" ||
-      Array.isArray(current[token.index])
-    ) {
-      current[token.index] = {};
-    }
-
-    current = current[token.index];
-  }
-}

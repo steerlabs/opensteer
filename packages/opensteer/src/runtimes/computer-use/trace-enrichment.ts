@@ -54,9 +54,7 @@ export async function enrichComputerUseTrace(input: {
   };
 }
 
-function toTracePoints(
-  action: OpensteerComputerAction,
-): readonly {
+function toTracePoints(action: OpensteerComputerAction): readonly {
   readonly role: OpensteerComputerTracePoint["role"];
   readonly point: Point;
 }[] {

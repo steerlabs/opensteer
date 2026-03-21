@@ -1807,13 +1807,15 @@ export const opensteerSemanticOperationSpecifications = [
   }),
   defineSemanticOperationSpec<OpensteerReversePackageListInput, OpensteerReversePackageListOutput>({
     name: "reverse.package.list",
-    description:
-      "List reverse-engineering packages by case, key, kind, or readiness.",
+    description: "List reverse-engineering packages by case, key, kind, or readiness.",
     inputSchema: opensteerReversePackageListInputSchema,
     outputSchema: opensteerReversePackageListOutputSchema,
     requiredCapabilities: [],
   }),
-  defineSemanticOperationSpec<OpensteerReversePackagePatchInput, OpensteerReversePackagePatchOutput>({
+  defineSemanticOperationSpec<
+    OpensteerReversePackagePatchInput,
+    OpensteerReversePackagePatchOutput
+  >({
     name: "reverse.package.patch",
     description:
       "Write a new immutable reverse-engineering package revision by patching editable workflow, resolver, validator, and evidence sections.",
@@ -1870,7 +1872,8 @@ export const opensteerSemanticOperationSpecifications = [
   }),
   defineSemanticOperationSpec<OpensteerScriptBeautifyInput, OpensteerScriptBeautifyOutput>({
     name: "scripts.beautify",
-    description: "Beautify captured or inline JavaScript through Prettier and optionally persist the transformed artifact.",
+    description:
+      "Beautify captured or inline JavaScript through Prettier and optionally persist the transformed artifact.",
     inputSchema: opensteerScriptBeautifyInputSchema,
     outputSchema: opensteerScriptBeautifyOutputSchema,
     requiredCapabilities: [],

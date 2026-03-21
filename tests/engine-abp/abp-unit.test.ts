@@ -451,7 +451,9 @@ describe("engine-abp internals", () => {
         signal,
       },
     );
-    expect(Buffer.from(output.screenshot.payload.bytes).toString("utf8")).toBe("computer-use-final");
+    expect(Buffer.from(output.screenshot.payload.bytes).toString("utf8")).toBe(
+      "computer-use-final",
+    );
     expect(output.screenshot.size).toEqual(output.viewport.visualViewport.size);
     expect(output.timing.totalMs).toBe(80);
   });

@@ -21,7 +21,10 @@ export function generateTypingCadence(input: {
     const jitter = (Math.random() * 2 - 1) * jitterMs;
     return {
       character,
-      delayMs: Math.max(10, Math.round(baseDelayMs + punctuationPause + whitespacePause + hesitation + jitter)),
+      delayMs: Math.max(
+        10,
+        Math.round(baseDelayMs + punctuationPause + whitespacePause + hesitation + jitter),
+      ),
     };
   });
 }

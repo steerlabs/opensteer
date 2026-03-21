@@ -29,7 +29,9 @@ export function requestPlanNotFoundError(
 ): OpensteerProtocolError {
   return new OpensteerProtocolError(
     "not-found",
-    version === undefined ? `request plan ${key} was not found` : `request plan ${key}@${version} was not found`,
+    version === undefined
+      ? `request plan ${key} was not found`
+      : `request plan ${key}@${version} was not found`,
     {
       details: {
         key,

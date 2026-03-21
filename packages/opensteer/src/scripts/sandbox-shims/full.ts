@@ -4,15 +4,14 @@ export interface FullSandboxShimOptions extends StandardSandboxShimOptions {
   readonly pageUrl?: string;
 }
 
-export function createFullSandboxGlobals(
-  options: FullSandboxShimOptions,
-): Record<string, unknown> {
+export function createFullSandboxGlobals(options: FullSandboxShimOptions): Record<string, unknown> {
   const globals = createStandardSandboxGlobals(options);
   const eventListeners = new WeakMap<object, Map<string, Set<(...args: unknown[]) => void>>>();
   const pageUrl = new URL(options.pageUrl ?? "https://sandbox.opensteer.invalid/");
 
   function getListeners(target: object, type: string): Set<(...args: unknown[]) => void> {
-    const byType = eventListeners.get(target) ?? new Map<string, Set<(...args: unknown[]) => void>>();
+    const byType =
+      eventListeners.get(target) ?? new Map<string, Set<(...args: unknown[]) => void>>();
     eventListeners.set(target, byType);
     const current = byType.get(type) ?? new Set<(...args: unknown[]) => void>();
     byType.set(type, current);
@@ -71,9 +70,14 @@ export function createFullSandboxGlobals(
   }
 
   const $ = ((target: unknown) => {
-    if (typeof target === "string" && typeof globals.document === "object" && globals.document !== null) {
-      const querySelector = (globals.document as { readonly querySelector?: (selector: string) => unknown })
-        .querySelector;
+    if (
+      typeof target === "string" &&
+      typeof globals.document === "object" &&
+      globals.document !== null
+    ) {
+      const querySelector = (
+        globals.document as { readonly querySelector?: (selector: string) => unknown }
+      ).querySelector;
       return makeWrapper(typeof querySelector === "function" ? querySelector(target) : null);
     }
     return makeWrapper(target);
@@ -115,7 +119,8 @@ export function createFullSandboxGlobals(
   return {
     ...globals,
     navigator: {
-      userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/537.36 Chrome/133.0.0.0 Safari/537.36",
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/537.36 Chrome/133.0.0.0 Safari/537.36",
       language: "en-US",
       languages: ["en-US", "en"],
       platform: "MacIntel",

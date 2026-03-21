@@ -146,7 +146,10 @@ export function rareStringValue(
   return parseStringTable(strings, stringIndex);
 }
 
-export function rareIntegerValue(data: RareIntegerData | undefined, index: number): number | undefined {
+export function rareIntegerValue(
+  data: RareIntegerData | undefined,
+  index: number,
+): number | undefined {
   if (!data) {
     return undefined;
   }
@@ -166,7 +169,9 @@ export function normalizeShadowRootType(
   return undefined;
 }
 
-export function buildShadowBoundaryIndex(root: DomTreeNode): ReadonlyMap<number, ShadowBoundaryInfo> {
+export function buildShadowBoundaryIndex(
+  root: DomTreeNode,
+): ReadonlyMap<number, ShadowBoundaryInfo> {
   const byBackendNodeId = new Map<number, ShadowBoundaryInfo>();
 
   const visit = (node: DomTreeNode, boundary: ShadowBoundaryInfo): void => {

@@ -50,11 +50,7 @@ export class OpensteerProtocolError extends Error {
   readonly capability: OpensteerCapability | undefined;
   readonly details: Readonly<Record<string, unknown>> | undefined;
 
-  constructor(
-    code: OpensteerErrorCode,
-    message: string,
-    options: OpensteerErrorOptions = {},
-  ) {
+  constructor(code: OpensteerErrorCode, message: string, options: OpensteerErrorOptions = {}) {
     super(message, { cause: options.cause });
     this.name = "OpensteerProtocolError";
     this.code = code;

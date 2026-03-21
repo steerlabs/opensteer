@@ -5,12 +5,14 @@
 The request workflow lets you capture network traffic from browser interactions, identify API endpoints, and build reusable request plans that can be replayed with parameter substitution.
 
 **Two transport modes:**
+
 - **`session-http`** — replays through the live browser session, reusing its cookies, auth context, and storage. Requires an open browser.
 - **`direct-http`** — replays through a direct HTTP client without browser context. Can run without a browser. Best for public APIs or when you supply auth yourself.
 
 **Auth recipes** can be attached to request plans to handle auth failures deterministically — when a request fails due to expired tokens or sessions, Opensteer runs the recipe to recover auth and retries automatically.
 
 **5-step process:**
+
 1. **Capture** — perform browser actions with `networkTag` to label traffic
 2. **Inspect** — query tagged traffic to find the API call
 3. **Experiment** — use `rawRequest()` to test the request independently
@@ -42,6 +44,7 @@ await opensteer.input({
 ```
 
 **Tips:**
+
 - Use descriptive tag names: `"search"`, `"add-to-cart"`, `"login"`.
 - You can tag any action: `click`, `input`, `hover`, `scroll`, `goto`.
 - Opensteer captures ALL network requests triggered by the tagged action.
@@ -69,20 +72,18 @@ for (const record of records.records) {
 ```typescript
 // By resource type (XHR/fetch are usually API calls)
 const apiCalls = records.records.filter(
-  (r) => r.resourceType === "xhr" || r.resourceType === "fetch"
+  (r) => r.resourceType === "xhr" || r.resourceType === "fetch",
 );
 
 // By hostname
-const apiCalls = records.records.filter(
-  (r) => r.url.includes("api.example.com")
-);
+const apiCalls = records.records.filter((r) => r.url.includes("api.example.com"));
 
 // By method
 const postCalls = records.records.filter((r) => r.method === "POST");
 
 // By URL pattern
 const searchCall = records.records.find(
-  (r) => r.url.includes("/search") || r.url.includes("/api/query")
+  (r) => r.url.includes("/search") || r.url.includes("/api/query"),
 );
 ```
 
@@ -113,7 +114,7 @@ Test the API call independently using `rawRequest()`. This validates that you ha
 
 ```typescript
 const searchRecord = records.records.find(
-  (r) => r.url.includes("/search") && r.resourceType === "xhr"
+  (r) => r.url.includes("/search") && r.resourceType === "xhr",
 );
 
 // Replay through the browser session (default transport)
@@ -121,9 +122,7 @@ const test = await opensteer.rawRequest({
   url: searchRecord.url,
   method: searchRecord.method,
   headers: searchRecord.requestHeaders,
-  body: searchRecord.requestBody
-    ? { json: searchRecord.requestBody }
-    : undefined,
+  body: searchRecord.requestBody ? { json: searchRecord.requestBody } : undefined,
 });
 
 console.log("Status:", test.response.status);
@@ -150,9 +149,7 @@ If the request succeeds with `direct-http`, the API doesn't depend on browser se
 const test3 = await opensteer.rawRequest({
   url: "https://api.example.com/v2/search?q=airpods",
   method: "GET",
-  headers: [
-    { name: "Accept", value: "application/json" },
-  ],
+  headers: [{ name: "Accept", value: "application/json" }],
 });
 ```
 
@@ -166,16 +163,17 @@ Once you've confirmed the request works, promote the captured network record to 
 
 ```typescript
 const plan = await opensteer.inferRequestPlan({
-  recordId: searchRecord.recordId,   // From the queryNetwork result
-  key: "search-api",                 // Key for future reference
-  version: "1.0",                    // Version string
-  lifecycle: "active",               // "draft" | "active" | "deprecated" | "retired"
+  recordId: searchRecord.recordId, // From the queryNetwork result
+  key: "search-api", // Key for future reference
+  version: "1.0", // Version string
+  lifecycle: "active", // "draft" | "active" | "deprecated" | "retired"
 });
 
 console.log("Plan created:", plan.key, plan.version);
 ```
 
 **What `inferRequestPlan` does:**
+
 - Extracts URL, method, headers, and body from the network record
 - Builds a `urlTemplate` with query parameters separated out
 - Filters out non-replayable headers (host, content-length, etc.)
@@ -197,9 +195,7 @@ const plan = await opensteer.writeRequestPlan({
     endpoint: {
       method: "GET",
       urlTemplate: "https://api.example.com/v2/search",
-      defaultHeaders: [
-        { name: "Accept", value: "application/json" },
-      ],
+      defaultHeaders: [{ name: "Accept", value: "application/json" }],
     },
     parameters: [
       { name: "q", in: "query", required: true, description: "Search query" },
@@ -318,19 +314,19 @@ const recipe = await opensteer.writeAuthRecipe({
 
 ### Auth recipe step types
 
-| Step kind | Purpose |
-|:----------|:--------|
-| `goto` | Navigate the browser to a URL |
-| `reload` | Reload the current page |
-| `waitForUrl` | Wait for the URL to contain a substring |
-| `waitForNetwork` | Wait for a network request matching criteria |
-| `waitForCookie` | Wait for a specific cookie to be set |
-| `waitForStorage` | Wait for a localStorage/sessionStorage key |
-| `readCookie` | Read a cookie value into a variable |
-| `readStorage` | Read a storage value into a variable |
+| Step kind        | Purpose                                          |
+| :--------------- | :----------------------------------------------- |
+| `goto`           | Navigate the browser to a URL                    |
+| `reload`         | Reload the current page                          |
+| `waitForUrl`     | Wait for the URL to contain a substring          |
+| `waitForNetwork` | Wait for a network request matching criteria     |
+| `waitForCookie`  | Wait for a specific cookie to be set             |
+| `waitForStorage` | Wait for a localStorage/sessionStorage key       |
+| `readCookie`     | Read a cookie value into a variable              |
+| `readStorage`    | Read a storage value into a variable             |
 | `sessionRequest` | Make an HTTP request through the browser session |
-| `directRequest` | Make a raw HTTP request without browser context |
-| `hook` | Call a custom hook |
+| `directRequest`  | Make a raw HTTP request without browser context  |
+| `hook`           | Call a custom hook                               |
 
 Steps with `saveAs` capture values into variables. Variables are interpolated in subsequent steps and in `outputs` using `${variableName}` syntax.
 
@@ -348,9 +344,7 @@ const plan = await opensteer.writeRequestPlan({
     endpoint: {
       method: "GET",
       urlTemplate: "https://api.example.com/data",
-      defaultHeaders: [
-        { name: "Authorization", value: "Bearer initial-token" },
-      ],
+      defaultHeaders: [{ name: "Authorization", value: "Bearer initial-token" }],
     },
     auth: {
       strategy: "bearer-token",
@@ -366,6 +360,7 @@ const plan = await opensteer.writeRequestPlan({
 ### How auth recovery works
 
 When `opensteer.request("protected-api")` is called:
+
 1. Opensteer executes the request normally
 2. Checks the response against the `failurePolicy`
 3. If the failure policy matches (e.g., status 401):
@@ -384,7 +379,7 @@ const recipe = await opensteer.getAuthRecipe({ key: "refresh-session" });
 // Run a recipe manually (useful for testing)
 const result = await opensteer.runAuthRecipe({
   key: "refresh-session",
-  variables: { csrf: "seed-value" },  // Optional seed variables
+  variables: { csrf: "seed-value" }, // Optional seed variables
 });
 console.log("Captured variables:", result.variables);
 console.log("Overrides:", result.overrides);
@@ -442,7 +437,7 @@ async function reverseEngineerSearchAPI(): Promise<void> {
     });
 
     const apiCall = records.records.find(
-      (r) => r.resourceType === "xhr" && r.url.includes("/api/")
+      (r) => r.resourceType === "xhr" && r.url.includes("/api/"),
     );
 
     if (!apiCall) {
@@ -482,7 +477,7 @@ async function reverseEngineerSearchAPI(): Promise<void> {
 }
 
 void scrapeProducts().catch((error) => {
-  const message = error instanceof Error ? error.stack ?? error.message : String(error);
+  const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
   process.stderr.write(`${message}\n`);
   process.exitCode = 1;
 });
@@ -509,18 +504,18 @@ const plan = await opensteer.getRequestPlan({ key: "store-search", version: "1.0
 
 Every SDK operation has a CLI equivalent:
 
-| SDK | CLI |
-|:----|:----|
-| `queryNetwork({ tag, includeBodies: true })` | `opensteer network query --tag x --include-bodies` |
-| `saveNetwork({ tag })` | `opensteer network save --tag x` |
-| `rawRequest({ url })` | `opensteer request raw https://...` |
-| `rawRequest({ url, transport: "direct-http" })` | `opensteer request raw https://... --transport direct-http` |
-| `inferRequestPlan({ recordId, key, version })` | `opensteer plan infer --record-id ID --key K --version V` |
-| `writeRequestPlan({ key, version, payload })` | `opensteer plan write --key K --version V --payload JSON` |
-| `getRequestPlan({ key })` | `opensteer plan get KEY` |
-| `listRequestPlans()` | `opensteer plan list` |
-| `request("key", { query })` | `opensteer request KEY --query q=x` |
-| `writeAuthRecipe({ key, version, payload })` | `opensteer auth-recipe write --key K --version V --payload JSON` |
-| `getAuthRecipe({ key })` | `opensteer auth-recipe get KEY` |
-| `listAuthRecipes()` | `opensteer auth-recipe list` |
-| `runAuthRecipe({ key })` | `opensteer auth-recipe run KEY` |
+| SDK                                             | CLI                                                              |
+| :---------------------------------------------- | :--------------------------------------------------------------- |
+| `queryNetwork({ tag, includeBodies: true })`    | `opensteer network query --tag x --include-bodies`               |
+| `saveNetwork({ tag })`                          | `opensteer network save --tag x`                                 |
+| `rawRequest({ url })`                           | `opensteer request raw https://...`                              |
+| `rawRequest({ url, transport: "direct-http" })` | `opensteer request raw https://... --transport direct-http`      |
+| `inferRequestPlan({ recordId, key, version })`  | `opensteer plan infer --record-id ID --key K --version V`        |
+| `writeRequestPlan({ key, version, payload })`   | `opensteer plan write --key K --version V --payload JSON`        |
+| `getRequestPlan({ key })`                       | `opensteer plan get KEY`                                         |
+| `listRequestPlans()`                            | `opensteer plan list`                                            |
+| `request("key", { query })`                     | `opensteer request KEY --query q=x`                              |
+| `writeAuthRecipe({ key, version, payload })`    | `opensteer auth-recipe write --key K --version V --payload JSON` |
+| `getAuthRecipe({ key })`                        | `opensteer auth-recipe get KEY`                                  |
+| `listAuthRecipes()`                             | `opensteer auth-recipe list`                                     |
+| `runAuthRecipe({ key })`                        | `opensteer auth-recipe run KEY`                                  |

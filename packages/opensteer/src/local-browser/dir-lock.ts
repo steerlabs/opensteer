@@ -47,8 +47,7 @@ export async function tryAcquireDirLock(lockDirPath: string): Promise<LockReleas
   await mkdir(dirname(lockDirPath), { recursive: true });
 
   while (true) {
-    const tempLockDirPath =
-      `${lockDirPath}-${String(process.pid)}-${String(CURRENT_PROCESS_OWNER.processStartedAtMs)}-${randomUUID()}`;
+    const tempLockDirPath = `${lockDirPath}-${String(process.pid)}-${String(CURRENT_PROCESS_OWNER.processStartedAtMs)}-${randomUUID()}`;
 
     try {
       await mkdir(tempLockDirPath);
@@ -71,8 +70,8 @@ export async function tryAcquireDirLock(lockDirPath: string): Promise<LockReleas
 
     const owner = await readLockOwner(lockDirPath);
     if (
-      (!owner || (await getProcessLiveness(owner)) === "dead")
-      && (await tryReclaimStaleLock(lockDirPath, owner))
+      (!owner || (await getProcessLiveness(owner)) === "dead") &&
+      (await tryReclaimStaleLock(lockDirPath, owner))
     ) {
       continue;
     }
@@ -95,8 +94,8 @@ export async function isDirLockHeld(lockDirPath: string): Promise<boolean> {
 
   const owner = await readLockOwner(lockDirPath);
   if (
-    (!owner || (await getProcessLiveness(owner)) === "dead")
-    && (await tryReclaimStaleLock(lockDirPath, owner))
+    (!owner || (await getProcessLiveness(owner)) === "dead") &&
+    (await tryReclaimStaleLock(lockDirPath, owner))
   ) {
     return false;
   }
@@ -105,17 +104,19 @@ export async function isDirLockHeld(lockDirPath: string): Promise<boolean> {
 }
 
 function getErrorCode(error: unknown): string | undefined {
-  return typeof error === "object"
-    && error !== null
-    && "code" in error
-    && typeof error.code === "string"
+  return typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string"
     ? error.code
     : undefined;
 }
 
 function wasDirPublishedByAnotherProcess(error: unknown, targetDirPath: string): boolean {
   const code = getErrorCode(error);
-  return existsSync(targetDirPath) && (code === "EEXIST" || code === "ENOTEMPTY" || code === "EPERM");
+  return (
+    existsSync(targetDirPath) && (code === "EEXIST" || code === "ENOTEMPTY" || code === "EPERM")
+  );
 }
 
 async function writeLockOwner(lockDirPath: string, owner: ProcessOwner): Promise<void> {
@@ -187,8 +188,7 @@ async function tryAcquireLockReclaimer(lockDirPath: string): Promise<boolean> {
   const reclaimerDirPath = buildLockReclaimerDirPath(lockDirPath);
 
   while (true) {
-    const tempReclaimerDirPath =
-      `${reclaimerDirPath}-${String(process.pid)}-${String(CURRENT_PROCESS_OWNER.processStartedAtMs)}-${randomUUID()}`;
+    const tempReclaimerDirPath = `${reclaimerDirPath}-${String(process.pid)}-${String(CURRENT_PROCESS_OWNER.processStartedAtMs)}-${randomUUID()}`;
 
     try {
       await mkdir(tempReclaimerDirPath);

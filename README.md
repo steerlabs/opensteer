@@ -20,6 +20,7 @@ path when the target really permits it.
 - `packages/engine-abp`: Agent Browser Protocol backend with CDP inspection support
 - `packages/opensteer`: public SDK, CLI, request workflows, traces, registry, and artifacts
 - `apps/opensteer-cloud`: cloud entrypoint package for hosted session infrastructure
+
 ## Repository Layout
 
 ```text
@@ -98,6 +99,10 @@ pnpm build
 pnpm typecheck
 pnpm test
 ```
+
+If you need cloud features during development, create a local `.env` from
+`.env.example` and provide `OPENSTEER_API_KEY`. The local `.env` file is ignored
+and should never be committed.
 
 ## Public Surface
 

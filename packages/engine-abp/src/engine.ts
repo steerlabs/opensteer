@@ -480,9 +480,7 @@ function normalizeCookiePriority(value: AbpCdpCookie["priority"]): CookieRecord[
   }
 }
 
-function toCdpCookieSameSite(
-  value: CookieRecord["sameSite"],
-): "Strict" | "Lax" | "None" {
+function toCdpCookieSameSite(value: CookieRecord["sameSite"]): "Strict" | "Lax" | "None" {
   switch (value) {
     case "strict":
       return "Strict";
@@ -494,9 +492,7 @@ function toCdpCookieSameSite(
   }
 }
 
-function toCdpCookiePriority(
-  value: CookieRecord["priority"],
-): "Low" | "Medium" | "High" {
+function toCdpCookiePriority(value: CookieRecord["priority"]): "Low" | "Medium" | "High" {
   switch (value) {
     case "low":
       return "Low";
@@ -2002,9 +1998,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
         ...(cookie.priority === undefined
           ? {}
           : { priority: toCdpCookiePriority(cookie.priority) }),
-        ...(cookie.partitionKey === undefined
-          ? {}
-          : { partitionKey: cookie.partitionKey }),
+        ...(cookie.partitionKey === undefined ? {} : { partitionKey: cookie.partitionKey }),
         ...(cookie.session || cookie.expiresAt === undefined || cookie.expiresAt === null
           ? {}
           : { expires: cookie.expiresAt / 1000 }),
@@ -3246,16 +3240,11 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     const message = error instanceof Error ? error.message : String(error);
     return {
       ...record,
-      requestBodyState:
-        record.requestBodyState === "pending" ? "failed" : record.requestBodyState,
+      requestBodyState: record.requestBodyState === "pending" ? "failed" : record.requestBodyState,
       responseBodyState:
         record.responseBodyState === "pending" ? "failed" : record.responseBodyState,
-      ...(record.requestBodyState === "pending"
-        ? { requestBodyError: message }
-        : {}),
-      ...(record.responseBodyState === "pending"
-        ? { responseBodyError: message }
-        : {}),
+      ...(record.requestBodyState === "pending" ? { requestBodyError: message } : {}),
+      ...(record.responseBodyState === "pending" ? { responseBodyError: message } : {}),
     };
   }
 
@@ -3289,17 +3278,12 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     const { requestBody: _requestBody, responseBody: _responseBody, ...metadataRecord } = record;
     return {
       ...metadataRecord,
-      requestBodyState:
-        record.requestBody === undefined ? record.requestBodyState : "pending",
-      responseBodyState:
-        record.responseBody === undefined ? record.responseBodyState : "pending",
+      requestBodyState: record.requestBody === undefined ? record.requestBodyState : "pending",
+      responseBodyState: record.responseBody === undefined ? record.responseBodyState : "pending",
     };
   }
 
-  private storeNetworkRecords(
-    session: SessionState,
-    records: readonly NetworkRecord[],
-  ): void {
+  private storeNetworkRecords(session: SessionState, records: readonly NetworkRecord[]): void {
     for (const record of records) {
       session.networkRecordsByRequestId.set(record.requestId, record);
     }
@@ -3834,7 +3818,12 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number | undefined): Pro
     promise,
     new Promise<T>((_, reject) => {
       setTimeout(() => {
-        reject(createBrowserCoreError("timeout", `page evaluation timed out after ${String(timeoutMs)}ms`));
+        reject(
+          createBrowserCoreError(
+            "timeout",
+            `page evaluation timed out after ${String(timeoutMs)}ms`,
+          ),
+        );
       }, timeoutMs);
     }),
   ]);

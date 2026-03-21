@@ -66,7 +66,10 @@ export class NetworkJournal {
     };
   }
 
-  diffNewRequestIds(records: readonly BrowserNetworkRecord[], baselineRequestIds: ReadonlySet<string>): {
+  diffNewRequestIds(
+    records: readonly BrowserNetworkRecord[],
+    baselineRequestIds: ReadonlySet<string>,
+  ): {
     readonly all: readonly NetworkQueryRecord[];
     readonly delta: readonly NetworkQueryRecord[];
   } {
@@ -112,7 +115,9 @@ export class NetworkJournal {
 
   getObservedAt(recordId: string): number | undefined {
     const requestId = this.requestIdByRecordId.get(recordId);
-    return requestId === undefined ? undefined : this.metadataByRequestId.get(requestId)?.observedAt;
+    return requestId === undefined
+      ? undefined
+      : this.metadataByRequestId.get(requestId)?.observedAt;
   }
 
   getRequestId(recordId: string): string | undefined {

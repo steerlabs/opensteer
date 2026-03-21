@@ -11,10 +11,7 @@ import {
 } from "@opensteer/browser-core";
 import { OpensteerProtocolError } from "@opensteer/protocol";
 
-import {
-  defaultPolicy,
-  type OpensteerPolicy,
-} from "../../policy/index.js";
+import { defaultPolicy, type OpensteerPolicy } from "../../policy/index.js";
 import type { FilesystemOpensteerRoot } from "../../root.js";
 import { createDomDescriptorStore } from "./descriptors.js";
 import { DomActionExecutor } from "./executor.js";
@@ -426,13 +423,7 @@ class DefaultDomRuntime implements DomRuntime {
     }
 
     if (target.anchor) {
-      return this.resolveAnchorTarget(
-        session,
-        pageRef,
-        target.anchor,
-        "live",
-        target.description,
-      );
+      return this.resolveAnchorTarget(session, pageRef, target.anchor, "live", target.description);
     }
 
     throw new Error(
@@ -461,9 +452,7 @@ class DefaultDomRuntime implements DomRuntime {
         : await writeDescriptor({
             method,
             description: target.description,
-            path:
-              replayPath ??
-              (await this.buildPathFromSnapshotNode(session, snapshot, node)),
+            path: replayPath ?? (await this.buildPathFromSnapshotNode(session, snapshot, node)),
             sourceUrl: snapshot.url,
           });
     return this.createResolvedTarget("selector", snapshot, node, anchor, {
@@ -624,7 +613,11 @@ class DefaultDomRuntime implements DomRuntime {
       );
     }
 
-    const replayPath = await this.tryBuildPathFromSnapshotNode(session, context.snapshot, target.node);
+    const replayPath = await this.tryBuildPathFromSnapshotNode(
+      session,
+      context.snapshot,
+      target.node,
+    );
     return this.createResolvedTarget(source, context.snapshot, target.node, anchor, {
       ...(description === undefined ? {} : { description }),
       ...(replayPath === undefined ? {} : { replayPath }),
@@ -825,7 +818,11 @@ class DefaultDomRuntime implements DomRuntime {
     const hostPath = await this.buildPathFromSnapshotNode(session, parentSnapshot, iframeHost);
     return sanitizeReplayElementPath({
       resolution: "deterministic",
-      context: [...hostPath.context, { kind: "iframe", host: hostPath.nodes }, ...localPath.context],
+      context: [
+        ...hostPath.context,
+        { kind: "iframe", host: hostPath.nodes },
+        ...localPath.context,
+      ],
       nodes: localPath.nodes,
     });
   }

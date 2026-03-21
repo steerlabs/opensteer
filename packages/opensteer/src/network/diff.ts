@@ -58,7 +58,15 @@ export function diffNetworkRecords(
   }
 
   if (scope === "body" || scope === "all") {
-    diffBody("body", left.record.requestBody, left.record.requestHeaders, right.record.requestBody, right.record.requestHeaders, input.includeUnchanged ?? false, requestDiffs);
+    diffBody(
+      "body",
+      left.record.requestBody,
+      left.record.requestHeaders,
+      right.record.requestBody,
+      right.record.requestHeaders,
+      input.includeUnchanged ?? false,
+      requestDiffs,
+    );
     diffBody(
       "responseBody",
       left.record.responseBody,
@@ -119,9 +127,13 @@ function searchParamsToMap(url: URL): Readonly<Record<string, string>> {
 
 function diffBody(
   prefix: string,
-  leftBody: NetworkQueryRecord["record"]["requestBody"] | NetworkQueryRecord["record"]["responseBody"],
+  leftBody:
+    | NetworkQueryRecord["record"]["requestBody"]
+    | NetworkQueryRecord["record"]["responseBody"],
   leftHeaders: readonly { readonly name: string; readonly value: string }[],
-  rightBody: NetworkQueryRecord["record"]["requestBody"] | NetworkQueryRecord["record"]["responseBody"],
+  rightBody:
+    | NetworkQueryRecord["record"]["requestBody"]
+    | NetworkQueryRecord["record"]["responseBody"],
   rightHeaders: readonly { readonly name: string; readonly value: string }[],
   includeUnchanged: boolean,
   output: NetworkDiffField[],
@@ -144,7 +156,10 @@ function diffBody(
 }
 
 function parseBodyValue(
-  body: NetworkQueryRecord["record"]["requestBody"] | NetworkQueryRecord["record"]["responseBody"] | undefined,
+  body:
+    | NetworkQueryRecord["record"]["requestBody"]
+    | NetworkQueryRecord["record"]["responseBody"]
+    | undefined,
   headers: readonly { readonly name: string; readonly value: string }[],
 ):
   | { readonly kind: "missing" }
@@ -194,7 +209,13 @@ function diffJsonValue(
   if (Array.isArray(left) && Array.isArray(right)) {
     const maxLength = Math.max(left.length, right.length);
     for (let index = 0; index < maxLength; index += 1) {
-      diffJsonValue(`${prefix}[${String(index)}]`, left[index], right[index], includeUnchanged, output);
+      diffJsonValue(
+        `${prefix}[${String(index)}]`,
+        left[index],
+        right[index],
+        includeUnchanged,
+        output,
+      );
     }
     return;
   }

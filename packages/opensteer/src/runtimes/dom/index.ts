@@ -29,10 +29,7 @@ export type {
   ResolvedDomTarget,
   StructuralElementAnchor,
 } from "./types.js";
-export {
-  OPENSTEER_DOM_ACTION_BRIDGE_SYMBOL,
-  resolveDomActionBridge,
-} from "./bridge.js";
+export { OPENSTEER_DOM_ACTION_BRIDGE_SYMBOL, resolveDomActionBridge } from "./bridge.js";
 export type {
   DomActionBridge,
   DomActionBridgeProvider,
@@ -48,10 +45,7 @@ export {
   resolveExtractedValueInContext,
 } from "./extraction.js";
 export { ElementPathError } from "./errors.js";
-export {
-  buildPathCandidates,
-  buildSegmentSelector,
-} from "./match-selectors.js";
+export { buildPathCandidates, buildSegmentSelector } from "./match-selectors.js";
 export {
   DEFERRED_MATCH_ATTR_KEYS,
   MATCH_ATTRIBUTE_PRIORITY,

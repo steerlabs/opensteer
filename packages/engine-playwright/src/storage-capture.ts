@@ -50,7 +50,7 @@ export async function capturePlaywrightStorageOrigins(
       route.fulfill({
         status: 200,
         contentType: "text/html",
-        body: "<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>",
+        body: '<!doctype html><html><head><meta charset="utf-8"></head><body></body></html>',
       }),
     );
 
@@ -69,7 +69,11 @@ export async function capturePlaywrightStorageOrigins(
 
     return uniqueOrigins
       .map((origin) =>
-        normalizeStorageOrigin(normalizedOrigins.get(origin), indexedDbSchemas.get(origin) ?? [], origin),
+        normalizeStorageOrigin(
+          normalizedOrigins.get(origin),
+          indexedDbSchemas.get(origin) ?? [],
+          origin,
+        ),
       )
       .filter((origin) => origin !== null);
   } finally {
@@ -115,7 +119,10 @@ async function inspectIndexedDbSchemas(page: Page): Promise<readonly IndexedDbSc
           readonly name: string;
           readonly version: number;
           readonly objectStoreNames: ArrayLike<string>;
-          readonly transaction: (storeName: string, mode: "readonly") => {
+          readonly transaction: (
+            storeName: string,
+            mode: "readonly",
+          ) => {
             readonly objectStore: (name: string) => {
               readonly name: string;
               readonly keyPath: unknown;

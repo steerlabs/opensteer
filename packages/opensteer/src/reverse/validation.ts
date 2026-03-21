@@ -37,13 +37,17 @@ export function evaluateValidationRulesForHttpResponse(
   const bodyText = decodeProtocolBody(response.body);
 
   const statusMatches =
-    statusRule?.expectedStatus === undefined ? undefined : response.status === statusRule.expectedStatus;
+    statusRule?.expectedStatus === undefined
+      ? undefined
+      : response.status === statusRule.expectedStatus;
   const structureMatches =
     structureRule?.structureHash === undefined
       ? undefined
       : jsonStructureHash(bodyText) === structureRule.structureHash;
   const textMatches =
-    textRule?.textIncludes === undefined ? undefined : bodyText?.includes(textRule.textIncludes) === true;
+    textRule?.textIncludes === undefined
+      ? undefined
+      : bodyText?.includes(textRule.textIncludes) === true;
 
   const success = rules.every((rule) => {
     if (!rule.required) {
@@ -67,7 +71,15 @@ export function evaluateValidationRulesForHttpResponse(
       ...(statusMatches === undefined ? {} : { statusMatches }),
       ...(structureMatches === undefined ? {} : { structureMatches }),
     },
-    ...(success ? {} : { error: firstFailedValidationMessage(rules, { statusMatches, structureMatches, textMatches }) }),
+    ...(success
+      ? {}
+      : {
+          error: firstFailedValidationMessage(rules, {
+            statusMatches,
+            structureMatches,
+            textMatches,
+          }),
+        }),
   };
 }
 
@@ -95,7 +107,9 @@ export function evaluateValidationRulesForObservedRecord(
         ? true
         : jsonStructureHash(bodyText) === structureRule.structureHash;
   const textMatches =
-    textRule?.textIncludes === undefined ? undefined : bodyText?.includes(textRule.textIncludes) === true;
+    textRule?.textIncludes === undefined
+      ? undefined
+      : bodyText?.includes(textRule.textIncludes) === true;
 
   const success = rules.every((rule) => {
     if (!rule.required) {
@@ -119,7 +133,15 @@ export function evaluateValidationRulesForObservedRecord(
       ...(statusMatches === undefined ? {} : { statusMatches }),
       ...(structureMatches === undefined ? {} : { structureMatches }),
     },
-    ...(success ? {} : { error: firstFailedValidationMessage(rules, { statusMatches, structureMatches, textMatches }) }),
+    ...(success
+      ? {}
+      : {
+          error: firstFailedValidationMessage(rules, {
+            statusMatches,
+            structureMatches,
+            textMatches,
+          }),
+        }),
   };
 }
 
@@ -154,7 +176,9 @@ export function evaluateValidationRulesForEventStreamReplay(
   const statusRule = rules.find((rule) => rule.kind === "status");
   const firstChunkRule = rules.find((rule) => rule.kind === "stream-first-chunk");
   const statusMatches =
-    statusRule?.expectedStatus === undefined ? undefined : replay.status === statusRule.expectedStatus;
+    statusRule?.expectedStatus === undefined
+      ? undefined
+      : replay.status === statusRule.expectedStatus;
   const firstChunkMatches =
     firstChunkRule?.textIncludes === undefined
       ? undefined
@@ -179,7 +203,9 @@ export function evaluateValidationRulesForEventStreamReplay(
       firstChunkObserved: replay.firstChunkPreview !== undefined,
       ...(firstChunkMatches === undefined ? {} : { firstChunkMatches }),
     },
-    ...(success ? {} : { error: firstFailedValidationMessage(rules, { statusMatches, firstChunkMatches }) }),
+    ...(success
+      ? {}
+      : { error: firstFailedValidationMessage(rules, { statusMatches, firstChunkMatches }) }),
   };
 }
 
@@ -198,7 +224,9 @@ export function evaluateValidationRulesForWebSocketReplay(
   const messageRule = rules.find((rule) => rule.kind === "message-count-at-least");
   const openMatches = openRule === undefined ? undefined : replay.opened === true;
   const messageMatches =
-    messageRule?.minimumCount === undefined ? undefined : replay.messageCount >= messageRule.minimumCount;
+    messageRule?.minimumCount === undefined
+      ? undefined
+      : replay.messageCount >= messageRule.minimumCount;
   const success = rules.every((rule) => {
     if (!rule.required) {
       return true;
@@ -219,7 +247,9 @@ export function evaluateValidationRulesForWebSocketReplay(
       messageObserved: replay.messageCount > 0,
       messageCount: replay.messageCount,
     },
-    ...(success ? {} : { error: firstFailedValidationMessage(rules, { openMatches, messageMatches }) }),
+    ...(success
+      ? {}
+      : { error: firstFailedValidationMessage(rules, { openMatches, messageMatches }) }),
   };
 }
 
@@ -247,7 +277,9 @@ function buildHttpValidationRules(record: NetworkQueryRecord): readonly Openstee
   return rules;
 }
 
-function buildEventStreamValidationRules(record: NetworkQueryRecord): readonly OpensteerValidationRule[] {
+function buildEventStreamValidationRules(
+  record: NetworkQueryRecord,
+): readonly OpensteerValidationRule[] {
   const rules: OpensteerValidationRule[] = [];
   if (record.record.status !== undefined) {
     rules.push({
@@ -271,7 +303,9 @@ function buildEventStreamValidationRules(record: NetworkQueryRecord): readonly O
   return rules;
 }
 
-function buildWebSocketValidationRules(_record: NetworkQueryRecord): readonly OpensteerValidationRule[] {
+function buildWebSocketValidationRules(
+  _record: NetworkQueryRecord,
+): readonly OpensteerValidationRule[] {
   return [
     {
       id: "validator:websocket-open",

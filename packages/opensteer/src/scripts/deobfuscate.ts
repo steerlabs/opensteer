@@ -1,8 +1,6 @@
 import { webcrack } from "webcrack";
 
-export async function deobfuscateScriptContent(input: {
-  readonly content: string;
-}): Promise<{
+export async function deobfuscateScriptContent(input: { readonly content: string }): Promise<{
   readonly content: string;
   readonly transforms: readonly string[];
 }> {

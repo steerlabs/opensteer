@@ -3,11 +3,7 @@ import type { TransportKind } from "@opensteer/protocol";
 
 import { isValidHttpHeaderName, normalizeHeaderName } from "../requests/shared.js";
 
-const ALWAYS_OMIT_HEADER_NAMES = new Set([
-  "content-length",
-  "host",
-  "priority",
-]);
+const ALWAYS_OMIT_HEADER_NAMES = new Set(["content-length", "host", "priority"]);
 
 const BROWSER_OWNED_HEADER_PREFIXES = ["sec-"];
 
@@ -19,10 +15,7 @@ export interface MaterializedTransportRequest {
   readonly followRedirects?: boolean;
 }
 
-export function isManagedRequestHeaderName(
-  name: string,
-  transport?: TransportKind,
-): boolean {
+export function isManagedRequestHeaderName(name: string, transport?: TransportKind): boolean {
   const normalized = normalizeHeaderName(name);
   if (!isValidHttpHeaderName(name)) {
     return true;
@@ -33,10 +26,7 @@ export function isManagedRequestHeaderName(
   if (ALWAYS_OMIT_HEADER_NAMES.has(normalized)) {
     return true;
   }
-  if (
-    transport !== undefined &&
-    (transport === "page-http" || transport === "session-http")
-  ) {
+  if (transport !== undefined && (transport === "page-http" || transport === "session-http")) {
     if (BROWSER_OWNED_HEADER_PREFIXES.some((prefix) => normalized.startsWith(prefix))) {
       return true;
     }

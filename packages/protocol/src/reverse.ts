@@ -29,20 +29,13 @@ export type OpensteerStateSourceKind =
   | "snapshot-session"
   | "snapshot-authenticated";
 
-export type OpensteerReverseCaseStatus =
-  | "capturing"
-  | "analyzing"
-  | "ready"
-  | "attention";
+export type OpensteerReverseCaseStatus = "capturing" | "analyzing" | "ready" | "attention";
 
 export type OpensteerReverseChannelKind = "http" | "event-stream" | "websocket";
 
 export type OpensteerReverseManualCalibrationMode = "allow" | "avoid" | "require";
 
-export type OpensteerReverseCandidateBoundary =
-  | "first-party"
-  | "same-site"
-  | "third-party";
+export type OpensteerReverseCandidateBoundary = "first-party" | "same-site" | "third-party";
 
 export type OpensteerReverseCandidateRole =
   | "primary-data"
@@ -60,20 +53,11 @@ export type OpensteerReverseCandidateDependencyClass =
   | "anti-bot"
   | "blocked";
 
-export type OpensteerRequestInputLocation =
-  | "path"
-  | "query"
-  | "header"
-  | "cookie"
-  | "body-field";
+export type OpensteerRequestInputLocation = "path" | "query" | "header" | "cookie" | "body-field";
 
 export type OpensteerRequestInputRequiredness = "required" | "optional" | "unknown";
 
-export type OpensteerRequestInputClassification =
-  | "managed"
-  | "static"
-  | "contextual"
-  | "volatile";
+export type OpensteerRequestInputClassification = "managed" | "static" | "contextual" | "volatile";
 
 export type OpensteerRequestInputSource =
   | "literal"
@@ -86,16 +70,9 @@ export type OpensteerRequestInputSource =
   | "runtime-managed"
   | "unknown";
 
-export type OpensteerRequestInputMaterializationPolicy =
-  | "copy"
-  | "omit"
-  | "recompute"
-  | "resolve";
+export type OpensteerRequestInputMaterializationPolicy = "copy" | "omit" | "recompute" | "resolve";
 
-export type OpensteerRequestInputExportPolicy =
-  | "portable"
-  | "browser-bound"
-  | "blocked";
+export type OpensteerRequestInputExportPolicy = "portable" | "browser-bound" | "blocked";
 
 export type OpensteerReplayStrategyExecution = "transport" | "page-observation";
 
@@ -1434,16 +1411,7 @@ export const opensteerReverseCaseRecordSchema: JsonSchema = objectSchema(
   },
   {
     title: "OpensteerReverseCaseRecord",
-    required: [
-      "id",
-      "key",
-      "version",
-      "createdAt",
-      "updatedAt",
-      "contentHash",
-      "tags",
-      "payload",
-    ],
+    required: ["id", "key", "version", "createdAt", "updatedAt", "contentHash", "tags", "payload"],
   },
 );
 
@@ -1512,16 +1480,7 @@ export const opensteerReversePackageRecordSchema: JsonSchema = objectSchema(
   },
   {
     title: "OpensteerReversePackageRecord",
-    required: [
-      "id",
-      "key",
-      "version",
-      "createdAt",
-      "updatedAt",
-      "contentHash",
-      "tags",
-      "payload",
-    ],
+    required: ["id", "key", "version", "createdAt", "updatedAt", "contentHash", "tags", "payload"],
   },
 );
 
@@ -1617,16 +1576,7 @@ export const opensteerReverseReportRecordSchema: JsonSchema = objectSchema(
   },
   {
     title: "OpensteerReverseReportRecord",
-    required: [
-      "id",
-      "key",
-      "version",
-      "createdAt",
-      "updatedAt",
-      "contentHash",
-      "tags",
-      "payload",
-    ],
+    required: ["id", "key", "version", "createdAt", "updatedAt", "contentHash", "tags", "payload"],
   },
 );
 

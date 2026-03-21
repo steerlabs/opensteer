@@ -66,7 +66,9 @@ export function cloneElementPath(path: ReplayElementPath): ReplayElementPath {
   return cloneReplayElementPath(path);
 }
 
-export function buildPathSelectorHint(path: { readonly nodes: readonly PathNode[] } | null | undefined): string {
+export function buildPathSelectorHint(
+  path: { readonly nodes: readonly PathNode[] } | null | undefined,
+): string {
   const nodes = path?.nodes || [];
   const last = nodes[nodes.length - 1];
   if (!last) {
@@ -188,7 +190,10 @@ export function buildLocalReplayElementPath(
   const hostPath = buildLocalReplayElementPath(index, shadowHost);
   return sanitizeReplayElementPath({
     resolution: "deterministic",
-    context: [...hostPath.context, { kind: "shadow", host: cloneReplayElementPath(hostPath).nodes }],
+    context: [
+      ...hostPath.context,
+      { kind: "shadow", host: cloneReplayElementPath(hostPath).nodes },
+    ],
     nodes,
   });
 }
@@ -401,13 +406,12 @@ function cloneContext(
   }));
 }
 
-function sanitizeContext(
-  context: unknown,
-): StructuralElementAnchor["context"] {
+function sanitizeContext(context: unknown): StructuralElementAnchor["context"] {
   const hops = Array.isArray(context) ? context : [];
   return hops
-    .filter((hop): hop is { readonly kind: "iframe" | "shadow"; readonly host?: unknown[] } =>
-      !!hop && (hop.kind === "iframe" || hop.kind === "shadow"),
+    .filter(
+      (hop): hop is { readonly kind: "iframe" | "shadow"; readonly host?: unknown[] } =>
+        !!hop && (hop.kind === "iframe" || hop.kind === "shadow"),
     )
     .map((hop) => ({
       kind: hop.kind,
@@ -868,7 +872,11 @@ function getSiblingsInScope(
     node.parentSnapshotNodeId === undefined
       ? undefined
       : findNodeBySnapshotNodeId(index, node.parentSnapshotNodeId);
-  if (parent && parent.nodeType === 1 && getShadowScopeNodeRef(index, parent) === scopeHostNodeRef) {
+  if (
+    parent &&
+    parent.nodeType === 1 &&
+    getShadowScopeNodeRef(index, parent) === scopeHostNodeRef
+  ) {
     return collectChildrenInScope(index, parent, scopeHostNodeRef);
   }
 

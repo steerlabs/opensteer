@@ -1,8 +1,4 @@
-import type {
-  DomArrayFieldSelector,
-  DomExtractFieldSelector,
-  ElementPath,
-} from "./types.js";
+import type { DomArrayFieldSelector, DomExtractFieldSelector, ElementPath } from "./types.js";
 import { buildPathCandidates } from "./match-selectors.js";
 
 const URL_LIST_ATTRIBUTES = new Set(["srcset", "imagesrcset", "ping"]);
@@ -226,8 +222,12 @@ function parseSrcsetCandidates(raw: string): SrcsetCandidate[] {
   return out;
 }
 
-function hasWidth(candidate: SrcsetCandidate): candidate is SrcsetCandidate & { readonly width: number } {
-  return typeof candidate.width === "number" && Number.isFinite(candidate.width) && candidate.width > 0;
+function hasWidth(
+  candidate: SrcsetCandidate,
+): candidate is SrcsetCandidate & { readonly width: number } {
+  return (
+    typeof candidate.width === "number" && Number.isFinite(candidate.width) && candidate.width > 0
+  );
 }
 
 function hasDensity(

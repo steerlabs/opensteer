@@ -1,12 +1,5 @@
-import {
-  createBodyPayload,
-  type BodyPayload,
-  type HeaderEntry,
-} from "@opensteer/browser-core";
-import type {
-  MinimizationFieldResult,
-  NetworkQueryRecord,
-} from "@opensteer/protocol";
+import { createBodyPayload, type BodyPayload, type HeaderEntry } from "@opensteer/browser-core";
+import type { MinimizationFieldResult, NetworkQueryRecord } from "@opensteer/protocol";
 
 import { headerValue, isValidHttpHeaderName, normalizeHeaderName } from "../requests/shared.js";
 
@@ -72,36 +65,41 @@ export function prepareMinimizationRequest(
   preserve: readonly string[] = [],
 ): PreparedMinimizationRequest {
   const requestUrl = new URL(record.record.url);
-  const preservedNames = new Set(preserve.map((entry) => entry.trim().toLowerCase()).filter(Boolean));
+  const preservedNames = new Set(
+    preserve.map((entry) => entry.trim().toLowerCase()).filter(Boolean),
+  );
   const headerGroups = groupNamedEntries(
     record.record.requestHeaders.filter(
       (header) =>
-        normalizeHeaderName(header.name) !== "cookie" &&
-        isValidHttpHeaderName(header.name),
+        normalizeHeaderName(header.name) !== "cookie" && isValidHttpHeaderName(header.name),
     ),
   );
   const cookies = parseCookieHeader(headerValue(record.record.requestHeaders, "cookie"));
-  const queryEntries = groupNamedEntries(Array.from(requestUrl.searchParams.entries()).map(([name, value]) => ({
-    name,
-    value,
-  })));
-  const body = record.record.requestBody === undefined
-    ? undefined
-    : createBodyPayload(new Uint8Array(Buffer.from(record.record.requestBody.data, "base64")), {
-        encoding: record.record.requestBody.encoding,
-        ...(record.record.requestBody.mimeType === undefined
-          ? {}
-          : { mimeType: record.record.requestBody.mimeType }),
-        ...(record.record.requestBody.charset === undefined
-          ? {}
-          : { charset: record.record.requestBody.charset }),
-        truncated: record.record.requestBody.truncated,
-        ...(record.record.requestBody.originalByteLength === undefined
-          ? {}
-          : { originalByteLength: record.record.requestBody.originalByteLength }),
-      });
+  const queryEntries = groupNamedEntries(
+    Array.from(requestUrl.searchParams.entries()).map(([name, value]) => ({
+      name,
+      value,
+    })),
+  );
+  const body =
+    record.record.requestBody === undefined
+      ? undefined
+      : createBodyPayload(new Uint8Array(Buffer.from(record.record.requestBody.data, "base64")), {
+          encoding: record.record.requestBody.encoding,
+          ...(record.record.requestBody.mimeType === undefined
+            ? {}
+            : { mimeType: record.record.requestBody.mimeType }),
+          ...(record.record.requestBody.charset === undefined
+            ? {}
+            : { charset: record.record.requestBody.charset }),
+          truncated: record.record.requestBody.truncated,
+          ...(record.record.requestBody.originalByteLength === undefined
+            ? {}
+            : { originalByteLength: record.record.requestBody.originalByteLength }),
+        });
   const bodyContentType =
-    headerValue(record.record.requestHeaders, "content-type") ?? record.record.requestBody?.mimeType;
+    headerValue(record.record.requestHeaders, "content-type") ??
+    record.record.requestBody?.mimeType;
   const bodyJsonEntries = parseJsonBodyEntries(body, bodyContentType);
 
   const initialKeepState: KeepState = {
@@ -158,7 +156,9 @@ export function materializePreparedMinimizationRequest(
     .filter((header) => keep.headers.has(normalizeCandidateKey("header", header.name)))
     .map((header) => ({ name: header.name, value: header.value }));
   const cookieHeaderValue = buildCookieHeader(
-    prepared.cookies.filter((cookie) => keep.cookies.has(normalizeCandidateKey("cookie", cookie.name))),
+    prepared.cookies.filter((cookie) =>
+      keep.cookies.has(normalizeCandidateKey("cookie", cookie.name)),
+    ),
   );
   if (cookieHeaderValue !== undefined) {
     headers.push({
@@ -186,10 +186,18 @@ export async function minimizePreparedRequest(input: {
     (input.preserve ?? []).map((entry) => entry.trim().toLowerCase()).filter(Boolean),
   );
   const keep: KeepState = {
-    headers: new Set(input.prepared.headerGroups.map((header) => normalizeCandidateKey("header", header.name))),
-    cookies: new Set(input.prepared.cookies.map((cookie) => normalizeCandidateKey("cookie", cookie.name))),
-    query: new Set(input.prepared.queryEntries.map((entry) => normalizeCandidateKey("query", entry.name))),
-    bodyFields: new Set(input.prepared.bodyJsonEntries.map(([name]) => normalizeCandidateKey("body-field", name))),
+    headers: new Set(
+      input.prepared.headerGroups.map((header) => normalizeCandidateKey("header", header.name)),
+    ),
+    cookies: new Set(
+      input.prepared.cookies.map((cookie) => normalizeCandidateKey("cookie", cookie.name)),
+    ),
+    query: new Set(
+      input.prepared.queryEntries.map((entry) => normalizeCandidateKey("query", entry.name)),
+    ),
+    bodyFields: new Set(
+      input.prepared.bodyJsonEntries.map(([name]) => normalizeCandidateKey("body-field", name)),
+    ),
   };
   const candidates = collectCandidates(input.prepared, preservedNames);
   const results = new Map<string, MinimizationFieldResult>(
@@ -199,7 +207,9 @@ export async function minimizePreparedRequest(input: {
         name: candidate.name,
         location: candidate.location,
         classification: candidate.preserved ? "untested" : "required",
-        ...(candidate.originalValue === undefined ? {} : { originalValue: candidate.originalValue }),
+        ...(candidate.originalValue === undefined
+          ? {}
+          : { originalValue: candidate.originalValue }),
       } satisfies MinimizationFieldResult,
     ]),
   );
@@ -485,8 +495,7 @@ function parseJsonBodyEntries(
   }
   const decoded = Buffer.from(body.bytes).toString(resolveBodyEncoding(body.charset));
   const shouldParseJson =
-    contentType?.toLowerCase().includes("json") === true ||
-    looksLikeJson(decoded);
+    contentType?.toLowerCase().includes("json") === true || looksLikeJson(decoded);
   if (!shouldParseJson) {
     return [];
   }

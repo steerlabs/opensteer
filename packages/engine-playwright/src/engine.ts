@@ -255,7 +255,8 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     this.assertNotDisposed();
     const sessionRef = createSessionRef(`playwright-${++this.sessionCounter}`);
     const context =
-      this.options.attachedContext ?? (await this.browser.newContext(buildContextOptions(this.contextOptions)));
+      this.options.attachedContext ??
+      (await this.browser.newContext(buildContextOptions(this.contextOptions)));
     const session: SessionState = {
       sessionRef,
       context,
@@ -267,7 +268,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       closeContextOnSessionClose:
         this.options.attachedContext === undefined
           ? true
-          : this.options.closeAttachedContextOnSessionClose ?? false,
+          : (this.options.closeAttachedContextOnSessionClose ?? false),
       activePageRef: undefined,
     };
     this.sessions.set(sessionRef, session);
@@ -330,13 +331,17 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     if (session.initialPage) {
       const initialPage = session.initialPage;
       session.initialPage = undefined;
-      const controller = this.pageByPlaywrightPage.get(initialPage)
-        ?? (await this.initializePageController(session, initialPage, input.openerPageRef, true));
+      const controller =
+        this.pageByPlaywrightPage.get(initialPage) ??
+        (await this.initializePageController(session, initialPage, input.openerPageRef, true));
       if (input.url) {
         await controller.page.goto(input.url, {
           waitUntil: "domcontentloaded",
         });
-        controller.lastKnownTitle = await this.readTitle(controller.page, controller.lastKnownTitle);
+        controller.lastKnownTitle = await this.readTitle(
+          controller.page,
+          controller.lastKnownTitle,
+        );
       }
       session.activePageRef = controller.pageRef;
       await this.flushPendingPageTasks(session.sessionRef);
@@ -1085,11 +1090,13 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
           if (!controller) {
             if (record.requestBodyState === "pending") {
               record.requestBodyState = "failed";
-              record.requestBodyError = "request body capture is unavailable because the page is closed";
+              record.requestBodyError =
+                "request body capture is unavailable because the page is closed";
             }
             if (record.responseBodyState === "pending") {
               record.responseBodyState = "failed";
-              record.responseBodyError = "response body capture is unavailable because the page is closed";
+              record.responseBodyError =
+                "response body capture is unavailable because the page is closed";
             }
             return;
           }
@@ -1145,9 +1152,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
         ...(cookie.sameSite === undefined
           ? {}
           : { sameSite: toPlaywrightCookieSameSite(cookie.sameSite) }),
-        ...(cookie.partitionKey === undefined
-          ? {}
-          : { partitionKey: cookie.partitionKey }),
+        ...(cookie.partitionKey === undefined ? {} : { partitionKey: cookie.partitionKey }),
         expires:
           cookie.session || cookie.expiresAt === undefined || cookie.expiresAt === null
             ? -1
@@ -1331,12 +1336,11 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
           await route.abort(decision.errorCode as never | undefined);
           return;
         case "fulfill": {
-          const headers = decision.headers === undefined
-            ? undefined
-            : Object.fromEntries(decision.headers.map((header) => [header.name, header.value]));
-          const body = decision.body === undefined
-            ? undefined
-            : Buffer.from(decision.body.bytes);
+          const headers =
+            decision.headers === undefined
+              ? undefined
+              : Object.fromEntries(decision.headers.map((header) => [header.name, header.value]));
+          const body = decision.body === undefined ? undefined : Buffer.from(decision.body.bytes);
           await route.fulfill({
             status: decision.status ?? 200,
             ...(decision.contentType === undefined ? {} : { contentType: decision.contentType }),
@@ -1454,7 +1458,9 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       responseBodyState: responseBody === undefined ? "skipped" : "complete",
       requestBodySkipReason: input.request.body === undefined ? "not-present" : undefined,
       responseBodySkipReason:
-        responseBody === undefined ? responseBodySkipReason ?? "not-present-or-unavailable" : undefined,
+        responseBody === undefined
+          ? (responseBodySkipReason ?? "not-present-or-unavailable")
+          : undefined,
       requestBodyError: undefined,
       responseBodyError: undefined,
       requestBody: input.request.body === undefined ? undefined : clone(input.request.body),
@@ -2041,7 +2047,11 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     const postData = payload.request.postData;
     const requestBody =
       typeof postData === "string"
-        ? captureBodyPayload(Buffer.from(postData, "utf8"), requestContentType, this.bodyCaptureLimitBytes)
+        ? captureBodyPayload(
+            Buffer.from(postData, "utf8"),
+            requestContentType,
+            this.bodyCaptureLimitBytes,
+          )
         : undefined;
     const record: NetworkRecordState = {
       kind: "http",
@@ -2073,13 +2083,17 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
             : "skipped",
       responseBodyState: "pending",
       requestBodySkipReason:
-        requestBody === undefined && payload.request.hasPostData !== true ? "not-present" : undefined,
+        requestBody === undefined && payload.request.hasPostData !== true
+          ? "not-present"
+          : undefined,
       responseBodySkipReason: undefined,
       requestBodyError: undefined,
       responseBodyError: undefined,
       requestBody,
       responseBody: undefined,
-      ...(payload.initiator === undefined ? {} : { initiator: normalizeNetworkInitiator(payload.initiator) }),
+      ...(payload.initiator === undefined
+        ? {}
+        : { initiator: normalizeNetworkInitiator(payload.initiator) }),
     };
 
     if (prior && payload.redirectResponse) {
@@ -2286,16 +2300,17 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     }
     record.transfer = {
       ...(record.transfer ?? {}),
-      ...(payload.encodedDataLength === undefined ? {} : { encodedBodyBytes: payload.encodedDataLength }),
-      ...(payload.encodedDataLength === undefined ? {} : { transferSizeBytes: payload.encodedDataLength }),
+      ...(payload.encodedDataLength === undefined
+        ? {}
+        : { encodedBodyBytes: payload.encodedDataLength }),
+      ...(payload.encodedDataLength === undefined
+        ? {}
+        : { transferSizeBytes: payload.encodedDataLength }),
       ...(record.responseBody === undefined
         ? {}
         : { decodedBodyBytes: record.responseBody.capturedByteLength }),
     };
-    if (
-      record.responseBodyState === "pending" &&
-      getResponseBodySkipReason(record) !== undefined
-    ) {
+    if (record.responseBodyState === "pending" && getResponseBodySkipReason(record) !== undefined) {
       record.responseBodyState = "skipped";
       record.responseBodySkipReason = getResponseBodySkipReason(record);
     }
@@ -2726,7 +2741,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     }
     record.source = {
       ...(response.protocol === undefined ? {} : { protocol: response.protocol }),
-      ...((response.remoteIPAddress === undefined && response.remotePort === undefined)
+      ...(response.remoteIPAddress === undefined && response.remotePort === undefined
         ? {}
         : {
             remoteAddress: {
@@ -2962,9 +2977,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   }
 }
 
-function toPlaywrightCookieSameSite(
-  value: CookieRecord["sameSite"],
-): "Strict" | "Lax" | "None" {
+function toPlaywrightCookieSameSite(value: CookieRecord["sameSite"]): "Strict" | "Lax" | "None" {
   switch (value) {
     case "strict":
       return "Strict";
@@ -3049,22 +3062,20 @@ function parseRawHeadersText(value: string | undefined): ReturnType<typeof creat
     });
 }
 
-function normalizeNetworkInitiator(
-  initiator: {
-    readonly type?: string;
-    readonly url?: string;
-    readonly lineNumber?: number;
-    readonly columnNumber?: number;
-    readonly stack?: {
-      readonly callFrames?: ReadonlyArray<{
-        readonly url?: string;
-        readonly lineNumber?: number;
-        readonly columnNumber?: number;
-        readonly functionName?: string;
-      }>;
-    };
-  },
-): NonNullable<NetworkRecord["initiator"]> {
+function normalizeNetworkInitiator(initiator: {
+  readonly type?: string;
+  readonly url?: string;
+  readonly lineNumber?: number;
+  readonly columnNumber?: number;
+  readonly stack?: {
+    readonly callFrames?: ReadonlyArray<{
+      readonly url?: string;
+      readonly lineNumber?: number;
+      readonly columnNumber?: number;
+      readonly functionName?: string;
+    }>;
+  };
+}): NonNullable<NetworkRecord["initiator"]> {
   const type =
     initiator.type === "parser" ||
     initiator.type === "script" ||
@@ -3225,7 +3236,12 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number | undefined): Pro
     promise,
     new Promise<T>((_, reject) => {
       setTimeout(() => {
-        reject(createBrowserCoreError("timeout", `page evaluation timed out after ${String(timeoutMs)}ms`));
+        reject(
+          createBrowserCoreError(
+            "timeout",
+            `page evaluation timed out after ${String(timeoutMs)}ms`,
+          ),
+        );
       }, timeoutMs);
     }),
   ]);

@@ -13,7 +13,9 @@ import { isValidHttpHeaderName } from "../shared.js";
 const HTTP_METHOD_PATTERN = /^[A-Za-z]+$/;
 const URL_TEMPLATE_PLACEHOLDER_PATTERN = /\{([A-Za-z][A-Za-z0-9_-]*)\}/g;
 
-export function assertValidRequestPlanPayload(payload: unknown): asserts payload is OpensteerRequestPlanPayload {
+function assertValidRequestPlanPayload(
+  payload: unknown,
+): asserts payload is OpensteerRequestPlanPayload {
   const issues = validateJsonSchema(opensteerRequestPlanPayloadSchema, payload);
   if (issues.length === 0) {
     return;
@@ -103,7 +105,8 @@ export function normalizeRequestPlanPayload(
             normalizeRequestEntry(entry, `endpoint.defaultQuery[${index}]`, "query"),
           ),
         }),
-    ...(payload.endpoint.defaultHeaders === undefined || payload.endpoint.defaultHeaders.length === 0
+    ...(payload.endpoint.defaultHeaders === undefined ||
+    payload.endpoint.defaultHeaders.length === 0
       ? {}
       : {
           defaultHeaders: payload.endpoint.defaultHeaders.map((entry, index) =>
@@ -124,19 +127,13 @@ export function normalizeRequestPlanPayload(
             ...(payload.body.contentType === undefined
               ? {}
               : {
-                  contentType: normalizeTrimmedString(
-                    "body.contentType",
-                    payload.body.contentType,
-                  ),
+                  contentType: normalizeTrimmedString("body.contentType", payload.body.contentType),
                 }),
             ...(payload.body.required === undefined ? {} : { required: payload.body.required }),
             ...(payload.body.description === undefined
               ? {}
               : {
-                  description: normalizeTrimmedString(
-                    "body.description",
-                    payload.body.description,
-                  ),
+                  description: normalizeTrimmedString("body.description", payload.body.description),
                 }),
             ...(payload.body.template === undefined ? {} : { template: payload.body.template }),
             ...(payload.body.fields === undefined || payload.body.fields.length === 0
@@ -251,10 +248,7 @@ export function normalizeRequestPlanPayload(
             ...(payload.auth.description === undefined
               ? {}
               : {
-                  description: normalizeTrimmedString(
-                    "auth.description",
-                    payload.auth.description,
-                  ),
+                  description: normalizeTrimmedString("auth.description", payload.auth.description),
                 }),
           },
         }),
@@ -278,7 +272,7 @@ export function normalizeRequestPlanPayload(
   return normalizedPayload;
 }
 
-export function extractUrlTemplatePlaceholders(urlTemplate: string): readonly string[] {
+function extractUrlTemplatePlaceholders(urlTemplate: string): readonly string[] {
   const placeholders: string[] = [];
   for (const match of urlTemplate.matchAll(URL_TEMPLATE_PLACEHOLDER_PATTERN)) {
     const name = match[1];
@@ -349,10 +343,7 @@ function normalizeParameters(
         ...(parameter.description === undefined
           ? {}
           : {
-              description: normalizeTrimmedString(
-                "parameter.description",
-                parameter.description,
-              ),
+              description: normalizeTrimmedString("parameter.description", parameter.description),
             }),
       };
     }
@@ -365,10 +356,7 @@ function normalizeParameters(
       ...(parameter.description === undefined
         ? {}
         : {
-            description: normalizeTrimmedString(
-              "parameter.description",
-              parameter.description,
-            ),
+            description: normalizeTrimmedString("parameter.description", parameter.description),
           }),
       ...(parameter.defaultValue === undefined ? {} : { defaultValue: parameter.defaultValue }),
     };
@@ -412,7 +400,10 @@ function normalizeFailurePolicy(
       ? {}
       : {
           responseHeaders: failurePolicy.responseHeaders.map((match, index) => ({
-            name: normalizeHttpHeaderName(`${fieldPrefix}.responseHeaders[${index}].name`, match.name),
+            name: normalizeHttpHeaderName(
+              `${fieldPrefix}.responseHeaders[${index}].name`,
+              match.name,
+            ),
             valueIncludes: normalizeTrimmedString(
               `${fieldPrefix}.responseHeaders[${index}].valueIncludes`,
               match.valueIncludes,
@@ -493,10 +484,7 @@ function normalizeTransport(
   }
 }
 
-function assertAbsoluteUrlTemplate(
-  urlTemplate: string,
-  placeholders: readonly string[],
-): void {
+function assertAbsoluteUrlTemplate(urlTemplate: string, placeholders: readonly string[]): void {
   const sampleUrl = placeholders.reduce(
     (current, placeholder) => current.replaceAll(`{${placeholder}}`, "placeholder"),
     urlTemplate,

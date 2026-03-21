@@ -82,26 +82,26 @@ afterAll(async () => {
 
 for (const harness of harnesses) {
   describe.sequential(`${harness.name} phase-1 DOM actions`, () => {
-    test(
-      "auto-scrolls to offscreen targets before clicking",
-      { timeout: 60_000 },
-      async () => {
-        await withPage(harness, offscreenClickDocument(), async ({ engine, runtime, pageRef, frameRef }) => {
+    test("auto-scrolls to offscreen targets before clicking", { timeout: 60_000 }, async () => {
+      await withPage(
+        harness,
+        offscreenClickDocument(),
+        async ({ engine, runtime, pageRef, frameRef }) => {
           await runtime.click({
             pageRef,
             target: { kind: "selector", selector: "#offscreen-action" },
           });
 
           expect(await readTextById(engine, frameRef, "status")).toBe("clicked");
-        });
-      },
-    );
+        },
+      );
+    });
 
-    test(
-      "scrolls nested containers before clicking",
-      { timeout: 60_000 },
-      async () => {
-        await withPage(harness, nestedScrollDocument(), async ({ engine, runtime, pageRef, frameRef }) => {
+    test("scrolls nested containers before clicking", { timeout: 60_000 }, async () => {
+      await withPage(
+        harness,
+        nestedScrollDocument(),
+        async ({ engine, runtime, pageRef, frameRef }) => {
           await runtime.click({
             pageRef,
             target: { kind: "selector", selector: "#nested-target" },
@@ -110,9 +110,9 @@ for (const harness of harnesses) {
           const status = await readTextById(engine, frameRef, "status");
           expect(status).toMatch(/^clicked:/);
           expect(Number(status.split(":")[1])).toBeGreaterThan(0);
-        });
-      },
-    );
+        },
+      );
+    });
 
     test(
       "retries transient post-scroll obstructions instead of probing a click grid",
@@ -137,14 +137,18 @@ for (const harness of harnesses) {
       "retries after layout shifts replace the live node between resolve and click",
       { timeout: 60_000 },
       async () => {
-        await withPage(harness, layoutShiftDocument(), async ({ engine, runtime, pageRef, frameRef }) => {
-          await runtime.click({
-            pageRef,
-            target: { kind: "selector", selector: "#shift-target" },
-          });
+        await withPage(
+          harness,
+          layoutShiftDocument(),
+          async ({ engine, runtime, pageRef, frameRef }) => {
+            await runtime.click({
+              pageRef,
+              target: { kind: "selector", selector: "#shift-target" },
+            });
 
-          expect(await readTextById(engine, frameRef, "status")).toBe("clicked");
-        });
+            expect(await readTextById(engine, frameRef, "status")).toBe("clicked");
+          },
+        );
       },
     );
 
@@ -152,24 +156,31 @@ for (const harness of harnesses) {
       "clicks iframe-contained offscreen targets through the existing locator context hops",
       { timeout: 60_000 },
       async () => {
-        await withUrl(harness, `${iframeBaseUrl}/iframe-main`, async ({ engine, runtime, pageRef }) => {
-          const childFrame = await waitForChildFrame(engine, pageRef, "/iframe-child");
-          const childSnapshot = await waitForNodeInFrame(engine, childFrame, "child-target");
-          const childNode = expectValue(findNodeById(childSnapshot, "child-target"), "child target was not found");
-          const locator = createLocator(childSnapshot, childNode);
-          const anchor = await runtime.buildAnchor({ locator });
+        await withUrl(
+          harness,
+          `${iframeBaseUrl}/iframe-main`,
+          async ({ engine, runtime, pageRef }) => {
+            const childFrame = await waitForChildFrame(engine, pageRef, "/iframe-child");
+            const childSnapshot = await waitForNodeInFrame(engine, childFrame, "child-target");
+            const childNode = expectValue(
+              findNodeById(childSnapshot, "child-target"),
+              "child target was not found",
+            );
+            const locator = createLocator(childSnapshot, childNode);
+            const anchor = await runtime.buildAnchor({ locator });
 
-          await runtime.click({
-            pageRef,
-            target: {
-              kind: "live",
-              locator,
-              anchor,
-            },
-          });
+            await runtime.click({
+              pageRef,
+              target: {
+                kind: "live",
+                locator,
+                anchor,
+              },
+            });
 
-          expect(await readTextById(engine, childFrame, "child-status")).toBe("clicked");
-        });
+            expect(await readTextById(engine, childFrame, "child-status")).toBe("clicked");
+          },
+        );
       },
     );
 
@@ -177,28 +188,32 @@ for (const harness of harnesses) {
       "handles open-shadow click and input targets without changing selector/path replay",
       { timeout: 60_000 },
       async () => {
-        await withPage(harness, openShadowDocument(), async ({ engine, runtime, pageRef, frameRef }) => {
-          await runtime.click({
-            pageRef,
-            target: { kind: "selector", selector: "#shadow-button" },
-          });
-          await runtime.input({
-            pageRef,
-            target: { kind: "selector", selector: "#shadow-input" },
-            text: "shadow",
-          });
+        await withPage(
+          harness,
+          openShadowDocument(),
+          async ({ engine, runtime, pageRef, frameRef }) => {
+            await runtime.click({
+              pageRef,
+              target: { kind: "selector", selector: "#shadow-button" },
+            });
+            await runtime.input({
+              pageRef,
+              target: { kind: "selector", selector: "#shadow-input" },
+              text: "shadow",
+            });
 
-          expect(await readTextById(engine, frameRef, "status")).toBe("shadow clicked");
-          expect(await readTextById(engine, frameRef, "mirror")).toBe("shadow");
-        });
+            expect(await readTextById(engine, frameRef, "status")).toBe("shadow clicked");
+            expect(await readTextById(engine, frameRef, "mirror")).toBe("shadow");
+          },
+        );
       },
     );
 
-    test(
-      "replays closed-shadow paths for action execution",
-      { timeout: 60_000 },
-      async () => {
-        await withPage(harness, closedShadowDocument(), async ({ engine, runtime, pageRef, frameRef }) => {
+    test("replays closed-shadow paths for action execution", { timeout: 60_000 }, async () => {
+      await withPage(
+        harness,
+        closedShadowDocument(),
+        async ({ engine, runtime, pageRef, frameRef }) => {
           const snapshot = await engine.getDomSnapshot({ frameRef });
           const targetNode = expectValue(
             findNodeById(snapshot, "closed-shadow-button"),
@@ -216,24 +231,28 @@ for (const harness of harnesses) {
           });
 
           expect(await readTextById(engine, frameRef, "status")).toBe("closed shadow clicked");
-        });
-      },
-    );
+        },
+      );
+    });
 
     test(
       "focuses inputs after scrolling before using keyboard input",
       { timeout: 60_000 },
       async () => {
-        await withPage(harness, focusAfterScrollDocument(), async ({ engine, runtime, pageRef, frameRef }) => {
-          await runtime.input({
-            pageRef,
-            target: { kind: "selector", selector: "#focus-input" },
-            text: "Opensteer",
-          });
+        await withPage(
+          harness,
+          focusAfterScrollDocument(),
+          async ({ engine, runtime, pageRef, frameRef }) => {
+            await runtime.input({
+              pageRef,
+              target: { kind: "selector", selector: "#focus-input" },
+              text: "Opensteer",
+            });
 
-          expect(await readTextById(engine, frameRef, "status")).toBe("focused:Opensteer");
-          expect(await readTextById(engine, frameRef, "mirror")).toBe("Opensteer");
-        });
+            expect(await readTextById(engine, frameRef, "status")).toBe("focused:Opensteer");
+            expect(await readTextById(engine, frameRef, "mirror")).toBe("Opensteer");
+          },
+        );
       },
     );
   });
@@ -302,7 +321,10 @@ async function waitForChildFrame(
   throw new Error("child frame did not appear");
 }
 
-async function waitForFrameSnapshot(engine: BrowserCoreEngine, frameRef: string): Promise<DomSnapshot> {
+async function waitForFrameSnapshot(
+  engine: BrowserCoreEngine,
+  frameRef: string,
+): Promise<DomSnapshot> {
   let lastError: unknown;
   for (let attempt = 0; attempt < 20; attempt += 1) {
     try {
@@ -313,7 +335,9 @@ async function waitForFrameSnapshot(engine: BrowserCoreEngine, frameRef: string)
     }
   }
 
-  throw lastError instanceof Error ? lastError : new Error("frame snapshot did not become available");
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("frame snapshot did not become available");
 }
 
 async function waitForNodeInFrame(
@@ -334,7 +358,9 @@ async function waitForNodeInFrame(
     await wait(100);
   }
 
-  throw lastError instanceof Error ? lastError : new Error(`node #${id} did not appear in ${frameRef}`);
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(`node #${id} did not appear in ${frameRef}`);
 }
 
 async function readTextById(

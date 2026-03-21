@@ -521,7 +521,8 @@ describe("semantic protocol descriptors", () => {
       }),
     ).not.toThrow();
 
-    const captureSchema = opensteerSemanticOperationSpecificationMap["scripts.capture"]?.outputSchema;
+    const captureSchema =
+      opensteerSemanticOperationSpecificationMap["scripts.capture"]?.outputSchema;
     expect(captureSchema?.properties?.scripts?.items?.properties).toMatchObject({
       source: expect.any(Object),
       hash: expect.any(Object),

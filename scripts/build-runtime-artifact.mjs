@@ -48,9 +48,7 @@ if (!tarballName) {
 process.stdout.write(`${path.join(outDir, tarballName)}\n`);
 
 async function createRuntimePackageManifest() {
-  const packageJson = JSON.parse(
-    await readFile(path.join(packageDir, "package.json"), "utf8"),
-  );
+  const packageJson = JSON.parse(await readFile(path.join(packageDir, "package.json"), "utf8"));
 
   return {
     name: packageJson.name,

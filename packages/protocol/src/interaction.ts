@@ -196,16 +196,7 @@ export const opensteerInteractionTraceRecordSchema: JsonSchema = objectSchema(
   },
   {
     title: "OpensteerInteractionTraceRecord",
-    required: [
-      "id",
-      "key",
-      "version",
-      "createdAt",
-      "updatedAt",
-      "contentHash",
-      "tags",
-      "payload",
-    ],
+    required: ["id", "key", "version", "createdAt", "updatedAt", "contentHash", "tags", "payload"],
   },
 );
 

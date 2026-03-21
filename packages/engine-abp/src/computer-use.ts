@@ -17,10 +17,7 @@ import type {
   NormalizedComputerScreenshotOptions,
 } from "@opensteer/protocol";
 
-import {
-  clampAbpActionSettleTimeout,
-  type AbpActionBoundaryOptions,
-} from "./action-settle.js";
+import { clampAbpActionSettleTimeout, type AbpActionBoundaryOptions } from "./action-settle.js";
 import {
   buildImmediateActionRequest,
   buildImmediateScreenshotRequest,
