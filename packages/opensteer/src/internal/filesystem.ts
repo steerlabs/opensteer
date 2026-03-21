@@ -72,7 +72,7 @@ export async function writeJsonFileAtomic(filePath: string, value: unknown): Pro
   await writeTextFileAtomic(filePath, stableJsonString(value));
 }
 
-export async function writeTextFileAtomic(filePath: string, value: string): Promise<void> {
+async function writeTextFileAtomic(filePath: string, value: string): Promise<void> {
   await ensureDirectory(path.dirname(filePath));
   const temporaryPath = `${filePath}.${randomUUID()}.tmp`;
 
@@ -84,7 +84,7 @@ export async function writeJsonFileExclusive(filePath: string, value: unknown): 
   await writeTextFileExclusive(filePath, stableJsonString(value));
 }
 
-export async function writeTextFileExclusive(filePath: string, value: string): Promise<void> {
+async function writeTextFileExclusive(filePath: string, value: string): Promise<void> {
   await ensureDirectory(path.dirname(filePath));
   const handle = await open(filePath, "wx");
 

@@ -144,7 +144,7 @@ async function prepareSnapshotOwnedBrowserLaunch(
       userDataDir,
       profileDirectory: options.sourceProfileDirectory,
       cleanupUserDataDir: userDataDir,
-      useRealKeychain: options.useRealKeychain ?? (options.copyMode === "authenticated"),
+      useRealKeychain: options.useRealKeychain ?? options.copyMode === "authenticated",
     };
   } catch (error) {
     await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);

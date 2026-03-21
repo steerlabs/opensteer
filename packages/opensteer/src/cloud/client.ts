@@ -9,10 +9,7 @@ import type {
   BrowserProfileImportDescriptor,
   CloudBrowserProfilePreference,
 } from "@opensteer/cloud-contracts";
-import {
-  syncBrowserProfileCookies,
-  type SyncBrowserProfileCookiesInput,
-} from "./profile-sync.js";
+import { syncBrowserProfileCookies, type SyncBrowserProfileCookiesInput } from "./profile-sync.js";
 
 export interface OpensteerCloudSessionCreateInput {
   readonly name?: string;

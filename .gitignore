@@ -11,6 +11,7 @@ coverage/
 *.tsbuildinfo
 *.tgz
 *.log
+artifacts/
 
 # Environment and local overrides
 .env

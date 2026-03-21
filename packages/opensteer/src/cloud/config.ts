@@ -7,17 +7,21 @@ export interface OpensteerCloudConfig {
   readonly browserProfile?: CloudBrowserProfilePreference;
 }
 
-export function resolveCloudConfig(input: {
-  readonly enabled?: boolean;
-  readonly apiKey?: string;
-  readonly baseUrl?: string;
-  readonly browserProfile?: CloudBrowserProfilePreference;
-  readonly mode?: "local" | "cloud";
-} = {}): OpensteerCloudConfig | undefined {
+export function resolveCloudConfig(
+  input: {
+    readonly enabled?: boolean;
+    readonly apiKey?: string;
+    readonly baseUrl?: string;
+    readonly browserProfile?: CloudBrowserProfilePreference;
+    readonly mode?: "local" | "cloud";
+  } = {},
+): OpensteerCloudConfig | undefined {
   const mode = resolveOpensteerExecutionMode({
     ...(input.mode === undefined ? {} : { explicit: input.mode }),
     ...(input.enabled === undefined ? {} : { cloud: input.enabled }),
-    ...(process.env.OPENSTEER_MODE === undefined ? {} : { environment: process.env.OPENSTEER_MODE }),
+    ...(process.env.OPENSTEER_MODE === undefined
+      ? {}
+      : { environment: process.env.OPENSTEER_MODE }),
   });
   if (mode !== "cloud") {
     return undefined;

@@ -939,7 +939,9 @@ test(
       const slotNode = findNodeById(snapshot.nodes, "shadow-action-slot")!;
       const bridge = resolveDomActionBridge(engine)!;
 
-      const canonicalTarget = await bridge.canonicalizePointerTarget(createLocator(snapshot, slotNode));
+      const canonicalTarget = await bridge.canonicalizePointerTarget(
+        createLocator(snapshot, slotNode),
+      );
       expect(canonicalTarget.nodeRef).toBe(buttonNode.nodeRef);
 
       const assessment = await bridge.classifyPointerHit({
@@ -1059,7 +1061,9 @@ test(
       const originalSend = controller.cdp.send.bind(controller.cdp);
       controller.cdp.send = async (method, params) => {
         if (method === "DOM.getContentQuads") {
-          throw new Error("Protocol error (DOM.getContentQuads): Could not find node with given id");
+          throw new Error(
+            "Protocol error (DOM.getContentQuads): Could not find node with given id",
+          );
         }
         return originalSend(method, params);
       };

@@ -52,7 +52,7 @@ export function resolveChromeExecutablePath(executablePath: string | undefined):
   );
 }
 
-export function detectLocalChromeInstallations(): readonly LocalChromeInstallation[] {
+function detectLocalChromeInstallations(): readonly LocalChromeInstallation[] {
   if (process.platform === "darwin") {
     return [
       {

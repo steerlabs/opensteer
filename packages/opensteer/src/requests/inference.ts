@@ -30,9 +30,11 @@ export function inferRequestPlanFromNetworkRecord(
       }) satisfies OpensteerRequestEntry,
   );
   const requestContentType =
-    headerValue(record.record.requestHeaders, "content-type") ?? record.record.requestBody?.mimeType;
+    headerValue(record.record.requestHeaders, "content-type") ??
+    record.record.requestBody?.mimeType;
   const responseContentType =
-    headerValue(record.record.responseHeaders, "content-type") ?? record.record.responseBody?.mimeType;
+    headerValue(record.record.responseHeaders, "content-type") ??
+    record.record.responseBody?.mimeType;
   const defaultHeaders = inferDefaultHeaders(record);
   const auth = inferAuth(record.record.requestHeaders);
 

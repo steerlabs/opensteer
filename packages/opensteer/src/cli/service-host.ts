@@ -49,7 +49,9 @@ export async function runOpensteerServiceHost(options: {
   });
   const rootPath = runtime.rootPath;
   const token = randomBytes(24).toString("hex");
-  const endpointByPath = new Map(opensteerSemanticRestEndpoints.map((endpoint) => [endpoint.path, endpoint]));
+  const endpointByPath = new Map(
+    opensteerSemanticRestEndpoints.map((endpoint) => [endpoint.path, endpoint]),
+  );
   const scheduler = new ServiceOperationScheduler();
   let shuttingDown = false;
 
@@ -72,20 +74,19 @@ export async function runOpensteerServiceHost(options: {
         shuttingDown = true;
         await shutdown();
       },
-    })
-      .catch((error) => {
-        const normalized = normalizeOpensteerError(error);
-        if (response.destroyed) {
-          return;
-        }
-        if (!response.headersSent) {
-          writeJson(response, httpStatusForOpensteerError(normalized), {
-            error: normalized,
-          });
-        } else {
-          response.end();
-        }
-      });
+    }).catch((error) => {
+      const normalized = normalizeOpensteerError(error);
+      if (response.destroyed) {
+        return;
+      }
+      if (!response.headersSent) {
+        writeJson(response, httpStatusForOpensteerError(normalized), {
+          error: normalized,
+        });
+      } else {
+        response.end();
+      }
+    });
   });
 
   const shutdown = async () => {
@@ -125,8 +126,8 @@ export async function runOpensteerServiceHost(options: {
     port: address.port,
     token,
     startedAt: Date.now(),
-        baseUrl,
-        engine,
+    baseUrl,
+    engine,
   });
 
   await once(server, "close");
@@ -206,7 +207,10 @@ async function handleRequest(
     writeProtocolError(
       response,
       envelope,
-      createOpensteerError("invalid-request", `expected ${endpoint.name}, received ${envelope.operation}`),
+      createOpensteerError(
+        "invalid-request",
+        `expected ${endpoint.name}, received ${envelope.operation}`,
+      ),
     );
     return;
   }
@@ -214,7 +218,9 @@ async function handleRequest(
   const abortController = new AbortController();
   const abort = () => {
     if (!abortController.signal.aborted) {
-      abortController.abort(new Error("The client disconnected before the Opensteer operation completed."));
+      abortController.abort(
+        new Error("The client disconnected before the Opensteer operation completed."),
+      );
     }
   };
   request.on("aborted", abort);

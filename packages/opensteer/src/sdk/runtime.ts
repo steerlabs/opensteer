@@ -216,10 +216,7 @@ import {
   prepareMinimizationRequest,
   type PreparedMinimizationRequest,
 } from "../network/minimize.js";
-import {
-  TRANSPORT_PROBE_LADDER,
-  selectTransportProbeRecommendation,
-} from "../network/probe.js";
+import { TRANSPORT_PROBE_LADDER, selectTransportProbeRecommendation } from "../network/probe.js";
 import {
   analyzeReverseCandidate,
   buildChannelDescriptor,
@@ -687,7 +684,9 @@ export class OpensteerSessionRuntime {
       const output = await this.runWithOperationTimeout(
         "page.activate",
         async (timeout) => {
-          await timeout.runStep(() => this.requireEngine().activatePage({ pageRef: input.pageRef }));
+          await timeout.runStep(() =>
+            this.requireEngine().activatePage({ pageRef: input.pageRef }),
+          );
           this.pageRef = input.pageRef;
           this.latestSnapshot = undefined;
           return this.readSessionState();
@@ -740,8 +739,7 @@ export class OpensteerSessionRuntime {
             this.requireEngine().listPages({ sessionRef: this.requireSessionRef() }),
           );
           let activePageRef =
-            pages.find((page) => page.pageRef === this.pageRef)?.pageRef ??
-            pages.at(-1)?.pageRef;
+            pages.find((page) => page.pageRef === this.pageRef)?.pageRef ?? pages.at(-1)?.pageRef;
 
           if (pages.length === 0) {
             const created = await timeout.runStep(() =>
@@ -1568,11 +1566,7 @@ export class OpensteerSessionRuntime {
                 request,
                 timeout,
               );
-              return matchesSuccessFingerprint(
-                response,
-                baselineFingerprint,
-                input.successPolicy,
-              );
+              return matchesSuccessFingerprint(response, baselineFingerprint, input.successPolicy);
             },
           });
 
@@ -1681,7 +1675,9 @@ export class OpensteerSessionRuntime {
     return this.runWithOperationTimeout(
       "artifact.read",
       async () => {
-        const artifact = await (await this.ensureRoot()).artifacts.toProtocolArtifact(input.artifactId);
+        const artifact = await (
+          await this.ensureRoot()
+        ).artifacts.toProtocolArtifact(input.artifactId);
         if (artifact === undefined) {
           throw new OpensteerProtocolError(
             "not-found",
@@ -1875,8 +1871,8 @@ export class OpensteerSessionRuntime {
             selectedStrategy ??
             (chosenCandidate === undefined
               ? undefined
-              : chosenCandidate.replayStrategies.find((strategy) => strategy.supported) ??
-                chosenCandidate.replayStrategies[0]);
+              : (chosenCandidate.replayStrategies.find((strategy) => strategy.supported) ??
+                chosenCandidate.replayStrategies[0]));
           const packageValidators =
             chosenCandidate === undefined
               ? []
@@ -1950,9 +1946,7 @@ export class OpensteerSessionRuntime {
                   id: `reverse-replay:${randomUUID()}`,
                   createdAt: Date.now(),
                   candidateId: chosenCandidate?.id ?? "candidate:none",
-                  ...(chosenStrategy === undefined
-                    ? {}
-                    : { strategyId: chosenStrategy.id }),
+                  ...(chosenStrategy === undefined ? {} : { strategyId: chosenStrategy.id }),
                   packageId: packageRecord.id,
                   success: false,
                   ...(chosenCandidate === undefined
@@ -1980,9 +1974,7 @@ export class OpensteerSessionRuntime {
           const finalReplayRuns =
             selectedRun === undefined
               ? [...replayRuns, finalRun]
-              : replayRuns.map((run) =>
-                  run.id === selectedRun.id ? finalRun : run,
-                );
+              : replayRuns.map((run) => (run.id === selectedRun.id ? finalRun : run));
           const exportRecord =
             chosenCandidate === undefined
               ? undefined
@@ -1990,15 +1982,11 @@ export class OpensteerSessionRuntime {
                   id: `export:${randomUUID()}`,
                   createdAt: Date.now(),
                   candidateId: chosenCandidate.id,
-                  ...(chosenStrategy === undefined
-                    ? {}
-                    : { strategyId: chosenStrategy.id }),
+                  ...(chosenStrategy === undefined ? {} : { strategyId: chosenStrategy.id }),
                   packageId: packageRecord.id,
                   kind: packageRecord.payload.kind,
                   readiness: packageRecord.payload.readiness,
-                  ...(requestPlan === undefined
-                    ? {}
-                    : { requestPlanId: requestPlan.id }),
+                  ...(requestPlan === undefined ? {} : { requestPlanId: requestPlan.id }),
                 };
           caseRecord = await root.registry.reverseCases.update({
             id: caseRecord.id,
@@ -2092,7 +2080,9 @@ export class OpensteerSessionRuntime {
         );
         const caseRecord = await this.tryResolveReverseCaseById(packageRecord.payload.caseId);
         if (caseRecord !== undefined) {
-          await (await this.ensureRoot()).registry.reverseCases.update({
+          await (
+            await this.ensureRoot()
+          ).registry.reverseCases.update({
             id: caseRecord.id,
             payload: {
               ...caseRecord.payload,
@@ -2106,12 +2096,8 @@ export class OpensteerSessionRuntime {
                   kind: "replay-attempt",
                   hypothesis: `replay ${replay.candidate.id} via package ${packageRecord.id}`,
                   success: replay.run.success,
-                  ...(replay.run.status === undefined
-                    ? {}
-                    : { status: replay.run.status }),
-                  ...(replay.run.error === undefined
-                    ? {}
-                    : { notes: replay.run.error }),
+                  ...(replay.run.status === undefined ? {} : { status: replay.run.status }),
+                  ...(replay.run.error === undefined ? {} : { notes: replay.run.error }),
                   validation: replay.run.validation,
                 },
               ],
@@ -2172,17 +2158,13 @@ export class OpensteerSessionRuntime {
         const requestPlan =
           packageRecord.payload.requestPlanId === undefined
             ? undefined
-            : await root.registry.requestPlans.getById(
-                packageRecord.payload.requestPlanId,
-              );
+            : await root.registry.requestPlans.getById(packageRecord.payload.requestPlanId);
 
         if (
           packageRecord.id !== sourcePackage.id &&
           packageRecord.payload.candidateId !== undefined
         ) {
-          const caseRecord = await this.tryResolveReverseCaseById(
-            packageRecord.payload.caseId,
-          );
+          const caseRecord = await this.tryResolveReverseCaseById(packageRecord.payload.caseId);
           if (caseRecord !== undefined) {
             await root.registry.reverseCases.update({
               id: caseRecord.id,
@@ -2200,9 +2182,7 @@ export class OpensteerSessionRuntime {
                     packageId: packageRecord.id,
                     kind: packageRecord.payload.kind,
                     readiness: packageRecord.payload.readiness,
-                    ...(requestPlan === undefined
-                      ? {}
-                      : { requestPlanId: requestPlan.id }),
+                    ...(requestPlan === undefined ? {} : { requestPlanId: requestPlan.id }),
                   },
                 ],
               },
@@ -2251,9 +2231,13 @@ export class OpensteerSessionRuntime {
     options: RuntimeOperationOptions = {},
   ): Promise<OpensteerReversePackageGetOutput> {
     assertValidSemanticOperationInput("reverse.package.get", input);
-    return this.runWithOperationTimeout("reverse.package.get", async () => ({
-      package: await this.resolveReversePackageById(input.packageId),
-    }), options);
+    return this.runWithOperationTimeout(
+      "reverse.package.get",
+      async () => ({
+        package: await this.resolveReversePackageById(input.packageId),
+      }),
+      options,
+    );
   }
 
   async listReversePackages(
@@ -2264,9 +2248,9 @@ export class OpensteerSessionRuntime {
     return this.runWithOperationTimeout(
       "reverse.package.list",
       async () => {
-        const packages = await (await this.ensureRoot()).registry.reversePackages.list(
-          input.key === undefined ? {} : { key: input.key },
-        );
+        const packages = await (
+          await this.ensureRoot()
+        ).registry.reversePackages.list(input.key === undefined ? {} : { key: input.key });
         return {
           packages: packages.filter((entry) => {
             if (input.caseId !== undefined && entry.payload.caseId !== input.caseId) {
@@ -2312,8 +2296,8 @@ export class OpensteerSessionRuntime {
           candidate === undefined
             ? undefined
             : selectedStrategyId === undefined
-              ? candidate.replayStrategies.find((entry) => entry.supported) ??
-                candidate.replayStrategies[0]
+              ? (candidate.replayStrategies.find((entry) => entry.supported) ??
+                candidate.replayStrategies[0])
               : candidate.replayStrategies.find((entry) => entry.id === selectedStrategyId);
         if (input.strategyId !== undefined && strategy === undefined) {
           throw new OpensteerProtocolError(
@@ -2363,17 +2347,11 @@ export class OpensteerSessionRuntime {
           draft.readiness === "runnable" &&
           candidate !== undefined &&
           strategy !== undefined
-            ? await this.writePortableReverseRequestPlan(
-                caseRecord,
-                candidate,
-                strategy,
-                timeout,
-                {
-                  key: `${caseRecord.key}:portable:${Date.now()}`,
-                  version: "1.0.0",
-                  provenanceSource: "reverse.export",
-                },
-              )
+            ? await this.writePortableReverseRequestPlan(caseRecord, candidate, strategy, timeout, {
+                key: `${caseRecord.key}:portable:${Date.now()}`,
+                version: "1.0.0",
+                provenanceSource: "reverse.export",
+              })
             : undefined;
         const packageRecord = await this.writeReversePackage({
           caseRecord,
@@ -2421,9 +2399,7 @@ export class OpensteerSessionRuntime {
     const pageInfo = await this.requireEngine().getPageInfo({ pageRef });
     const stateSource = input.stateSource ?? this.resolveCurrentStateSource();
     const existingCase =
-      input.caseId === undefined
-        ? undefined
-        : await this.resolveReverseCaseById(input.caseId);
+      input.caseId === undefined ? undefined : await this.resolveReverseCaseById(input.caseId);
     const caseRecord =
       existingCase ??
       (await root.registry.reverseCases.write({
@@ -2456,13 +2432,9 @@ export class OpensteerSessionRuntime {
         source: "live",
         pageRef,
         ...(input.network?.url === undefined ? {} : { url: input.network.url }),
-        ...(input.network?.hostname === undefined
-          ? {}
-          : { hostname: input.network.hostname }),
+        ...(input.network?.hostname === undefined ? {} : { hostname: input.network.hostname }),
         ...(input.network?.path === undefined ? {} : { path: input.network.path }),
-        ...(input.network?.method === undefined
-          ? {}
-          : { method: input.network.method }),
+        ...(input.network?.method === undefined ? {} : { method: input.network.method }),
         includeBodies: input.network?.includeBodies ?? true,
       },
       timeout,
@@ -2603,11 +2575,7 @@ export class OpensteerSessionRuntime {
       const clusteredRecords = observationRecords.map((entry) => {
         const bodyCodec = describeReverseBodyCodec(entry.record).codec;
         const channel = buildChannelDescriptor(entry.record);
-        const matchedTargetHints = matchReverseTargetHints(
-          channel,
-          bodyCodec,
-          input.targetHints,
-        );
+        const matchedTargetHints = matchReverseTargetHints(channel, bodyCodec, input.targetHints);
         return {
           record: entry.record,
           ...(entry.observedAt === undefined ? {} : { observedAt: entry.observedAt }),
@@ -2653,9 +2621,7 @@ export class OpensteerSessionRuntime {
           inputs: analysis.inputs,
           resolvers: analysis.resolvers,
           guardIds: Array.from(
-            new Set(
-              analysis.replayStrategies.flatMap((strategy) => strategy.guardIds),
-            ),
+            new Set(analysis.replayStrategies.flatMap((strategy) => strategy.guardIds)),
           ).sort((left, right) => left.localeCompare(right)),
           scriptArtifactIds: observation.scriptArtifactIds,
           replayStrategies: analysis.replayStrategies,
@@ -2663,9 +2629,9 @@ export class OpensteerSessionRuntime {
       }
     }
 
-    analyzedCandidates.sort((left, right) =>
-      compareReverseAnalysisResults(left, right) ||
-      left.id.localeCompare(right.id),
+    analyzedCandidates.sort(
+      (left, right) =>
+        compareReverseAnalysisResults(left, right) || left.id.localeCompare(right.id),
     );
     const limitedCandidates =
       input.candidateLimit === undefined
@@ -2709,8 +2675,8 @@ export class OpensteerSessionRuntime {
     const candidate = resolveReverseCandidate(caseRecord, input.candidateId);
     const strategy =
       input.strategyId === undefined
-        ? candidate.replayStrategies.find((entry) => entry.supported) ??
-          candidate.replayStrategies[0]
+        ? (candidate.replayStrategies.find((entry) => entry.supported) ??
+          candidate.replayStrategies[0])
         : candidate.replayStrategies.find((entry) => entry.id === input.strategyId);
     if (strategy === undefined) {
       throw new OpensteerProtocolError(
@@ -2991,18 +2957,17 @@ export class OpensteerSessionRuntime {
     bindings: ReadonlyMap<string, unknown>,
     resolverValues: ReadonlyMap<string, unknown>,
   ): Promise<unknown> {
-    const input = normalizeReversePackageOperationInput(
-      step.input,
-      bindings,
-      resolverValues,
-    );
+    const input = normalizeReversePackageOperationInput(step.input, bindings, resolverValues);
     switch (step.operation) {
       case "page.goto":
         return this.goto(input as OpensteerPageGotoInput, { signal: timeout.signal });
       case "page.evaluate":
-        return this.evaluate(withReverseOperationPageRef(input, pageRef) as OpensteerPageEvaluateInput, {
-          signal: timeout.signal,
-        });
+        return this.evaluate(
+          withReverseOperationPageRef(input, pageRef) as OpensteerPageEvaluateInput,
+          {
+            signal: timeout.signal,
+          },
+        );
       case "dom.click":
         return this.click(withReverseOperationPageRef(input, pageRef) as OpensteerDomClickInput, {
           signal: timeout.signal,
@@ -3020,9 +2985,12 @@ export class OpensteerSessionRuntime {
           signal: timeout.signal,
         });
       case "interaction.replay":
-        return this.replayInteraction(withReverseOperationPageRef(input, pageRef) as OpensteerInteractionReplayInput, {
-          signal: timeout.signal,
-        });
+        return this.replayInteraction(
+          withReverseOperationPageRef(input, pageRef) as OpensteerInteractionReplayInput,
+          {
+            signal: timeout.signal,
+          },
+        );
       case "request.raw":
         return this.rawRequest(input as OpensteerRawRequestInput, {
           signal: timeout.signal,
@@ -3143,7 +3111,10 @@ export class OpensteerSessionRuntime {
       redactSecretHeaders: false,
     });
     const headers = stripManagedRequestHeaders(record.record.requestHeaders, strategy.transport);
-    const body = toReverseRawRequestBodyInput(record.record.requestBody, record.record.requestHeaders);
+    const body = toReverseRawRequestBodyInput(
+      record.record.requestBody,
+      record.record.requestHeaders,
+    );
     return {
       transport: strategy.transport,
       url: record.record.url,
@@ -3186,9 +3157,7 @@ export class OpensteerSessionRuntime {
       ...inferred.payload,
       transport: {
         kind: strategy.transport ?? "direct-http",
-        ...(strategy.transport === "page-http"
-          ? { requireSameOrigin: false }
-          : {}),
+        ...(strategy.transport === "page-http" ? { requireSameOrigin: false } : {}),
       },
       endpoint: {
         ...inferred.payload.endpoint,
@@ -3222,9 +3191,7 @@ export class OpensteerSessionRuntime {
         : { manualCalibration: input.manualCalibration }),
     });
     return root.registry.reversePackages.write({
-      key:
-        input.key ??
-        `${input.caseRecord.key}:package:${candidate?.id ?? "draft"}:${Date.now()}`,
+      key: input.key ?? `${input.caseRecord.key}:package:${candidate?.id ?? "draft"}:${Date.now()}`,
       version: input.version ?? "1.0.0",
       tags: input.caseRecord.tags,
       provenance: {
@@ -3245,21 +3212,14 @@ export class OpensteerSessionRuntime {
           ? { stateSource: input.caseRecord.payload.stateSource }
           : { stateSource: input.strategy.stateSource }),
         ...(candidate === undefined ? {} : { observationId: candidate.observationId }),
-        ...(input.strategy?.transport === undefined
-          ? {}
-          : { transport: input.strategy.transport }),
-        guardIds:
-          input.strategy?.guardIds ??
-          candidate?.guardIds ??
-          ([] as readonly string[]),
+        ...(input.strategy?.transport === undefined ? {} : { transport: input.strategy.transport }),
+        guardIds: input.strategy?.guardIds ?? candidate?.guardIds ?? ([] as readonly string[]),
         workflow: input.workflow,
         resolvers: cloneReversePackageResolvers(input.resolvers ?? []),
         validators: input.validators,
         stateSnapshots: input.stateSnapshots,
         requirements,
-        ...(input.requestPlan === undefined
-          ? {}
-          : { requestPlanId: input.requestPlan.id }),
+        ...(input.requestPlan === undefined ? {} : { requestPlanId: input.requestPlan.id }),
         unresolvedRequirements: input.unresolvedRequirements,
         suggestedEdits: input.suggestedEdits,
         attachedTraceIds: input.attachedTraceIds,
@@ -3305,7 +3265,9 @@ export class OpensteerSessionRuntime {
     const observation =
       candidate === undefined
         ? undefined
-        : input.caseRecord.payload.observations.find((entry) => entry.id === candidate.observationId);
+        : input.caseRecord.payload.observations.find(
+            (entry) => entry.id === candidate.observationId,
+          );
     const guards =
       strategy === undefined
         ? []
@@ -3346,7 +3308,9 @@ export class OpensteerSessionRuntime {
       });
     const attachedTraceIds = dedupeStringList([
       ...(observation?.interactionTraceIds ?? []),
-      ...guards.flatMap((guard) => (guard.interactionTraceId === undefined ? [] : [guard.interactionTraceId])),
+      ...guards.flatMap((guard) =>
+        guard.interactionTraceId === undefined ? [] : [guard.interactionTraceId],
+      ),
       ...(input.attachedTraceIds ?? []),
     ]);
     const attachedArtifactIds = dedupeStringList([
@@ -4442,21 +4406,15 @@ export class OpensteerSessionRuntime {
     assertValidSemanticOperationInput("request.raw", input);
 
     const transport = normalizeTransportKind(input.transport ?? "context-http");
-    const binding =
-      transportRequiresBrowserBinding(transport)
-        ? await this.ensureBrowserTransportBinding()
-        : this.currentBinding();
+    const binding = transportRequiresBrowserBinding(transport)
+      ? await this.ensureBrowserTransportBinding()
+      : this.currentBinding();
     const startedAt = Date.now();
 
     try {
       const output = await this.runWithOperationTimeout(
         "request.raw",
-        async (timeout) =>
-          this.executeRawTransportRequest(
-            input,
-            timeout,
-            binding,
-          ),
+        async (timeout) => this.executeRawTransportRequest(input, timeout, binding),
         options,
       );
 
@@ -4542,7 +4500,9 @@ export class OpensteerSessionRuntime {
     });
   }
 
-  async interceptScript(input: OpensteerInterceptScriptOptions): Promise<OpensteerRouteRegistration> {
+  async interceptScript(
+    input: OpensteerInterceptScriptOptions,
+  ): Promise<OpensteerRouteRegistration> {
     return this.route({
       ...(input.pageRef === undefined ? {} : { pageRef: input.pageRef }),
       urlPattern: input.urlPattern,
@@ -4550,9 +4510,8 @@ export class OpensteerSessionRuntime {
       ...(input.times === undefined ? {} : { times: input.times }),
       handler: async ({ request, fetchOriginal }) => {
         const original = await fetchOriginal();
-        const content = original.body === undefined
-          ? ""
-          : Buffer.from(original.body.bytes).toString("utf8");
+        const content =
+          original.body === undefined ? "" : Buffer.from(original.body.bytes).toString("utf8");
         const body = await input.handler({
           url: request.url,
           content,
@@ -4565,8 +4524,8 @@ export class OpensteerSessionRuntime {
           headers: original.headers,
           body,
           contentType:
-            original.headers.find((header) => header.name.toLowerCase() === "content-type")?.value
-            ?? "application/javascript; charset=utf-8",
+            original.headers.find((header) => header.name.toLowerCase() === "content-type")
+              ?.value ?? "application/javascript; charset=utf-8",
         };
       },
     });
@@ -4598,10 +4557,11 @@ export class OpensteerSessionRuntime {
         },
       );
     }
-    const binding =
-      transportRequiresBrowserBinding(normalizeTransportKind(plan.payload.transport.kind))
-        ? await this.ensureBrowserTransportBinding()
-        : this.currentBinding();
+    const binding = transportRequiresBrowserBinding(
+      normalizeTransportKind(plan.payload.transport.kind),
+    )
+      ? await this.ensureBrowserTransportBinding()
+      : this.currentBinding();
     const startedAt = Date.now();
 
     try {
@@ -5117,7 +5077,9 @@ export class OpensteerSessionRuntime {
       }),
     );
     const pageScripts = normalizePageScriptScan(evaluated.data);
-    const resourceEntriesByUrl = new Map(pageScripts.resourceEntries.map((entry) => [entry.url, entry]));
+    const resourceEntriesByUrl = new Map(
+      pageScripts.resourceEntries.map((entry) => [entry.url, entry]),
+    );
     const workerUrls = new Set(
       pageScripts.resourceEntries
         .filter((entry) => entry.initiatorType === "worker")
@@ -5186,14 +5148,13 @@ export class OpensteerSessionRuntime {
         continue;
       }
       const resourceEntry = resourceEntriesByUrl.get(script.url);
-      const source =
-        workerUrls.has(script.url)
-          ? "worker"
-          : pageScripts.loadEventStart !== undefined &&
-              resourceEntry?.startTime !== undefined &&
-              resourceEntry.startTime >= pageScripts.loadEventStart
-            ? "dynamic"
-            : "external";
+      const source = workerUrls.has(script.url)
+        ? "worker"
+        : pageScripts.loadEventStart !== undefined &&
+            resourceEntry?.startTime !== undefined &&
+            resourceEntry.startTime >= pageScripts.loadEventStart
+          ? "dynamic"
+          : "external";
       if (source === "external" && input.includeExternal === false) {
         continue;
       }
@@ -5394,25 +5355,19 @@ export class OpensteerSessionRuntime {
     return record;
   }
 
-  private async tryResolveReverseCaseById(
-    caseId: string,
-  ): Promise<ReverseCaseRecord | undefined> {
+  private async tryResolveReverseCaseById(caseId: string): Promise<ReverseCaseRecord | undefined> {
     return (await this.ensureRoot()).registry.reverseCases.getById(caseId);
   }
 
   private async resolveReversePackageById(packageId: string): Promise<ReversePackageRecord> {
     const record = await (await this.ensureRoot()).registry.reversePackages.getById(packageId);
     if (record === undefined) {
-      throw new OpensteerProtocolError(
-        "not-found",
-        `reverse package ${packageId} was not found`,
-        {
-          details: {
-            packageId,
-            kind: "reverse-package",
-          },
+      throw new OpensteerProtocolError("not-found", `reverse package ${packageId} was not found`, {
+        details: {
+          packageId,
+          kind: "reverse-package",
         },
-      );
+      });
     }
     return record;
   }
@@ -5420,23 +5375,17 @@ export class OpensteerSessionRuntime {
   private async resolveReverseReportById(reportId: string): Promise<ReverseReportRecord> {
     const record = await (await this.ensureRoot()).registry.reverseReports.getById(reportId);
     if (record === undefined) {
-      throw new OpensteerProtocolError(
-        "not-found",
-        `reverse report ${reportId} was not found`,
-        {
-          details: {
-            reportId,
-            kind: "reverse-report",
-          },
+      throw new OpensteerProtocolError("not-found", `reverse report ${reportId} was not found`, {
+        details: {
+          reportId,
+          kind: "reverse-report",
         },
-      );
+      });
     }
     return record;
   }
 
-  private async resolveReverseReportByPackageId(
-    packageId: string,
-  ): Promise<ReverseReportRecord> {
+  private async resolveReverseReportByPackageId(packageId: string): Promise<ReverseReportRecord> {
     const reports = await (await this.ensureRoot()).registry.reverseReports.list();
     const report = reports.find((entry) => entry.payload.packageId === packageId);
     if (report === undefined) {
@@ -5457,16 +5406,12 @@ export class OpensteerSessionRuntime {
   private async resolveInteractionTraceById(traceId: string): Promise<InteractionTraceRecord> {
     const trace = await (await this.ensureRoot()).registry.interactionTraces.getById(traceId);
     if (trace === undefined) {
-      throw new OpensteerProtocolError(
-        "not-found",
-        `interaction trace ${traceId} was not found`,
-        {
-          details: {
-            traceId,
-            kind: "interaction-trace",
-          },
+      throw new OpensteerProtocolError("not-found", `interaction trace ${traceId} was not found`, {
+        details: {
+          traceId,
+          kind: "interaction-trace",
         },
-      );
+      });
     }
     return trace;
   }
@@ -5488,16 +5433,15 @@ export class OpensteerSessionRuntime {
         urls: [pageInfo.url],
       }),
     );
-    const storage =
-      options.includeStorage
-        ? await timeout.runStep(() =>
-            this.requireEngine().getStorageSnapshot({
-              sessionRef: pageInfo.sessionRef,
-              includeSessionStorage: options.includeSessionStorage,
-              includeIndexedDb: options.includeIndexedDb,
-            }),
-          )
-        : undefined;
+    const storage = options.includeStorage
+      ? await timeout.runStep(() =>
+          this.requireEngine().getStorageSnapshot({
+            sessionRef: pageInfo.sessionRef,
+            includeSessionStorage: options.includeSessionStorage,
+            includeIndexedDb: options.includeIndexedDb,
+          }),
+        )
+      : undefined;
     const pageState = await timeout.runStep(() =>
       this.requireEngine().evaluatePage({
         pageRef,
@@ -5531,7 +5475,11 @@ export class OpensteerSessionRuntime {
       ...(storage === undefined ? {} : { storage }),
       ...(Array.isArray((pageState.data as { hiddenFields?: unknown }).hiddenFields)
         ? {
-            hiddenFields: (pageState.data as { hiddenFields: readonly { path: string; name: string; value: string }[] }).hiddenFields,
+            hiddenFields: (
+              pageState.data as {
+                hiddenFields: readonly { path: string; name: string; value: string }[];
+              }
+            ).hiddenFields,
           }
         : {}),
       ...(pageState.data !== null &&
@@ -5569,11 +5517,7 @@ export class OpensteerSessionRuntime {
     }
 
     const currentPageOrigin = originFromUrl(pageInfo.url);
-    const targetUrl = resolveReverseReplayStateRestoreUrl(
-      candidate,
-      snapshots,
-      pageInfo.url,
-    );
+    const targetUrl = resolveReverseReplayStateRestoreUrl(candidate, snapshots, pageInfo.url);
     const targetOrigin = originFromUrl(targetUrl);
     const localStorageByOrigin = mergeReverseStateSnapshotLocalStorage(snapshots);
     const sessionStorageByOrigin = mergeReverseStateSnapshotSessionStorage(snapshots);
@@ -5723,7 +5667,7 @@ export class OpensteerSessionRuntime {
       );
       const replayedEventCount =
         typeof (result.data as { replayedEventCount?: unknown }).replayedEventCount === "number"
-          ? ((result.data as { replayedEventCount: number }).replayedEventCount)
+          ? (result.data as { replayedEventCount: number }).replayedEventCount
           : trace.payload.events.length;
       return {
         traceId: trace.id,
@@ -5926,11 +5870,21 @@ export class OpensteerSessionRuntime {
     }
 
     if (transport === "matched-tls") {
-      return this.executeMatchedTlsTransportRequestWithPersistence(request, timeout, binding, input.cookieJar);
+      return this.executeMatchedTlsTransportRequestWithPersistence(
+        request,
+        timeout,
+        binding,
+        input.cookieJar,
+      );
     }
 
     if (transport === "context-http") {
-      return this.executeContextTransportRequestWithPersistence(request, timeout, binding, input.cookieJar);
+      return this.executeContextTransportRequestWithPersistence(
+        request,
+        timeout,
+        binding,
+        input.cookieJar,
+      );
     }
 
     if (transport === "page-http") {
@@ -5947,7 +5901,11 @@ export class OpensteerSessionRuntime {
       throw new Error("Opensteer session is not initialized");
     }
 
-    const output = await this.executeTransportRequestWithJournal(request, timeout, binding.sessionRef);
+    const output = await this.executeTransportRequestWithJournal(
+      request,
+      timeout,
+      binding.sessionRef,
+    );
     this.updateCookieJarFromResponse(input.cookieJar, output.response, request.url);
     return output;
   }
@@ -5966,7 +5924,11 @@ export class OpensteerSessionRuntime {
     const response = await timeout.runStep(() =>
       executeDirectTransportRequest(request, timeout.signal),
     );
-    this.updateCookieJarFromResponse(cookieJarName, toProtocolRequestResponseResult(response), request.url);
+    this.updateCookieJarFromResponse(
+      cookieJarName,
+      toProtocolRequestResponseResult(response),
+      request.url,
+    );
     const recordId = await this.persistDirectTransportRecord(request, response, undefined);
     return {
       recordId,
@@ -5991,7 +5953,11 @@ export class OpensteerSessionRuntime {
     cookieJarName?: string,
   ): Promise<OpensteerRawRequestOutput> {
     const response = await this.executePageHttpTransportRequest(request, timeout, binding);
-    this.updateCookieJarFromResponse(cookieJarName, toProtocolRequestResponseResult(response), request.url);
+    this.updateCookieJarFromResponse(
+      cookieJarName,
+      toProtocolRequestResponseResult(response),
+      request.url,
+    );
     const recordId = await this.persistDirectTransportRecord(
       request,
       response,
@@ -6022,8 +5988,18 @@ export class OpensteerSessionRuntime {
     cookieJarName?: string,
   ): Promise<OpensteerRawRequestOutput> {
     const response = await this.executeContextTransportRequest(request, timeout, binding);
-    this.updateCookieJarFromResponse(cookieJarName, toProtocolRequestResponseResult(response), request.url);
-    const recordId = await this.persistDirectTransportRecord(request, response, undefined, "context-http", binding);
+    this.updateCookieJarFromResponse(
+      cookieJarName,
+      toProtocolRequestResponseResult(response),
+      request.url,
+    );
+    const recordId = await this.persistDirectTransportRecord(
+      request,
+      response,
+      undefined,
+      "context-http",
+      binding,
+    );
     return {
       recordId,
       request: toProtocolRequestTransportResult(request),
@@ -6047,8 +6023,18 @@ export class OpensteerSessionRuntime {
     cookieJarName?: string,
   ): Promise<OpensteerRawRequestOutput> {
     const response = await this.executeMatchedTlsTransportRequest(request, timeout, binding);
-    this.updateCookieJarFromResponse(cookieJarName, toProtocolRequestResponseResult(response), request.url);
-    const recordId = await this.persistDirectTransportRecord(request, response, undefined, "matched-tls", binding);
+    this.updateCookieJarFromResponse(
+      cookieJarName,
+      toProtocolRequestResponseResult(response),
+      request.url,
+    );
+    const recordId = await this.persistDirectTransportRecord(
+      request,
+      response,
+      undefined,
+      "matched-tls",
+      binding,
+    );
     return {
       recordId,
       request: toProtocolRequestTransportResult(request),
@@ -6275,9 +6261,7 @@ export class OpensteerSessionRuntime {
         captureState: "complete",
         requestBodyState: request.body === undefined ? "skipped" : "complete",
         responseBodyState: response.body === undefined ? "skipped" : "complete",
-        ...(request.body === undefined
-          ? {}
-          : { requestBody: toProtocolBodyPayload(request.body) }),
+        ...(request.body === undefined ? {} : { requestBody: toProtocolBodyPayload(request.body) }),
         ...(response.body === undefined
           ? {}
           : { responseBody: toProtocolBodyPayload(response.body) }),
@@ -6465,7 +6449,11 @@ export class OpensteerSessionRuntime {
       await this.observeLiveTransportDelta(timeout, baselineRequestIds, {
         includeCurrentPageOnly: false,
       });
-      this.updateCookieJarFromResponse(cookieJarName, toProtocolRequestResponseResult(response.data), request.url);
+      this.updateCookieJarFromResponse(
+        cookieJarName,
+        toProtocolRequestResponseResult(response.data),
+        request.url,
+      );
       return {
         output: buildPlanExecuteOutput(plan, request, response.data),
         transportResponse: response.data,
@@ -6474,7 +6462,11 @@ export class OpensteerSessionRuntime {
 
     if (transportKind === "context-http") {
       const response = await this.executeContextTransportRequest(request, timeout, binding);
-      this.updateCookieJarFromResponse(cookieJarName, toProtocolRequestResponseResult(response), request.url);
+      this.updateCookieJarFromResponse(
+        cookieJarName,
+        toProtocolRequestResponseResult(response),
+        request.url,
+      );
       return {
         output: buildPlanExecuteOutput(plan, request, response),
         transportResponse: response,
@@ -6483,7 +6475,11 @@ export class OpensteerSessionRuntime {
 
     if (transportKind === "matched-tls") {
       const response = await this.executeMatchedTlsTransportRequest(request, timeout, binding);
-      this.updateCookieJarFromResponse(cookieJarName, toProtocolRequestResponseResult(response), request.url);
+      this.updateCookieJarFromResponse(
+        cookieJarName,
+        toProtocolRequestResponseResult(response),
+        request.url,
+      );
       return {
         output: buildPlanExecuteOutput(plan, request, response),
         transportResponse: response,
@@ -6497,15 +6493,25 @@ export class OpensteerSessionRuntime {
         plan.payload.transport.requireSameOrigin ?? false,
       );
       const response = await this.executePageHttpTransportRequest(request, timeout, pageBinding);
-      this.updateCookieJarFromResponse(cookieJarName, toProtocolRequestResponseResult(response), request.url);
+      this.updateCookieJarFromResponse(
+        cookieJarName,
+        toProtocolRequestResponseResult(response),
+        request.url,
+      );
       return {
         output: buildPlanExecuteOutput(plan, request, response),
         transportResponse: response,
       };
     }
 
-    const response = await timeout.runStep(() => executeDirectTransportRequest(request, timeout.signal));
-    this.updateCookieJarFromResponse(cookieJarName, toProtocolRequestResponseResult(response), request.url);
+    const response = await timeout.runStep(() =>
+      executeDirectTransportRequest(request, timeout.signal),
+    );
+    this.updateCookieJarFromResponse(
+      cookieJarName,
+      toProtocolRequestResponseResult(response),
+      request.url,
+    );
     return {
       output: buildPlanExecuteOutput(plan, request, response),
       transportResponse: response,
@@ -6613,7 +6619,10 @@ export class OpensteerSessionRuntime {
     return latest;
   }
 
-  private async resolveAuthRecipe(key: string, version: string | undefined): Promise<AuthRecipeRecord> {
+  private async resolveAuthRecipe(
+    key: string,
+    version: string | undefined,
+  ): Promise<AuthRecipeRecord> {
     const recipe = await this.requireRoot().registry.authRecipes.resolve({
       key,
       ...(version === undefined ? {} : { version }),
@@ -6686,7 +6695,9 @@ export class OpensteerSessionRuntime {
         key: recipe.key,
         version: recipe.version,
       },
-      variables: Object.fromEntries([...variables.entries()].sort(([left], [right]) => left.localeCompare(right))),
+      variables: Object.fromEntries(
+        [...variables.entries()].sort(([left], [right]) => left.localeCompare(right)),
+      ),
       ...(renderedOverrides === undefined ? {} : { overrides: renderedOverrides }),
     };
   }
@@ -6751,7 +6762,9 @@ export class OpensteerSessionRuntime {
               ...(step.hostname === undefined
                 ? {}
                 : { hostname: interpolateTemplate(step.hostname, variables) }),
-              ...(step.path === undefined ? {} : { path: interpolateTemplate(step.path, variables) }),
+              ...(step.path === undefined
+                ? {}
+                : { path: interpolateTemplate(step.path, variables) }),
               ...(step.method === undefined
                 ? {}
                 : { method: interpolateTemplate(step.method, variables) }),
@@ -6909,9 +6922,13 @@ export class OpensteerSessionRuntime {
           readonly context: {
             goto: (input: { readonly url: string }) => Promise<unknown>;
             reload: () => Promise<unknown>;
-            queryNetwork: (input?: OpensteerNetworkQueryInput) => Promise<OpensteerNetworkQueryOutput>;
+            queryNetwork: (
+              input?: OpensteerNetworkQueryInput,
+            ) => Promise<OpensteerNetworkQueryOutput>;
             rawRequest: (input: OpensteerRawRequestInput) => Promise<OpensteerRawRequestOutput>;
-            getCookies: (input?: { readonly urls?: readonly string[] }) => Promise<readonly CookieRecord[]>;
+            getCookies: (input?: {
+              readonly urls?: readonly string[];
+            }) => Promise<readonly CookieRecord[]>;
             getStorageSnapshot: (input?: {
               readonly includeSessionStorage?: boolean;
               readonly includeIndexedDb?: boolean;
@@ -7005,10 +7022,7 @@ export class OpensteerSessionRuntime {
         ? undefined
         : interpolateTemplate(requestInput.cookieJar, variables);
     const request = finalizeMaterializedTransportRequest(
-      this.applyCookieJarToTransportRequest(
-        buildRecipeRequest(requestInput, variables),
-        cookieJar,
-      ),
+      this.applyCookieJarToTransportRequest(buildRecipeRequest(requestInput, variables), cookieJar),
       transport,
     );
 
@@ -7024,7 +7038,12 @@ export class OpensteerSessionRuntime {
         );
       case "page-http": {
         const binding = await this.resolvePageHttpBinding(request.url, requestInput.pageRef, false);
-        return this.executePageHttpTransportRequestWithPersistence(request, timeout, binding, cookieJar);
+        return this.executePageHttpTransportRequestWithPersistence(
+          request,
+          timeout,
+          binding,
+          cookieJar,
+        );
       }
       case "context-http": {
         return this.executeContextTransportRequestWithPersistence(
@@ -7036,7 +7055,11 @@ export class OpensteerSessionRuntime {
       }
       case "session-http": {
         const binding = this.requireExistingBrowserBindingForRecovery();
-        const output = await this.executeTransportRequestWithJournal(request, timeout, binding.sessionRef);
+        const output = await this.executeTransportRequestWithJournal(
+          request,
+          timeout,
+          binding.sessionRef,
+        );
         this.updateCookieJarFromResponse(cookieJar, output.response, request.url);
         return output;
       }
@@ -7077,7 +7100,9 @@ export class OpensteerSessionRuntime {
     const binding = this.requireExistingBrowserBindingForRecovery();
     const cookies = await this.requireEngine().getCookies({
       sessionRef: binding.sessionRef,
-      ...(urls === undefined ? {} : { urls: urls.map((url) => interpolateTemplate(url, variables)) }),
+      ...(urls === undefined
+        ? {}
+        : { urls: urls.map((url) => interpolateTemplate(url, variables)) }),
     });
     this.cookieJars.set(
       interpolateTemplate(jarName, variables),
@@ -7109,17 +7134,27 @@ export class OpensteerSessionRuntime {
     readonly status: number;
     readonly statusText: string;
     readonly headers: readonly HeaderEntry[];
-      readonly body?: BrowserBodyPayload;
-      readonly redirected: boolean;
+    readonly body?: BrowserBodyPayload;
+    readonly redirected: boolean;
   }> {
     const normalizedRequest = finalizeMaterializedTransportRequest(request, transport);
     switch (transport) {
       case "direct-http":
-        return timeout.runStep(() => executeDirectTransportRequest(normalizedRequest, timeout.signal));
+        return timeout.runStep(() =>
+          executeDirectTransportRequest(normalizedRequest, timeout.signal),
+        );
       case "matched-tls":
-        return this.executeMatchedTlsTransportRequest(normalizedRequest, timeout, this.currentBinding());
+        return this.executeMatchedTlsTransportRequest(
+          normalizedRequest,
+          timeout,
+          this.currentBinding(),
+        );
       case "context-http":
-        return this.executeContextTransportRequest(normalizedRequest, timeout, this.currentBinding());
+        return this.executeContextTransportRequest(
+          normalizedRequest,
+          timeout,
+          this.currentBinding(),
+        );
       case "page-http":
         return this.executePageHttpTransportRequest(
           normalizedRequest,
@@ -7168,12 +7203,10 @@ export class OpensteerSessionRuntime {
     }
   }
 
-  private async resolveScriptTransformSource(
-    input: {
-      readonly artifactId?: string;
-      readonly content?: string;
-    },
-  ): Promise<ScriptTransformSource> {
+  private async resolveScriptTransformSource(input: {
+    readonly artifactId?: string;
+    readonly content?: string;
+  }): Promise<ScriptTransformSource> {
     if (typeof input.content === "string") {
       return {
         content: input.content,
@@ -7271,10 +7304,7 @@ export class OpensteerSessionRuntime {
       return request;
     }
 
-    const cookieHeader = serializeCookieJarHeader(
-      this.cookieJars.get(jarName) ?? [],
-      request.url,
-    );
+    const cookieHeader = serializeCookieJarHeader(this.cookieJars.get(jarName) ?? [], request.url);
     if (cookieHeader === undefined) {
       return request;
     }
@@ -7342,7 +7372,8 @@ export class OpensteerSessionRuntime {
         ?.localStorage.find((entry) => entry.key === key)?.value;
     }
 
-    const pageUrl = step.pageUrl === undefined ? undefined : interpolateTemplate(step.pageUrl, variables);
+    const pageUrl =
+      step.pageUrl === undefined ? undefined : interpolateTemplate(step.pageUrl, variables);
     return snapshot.sessionStorage
       ?.filter((entry) => entry.origin === origin)
       .find((entry) => pageUrl === undefined || entry.origin === new URL(pageUrl).origin)
@@ -8143,9 +8174,7 @@ function normalizePageScriptScan(value: unknown): {
   };
 }
 
-function normalizeTransportKind(
-  value: TransportKind,
-): TransportKind {
+function normalizeTransportKind(value: TransportKind): TransportKind {
   return value;
 }
 
@@ -8157,8 +8186,12 @@ function createFullMinimizationKeepState(
   prepared: PreparedMinimizationRequest,
 ): Parameters<typeof materializePreparedMinimizationRequest>[1] {
   return {
-    headers: new Set(prepared.headerGroups.map((header) => `header:${header.name.trim().toLowerCase()}`)),
-    cookies: new Set(prepared.cookies.map((cookie) => `cookie:${cookie.name.trim().toLowerCase()}`)),
+    headers: new Set(
+      prepared.headerGroups.map((header) => `header:${header.name.trim().toLowerCase()}`),
+    ),
+    cookies: new Set(
+      prepared.cookies.map((cookie) => `cookie:${cookie.name.trim().toLowerCase()}`),
+    ),
     query: new Set(prepared.queryEntries.map((entry) => `query:${entry.name}`)),
     bodyFields: new Set(prepared.bodyJsonEntries.map(([name]) => `body-field:${name}`)),
   };
@@ -8204,7 +8237,8 @@ function matchesSuccessFingerprint(
     return false;
   }
 
-  const mustMatchStructure = policy?.responseStructureMatch ?? fingerprint.structureHash !== undefined;
+  const mustMatchStructure =
+    policy?.responseStructureMatch ?? fingerprint.structureHash !== undefined;
   if (!mustMatchStructure) {
     return true;
   }
@@ -8216,7 +8250,9 @@ function jsonStructureHash(bodyText: string | undefined): string | undefined {
     return undefined;
   }
   try {
-    return sha256Hex(Buffer.from(canonicalJsonString(jsonStructureShape(JSON.parse(bodyText))), "utf8"));
+    return sha256Hex(
+      Buffer.from(canonicalJsonString(jsonStructureShape(JSON.parse(bodyText))), "utf8"),
+    );
   } catch {
     return undefined;
   }
@@ -8276,14 +8312,17 @@ function buildMinimizedRequestPlan(input: {
   const url = new URL(input.request.url);
   const headers = input.request.headers ?? [];
   const validHeaders = filterValidHttpHeaders(headers);
-  const requestContentType = headerValue(validHeaders, "content-type") ?? input.request.body?.mimeType;
+  const requestContentType =
+    headerValue(validHeaders, "content-type") ?? input.request.body?.mimeType;
   const body = buildMinimizedRequestPlanBody(input.request.body, requestContentType);
   const responseContentType = headerValue(input.record.record.responseHeaders, "content-type");
 
   return {
     key: buildMinimizedRequestPlanKey(input.record),
     version: "1.0.0",
-    ...(input.record.tags === undefined || input.record.tags.length === 0 ? {} : { tags: input.record.tags }),
+    ...(input.record.tags === undefined || input.record.tags.length === 0
+      ? {}
+      : { tags: input.record.tags }),
     provenance: {
       source: "network-minimize",
       sourceId: input.record.recordId,
@@ -8341,7 +8380,10 @@ function buildMinimizedRequestPlanBody(
   }
   const bodyText = decodeBrowserBody(body) ?? "";
   const normalizedContentType = contentType?.toLowerCase();
-  if (normalizedContentType?.includes("application/json") === true || normalizedContentType?.includes("+json") === true) {
+  if (
+    normalizedContentType?.includes("application/json") === true ||
+    normalizedContentType?.includes("+json") === true
+  ) {
     try {
       return {
         kind: "json",
@@ -8387,7 +8429,11 @@ function inferMinimizedPlanAuth(
       description: "Inferred from required cookies in the minimized request.",
     };
   }
-  if (headerNames.has("api-key") || headerNames.has("x-api-key") || headerNames.has("x-auth-token")) {
+  if (
+    headerNames.has("api-key") ||
+    headerNames.has("x-api-key") ||
+    headerNames.has("x-auth-token")
+  ) {
     return {
       strategy: "api-key",
       description: "Inferred from a required API key style header in the minimized request.",
@@ -8408,21 +8454,20 @@ function buildMinimizedRequestPlanKey(record: NetworkQueryRecord): string {
 
 function buildReverseCaseKey(objective: string | undefined, pageUrl: string): string {
   const seed = objective ?? pageUrl;
-  return seed
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80) || `reverse-${Date.now()}`;
+  return (
+    seed
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 80) || `reverse-${Date.now()}`
+  );
 }
 
 function buildInteractionTraceKey(pageUrl: string): string {
   return `interaction-${buildReverseCaseKey(undefined, pageUrl)}`;
 }
 
-function mergeStringArrays(
-  left: readonly string[],
-  right: readonly string[],
-): readonly string[] {
+function mergeStringArrays(left: readonly string[], right: readonly string[]): readonly string[] {
   return [...new Set([...left, ...right])];
 }
 
@@ -8704,15 +8749,15 @@ function resolveReversePackageReference(
   }
   const bindingName =
     typeof (value as { readonly $binding?: unknown }).$binding === "string"
-      ? ((value as { readonly $binding: string }).$binding)
+      ? (value as { readonly $binding: string }).$binding
       : undefined;
   const resolverId =
     typeof (value as { readonly $resolver?: unknown }).$resolver === "string"
-      ? ((value as { readonly $resolver: string }).$resolver)
+      ? (value as { readonly $resolver: string }).$resolver
       : undefined;
   const pointer =
     typeof (value as { readonly pointer?: unknown }).pointer === "string"
-      ? ((value as { readonly pointer: string }).pointer)
+      ? (value as { readonly pointer: string }).pointer
       : undefined;
   if (bindingName !== undefined) {
     return extractReverseRuntimeValue(bindings.get(bindingName), pointer);
@@ -8895,7 +8940,9 @@ function evaluateReversePackageAssertion(
         };
       }
       case "event-stream": {
-        const firstChunkPreview = firstTextPreview(decodeProtocolBody(boundValue.record.responseBody));
+        const firstChunkPreview = firstTextPreview(
+          decodeProtocolBody(boundValue.record.responseBody),
+        );
         const evaluation = evaluateValidationRulesForEventStreamReplay(
           firstChunkPreview === undefined
             ? { status: boundValue.record.status ?? 0 }
@@ -8961,7 +9008,8 @@ function evaluateReversePackageAssertion(
           ...(fallbackRecordId === undefined ? {} : { recordId: fallbackRecordId }),
           ...(fallbackStatus === undefined ? {} : { status: fallbackStatus }),
           validation: {},
-          error: "request.raw cannot validate websocket replay directly; await the observed websocket record instead",
+          error:
+            "request.raw cannot validate websocket replay directly; await the observed websocket record instead",
         };
     }
   }
@@ -8977,7 +9025,7 @@ function evaluateReversePackageAssertion(
         opened: (boundValue as { readonly opened: boolean }).opened,
         messageCount:
           typeof (boundValue as { readonly messageCount?: unknown }).messageCount === "number"
-            ? ((boundValue as { readonly messageCount: number }).messageCount)
+            ? (boundValue as { readonly messageCount: number }).messageCount
             : 0,
       },
       validators,
@@ -9019,9 +9067,7 @@ function isRawRequestOutputValue(value: unknown): value is OpensteerRawRequestOu
   );
 }
 
-function buildCapturedRecordSuccessFingerprint(
-  record: NetworkQueryRecord,
-): {
+function buildCapturedRecordSuccessFingerprint(record: NetworkQueryRecord): {
   readonly status: number;
   readonly structureHash?: string;
 } {
@@ -9064,13 +9110,17 @@ function protocolJsonStructureHash(
   return jsonStructureHash(text);
 }
 
-function normalizeInteractionEvents(value: unknown): OpensteerInteractionCaptureOutput["trace"]["payload"]["events"] {
+function normalizeInteractionEvents(
+  value: unknown,
+): OpensteerInteractionCaptureOutput["trace"]["payload"]["events"] {
   if (!Array.isArray(value)) {
     return [];
   }
   return value
     .filter(
-      (entry): entry is {
+      (
+        entry,
+      ): entry is {
         readonly type: string;
         readonly timestamp: number;
         readonly targetPath?: string;
@@ -9092,9 +9142,7 @@ function normalizeInteractionEvents(value: unknown): OpensteerInteractionCapture
 function stripUndefinedRecordValues(
   value: Readonly<Record<string, unknown>>,
 ): Readonly<Record<string, unknown>> {
-  return Object.fromEntries(
-    Object.entries(value).filter(([, entry]) => entry !== undefined),
-  );
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined));
 }
 
 function buildStateDelta(
@@ -9124,10 +9172,7 @@ function buildStateDelta(
   };
 }
 
-function diffNamedEntries(
-  left: readonly string[],
-  right: readonly string[],
-): readonly string[] {
+function diffNamedEntries(left: readonly string[], right: readonly string[]): readonly string[] {
   const leftSet = new Set(left);
   const rightSet = new Set(right);
   return [...new Set([...left, ...right])].filter(
@@ -9816,7 +9861,10 @@ function toPageHttpTransportResponse(value: unknown): {
   const contentType = headers.find((header) => header.name.toLowerCase() === "content-type")?.value;
   const body =
     typeof response.bodyBase64 === "string"
-      ? createBodyPayload(new Uint8Array(Buffer.from(response.bodyBase64, "base64")), parseContentType(contentType))
+      ? createBodyPayload(
+          new Uint8Array(Buffer.from(response.bodyBase64, "base64")),
+          parseContentType(contentType),
+        )
       : undefined;
 
   return {
@@ -9980,8 +10028,7 @@ function buildPlanBodyInput(
       );
       return {
         text: new URLSearchParams(fields).toString(),
-        contentType:
-          planBody.contentType ?? "application/x-www-form-urlencoded; charset=utf-8",
+        contentType: planBody.contentType ?? "application/x-www-form-urlencoded; charset=utf-8",
       };
     }
   }
@@ -10141,7 +10188,10 @@ function assertResponseMatchesPlan(
     const actualContentType = response.headers.find(
       (header) => header.name.toLowerCase() === "content-type",
     )?.value;
-    if (actualContentType === undefined || !actualContentType.toLowerCase().includes(expectation.contentType.toLowerCase())) {
+    if (
+      actualContentType === undefined ||
+      !actualContentType.toLowerCase().includes(expectation.contentType.toLowerCase())
+    ) {
       throw new OpensteerProtocolError(
         "conflict",
         `request plan ${plan.key}@${plan.version} expected content-type ${expectation.contentType} but received ${actualContentType ?? "none"}`,
@@ -10158,9 +10208,7 @@ function assertResponseMatchesPlan(
   }
 }
 
-function touchFreshness(
-  freshness: RequestPlanRecord["freshness"],
-): RequestPlanRecord["freshness"] {
+function touchFreshness(freshness: RequestPlanRecord["freshness"]): RequestPlanRecord["freshness"] {
   return {
     ...(freshness ?? {}),
     lastValidatedAt: Date.now(),
@@ -10282,9 +10330,7 @@ function firstTextPreview(value: string | undefined, limit = 256): string | unde
   return value.slice(0, limit);
 }
 
-function parseWebSocketProtocols(
-  headers: readonly HeaderEntry[] | undefined,
-): readonly string[] {
+function parseWebSocketProtocols(headers: readonly HeaderEntry[] | undefined): readonly string[] {
   const protocols = headerValue(headers ?? [], "sec-websocket-protocol");
   if (protocols === undefined) {
     return [];
@@ -10320,7 +10366,10 @@ function matchesFailurePolicy(
   }
 
   const responseText = decodeProtocolBody(response.body);
-  if (responseText !== undefined && policy.responseBodyIncludes?.some((value) => responseText.includes(value))) {
+  if (
+    responseText !== undefined &&
+    policy.responseBodyIncludes?.some((value) => responseText.includes(value))
+  ) {
     return true;
   }
 
@@ -10362,12 +10411,10 @@ function applyTransportRequestOverrides(
   };
 }
 
-function interpolateTemplate(
-  value: string,
-  variables: ReadonlyMap<string, string>,
-): string {
-  return value.replace(/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g, (_match, name: string) =>
-    variables.get(name) ?? "",
+function interpolateTemplate(value: string, variables: ReadonlyMap<string, string>): string {
+  return value.replace(
+    /\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g,
+    (_match, name: string) => variables.get(name) ?? "",
   );
 }
 
@@ -10408,7 +10455,10 @@ function buildRecipeRequest(
   const headers = Object.entries(interpolateRecord(request.headers, variables) ?? {}).map(
     ([name, value]) => ({ name, value }),
   );
-  const body = request.body === undefined ? undefined : toBrowserRequestBody(interpolateRequestBody(request.body, variables));
+  const body =
+    request.body === undefined
+      ? undefined
+      : toBrowserRequestBody(interpolateRequestBody(request.body, variables));
   if (
     body?.contentType !== undefined &&
     !headers.some((header) => header.name.toLowerCase() === "content-type")
@@ -10547,10 +10597,14 @@ function renderOverrides(
   if (overrides === undefined) {
     return undefined;
   }
-  const params = overrides.params === undefined ? undefined : interpolateRecord(overrides.params, variables);
-  const headers = overrides.headers === undefined ? undefined : interpolateRecord(overrides.headers, variables);
-  const query = overrides.query === undefined ? undefined : interpolateRecord(overrides.query, variables);
-  const body = overrides.body === undefined ? undefined : interpolateRecord(overrides.body, variables);
+  const params =
+    overrides.params === undefined ? undefined : interpolateRecord(overrides.params, variables);
+  const headers =
+    overrides.headers === undefined ? undefined : interpolateRecord(overrides.headers, variables);
+  const query =
+    overrides.query === undefined ? undefined : interpolateRecord(overrides.query, variables);
+  const body =
+    overrides.body === undefined ? undefined : interpolateRecord(overrides.body, variables);
   return {
     ...(params === undefined ? {} : { params }),
     ...(headers === undefined ? {} : { headers }),
@@ -10644,7 +10698,9 @@ function resolveRetryDelayMs(
   attempt: number,
 ): number {
   if (retryPolicy.respectRetryAfter) {
-    const retryAfter = response.headers.find((header) => header.name.toLowerCase() === "retry-after")?.value;
+    const retryAfter = response.headers.find(
+      (header) => header.name.toLowerCase() === "retry-after",
+    )?.value;
     const retryAfterMs = parseRetryAfterDelayMs(retryAfter);
     if (retryAfterMs !== undefined) {
       return retryAfterMs;

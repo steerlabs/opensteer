@@ -100,7 +100,8 @@ export function buildReversePackageRequirements(input: {
     ...(input.strategy === undefined ? [] : [input.strategy.stateSource]),
   ]);
   return {
-    requiresBrowser: input.strategy?.requiresBrowser ?? input.candidate?.dependencyClass !== "portable",
+    requiresBrowser:
+      input.strategy?.requiresBrowser ?? input.candidate?.dependencyClass !== "portable",
     requiresLiveState: input.strategy?.requiresLiveState ?? false,
     manualCalibration: classifyManualCalibrationRequirement(
       input.candidate,
@@ -150,7 +151,8 @@ export function deriveReversePackageUnresolvedRequirements(input: {
       kind: "unsupported",
       status: "required",
       label: "Candidate is outside the supported reverse-engineering scope",
-      description: "This candidate was classified as blocked or opaque and cannot be replayed directly.",
+      description:
+        "This candidate was classified as blocked or opaque and cannot be replayed directly.",
       blocking: true,
       recordId: input.candidate.recordId,
     });
@@ -206,7 +208,8 @@ export function deriveReversePackageUnresolvedRequirements(input: {
       status: "required",
       label: guard?.label ?? `Unresolved guard ${guardId}`,
       description:
-        guard?.notes ?? "Attach a successful unlock trace or author package steps that satisfy this guard.",
+        guard?.notes ??
+        "Attach a successful unlock trace or author package steps that satisfy this guard.",
       blocking: true,
       guardId,
       ...(guard?.interactionTraceId === undefined ? {} : { traceId: guard.interactionTraceId }),
@@ -244,7 +247,8 @@ export function deriveReversePackageUnresolvedRequirements(input: {
       kind: "state",
       status: "recommended",
       label: "Live browser state may still be required",
-      description: "Replay strategy expects live state. Consider using attach-live or patching the package to reacquire the state.",
+      description:
+        "Replay strategy expects live state. Consider using attach-live or patching the package to reacquire the state.",
       blocking: false,
       recordId: input.candidate.recordId,
     });
@@ -270,75 +274,75 @@ export function buildReversePackageSuggestedEdits(
   unresolvedRequirements: readonly OpensteerReverseRequirement[],
 ): readonly OpensteerReverseSuggestedEdit[] {
   const suggestions = unresolvedRequirements.map((requirement) => {
-      switch (requirement.kind) {
-        case "resolver":
-          return {
-            id: `suggestion:${requirement.id}`,
-            kind: "set-resolver",
-            label: `Patch resolver ${requirement.resolverId ?? requirement.label}`,
-            ...(requirement.description === undefined
-              ? {}
-              : { description: requirement.description }),
-            ...(requirement.resolverId === undefined ? {} : { resolverId: requirement.resolverId }),
-            ...(requirement.traceId === undefined ? {} : { traceId: requirement.traceId }),
-            ...(requirement.artifactId === undefined ? {} : { artifactId: requirement.artifactId }),
-            ...(requirement.recordId === undefined ? {} : { recordId: requirement.recordId }),
-          } satisfies OpensteerReverseSuggestedEdit;
-        case "guard":
-          return {
-            id: `suggestion:${requirement.id}`,
-            kind: "attach-trace",
-            label: `Attach a trace for ${requirement.guardId ?? requirement.label}`,
-            ...(requirement.description === undefined
-              ? {}
-              : { description: requirement.description }),
-            ...(requirement.guardId === undefined ? {} : { guardId: requirement.guardId }),
-            ...(requirement.traceId === undefined ? {} : { traceId: requirement.traceId }),
-          } satisfies OpensteerReverseSuggestedEdit;
-        case "workflow-step":
-          return {
-            id: `suggestion:${requirement.id}`,
-            kind: "replace-workflow",
-            label: "Patch the package workflow",
-            ...(requirement.description === undefined
-              ? {}
-              : { description: requirement.description }),
-            ...(requirement.stepId === undefined ? {} : { stepId: requirement.stepId }),
-          } satisfies OpensteerReverseSuggestedEdit;
-        case "state":
-          return {
-            id: `suggestion:${requirement.id}`,
-            kind: "switch-state-source",
-            label: "Switch replay to live state or add reacquisition steps",
-            ...(requirement.description === undefined
-              ? {}
-              : { description: requirement.description }),
-            ...(requirement.recordId === undefined ? {} : { recordId: requirement.recordId }),
-          } satisfies OpensteerReverseSuggestedEdit;
-        case "unsupported":
-          return {
-            id: `suggestion:${requirement.id}`,
-            kind: "mark-unsupported",
-            label: "Mark this package unsupported or choose another candidate",
-            ...(requirement.description === undefined
-              ? {}
-              : { description: requirement.description }),
-            ...(requirement.recordId === undefined ? {} : { recordId: requirement.recordId }),
-          } satisfies OpensteerReverseSuggestedEdit;
-        default:
-          return {
-            id: `suggestion:${requirement.id}`,
-            kind: "inspect-evidence",
-            label: "Inspect linked reverse-engineering evidence",
-            ...(requirement.description === undefined
-              ? {}
-              : { description: requirement.description }),
-            ...(requirement.traceId === undefined ? {} : { traceId: requirement.traceId }),
-            ...(requirement.artifactId === undefined ? {} : { artifactId: requirement.artifactId }),
-            ...(requirement.recordId === undefined ? {} : { recordId: requirement.recordId }),
-          } satisfies OpensteerReverseSuggestedEdit;
-      }
-    });
+    switch (requirement.kind) {
+      case "resolver":
+        return {
+          id: `suggestion:${requirement.id}`,
+          kind: "set-resolver",
+          label: `Patch resolver ${requirement.resolverId ?? requirement.label}`,
+          ...(requirement.description === undefined
+            ? {}
+            : { description: requirement.description }),
+          ...(requirement.resolverId === undefined ? {} : { resolverId: requirement.resolverId }),
+          ...(requirement.traceId === undefined ? {} : { traceId: requirement.traceId }),
+          ...(requirement.artifactId === undefined ? {} : { artifactId: requirement.artifactId }),
+          ...(requirement.recordId === undefined ? {} : { recordId: requirement.recordId }),
+        } satisfies OpensteerReverseSuggestedEdit;
+      case "guard":
+        return {
+          id: `suggestion:${requirement.id}`,
+          kind: "attach-trace",
+          label: `Attach a trace for ${requirement.guardId ?? requirement.label}`,
+          ...(requirement.description === undefined
+            ? {}
+            : { description: requirement.description }),
+          ...(requirement.guardId === undefined ? {} : { guardId: requirement.guardId }),
+          ...(requirement.traceId === undefined ? {} : { traceId: requirement.traceId }),
+        } satisfies OpensteerReverseSuggestedEdit;
+      case "workflow-step":
+        return {
+          id: `suggestion:${requirement.id}`,
+          kind: "replace-workflow",
+          label: "Patch the package workflow",
+          ...(requirement.description === undefined
+            ? {}
+            : { description: requirement.description }),
+          ...(requirement.stepId === undefined ? {} : { stepId: requirement.stepId }),
+        } satisfies OpensteerReverseSuggestedEdit;
+      case "state":
+        return {
+          id: `suggestion:${requirement.id}`,
+          kind: "switch-state-source",
+          label: "Switch replay to live state or add reacquisition steps",
+          ...(requirement.description === undefined
+            ? {}
+            : { description: requirement.description }),
+          ...(requirement.recordId === undefined ? {} : { recordId: requirement.recordId }),
+        } satisfies OpensteerReverseSuggestedEdit;
+      case "unsupported":
+        return {
+          id: `suggestion:${requirement.id}`,
+          kind: "mark-unsupported",
+          label: "Mark this package unsupported or choose another candidate",
+          ...(requirement.description === undefined
+            ? {}
+            : { description: requirement.description }),
+          ...(requirement.recordId === undefined ? {} : { recordId: requirement.recordId }),
+        } satisfies OpensteerReverseSuggestedEdit;
+      default:
+        return {
+          id: `suggestion:${requirement.id}`,
+          kind: "inspect-evidence",
+          label: "Inspect linked reverse-engineering evidence",
+          ...(requirement.description === undefined
+            ? {}
+            : { description: requirement.description }),
+          ...(requirement.traceId === undefined ? {} : { traceId: requirement.traceId }),
+          ...(requirement.artifactId === undefined ? {} : { artifactId: requirement.artifactId }),
+          ...(requirement.recordId === undefined ? {} : { recordId: requirement.recordId }),
+        } satisfies OpensteerReverseSuggestedEdit;
+    }
+  });
   return dedupeSuggestedEdits(suggestions);
 }
 
@@ -399,7 +403,7 @@ function visitResolverReferences(value: unknown, resolverIds: Set<string>): void
   }
   const resolverId =
     typeof (value as { readonly $resolver?: unknown }).$resolver === "string"
-      ? ((value as { readonly $resolver: string }).$resolver)
+      ? (value as { readonly $resolver: string }).$resolver
       : undefined;
   if (resolverId !== undefined) {
     resolverIds.add(resolverId);

@@ -153,7 +153,12 @@ function normalizeProvenance(
   return {
     ...(provenance.sourceArtifactId === undefined
       ? {}
-      : { sourceArtifactId: normalizeNonEmptyString("provenance.sourceArtifactId", provenance.sourceArtifactId) }),
+      : {
+          sourceArtifactId: normalizeNonEmptyString(
+            "provenance.sourceArtifactId",
+            provenance.sourceArtifactId,
+          ),
+        }),
     ...(provenance.transform === undefined
       ? {}
       : { transform: normalizeNonEmptyString("provenance.transform", provenance.transform) }),
@@ -385,7 +390,9 @@ export class FilesystemArtifactStore implements OpensteerArtifactStore {
     const artifactBase = {
       artifactId: record.manifest.artifactId,
       createdAt: record.manifest.createdAt,
-      ...(record.manifest.provenance === undefined ? {} : { provenance: record.manifest.provenance }),
+      ...(record.manifest.provenance === undefined
+        ? {}
+        : { provenance: record.manifest.provenance }),
       ...(record.manifest.scope.sessionRef === undefined
         ? {}
         : { sessionRef: record.manifest.scope.sessionRef }),

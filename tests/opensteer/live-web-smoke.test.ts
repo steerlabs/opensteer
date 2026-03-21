@@ -50,38 +50,34 @@ liveDescribe("Live web smoke", () => {
   ] as const;
 
   for (const site of cases) {
-    test(
-      `${site.name} supports both snapshot modes and deterministic descriptor authoring`,
-      async () => {
-        const rootDir = await createTemporaryRoot();
-        const opensteer = new Opensteer({
-          name: `live-web-${site.name.toLowerCase().replace(/\s+/g, "-")}`,
-          rootDir,
-          browser: {
-            headless: true,
-          },
+    test(`${site.name} supports both snapshot modes and deterministic descriptor authoring`, async () => {
+      const rootDir = await createTemporaryRoot();
+      const opensteer = new Opensteer({
+        name: `live-web-${site.name.toLowerCase().replace(/\s+/g, "-")}`,
+        rootDir,
+        browser: {
+          headless: true,
+        },
+      });
+
+      try {
+        await opensteer.open(site.url);
+
+        const actionSnapshot = await opensteer.snapshot("action");
+        const extractionSnapshot = await opensteer.snapshot("extraction");
+        expect(actionSnapshot.counters.length).toBeGreaterThan(0);
+        expect(extractionSnapshot.counters.length).toBeGreaterThan(0);
+
+        const extracted = await opensteer.extract({
+          description: site.description,
+          schema: site.schema,
         });
+        expect(Object.keys(extracted).length).toBeGreaterThan(0);
 
-        try {
-          await opensteer.open(site.url);
-
-          const actionSnapshot = await opensteer.snapshot("action");
-          const extractionSnapshot = await opensteer.snapshot("extraction");
-          expect(actionSnapshot.counters.length).toBeGreaterThan(0);
-          expect(extractionSnapshot.counters.length).toBeGreaterThan(0);
-
-          const extracted = await opensteer.extract({
-            description: site.description,
-            schema: site.schema,
-          });
-          expect(Object.keys(extracted).length).toBeGreaterThan(0);
-
-          expect(await opensteer.extract({ description: site.description })).toEqual(extracted);
-        } finally {
-          await opensteer.close();
-        }
-      },
-      120_000,
-    );
+        expect(await opensteer.extract({ description: site.description })).toEqual(extracted);
+      } finally {
+        await opensteer.close();
+      }
+    }, 120_000);
   }
 });

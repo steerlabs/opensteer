@@ -42,12 +42,14 @@ export function normalizePlaywrightError(error: unknown, pageRef: PageRef): Erro
 
 export function isContextClosedError(error: unknown): boolean {
   return (
-    error instanceof Error &&
-    /Target page, context or browser has been closed/i.test(error.message)
+    error instanceof Error && /Target page, context or browser has been closed/i.test(error.message)
   );
 }
 
-export function shouldIgnoreBackgroundTaskError(controller: PageController, error: unknown): boolean {
+export function shouldIgnoreBackgroundTaskError(
+  controller: PageController,
+  error: unknown,
+): boolean {
   return controller.lifecycleState === "closed" || isContextClosedError(error);
 }
 

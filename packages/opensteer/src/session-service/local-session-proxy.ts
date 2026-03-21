@@ -198,27 +198,19 @@ export class LocalOpensteerSessionProxy implements OpensteerDisconnectableRuntim
     return (await this.ensureClient()).invoke("network.diff", input);
   }
 
-  async probeNetwork(
-    input: OpensteerTransportProbeInput,
-  ): Promise<OpensteerTransportProbeOutput> {
+  async probeNetwork(input: OpensteerTransportProbeInput): Promise<OpensteerTransportProbeOutput> {
     return (await this.ensureClient()).invoke("network.probe", input);
   }
 
-  async solveReverse(
-    input: OpensteerReverseSolveInput,
-  ): Promise<OpensteerReverseSolveOutput> {
+  async solveReverse(input: OpensteerReverseSolveInput): Promise<OpensteerReverseSolveOutput> {
     return (await this.ensureClient()).invoke("reverse.solve", input);
   }
 
-  async replayReverse(
-    input: OpensteerReverseReplayInput,
-  ): Promise<OpensteerReverseReplayOutput> {
+  async replayReverse(input: OpensteerReverseReplayInput): Promise<OpensteerReverseReplayOutput> {
     return (await this.ensureClient()).invoke("reverse.replay", input);
   }
 
-  async exportReverse(
-    input: OpensteerReverseExportInput,
-  ): Promise<OpensteerReverseExportOutput> {
+  async exportReverse(input: OpensteerReverseExportInput): Promise<OpensteerReverseExportOutput> {
     return (await this.ensureClient()).invoke("reverse.export", input);
   }
 
@@ -304,7 +296,9 @@ export class LocalOpensteerSessionProxy implements OpensteerDisconnectableRuntim
     return (await this.ensureClient()).invoke("captcha.solve", input);
   }
 
-  async getCookies(input: { readonly urls?: readonly string[] } = {}): Promise<readonly CookieRecord[]> {
+  async getCookies(
+    input: { readonly urls?: readonly string[] } = {},
+  ): Promise<readonly CookieRecord[]> {
     return (await this.ensureClient()).invoke("inspect.cookies", input);
   }
 
@@ -361,9 +355,7 @@ export class LocalOpensteerSessionProxy implements OpensteerDisconnectableRuntim
     return (await this.ensureClient()).invoke("auth-recipe.list", input);
   }
 
-  async listRecipes(
-    input: OpensteerListRecipesInput = {},
-  ): Promise<OpensteerListRecipesOutput> {
+  async listRecipes(input: OpensteerListRecipesInput = {}): Promise<OpensteerListRecipesOutput> {
     return (await this.ensureClient()).invoke("recipe.list", input);
   }
 

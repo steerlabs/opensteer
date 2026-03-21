@@ -18,10 +18,7 @@ import type {
 } from "@opensteer/protocol";
 
 import type { DocumentState, PageController, SessionState } from "./types.js";
-import {
-  clampAbpActionSettleTimeout,
-  type AbpActionBoundaryOptions,
-} from "./action-settle.js";
+import { clampAbpActionSettleTimeout, type AbpActionBoundaryOptions } from "./action-settle.js";
 import { buildInputActionRequest } from "./rest-client.js";
 
 interface AbpDomActionBridgeContext {
@@ -203,13 +200,19 @@ const POINTER_ACTION_HELPERS = String.raw`
   }
 `;
 
-const RESOLVE_POINTER_OWNER_DECLARATION = String.raw`function() {
-  ` + POINTER_ACTION_HELPERS + String.raw`
+const RESOLVE_POINTER_OWNER_DECLARATION =
+  String.raw`function() {
+  ` +
+  POINTER_ACTION_HELPERS +
+  String.raw`
   return findPointerOwner(this);
 }`;
 
-const CLASSIFY_POINTER_HIT_DECLARATION = String.raw`function(hitNode, point) {
-  ` + POINTER_ACTION_HELPERS + String.raw`
+const CLASSIFY_POINTER_HIT_DECLARATION =
+  String.raw`function(hitNode, point) {
+  ` +
+  POINTER_ACTION_HELPERS +
+  String.raw`
   const targetElement = closestElementInComposedTree(this);
   const hitElement = closestElementInComposedTree(hitNode);
   if (!targetElement || !hitElement) {
@@ -255,7 +258,10 @@ const CLASSIFY_POINTER_HIT_DECLARATION = String.raw`function(hitNode, point) {
 export function createAbpDomActionBridge(context: AbpDomActionBridgeContext): DomActionBridge {
   return {
     async inspectActionTarget(locator) {
-      const { controller, document, backendNodeId } = await prepareLiveNodeContext(context, locator);
+      const { controller, document, backendNodeId } = await prepareLiveNodeContext(
+        context,
+        locator,
+      );
       const snapshot = await context.getDomSnapshot(locator.documentRef);
       const node = findNode(snapshot, locator);
       if (!node) {
@@ -263,8 +269,8 @@ export function createAbpDomActionBridge(context: AbpDomActionBridgeContext): Do
       }
       const nodeId = await resolveFrontendNodeId(controller, document, locator, backendNodeId);
       const metrics = await context.getViewportMetrics(document.pageRef);
-      const contentQuads = await readContentQuads(controller, nodeId, metrics).catch(
-        () => (node.layout?.quad === undefined ? [] : [node.layout.quad]),
+      const contentQuads = await readContentQuads(controller, nodeId, metrics).catch(() =>
+        node.layout?.quad === undefined ? [] : [node.layout.quad],
       );
       const bounds = contentQuads.length === 0 ? undefined : quadBounds(contentQuads[0]!);
 
@@ -275,11 +281,7 @@ export function createAbpDomActionBridge(context: AbpDomActionBridgeContext): Do
       const readOnly = hasAttribute(node, "readonly");
       const style = readAttributeValue(node, "style") ?? "";
       const pointerEvents = readInlineStyleValue(style, "pointer-events") ?? "auto";
-      const editable =
-        isEditableElement(node) &&
-        !disabled &&
-        !ariaDisabled &&
-        !readOnly;
+      const editable = isEditableElement(node) && !disabled && !ariaDisabled && !readOnly;
 
       return {
         connected: true,
@@ -298,7 +300,10 @@ export function createAbpDomActionBridge(context: AbpDomActionBridgeContext): Do
     },
 
     async canonicalizePointerTarget(locator) {
-      const { controller, document, backendNodeId } = await prepareLiveNodeContext(context, locator);
+      const { controller, document, backendNodeId } = await prepareLiveNodeContext(
+        context,
+        locator,
+      );
       return withTemporaryExecutionResume(context, controller, async () => {
         return (
           (await callNodeFunctionForLocator(context, controller, document, locator, backendNodeId, {
@@ -353,7 +358,10 @@ export function createAbpDomActionBridge(context: AbpDomActionBridgeContext): Do
     },
 
     async scrollNodeIntoView(locator) {
-      const { controller, document, backendNodeId } = await prepareLiveNodeContext(context, locator);
+      const { controller, document, backendNodeId } = await prepareLiveNodeContext(
+        context,
+        locator,
+      );
       const nodeId = await resolveFrontendNodeId(controller, document, locator, backendNodeId);
       await withTemporaryExecutionResume(context, controller, async () => {
         await controller.cdp.send("DOM.scrollIntoViewIfNeeded", { nodeId });
@@ -362,7 +370,10 @@ export function createAbpDomActionBridge(context: AbpDomActionBridgeContext): Do
     },
 
     async focusNode(locator) {
-      const { controller, document, backendNodeId } = await prepareLiveNodeContext(context, locator);
+      const { controller, document, backendNodeId } = await prepareLiveNodeContext(
+        context,
+        locator,
+      );
       const nodeId = await resolveFrontendNodeId(controller, document, locator, backendNodeId);
       await withTemporaryExecutionResume(context, controller, async () => {
         await controller.cdp.send("DOM.focus", { nodeId });
@@ -371,7 +382,10 @@ export function createAbpDomActionBridge(context: AbpDomActionBridgeContext): Do
     },
 
     async pressKey(locator, input) {
-      const { controller, document, backendNodeId } = await prepareLiveNodeContext(context, locator);
+      const { controller, document, backendNodeId } = await prepareLiveNodeContext(
+        context,
+        locator,
+      );
       const nodeId = await resolveFrontendNodeId(controller, document, locator, backendNodeId);
       await withTemporaryExecutionResume(context, controller, async () => {
         await controller.cdp.send("DOM.focus", { nodeId });

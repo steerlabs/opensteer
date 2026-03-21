@@ -21,10 +21,7 @@ import {
   launchSnapshotAuthenticatedBrowserSession,
   launchSnapshotSessionBrowserSession,
 } from "../local-browser/shared-session.js";
-import {
-  generateStealthProfile,
-  type StealthProfile,
-} from "../local-browser/stealth-profiles.js";
+import { generateStealthProfile, type StealthProfile } from "../local-browser/stealth-profiles.js";
 import type {
   ConnectedCdpBrowser,
   ConnectedCdpBrowserContext,
@@ -156,9 +153,9 @@ export function normalizeOpensteerBrowserContextOptions(
     ...(timezoneId === undefined ? {} : { timezoneId }),
     ...(userAgent === undefined ? {} : { userAgent }),
     viewport:
-      context?.viewport
-      ?? stealthProfile?.viewport
-      ?? OPENSTEER_COMPUTER_DISPLAY_PROFILE.preferredViewport,
+      context?.viewport ??
+      stealthProfile?.viewport ??
+      OPENSTEER_COMPUTER_DISPLAY_PROFILE.preferredViewport,
   };
 }
 
@@ -434,22 +431,22 @@ function isStealthProfile(
   input: NonNullable<OpensteerBrowserContextOptions["stealthProfile"]>,
 ): input is StealthProfile {
   return (
-    input.id !== undefined
-    && input.platform !== undefined
-    && input.browserBrand !== undefined
-    && input.browserVersion !== undefined
-    && input.userAgent !== undefined
-    && input.viewport !== undefined
-    && input.screenResolution !== undefined
-    && input.devicePixelRatio !== undefined
-    && input.maxTouchPoints !== undefined
-    && input.webglVendor !== undefined
-    && input.webglRenderer !== undefined
-    && input.fonts !== undefined
-    && input.canvasNoiseSeed !== undefined
-    && input.audioNoiseSeed !== undefined
-    && input.locale !== undefined
-    && input.timezoneId !== undefined
+    input.id !== undefined &&
+    input.platform !== undefined &&
+    input.browserBrand !== undefined &&
+    input.browserVersion !== undefined &&
+    input.userAgent !== undefined &&
+    input.viewport !== undefined &&
+    input.screenResolution !== undefined &&
+    input.devicePixelRatio !== undefined &&
+    input.maxTouchPoints !== undefined &&
+    input.webglVendor !== undefined &&
+    input.webglRenderer !== undefined &&
+    input.fonts !== undefined &&
+    input.canvasNoiseSeed !== undefined &&
+    input.audioNoiseSeed !== undefined &&
+    input.locale !== undefined &&
+    input.timezoneId !== undefined
   );
 }
 

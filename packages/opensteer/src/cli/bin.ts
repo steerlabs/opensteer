@@ -502,7 +502,9 @@ async function main(argv: readonly string[]): Promise<void> {
         ...(readOptionalBoolean(options.includeSessionStorage) === true
           ? { includeSessionStorage: true }
           : {}),
-        ...(readOptionalBoolean(options.includeIndexedDb) === true ? { includeIndexedDb: true } : {}),
+        ...(readOptionalBoolean(options.includeIndexedDb) === true
+          ? { includeIndexedDb: true }
+          : {}),
         ...(interactionTraceIds.length === 0 ? {} : { interactionTraceIds }),
         ...(targetHosts.length === 0 &&
         targetPaths.length === 0 &&
@@ -691,13 +693,17 @@ async function main(argv: readonly string[]): Promise<void> {
         ...(pageRef === undefined ? {} : { pageRef }),
         ...(durationMs === undefined ? {} : { durationMs }),
         ...(script === undefined ? {} : { script }),
-        ...(argsJson === undefined ? {} : { args: Array.isArray(argsJson) ? argsJson : [argsJson] }),
+        ...(argsJson === undefined
+          ? {}
+          : { args: Array.isArray(argsJson) ? argsJson : [argsJson] }),
         ...(steps === undefined ? {} : { steps }),
         ...(readOptionalBoolean(options.includeStorage) === false ? { includeStorage: false } : {}),
         ...(readOptionalBoolean(options.includeSessionStorage) === true
           ? { includeSessionStorage: true }
           : {}),
-        ...(readOptionalBoolean(options.includeIndexedDb) === true ? { includeIndexedDb: true } : {}),
+        ...(readOptionalBoolean(options.includeIndexedDb) === true
+          ? { includeIndexedDb: true }
+          : {}),
         ...(globalNames.length === 0 ? {} : { globalNames }),
         ...(caseId === undefined ? {} : { caseId }),
         ...(notes === undefined ? {} : { notes }),
@@ -843,7 +849,9 @@ async function main(argv: readonly string[]): Promise<void> {
           ? {}
           : { fidelity: readOptionalString(options.fidelity) as "minimal" | "standard" | "full" }),
         ...(ajaxRoutes === undefined ? {} : { ajaxRoutes: parseSandboxAjaxRoutes(ajaxRoutes) }),
-        ...(pageCookies === undefined ? {} : { cookies: parseStringRecord(pageCookies, "--cookies") }),
+        ...(pageCookies === undefined
+          ? {}
+          : { cookies: parseStringRecord(pageCookies, "--cookies") }),
         ...(globals === undefined ? {} : { globals }),
         ...(timeoutMs === undefined ? {} : { timeoutMs }),
         ...(readOptionalString(options.clockMode) === undefined
@@ -1437,7 +1445,10 @@ function parseBrowserOptions(options: ParsedCliOptions): Record<string, unknown>
     (attachEndpoint !== undefined ? "attach-live" : undefined) ??
     (sourceUserDataDir !== undefined ? "snapshot-session" : undefined);
 
-  if ((attachEndpoint !== undefined || attachHeaders.length > 0) && sourceUserDataDir !== undefined) {
+  if (
+    (attachEndpoint !== undefined || attachHeaders.length > 0) &&
+    sourceUserDataDir !== undefined
+  ) {
     throw new Error(
       "Specify either attach-live flags (--attach-endpoint/--attach-header) or snapshot flags (--source-user-data-dir/--source-profile-directory), not both.",
     );
@@ -1454,9 +1465,7 @@ function parseBrowserOptions(options: ParsedCliOptions): Record<string, unknown>
       kind: "snapshot-session" as const,
       ...managed,
       sourceUserDataDir,
-      ...(sourceProfileDirectory === undefined
-        ? {}
-        : { sourceProfileDirectory }),
+      ...(sourceProfileDirectory === undefined ? {} : { sourceProfileDirectory }),
     };
   }
 
@@ -1828,10 +1837,7 @@ function readOptionalEnumList<T extends string>(
   return parsed;
 }
 
-function includesEnumValue<T extends string>(
-  allowed: readonly T[],
-  value: string,
-): value is T {
+function includesEnumValue<T extends string>(allowed: readonly T[], value: string): value is T {
   return allowed.some((entry) => entry === value);
 }
 
@@ -1906,12 +1912,13 @@ function parseReverseWorkflowSteps(
   value: readonly unknown[],
   label: string,
 ): readonly OpensteerReverseWorkflowStep[] {
-  return value.map((entry, index) =>
-    validateSchemaValue(
-      opensteerReverseWorkflowStepSchema,
-      entry,
-      `${label}[${String(index)}]`,
-    ) as OpensteerReverseWorkflowStep,
+  return value.map(
+    (entry, index) =>
+      validateSchemaValue(
+        opensteerReverseWorkflowStepSchema,
+        entry,
+        `${label}[${String(index)}]`,
+      ) as OpensteerReverseWorkflowStep,
   );
 }
 
@@ -1919,12 +1926,13 @@ function parseExecutableResolvers(
   value: readonly unknown[],
   label: string,
 ): readonly OpensteerExecutableResolver[] {
-  return value.map((entry, index) =>
-    validateSchemaValue(
-      opensteerExecutableResolverSchema,
-      entry,
-      `${label}[${String(index)}]`,
-    ) as OpensteerExecutableResolver,
+  return value.map(
+    (entry, index) =>
+      validateSchemaValue(
+        opensteerExecutableResolverSchema,
+        entry,
+        `${label}[${String(index)}]`,
+      ) as OpensteerExecutableResolver,
   );
 }
 
@@ -1932,12 +1940,13 @@ function parseValidationRules(
   value: readonly unknown[],
   label: string,
 ): readonly OpensteerValidationRule[] {
-  return value.map((entry, index) =>
-    validateSchemaValue(
-      opensteerValidationRuleSchema,
-      entry,
-      `${label}[${String(index)}]`,
-    ) as OpensteerValidationRule,
+  return value.map(
+    (entry, index) =>
+      validateSchemaValue(
+        opensteerValidationRuleSchema,
+        entry,
+        `${label}[${String(index)}]`,
+      ) as OpensteerValidationRule,
   );
 }
 
@@ -2000,10 +2009,7 @@ function parseInteractionCaptureStep(
   }
 }
 
-function parseInteractionCaptureTarget(
-  value: unknown,
-  label: string,
-): OpensteerTargetInput {
+function parseInteractionCaptureTarget(value: unknown, label: string): OpensteerTargetInput {
   const target = readOptionalJsonObject(value);
   if (target === undefined) {
     throw new Error(`${label} must be an object`);
@@ -2030,10 +2036,7 @@ function parseInteractionCaptureTarget(
   }
 }
 
-function parseScrollDirection(
-  value: unknown,
-  label: string,
-): "up" | "down" | "left" | "right" {
+function parseScrollDirection(value: unknown, label: string): "up" | "down" | "left" | "right" {
   const direction = readRequiredString(value, label);
   if (direction === "up" || direction === "down" || direction === "left" || direction === "right") {
     return direction;
@@ -2110,9 +2113,7 @@ function parseRequestPlanLifecycle(value: string): OpensteerRequestPlanLifecycle
   throw new Error(`invalid lifecycle "${value}"`);
 }
 
-function parseRequestTransport(
-  value: string,
-): TransportKind {
+function parseRequestTransport(value: string): TransportKind {
   if (
     value === "direct-http" ||
     value === "matched-tls" ||

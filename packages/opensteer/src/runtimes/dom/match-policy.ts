@@ -1,9 +1,4 @@
-import type {
-  AttributeMatchClause,
-  MatchClause,
-  MatchOperator,
-  PathNode,
-} from "./types.js";
+import type { AttributeMatchClause, MatchClause, MatchOperator, PathNode } from "./types.js";
 
 export const ATTRIBUTE_DENY_KEYS = new Set([
   "style",

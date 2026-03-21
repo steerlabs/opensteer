@@ -143,7 +143,9 @@ for (const harness of harnesses) {
             target: { kind: "path", path },
           });
 
-          expect(await readTextById(engine, childFrame, "child-status")).toBe("child shadow clicked");
+          expect(await readTextById(engine, childFrame, "child-status")).toBe(
+            "child shadow clicked",
+          );
         });
       },
     );
@@ -160,7 +162,11 @@ for (const harness of harnesses) {
               pageRef,
               "/path-parity-shadow-host-child?kind=open",
             );
-            const childSnapshot = await waitForNodeInFrame(engine, childFrame, "shadow-hosted-button");
+            const childSnapshot = await waitForNodeInFrame(
+              engine,
+              childFrame,
+              "shadow-hosted-button",
+            );
             const targetNode = expectValue(
               findNodeById(childSnapshot, "shadow-hosted-button"),
               "shadow-hosted button was not found",
@@ -183,7 +189,9 @@ for (const harness of harnesses) {
               target: { kind: "path", path },
             });
 
-            expect(await readTextById(engine, childFrame, "shadow-hosted-status")).toBe("clicked:open");
+            expect(await readTextById(engine, childFrame, "shadow-hosted-status")).toBe(
+              "clicked:open",
+            );
           },
           "/path-parity-shadow-host-open-main",
         );
@@ -202,7 +210,11 @@ for (const harness of harnesses) {
               pageRef,
               "/path-parity-shadow-host-child?kind=open",
             );
-            const childSnapshot = await waitForNodeInFrame(engine, childFrame, "shadow-hosted-slot");
+            const childSnapshot = await waitForNodeInFrame(
+              engine,
+              childFrame,
+              "shadow-hosted-slot",
+            );
             const targetNode = expectValue(
               findNodeById(childSnapshot, "shadow-hosted-slot"),
               "shadow-hosted slot was not found",
@@ -246,7 +258,11 @@ for (const harness of harnesses) {
               pageRef,
               "/path-parity-shadow-host-child?kind=closed",
             );
-            const childSnapshot = await waitForNodeInFrame(engine, childFrame, "shadow-hosted-button");
+            const childSnapshot = await waitForNodeInFrame(
+              engine,
+              childFrame,
+              "shadow-hosted-button",
+            );
             const targetNode = expectValue(
               findNodeById(childSnapshot, "shadow-hosted-button"),
               "shadow-hosted button was not found",
@@ -313,84 +329,72 @@ for (const harness of harnesses) {
       },
     );
 
-    test(
-      "builds and replays closed-shadow paths for click",
-      { timeout: 60_000 },
-      async () => {
-        await withFixturePage(harness, async ({ engine, runtime, pageRef, frameRef }) => {
-          const snapshot = await engine.getDomSnapshot({ frameRef });
-          const targetNode = expectValue(
-            findNodeById(snapshot, "closed-shadow-button"),
-            "closed shadow button was not found",
-          );
-          const path = await runtime.buildPath({
-            locator: createLocator(snapshot, targetNode),
-          });
-
-          expect(path.context.map((hop) => hop.kind)).toEqual(["shadow"]);
-
-          await runtime.click({
-            pageRef,
-            target: { kind: "path", path },
-          });
-
-          expect(await readTextById(engine, frameRef, "status")).toBe("closed shadow clicked");
+    test("builds and replays closed-shadow paths for click", { timeout: 60_000 }, async () => {
+      await withFixturePage(harness, async ({ engine, runtime, pageRef, frameRef }) => {
+        const snapshot = await engine.getDomSnapshot({ frameRef });
+        const targetNode = expectValue(
+          findNodeById(snapshot, "closed-shadow-button"),
+          "closed shadow button was not found",
+        );
+        const path = await runtime.buildPath({
+          locator: createLocator(snapshot, targetNode),
         });
-      },
-    );
 
-    test(
-      "builds and replays paths for hover actions",
-      { timeout: 60_000 },
-      async () => {
-        await withFixturePage(harness, async ({ engine, runtime, pageRef, frameRef }) => {
-          const snapshot = await engine.getDomSnapshot({ frameRef });
-          const targetNode = expectValue(
-            findNodeById(snapshot, "hover-target"),
-            "hover target was not found",
-          );
-          const path = await runtime.buildPath({
-            locator: createLocator(snapshot, targetNode),
-          });
+        expect(path.context.map((hop) => hop.kind)).toEqual(["shadow"]);
 
-          await runtime.hover({
-            pageRef,
-            target: { kind: "path", path },
-          });
-
-          expect(await readTextById(engine, frameRef, "status")).toBe("hovered");
+        await runtime.click({
+          pageRef,
+          target: { kind: "path", path },
         });
-      },
-    );
 
-    test(
-      "builds and replays offscreen paths for scroll actions",
-      { timeout: 60_000 },
-      async () => {
-        await withFixturePage(harness, async ({ engine, runtime, pageRef, frameRef }) => {
-          const snapshot = await engine.getDomSnapshot({ frameRef });
-          const targetNode = expectValue(
-            findNodeById(snapshot, "scroll-box"),
-            "scroll box was not found",
-          );
-          const path = await runtime.buildPath({
-            locator: createLocator(snapshot, targetNode),
-          });
+        expect(await readTextById(engine, frameRef, "status")).toBe("closed shadow clicked");
+      });
+    });
 
-          await runtime.scroll({
-            pageRef,
-            target: { kind: "path", path },
-            delta: createPoint(0, 320),
-          });
-
-          await wait(150);
-
-          const status = await readTextById(engine, frameRef, "status");
-          expect(status).toMatch(/^scrolled:/);
-          expect(Number(status.split(":")[1])).toBeGreaterThan(0);
+    test("builds and replays paths for hover actions", { timeout: 60_000 }, async () => {
+      await withFixturePage(harness, async ({ engine, runtime, pageRef, frameRef }) => {
+        const snapshot = await engine.getDomSnapshot({ frameRef });
+        const targetNode = expectValue(
+          findNodeById(snapshot, "hover-target"),
+          "hover target was not found",
+        );
+        const path = await runtime.buildPath({
+          locator: createLocator(snapshot, targetNode),
         });
-      },
-    );
+
+        await runtime.hover({
+          pageRef,
+          target: { kind: "path", path },
+        });
+
+        expect(await readTextById(engine, frameRef, "status")).toBe("hovered");
+      });
+    });
+
+    test("builds and replays offscreen paths for scroll actions", { timeout: 60_000 }, async () => {
+      await withFixturePage(harness, async ({ engine, runtime, pageRef, frameRef }) => {
+        const snapshot = await engine.getDomSnapshot({ frameRef });
+        const targetNode = expectValue(
+          findNodeById(snapshot, "scroll-box"),
+          "scroll box was not found",
+        );
+        const path = await runtime.buildPath({
+          locator: createLocator(snapshot, targetNode),
+        });
+
+        await runtime.scroll({
+          pageRef,
+          target: { kind: "path", path },
+          delta: createPoint(0, 320),
+        });
+
+        await wait(150);
+
+        const status = await readTextById(engine, frameRef, "status");
+        expect(status).toMatch(/^scrolled:/);
+        expect(Number(status.split(":")[1])).toBeGreaterThan(0);
+      });
+    });
   });
 }
 
@@ -536,7 +540,9 @@ async function handleFixtureRequest(
 
   if (url.pathname === "/path-parity-shadow-host-child") {
     response.setHeader("content-type", "text/html; charset=utf-8");
-    response.end(shadowHostedChildDocument(url.searchParams.get("kind") === "closed" ? "closed" : "open"));
+    response.end(
+      shadowHostedChildDocument(url.searchParams.get("kind") === "closed" ? "closed" : "open"),
+    );
     return;
   }
 

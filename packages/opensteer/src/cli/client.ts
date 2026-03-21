@@ -23,9 +23,7 @@ export interface OpensteerServiceLaunchContext {
 export { OpensteerCliServiceError, OpensteerSessionServiceClient as OpensteerCliServiceClient };
 export type { OpensteerCliSessionOptions } from "../session-service/client.js";
 
-export async function connectOpensteerService(
-  options: OpensteerCliSessionOptions = {},
-) {
+export async function connectOpensteerService(options: OpensteerCliSessionOptions = {}) {
   return connectExistingOpensteerService(options);
 }
 
@@ -71,9 +69,7 @@ export async function ensureOpensteerService(
   );
 }
 
-export async function requireOpensteerService(
-  options: OpensteerCliSessionOptions = {},
-) {
+export async function requireOpensteerService(options: OpensteerCliSessionOptions = {}) {
   return requireExistingOpensteerService(options);
 }
 

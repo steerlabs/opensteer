@@ -18,10 +18,7 @@ import {
   createPageRef,
   createSessionRef,
 } from "../../packages/protocol/src/index.js";
-import {
-  Opensteer,
-  createFilesystemOpensteerRoot,
-} from "../../packages/opensteer/src/index.js";
+import { Opensteer, createFilesystemOpensteerRoot } from "../../packages/opensteer/src/index.js";
 import { ensureOpensteerService } from "../../packages/opensteer/src/cli/client.js";
 import { inferRequestPlanFromNetworkRecord } from "../../packages/opensteer/src/requests/inference.js";
 import { normalizeRequestPlanPayload } from "../../packages/opensteer/src/requests/plans/index.js";
@@ -474,10 +471,30 @@ describe("Phase 10 request workflows", () => {
         includeWorkers: true,
       });
 
-      expect(captured.scripts.some((script) => script.source === "inline" && script.content.includes("phase10Inline"))).toBe(true);
-      expect(captured.scripts.some((script) => script.source === "external" && script.url?.includes("/phase10/assets/script-a.js"))).toBe(true);
-      expect(captured.scripts.some((script) => script.source === "dynamic" && script.url?.includes("/phase10/assets/script-dynamic.js"))).toBe(true);
-      expect(captured.scripts.some((script) => script.source === "worker" && script.url?.includes("/phase10/assets/script-worker.js"))).toBe(true);
+      expect(
+        captured.scripts.some(
+          (script) => script.source === "inline" && script.content.includes("phase10Inline"),
+        ),
+      ).toBe(true);
+      expect(
+        captured.scripts.some(
+          (script) =>
+            script.source === "external" && script.url?.includes("/phase10/assets/script-a.js"),
+        ),
+      ).toBe(true);
+      expect(
+        captured.scripts.some(
+          (script) =>
+            script.source === "dynamic" &&
+            script.url?.includes("/phase10/assets/script-dynamic.js"),
+        ),
+      ).toBe(true);
+      expect(
+        captured.scripts.some(
+          (script) =>
+            script.source === "worker" && script.url?.includes("/phase10/assets/script-worker.js"),
+        ),
+      ).toBe(true);
       expect(captured.scripts.every((script) => script.artifactId !== undefined)).toBe(true);
       const artifact = await opensteer.readArtifact({
         artifactId: captured.scripts[0]!.artifactId!,
@@ -504,7 +521,9 @@ describe("Phase 10 request workflows", () => {
         "--include-dynamic",
         "true",
       ]);
-      expect((cliCaptured as { scripts: readonly { source: string }[] }).scripts.length).toBeGreaterThan(0);
+      expect(
+        (cliCaptured as { scripts: readonly { source: string }[] }).scripts.length,
+      ).toBeGreaterThan(0);
       await runCliCommand(rootDir, [
         "close",
         "--name",
@@ -1090,10 +1109,7 @@ describe("Phase 10 request workflows", () => {
       }),
     ]);
 
-    const listed = (await runCliCommand(rootDir, [
-      "recipe",
-      "list",
-    ])) as {
+    const listed = (await runCliCommand(rootDir, ["recipe", "list"])) as {
       readonly recipes: readonly { readonly key: string }[];
     };
     expect(listed.recipes.map((entry) => entry.key)).toContain("phase10-cli-direct-refresh");
@@ -1172,7 +1188,9 @@ describe("Phase 10 request workflows", () => {
         status: "20",
         resourceType: "fetch",
       });
-      expect(filteredLive.records.map((record) => record.recordId)).toContain(captureRecord.recordId);
+      expect(filteredLive.records.map((record) => record.recordId)).toContain(
+        captureRecord.recordId,
+      );
 
       const byAction = await opensteer.queryNetwork({
         actionId: captureRecord.actionId,
@@ -1764,7 +1782,9 @@ describe("Phase 10 request workflows", () => {
       }[];
     };
     expect(network.records).toHaveLength(1);
-    expect(readHeader(network.records[0]!.record.requestHeaders, "authorization")).toBe("[redacted]");
+    expect(readHeader(network.records[0]!.record.requestHeaders, "authorization")).toBe(
+      "[redacted]",
+    );
 
     await runCliCommand(rootDir, [
       "network",
@@ -1816,12 +1836,7 @@ describe("Phase 10 request workflows", () => {
       "1.0.0",
     ]);
 
-    const listed = (await runCliCommand(rootDir, [
-      "plan",
-      "list",
-      "--name",
-      sessionName,
-    ])) as {
+    const listed = (await runCliCommand(rootDir, ["plan", "list", "--name", sessionName])) as {
       readonly plans: readonly { readonly key: string }[];
     };
     expect(listed.plans.map((entry) => entry.key)).toContain("phase10-cli-inferred");
@@ -1955,14 +1970,18 @@ function requireFixtureServer(): Phase6FixtureServer {
 }
 
 async function runCliCommand(rootDir: string, args: readonly string[]): Promise<unknown> {
-  const { stdout, stderr } = await execFile(process.execPath, [...CLI_EXEC_ARGV, CLI_SCRIPT, ...args], {
-    cwd: rootDir,
-    env: {
-      ...process.env,
-      NODE_NO_WARNINGS: "1",
+  const { stdout, stderr } = await execFile(
+    process.execPath,
+    [...CLI_EXEC_ARGV, CLI_SCRIPT, ...args],
+    {
+      cwd: rootDir,
+      env: {
+        ...process.env,
+        NODE_NO_WARNINGS: "1",
+      },
+      maxBuffer: 1024 * 1024 * 4,
     },
-    maxBuffer: 1024 * 1024 * 4,
-  });
+  );
 
   expect(stderr.trim()).toBe("");
   const trimmed = stdout.trim();

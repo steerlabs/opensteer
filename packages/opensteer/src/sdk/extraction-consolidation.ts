@@ -5,10 +5,7 @@ import {
   type MatchClause,
   type PathNode,
 } from "../runtimes/dom/index.js";
-import {
-  VOLATILE_CLASS_TOKENS,
-  VOLATILE_LAZY_CLASS_TOKENS,
-} from "../runtimes/dom/match-policy.js";
+import { VOLATILE_CLASS_TOKENS, VOLATILE_LAZY_CLASS_TOKENS } from "../runtimes/dom/match-policy.js";
 import {
   encodeDataPath,
   joinDataPath,
@@ -94,12 +91,7 @@ const SINGLE_SAMPLE_DROP_ATTR_KEYS = new Set([
   "aria-labelledby",
 ]);
 
-const DATA_TEST_ATTR_KEYS = new Set([
-  "data-testid",
-  "data-test",
-  "data-qa",
-  "data-cy",
-]);
+const DATA_TEST_ATTR_KEYS = new Set(["data-testid", "data-test", "data-qa", "data-cy"]);
 
 const CLUSTER_FALLBACK_PREFIX = "variant";
 
@@ -236,7 +228,9 @@ function buildPersistedArrayDescriptor(
     return null;
   }
 
-  variants.sort((left, right) => buildVariantSortKey(left).localeCompare(buildVariantSortKey(right)));
+  variants.sort((left, right) =>
+    buildVariantSortKey(left).localeCompare(buildVariantSortKey(right)),
+  );
 
   return {
     path: arrayPath,
@@ -289,7 +283,9 @@ function buildPerIndexDescriptor(
     });
   }
 
-  const fields = [...fieldsByPath.values()].sort((left, right) => left.path.localeCompare(right.path));
+  const fields = [...fieldsByPath.values()].sort((left, right) =>
+    left.path.localeCompare(right.path),
+  );
   if (!fields.length) {
     return null;
   }
@@ -333,7 +329,7 @@ function buildVariantDescriptorFromCluster(
   const mergedItemPath =
     clusterSize === 1
       ? relaxPathForSingleSample(rootPaths[0]!, "item-root")
-      : mergeElementPathsByMajority(rootPaths) ?? sanitizeElementPath(rootPaths[0]!);
+      : (mergeElementPathsByMajority(rootPaths) ?? sanitizeElementPath(rootPaths[0]!));
   const normalizedItemPath = minimizePathMatchClauses(mergedItemPath, "item-root");
 
   const keyStats = new Map<
@@ -421,10 +417,7 @@ function buildVariantDescriptorFromCluster(
   };
 }
 
-function minimizePathMatchClauses(
-  path: ElementPath,
-  mode: "item-root" | "field",
-): ElementPath {
+function minimizePathMatchClauses(path: ElementPath, mode: "item-root" | "field"): ElementPath {
   const normalized = sanitizeElementPath(path);
   const nodes = normalized.nodes.map((node, index) => {
     const isLast = index === normalized.nodes.length - 1;
@@ -478,7 +471,9 @@ function normalizeAttrClauseForMinimization(
     return null;
   }
 
-  const key = String(clause.key || "").trim().toLowerCase();
+  const key = String(clause.key || "")
+    .trim()
+    .toLowerCase();
   if (!key || !Object.hasOwn(attrs, key)) {
     return null;
   }
@@ -500,9 +495,7 @@ function normalizeAttrClauseForMinimization(
     kind: "attr",
     key,
     op: clause.op === "startsWith" || clause.op === "contains" ? clause.op : "exact",
-    ...(typeof clause.value === "string" && clause.value.trim()
-      ? { value: clause.value }
-      : {}),
+    ...(typeof clause.value === "string" && clause.value.trim() ? { value: clause.value } : {}),
   };
 }
 
@@ -555,10 +548,7 @@ function seedMinimalAttrClause(attrs: Record<string, string>): MatchClause | nul
   return null;
 }
 
-function relaxPathForSingleSample(
-  path: ElementPath,
-  mode: "item-root" | "field",
-): ElementPath {
+function relaxPathForSingleSample(path: ElementPath, mode: "item-root" | "field"): ElementPath {
   const normalized = sanitizeElementPath(path);
 
   const relaxedNodes = normalized.nodes.map((node, index) => {
@@ -578,7 +568,9 @@ function relaxPathForSingleSample(
           return !isLast;
         }
 
-        const key = String(clause.key || "").trim().toLowerCase();
+        const key = String(clause.key || "")
+          .trim()
+          .toLowerCase();
         if (!key || !shouldKeepAttrForSingleSample(key)) {
           return false;
         }
@@ -626,7 +618,9 @@ function normalizeAttrsForSingleSample(attrs: Record<string, string>): Record<st
   const out: Record<string, string> = {};
 
   for (const [rawKey, rawValue] of Object.entries(attrs || {})) {
-    const key = String(rawKey || "").trim().toLowerCase();
+    const key = String(rawKey || "")
+      .trim()
+      .toLowerCase();
     if (!key || !shouldKeepAttrForSingleSample(key)) {
       continue;
     }
@@ -679,7 +673,9 @@ function buildNodeStructure(node: PathNode): Record<string, unknown> {
   const structuralAttrs: Record<string, string> = {};
 
   for (const [rawKey, rawValue] of Object.entries(attrs)) {
-    const key = String(rawKey || "").trim().toLowerCase();
+    const key = String(rawKey || "")
+      .trim()
+      .toLowerCase();
     if (!STRUCTURAL_ATTR_KEYS.has(key)) {
       continue;
     }
@@ -703,7 +699,9 @@ function buildNodeStructure(node: PathNode): Record<string, unknown> {
     .map((clause) =>
       clause.kind === "position"
         ? `position:${clause.axis}`
-        : `attr:${String(clause.key || "").trim().toLowerCase()}`,
+        : `attr:${String(clause.key || "")
+            .trim()
+            .toLowerCase()}`,
     )
     .sort();
 
@@ -851,9 +849,7 @@ function insertNodeAtPath(
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
     if (!token || token.kind !== "prop") {
-      throw new Error(
-        `Invalid persisted extraction path "${path}": expected object segment.`,
-      );
+      throw new Error(`Invalid persisted extraction path "${path}": expected object segment.`);
     }
 
     const isLast = index === tokens.length - 1;
@@ -915,15 +911,15 @@ function parseIndexedArrayFieldKey(
   };
 }
 
-function buildItemRootForArrayIndex(
-  entries: readonly IndexedArrayField[],
-): ElementPath | null {
+function buildItemRootForArrayIndex(entries: readonly IndexedArrayField[]): ElementPath | null {
   if (!entries.length) {
     return null;
   }
 
   const paths = entries
-    .map((entry) => (isPersistablePathField(entry.source) ? sanitizeElementPath(entry.source.path) : null))
+    .map((entry) =>
+      isPersistablePathField(entry.source) ? sanitizeElementPath(entry.source.path) : null,
+    )
     .filter((path): path is ElementPath => path !== null);
   if (!paths.length) {
     return null;
@@ -1006,7 +1002,9 @@ function toRelativeElementPath(absolute: ElementPath, root: ElementPath): Elemen
   const normalizedAbsolute = sanitizeElementPath(absolute);
   const normalizedRoot = sanitizeElementPath(root);
 
-  if (canonicalJsonString(normalizedAbsolute.context) !== canonicalJsonString(normalizedRoot.context)) {
+  if (
+    canonicalJsonString(normalizedAbsolute.context) !== canonicalJsonString(normalizedRoot.context)
+  ) {
     return null;
   }
 
@@ -1037,7 +1035,10 @@ function mergeElementPathsByMajority(paths: readonly ElementPath[]): ElementPath
   }
 
   const normalized = paths.map((path) => sanitizeElementPath(path));
-  const contextKey = pickModeString(normalized.map((path) => canonicalJsonString(path.context)), 1);
+  const contextKey = pickModeString(
+    normalized.map((path) => canonicalJsonString(path.context)),
+    1,
+  );
   if (!contextKey) {
     return null;
   }
@@ -1048,7 +1049,10 @@ function mergeElementPathsByMajority(paths: readonly ElementPath[]): ElementPath
   }
 
   const targetLength =
-    pickModeNumber(sameContext.map((path) => path.nodes.length), 1) ??
+    pickModeNumber(
+      sameContext.map((path) => path.nodes.length),
+      1,
+    ) ??
     sameContext[0]?.nodes.length ??
     0;
   const aligned = sameContext.filter((path) => path.nodes.length === targetLength);
@@ -1076,12 +1080,19 @@ function mergeElementPathsByMajority(paths: readonly ElementPath[]): ElementPath
 }
 
 function mergePathNodeByMajority(nodes: readonly PathNode[], threshold: number): PathNode {
-  const tag = pickModeString(
-    nodes.map((node) => String(node.tag || "*").toLowerCase()),
+  const tag =
+    pickModeString(
+      nodes.map((node) => String(node.tag || "*").toLowerCase()),
+      threshold,
+    ) || "*";
+  const attrs = mergeAttributesByMajority(
+    nodes.map((node) => node.attrs || {}),
     threshold,
-  ) || "*";
-  const attrs = mergeAttributesByMajority(nodes.map((node) => node.attrs || {}), threshold);
-  const mergedPosition = mergePositionByMajority(nodes.map((node) => node.position), threshold);
+  );
+  const mergedPosition = mergePositionByMajority(
+    nodes.map((node) => node.position),
+    threshold,
+  );
   const match = mergeMatchByMajority(
     nodes.map((node) => [...(node.match || [])]),
     attrs,
@@ -1347,7 +1358,9 @@ function pickModeNumber(
   return best;
 }
 
-function clonePathContext(context: readonly ElementPath["context"][number][]): ElementPath["context"] {
+function clonePathContext(
+  context: readonly ElementPath["context"][number][],
+): ElementPath["context"] {
   return JSON.parse(JSON.stringify(context || [])) as ElementPath["context"];
 }
 

@@ -89,11 +89,9 @@ export interface WriteRequestPlanInput extends WriteDescriptorInput<OpensteerReq
 
 export interface WriteAuthRecipeInput extends WriteDescriptorInput<OpensteerAuthRecipePayload> {}
 export interface WriteRecipeInput extends WriteDescriptorInput<OpensteerRecipePayload> {}
-export interface WriteInteractionTraceInput
-  extends WriteDescriptorInput<OpensteerInteractionTracePayload> {}
+export interface WriteInteractionTraceInput extends WriteDescriptorInput<OpensteerInteractionTracePayload> {}
 export interface WriteReverseCaseInput extends WriteDescriptorInput<OpensteerReverseCasePayload> {}
-export interface WriteReversePackageInput
-  extends WriteDescriptorInput<OpensteerReversePackagePayload> {}
+export interface WriteReversePackageInput extends WriteDescriptorInput<OpensteerReversePackagePayload> {}
 export interface WriteReverseReportInput extends WriteDescriptorInput<OpensteerReverseReportPayload> {}
 
 export interface ListRegistryRecordsInput {
@@ -818,7 +816,9 @@ export function createAuthRecipeRegistry(rootPath: string): FilesystemAuthRecipe
   return new FilesystemAuthRecipeRegistry(rootPath);
 }
 
-export function createInteractionTraceRegistry(rootPath: string): FilesystemInteractionTraceRegistry {
+export function createInteractionTraceRegistry(
+  rootPath: string,
+): FilesystemInteractionTraceRegistry {
   return new FilesystemInteractionTraceRegistry(rootPath);
 }
 

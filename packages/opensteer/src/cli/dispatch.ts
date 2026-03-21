@@ -37,10 +37,7 @@ export async function dispatchSemanticOperation(
     case "page.goto":
       return runtime.goto(input as Parameters<OpensteerSessionRuntime["goto"]>[0], options);
     case "page.evaluate":
-      return runtime.evaluate(
-        input as Parameters<OpensteerSessionRuntime["evaluate"]>[0],
-        options,
-      );
+      return runtime.evaluate(input as Parameters<OpensteerSessionRuntime["evaluate"]>[0], options);
     case "page.add-init-script":
       return runtime.addInitScript(
         input as Parameters<OpensteerSessionRuntime["addInitScript"]>[0],
@@ -67,7 +64,10 @@ export async function dispatchSemanticOperation(
         options,
       );
     case "network.save":
-      return runtime.saveNetwork(input as Parameters<OpensteerSessionRuntime["saveNetwork"]>[0], options);
+      return runtime.saveNetwork(
+        input as Parameters<OpensteerSessionRuntime["saveNetwork"]>[0],
+        options,
+      );
     case "network.minimize":
       return runtime.minimizeNetwork(
         input as Parameters<OpensteerSessionRuntime["minimizeNetwork"]>[0],
@@ -184,7 +184,10 @@ export async function dispatchSemanticOperation(
         options,
       );
     case "request.raw":
-      return runtime.rawRequest(input as Parameters<OpensteerSessionRuntime["rawRequest"]>[0], options);
+      return runtime.rawRequest(
+        input as Parameters<OpensteerSessionRuntime["rawRequest"]>[0],
+        options,
+      );
     case "request-plan.infer":
       return runtime.inferRequestPlan(
         input as Parameters<OpensteerSessionRuntime["inferRequestPlan"]>[0],
@@ -196,7 +199,10 @@ export async function dispatchSemanticOperation(
         options,
       );
     case "request-plan.get":
-      return runtime.getRequestPlan(input as Parameters<OpensteerSessionRuntime["getRequestPlan"]>[0], options);
+      return runtime.getRequestPlan(
+        input as Parameters<OpensteerSessionRuntime["getRequestPlan"]>[0],
+        options,
+      );
     case "request-plan.list":
       return runtime.listRequestPlans(
         (input ?? {}) as Parameters<OpensteerSessionRuntime["listRequestPlans"]>[0],

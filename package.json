@@ -11,7 +11,7 @@
     "build": "pnpm -r build",
     "build:runtime-artifact": "node scripts/build-runtime-artifact.mjs",
     "check": "pnpm run format:check && pnpm run typecheck && pnpm run test && pnpm run build",
-    "clean": "pnpm -r clean && rimraf coverage",
+    "clean": "pnpm -r clean && rimraf coverage .opensteer artifacts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "opensteer:local": "node scripts/opensteer-local.mjs",

@@ -845,10 +845,7 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
       ]),
     );
     for (const cookie of input.cookies) {
-      merged.set(
-        `${cookie.name}\u0000${cookie.domain}\u0000${cookie.path}`,
-        clone(cookie),
-      );
+      merged.set(`${cookie.name}\u0000${cookie.domain}\u0000${cookie.path}`, clone(cookie));
     }
     session.cookies = [...merged.values()];
   }

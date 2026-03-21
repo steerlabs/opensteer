@@ -40,7 +40,10 @@ export function createStandardSandboxGlobals(
     readonly bubbles: boolean;
     readonly detail?: unknown;
 
-    constructor(type: string, init: { readonly bubbles?: boolean; readonly detail?: unknown } = {}) {
+    constructor(
+      type: string,
+      init: { readonly bubbles?: boolean; readonly detail?: unknown } = {},
+    ) {
       this.type = type;
       this.bubbles = init.bubbles ?? false;
       this.detail = init.detail;
@@ -77,7 +80,11 @@ export function createStandardSandboxGlobals(
         return;
       }
       const name = value.slice(0, separator).trim();
-      const cookieValue = value.slice(separator + 1).split(";")[0]?.trim() ?? "";
+      const cookieValue =
+        value
+          .slice(separator + 1)
+          .split(";")[0]
+          ?.trim() ?? "";
       if (name.length === 0) {
         return;
       }
@@ -85,7 +92,10 @@ export function createStandardSandboxGlobals(
     },
   };
 
-  const fetch = async (input: string | URL | Request, init: RequestInit = {}): Promise<Response> => {
+  const fetch = async (
+    input: string | URL | Request,
+    init: RequestInit = {},
+  ): Promise<Response> => {
     const request = normalizeFetchRequest(input, init);
     const response = await options.ajax.dispatch(request);
     return new Response(response.body ?? "", {
@@ -285,13 +295,15 @@ function createStorageArea(): Storage {
   };
 }
 
-function normalizeFetchRequest(input: string | URL | Request, init: RequestInit): SandboxAjaxRequest {
-  const url = input instanceof URL
-    ? input.toString()
-    : typeof input === "string"
-      ? input
-      : input.url;
-  const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined));
+function normalizeFetchRequest(
+  input: string | URL | Request,
+  init: RequestInit,
+): SandboxAjaxRequest {
+  const url =
+    input instanceof URL ? input.toString() : typeof input === "string" ? input : input.url;
+  const headers = new Headers(
+    init.headers ?? (input instanceof Request ? input.headers : undefined),
+  );
   return {
     method: init.method ?? (input instanceof Request ? input.method : "GET"),
     url,

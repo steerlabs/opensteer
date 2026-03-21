@@ -150,12 +150,12 @@ export function analyzeReverseCandidate(input: {
   );
   const boundary = classifyBoundary(channel.url, input.observationUrl);
   const role = classifyRole(input.record, channel, bodyAnalysis.codec);
-  const matchedTargetHints = matchReverseTargetHints(channel, bodyAnalysis.codec, input.targetHints);
-  const dependencyClass = classifyDependency(
-    inputs,
-    input.guards ?? [],
+  const matchedTargetHints = matchReverseTargetHints(
+    channel,
     bodyAnalysis.codec,
+    input.targetHints,
   );
+  const dependencyClass = classifyDependency(inputs, input.guards ?? [], bodyAnalysis.codec);
   const score = scoreCandidate(
     input.record,
     role,
@@ -217,7 +217,9 @@ export function describeReverseBodyCodec(record: NetworkQueryRecord): {
   readonly codec: OpensteerBodyCodecDescriptor;
   readonly fields: readonly RequestBodyFieldEntry[];
 } {
-  const requestContentType = normalizeContentType(headerValue(record.record.requestHeaders, "content-type"));
+  const requestContentType = normalizeContentType(
+    headerValue(record.record.requestHeaders, "content-type"),
+  );
   const channel = record.record.kind;
   if (channel === "event-stream") {
     return {
@@ -243,7 +245,8 @@ export function describeReverseBodyCodec(record: NetworkQueryRecord): {
   if (bodyText === undefined || bodyText.length === 0) {
     return {
       codec: {
-        kind: requestContentType === undefined ? "unknown" : inferCodecWithoutBody(requestContentType),
+        kind:
+          requestContentType === undefined ? "unknown" : inferCodecWithoutBody(requestContentType),
         ...(requestContentType === undefined ? {} : { contentType: requestContentType }),
         fieldPaths: [],
       },
@@ -256,11 +259,11 @@ export function describeReverseBodyCodec(record: NetworkQueryRecord): {
     if (json !== undefined) {
       const operationName =
         typeof (json as { operationName?: unknown }).operationName === "string"
-          ? ((json as { operationName: string }).operationName)
+          ? (json as { operationName: string }).operationName
           : undefined;
       const graphQuery =
         typeof (json as { query?: unknown }).query === "string"
-          ? ((json as { query: string }).query)
+          ? (json as { query: string }).query
           : undefined;
       const persistedQuery =
         json !== null &&
@@ -272,11 +275,7 @@ export function describeReverseBodyCodec(record: NetworkQueryRecord): {
       return {
         codec: {
           kind:
-            graphQuery !== undefined
-              ? persistedQuery
-                ? "persisted-graphql"
-                : "graphql"
-              : "json",
+            graphQuery !== undefined ? (persistedQuery ? "persisted-graphql" : "graphql") : "json",
           ...(requestContentType === undefined ? {} : { contentType: requestContentType }),
           ...(operationName === undefined ? {} : { operationName }),
           fieldPaths: fields.map((field) => field.path),
@@ -434,12 +433,19 @@ function scoreCandidate(
   hasTargetHints: boolean,
 ): number {
   let score = 0;
-  if (record.record.status !== undefined && record.record.status >= 200 && record.record.status < 400) {
+  if (
+    record.record.status !== undefined &&
+    record.record.status >= 200 &&
+    record.record.status < 400
+  ) {
     score += 25;
   }
   if (record.record.resourceType === "fetch" || record.record.resourceType === "xhr") {
     score += 20;
-  } else if (record.record.resourceType === "event-stream" || record.record.resourceType === "websocket") {
+  } else if (
+    record.record.resourceType === "event-stream" ||
+    record.record.resourceType === "websocket"
+  ) {
     score += 14;
   }
   if (DATA_PATH_PATTERNS.some((pattern) => record.record.url.toLowerCase().includes(pattern))) {
@@ -452,7 +458,11 @@ function scoreCandidate(
   }
   if (codec.kind === "graphql" || codec.kind === "persisted-graphql") {
     score += 10;
-  } else if (codec.kind === "json" || codec.kind === "form-urlencoded" || codec.kind === "multipart") {
+  } else if (
+    codec.kind === "json" ||
+    codec.kind === "form-urlencoded" ||
+    codec.kind === "multipart"
+  ) {
     score += 7;
   }
   if (record.record.responseBody !== undefined) {
@@ -479,7 +489,11 @@ function scoreCandidate(
   if (role === "navigation") {
     score -= 30;
   }
-  if (LOW_SIGNAL_CONTENT_PATH_PATTERNS.some((pattern) => record.record.url.toLowerCase().includes(pattern))) {
+  if (
+    LOW_SIGNAL_CONTENT_PATH_PATTERNS.some((pattern) =>
+      record.record.url.toLowerCase().includes(pattern),
+    )
+  ) {
     score -= 20;
   }
   if (dependencyClass === "portable") {
@@ -584,7 +598,11 @@ function createInputDescriptor(input: {
   const normalizedName = normalizeHeaderName(input.name);
   const classification = classifyInput(normalizedName, input.originalValue, input.location);
   const source = classifyInputSource(normalizedName, classification, input.location);
-  const materializationPolicy = classifyMaterializationPolicy(normalizedName, classification, input.location);
+  const materializationPolicy = classifyMaterializationPolicy(
+    normalizedName,
+    classification,
+    input.location,
+  );
   const exportPolicy = classifyExportPolicy(classification, input.location);
 
   return {
@@ -592,7 +610,11 @@ function createInputDescriptor(input: {
     location: input.location,
     ...(input.path === undefined ? {} : { path: input.path }),
     requiredness:
-      classification === "managed" ? "optional" : input.location === "body-field" ? "unknown" : "required",
+      classification === "managed"
+        ? "optional"
+        : input.location === "body-field"
+          ? "unknown"
+          : "required",
     classification,
     source,
     materializationPolicy,
@@ -695,7 +717,9 @@ function classifyDependency(
   if (inputs.some((input) => input.classification === "volatile")) {
     return inputs.some((input) => input.source === "script") ? "script-signed" : "anti-bot";
   }
-  if (inputs.some((input) => input.classification === "contextual" || input.location === "cookie")) {
+  if (
+    inputs.some((input) => input.classification === "contextual" || input.location === "cookie")
+  ) {
     return "browser-state";
   }
   return "portable";
@@ -714,7 +738,8 @@ function buildResolvers(
     }
 
     const scriptBacked = input.source === "script";
-    const guardBacked = input.unlockedByGuardIds !== undefined && input.unlockedByGuardIds.length > 0;
+    const guardBacked =
+      input.unlockedByGuardIds !== undefined && input.unlockedByGuardIds.length > 0;
     const cookieBacked = input.location === "cookie";
     const runtimeManaged = input.source === "runtime-managed";
     const status =
@@ -748,31 +773,34 @@ function buildResolvers(
       label: `Resolve ${input.location} ${input.name}`,
       status,
       requiresBrowser:
-        !runtimeManaged && !cookieBacked && (guardBacked || scriptBacked || input.classification === "contextual"),
+        !runtimeManaged &&
+        !cookieBacked &&
+        (guardBacked || scriptBacked || input.classification === "contextual"),
       requiresLiveState:
-        guardBacked || stateSource === "attach-live" || (scriptBacked && scriptArtifactIds.length === 0),
+        guardBacked ||
+        stateSource === "attach-live" ||
+        (scriptBacked && scriptArtifactIds.length === 0),
       inputNames: [input.name],
-      description:
-        runtimeManaged
-          ? "Generated by the request materializer."
-          : guardBacked
-            ? "Derived from a recorded unlock interaction."
-            : scriptBacked
-              ? "Derived from a captured script or signer."
-              : input.classification === "contextual"
-                ? "Resolved from live browser state at replay time."
-                : "Resolved directly from the captured value.",
-      ...(input.unlockedByGuardIds?.[0] === undefined ? {} : { guardId: input.unlockedByGuardIds[0] }),
+      description: runtimeManaged
+        ? "Generated by the request materializer."
+        : guardBacked
+          ? "Derived from a recorded unlock interaction."
+          : scriptBacked
+            ? "Derived from a captured script or signer."
+            : input.classification === "contextual"
+              ? "Resolved from live browser state at replay time."
+              : "Resolved directly from the captured value.",
+      ...(input.unlockedByGuardIds?.[0] === undefined
+        ? {}
+        : { guardId: input.unlockedByGuardIds[0] }),
       ...(scriptBacked && scriptArtifactIds[0] !== undefined
         ? { scriptArtifactId: scriptArtifactIds[0] }
         : {}),
-      ...(
-        scriptBacked || input.classification === "contextual"
-          ? input.provenance?.sourcePointer === undefined
-            ? {}
-            : { expression: input.provenance.sourcePointer }
-          : {}
-      ),
+      ...(scriptBacked || input.classification === "contextual"
+        ? input.provenance?.sourcePointer === undefined
+          ? {}
+          : { expression: input.provenance.sourcePointer }
+        : {}),
     });
   }
   return dedupeResolvers(resolvers);
@@ -962,16 +990,44 @@ function buildWebSocketReplayStrategies(input: {
   switch (input.dependencyClass) {
     case "portable":
       return [
-        createReplayStrategy("socket-page", "page-http", input.stateSource, supported, input, headerFailureReason),
+        createReplayStrategy(
+          "socket-page",
+          "page-http",
+          input.stateSource,
+          supported,
+          input,
+          headerFailureReason,
+        ),
       ];
     case "browser-state":
       return [
-        createReplayStrategy("socket-page", "page-http", "snapshot-authenticated", supported, input, headerFailureReason),
-        createReplayStrategy("socket-attach", "page-http", "attach-live", supported, input, headerFailureReason),
+        createReplayStrategy(
+          "socket-page",
+          "page-http",
+          "snapshot-authenticated",
+          supported,
+          input,
+          headerFailureReason,
+        ),
+        createReplayStrategy(
+          "socket-attach",
+          "page-http",
+          "attach-live",
+          supported,
+          input,
+          headerFailureReason,
+        ),
       ];
     case "behavior-gated":
       return [
-        createReplayStrategy("socket-guarded", "page-http", "attach-live", supported, input, headerFailureReason),
+        createReplayStrategy(
+          "socket-guarded",
+          "page-http",
+          "attach-live",
+          supported,
+          input,
+          headerFailureReason,
+        ),
       ];
     case "script-signed":
       return [
@@ -1186,7 +1242,10 @@ function normalizeContentType(value: string | undefined): string | undefined {
 }
 
 function inferWebSocketCodec(record: NetworkQueryRecord): OpensteerBodyCodecDescriptor["kind"] {
-  const subprotocol = headerValue(record.record.requestHeaders, "sec-websocket-protocol")?.toLowerCase();
+  const subprotocol = headerValue(
+    record.record.requestHeaders,
+    "sec-websocket-protocol",
+  )?.toLowerCase();
   if (subprotocol?.includes("json") === true || subprotocol?.includes("graphql") === true) {
     return "websocket-json";
   }
@@ -1306,11 +1365,7 @@ function looksHighEntropy(value: string | undefined): boolean {
     return false;
   }
   const normalized = trimmed.toLowerCase();
-  if (
-    /^https?:\/\//.test(normalized) ||
-    normalized.startsWith("mozilla/") ||
-    /\s/.test(trimmed)
-  ) {
+  if (/^https?:\/\//.test(normalized) || normalized.startsWith("mozilla/") || /\s/.test(trimmed)) {
     return false;
   }
   if (!/^[A-Za-z0-9._~+/-=]+$/.test(trimmed)) {

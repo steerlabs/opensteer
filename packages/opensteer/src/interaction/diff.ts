@@ -43,7 +43,12 @@ export function diffInteractionTraces(
     }
   }
 
-  for (const field of ["cookiesChanged", "storageChanged", "hiddenFieldsChanged", "globalsChanged"] as const) {
+  for (const field of [
+    "cookiesChanged",
+    "storageChanged",
+    "hiddenFieldsChanged",
+    "globalsChanged",
+  ] as const) {
     const leftValues = new Set(left.payload.stateDelta?.[field] ?? []);
     const rightValues = new Set(right.payload.stateDelta?.[field] ?? []);
     for (const value of new Set([...leftValues, ...rightValues])) {

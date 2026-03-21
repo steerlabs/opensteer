@@ -64,12 +64,3 @@ export function toViewportPoint(
       unsupportedCoordinateSpace(coordinateSpace);
   }
 }
-
-export function toViewportRect(
-  metrics: ViewportMetrics,
-  rect: Rect,
-  coordinateSpace: CoordinateSpace,
-): Rect {
-  const origin = toViewportPoint(metrics, createPoint(rect.x, rect.y), coordinateSpace);
-  return createRect(origin.x, origin.y, rect.width, rect.height);
-}

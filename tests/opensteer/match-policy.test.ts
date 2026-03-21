@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
 
-import { buildLocalClausePool, type PathNode } from "../../packages/opensteer/src/runtimes/dom/index.js";
+import {
+  buildLocalClausePool,
+  type PathNode,
+} from "../../packages/opensteer/src/runtimes/dom/index.js";
 
 describe("DOM match policy parity", () => {
   test("does not append deferred attributes when primary match attributes exist", () => {

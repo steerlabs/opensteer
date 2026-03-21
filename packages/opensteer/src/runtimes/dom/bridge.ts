@@ -1,7 +1,4 @@
-import {
-  OPENSTEER_DOM_ACTION_BRIDGE_SYMBOL,
-  resolveDomActionBridge,
-} from "@opensteer/protocol";
+import { OPENSTEER_DOM_ACTION_BRIDGE_SYMBOL, resolveDomActionBridge } from "@opensteer/protocol";
 
 export type {
   DomActionBridge,

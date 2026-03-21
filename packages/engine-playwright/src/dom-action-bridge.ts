@@ -243,13 +243,19 @@ const POINTER_ACTION_HELPERS = String.raw`
   }
 `;
 
-const RESOLVE_POINTER_OWNER_DECLARATION = String.raw`function() {
-  ` + POINTER_ACTION_HELPERS + String.raw`
+const RESOLVE_POINTER_OWNER_DECLARATION =
+  String.raw`function() {
+  ` +
+  POINTER_ACTION_HELPERS +
+  String.raw`
   return findPointerOwner(this);
 }`;
 
-const CLASSIFY_POINTER_HIT_DECLARATION = String.raw`function(hitNode, point) {
-  ` + POINTER_ACTION_HELPERS + String.raw`
+const CLASSIFY_POINTER_HIT_DECLARATION =
+  String.raw`function(hitNode, point) {
+  ` +
+  POINTER_ACTION_HELPERS +
+  String.raw`
   const targetElement = closestElementInComposedTree(this);
   const hitElement = closestElementInComposedTree(hitNode);
   if (!targetElement || !hitElement) {
@@ -549,9 +555,7 @@ async function callNodeFunction(
     rethrowNodeLookupError(error, document, locator);
   } finally {
     if (objectId !== undefined) {
-      await controller.cdp
-        .send("Runtime.releaseObject", { objectId })
-        .catch(() => undefined);
+      await controller.cdp.send("Runtime.releaseObject", { objectId }).catch(() => undefined);
     }
   }
 }
@@ -700,8 +704,7 @@ function normalizeActionTargetInspection(
     throw new Error("DOM action bridge returned an invalid inspection payload");
   }
 
-  const bounds =
-    contentQuads.length === 0 ? undefined : unionQuadBounds(contentQuads);
+  const bounds = contentQuads.length === 0 ? undefined : unionQuadBounds(contentQuads);
 
   return {
     connected: candidate.connected,

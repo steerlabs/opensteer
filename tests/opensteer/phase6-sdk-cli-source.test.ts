@@ -145,8 +145,14 @@ async function runFailingSourceCliCommand(
     return await runSourceCli(rootDir, args);
   } catch (error) {
     return {
-      stdout: error instanceof Error && "stdout" in error && typeof error.stdout === "string" ? error.stdout : "",
-      stderr: error instanceof Error && "stderr" in error && typeof error.stderr === "string" ? error.stderr : "",
+      stdout:
+        error instanceof Error && "stdout" in error && typeof error.stdout === "string"
+          ? error.stdout
+          : "",
+      stderr:
+        error instanceof Error && "stderr" in error && typeof error.stderr === "string"
+          ? error.stderr
+          : "",
     };
   }
 }
@@ -155,16 +161,12 @@ async function runSourceCli(
   rootDir: string,
   args: readonly string[],
 ): Promise<{ readonly stdout: string; readonly stderr: string }> {
-  return execFile(
-    process.execPath,
-    ["--import", tsxLoaderPath, sourceCliScript, ...args],
-    {
-      cwd: rootDir,
-      env: {
-        ...process.env,
-        TSX_TSCONFIG_PATH: repoTsconfigPath,
-      },
-      maxBuffer: 1024 * 1024,
+  return execFile(process.execPath, ["--import", tsxLoaderPath, sourceCliScript, ...args], {
+    cwd: rootDir,
+    env: {
+      ...process.env,
+      TSX_TSCONFIG_PATH: repoTsconfigPath,
     },
-  );
+    maxBuffer: 1024 * 1024,
+  });
 }

@@ -42,9 +42,8 @@ describe("portable cookie snapshot capture", () => {
       ]),
     );
 
-    const { capturePortableBrowserProfileSnapshot } = await import(
-      "../../packages/opensteer/src/cloud/portable-cookie-snapshot.js"
-    );
+    const { capturePortableBrowserProfileSnapshot } =
+      await import("../../packages/opensteer/src/cloud/portable-cookie-snapshot.js");
 
     await expect(
       capturePortableBrowserProfileSnapshot({
@@ -101,9 +100,8 @@ describe("portable cookie snapshot capture", () => {
       ]),
     );
 
-    const { capturePortableBrowserProfileSnapshot } = await import(
-      "../../packages/opensteer/src/cloud/portable-cookie-snapshot.js"
-    );
+    const { capturePortableBrowserProfileSnapshot } =
+      await import("../../packages/opensteer/src/cloud/portable-cookie-snapshot.js");
 
     const snapshot = await capturePortableBrowserProfileSnapshot({
       domains: ["helium.dev"],
@@ -123,9 +121,8 @@ describe("portable cookie snapshot capture", () => {
     });
     connectPlaywrightChromiumBrowserMock.mockResolvedValueOnce(createBrowser([]));
 
-    const { capturePortableBrowserProfileSnapshot } = await import(
-      "../../packages/opensteer/src/cloud/portable-cookie-snapshot.js"
-    );
+    const { capturePortableBrowserProfileSnapshot } =
+      await import("../../packages/opensteer/src/cloud/portable-cookie-snapshot.js");
 
     await expect(
       capturePortableBrowserProfileSnapshot({

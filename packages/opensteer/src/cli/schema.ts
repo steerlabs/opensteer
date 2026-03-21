@@ -897,7 +897,8 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
       {
         name: "probe",
         id: "network.probe",
-        summary: "Probe a captured request across transports and recommend the lightest working one.",
+        summary:
+          "Probe a captured request across transports and recommend the lightest working one.",
         options: [
           ...SESSION_OPTIONS,
           OUTPUT_OPTION,
@@ -919,7 +920,8 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
       {
         name: "solve",
         id: "reverse.solve",
-        summary: "Capture recent evidence, rank candidates, replay strategies, and emit a runnable reverse package.",
+        summary:
+          "Capture recent evidence, rank candidates, replay strategies, and emit a runnable reverse package.",
         options: [
           ...SESSION_OPTIONS,
           OUTPUT_OPTION,
@@ -1079,7 +1081,8 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
       {
         name: "export",
         id: "reverse.export",
-        summary: "Read or clone the generated reverse package, including a request plan when portable.",
+        summary:
+          "Read or clone the generated reverse package, including a request plan when portable.",
         options: [
           ...SESSION_OPTIONS,
           OUTPUT_OPTION,
@@ -1151,7 +1154,12 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
                 valueLabel: "id",
                 internalName: "caseId",
               },
-              { name: "key", description: "Filter by package key", kind: "string", valueLabel: "key" },
+              {
+                name: "key",
+                description: "Filter by package key",
+                kind: "string",
+                valueLabel: "key",
+              },
               {
                 name: "kind",
                 description: "Filter by package kind",
@@ -1182,8 +1190,18 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
                 valueLabel: "id",
                 internalName: "packageId",
               },
-              { name: "key", description: "Patched package key", kind: "string", valueLabel: "key" },
-              { name: "version", description: "Patched package version", kind: "string", valueLabel: "version" },
+              {
+                name: "key",
+                description: "Patched package key",
+                kind: "string",
+                valueLabel: "key",
+              },
+              {
+                name: "version",
+                description: "Patched package version",
+                kind: "string",
+                valueLabel: "version",
+              },
               { name: "notes", description: "Package notes", kind: "string", valueLabel: "text" },
               {
                 name: "candidate-id",
@@ -1270,16 +1288,73 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
           ...SESSION_OPTIONS,
           OUTPUT_OPTION,
           { name: "key", description: "Trace key", kind: "string", valueLabel: "key" },
-          { name: "page-ref", description: "Page reference", kind: "string", valueLabel: "ref", internalName: "pageRef" },
-          { name: "duration-ms", description: "Manual capture duration", kind: "number", valueLabel: "ms", internalName: "durationMs" },
-          { name: "script", description: "Automated capture script", kind: "string", valueLabel: "js" },
-          { name: "args-json", description: "JSON array of script args", kind: "json", valueLabel: "json", internalName: "argsJson" },
-          { name: "steps-json", description: "JSON array of declarative capture steps", kind: "json", valueLabel: "json", internalName: "stepsJson" },
-          { name: "include-storage", description: "Capture browser storage state", kind: "boolean", internalName: "includeStorage" },
-          { name: "include-session-storage", description: "Include sessionStorage", kind: "boolean", internalName: "includeSessionStorage" },
-          { name: "include-indexed-db", description: "Include IndexedDB metadata", kind: "boolean", internalName: "includeIndexedDb" },
-          { name: "global-name", description: "Page global to snapshot (repeatable)", kind: "string", valueLabel: "name", multiple: true, internalName: "globalName" },
-          { name: "case-id", description: "Attach trace to an existing case", kind: "string", valueLabel: "id", internalName: "caseId" },
+          {
+            name: "page-ref",
+            description: "Page reference",
+            kind: "string",
+            valueLabel: "ref",
+            internalName: "pageRef",
+          },
+          {
+            name: "duration-ms",
+            description: "Manual capture duration",
+            kind: "number",
+            valueLabel: "ms",
+            internalName: "durationMs",
+          },
+          {
+            name: "script",
+            description: "Automated capture script",
+            kind: "string",
+            valueLabel: "js",
+          },
+          {
+            name: "args-json",
+            description: "JSON array of script args",
+            kind: "json",
+            valueLabel: "json",
+            internalName: "argsJson",
+          },
+          {
+            name: "steps-json",
+            description: "JSON array of declarative capture steps",
+            kind: "json",
+            valueLabel: "json",
+            internalName: "stepsJson",
+          },
+          {
+            name: "include-storage",
+            description: "Capture browser storage state",
+            kind: "boolean",
+            internalName: "includeStorage",
+          },
+          {
+            name: "include-session-storage",
+            description: "Include sessionStorage",
+            kind: "boolean",
+            internalName: "includeSessionStorage",
+          },
+          {
+            name: "include-indexed-db",
+            description: "Include IndexedDB metadata",
+            kind: "boolean",
+            internalName: "includeIndexedDb",
+          },
+          {
+            name: "global-name",
+            description: "Page global to snapshot (repeatable)",
+            kind: "string",
+            valueLabel: "name",
+            multiple: true,
+            internalName: "globalName",
+          },
+          {
+            name: "case-id",
+            description: "Attach trace to an existing case",
+            kind: "string",
+            valueLabel: "id",
+            internalName: "caseId",
+          },
           { name: "notes", description: "Trace notes", kind: "string", valueLabel: "text" },
         ],
       },
@@ -1290,7 +1365,13 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
         options: [
           ...SESSION_OPTIONS,
           OUTPUT_OPTION,
-          { name: "trace-id", description: "Trace ID", kind: "string", valueLabel: "id", internalName: "traceId" },
+          {
+            name: "trace-id",
+            description: "Trace ID",
+            kind: "string",
+            valueLabel: "id",
+            internalName: "traceId",
+          },
         ],
       },
       {
@@ -1300,8 +1381,20 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
         options: [
           ...SESSION_OPTIONS,
           OUTPUT_OPTION,
-          { name: "left-trace-id", description: "Left trace ID", kind: "string", valueLabel: "id", internalName: "leftTraceId" },
-          { name: "right-trace-id", description: "Right trace ID", kind: "string", valueLabel: "id", internalName: "rightTraceId" },
+          {
+            name: "left-trace-id",
+            description: "Left trace ID",
+            kind: "string",
+            valueLabel: "id",
+            internalName: "leftTraceId",
+          },
+          {
+            name: "right-trace-id",
+            description: "Right trace ID",
+            kind: "string",
+            valueLabel: "id",
+            internalName: "rightTraceId",
+          },
         ],
       },
       {
@@ -1311,8 +1404,20 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
         options: [
           ...SESSION_OPTIONS,
           OUTPUT_OPTION,
-          { name: "trace-id", description: "Trace ID", kind: "string", valueLabel: "id", internalName: "traceId" },
-          { name: "page-ref", description: "Optional page reference override", kind: "string", valueLabel: "ref", internalName: "pageRef" },
+          {
+            name: "trace-id",
+            description: "Trace ID",
+            kind: "string",
+            valueLabel: "id",
+            internalName: "traceId",
+          },
+          {
+            name: "page-ref",
+            description: "Optional page reference override",
+            kind: "string",
+            valueLabel: "ref",
+            internalName: "pageRef",
+          },
         ],
       },
     ],

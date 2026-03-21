@@ -496,13 +496,13 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       );
       return;
     }
-      response.end(
-        JSON.stringify({
-          ok: true,
-          mode: "page-http",
-        }),
-      );
-      return;
+    response.end(
+      JSON.stringify({
+        ok: true,
+        mode: "page-http",
+      }),
+    );
+    return;
   }
 
   if (url.pathname === "/phase10/api/page-http-cors") {

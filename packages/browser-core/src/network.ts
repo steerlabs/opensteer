@@ -221,7 +221,10 @@ export function matchesNetworkRecordFilters(
 
   if (
     filters.status !== undefined &&
-    !includesCaseInsensitive(record.status === undefined ? "" : String(record.status), filters.status)
+    !includesCaseInsensitive(
+      record.status === undefined ? "" : String(record.status),
+      filters.status,
+    )
   ) {
     return false;
   }

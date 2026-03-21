@@ -300,7 +300,11 @@ export class DomActionExecutor {
           const inspectionAfterScroll = await timeout.runStep(() =>
             bridge.inspectActionTarget(pointerTarget.resolved.locator),
           );
-          this.assertPointerActionable(input.operation, pointerTarget.resolved, inspectionAfterScroll);
+          this.assertPointerActionable(
+            input.operation,
+            pointerTarget.resolved,
+            inspectionAfterScroll,
+          );
 
           const point = await timeout.runStep(() =>
             this.computeActionPoint(
@@ -311,7 +315,9 @@ export class DomActionExecutor {
             ),
           );
           if (input.operation !== "dom.scroll") {
-            const hit = await timeout.runStep(() => this.tryHitTest(pointerTarget.resolved.pageRef, point));
+            const hit = await timeout.runStep(() =>
+              this.tryHitTest(pointerTarget.resolved.pageRef, point),
+            );
             if (hit !== undefined) {
               await timeout.runStep(() =>
                 this.assertHitTarget(input.operation, pointerTarget, point, hit),
@@ -611,7 +617,9 @@ export class DomActionExecutor {
               hitOwnerDocumentRef: assessment.hitOwner.documentRef,
               hitOwnerDocumentEpoch: assessment.hitOwner.documentEpoch,
             }),
-        hitMissingFromSnapshot: !resolved.snapshot.nodes.some((node) => node.nodeRef === hit.nodeRef),
+        hitMissingFromSnapshot: !resolved.snapshot.nodes.some(
+          (node) => node.nodeRef === hit.nodeRef,
+        ),
       },
       true,
     );

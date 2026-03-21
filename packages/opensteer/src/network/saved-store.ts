@@ -29,9 +29,10 @@ export interface SavedNetworkStore {
   initialize(): Promise<void>;
   save(records: readonly NetworkQueryRecord[], tag?: string): Promise<number>;
   query(input?: SavedNetworkQueryInput): Promise<readonly NetworkQueryRecord[]>;
-  getByRecordId(recordId: string, options?: { readonly includeBodies?: boolean }): Promise<
-    NetworkQueryRecord | undefined
-  >;
+  getByRecordId(
+    recordId: string,
+    options?: { readonly includeBodies?: boolean },
+  ): Promise<NetworkQueryRecord | undefined>;
   clear(input?: { readonly tag?: string }): Promise<number>;
 }
 
@@ -162,18 +163,8 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
       "response_body_state",
       "TEXT NOT NULL DEFAULT 'skipped'",
     );
-    this.ensureColumn(
-      database,
-      "saved_network_records",
-      "request_body_skip_reason",
-      "TEXT",
-    );
-    this.ensureColumn(
-      database,
-      "saved_network_records",
-      "response_body_skip_reason",
-      "TEXT",
-    );
+    this.ensureColumn(database, "saved_network_records", "request_body_skip_reason", "TEXT");
+    this.ensureColumn(database, "saved_network_records", "response_body_skip_reason", "TEXT");
     this.ensureColumn(database, "saved_network_records", "request_body_error", "TEXT");
     this.ensureColumn(database, "saved_network_records", "response_body_error", "TEXT");
     this.database = database;
@@ -354,9 +345,11 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
           source_json: stringifyOptional(entry.record.source),
           capture_state: entry.record.captureState ?? "complete",
           request_body_state:
-            entry.record.requestBodyState ?? (entry.record.requestBody === undefined ? "skipped" : "complete"),
+            entry.record.requestBodyState ??
+            (entry.record.requestBody === undefined ? "skipped" : "complete"),
           response_body_state:
-            entry.record.responseBodyState ?? (entry.record.responseBody === undefined ? "skipped" : "complete"),
+            entry.record.responseBodyState ??
+            (entry.record.responseBody === undefined ? "skipped" : "complete"),
           request_body_skip_reason: entry.record.requestBodySkipReason ?? null,
           response_body_skip_reason: entry.record.responseBodySkipReason ?? null,
           request_body_error: entry.record.requestBodyError ?? null,
@@ -383,7 +376,8 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
     const limit = Math.max(1, Math.min(input.limit ?? 50, 200));
     const { whereSql, parameters } = buildSavedNetworkWhere(input);
     const rows = database
-      .prepare(`
+      .prepare(
+        `
       SELECT
         r.*,
         GROUP_CONCAT(t.tag, '${TAG_DELIMITER}') AS tags
@@ -394,8 +388,12 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
       GROUP BY r.record_id
       ORDER BY r.saved_at DESC, r.record_id ASC
       LIMIT ?
-    `)
-      .all(...(parameters as readonly (string | number | null | Uint8Array)[]), limit) as SavedNetworkRow[];
+    `,
+      )
+      .all(
+        ...(parameters as readonly (string | number | null | Uint8Array)[]),
+        limit,
+      ) as SavedNetworkRow[];
 
     return rows.map((row) => inflateSavedNetworkRow(row, input.includeBodies ?? false));
   }
@@ -540,14 +538,9 @@ function buildSavedNetworkWhere(input: SavedNetworkQueryInput): {
   };
 }
 
-function inflateSavedNetworkRow(
-  row: SavedNetworkRow,
-  includeBodies: boolean,
-): NetworkQueryRecord {
+function inflateSavedNetworkRow(row: SavedNetworkRow, includeBodies: boolean): NetworkQueryRecord {
   const requestBody =
-    includeBodies && row.request_body_json !== null
-      ? JSON.parse(row.request_body_json)
-      : undefined;
+    includeBodies && row.request_body_json !== null ? JSON.parse(row.request_body_json) : undefined;
   const responseBody =
     includeBodies && row.response_body_json !== null
       ? JSON.parse(row.response_body_json)
@@ -574,7 +567,9 @@ function inflateSavedNetworkRow(
     record.frameRef = row.frame_ref as NonNullable<NetworkQueryRecord["record"]["frameRef"]>;
   }
   if (row.document_ref !== null) {
-    record.documentRef = row.document_ref as NonNullable<NetworkQueryRecord["record"]["documentRef"]>;
+    record.documentRef = row.document_ref as NonNullable<
+      NetworkQueryRecord["record"]["documentRef"]
+    >;
   }
   if (row.status !== null) {
     record.status = row.status;

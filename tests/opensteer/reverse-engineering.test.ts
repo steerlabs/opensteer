@@ -52,7 +52,8 @@ function createNetworkQueryRecord(input: {
       resourceType: input.resourceType,
       navigationRequest: false,
       captureState: "complete" as const,
-      requestBodyState: input.requestBody === undefined ? ("skipped" as const) : ("complete" as const),
+      requestBodyState:
+        input.requestBody === undefined ? ("skipped" as const) : ("complete" as const),
       responseBodyState: "complete" as const,
     },
   };
@@ -75,9 +76,7 @@ describe("reverse-engineering architecture", () => {
       "page-http",
     );
 
-    expect(finalized.headers).toEqual([
-      { name: "x-client-version", value: "web-2026.03" },
-    ]);
+    expect(finalized.headers).toEqual([{ name: "x-client-version", value: "web-2026.03" }]);
   });
 
   test("event-stream candidates produce replayable stream strategies instead of being blocked", () => {

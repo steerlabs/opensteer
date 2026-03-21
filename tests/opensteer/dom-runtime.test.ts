@@ -1214,57 +1214,53 @@ describe("Phase 5 DOM runtime integration", () => {
     },
   );
 
-  test(
-    "replays ambiguous paths by choosing the first match",
-    { timeout: 60_000 },
-    async () => {
-      const engine = await createPlaywrightBrowserCoreEngine({
-        launch: { headless: true },
-      });
+  test("replays ambiguous paths by choosing the first match", { timeout: 60_000 }, async () => {
+    const engine = await createPlaywrightBrowserCoreEngine({
+      launch: { headless: true },
+    });
 
-      try {
-        const runtime = createDomRuntime({ engine });
-        const sessionRef = await engine.createSession();
-        const created = await engine.createPage({
-          sessionRef,
-          url: dataUrl(
-            html(
-              `
+    try {
+      const runtime = createDomRuntime({ engine });
+      const sessionRef = await engine.createSession();
+      const created = await engine.createPage({
+        sessionRef,
+        url: dataUrl(
+          html(
+            `
                 <button class="dup" type="button" style="position:absolute;left:20px;top:20px;width:160px;height:40px">A</button>
                 <button class="dup" type="button" style="position:absolute;left:20px;top:80px;width:160px;height:40px">B</button>
               `,
-              "DOM runtime ambiguity",
-            ),
+            "DOM runtime ambiguity",
           ),
-        });
+        ),
+      });
 
-        await wait(300);
+      await wait(300);
 
-        const path: ElementPath = {
-          resolution: "deterministic",
-          context: [],
-          nodes: [
-            {
-              tag: "button",
-              attrs: { class: "dup" },
-              position: { nthChild: 1, nthOfType: 1 },
-              match: [{ kind: "attr", key: "class", op: "exact", value: "dup" }],
-            },
-          ],
-        };
+      const path: ElementPath = {
+        resolution: "deterministic",
+        context: [],
+        nodes: [
+          {
+            tag: "button",
+            attrs: { class: "dup" },
+            position: { nthChild: 1, nthOfType: 1 },
+            match: [{ kind: "attr", key: "class", op: "exact", value: "dup" }],
+          },
+        ],
+      };
 
-        const resolved = await runtime.resolveTarget({
-          pageRef: created.data.pageRef,
-          method: "click",
-          target: { kind: "path", path },
-        });
+      const resolved = await runtime.resolveTarget({
+        pageRef: created.data.pageRef,
+        method: "click",
+        target: { kind: "path", path },
+      });
 
-        expect(await engine.readText(createLocator(resolved.snapshot, resolved.node))).toBe("A");
-      } finally {
-        await engine.dispose();
-      }
-    },
-  );
+      expect(await engine.readText(createLocator(resolved.snapshot, resolved.node))).toBe("A");
+    } finally {
+      await engine.dispose();
+    }
+  });
 
   test(
     "replays ambiguous context hosts by choosing the first matching host",
@@ -1334,9 +1330,9 @@ describe("Phase 5 DOM runtime integration", () => {
           target: { kind: "path", path },
         });
 
-        expect(resolved.node.attributes.find((attribute) => attribute.name === "data-label")?.value).toBe(
-          "first",
-        );
+        expect(
+          resolved.node.attributes.find((attribute) => attribute.name === "data-label")?.value,
+        ).toBe("first");
       } finally {
         await engine.dispose();
       }
@@ -1941,22 +1937,19 @@ describe("Phase 5 DOM runtime integration", () => {
     },
   );
 
-  test(
-    "re-resolves same-selector replacement before pressEnter",
-    { timeout: 60_000 },
-    async () => {
-      const engine = await createPlaywrightBrowserCoreEngine({
-        launch: { headless: true },
-      });
+  test("re-resolves same-selector replacement before pressEnter", { timeout: 60_000 }, async () => {
+    const engine = await createPlaywrightBrowserCoreEngine({
+      launch: { headless: true },
+    });
 
-      try {
-        const runtime = createDomRuntime({ engine });
-        const sessionRef = await engine.createSession();
-        const created = await engine.createPage({
-          sessionRef,
-          url: dataUrl(
-            html(
-              `
+    try {
+      const runtime = createDomRuntime({ engine });
+      const sessionRef = await engine.createSession();
+      const created = await engine.createPage({
+        sessionRef,
+        url: dataUrl(
+          html(
+            `
                 <div id="slot" style="position:absolute;left:20px;top:20px"></div>
                 <div id="result" style="position:absolute;left:20px;top:100px">idle</div>
                 <script>
@@ -1995,42 +1988,42 @@ describe("Phase 5 DOM runtime integration", () => {
                   render(1, "");
                 </script>
               `,
-              "DOM input replacement",
-            ),
+            "DOM input replacement",
           ),
-        });
+        ),
+      });
 
-        await wait(300);
+      await wait(300);
 
-        const initialSnapshot = await engine.getDomSnapshot({
-          frameRef: created.frameRef!,
-        });
-        const initialInputNode = requireValue(
-          findNodeById(initialSnapshot.nodes, "search-input"),
-          "initial input missing",
-        );
-        const initialNodeRef = requireValue(initialInputNode.nodeRef, "initial node ref missing");
+      const initialSnapshot = await engine.getDomSnapshot({
+        frameRef: created.frameRef!,
+      });
+      const initialInputNode = requireValue(
+        findNodeById(initialSnapshot.nodes, "search-input"),
+        "initial input missing",
+      );
+      const initialNodeRef = requireValue(initialInputNode.nodeRef, "initial node ref missing");
 
-        const resolved = await runtime.input({
-          pageRef: created.data.pageRef,
-          target: { kind: "selector", selector: "#search-input" },
-          text: "MSCU5715955",
-          pressEnter: true,
-        });
+      const resolved = await runtime.input({
+        pageRef: created.data.pageRef,
+        target: { kind: "selector", selector: "#search-input" },
+        text: "MSCU5715955",
+        pressEnter: true,
+      });
 
-        const finalSnapshot = await engine.getDomSnapshot({
-          frameRef: created.frameRef!,
-        });
-        const resultNode = requireValue(findNodeById(finalSnapshot.nodes, "result"), "result missing");
-        expect(await engine.readText(createLocator(finalSnapshot, resultNode))).toBe(
-          "2:MSCU5715955",
-        );
-        expect(resolved.nodeRef).not.toBe(initialNodeRef);
-      } finally {
-        await engine.dispose();
-      }
-    },
-  );
+      const finalSnapshot = await engine.getDomSnapshot({
+        frameRef: created.frameRef!,
+      });
+      const resultNode = requireValue(
+        findNodeById(finalSnapshot.nodes, "result"),
+        "result missing",
+      );
+      expect(await engine.readText(createLocator(finalSnapshot, resultNode))).toBe("2:MSCU5715955");
+      expect(resolved.nodeRef).not.toBe(initialNodeRef);
+    } finally {
+      await engine.dispose();
+    }
+  });
 
   test(
     "uses the DOM action bridge instead of engine.keyPress for pressEnter",

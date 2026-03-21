@@ -165,7 +165,7 @@ export async function requireAttachedLocalOpensteerService(
   return OpensteerSessionServiceClient.fromMetadata(metadata);
 }
 
-export async function loadOpensteerServiceMetadata(
+async function loadOpensteerServiceMetadata(
   options: OpensteerCliSessionOptions,
 ): Promise<ParsedOpensteerServiceMetadata | undefined> {
   const name = normalizeOpensteerSessionName(options.name);
@@ -201,9 +201,9 @@ export async function resolveLiveOpensteerServiceMetadata(
   }
 
   if (
-    isLocalOpensteerServiceMetadata(metadata)
-    && options.engine !== undefined
-    && metadata.engine !== options.engine
+    isLocalOpensteerServiceMetadata(metadata) &&
+    options.engine !== undefined &&
+    metadata.engine !== options.engine
   ) {
     throw new Error(
       `Opensteer session "${name}" is already running with engine "${metadata.engine}". Run "opensteer close --name ${name}" before reopening it with engine "${options.engine}".`,
@@ -245,7 +245,9 @@ async function validateServiceMetadata(
   }
 }
 
-function createConnectionFromMetadata(metadata: OpensteerServiceMetadata): OpensteerServiceConnection {
+function createConnectionFromMetadata(
+  metadata: OpensteerServiceMetadata,
+): OpensteerServiceConnection {
   if (isLocalOpensteerServiceMetadata(metadata)) {
     return {
       baseUrl: metadata.baseUrl,
@@ -256,7 +258,9 @@ function createConnectionFromMetadata(metadata: OpensteerServiceMetadata): Opens
   return createCloudConnection(metadata);
 }
 
-function createCloudConnection(metadata: OpensteerCloudServiceMetadata): OpensteerServiceConnection {
+function createCloudConnection(
+  metadata: OpensteerCloudServiceMetadata,
+): OpensteerServiceConnection {
   const config = resolveCloudConfig({
     enabled: true,
   });

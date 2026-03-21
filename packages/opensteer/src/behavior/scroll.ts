@@ -13,7 +13,8 @@ export function generateScrollPattern(input: {
   readonly durationMs?: number;
   readonly fps?: number;
 }): ScrollPattern {
-  const durationMs = input.durationMs ?? Math.max(220, Math.round(Math.abs(input.distancePx) * 0.9));
+  const durationMs =
+    input.durationMs ?? Math.max(220, Math.round(Math.abs(input.distancePx) * 0.9));
   const fps = input.fps ?? 60;
   const frames = Math.max(2, Math.round((durationMs / 1000) * fps));
   let previousDistance = 0;

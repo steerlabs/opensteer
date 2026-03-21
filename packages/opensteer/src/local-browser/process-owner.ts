@@ -44,10 +44,7 @@ export function parseProcessOwner(value: unknown): ProcessOwner | null {
   };
 }
 
-export function processOwnersEqual(
-  left: ProcessOwner | null,
-  right: ProcessOwner | null,
-): boolean {
+export function processOwnersEqual(left: ProcessOwner | null, right: ProcessOwner | null): boolean {
   if (!left || !right) {
     return left === right;
   }
@@ -57,8 +54,8 @@ export function processOwnersEqual(
 
 export async function getProcessLiveness(owner: ProcessOwner): Promise<ProcessLiveness> {
   if (
-    owner.pid === process.pid
-    && hasMatchingProcessStartTime(owner.processStartedAtMs, PROCESS_STARTED_AT_MS)
+    owner.pid === process.pid &&
+    hasMatchingProcessStartTime(owner.processStartedAtMs, PROCESS_STARTED_AT_MS)
   ) {
     return "live";
   }
@@ -77,10 +74,10 @@ export function isProcessRunning(pid: number): boolean {
     return true;
   } catch (error) {
     const code =
-      typeof error === "object"
-      && error !== null
-      && "code" in error
-      && typeof error.code === "string"
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      typeof error.code === "string"
         ? error.code
         : undefined;
     return code !== "ESRCH";
@@ -99,7 +96,10 @@ export async function readProcessOwner(pid: number): Promise<ProcessOwner | null
   };
 }
 
-function hasMatchingProcessStartTime(expectedStartedAtMs: number, actualStartedAtMs: number): boolean {
+function hasMatchingProcessStartTime(
+  expectedStartedAtMs: number,
+  actualStartedAtMs: number,
+): boolean {
   return Math.abs(expectedStartedAtMs - actualStartedAtMs) <= PROCESS_START_TIME_TOLERANCE_MS;
 }
 
@@ -149,7 +149,10 @@ function parseLinuxProcessStartTicks(statRaw: string): number | null {
     return null;
   }
 
-  const fields = statRaw.slice(closingParenIndex + 2).trim().split(/\s+/);
+  const fields = statRaw
+    .slice(closingParenIndex + 2)
+    .trim()
+    .split(/\s+/);
   const startTicks = Number(fields[LINUX_STAT_START_TIME_FIELD_INDEX]);
   return Number.isFinite(startTicks) && startTicks >= 0 ? startTicks : null;
 }

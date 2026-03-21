@@ -11,7 +11,9 @@ export function assertExecutionModeSupportsEngine(
   }
 
   if (mode === "cloud") {
-    throw new Error("ABP is not supported in cloud mode. Cloud mode currently requires Playwright.");
+    throw new Error(
+      "ABP is not supported in cloud mode. Cloud mode currently requires Playwright.",
+    );
   }
 }
 
@@ -20,10 +22,7 @@ export function normalizeOpensteerExecutionMode(
   source = "OPENSTEER_MODE",
 ): OpensteerExecutionMode {
   const normalized = value.trim().toLowerCase();
-  if (
-    normalized === OPENSTEER_EXECUTION_MODES[0] ||
-    normalized === OPENSTEER_EXECUTION_MODES[1]
-  ) {
+  if (normalized === OPENSTEER_EXECUTION_MODES[0] || normalized === OPENSTEER_EXECUTION_MODES[1]) {
     return normalized;
   }
 
@@ -32,12 +31,14 @@ export function normalizeOpensteerExecutionMode(
   );
 }
 
-export function resolveOpensteerExecutionMode(input: {
-  readonly local?: boolean;
-  readonly cloud?: boolean;
-  readonly explicit?: OpensteerExecutionMode;
-  readonly environment?: string;
-} = {}): OpensteerExecutionMode {
+export function resolveOpensteerExecutionMode(
+  input: {
+    readonly local?: boolean;
+    readonly cloud?: boolean;
+    readonly explicit?: OpensteerExecutionMode;
+    readonly environment?: string;
+  } = {},
+): OpensteerExecutionMode {
   const explicitFlags = [input.local, input.cloud].filter(Boolean).length;
   if (explicitFlags > 1) {
     throw new Error("Choose exactly one execution mode: local or cloud.");

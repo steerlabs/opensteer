@@ -28,7 +28,10 @@ function validateSchemaNode(
     return issues;
   }
 
-  if (schema.enum !== undefined && !schema.enum.some((candidate) => isJsonValueEqual(candidate, value))) {
+  if (
+    schema.enum !== undefined &&
+    !schema.enum.some((candidate) => isJsonValueEqual(candidate, value))
+  ) {
     issues.push({
       path,
       message: `must be one of ${schema.enum.map((candidate) => JSON.stringify(candidate)).join(", ")}`,
@@ -52,7 +55,9 @@ function validateSchemaNode(
   }
 
   if (schema.anyOf !== undefined) {
-    const hasMatch = schema.anyOf.some((member) => validateSchemaNode(member, value, path).length === 0);
+    const hasMatch = schema.anyOf.some(
+      (member) => validateSchemaNode(member, value, path).length === 0,
+    );
     if (!hasMatch) {
       issues.push({
         path,
@@ -158,9 +163,7 @@ function validateSchemaNode(
     }
     if (schema.items !== undefined) {
       for (let index = 0; index < value.length; index += 1) {
-        issues.push(
-          ...validateSchemaNode(schema.items, value[index], `${path}[${String(index)}]`),
-        );
+        issues.push(...validateSchemaNode(schema.items, value[index], `${path}[${String(index)}]`));
       }
     }
     return issues;
@@ -194,10 +197,7 @@ function validateSchemaNode(
         continue;
       }
 
-      if (
-        schema.additionalProperties !== undefined &&
-        schema.additionalProperties !== true
-      ) {
+      if (schema.additionalProperties !== undefined && schema.additionalProperties !== true) {
         issues.push(
           ...validateSchemaNode(
             schema.additionalProperties,

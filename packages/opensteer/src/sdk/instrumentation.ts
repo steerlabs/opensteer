@@ -48,9 +48,7 @@ export interface OpensteerRouteOptions {
   readonly handler: (input: {
     readonly request: OpensteerRouteRequest;
     fetchOriginal(): Promise<OpensteerFetchedRouteResponse>;
-  }) =>
-    | OpensteerRouteHandlerResult
-    | Promise<OpensteerRouteHandlerResult>;
+  }) => OpensteerRouteHandlerResult | Promise<OpensteerRouteHandlerResult>;
 }
 
 export interface OpensteerRouteRegistration {

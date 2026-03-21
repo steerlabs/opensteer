@@ -213,30 +213,22 @@ export class CloudSessionProxy implements OpensteerSemanticRuntime {
     return this.requireClient().invoke("network.diff", input);
   }
 
-  async probeNetwork(
-    input: OpensteerTransportProbeInput,
-  ): Promise<OpensteerTransportProbeOutput> {
+  async probeNetwork(input: OpensteerTransportProbeInput): Promise<OpensteerTransportProbeOutput> {
     await this.ensureSession();
     return this.requireClient().invoke("network.probe", input);
   }
 
-  async solveReverse(
-    input: OpensteerReverseSolveInput,
-  ): Promise<OpensteerReverseSolveOutput> {
+  async solveReverse(input: OpensteerReverseSolveInput): Promise<OpensteerReverseSolveOutput> {
     await this.ensureSession();
     return this.requireClient().invoke("reverse.solve", input);
   }
 
-  async replayReverse(
-    input: OpensteerReverseReplayInput,
-  ): Promise<OpensteerReverseReplayOutput> {
+  async replayReverse(input: OpensteerReverseReplayInput): Promise<OpensteerReverseReplayOutput> {
     await this.ensureSession();
     return this.requireClient().invoke("reverse.replay", input);
   }
 
-  async exportReverse(
-    input: OpensteerReverseExportInput,
-  ): Promise<OpensteerReverseExportOutput> {
+  async exportReverse(input: OpensteerReverseExportInput): Promise<OpensteerReverseExportOutput> {
     await this.ensureSession();
     return this.requireClient().invoke("reverse.export", input);
   }

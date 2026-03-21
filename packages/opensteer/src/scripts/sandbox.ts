@@ -90,9 +90,8 @@ export async function runScriptSandbox(
 
 class SandboxClock implements SandboxClockApi {
   private readonly startedAt = Date.now();
-  private readonly performanceStartedAt = typeof globalThis.performance?.now === "function"
-    ? globalThis.performance.now()
-    : 0;
+  private readonly performanceStartedAt =
+    typeof globalThis.performance?.now === "function" ? globalThis.performance.now() : 0;
   private manualNow = this.startedAt;
   private nextTimerId = 1;
   private readonly timers = new Map<number, SandboxClockTimerRecord>();
@@ -236,9 +235,7 @@ function createSandboxAjaxDispatcher(input: {
           ...(route?.mockResponse?.headers === undefined
             ? {}
             : { headers: route.mockResponse.headers }),
-          ...(route?.mockResponse?.body === undefined
-            ? {}
-            : { body: route.mockResponse.body }),
+          ...(route?.mockResponse?.body === undefined ? {} : { body: route.mockResponse.body }),
         };
       }
 

@@ -11,10 +11,7 @@ import {
 } from "@opensteer/browser-core";
 import type { CookieRecord } from "@opensteer/protocol";
 
-const MATCHED_TLS_BINARY_NAMES = [
-  "curl-impersonate-chrome",
-  "curl_chrome",
-] as const;
+const MATCHED_TLS_BINARY_NAMES = ["curl-impersonate-chrome", "curl_chrome"] as const;
 
 export async function executeMatchedTlsTransportRequest(input: {
   readonly request: {
@@ -71,11 +68,15 @@ export async function executeMatchedTlsTransportRequest(input: {
     const parsedHeaders = parseCurlHeaderBlocks(rawHeaders);
     const responseBlock = parsedHeaders.at(-1);
     if (responseBlock === undefined) {
-      throw new Error(`matched-tls transport did not emit response headers${stderr.length === 0 ? "" : `: ${stderr.trim()}`}`);
+      throw new Error(
+        `matched-tls transport did not emit response headers${stderr.length === 0 ? "" : `: ${stderr.trim()}`}`,
+      );
     }
 
     const bodyBytes = await readFile(bodyPath).catch(() => Buffer.alloc(0));
-    const contentType = responseBlock.headers.find((header) => header.name.toLowerCase() === "content-type")?.value;
+    const contentType = responseBlock.headers.find(
+      (header) => header.name.toLowerCase() === "content-type",
+    )?.value;
 
     return {
       url: effectiveUrl,
@@ -93,7 +94,9 @@ export async function executeMatchedTlsTransportRequest(input: {
 }
 
 async function resolveMatchedTlsBinary(): Promise<string> {
-  const pathEntries = (process.env.PATH ?? "").split(path.delimiter).filter((entry) => entry.length > 0);
+  const pathEntries = (process.env.PATH ?? "")
+    .split(path.delimiter)
+    .filter((entry) => entry.length > 0);
   for (const directory of pathEntries) {
     for (const name of MATCHED_TLS_BINARY_NAMES) {
       const candidate = path.join(directory, name);
@@ -152,7 +155,11 @@ async function spawnAndCollect(
     child.on("close", (code) => {
       signal.removeEventListener("abort", abort);
       if (code !== 0) {
-        reject(new Error(`matched-tls transport exited with code ${String(code)}${stderr.length === 0 ? "" : `: ${stderr.trim()}`}`));
+        reject(
+          new Error(
+            `matched-tls transport exited with code ${String(code)}${stderr.length === 0 ? "" : `: ${stderr.trim()}`}`,
+          ),
+        );
         return;
       }
       resolve({ stdout, stderr });
@@ -176,7 +183,9 @@ function toNetscapeCookieJar(cookies: readonly CookieRecord[]): string {
         cookie.domain.startsWith(".") ? "TRUE" : "FALSE",
         cookie.path,
         cookie.secure ? "TRUE" : "FALSE",
-        cookie.expiresAt === undefined || cookie.expiresAt === null ? "0" : String(Math.floor(cookie.expiresAt / 1000)),
+        cookie.expiresAt === undefined || cookie.expiresAt === null
+          ? "0"
+          : String(Math.floor(cookie.expiresAt / 1000)),
         cookie.name,
         cookie.value,
       ].join("\t"),

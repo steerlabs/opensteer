@@ -95,13 +95,7 @@ describe("Opensteer runtime modes", () => {
   test("transient cloud ping failures do not purge live session metadata", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "opensteer-cloud-liveness-"));
     const opensteerRoot = path.join(rootDir, ".opensteer");
-    const metadataPath = path.join(
-      opensteerRoot,
-      "runtime",
-      "sessions",
-      "remote",
-      "service.json",
-    );
+    const metadataPath = path.join(opensteerRoot, "runtime", "sessions", "remote", "service.json");
 
     vi.stubEnv("OPENSTEER_MODE", "cloud");
     vi.stubEnv("OPENSTEER_API_KEY", "osk_test");
@@ -133,19 +127,13 @@ describe("Opensteer runtime modes", () => {
       sessionId: "session-123",
     });
 
-    await expect(readFile(metadataPath, "utf8")).resolves.toContain("\"mode\": \"cloud\"");
+    await expect(readFile(metadataPath, "utf8")).resolves.toContain('"mode": "cloud"');
   });
 
   test("stale cloud ping responses still purge stale session metadata", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "opensteer-cloud-stale-"));
     const opensteerRoot = path.join(rootDir, ".opensteer");
-    const metadataPath = path.join(
-      opensteerRoot,
-      "runtime",
-      "sessions",
-      "remote",
-      "service.json",
-    );
+    const metadataPath = path.join(opensteerRoot, "runtime", "sessions", "remote", "service.json");
 
     vi.stubEnv("OPENSTEER_MODE", "cloud");
     vi.stubEnv("OPENSTEER_API_KEY", "osk_test");

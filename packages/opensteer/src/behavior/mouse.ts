@@ -41,10 +41,7 @@ export function generateMousePath(input: {
     const linear = index / frameCount;
     const eased = easeInOutCubic(linear);
     const base = cubicBezier(input.start, control1, control2, input.end, eased);
-    const noise =
-      index === 0 || index === frameCount
-        ? 0
-        : gaussianRandom() * jitter;
+    const noise = index === 0 || index === frameCount ? 0 : gaussianRandom() * jitter;
     points.push({
       x: base.x + normal.x * noise,
       y: base.y + normal.y * noise,

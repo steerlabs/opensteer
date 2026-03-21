@@ -90,8 +90,8 @@ export function generateStealthProfile(overrides: StealthProfileOverrides = {}):
   const preset = pickStealthProfilePreset(overrides);
   return {
     id:
-      overrides.id
-      ?? `stealth:${preset.platform}:${preset.browserBrand}:${Math.random().toString(36).slice(2, 10)}`,
+      overrides.id ??
+      `stealth:${preset.platform}:${preset.browserBrand}:${Math.random().toString(36).slice(2, 10)}`,
     platform: overrides.platform ?? preset.platform,
     browserBrand: overrides.browserBrand ?? preset.browserBrand,
     browserVersion: overrides.browserVersion ?? preset.browserVersion,
@@ -113,8 +113,8 @@ export function generateStealthProfile(overrides: StealthProfileOverrides = {}):
 function pickStealthProfilePreset(overrides: StealthProfileOverrides) {
   const candidates = PROFILE_PRESETS.filter(
     (preset) =>
-      (overrides.platform === undefined || preset.platform === overrides.platform)
-      && (overrides.browserBrand === undefined || preset.browserBrand === overrides.browserBrand),
+      (overrides.platform === undefined || preset.platform === overrides.platform) &&
+      (overrides.browserBrand === undefined || preset.browserBrand === overrides.browserBrand),
   );
   const pool = candidates.length > 0 ? candidates : PROFILE_PRESETS;
   return pool[Math.floor(Math.random() * pool.length)]!;

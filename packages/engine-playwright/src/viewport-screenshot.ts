@@ -20,8 +20,7 @@ export async function getViewportMetricsFromCdp(controller: {
     returnByValue: true,
   });
   const pageZoomFactor = layout.cssVisualViewport.zoom ?? 1;
-  const devicePixelRatio =
-    typeof dprResult.result.value === "number" ? dprResult.result.value : 1;
+  const devicePixelRatio = typeof dprResult.result.value === "number" ? dprResult.result.value : 1;
   return {
     layoutViewport: {
       origin: { x: layout.cssLayoutViewport.pageX, y: layout.cssLayoutViewport.pageY },

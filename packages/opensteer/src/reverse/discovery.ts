@@ -59,9 +59,9 @@ export function clusterReverseObservationRecords(input: {
     for (const hint of item.matchedTargetHints) {
       existing.matchedTargetHints.add(hint);
     }
-    const currentPrimary = existing.records.find(
-      (entry) => entry.record.recordId === existing.primaryRecordId,
-    ) ?? existing.records[0]!;
+    const currentPrimary =
+      existing.records.find((entry) => entry.record.recordId === existing.primaryRecordId) ??
+      existing.records[0]!;
     if (comparePrimaryCandidate(item, currentPrimary) > 0) {
       existing.suppressedRecordIds.push(existing.primaryRecordId);
       existing.suppressionReasons.add(inferSuppressionReason(currentPrimary.record, item.record));
@@ -151,13 +151,20 @@ function comparePrimaryCandidate(
 
 function rankClusterPrimary(record: NetworkQueryRecord): number {
   let score = 0;
-  if (record.record.status !== undefined && record.record.status >= 200 && record.record.status < 400) {
+  if (
+    record.record.status !== undefined &&
+    record.record.status >= 200 &&
+    record.record.status < 400
+  ) {
     score += 5;
   }
   if (record.record.responseBody !== undefined) {
     score += 3;
   }
-  if (record.record.redirectToRequestId !== undefined || record.record.redirectFromRequestId !== undefined) {
+  if (
+    record.record.redirectToRequestId !== undefined ||
+    record.record.redirectFromRequestId !== undefined
+  ) {
     score -= 2;
   }
   if (record.record.resourceType === "preflight" || record.record.method === "OPTIONS") {
