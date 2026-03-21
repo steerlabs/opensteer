@@ -43,6 +43,7 @@ export const PAGE_CDP_METHOD_ALLOWLIST = new Set<string>([
 
 export const BROWSER_CDP_METHOD_ALLOWLIST = new Set<string>([
   "Storage.getCookies",
+  "Storage.setCookies",
   "Target.getTargets",
 ]);
 

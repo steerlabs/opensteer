@@ -1,4 +1,6 @@
 import type {
+  OpensteerArtifactReadInput,
+  OpensteerArtifactReadOutput,
   CookieRecord,
   OpensteerAddInitScriptInput,
   OpensteerAddInitScriptOutput,
@@ -35,6 +37,14 @@ import type {
   OpensteerNetworkQueryOutput,
   OpensteerNetworkSaveInput,
   OpensteerNetworkSaveOutput,
+  OpensteerInteractionCaptureInput,
+  OpensteerInteractionCaptureOutput,
+  OpensteerInteractionDiffInput,
+  OpensteerInteractionDiffOutput,
+  OpensteerInteractionGetInput,
+  OpensteerInteractionGetOutput,
+  OpensteerInteractionReplayInput,
+  OpensteerInteractionReplayOutput,
   OpensteerPageActivateInput,
   OpensteerPageActivateOutput,
   OpensteerPageCloseInput,
@@ -63,6 +73,20 @@ import type {
   OpensteerScriptDeobfuscateOutput,
   OpensteerScriptSandboxInput,
   OpensteerScriptSandboxOutput,
+  OpensteerReverseExportInput,
+  OpensteerReverseExportOutput,
+  OpensteerReversePackageGetInput,
+  OpensteerReversePackageGetOutput,
+  OpensteerReversePackageListInput,
+  OpensteerReversePackageListOutput,
+  OpensteerReversePackagePatchInput,
+  OpensteerReversePackagePatchOutput,
+  OpensteerReverseReplayInput,
+  OpensteerReverseReplayOutput,
+  OpensteerReverseReportInput,
+  OpensteerReverseReportOutput,
+  OpensteerReverseSolveInput,
+  OpensteerReverseSolveOutput,
   OpensteerSessionCloseOutput,
   OpensteerSessionOpenInput,
   OpensteerSessionOpenOutput,
@@ -180,6 +204,72 @@ export class LocalOpensteerSessionProxy implements OpensteerDisconnectableRuntim
     return (await this.ensureClient()).invoke("network.probe", input);
   }
 
+  async solveReverse(
+    input: OpensteerReverseSolveInput,
+  ): Promise<OpensteerReverseSolveOutput> {
+    return (await this.ensureClient()).invoke("reverse.solve", input);
+  }
+
+  async replayReverse(
+    input: OpensteerReverseReplayInput,
+  ): Promise<OpensteerReverseReplayOutput> {
+    return (await this.ensureClient()).invoke("reverse.replay", input);
+  }
+
+  async exportReverse(
+    input: OpensteerReverseExportInput,
+  ): Promise<OpensteerReverseExportOutput> {
+    return (await this.ensureClient()).invoke("reverse.export", input);
+  }
+
+  async getReverseReport(
+    input: OpensteerReverseReportInput,
+  ): Promise<OpensteerReverseReportOutput> {
+    return (await this.ensureClient()).invoke("reverse.report", input);
+  }
+
+  async getReversePackage(
+    input: OpensteerReversePackageGetInput,
+  ): Promise<OpensteerReversePackageGetOutput> {
+    return (await this.ensureClient()).invoke("reverse.package.get", input);
+  }
+
+  async listReversePackages(
+    input: OpensteerReversePackageListInput = {},
+  ): Promise<OpensteerReversePackageListOutput> {
+    return (await this.ensureClient()).invoke("reverse.package.list", input);
+  }
+
+  async patchReversePackage(
+    input: OpensteerReversePackagePatchInput,
+  ): Promise<OpensteerReversePackagePatchOutput> {
+    return (await this.ensureClient()).invoke("reverse.package.patch", input);
+  }
+
+  async captureInteraction(
+    input: OpensteerInteractionCaptureInput,
+  ): Promise<OpensteerInteractionCaptureOutput> {
+    return (await this.ensureClient()).invoke("interaction.capture", input);
+  }
+
+  async getInteraction(
+    input: OpensteerInteractionGetInput,
+  ): Promise<OpensteerInteractionGetOutput> {
+    return (await this.ensureClient()).invoke("interaction.get", input);
+  }
+
+  async diffInteraction(
+    input: OpensteerInteractionDiffInput,
+  ): Promise<OpensteerInteractionDiffOutput> {
+    return (await this.ensureClient()).invoke("interaction.diff", input);
+  }
+
+  async replayInteraction(
+    input: OpensteerInteractionReplayInput,
+  ): Promise<OpensteerInteractionReplayOutput> {
+    return (await this.ensureClient()).invoke("interaction.replay", input);
+  }
+
   async clearNetwork(input: OpensteerNetworkClearInput = {}): Promise<OpensteerNetworkClearOutput> {
     return (await this.ensureClient()).invoke("network.clear", input);
   }
@@ -188,6 +278,10 @@ export class LocalOpensteerSessionProxy implements OpensteerDisconnectableRuntim
     input: OpensteerCaptureScriptsInput = {},
   ): Promise<OpensteerCaptureScriptsOutput> {
     return (await this.ensureClient()).invoke("scripts.capture", input);
+  }
+
+  async readArtifact(input: OpensteerArtifactReadInput): Promise<OpensteerArtifactReadOutput> {
+    return (await this.ensureClient()).invoke("artifact.read", input);
   }
 
   async beautifyScript(

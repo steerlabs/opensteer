@@ -1,8 +1,8 @@
 import type {
-  OpensteerAttachBrowserLaunchOptions,
-  OpensteerClonedBrowserLaunchOptions,
+  OpensteerAttachLiveBrowserLaunchOptions,
   OpensteerManagedBrowserLaunchOptions,
-  OpensteerProfileBrowserLaunchOptions,
+  OpensteerSnapshotAuthenticatedBrowserLaunchOptions,
+  OpensteerSnapshotSessionBrowserLaunchOptions,
 } from "@opensteer/protocol";
 import type { BrowserBrandId } from "./browser-brands.js";
 import type { StealthProfile } from "./stealth-profiles.js";
@@ -42,17 +42,13 @@ export interface ResolvedManagedBrowserLaunch {
   readonly args: readonly string[];
 }
 
-export interface ResolvedProfileBrowserLaunch extends ResolvedManagedBrowserLaunch {
-  readonly profileDirectory: string;
-  readonly userDataDir: string;
-}
-
-export interface ResolvedClonedBrowserLaunch extends ResolvedManagedBrowserLaunch {
+export interface ResolvedSnapshotBrowserLaunch extends ResolvedManagedBrowserLaunch {
+  readonly copyMode: "session" | "authenticated";
   readonly sourceProfileDirectory: string;
   readonly sourceUserDataDir: string;
 }
 
-export interface ResolvedAttachBrowserLaunch {
+export interface ResolvedAttachLiveBrowserLaunch {
   readonly endpoint?: string;
   readonly freshTab: boolean;
   readonly headers?: Readonly<Record<string, string>>;
@@ -156,12 +152,11 @@ export interface LaunchMetadataRecord {
 
 export type ResolvedLocalBrowserLaunch =
   | ResolvedManagedBrowserLaunch
-  | ResolvedProfileBrowserLaunch
-  | ResolvedClonedBrowserLaunch
-  | ResolvedAttachBrowserLaunch;
+  | ResolvedSnapshotBrowserLaunch
+  | ResolvedAttachLiveBrowserLaunch;
 
 export type LocalBrowserLaunchInput =
   | OpensteerManagedBrowserLaunchOptions
-  | OpensteerProfileBrowserLaunchOptions
-  | OpensteerClonedBrowserLaunchOptions
-  | OpensteerAttachBrowserLaunchOptions;
+  | OpensteerSnapshotSessionBrowserLaunchOptions
+  | OpensteerSnapshotAuthenticatedBrowserLaunchOptions
+  | OpensteerAttachLiveBrowserLaunchOptions;

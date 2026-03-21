@@ -489,7 +489,7 @@ describe("semantic protocol descriptors", () => {
         opensteerSemanticOperationSpecificationMap["request.raw"]!,
         {
           url: "https://example.com/api/data",
-          transport: "page-eval-http",
+          transport: "page-http",
         },
       ),
     ).toEqual(["pages.manage"]);

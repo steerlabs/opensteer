@@ -833,6 +833,26 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
     return cookies.map((cookie) => clone(cookie));
   }
 
+  async setCookies(input: {
+    readonly sessionRef: SessionRef;
+    readonly cookies: readonly CookieRecord[];
+  }): Promise<void> {
+    const session = this.requireSession(input.sessionRef);
+    const merged = new Map(
+      session.cookies.map((cookie) => [
+        `${cookie.name}\u0000${cookie.domain}\u0000${cookie.path}`,
+        clone(cookie),
+      ]),
+    );
+    for (const cookie of input.cookies) {
+      merged.set(
+        `${cookie.name}\u0000${cookie.domain}\u0000${cookie.path}`,
+        clone(cookie),
+      );
+    }
+    session.cookies = [...merged.values()];
+  }
+
   async getStorageSnapshot(input: {
     readonly sessionRef: SessionRef;
     readonly includeSessionStorage?: boolean;

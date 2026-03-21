@@ -47,7 +47,15 @@ import {
   type CookieRecord,
   type StorageSnapshot,
 } from "./storage.js";
-import type { ScriptSourceArtifactData } from "./artifacts.js";
+import type {
+  OpensteerArtifactReadInput,
+  OpensteerArtifactReadOutput,
+  ScriptSourceArtifactData,
+} from "./artifacts.js";
+import {
+  opensteerArtifactReadInputSchema,
+  opensteerArtifactReadOutputSchema,
+} from "./artifacts.js";
 import {
   opensteerGetAuthRecipeInputSchema,
   opensteerListAuthRecipesInputSchema,
@@ -135,6 +143,54 @@ import {
   type OpensteerCaptchaSolveInput,
   type OpensteerCaptchaSolveOutput,
 } from "./captcha.js";
+import {
+  opensteerReverseExportInputSchema,
+  opensteerReverseExportOutputSchema,
+  opensteerReversePackageGetInputSchema,
+  opensteerReversePackageGetOutputSchema,
+  opensteerReversePackageListInputSchema,
+  opensteerReversePackageListOutputSchema,
+  opensteerReversePackagePatchInputSchema,
+  opensteerReversePackagePatchOutputSchema,
+  opensteerReverseReplayInputSchema,
+  opensteerReverseReplayOutputSchema,
+  opensteerReverseReportInputSchema,
+  opensteerReverseReportOutputSchema,
+  opensteerReverseSolveInputSchema,
+  opensteerReverseSolveOutputSchema,
+  type OpensteerReverseExportInput,
+  type OpensteerReverseExportOutput,
+  type OpensteerReversePackageGetInput,
+  type OpensteerReversePackageGetOutput,
+  type OpensteerReversePackageListInput,
+  type OpensteerReversePackageListOutput,
+  type OpensteerReversePackagePatchInput,
+  type OpensteerReversePackagePatchOutput,
+  type OpensteerReverseReplayInput,
+  type OpensteerReverseReplayOutput,
+  type OpensteerReverseReportInput,
+  type OpensteerReverseReportOutput,
+  type OpensteerReverseSolveInput,
+  type OpensteerReverseSolveOutput,
+} from "./reverse.js";
+import {
+  opensteerInteractionCaptureInputSchema,
+  opensteerInteractionCaptureOutputSchema,
+  opensteerInteractionDiffInputSchema,
+  opensteerInteractionDiffOutputSchema,
+  opensteerInteractionGetInputSchema,
+  opensteerInteractionGetOutputSchema,
+  opensteerInteractionReplayInputSchema,
+  opensteerInteractionReplayOutputSchema,
+  type OpensteerInteractionCaptureInput,
+  type OpensteerInteractionCaptureOutput,
+  type OpensteerInteractionDiffInput,
+  type OpensteerInteractionDiffOutput,
+  type OpensteerInteractionGetInput,
+  type OpensteerInteractionGetOutput,
+  type OpensteerInteractionReplayInput,
+  type OpensteerInteractionReplayOutput,
+} from "./interaction.js";
 import { validateJsonSchema } from "./validation.js";
 import { OPENSTEER_PROTOCOL_REST_BASE_PATH } from "./version.js";
 
@@ -148,18 +204,8 @@ export interface OpensteerManagedBrowserLaunchOptions {
   readonly timeoutMs?: number;
 }
 
-export interface OpensteerProfileBrowserLaunchOptions {
-  readonly kind: "profile";
-  readonly headless?: boolean;
-  readonly executablePath?: string;
-  readonly userDataDir: string;
-  readonly profileDirectory?: string;
-  readonly args?: readonly string[];
-  readonly timeoutMs?: number;
-}
-
-export interface OpensteerClonedBrowserLaunchOptions {
-  readonly kind: "cloned";
+export interface OpensteerSnapshotSessionBrowserLaunchOptions {
+  readonly kind: "snapshot-session";
   readonly headless?: boolean;
   readonly executablePath?: string;
   readonly sourceUserDataDir: string;
@@ -168,8 +214,18 @@ export interface OpensteerClonedBrowserLaunchOptions {
   readonly timeoutMs?: number;
 }
 
-export interface OpensteerAttachBrowserLaunchOptions {
-  readonly kind: "attach";
+export interface OpensteerSnapshotAuthenticatedBrowserLaunchOptions {
+  readonly kind: "snapshot-authenticated";
+  readonly headless?: boolean;
+  readonly executablePath?: string;
+  readonly sourceUserDataDir: string;
+  readonly sourceProfileDirectory?: string;
+  readonly args?: readonly string[];
+  readonly timeoutMs?: number;
+}
+
+export interface OpensteerAttachLiveBrowserLaunchOptions {
+  readonly kind: "attach-live";
   readonly endpoint?: string;
   readonly headers?: Readonly<Record<string, string>>;
   readonly freshTab?: boolean;
@@ -177,9 +233,9 @@ export interface OpensteerAttachBrowserLaunchOptions {
 
 export type OpensteerBrowserLaunchOptions =
   | OpensteerManagedBrowserLaunchOptions
-  | OpensteerProfileBrowserLaunchOptions
-  | OpensteerClonedBrowserLaunchOptions
-  | OpensteerAttachBrowserLaunchOptions;
+  | OpensteerSnapshotSessionBrowserLaunchOptions
+  | OpensteerSnapshotAuthenticatedBrowserLaunchOptions
+  | OpensteerAttachLiveBrowserLaunchOptions;
 
 export interface OpensteerBrowserContextOptions {
   readonly ignoreHTTPSErrors?: boolean;
@@ -581,6 +637,18 @@ export const opensteerSemanticOperationNames = [
   "network.minimize",
   "network.diff",
   "network.probe",
+  "reverse.solve",
+  "reverse.replay",
+  "reverse.export",
+  "reverse.report",
+  "reverse.package.get",
+  "reverse.package.list",
+  "reverse.package.patch",
+  "interaction.capture",
+  "interaction.get",
+  "interaction.diff",
+  "interaction.replay",
+  "artifact.read",
   "inspect.cookies",
   "inspect.storage",
   "scripts.capture",
@@ -642,7 +710,7 @@ function resolveTransportRequiredCapabilities(
     case "matched-tls":
     case "context-http":
       return ["inspect.cookies"];
-    case "page-eval-http":
+    case "page-http":
       return ["pages.manage"];
     case "session-http":
       return ["transport.sessionHttp"];
@@ -685,25 +753,9 @@ const managedBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
   },
 );
 
-const profileBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
+const snapshotSessionBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
   {
-    kind: enumSchema(["profile"] as const),
-    headless: { type: "boolean" },
-    executablePath: stringSchema(),
-    userDataDir: stringSchema(),
-    profileDirectory: stringSchema(),
-    args: arraySchema(stringSchema()),
-    timeoutMs: integerSchema({ minimum: 0 }),
-  },
-  {
-    title: "OpensteerProfileBrowserLaunchOptions",
-    required: ["kind", "userDataDir"],
-  },
-);
-
-const clonedBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
-  {
-    kind: enumSchema(["cloned"] as const),
+    kind: enumSchema(["snapshot-session"] as const),
     headless: { type: "boolean" },
     executablePath: stringSchema(),
     sourceUserDataDir: stringSchema(),
@@ -712,22 +764,38 @@ const clonedBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
     timeoutMs: integerSchema({ minimum: 0 }),
   },
   {
-    title: "OpensteerClonedBrowserLaunchOptions",
+    title: "OpensteerSnapshotSessionBrowserLaunchOptions",
     required: ["kind", "sourceUserDataDir"],
   },
 );
 
-const attachBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
+const snapshotAuthenticatedBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
   {
-    kind: enumSchema(["attach"] as const),
+    kind: enumSchema(["snapshot-authenticated"] as const),
+    headless: { type: "boolean" },
+    executablePath: stringSchema(),
+    sourceUserDataDir: stringSchema(),
+    sourceProfileDirectory: stringSchema(),
+    args: arraySchema(stringSchema()),
+    timeoutMs: integerSchema({ minimum: 0 }),
+  },
+  {
+    title: "OpensteerSnapshotAuthenticatedBrowserLaunchOptions",
+    required: ["kind", "sourceUserDataDir"],
+  },
+);
+
+const attachLiveBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
+  {
+    kind: enumSchema(["attach-live"] as const),
     endpoint: stringSchema(),
     headers: recordSchema(stringSchema(), {
-      title: "OpensteerAttachBrowserHeaders",
+      title: "OpensteerAttachLiveBrowserHeaders",
     }),
     freshTab: { type: "boolean" },
   },
   {
-    title: "OpensteerAttachBrowserLaunchOptions",
+    title: "OpensteerAttachLiveBrowserLaunchOptions",
     required: ["kind"],
   },
 );
@@ -735,9 +803,9 @@ const attachBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
 const opensteerBrowserLaunchOptionsSchema: JsonSchema = oneOfSchema(
   [
     managedBrowserLaunchOptionsSchema,
-    profileBrowserLaunchOptionsSchema,
-    clonedBrowserLaunchOptionsSchema,
-    attachBrowserLaunchOptionsSchema,
+    snapshotSessionBrowserLaunchOptionsSchema,
+    snapshotAuthenticatedBrowserLaunchOptionsSchema,
+    attachLiveBrowserLaunchOptionsSchema,
   ],
   {
     title: "OpensteerBrowserLaunchOptions",
@@ -1695,6 +1763,102 @@ export const opensteerSemanticOperationSpecifications = [
       "Probe a captured request across transport layers and recommend the lightest working execution path.",
     inputSchema: opensteerTransportProbeInputSchema,
     outputSchema: opensteerTransportProbeOutputSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerReverseSolveInput, OpensteerReverseSolveOutput>({
+    name: "reverse.solve",
+    description:
+      "Solve a browser-driven reverse-engineering target end to end by capturing evidence, ranking candidates, replaying strategies, and emitting a default runnable package.",
+    inputSchema: opensteerReverseSolveInputSchema,
+    outputSchema: opensteerReverseSolveOutputSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerReverseReplayInput, OpensteerReverseReplayOutput>({
+    name: "reverse.replay",
+    description:
+      "Replay a solved reverse-engineering package through its required state, guard, and channel execution phases.",
+    inputSchema: opensteerReverseReplayInputSchema,
+    outputSchema: opensteerReverseReplayOutputSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerReverseExportInput, OpensteerReverseExportOutput>({
+    name: "reverse.export",
+    description:
+      "Export or clone a reverse-engineering package, including a request plan when the package is portable.",
+    inputSchema: opensteerReverseExportInputSchema,
+    outputSchema: opensteerReverseExportOutputSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerReverseReportInput, OpensteerReverseReportOutput>({
+    name: "reverse.report",
+    description:
+      "Read the reverse-engineering report for a package, including ranked candidates, evidence links, replay attempts, and package suggestions.",
+    inputSchema: opensteerReverseReportInputSchema,
+    outputSchema: opensteerReverseReportOutputSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerReversePackageGetInput, OpensteerReversePackageGetOutput>({
+    name: "reverse.package.get",
+    description:
+      "Read a standalone reverse-engineering package so an agent can inspect its workflow, resolvers, requirements, and linked evidence.",
+    inputSchema: opensteerReversePackageGetInputSchema,
+    outputSchema: opensteerReversePackageGetOutputSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerReversePackageListInput, OpensteerReversePackageListOutput>({
+    name: "reverse.package.list",
+    description:
+      "List reverse-engineering packages by case, key, kind, or readiness.",
+    inputSchema: opensteerReversePackageListInputSchema,
+    outputSchema: opensteerReversePackageListOutputSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerReversePackagePatchInput, OpensteerReversePackagePatchOutput>({
+    name: "reverse.package.patch",
+    description:
+      "Write a new immutable reverse-engineering package revision by patching editable workflow, resolver, validator, and evidence sections.",
+    inputSchema: opensteerReversePackagePatchInputSchema,
+    outputSchema: opensteerReversePackagePatchOutputSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerInteractionCaptureInput, OpensteerInteractionCaptureOutput>({
+    name: "interaction.capture",
+    description:
+      "Capture a guarded interaction window, including event properties, state changes, and downstream network.",
+    inputSchema: opensteerInteractionCaptureInputSchema,
+    outputSchema: opensteerInteractionCaptureOutputSchema,
+    requiredCapabilities: ["pages.manage", "inspect.cookies", "inspect.localStorage"],
+  }),
+  defineSemanticOperationSpec<OpensteerInteractionGetInput, OpensteerInteractionGetOutput>({
+    name: "interaction.get",
+    description:
+      "Read a captured interaction trace by ID for package inspection, diffing, and replay editing.",
+    inputSchema: opensteerInteractionGetInputSchema,
+    outputSchema: opensteerInteractionGetOutputSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerInteractionDiffInput, OpensteerInteractionDiffOutput>({
+    name: "interaction.diff",
+    description:
+      "Compare two captured interaction traces by event sequence, event properties, state deltas, and downstream network.",
+    inputSchema: opensteerInteractionDiffInputSchema,
+    outputSchema: opensteerInteractionDiffOutputSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerInteractionReplayInput, OpensteerInteractionReplayOutput>({
+    name: "interaction.replay",
+    description:
+      "Replay a captured interaction trace against a live page and report how many events were reproduced.",
+    inputSchema: opensteerInteractionReplayInputSchema,
+    outputSchema: opensteerInteractionReplayOutputSchema,
+    requiredCapabilities: ["pages.manage"],
+  }),
+  defineSemanticOperationSpec<OpensteerArtifactReadInput, OpensteerArtifactReadOutput>({
+    name: "artifact.read",
+    description:
+      "Read a persisted artifact by ID so agents can inspect captured scripts, storage, cookies, or snapshots linked from reverse packages and reports.",
+    inputSchema: opensteerArtifactReadInputSchema,
+    outputSchema: opensteerArtifactReadOutputSchema,
     requiredCapabilities: [],
   }),
   defineSemanticOperationSpec<OpensteerCaptureScriptsInput, OpensteerCaptureScriptsOutput>({

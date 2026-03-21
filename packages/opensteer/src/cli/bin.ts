@@ -4,8 +4,11 @@ import path from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 
 import {
+  opensteerExecutableResolverSchema,
   opensteerAuthRecipePayloadSchema,
+  opensteerReverseWorkflowStepSchema,
   opensteerRequestPlanPayloadSchema,
+  opensteerValidationRuleSchema,
   isPageRef,
   sandboxAjaxRouteSchema,
   validateJsonSchema,
@@ -17,11 +20,16 @@ import type {
   OpensteerComputerAction,
   OpensteerComputerExecuteInput,
   OpensteerComputerExecuteOutput,
+  OpensteerExecutableResolver,
+  OpensteerInteractionCaptureStep,
   OpensteerRecipePayload,
   OpensteerRequestBodyInput,
   OpensteerRegistryProvenance,
   OpensteerRequestPlanLifecycle,
   OpensteerRequestPlanPayload,
+  OpensteerReverseWorkflowStep,
+  OpensteerTargetInput,
+  OpensteerValidationRule,
   SandboxAjaxRoute,
   TransportKind,
 } from "@opensteer/protocol";
@@ -450,6 +458,304 @@ async function main(argv: readonly string[]): Promise<void> {
       return;
     }
 
+    case "reverse.solve": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const caseId = readOptionalString(options.caseId);
+      const key = readOptionalString(options.key);
+      const objective = readOptionalString(options.objective);
+      const notes = readOptionalString(options.notes);
+      const pageRef = readOptionalPageRef(options.pageRef, "--page-ref");
+      const stateSource = readOptionalEnum(
+        options.stateSource,
+        ["managed", "attach-live", "snapshot-session", "snapshot-authenticated"] as const,
+        "--state-source",
+      );
+      const interactionTraceIds = readOptionalStrings(options.interactionTraceId);
+      const targetHosts = readOptionalStrings(options.targetHost);
+      const targetPaths = readOptionalStrings(options.targetPath);
+      const targetOperationNames = readOptionalStrings(options.targetOperationName);
+      const targetChannels = readOptionalEnumList(
+        options.targetChannel,
+        ["http", "event-stream", "websocket"] as const,
+        "--target-channel",
+      );
+      const captureWindowMs = readOptionalNumber(options.captureWindowMs);
+      const manualCalibration = readOptionalEnum(
+        options.manualCalibration,
+        ["allow", "avoid", "require"] as const,
+        "--manual-calibration",
+      );
+      const candidateLimit = readOptionalNumber(options.candidateLimit);
+      const maxReplayAttempts = readOptionalNumber(options.maxReplayAttempts);
+      const result = await runtime.solveReverse({
+        ...(caseId === undefined ? {} : { caseId }),
+        ...(key === undefined ? {} : { key }),
+        ...(objective === undefined ? {} : { objective }),
+        ...(notes === undefined ? {} : { notes }),
+        ...(pageRef === undefined ? {} : { pageRef }),
+        ...(stateSource === undefined ? {} : { stateSource }),
+        ...(readOptionalBoolean(options.includeScripts) === false ? { includeScripts: false } : {}),
+        ...(readOptionalBoolean(options.includeStorage) === false ? { includeStorage: false } : {}),
+        ...(readOptionalBoolean(options.includeSessionStorage) === true
+          ? { includeSessionStorage: true }
+          : {}),
+        ...(readOptionalBoolean(options.includeIndexedDb) === true ? { includeIndexedDb: true } : {}),
+        ...(interactionTraceIds.length === 0 ? {} : { interactionTraceIds }),
+        ...(targetHosts.length === 0 &&
+        targetPaths.length === 0 &&
+        targetOperationNames.length === 0 &&
+        targetChannels.length === 0
+          ? {}
+          : {
+              targetHints: {
+                ...(targetHosts.length === 0 ? {} : { hosts: targetHosts }),
+                ...(targetPaths.length === 0 ? {} : { paths: targetPaths }),
+                ...(targetOperationNames.length === 0
+                  ? {}
+                  : { operationNames: targetOperationNames }),
+                ...(targetChannels.length === 0 ? {} : { channels: targetChannels }),
+              },
+            }),
+        ...(captureWindowMs === undefined ? {} : { captureWindowMs }),
+        ...(manualCalibration === undefined ? {} : { manualCalibration }),
+        ...(candidateLimit === undefined ? {} : { candidateLimit }),
+        ...(maxReplayAttempts === undefined ? {} : { maxReplayAttempts }),
+      });
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "reverse.replay": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const packageId = readOptionalString(options.packageId);
+      if (!packageId) {
+        throw new Error("reverse replay requires --package-id");
+      }
+      const pageRef = readOptionalPageRef(options.pageRef, "--page-ref");
+      const result = await runtime.replayReverse({
+        packageId,
+        ...(pageRef === undefined ? {} : { pageRef }),
+      });
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "reverse.export": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const packageId = readOptionalString(options.packageId);
+      if (!packageId) {
+        throw new Error("reverse export requires --package-id");
+      }
+      const key = readOptionalString(options.key);
+      const version = readOptionalString(options.version);
+      const result = await runtime.exportReverse({
+        packageId,
+        ...(key === undefined ? {} : { key }),
+        ...(version === undefined ? {} : { version }),
+      });
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "reverse.report": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const packageId = readOptionalString(options.packageId);
+      const reportId = readOptionalString(options.reportId);
+      if (!packageId && !reportId) {
+        throw new Error("reverse report requires --package-id or --report-id");
+      }
+      const result = await runtime.getReverseReport({
+        ...(packageId === undefined ? {} : { packageId }),
+        ...(reportId === undefined ? {} : { reportId }),
+      });
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "reverse.package.get": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const packageId = readOptionalString(options.packageId);
+      if (!packageId) {
+        throw new Error("reverse package get requires --package-id");
+      }
+      const result = await runtime.getReversePackage({ packageId });
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "reverse.package.list": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const caseId = readOptionalString(options.caseId);
+      const key = readOptionalString(options.key);
+      const kind = readOptionalEnum(
+        options.kind,
+        ["portable-http", "browser-workflow"] as const,
+        "--kind",
+      );
+      const readiness = readOptionalEnum(
+        options.readiness,
+        ["runnable", "draft", "unsupported"] as const,
+        "--readiness",
+      );
+      const result = await runtime.listReversePackages({
+        ...(caseId === undefined ? {} : { caseId }),
+        ...(key === undefined ? {} : { key }),
+        ...(kind === undefined ? {} : { kind }),
+        ...(readiness === undefined ? {} : { readiness }),
+      });
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "reverse.package.patch": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const packageId = readOptionalString(options.packageId);
+      if (!packageId) {
+        throw new Error("reverse package patch requires --package-id");
+      }
+      const key = readOptionalString(options.key);
+      const version = readOptionalString(options.version);
+      const notes = readOptionalString(options.notes);
+      const candidateId = readOptionalString(options.candidateId);
+      const strategyId = readOptionalString(options.strategyId);
+      const workflowJson = readOptionalJsonArray(options.workflowJson, "--workflow-json");
+      const resolversJson = readOptionalJsonArray(options.resolversJson, "--resolvers-json");
+      const validatorsJson = readOptionalJsonArray(options.validatorsJson, "--validators-json");
+      const traceIds = readOptionalStrings(options.traceId);
+      const artifactIds = readOptionalStrings(options.artifactId);
+      const recordIds = readOptionalStrings(options.recordId);
+      const stateSnapshotIds = readOptionalStrings(options.stateSnapshotId);
+      const result = await runtime.patchReversePackage({
+        packageId,
+        ...(key === undefined ? {} : { key }),
+        ...(version === undefined ? {} : { version }),
+        ...(notes === undefined ? {} : { notes }),
+        ...(candidateId === undefined ? {} : { candidateId }),
+        ...(strategyId === undefined ? {} : { strategyId }),
+        ...(workflowJson === undefined
+          ? {}
+          : { workflow: parseReverseWorkflowSteps(workflowJson, "--workflow-json") }),
+        ...(resolversJson === undefined
+          ? {}
+          : { resolvers: parseExecutableResolvers(resolversJson, "--resolvers-json") }),
+        ...(validatorsJson === undefined
+          ? {}
+          : { validators: parseValidationRules(validatorsJson, "--validators-json") }),
+        ...(traceIds.length === 0 ? {} : { attachedTraceIds: traceIds }),
+        ...(artifactIds.length === 0 ? {} : { attachedArtifactIds: artifactIds }),
+        ...(recordIds.length === 0 ? {} : { attachedRecordIds: recordIds }),
+        ...(stateSnapshotIds.length === 0 ? {} : { stateSnapshotIds }),
+      });
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "interaction.capture": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const argsJson = readOptionalJson(options.argsJson);
+      const stepsJson = readOptionalJsonArray(options.stepsJson, "--steps-json");
+      const key = readOptionalString(options.key);
+      const pageRef = readOptionalPageRef(options.pageRef, "--page-ref");
+      const durationMs = readOptionalNumber(options.durationMs);
+      const script = readOptionalString(options.script);
+      const globalNames = readOptionalStrings(options.globalName);
+      const caseId = readOptionalString(options.caseId);
+      const notes = readOptionalString(options.notes);
+      const steps = parseInteractionCaptureSteps(stepsJson);
+      const result = await runtime.captureInteraction({
+        ...(key === undefined ? {} : { key }),
+        ...(pageRef === undefined ? {} : { pageRef }),
+        ...(durationMs === undefined ? {} : { durationMs }),
+        ...(script === undefined ? {} : { script }),
+        ...(argsJson === undefined ? {} : { args: Array.isArray(argsJson) ? argsJson : [argsJson] }),
+        ...(steps === undefined ? {} : { steps }),
+        ...(readOptionalBoolean(options.includeStorage) === false ? { includeStorage: false } : {}),
+        ...(readOptionalBoolean(options.includeSessionStorage) === true
+          ? { includeSessionStorage: true }
+          : {}),
+        ...(readOptionalBoolean(options.includeIndexedDb) === true ? { includeIndexedDb: true } : {}),
+        ...(globalNames.length === 0 ? {} : { globalNames }),
+        ...(caseId === undefined ? {} : { caseId }),
+        ...(notes === undefined ? {} : { notes }),
+      });
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "interaction.diff": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const leftTraceId = readOptionalString(options.leftTraceId);
+      const rightTraceId = readOptionalString(options.rightTraceId);
+      if (!leftTraceId || !rightTraceId) {
+        throw new Error("interaction diff requires --left-trace-id and --right-trace-id");
+      }
+      const result = await runtime.diffInteraction({
+        leftTraceId,
+        rightTraceId,
+      });
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "interaction.get": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const traceId = readOptionalString(options.traceId);
+      if (!traceId) {
+        throw new Error("interaction get requires --trace-id");
+      }
+      const result = await runtime.getInteraction({ traceId });
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "interaction.replay": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const traceId = readOptionalString(options.traceId);
+      if (!traceId) {
+        throw new Error("interaction replay requires --trace-id");
+      }
+      const pageRef = readOptionalPageRef(options.pageRef, "--page-ref");
+      const result = await runtime.replayInteraction({
+        traceId,
+        ...(pageRef === undefined ? {} : { pageRef }),
+      });
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
     case "scripts.capture": {
       const runtime = await resolveCliSemanticRuntime(
         sessionOptions,
@@ -474,6 +780,20 @@ async function main(argv: readonly string[]): Promise<void> {
         ...(readOptionalBoolean(options.noPersist) === true ? { persist: false } : {}),
       };
       const result = await runtime.captureScripts(captureInput);
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "artifact.read": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const artifactId = readOptionalString(options.artifactId);
+      if (!artifactId) {
+        throw new Error("artifact read requires --artifact-id");
+      }
+      const result = await runtime.readArtifact({ artifactId });
       await writeJsonOutput(result, readOptionalString(options.output));
       return;
     }
@@ -1107,65 +1427,54 @@ function parseBrowserOptions(options: ParsedCliOptions): Record<string, unknown>
   };
 
   const attachEndpoint = readOptionalString(options.attachEndpoint);
-  const userDataDir = readOptionalString(options.userDataDir);
-  const profileDirectory = readOptionalString(options.profileDirectory);
-  const cloneFrom = readOptionalString(options.cloneFrom);
-  const cloneProfileDirectory = readOptionalString(options.cloneProfileDirectory);
+  const sourceUserDataDir = readOptionalString(options.sourceUserDataDir);
+  const sourceProfileDirectory = readOptionalString(options.sourceProfileDirectory);
   const freshTab = readOptionalBoolean(options.freshTab);
   const attachHeaders = parseHeaderEntries(readOptionalStrings(options.attachHeader));
 
   const inferredKind =
     browserKind ??
-    (attachEndpoint !== undefined ? "attach" : undefined) ??
-    (userDataDir !== undefined ? "profile" : undefined);
-  const inferredWithClone = inferredKind ?? (cloneFrom !== undefined ? "cloned" : undefined);
+    (attachEndpoint !== undefined ? "attach-live" : undefined) ??
+    (sourceUserDataDir !== undefined ? "snapshot-session" : undefined);
 
-  if ((attachEndpoint !== undefined || attachHeaders.length > 0) && userDataDir !== undefined) {
+  if ((attachEndpoint !== undefined || attachHeaders.length > 0) && sourceUserDataDir !== undefined) {
     throw new Error(
-      "Specify either attach flags (--attach-endpoint/--attach-header) or launch flags (--user-data-dir), not both.",
-    );
-  }
-  if ((attachEndpoint !== undefined || attachHeaders.length > 0) && cloneFrom !== undefined) {
-    throw new Error(
-      "Specify either attach flags (--attach-endpoint/--attach-header) or cloned launch flags (--clone-from), not both.",
+      "Specify either attach-live flags (--attach-endpoint/--attach-header) or snapshot flags (--source-user-data-dir/--source-profile-directory), not both.",
     );
   }
   if (attachHeaders.length > 0 && attachEndpoint === undefined) {
     throw new Error("--attach-header requires --attach-endpoint.");
   }
-  if (cloneFrom !== undefined && userDataDir !== undefined) {
-    throw new Error("Specify either --clone-from or --user-data-dir, not both.");
-  }
 
-  if (inferredWithClone === "profile") {
-    if (userDataDir === undefined) {
-      throw new Error('browser kind "profile" requires --user-data-dir.');
+  if (inferredKind === "snapshot-session") {
+    if (sourceUserDataDir === undefined) {
+      throw new Error('browser kind "snapshot-session" requires --source-user-data-dir.');
     }
     return {
-      kind: "profile" as const,
+      kind: "snapshot-session" as const,
       ...managed,
-      userDataDir,
-      ...(profileDirectory === undefined ? {} : { profileDirectory }),
-    };
-  }
-
-  if (inferredWithClone === "cloned") {
-    if (cloneFrom === undefined) {
-      throw new Error('browser kind "cloned" requires --clone-from.');
-    }
-    return {
-      kind: "cloned" as const,
-      ...managed,
-      sourceUserDataDir: cloneFrom,
-      ...(cloneProfileDirectory === undefined
+      sourceUserDataDir,
+      ...(sourceProfileDirectory === undefined
         ? {}
-        : { sourceProfileDirectory: cloneProfileDirectory }),
+        : { sourceProfileDirectory }),
     };
   }
 
-  if (inferredWithClone === "attach") {
+  if (inferredKind === "snapshot-authenticated") {
+    if (sourceUserDataDir === undefined) {
+      throw new Error('browser kind "snapshot-authenticated" requires --source-user-data-dir.');
+    }
     return {
-      kind: "attach" as const,
+      kind: "snapshot-authenticated" as const,
+      ...managed,
+      sourceUserDataDir,
+      ...(sourceProfileDirectory === undefined ? {} : { sourceProfileDirectory }),
+    };
+  }
+
+  if (inferredKind === "attach-live") {
+    return {
+      kind: "attach-live" as const,
       ...(attachEndpoint === undefined ? {} : { endpoint: attachEndpoint }),
       ...(freshTab === undefined ? {} : { freshTab }),
       ...(attachHeaders.length === 0
@@ -1176,9 +1485,9 @@ function parseBrowserOptions(options: ParsedCliOptions): Record<string, unknown>
     };
   }
 
-  if (inferredWithClone !== undefined && inferredWithClone !== "managed") {
+  if (inferredKind !== undefined && inferredKind !== "managed") {
     throw new Error(
-      `browser must be "managed", "profile", "cloned", or "attach"; received "${inferredWithClone}"`,
+      `browser must be "managed", "snapshot-session", "snapshot-authenticated", or "attach-live"; received "${inferredKind}"`,
     );
   }
 
@@ -1247,7 +1556,7 @@ function parseViewportOption(value: string | undefined) {
 }
 
 function parseJsonObject(value: string, label: string): Record<string, unknown> {
-  const parsed = JSON.parse(value) as unknown;
+  const parsed = JSON.parse(value);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`${label} must be a JSON object`);
   }
@@ -1426,7 +1735,7 @@ async function parseRequestBodyInput(
     contentType?.toLowerCase().startsWith("application/json") === true;
   if (shouldParseJson) {
     return {
-      json: toCanonicalJsonValue(JSON.parse(raw) as unknown),
+      json: toCanonicalJsonValue(JSON.parse(raw)),
       ...(contentType === undefined ? {} : { contentType }),
     };
   }
@@ -1488,6 +1797,59 @@ function readOptionalStrings(value: unknown): readonly string[] {
     : [];
 }
 
+function readOptionalEnum<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  label: string,
+): T | undefined {
+  const text = readOptionalString(value);
+  if (text === undefined) {
+    return undefined;
+  }
+  if (includesEnumValue(allowed, text)) {
+    return text;
+  }
+  throw new Error(`${label} must be one of: ${allowed.join(", ")}`);
+}
+
+function readOptionalEnumList<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  label: string,
+): readonly T[] {
+  const texts = readOptionalStrings(value);
+  const parsed: T[] = [];
+  for (const text of texts) {
+    if (!includesEnumValue(allowed, text)) {
+      throw new Error(`${label} must contain only: ${allowed.join(", ")}`);
+    }
+    parsed.push(text);
+  }
+  return parsed;
+}
+
+function includesEnumValue<T extends string>(
+  allowed: readonly T[],
+  value: string,
+): value is T {
+  return allowed.some((entry) => entry === value);
+}
+
+function readOptionalPageRef(value: unknown, label: string) {
+  const pageRef = readOptionalString(value);
+  if (pageRef === undefined) {
+    return undefined;
+  }
+  if (!isPageRef(pageRef)) {
+    throw new Error(`${label} must be a valid page reference`);
+  }
+  return pageRef;
+}
+
+function readOptionalJson(value: unknown): unknown {
+  return value;
+}
+
 function readOptionalJsonObject(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -1527,6 +1889,156 @@ function readOptionalStringArray(value: unknown, label: string): readonly string
     throw new Error(`${label} must be an array of strings`);
   }
   return value;
+}
+
+function parseInteractionCaptureSteps(
+  value: readonly unknown[] | undefined,
+): readonly OpensteerInteractionCaptureStep[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  return value.map((entry, index) =>
+    parseInteractionCaptureStep(entry, `--steps-json[${String(index)}]`),
+  );
+}
+
+function parseReverseWorkflowSteps(
+  value: readonly unknown[],
+  label: string,
+): readonly OpensteerReverseWorkflowStep[] {
+  return value.map((entry, index) =>
+    validateSchemaValue(
+      opensteerReverseWorkflowStepSchema,
+      entry,
+      `${label}[${String(index)}]`,
+    ) as OpensteerReverseWorkflowStep,
+  );
+}
+
+function parseExecutableResolvers(
+  value: readonly unknown[],
+  label: string,
+): readonly OpensteerExecutableResolver[] {
+  return value.map((entry, index) =>
+    validateSchemaValue(
+      opensteerExecutableResolverSchema,
+      entry,
+      `${label}[${String(index)}]`,
+    ) as OpensteerExecutableResolver,
+  );
+}
+
+function parseValidationRules(
+  value: readonly unknown[],
+  label: string,
+): readonly OpensteerValidationRule[] {
+  return value.map((entry, index) =>
+    validateSchemaValue(
+      opensteerValidationRuleSchema,
+      entry,
+      `${label}[${String(index)}]`,
+    ) as OpensteerValidationRule,
+  );
+}
+
+function validateSchemaValue<T>(
+  schema: Parameters<typeof validateJsonSchema>[0],
+  value: unknown,
+  label: string,
+): T {
+  const issues = validateJsonSchema(schema, value, label);
+  if (issues.length > 0) {
+    throw new Error(issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n"));
+  }
+  return value as T;
+}
+
+function parseInteractionCaptureStep(
+  value: unknown,
+  label: string,
+): OpensteerInteractionCaptureStep {
+  const step = readOptionalJsonObject(value);
+  if (step === undefined) {
+    throw new Error(`${label} must be an object`);
+  }
+  const kind = readRequiredString(step.kind, `${label}.kind`);
+  switch (kind) {
+    case "goto":
+      return {
+        kind,
+        url: readRequiredString(step.url, `${label}.url`),
+      };
+    case "click":
+    case "hover":
+      return {
+        kind,
+        target: parseInteractionCaptureTarget(step.target, `${label}.target`),
+      };
+    case "input": {
+      const pressEnter = readOptionalBoolean(step.pressEnter);
+      return {
+        kind,
+        target: parseInteractionCaptureTarget(step.target, `${label}.target`),
+        text: readRequiredString(step.text, `${label}.text`),
+        ...(pressEnter === undefined ? {} : { pressEnter }),
+      };
+    }
+    case "scroll":
+      return {
+        kind,
+        target: parseInteractionCaptureTarget(step.target, `${label}.target`),
+        direction: parseScrollDirection(step.direction, `${label}.direction`),
+        amount: readRequiredNumber(step.amount, `${label}.amount`),
+      };
+    case "wait":
+      return {
+        kind,
+        durationMs: readRequiredNumber(step.durationMs, `${label}.durationMs`),
+      };
+    default:
+      throw new Error(`${label}.kind must be one of: goto, click, hover, input, scroll, wait`);
+  }
+}
+
+function parseInteractionCaptureTarget(
+  value: unknown,
+  label: string,
+): OpensteerTargetInput {
+  const target = readOptionalJsonObject(value);
+  if (target === undefined) {
+    throw new Error(`${label} must be an object`);
+  }
+  const kind = readRequiredString(target.kind, `${label}.kind`);
+  switch (kind) {
+    case "element":
+      return {
+        kind,
+        element: readRequiredNumber(target.element, `${label}.element`),
+      };
+    case "description":
+      return {
+        kind,
+        description: readRequiredString(target.description, `${label}.description`),
+      };
+    case "selector":
+      return {
+        kind,
+        selector: readRequiredString(target.selector, `${label}.selector`),
+      };
+    default:
+      throw new Error(`${label}.kind must be one of: element, description, selector`);
+  }
+}
+
+function parseScrollDirection(
+  value: unknown,
+  label: string,
+): "up" | "down" | "left" | "right" {
+  const direction = readRequiredString(value, label);
+  if (direction === "up" || direction === "down" || direction === "left" || direction === "right") {
+    return direction;
+  }
+  throw new Error(`${label} must be one of: up, down, left, right`);
 }
 
 function parseMouseButton(value: unknown, label: string): "left" | "middle" | "right" | undefined {
@@ -1605,7 +2117,7 @@ function parseRequestTransport(
     value === "direct-http" ||
     value === "matched-tls" ||
     value === "context-http" ||
-    value === "page-eval-http" ||
+    value === "page-http" ||
     value === "session-http"
   ) {
     return value;

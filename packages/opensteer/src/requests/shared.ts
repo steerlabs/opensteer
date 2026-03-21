@@ -208,6 +208,12 @@ export function cloneHeaders(
   return headers.map((header) => createHeaderEntry(header.name, header.value));
 }
 
+export function filterValidHttpHeaders(
+  headers: readonly BrowserHeaderEntry[] | readonly ProtocolHeaderEntry[],
+): ProtocolHeaderEntry[] {
+  return cloneHeaders(headers).filter((header) => isValidHttpHeaderName(header.name));
+}
+
 export function stringifyRequestScalar(value: OpensteerRequestScalar): string {
   return typeof value === "string" ? value : String(value);
 }
@@ -291,7 +297,7 @@ export function parseStructuredResponseData(
 
   if (normalizedMimeType === "application/json" || normalizedMimeType.endsWith("+json")) {
     try {
-      return JSON.parse(text) as unknown;
+      return JSON.parse(text);
     } catch {
       return undefined;
     }

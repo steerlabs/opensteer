@@ -83,6 +83,61 @@ export async function dispatchSemanticOperation(
         input as Parameters<OpensteerSessionRuntime["probeNetwork"]>[0],
         options,
       );
+    case "reverse.solve":
+      return runtime.solveReverse(
+        (input ?? {}) as Parameters<OpensteerSessionRuntime["solveReverse"]>[0],
+        options,
+      );
+    case "reverse.replay":
+      return runtime.replayReverse(
+        input as Parameters<OpensteerSessionRuntime["replayReverse"]>[0],
+        options,
+      );
+    case "reverse.export":
+      return runtime.exportReverse(
+        input as Parameters<OpensteerSessionRuntime["exportReverse"]>[0],
+        options,
+      );
+    case "reverse.report":
+      return runtime.getReverseReport(
+        input as Parameters<OpensteerSessionRuntime["getReverseReport"]>[0],
+        options,
+      );
+    case "reverse.package.get":
+      return runtime.getReversePackage(
+        input as Parameters<OpensteerSessionRuntime["getReversePackage"]>[0],
+        options,
+      );
+    case "reverse.package.list":
+      return runtime.listReversePackages(
+        (input ?? {}) as Parameters<OpensteerSessionRuntime["listReversePackages"]>[0],
+        options,
+      );
+    case "reverse.package.patch":
+      return runtime.patchReversePackage(
+        input as Parameters<OpensteerSessionRuntime["patchReversePackage"]>[0],
+        options,
+      );
+    case "interaction.capture":
+      return runtime.captureInteraction(
+        input as Parameters<OpensteerSessionRuntime["captureInteraction"]>[0],
+        options,
+      );
+    case "interaction.get":
+      return runtime.getInteraction(
+        input as Parameters<OpensteerSessionRuntime["getInteraction"]>[0],
+        options,
+      );
+    case "interaction.diff":
+      return runtime.diffInteraction(
+        input as Parameters<OpensteerSessionRuntime["diffInteraction"]>[0],
+        options,
+      );
+    case "interaction.replay":
+      return runtime.replayInteraction(
+        input as Parameters<OpensteerSessionRuntime["replayInteraction"]>[0],
+        options,
+      );
     case "network.clear":
       return runtime.clearNetwork(
         (input ?? {}) as Parameters<OpensteerSessionRuntime["clearNetwork"]>[0],
@@ -91,6 +146,11 @@ export async function dispatchSemanticOperation(
     case "scripts.capture":
       return runtime.captureScripts(
         (input ?? {}) as Parameters<OpensteerSessionRuntime["captureScripts"]>[0],
+        options,
+      );
+    case "artifact.read":
+      return runtime.readArtifact(
+        input as Parameters<OpensteerSessionRuntime["readArtifact"]>[0],
         options,
       );
     case "scripts.beautify":

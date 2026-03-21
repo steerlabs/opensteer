@@ -231,6 +231,10 @@ export interface BrowserInspector {
     readonly sessionRef: SessionRef;
     readonly urls?: readonly string[];
   }): Promise<readonly CookieRecord[]>;
+  setCookies(input: {
+    readonly sessionRef: SessionRef;
+    readonly cookies: readonly CookieRecord[];
+  }): Promise<void>;
   getStorageSnapshot(input: {
     readonly sessionRef: SessionRef;
     readonly includeSessionStorage?: boolean;

@@ -174,14 +174,14 @@ export function formatLocalProfileInspectionMessage(
 ): string {
   switch (inspection.status) {
     case "unsupported_default_user_data_dir":
-      return 'The selected user-data-dir is a default Chromium-family browser profile. Use a dedicated automation profile dir for browser.kind="profile", or attach to an already-debuggable browser with browser.kind="attach".';
+      return 'The selected user-data-dir is a default Chromium-family browser profile. Use browser.kind="snapshot-session" or browser.kind="snapshot-authenticated" to launch from a copy, or browser.kind="attach-live" to connect to an already-debuggable browser.';
     case "opensteer_owned":
       return "This profile is already owned by Opensteer. Reuse the existing session with Opensteer.attach(...) or the named CLI session.";
     case "browser_owned":
       if (inspection.attachMode === "attach") {
-        return 'The browser is already running with remote debugging. Attach with --browser attach or browser.kind="attach".';
+        return 'The browser is already running with remote debugging. Attach with --browser attach-live or browser.kind="attach-live".';
       }
-      return 'The browser appears to own this profile, but it is not exposing CDP. Close it or start it with remote debugging, then attach with browser.kind="attach".';
+      return 'The browser appears to own this profile, but it is not exposing CDP. Close it or start it with remote debugging, then attach with browser.kind="attach-live".';
     case "stale_lock":
       return `This profile has stale Chrome lock artifacts. Run opensteer local-profile unlock --user-data-dir ${JSON.stringify(inspection.userDataDir)} and retry.`;
     case "available":

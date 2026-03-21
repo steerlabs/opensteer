@@ -5,7 +5,7 @@ export type TransportProbeLevel =
   | "direct-http"
   | "matched-tls"
   | "context-http"
-  | "page-eval-http"
+  | "page-http"
   | "session-http";
 
 export interface OpensteerTransportProbeInput {
@@ -26,7 +26,7 @@ export interface OpensteerTransportProbeOutput {
 }
 
 export const transportProbeLevelSchema: JsonSchema = enumSchema(
-  ["direct-http", "matched-tls", "context-http", "page-eval-http", "session-http"] as const,
+  ["direct-http", "matched-tls", "context-http", "page-http", "session-http"] as const,
   {
     title: "TransportProbeLevel",
   },

@@ -110,7 +110,7 @@ export async function runOpensteerBrowserCli(
     });
     const payload = {
       ...inspection,
-      attachHint: `opensteer open --browser attach --attach-endpoint ${JSON.stringify(parsed.endpoint)}`,
+      attachHint: `opensteer open --browser attach-live --attach-endpoint ${JSON.stringify(parsed.endpoint)}`,
     };
     deps.writeStdout(
       parsed.json ? `${JSON.stringify(payload, null, 2)}\n` : `${JSON.stringify(payload)}\n`,

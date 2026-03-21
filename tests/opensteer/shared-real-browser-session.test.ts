@@ -1,8 +1,3 @@
-import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
-import path from "node:path";
-
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 const cdpDiscoveryState = vi.hoisted(() => ({
@@ -129,54 +124,6 @@ describe("local browser sessions", () => {
     expect(browser.close).toHaveBeenCalledTimes(1);
   });
 
-  test("launchProfileBrowserSession rejects profiles already owned by another live launcher", async () => {
-    const userDataDir = await mkdtemp(path.join(tmpdir(), "opensteer-profile-in-use-"));
-    const launchDir = path.join(
-      homedir(),
-      ".opensteer",
-      "local-browser",
-      "launches",
-      createHash("sha256").update(path.resolve(userDataDir)).digest("hex").slice(0, 16),
-    );
-    const metadataPath = path.join(launchDir, "launch.json");
-
-    await mkdir(launchDir, { recursive: true });
-    await writeFile(
-      metadataPath,
-      JSON.stringify({
-        args: [],
-        executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        headless: false,
-        owner: {
-          pid: 2222,
-          processStartedAtMs: 22_222,
-        },
-        userDataDir,
-      }),
-    );
-
-    try {
-      const { launchProfileBrowserSession } =
-        await import("../../packages/opensteer/src/local-browser/shared-session.js");
-
-      await expect(
-        launchProfileBrowserSession({
-          executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-          headless: false,
-          args: [],
-          timeoutMs: 1_000,
-          userDataDir,
-          connectBrowser: vi.fn(),
-        }),
-      ).rejects.toThrow(
-        "This profile is already owned by Opensteer. Reuse the existing session with Opensteer.attach(...) or the named CLI session.",
-      );
-    } finally {
-      await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
-      await rm(launchDir, { recursive: true, force: true }).catch(() => undefined);
-    }
-  });
-
   test("connectAttachBrowserSession auto-discovers the selected local CDP candidate", async () => {
     const page = {
       bringToFront: vi.fn(async () => undefined),
@@ -238,7 +185,7 @@ describe("local browser sessions", () => {
         }),
       }),
     ).rejects.toThrow(
-      "Attach target disappeared or selection changed before attach. Re-run discovery or use --browser attach --attach-endpoint <endpoint>.",
+      "Attach target disappeared or selection changed before attach. Re-run discovery or use --browser attach-live --attach-endpoint <endpoint>.",
     );
   });
 });

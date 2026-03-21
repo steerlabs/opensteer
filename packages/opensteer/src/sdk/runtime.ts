@@ -21,6 +21,8 @@ import {
   assertValidSemanticOperationInput,
   createNetworkRequestId,
   createSessionRef,
+  type OpensteerArtifactReadInput,
+  type OpensteerArtifactReadOutput,
   type CaptchaDetectionResult,
   type CookieRecord,
   type OpensteerCaptchaSolveInput,
@@ -103,6 +105,48 @@ import {
   type OpensteerTargetInput,
   type OpensteerTransportProbeInput,
   type OpensteerTransportProbeOutput,
+  type OpensteerInteractionCaptureInput,
+  type OpensteerInteractionCaptureOutput,
+  type OpensteerInteractionCaptureStep,
+  type OpensteerInteractionDiffInput,
+  type OpensteerInteractionDiffOutput,
+  type OpensteerInteractionGetInput,
+  type OpensteerInteractionGetOutput,
+  type OpensteerInteractionReplayInput,
+  type OpensteerInteractionReplayOutput,
+  type OpensteerReverseCandidateRecord,
+  type OpensteerExecutableResolver,
+  type OpensteerReverseExperimentRecord,
+  type OpensteerReverseExportInput,
+  type OpensteerReverseExportOutput,
+  type OpensteerReverseGuardRecord,
+  type OpensteerReverseManualCalibrationMode,
+  type OpensteerReverseObservationRecord,
+  type OpensteerObservationCluster,
+  type OpensteerReversePackageGetInput,
+  type OpensteerReversePackageGetOutput,
+  type OpensteerReversePackageKind,
+  type OpensteerReversePackageListInput,
+  type OpensteerReversePackageListOutput,
+  type OpensteerReversePackagePatchInput,
+  type OpensteerReversePackagePatchOutput,
+  type OpensteerReversePackageReadiness,
+  type OpensteerReplayStrategy,
+  type OpensteerReverseReplayRunRecord,
+  type OpensteerReverseReplayInput,
+  type OpensteerReverseReplayOutput,
+  type OpensteerReverseReportInput,
+  type OpensteerReverseReportOutput,
+  type OpensteerReverseRequirement,
+  type OpensteerReverseSolveInput,
+  type OpensteerReverseSolveOutput,
+  type OpensteerReverseSuggestedEdit,
+  type OpensteerReverseTargetHints,
+  type OpensteerReverseWorkflowStep,
+  type OpensteerStateDelta,
+  type OpensteerStateSnapshot,
+  type OpensteerStateSourceKind,
+  type OpensteerValidationRule,
   type OpensteerEvent,
   type OpensteerWriteRecipeInput,
   type StorageSnapshot,
@@ -153,12 +197,17 @@ import type {
 import { inferRequestPlanFromNetworkRecord } from "../requests/inference.js";
 import { normalizeRequestPlanPayload } from "../requests/plans/index.js";
 import {
+  filterValidHttpHeaders,
   headerValue,
   parseStructuredResponseData,
   toProtocolBodyPayload,
   toProtocolRequestResponseResult,
   toProtocolRequestTransportResult,
 } from "../requests/shared.js";
+import {
+  finalizeMaterializedTransportRequest,
+  stripManagedRequestHeaders,
+} from "../reverse/materialization.js";
 import { diffNetworkRecords } from "../network/diff.js";
 import { NetworkJournal } from "../network/journal.js";
 import {
@@ -171,7 +220,31 @@ import {
   TRANSPORT_PROBE_LADDER,
   selectTransportProbeRecommendation,
 } from "../network/probe.js";
+import {
+  analyzeReverseCandidate,
+  buildChannelDescriptor,
+  compareReverseAnalysisResults,
+  describeReverseBodyCodec,
+  matchReverseTargetHints,
+} from "../reverse/analysis.js";
+import { clusterReverseObservationRecords } from "../reverse/discovery.js";
 import { executeMatchedTlsTransportRequest as executeMatchedTlsTransportRequestWithCurl } from "../requests/execution/matched-tls/index.js";
+import {
+  evaluateValidationRulesForEventStreamReplay,
+  evaluateValidationRulesForHttpResponse,
+  evaluateValidationRulesForObservedRecord,
+  evaluateValidationRulesForWebSocketReplay,
+  buildReverseValidationRules,
+} from "../reverse/validation.js";
+import {
+  buildReversePackageRequirements,
+  buildReversePackageWorkflow,
+  buildReversePackageSuggestedEdits,
+  cloneReversePackageResolvers,
+  deriveReversePackageKind,
+  deriveReversePackageReadiness,
+  deriveReversePackageUnresolvedRequirements,
+} from "../reverse/workflows.js";
 import {
   assertValidOpensteerExtractionSchemaRoot,
   compileOpensteerExtractionPayload,
@@ -180,7 +253,15 @@ import {
   type OpensteerExtractionDescriptorRecord,
 } from "./extraction.js";
 import { compileOpensteerSnapshot, type CompiledOpensteerSnapshot } from "./snapshot/compiler.js";
-import type { AuthRecipeRecord, RecipeRecord, RequestPlanRecord } from "../registry.js";
+import type {
+  AuthRecipeRecord,
+  InteractionTraceRecord,
+  RecipeRecord,
+  RequestPlanRecord,
+  ReverseCaseRecord,
+  ReversePackageRecord,
+  ReverseReportRecord,
+} from "../registry.js";
 import { beautifyScriptContent } from "../scripts/beautify.js";
 import { deobfuscateScriptContent } from "../scripts/deobfuscate.js";
 import { runScriptSandbox } from "../scripts/sandbox.js";
@@ -188,6 +269,7 @@ import { createCapSolver } from "../captcha/solver-capsolver.js";
 import { createTwoCaptchaSolver } from "../captcha/solver-2captcha.js";
 import { detectCaptchaOnPage } from "../captcha/detect.js";
 import { injectCaptchaToken } from "../captcha/inject.js";
+import { diffInteractionTraces } from "../interaction/diff.js";
 
 type DisposableBrowserCoreEngine = BrowserCoreEngine & {
   dispose?: () => Promise<void>;
@@ -221,6 +303,80 @@ interface OpensteerTraceArtifacts {
 interface PersistedComputerArtifacts {
   readonly manifests: readonly ArtifactManifest[];
   readonly output: OpensteerComputerExecuteOutput;
+}
+
+interface ReverseReplaySelectionInput {
+  readonly caseId: string;
+  readonly candidateId: string;
+  readonly strategyId?: string;
+  readonly pageRef?: PageRef;
+  readonly packageId?: string;
+}
+
+interface InternalReverseCaptureInput {
+  readonly caseId?: string;
+  readonly key?: string;
+  readonly objective?: string;
+  readonly notes?: string;
+  readonly tags?: readonly string[];
+  readonly pageRef?: PageRef;
+  readonly stateSource?: OpensteerStateSourceKind;
+  readonly network?: {
+    readonly url?: string;
+    readonly hostname?: string;
+    readonly path?: string;
+    readonly method?: string;
+    readonly resourceType?: string;
+    readonly includeBodies?: boolean;
+  };
+  readonly includeScripts?: boolean;
+  readonly includeStorage?: boolean;
+  readonly includeSessionStorage?: boolean;
+  readonly includeIndexedDb?: boolean;
+  readonly interactionTraceIds?: readonly string[];
+  readonly captureWindowMs?: number;
+}
+
+interface InternalReverseCaptureOutput {
+  readonly case: ReverseCaseRecord;
+  readonly observation: OpensteerReverseObservationRecord;
+}
+
+interface InternalReverseAnalyzeInput {
+  readonly caseId: string;
+  readonly observationId?: string;
+  readonly targetHints?: OpensteerReverseTargetHints;
+  readonly candidateLimit?: number;
+}
+
+interface InternalReverseAnalyzeOutput {
+  readonly case: ReverseCaseRecord;
+  readonly analyzedObservationIds: readonly string[];
+  readonly candidateCount: number;
+}
+
+interface ReversePackageWriteInput {
+  readonly caseRecord: ReverseCaseRecord;
+  readonly candidate?: OpensteerReverseCandidateRecord;
+  readonly strategy?: OpensteerReverseCandidateRecord["replayStrategies"][number];
+  readonly kind: OpensteerReversePackageKind;
+  readonly readiness: OpensteerReversePackageReadiness;
+  readonly validators: readonly OpensteerValidationRule[];
+  readonly workflow: readonly OpensteerReverseWorkflowStep[];
+  readonly resolvers: readonly OpensteerExecutableResolver[];
+  readonly unresolvedRequirements: readonly OpensteerReverseRequirement[];
+  readonly suggestedEdits: readonly OpensteerReverseSuggestedEdit[];
+  readonly attachedTraceIds: readonly string[];
+  readonly attachedArtifactIds: readonly string[];
+  readonly attachedRecordIds: readonly string[];
+  readonly stateSnapshots: readonly OpensteerStateSnapshot[];
+  readonly requestPlan?: RequestPlanRecord;
+  readonly notes?: string;
+  readonly parentPackageId?: string;
+  readonly manualCalibration?: OpensteerReverseManualCalibrationMode;
+  readonly key?: string;
+  readonly version?: string;
+  readonly provenanceSource: "reverse.solve" | "reverse.export" | "reverse.package.patch";
 }
 
 interface OpensteerSessionTraceInput {
@@ -1517,6 +1673,34 @@ export class OpensteerSessionRuntime {
     }
   }
 
+  async readArtifact(
+    input: OpensteerArtifactReadInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerArtifactReadOutput> {
+    assertValidSemanticOperationInput("artifact.read", input);
+    return this.runWithOperationTimeout(
+      "artifact.read",
+      async () => {
+        const artifact = await (await this.ensureRoot()).artifacts.toProtocolArtifact(input.artifactId);
+        if (artifact === undefined) {
+          throw new OpensteerProtocolError(
+            "not-found",
+            `artifact ${input.artifactId} was not found`,
+            {
+              details: {
+                artifactId: input.artifactId,
+              },
+            },
+          );
+        }
+        return {
+          artifact,
+        } satisfies OpensteerArtifactReadOutput;
+      },
+      options,
+    );
+  }
+
   async probeNetwork(
     input: OpensteerTransportProbeInput,
     options: RuntimeOperationOptions = {},
@@ -1537,27 +1721,17 @@ export class OpensteerSessionRuntime {
             prepared,
             createFullMinimizationKeepState(prepared),
           );
-          const baselineTransport =
-            this.currentBinding() === undefined ? "direct-http" : "session-http";
-          const baselineResponse = await this.executeAnalysisTransportRequest(
-            baselineTransport,
-            request,
-            timeout,
-          );
-          const baselineFingerprint = buildSuccessFingerprint(baselineResponse);
+          const baselineFingerprint = buildCapturedRecordSuccessFingerprint(record);
 
           const results: OpensteerTransportProbeOutput["results"][number][] = [];
           for (const transport of TRANSPORT_PROBE_LADDER) {
             const trialStartedAt = Date.now();
             try {
-              const response =
-                transport === baselineTransport
-                  ? baselineResponse
-                  : await this.executeAnalysisTransportRequest(
-                      transport,
-                      request,
-                      timeout,
-                    );
+              const response = await this.executeAnalysisTransportRequest(
+                transport,
+                request,
+                timeout,
+              );
               results.push({
                 transport,
                 status: response.status,
@@ -1604,6 +1778,1906 @@ export class OpensteerSessionRuntime {
       });
       throw error;
     }
+  }
+
+  async solveReverse(
+    input: OpensteerReverseSolveInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerReverseSolveOutput> {
+    assertValidSemanticOperationInput("reverse.solve", input);
+
+    const startedAt = Date.now();
+    try {
+      const output = await this.runWithOperationTimeout(
+        "reverse.solve",
+        async (timeout) => {
+          const root = await this.ensureRoot();
+          const capture = await this.captureReverseCaseInternal(input, timeout);
+          const analyzed = await this.analyzeReverseCaseInternal(
+            {
+              caseId: capture.case.id,
+              observationId: capture.observation.id,
+              ...(input.targetHints === undefined ? {} : { targetHints: input.targetHints }),
+              ...(input.candidateLimit === undefined
+                ? {}
+                : { candidateLimit: input.candidateLimit }),
+            },
+            timeout,
+          );
+          let caseRecord = analyzed.case;
+          const maxReplayAttempts = input.maxReplayAttempts ?? 6;
+          const replayRuns: OpensteerReverseReplayRunRecord[] = [];
+          const experiments: OpensteerReverseExperimentRecord[] = [];
+          let selectedCandidate: OpensteerReverseCandidateRecord | undefined;
+          let selectedStrategy:
+            | OpensteerReverseCandidateRecord["replayStrategies"][number]
+            | undefined;
+          let selectedRun: OpensteerReverseReplayRunRecord | undefined;
+          let attempts = 0;
+
+          outer: for (const candidate of caseRecord.payload.candidates) {
+            for (const strategy of candidate.replayStrategies) {
+              if (!strategy.supported) {
+                experiments.push({
+                  id: `experiment:${randomUUID()}`,
+                  createdAt: Date.now(),
+                  candidateId: candidate.id,
+                  strategyId: strategy.id,
+                  kind: "replay-attempt",
+                  hypothesis: `replay ${candidate.id} via ${strategy.id}`,
+                  success: false,
+                  ...(strategy.failureReason === undefined
+                    ? {}
+                    : { notes: strategy.failureReason }),
+                });
+                continue;
+              }
+
+              if (attempts >= maxReplayAttempts) {
+                break outer;
+              }
+
+              attempts += 1;
+              const replay = await this.replayReverseSelectionInternal(
+                {
+                  caseId: caseRecord.id,
+                  candidateId: candidate.id,
+                  strategyId: strategy.id,
+                  ...(input.pageRef === undefined ? {} : { pageRef: input.pageRef }),
+                },
+                timeout,
+              );
+              replayRuns.push(replay.run);
+              experiments.push({
+                id: `experiment:${randomUUID()}`,
+                createdAt: replay.run.createdAt,
+                candidateId: candidate.id,
+                strategyId: strategy.id,
+                kind: "replay-attempt",
+                hypothesis: `replay ${candidate.id} via ${strategy.id}`,
+                success: replay.run.success,
+                ...(replay.run.status === undefined ? {} : { status: replay.run.status }),
+                ...(replay.run.error === undefined ? {} : { notes: replay.run.error }),
+                validation: replay.run.validation,
+              });
+
+              if (replay.run.success) {
+                selectedCandidate = replay.candidate;
+                selectedStrategy = replay.strategy;
+                selectedRun = replay.run;
+                break outer;
+              }
+            }
+          }
+
+          const chosenCandidate = selectedCandidate ?? caseRecord.payload.candidates[0];
+          const chosenStrategy =
+            selectedStrategy ??
+            (chosenCandidate === undefined
+              ? undefined
+              : chosenCandidate.replayStrategies.find((strategy) => strategy.supported) ??
+                chosenCandidate.replayStrategies[0]);
+          const packageValidators =
+            chosenCandidate === undefined
+              ? []
+              : buildReverseValidationRules({
+                  record: await this.resolveNetworkRecordByRecordId(
+                    chosenCandidate.recordId,
+                    timeout,
+                    {
+                      includeBodies: true,
+                      redactSecretHeaders: false,
+                    },
+                  ),
+                  channel: chosenCandidate.channel,
+                });
+          const packageDraft = await this.buildReversePackageDraft(
+            {
+              caseRecord,
+              ...(chosenCandidate === undefined ? {} : { candidate: chosenCandidate }),
+              ...(chosenStrategy === undefined ? {} : { strategy: chosenStrategy }),
+              validators: packageValidators,
+              ...(input.manualCalibration === undefined
+                ? {}
+                : { manualCalibration: input.manualCalibration }),
+              ...(input.notes === undefined ? {} : { notes: input.notes }),
+            },
+            timeout,
+          );
+          const requestPlan =
+            packageDraft.kind === "portable-http" &&
+            packageDraft.readiness === "runnable" &&
+            chosenCandidate !== undefined &&
+            chosenStrategy !== undefined
+              ? await this.writePortableReverseRequestPlan(
+                  caseRecord,
+                  chosenCandidate,
+                  chosenStrategy,
+                  timeout,
+                  {
+                    key: `${caseRecord.key}:portable`,
+                    version: "1.0.0",
+                    provenanceSource: "reverse.solve",
+                  },
+                )
+              : undefined;
+          const packageRecord = await this.writeReversePackage({
+            caseRecord,
+            ...(chosenCandidate === undefined ? {} : { candidate: chosenCandidate }),
+            ...(chosenStrategy === undefined ? {} : { strategy: chosenStrategy }),
+            kind: packageDraft.kind,
+            readiness: packageDraft.readiness,
+            validators: packageValidators,
+            workflow: packageDraft.workflow,
+            resolvers: packageDraft.resolvers,
+            unresolvedRequirements: packageDraft.unresolvedRequirements,
+            suggestedEdits: packageDraft.suggestedEdits,
+            attachedTraceIds: packageDraft.attachedTraceIds,
+            attachedArtifactIds: packageDraft.attachedArtifactIds,
+            attachedRecordIds: packageDraft.attachedRecordIds,
+            stateSnapshots: packageDraft.stateSnapshots,
+            ...(requestPlan === undefined ? {} : { requestPlan }),
+            ...(packageDraft.notes === undefined ? {} : { notes: packageDraft.notes }),
+            ...(input.manualCalibration === undefined
+              ? {}
+              : { manualCalibration: input.manualCalibration }),
+            provenanceSource: "reverse.solve",
+          });
+
+          const finalRun: OpensteerReverseReplayRunRecord =
+            selectedRun === undefined
+              ? {
+                  id: `reverse-replay:${randomUUID()}`,
+                  createdAt: Date.now(),
+                  candidateId: chosenCandidate?.id ?? "candidate:none",
+                  ...(chosenStrategy === undefined
+                    ? {}
+                    : { strategyId: chosenStrategy.id }),
+                  packageId: packageRecord.id,
+                  success: false,
+                  ...(chosenCandidate === undefined
+                    ? {}
+                    : { channel: chosenCandidate.channel.kind }),
+                  kind: packageRecord.payload.kind,
+                  readiness: packageRecord.payload.readiness,
+                  ...(chosenStrategy?.transport === undefined
+                    ? {}
+                    : { transport: chosenStrategy.transport }),
+                  ...(chosenStrategy?.stateSource === undefined
+                    ? {}
+                    : { stateSource: chosenStrategy.stateSource }),
+                  validation: {},
+                  error:
+                    packageRecord.payload.unresolvedRequirements[0]?.label ??
+                    "reverse solve produced a draft package that still needs agent edits before replay can run",
+                }
+              : {
+                  ...selectedRun,
+                  packageId: packageRecord.id,
+                  kind: packageRecord.payload.kind,
+                  readiness: packageRecord.payload.readiness,
+                };
+          const finalReplayRuns =
+            selectedRun === undefined
+              ? [...replayRuns, finalRun]
+              : replayRuns.map((run) =>
+                  run.id === selectedRun.id ? finalRun : run,
+                );
+          const exportRecord =
+            chosenCandidate === undefined
+              ? undefined
+              : {
+                  id: `export:${randomUUID()}`,
+                  createdAt: Date.now(),
+                  candidateId: chosenCandidate.id,
+                  ...(chosenStrategy === undefined
+                    ? {}
+                    : { strategyId: chosenStrategy.id }),
+                  packageId: packageRecord.id,
+                  kind: packageRecord.payload.kind,
+                  readiness: packageRecord.payload.readiness,
+                  ...(requestPlan === undefined
+                    ? {}
+                    : { requestPlanId: requestPlan.id }),
+                };
+          caseRecord = await root.registry.reverseCases.update({
+            id: caseRecord.id,
+            payload: {
+              ...caseRecord.payload,
+              status: packageRecord.payload.readiness === "runnable" ? "ready" : "attention",
+              experiments: [...caseRecord.payload.experiments, ...experiments],
+              replayRuns: [...caseRecord.payload.replayRuns, ...finalReplayRuns],
+              exports:
+                exportRecord === undefined
+                  ? caseRecord.payload.exports
+                  : [...caseRecord.payload.exports, exportRecord],
+            },
+          });
+
+          const report = await this.writeReverseReportRecord({
+            caseRecord,
+            packageRecord,
+            ...(chosenCandidate === undefined ? {} : { chosenCandidate }),
+            ...(chosenStrategy === undefined ? {} : { chosenStrategy }),
+          });
+
+          return {
+            caseId: caseRecord.id,
+            package: packageRecord,
+            report,
+          } satisfies OpensteerReverseSolveOutput;
+        },
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "reverse.solve",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          caseId: output.caseId,
+          packageId: output.package.id,
+          reportId: output.report.id,
+        },
+      });
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "reverse.solve",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+      });
+      throw error;
+    }
+  }
+
+  async replayReverse(
+    input: OpensteerReverseReplayInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerReverseReplayOutput> {
+    assertValidSemanticOperationInput("reverse.replay", input);
+
+    return this.runWithOperationTimeout(
+      "reverse.replay",
+      async (timeout) => {
+        const packageRecord = await this.resolveReversePackageById(input.packageId);
+
+        if (
+          packageRecord.payload.readiness !== "runnable" ||
+          packageRecord.payload.candidate === undefined ||
+          packageRecord.payload.strategy === undefined
+        ) {
+          return {
+            packageId: packageRecord.id,
+            caseId: packageRecord.payload.caseId,
+            success: false,
+            kind: packageRecord.payload.kind,
+            readiness: packageRecord.payload.readiness,
+            validation: {},
+            unresolvedRequirements: packageRecord.payload.unresolvedRequirements,
+            suggestedEdits: packageRecord.payload.suggestedEdits,
+            error:
+              packageRecord.payload.unresolvedRequirements[0]?.label ??
+              "reverse package is still a draft and cannot be replayed yet",
+          } satisfies OpensteerReverseReplayOutput;
+        }
+
+        const replay = await this.replayReversePackageInternal(
+          packageRecord,
+          timeout,
+          input.pageRef,
+        );
+        const caseRecord = await this.tryResolveReverseCaseById(packageRecord.payload.caseId);
+        if (caseRecord !== undefined) {
+          await (await this.ensureRoot()).registry.reverseCases.update({
+            id: caseRecord.id,
+            payload: {
+              ...caseRecord.payload,
+              experiments: [
+                ...caseRecord.payload.experiments,
+                {
+                  id: `experiment:${randomUUID()}`,
+                  createdAt: replay.run.createdAt,
+                  candidateId: replay.candidate.id,
+                  strategyId: replay.strategy.id,
+                  kind: "replay-attempt",
+                  hypothesis: `replay ${replay.candidate.id} via package ${packageRecord.id}`,
+                  success: replay.run.success,
+                  ...(replay.run.status === undefined
+                    ? {}
+                    : { status: replay.run.status }),
+                  ...(replay.run.error === undefined
+                    ? {}
+                    : { notes: replay.run.error }),
+                  validation: replay.run.validation,
+                },
+              ],
+              replayRuns: [...caseRecord.payload.replayRuns, replay.run],
+            },
+          });
+        }
+
+        return {
+          packageId: packageRecord.id,
+          caseId: packageRecord.payload.caseId,
+          candidateId: replay.candidate.id,
+          strategyId: replay.strategy.id,
+          success: replay.run.success,
+          kind: packageRecord.payload.kind,
+          readiness: packageRecord.payload.readiness,
+          channel: replay.candidate.channel.kind,
+          ...(replay.strategy.transport === undefined
+            ? {}
+            : { transport: replay.strategy.transport }),
+          stateSource: replay.strategy.stateSource,
+          ...(replay.run.recordId === undefined ? {} : { recordId: replay.run.recordId }),
+          ...(replay.run.status === undefined ? {} : { status: replay.run.status }),
+          validation: replay.run.validation,
+          unresolvedRequirements: packageRecord.payload.unresolvedRequirements,
+          suggestedEdits: packageRecord.payload.suggestedEdits,
+          ...(replay.run.error === undefined ? {} : { error: replay.run.error }),
+        } satisfies OpensteerReverseReplayOutput;
+      },
+      options,
+    );
+  }
+
+  async exportReverse(
+    input: OpensteerReverseExportInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerReverseExportOutput> {
+    assertValidSemanticOperationInput("reverse.export", input);
+
+    return this.runWithOperationTimeout(
+      "reverse.export",
+      async () => {
+        const root = await this.ensureRoot();
+        const sourcePackage = await this.resolveReversePackageById(input.packageId);
+        const packageRecord =
+          input.key === undefined && input.version === undefined
+            ? sourcePackage
+            : await root.registry.reversePackages.write({
+                key: input.key ?? `${sourcePackage.key}:copy:${Date.now()}`,
+                version: input.version ?? sourcePackage.version,
+                tags: sourcePackage.tags,
+                provenance: {
+                  source: "reverse.export",
+                  sourceId: sourcePackage.id,
+                },
+                payload: sourcePackage.payload,
+              });
+        const requestPlan =
+          packageRecord.payload.requestPlanId === undefined
+            ? undefined
+            : await root.registry.requestPlans.getById(
+                packageRecord.payload.requestPlanId,
+              );
+
+        if (
+          packageRecord.id !== sourcePackage.id &&
+          packageRecord.payload.candidateId !== undefined
+        ) {
+          const caseRecord = await this.tryResolveReverseCaseById(
+            packageRecord.payload.caseId,
+          );
+          if (caseRecord !== undefined) {
+            await root.registry.reverseCases.update({
+              id: caseRecord.id,
+              payload: {
+                ...caseRecord.payload,
+                exports: [
+                  ...caseRecord.payload.exports,
+                  {
+                    id: `export:${randomUUID()}`,
+                    createdAt: Date.now(),
+                    candidateId: packageRecord.payload.candidateId,
+                    ...(packageRecord.payload.strategyId === undefined
+                      ? {}
+                      : { strategyId: packageRecord.payload.strategyId }),
+                    packageId: packageRecord.id,
+                    kind: packageRecord.payload.kind,
+                    readiness: packageRecord.payload.readiness,
+                    ...(requestPlan === undefined
+                      ? {}
+                      : { requestPlanId: requestPlan.id }),
+                  },
+                ],
+              },
+            });
+          }
+        }
+
+        return {
+          package: packageRecord,
+          ...(requestPlan === undefined ? {} : { requestPlan }),
+        } satisfies OpensteerReverseExportOutput;
+      },
+      options,
+    );
+  }
+
+  async getReverseReport(
+    input: OpensteerReverseReportInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerReverseReportOutput> {
+    assertValidSemanticOperationInput("reverse.report", input);
+
+    return this.runWithOperationTimeout(
+      "reverse.report",
+      async () => {
+        if (input.packageId === undefined && input.reportId === undefined) {
+          throw new OpensteerProtocolError(
+            "invalid-argument",
+            "reverse report requires packageId or reportId",
+          );
+        }
+        const report =
+          input.reportId === undefined
+            ? await this.resolveReverseReportByPackageId(input.packageId!)
+            : await this.resolveReverseReportById(input.reportId);
+        return {
+          report,
+        } satisfies OpensteerReverseReportOutput;
+      },
+      options,
+    );
+  }
+
+  async getReversePackage(
+    input: OpensteerReversePackageGetInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerReversePackageGetOutput> {
+    assertValidSemanticOperationInput("reverse.package.get", input);
+    return this.runWithOperationTimeout("reverse.package.get", async () => ({
+      package: await this.resolveReversePackageById(input.packageId),
+    }), options);
+  }
+
+  async listReversePackages(
+    input: OpensteerReversePackageListInput = {},
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerReversePackageListOutput> {
+    assertValidSemanticOperationInput("reverse.package.list", input);
+    return this.runWithOperationTimeout(
+      "reverse.package.list",
+      async () => {
+        const packages = await (await this.ensureRoot()).registry.reversePackages.list(
+          input.key === undefined ? {} : { key: input.key },
+        );
+        return {
+          packages: packages.filter((entry) => {
+            if (input.caseId !== undefined && entry.payload.caseId !== input.caseId) {
+              return false;
+            }
+            if (input.kind !== undefined && entry.payload.kind !== input.kind) {
+              return false;
+            }
+            if (input.readiness !== undefined && entry.payload.readiness !== input.readiness) {
+              return false;
+            }
+            return true;
+          }),
+        } satisfies OpensteerReversePackageListOutput;
+      },
+      options,
+    );
+  }
+
+  async patchReversePackage(
+    input: OpensteerReversePackagePatchInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerReversePackagePatchOutput> {
+    assertValidSemanticOperationInput("reverse.package.patch", input);
+
+    return this.runWithOperationTimeout(
+      "reverse.package.patch",
+      async (timeout) => {
+        const sourcePackage = await this.resolveReversePackageById(input.packageId);
+        const caseRecord = await this.resolveReverseCaseById(sourcePackage.payload.caseId);
+        const candidate =
+          input.candidateId === undefined
+            ? sourcePackage.payload.candidate
+            : caseRecord.payload.candidates.find((entry) => entry.id === input.candidateId);
+        if (input.candidateId !== undefined && candidate === undefined) {
+          throw new OpensteerProtocolError(
+            "not-found",
+            `reverse candidate ${input.candidateId} was not found`,
+          );
+        }
+        const selectedStrategyId = input.strategyId ?? sourcePackage.payload.strategy?.id;
+        const strategy =
+          candidate === undefined
+            ? undefined
+            : selectedStrategyId === undefined
+              ? candidate.replayStrategies.find((entry) => entry.supported) ??
+                candidate.replayStrategies[0]
+              : candidate.replayStrategies.find((entry) => entry.id === selectedStrategyId);
+        if (input.strategyId !== undefined && strategy === undefined) {
+          throw new OpensteerProtocolError(
+            "not-found",
+            `reverse strategy ${input.strategyId} was not found`,
+          );
+        }
+
+        const validators =
+          input.validators ??
+          (candidate === undefined
+            ? sourcePackage.payload.validators
+            : buildReverseValidationRules({
+                record: await this.resolveNetworkRecordByRecordId(candidate.recordId, timeout, {
+                  includeBodies: true,
+                  redactSecretHeaders: false,
+                }),
+                channel: candidate.channel,
+              }));
+        const notes = input.notes ?? sourcePackage.payload.notes;
+        const draft = await this.buildReversePackageDraft(
+          {
+            caseRecord,
+            ...(candidate === undefined ? {} : { candidate }),
+            ...(strategy === undefined ? {} : { strategy }),
+            validators,
+            ...(input.workflow === undefined ? {} : { workflow: input.workflow }),
+            ...(input.resolvers === undefined ? {} : { resolvers: input.resolvers }),
+            ...(input.attachedTraceIds === undefined
+              ? {}
+              : { attachedTraceIds: input.attachedTraceIds }),
+            ...(input.attachedArtifactIds === undefined
+              ? {}
+              : { attachedArtifactIds: input.attachedArtifactIds }),
+            ...(input.attachedRecordIds === undefined
+              ? {}
+              : { attachedRecordIds: input.attachedRecordIds }),
+            ...(input.stateSnapshotIds === undefined
+              ? {}
+              : { stateSnapshotIds: input.stateSnapshotIds }),
+            ...(notes === undefined ? {} : { notes }),
+          },
+          timeout,
+        );
+        const requestPlan =
+          draft.kind === "portable-http" &&
+          draft.readiness === "runnable" &&
+          candidate !== undefined &&
+          strategy !== undefined
+            ? await this.writePortableReverseRequestPlan(
+                caseRecord,
+                candidate,
+                strategy,
+                timeout,
+                {
+                  key: `${caseRecord.key}:portable:${Date.now()}`,
+                  version: "1.0.0",
+                  provenanceSource: "reverse.export",
+                },
+              )
+            : undefined;
+        const packageRecord = await this.writeReversePackage({
+          caseRecord,
+          ...(candidate === undefined ? {} : { candidate }),
+          ...(strategy === undefined ? {} : { strategy }),
+          kind: draft.kind,
+          readiness: draft.readiness,
+          validators,
+          workflow: draft.workflow,
+          resolvers: draft.resolvers,
+          unresolvedRequirements: draft.unresolvedRequirements,
+          suggestedEdits: draft.suggestedEdits,
+          attachedTraceIds: draft.attachedTraceIds,
+          attachedArtifactIds: draft.attachedArtifactIds,
+          attachedRecordIds: draft.attachedRecordIds,
+          stateSnapshots: draft.stateSnapshots,
+          ...(draft.notes === undefined ? {} : { notes: draft.notes }),
+          ...(requestPlan === undefined ? {} : { requestPlan }),
+          parentPackageId: sourcePackage.id,
+          key: input.key ?? `${sourcePackage.key}:patch:${Date.now()}`,
+          version: input.version ?? sourcePackage.version,
+          provenanceSource: "reverse.package.patch",
+        });
+        const report = await this.writeReverseReportRecord({
+          caseRecord,
+          packageRecord,
+          ...(candidate === undefined ? {} : { chosenCandidate: candidate }),
+          ...(strategy === undefined ? {} : { chosenStrategy: strategy }),
+        });
+        return {
+          package: packageRecord,
+          report,
+        } satisfies OpensteerReversePackagePatchOutput;
+      },
+      options,
+    );
+  }
+
+  private async captureReverseCaseInternal(
+    input: InternalReverseCaptureInput,
+    timeout: TimeoutExecutionContext,
+  ): Promise<InternalReverseCaptureOutput> {
+    const root = await this.ensureRoot();
+    const pageRef = input.pageRef ?? (await this.ensurePageRef());
+    const pageInfo = await this.requireEngine().getPageInfo({ pageRef });
+    const stateSource = input.stateSource ?? this.resolveCurrentStateSource();
+    const existingCase =
+      input.caseId === undefined
+        ? undefined
+        : await this.resolveReverseCaseById(input.caseId);
+    const caseRecord =
+      existingCase ??
+      (await root.registry.reverseCases.write({
+        key: input.key ?? buildReverseCaseKey(input.objective, pageInfo.url),
+        version: "1.0.0",
+        ...(input.tags === undefined ? {} : { tags: input.tags }),
+        provenance: {
+          source: "reverse.solve",
+          ...(pageInfo.url.length === 0 ? {} : { sourceId: pageInfo.url }),
+        },
+        payload: {
+          objective: input.objective ?? `Reverse engineer ${pageInfo.url}`,
+          ...(input.notes === undefined ? {} : { notes: input.notes }),
+          status: "capturing",
+          stateSource,
+          observations: [],
+          observationClusters: [],
+          candidates: [],
+          guards: [],
+          stateSnapshots: [],
+          stateDeltas: [],
+          experiments: [],
+          replayRuns: [],
+          exports: [],
+        },
+      }));
+
+    const networkRecords = await this.queryLiveNetwork(
+      {
+        source: "live",
+        pageRef,
+        ...(input.network?.url === undefined ? {} : { url: input.network.url }),
+        ...(input.network?.hostname === undefined
+          ? {}
+          : { hostname: input.network.hostname }),
+        ...(input.network?.path === undefined ? {} : { path: input.network.path }),
+        ...(input.network?.method === undefined
+          ? {}
+          : { method: input.network.method }),
+        includeBodies: input.network?.includeBodies ?? true,
+      },
+      timeout,
+      {
+        ignoreLimit: true,
+        redactSecretHeaders: false,
+      },
+    );
+    const persistedNetwork = filterReverseObservationWindow(
+      networkRecords.filter(isReverseRelevantNetworkRecord),
+      this.networkJournal,
+      input.captureWindowMs,
+    );
+    const observationId = `observation:${randomUUID()}`;
+    const networkTag = `reverse-case:${caseRecord.id}:${observationId}`;
+    if (persistedNetwork.length > 0) {
+      await root.registry.savedNetwork.save(persistedNetwork, networkTag);
+    }
+
+    const scriptArtifactIds =
+      input.includeScripts === false
+        ? []
+        : (
+            await this.captureScriptsInternal(
+              pageRef,
+              {
+                pageRef,
+                includeExternal: true,
+                includeInline: true,
+                includeDynamic: true,
+                includeWorkers: true,
+                persist: true,
+              },
+              timeout,
+            )
+          ).scripts.flatMap((script) =>
+            script.artifactId === undefined ? [] : [script.artifactId],
+          );
+
+    const stateSnapshot = await this.captureReverseStateSnapshot(pageRef, timeout, {
+      includeStorage: input.includeStorage ?? true,
+      includeSessionStorage: input.includeSessionStorage ?? true,
+      includeIndexedDb: input.includeIndexedDb ?? false,
+    });
+
+    const linkedInteractionTraceIds = await Promise.all(
+      (input.interactionTraceIds ?? []).map(
+        async (traceId) => (await this.resolveInteractionTraceById(traceId)).id,
+      ),
+    );
+    const nextGuards = mergeReverseGuards(
+      caseRecord.payload.guards,
+      linkedInteractionTraceIds.map((traceId) => ({
+        id: `guard:${traceId}`,
+        kind: "interaction" as const,
+        label: `Interaction guard ${traceId}`,
+        status: "satisfied" as const,
+        interactionTraceId: traceId,
+      })),
+    );
+    const nextStateDeltas = [
+      ...caseRecord.payload.stateDeltas,
+      ...(
+        await Promise.all(
+          linkedInteractionTraceIds.map(async (traceId) => {
+            const trace = await this.resolveInteractionTraceById(traceId);
+            return trace.payload.stateDelta;
+          }),
+        )
+      ).filter((delta): delta is OpensteerStateDelta => delta !== undefined),
+    ];
+
+    const observation: OpensteerReverseObservationRecord = {
+      id: observationId,
+      capturedAt: Date.now(),
+      pageRef,
+      url: pageInfo.url,
+      stateSource,
+      networkRecordIds: persistedNetwork.map((record) => record.recordId),
+      scriptArtifactIds,
+      interactionTraceIds: linkedInteractionTraceIds,
+      stateSnapshotIds: [stateSnapshot.id],
+      ...(input.notes === undefined ? {} : { notes: input.notes }),
+    };
+
+    const updatedCase = await root.registry.reverseCases.update({
+      id: caseRecord.id,
+      tags: mergeStringArrays(caseRecord.tags, input.tags ?? []),
+      payload: {
+        ...caseRecord.payload,
+        ...(input.notes === undefined ? {} : { notes: input.notes }),
+        stateSource,
+        status: "capturing",
+        observations: [...caseRecord.payload.observations, observation],
+        guards: nextGuards,
+        stateSnapshots: [...caseRecord.payload.stateSnapshots, stateSnapshot],
+        stateDeltas: nextStateDeltas,
+      },
+    });
+
+    return {
+      case: updatedCase,
+      observation,
+    };
+  }
+
+  private async analyzeReverseCaseInternal(
+    input: InternalReverseAnalyzeInput & {
+      readonly targetHints?: OpensteerReverseTargetHints;
+    },
+    timeout: TimeoutExecutionContext,
+  ): Promise<InternalReverseAnalyzeOutput> {
+    const root = await this.ensureRoot();
+    const caseRecord = await this.resolveReverseCaseById(input.caseId);
+    const targetObservationIds =
+      input.observationId === undefined
+        ? caseRecord.payload.observations.map((observation) => observation.id)
+        : [input.observationId];
+    const targetObservations = caseRecord.payload.observations.filter((observation) =>
+      targetObservationIds.includes(observation.id),
+    );
+
+    const analyzedCandidates: OpensteerReverseCandidateRecord[] = [];
+    const analyzedClusters: OpensteerObservationCluster[] = [];
+    for (const observation of targetObservations) {
+      const guards = caseRecord.payload.guards.filter((guard) =>
+        observation.interactionTraceIds.includes(guard.interactionTraceId ?? ""),
+      );
+      const observationRecords = await Promise.all(
+        observation.networkRecordIds.map(async (recordId) => ({
+          record: await this.resolveNetworkRecordByRecordId(recordId, timeout, {
+            includeBodies: true,
+            redactSecretHeaders: false,
+          }),
+          observedAt: this.networkJournal.getObservedAt(recordId),
+        })),
+      );
+      const clusteredRecords = observationRecords.map((entry) => {
+        const bodyCodec = describeReverseBodyCodec(entry.record).codec;
+        const channel = buildChannelDescriptor(entry.record);
+        const matchedTargetHints = matchReverseTargetHints(
+          channel,
+          bodyCodec,
+          input.targetHints,
+        );
+        return {
+          record: entry.record,
+          ...(entry.observedAt === undefined ? {} : { observedAt: entry.observedAt }),
+          channel,
+          bodyCodec,
+          matchedTargetHints,
+        };
+      });
+      const clusters = clusterReverseObservationRecords({
+        observationId: observation.id,
+        records: clusteredRecords,
+      });
+      analyzedClusters.push(...clusters);
+
+      for (const cluster of clusters) {
+        const recordId = cluster.primaryRecordId;
+        const record = await this.resolveNetworkRecordByRecordId(recordId, timeout, {
+          includeBodies: true,
+          redactSecretHeaders: false,
+        });
+        const analysis = analyzeReverseCandidate({
+          observationId: observation.id,
+          record,
+          ...(observation.url === undefined ? {} : { observationUrl: observation.url }),
+          stateSource: caseRecord.payload.stateSource,
+          guards,
+          scriptArtifactIds: observation.scriptArtifactIds,
+          ...(input.targetHints === undefined ? {} : { targetHints: input.targetHints }),
+        });
+        analyzedCandidates.push({
+          id: `candidate:${record.recordId}`,
+          observationId: observation.id,
+          clusterId: cluster.id,
+          recordId: record.recordId,
+          channel: analysis.channel,
+          bodyCodec: analysis.bodyCodec,
+          boundary: analysis.boundary,
+          role: analysis.role,
+          dependencyClass: analysis.dependencyClass,
+          score: analysis.score,
+          summary: analysis.summary,
+          matchedTargetHints: analysis.matchedTargetHints,
+          inputs: analysis.inputs,
+          resolvers: analysis.resolvers,
+          guardIds: Array.from(
+            new Set(
+              analysis.replayStrategies.flatMap((strategy) => strategy.guardIds),
+            ),
+          ).sort((left, right) => left.localeCompare(right)),
+          scriptArtifactIds: observation.scriptArtifactIds,
+          replayStrategies: analysis.replayStrategies,
+        });
+      }
+    }
+
+    analyzedCandidates.sort((left, right) =>
+      compareReverseAnalysisResults(left, right) ||
+      left.id.localeCompare(right.id),
+    );
+    const limitedCandidates =
+      input.candidateLimit === undefined
+        ? analyzedCandidates
+        : analyzedCandidates.slice(0, input.candidateLimit);
+    const untouchedCandidates = caseRecord.payload.candidates.filter(
+      (candidate) => !targetObservationIds.includes(candidate.observationId),
+    );
+    const nextCandidates = [...untouchedCandidates, ...limitedCandidates];
+
+    const updatedCase = await root.registry.reverseCases.update({
+      id: caseRecord.id,
+      payload: {
+        ...caseRecord.payload,
+        status: nextCandidates.length === 0 ? "attention" : "ready",
+        observationClusters: mergeObservationClusters(
+          caseRecord.payload.observationClusters,
+          analyzedClusters,
+        ),
+        candidates: nextCandidates,
+      },
+    });
+
+    return {
+      case: updatedCase,
+      analyzedObservationIds: targetObservationIds,
+      candidateCount: nextCandidates.length,
+    };
+  }
+
+  private async replayReverseSelectionInternal(
+    input: ReverseReplaySelectionInput,
+    timeout: TimeoutExecutionContext,
+  ): Promise<{
+    readonly caseRecord: ReverseCaseRecord;
+    readonly candidate: OpensteerReverseCandidateRecord;
+    readonly strategy: OpensteerReverseCandidateRecord["replayStrategies"][number];
+    readonly run: OpensteerReverseReplayRunRecord;
+  }> {
+    const caseRecord = await this.resolveReverseCaseById(input.caseId);
+    const candidate = resolveReverseCandidate(caseRecord, input.candidateId);
+    const strategy =
+      input.strategyId === undefined
+        ? candidate.replayStrategies.find((entry) => entry.supported) ??
+          candidate.replayStrategies[0]
+        : candidate.replayStrategies.find((entry) => entry.id === input.strategyId);
+    if (strategy === undefined) {
+      throw new OpensteerProtocolError(
+        "not-found",
+        `reverse replay strategy ${input.strategyId ?? "<default>"} was not found for ${candidate.id}`,
+      );
+    }
+    const validationRules = buildReverseValidationRules({
+      record: await this.resolveNetworkRecordByRecordId(candidate.recordId, timeout, {
+        includeBodies: true,
+        redactSecretHeaders: false,
+      }),
+      channel: candidate.channel,
+    });
+    const draft = await this.buildReversePackageDraft(
+      {
+        caseRecord,
+        candidate,
+        strategy,
+        validators: validationRules,
+      },
+      timeout,
+    );
+    if (draft.readiness !== "runnable") {
+      const packageId = input.packageId ?? `reverse-package:ephemeral:${randomUUID()}`;
+      return {
+        caseRecord,
+        candidate,
+        strategy,
+        run: {
+          id: `reverse-replay:${randomUUID()}`,
+          createdAt: Date.now(),
+          candidateId: candidate.id,
+          strategyId: strategy.id,
+          packageId,
+          success: false,
+          channel: candidate.channel.kind,
+          kind: draft.kind,
+          readiness: draft.readiness,
+          ...(strategy.transport === undefined ? {} : { transport: strategy.transport }),
+          stateSource: strategy.stateSource,
+          validation: {},
+          error:
+            draft.unresolvedRequirements[0]?.label ??
+            strategy.failureReason ??
+            "strategy draft still needs agent edits before replay can run",
+        },
+      };
+    }
+    const ephemeralPackage: ReversePackageRecord = {
+      id: input.packageId ?? `reverse-package:ephemeral:${randomUUID()}`,
+      key: `${caseRecord.key}:advisory:${candidate.id}`,
+      version: "1.0.0",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      contentHash: sha256Hex(Buffer.from(candidate.id, "utf8")),
+      tags: caseRecord.tags,
+      provenance: {
+        source: "reverse.solve",
+        sourceId: candidate.id,
+      },
+      payload: {
+        kind: draft.kind,
+        readiness: draft.readiness,
+        caseId: caseRecord.id,
+        objective: caseRecord.payload.objective,
+        candidateId: candidate.id,
+        candidate,
+        strategyId: strategy.id,
+        strategy,
+        channel: candidate.channel,
+        stateSource: strategy.stateSource,
+        observationId: candidate.observationId,
+        ...(strategy.transport === undefined ? {} : { transport: strategy.transport }),
+        guardIds: strategy.guardIds,
+        workflow: draft.workflow,
+        resolvers: draft.resolvers,
+        validators: validationRules,
+        stateSnapshots: draft.stateSnapshots,
+        requirements: buildReversePackageRequirements({
+          stateSource: caseRecord.payload.stateSource,
+          strategy,
+          candidate,
+        }),
+        unresolvedRequirements: draft.unresolvedRequirements,
+        suggestedEdits: draft.suggestedEdits,
+        attachedTraceIds: draft.attachedTraceIds,
+        attachedArtifactIds: draft.attachedArtifactIds,
+        attachedRecordIds: draft.attachedRecordIds,
+      },
+    };
+    const replay = await this.replayReversePackageInternal(
+      ephemeralPackage,
+      timeout,
+      input.pageRef,
+    );
+
+    return {
+      caseRecord,
+      candidate,
+      strategy,
+      run: {
+        ...replay.run,
+        ...(input.packageId === undefined ? {} : { packageId: input.packageId }),
+      },
+    };
+  }
+
+  private async replayReversePackageInternal(
+    packageRecord: ReversePackageRecord,
+    timeout: TimeoutExecutionContext,
+    explicitPageRef: PageRef | undefined,
+  ): Promise<{
+    readonly candidate: OpensteerReverseCandidateRecord;
+    readonly strategy: OpensteerReplayStrategy;
+    readonly run: OpensteerReverseReplayRunRecord;
+  }> {
+    const candidate = packageRecord.payload.candidate;
+    const strategy = packageRecord.payload.strategy;
+    if (candidate === undefined || strategy === undefined) {
+      throw new OpensteerProtocolError(
+        "invalid-argument",
+        `reverse package ${packageRecord.id} is missing its executable candidate or strategy`,
+      );
+    }
+
+    if (packageRecord.payload.stateSnapshots.length > 0) {
+      await this.restoreReverseStateSnapshots(
+        packageRecord.payload.stateSnapshots,
+        candidate,
+        timeout,
+        explicitPageRef,
+      );
+    }
+    const replayResult = await this.executeReversePackageWorkflow(
+      packageRecord,
+      candidate,
+      strategy,
+      timeout,
+      explicitPageRef,
+    );
+
+    return {
+      candidate,
+      strategy,
+      run: {
+        id: `reverse-replay:${randomUUID()}`,
+        createdAt: Date.now(),
+        candidateId: candidate.id,
+        strategyId: strategy.id,
+        packageId: packageRecord.id,
+        success: replayResult.success,
+        channel: candidate.channel.kind,
+        kind: packageRecord.payload.kind,
+        readiness: packageRecord.payload.readiness,
+        stateSource: strategy.stateSource,
+        ...(strategy.transport === undefined ? {} : { transport: strategy.transport }),
+        ...(replayResult.recordId === undefined ? {} : { recordId: replayResult.recordId }),
+        ...(replayResult.status === undefined ? {} : { status: replayResult.status }),
+        validation: replayResult.validation,
+        ...(replayResult.error === undefined ? {} : { error: replayResult.error }),
+      },
+    };
+  }
+
+  private async executeReversePackageWorkflow(
+    packageRecord: ReversePackageRecord,
+    candidate: OpensteerReverseCandidateRecord,
+    strategy: OpensteerReplayStrategy,
+    timeout: TimeoutExecutionContext,
+    explicitPageRef: PageRef | undefined,
+  ): Promise<{
+    readonly success: boolean;
+    readonly recordId?: string;
+    readonly status?: number;
+    readonly validation: OpensteerReverseReplayOutput["validation"];
+    readonly error?: string;
+  }> {
+    const bindings = new Map<string, unknown>();
+    const baselineRequestIds = await this.beginMutationCapture(timeout);
+    const pageRef = explicitPageRef ?? (await this.ensurePageRef());
+    const validatorMap = new Map(
+      packageRecord.payload.validators.map((validator) => [validator.id, validator]),
+    );
+    let lastAssertable: unknown;
+    let lastRecordId: string | undefined;
+    let lastStatus: number | undefined;
+
+    for (const step of packageRecord.payload.workflow) {
+      const resolverValues = await this.resolveReversePackageResolverValues(
+        packageRecord,
+        bindings,
+        pageRef,
+        timeout,
+      );
+      switch (step.kind) {
+        case "operation": {
+          const result = await this.executeReversePackageOperationStep(
+            step,
+            timeout,
+            pageRef,
+            bindings,
+            resolverValues,
+          );
+          if (step.bindAs !== undefined) {
+            bindings.set(step.bindAs, result);
+          }
+          lastAssertable = result;
+          lastRecordId = extractReverseRecordId(result);
+          lastStatus = extractReverseStatus(result);
+          break;
+        }
+        case "await-record": {
+          const record = await this.resolveNetworkRecordByRecordId(
+            step.recordId ?? candidate.recordId,
+            timeout,
+            {
+              includeBodies: true,
+              redactSecretHeaders: false,
+            },
+          );
+          const matchedRecord = await this.waitForObservedReplayRecord(
+            record,
+            baselineRequestIds,
+            timeout,
+            pageRef,
+          );
+          if (matchedRecord === undefined) {
+            return {
+              success: false,
+              validation: {},
+              error: "package workflow did not emit the expected observed record",
+            };
+          }
+          const bindingName = step.bindAs ?? `record:${step.id}`;
+          bindings.set(bindingName, matchedRecord);
+          lastAssertable = matchedRecord;
+          lastRecordId = matchedRecord.recordId;
+          lastStatus = matchedRecord.record.status;
+          break;
+        }
+        case "assert": {
+          const validators = step.validationRuleIds
+            .map((validatorId) => validatorMap.get(validatorId))
+            .filter((validator): validator is OpensteerValidationRule => validator !== undefined);
+          const boundValue =
+            step.binding === undefined ? lastAssertable : bindings.get(step.binding);
+          if (boundValue === undefined) {
+            return {
+              success: false,
+              validation: {},
+              error: `assert step ${step.id} did not find a bound result`,
+            };
+          }
+          return evaluateReversePackageAssertion(
+            boundValue,
+            candidate.channel.kind,
+            validators,
+            lastRecordId,
+            lastStatus,
+          );
+        }
+      }
+    }
+
+    return {
+      success: true,
+      ...(lastRecordId === undefined ? {} : { recordId: lastRecordId }),
+      ...(lastStatus === undefined ? {} : { status: lastStatus }),
+      validation: {},
+    };
+  }
+
+  private async executeReversePackageOperationStep(
+    step: Extract<OpensteerReverseWorkflowStep, { readonly kind: "operation" }>,
+    timeout: TimeoutExecutionContext,
+    pageRef: PageRef,
+    bindings: ReadonlyMap<string, unknown>,
+    resolverValues: ReadonlyMap<string, unknown>,
+  ): Promise<unknown> {
+    const input = normalizeReversePackageOperationInput(
+      step.input,
+      bindings,
+      resolverValues,
+    );
+    switch (step.operation) {
+      case "page.goto":
+        return this.goto(input as OpensteerPageGotoInput, { signal: timeout.signal });
+      case "page.evaluate":
+        return this.evaluate(withReverseOperationPageRef(input, pageRef) as OpensteerPageEvaluateInput, {
+          signal: timeout.signal,
+        });
+      case "dom.click":
+        return this.click(withReverseOperationPageRef(input, pageRef) as OpensteerDomClickInput, {
+          signal: timeout.signal,
+        });
+      case "dom.hover":
+        return this.hover(withReverseOperationPageRef(input, pageRef) as OpensteerDomHoverInput, {
+          signal: timeout.signal,
+        });
+      case "dom.input":
+        return this.input(withReverseOperationPageRef(input, pageRef) as OpensteerDomInputInput, {
+          signal: timeout.signal,
+        });
+      case "dom.scroll":
+        return this.scroll(withReverseOperationPageRef(input, pageRef) as OpensteerDomScrollInput, {
+          signal: timeout.signal,
+        });
+      case "interaction.replay":
+        return this.replayInteraction(withReverseOperationPageRef(input, pageRef) as OpensteerInteractionReplayInput, {
+          signal: timeout.signal,
+        });
+      case "request.raw":
+        return this.rawRequest(input as OpensteerRawRequestInput, {
+          signal: timeout.signal,
+        });
+      default:
+        throw new OpensteerProtocolError(
+          "invalid-argument",
+          `reverse package operation ${step.operation} is not supported by the workflow runner`,
+        );
+    }
+  }
+
+  private async resolveReversePackageResolverValues(
+    packageRecord: ReversePackageRecord,
+    bindings: ReadonlyMap<string, unknown>,
+    pageRef: PageRef,
+    timeout: TimeoutExecutionContext,
+  ): Promise<ReadonlyMap<string, unknown>> {
+    const values = new Map<string, unknown>();
+    for (const resolver of packageRecord.payload.resolvers) {
+      const value = await this.resolveReversePackageResolverValue(
+        resolver,
+        bindings,
+        packageRecord.payload.stateSnapshots,
+        pageRef,
+        timeout,
+      );
+      if (value !== undefined) {
+        values.set(resolver.id, value);
+      }
+    }
+    return values;
+  }
+
+  private async resolveReversePackageResolverValue(
+    resolver: OpensteerExecutableResolver,
+    bindings: ReadonlyMap<string, unknown>,
+    stateSnapshots: readonly OpensteerStateSnapshot[],
+    pageRef: PageRef,
+    timeout: TimeoutExecutionContext,
+  ): Promise<unknown> {
+    if (resolver.value !== undefined) {
+      return resolver.value;
+    }
+
+    if (resolver.binding !== undefined) {
+      const boundValue = bindings.get(resolver.binding);
+      return extractReverseRuntimeValue(boundValue, resolver.pointer);
+    }
+
+    switch (resolver.kind) {
+      case "literal":
+      case "manual":
+      case "runtime-managed":
+        return undefined;
+      case "cookie":
+        return resolveReverseCookieResolverValue(stateSnapshots, resolver);
+      case "storage":
+        return resolveReverseStorageResolverValue(stateSnapshots, resolver);
+      case "prior-response":
+        if (resolver.sourceRecordId === undefined) {
+          return undefined;
+        }
+        return extractReverseRuntimeValue(
+          await this.resolveNetworkRecordByRecordId(resolver.sourceRecordId, timeout, {
+            includeBodies: true,
+            redactSecretHeaders: false,
+          }),
+          resolver.pointer,
+        );
+      case "guard-output":
+        if (resolver.traceId !== undefined) {
+          return extractReverseRuntimeValue(
+            await this.resolveInteractionTraceById(resolver.traceId),
+            resolver.pointer,
+          );
+        }
+        return undefined;
+      case "page-eval":
+        if (
+          resolver.expression === undefined ||
+          !looksLikeExecutablePageResolverExpression(resolver.expression)
+        ) {
+          return undefined;
+        }
+        return (
+          await this.evaluate(
+            {
+              pageRef,
+              script: PAGE_EVAL_RESOLVER_SCRIPT,
+              args: [
+                {
+                  expression: resolver.expression,
+                },
+              ],
+            },
+            { signal: timeout.signal },
+          )
+        ).value;
+      case "script-sandbox":
+        return undefined;
+    }
+  }
+
+  private async buildReverseTransportOperationInput(
+    candidate: OpensteerReverseCandidateRecord,
+    strategy: OpensteerReplayStrategy,
+    timeout: TimeoutExecutionContext,
+  ): Promise<OpensteerRawRequestInput> {
+    if (strategy.transport === undefined) {
+      throw new OpensteerProtocolError(
+        "invalid-argument",
+        `reverse strategy ${strategy.id} is missing a transport`,
+      );
+    }
+    const record = await this.resolveNetworkRecordByRecordId(candidate.recordId, timeout, {
+      includeBodies: true,
+      redactSecretHeaders: false,
+    });
+    const headers = stripManagedRequestHeaders(record.record.requestHeaders, strategy.transport);
+    const body = toReverseRawRequestBodyInput(record.record.requestBody, record.record.requestHeaders);
+    return {
+      transport: strategy.transport,
+      url: record.record.url,
+      method: record.record.method,
+      ...(headers === undefined ? {} : { headers }),
+      ...(body === undefined ? {} : { body }),
+    };
+  }
+
+  private async writePortableReverseRequestPlan(
+    caseRecord: ReverseCaseRecord,
+    candidate: OpensteerReverseCandidateRecord,
+    strategy: OpensteerReverseCandidateRecord["replayStrategies"][number],
+    timeout: TimeoutExecutionContext,
+    input: {
+      readonly key: string;
+      readonly version: string;
+      readonly provenanceSource: "reverse.solve" | "reverse.export";
+    },
+  ): Promise<RequestPlanRecord> {
+    const root = await this.ensureRoot();
+    const record = await this.resolveNetworkRecordByRecordId(candidate.recordId, timeout, {
+      includeBodies: true,
+      redactSecretHeaders: false,
+    });
+    const inferred = inferRequestPlanFromNetworkRecord(record, {
+      recordId: candidate.recordId,
+      key: input.key,
+      version: input.version,
+      lifecycle: "draft",
+    });
+    const defaultHeaders =
+      inferred.payload.endpoint.defaultHeaders === undefined
+        ? undefined
+        : stripManagedRequestHeaders(
+            inferred.payload.endpoint.defaultHeaders,
+            strategy.transport ?? "direct-http",
+          );
+    const payload = normalizeRequestPlanPayload({
+      ...inferred.payload,
+      transport: {
+        kind: strategy.transport ?? "direct-http",
+        ...(strategy.transport === "page-http"
+          ? { requireSameOrigin: false }
+          : {}),
+      },
+      endpoint: {
+        ...inferred.payload.endpoint,
+        ...(defaultHeaders === undefined ? {} : { defaultHeaders }),
+      },
+    });
+    return root.registry.requestPlans.write({
+      ...inferred,
+      key: input.key,
+      version: input.version,
+      tags: caseRecord.tags,
+      provenance: {
+        source: input.provenanceSource,
+        sourceId: candidate.recordId,
+      },
+      payload,
+    });
+  }
+
+  private async writeReversePackage(
+    input: ReversePackageWriteInput,
+  ): Promise<ReversePackageRecord> {
+    const root = await this.ensureRoot();
+    const candidate = input.candidate;
+    const requirements = buildReversePackageRequirements({
+      stateSource: input.caseRecord.payload.stateSource,
+      ...(input.strategy === undefined ? {} : { strategy: input.strategy }),
+      ...(candidate === undefined ? {} : { candidate }),
+      ...(input.manualCalibration === undefined
+        ? {}
+        : { manualCalibration: input.manualCalibration }),
+    });
+    return root.registry.reversePackages.write({
+      key:
+        input.key ??
+        `${input.caseRecord.key}:package:${candidate?.id ?? "draft"}:${Date.now()}`,
+      version: input.version ?? "1.0.0",
+      tags: input.caseRecord.tags,
+      provenance: {
+        source: input.provenanceSource,
+        sourceId: candidate?.id ?? input.caseRecord.id,
+      },
+      payload: {
+        kind: input.kind,
+        readiness: input.readiness,
+        caseId: input.caseRecord.id,
+        objective: input.caseRecord.payload.objective,
+        ...(candidate === undefined ? {} : { candidateId: candidate.id }),
+        ...(candidate === undefined ? {} : { candidate }),
+        ...(input.strategy === undefined ? {} : { strategyId: input.strategy.id }),
+        ...(input.strategy === undefined ? {} : { strategy: input.strategy }),
+        ...(candidate === undefined ? {} : { channel: candidate.channel }),
+        ...(input.strategy === undefined
+          ? { stateSource: input.caseRecord.payload.stateSource }
+          : { stateSource: input.strategy.stateSource }),
+        ...(candidate === undefined ? {} : { observationId: candidate.observationId }),
+        ...(input.strategy?.transport === undefined
+          ? {}
+          : { transport: input.strategy.transport }),
+        guardIds:
+          input.strategy?.guardIds ??
+          candidate?.guardIds ??
+          ([] as readonly string[]),
+        workflow: input.workflow,
+        resolvers: cloneReversePackageResolvers(input.resolvers ?? []),
+        validators: input.validators,
+        stateSnapshots: input.stateSnapshots,
+        requirements,
+        ...(input.requestPlan === undefined
+          ? {}
+          : { requestPlanId: input.requestPlan.id }),
+        unresolvedRequirements: input.unresolvedRequirements,
+        suggestedEdits: input.suggestedEdits,
+        attachedTraceIds: input.attachedTraceIds,
+        attachedArtifactIds: input.attachedArtifactIds,
+        attachedRecordIds: input.attachedRecordIds,
+        ...(input.notes === undefined ? {} : { notes: input.notes }),
+        ...(input.parentPackageId === undefined ? {} : { parentPackageId: input.parentPackageId }),
+      },
+    });
+  }
+
+  private async buildReversePackageDraft(
+    input: {
+      readonly caseRecord: ReverseCaseRecord;
+      readonly candidate?: OpensteerReverseCandidateRecord;
+      readonly strategy?: OpensteerReplayStrategy;
+      readonly validators: readonly OpensteerValidationRule[];
+      readonly workflow?: readonly OpensteerReverseWorkflowStep[];
+      readonly resolvers?: readonly OpensteerExecutableResolver[];
+      readonly attachedTraceIds?: readonly string[];
+      readonly attachedArtifactIds?: readonly string[];
+      readonly attachedRecordIds?: readonly string[];
+      readonly stateSnapshotIds?: readonly string[];
+      readonly manualCalibration?: OpensteerReverseManualCalibrationMode;
+      readonly notes?: string;
+    },
+    timeout: TimeoutExecutionContext,
+  ): Promise<{
+    readonly kind: OpensteerReversePackageKind;
+    readonly readiness: OpensteerReversePackageReadiness;
+    readonly workflow: readonly OpensteerReverseWorkflowStep[];
+    readonly resolvers: readonly OpensteerExecutableResolver[];
+    readonly unresolvedRequirements: readonly OpensteerReverseRequirement[];
+    readonly suggestedEdits: readonly OpensteerReverseSuggestedEdit[];
+    readonly attachedTraceIds: readonly string[];
+    readonly attachedArtifactIds: readonly string[];
+    readonly attachedRecordIds: readonly string[];
+    readonly stateSnapshots: readonly OpensteerStateSnapshot[];
+    readonly notes?: string;
+  }> {
+    const candidate = input.candidate;
+    const strategy = input.strategy;
+    const observation =
+      candidate === undefined
+        ? undefined
+        : input.caseRecord.payload.observations.find((entry) => entry.id === candidate.observationId);
+    const guards =
+      strategy === undefined
+        ? []
+        : input.caseRecord.payload.guards.filter((guard) => strategy.guardIds.includes(guard.id));
+    const resolvers = input.resolvers ?? candidate?.resolvers ?? [];
+    const stateSnapshots =
+      input.stateSnapshotIds === undefined
+        ? candidate === undefined
+          ? []
+          : collectReverseReplayStateSnapshotsFromCase(input.caseRecord, candidate)
+        : input.stateSnapshotIds.map((snapshotId) => {
+            const snapshot = input.caseRecord.payload.stateSnapshots.find(
+              (entry) => entry.id === snapshotId,
+            );
+            if (snapshot === undefined) {
+              throw new OpensteerProtocolError(
+                "not-found",
+                `reverse state snapshot ${snapshotId} was not found`,
+              );
+            }
+            return snapshot;
+          });
+    const executeStepInput =
+      candidate === undefined || strategy === undefined || strategy.execution === "page-observation"
+        ? undefined
+        : await this.buildReverseTransportOperationInput(candidate, strategy, timeout);
+    const executeStepValue =
+      executeStepInput === undefined ? undefined : toCanonicalJsonValue(executeStepInput);
+    const workflow =
+      input.workflow ??
+      buildReversePackageWorkflow({
+        ...(candidate === undefined ? {} : { candidate }),
+        ...(strategy === undefined ? {} : { strategy }),
+        ...(observation === undefined ? {} : { observation }),
+        guards,
+        validators: input.validators,
+        ...(executeStepValue === undefined ? {} : { executeStepInput: executeStepValue }),
+      });
+    const attachedTraceIds = dedupeStringList([
+      ...(observation?.interactionTraceIds ?? []),
+      ...guards.flatMap((guard) => (guard.interactionTraceId === undefined ? [] : [guard.interactionTraceId])),
+      ...(input.attachedTraceIds ?? []),
+    ]);
+    const attachedArtifactIds = dedupeStringList([
+      ...(observation?.scriptArtifactIds ?? []),
+      ...(candidate?.scriptArtifactIds ?? []),
+      ...resolvers.flatMap((resolver) =>
+        resolver.artifactId === undefined && resolver.scriptArtifactId === undefined
+          ? []
+          : [resolver.artifactId ?? resolver.scriptArtifactId!],
+      ),
+      ...(input.attachedArtifactIds ?? []),
+    ]);
+    const attachedRecordIds = dedupeStringList([
+      ...(observation?.networkRecordIds ?? []),
+      ...(candidate === undefined ? [] : [candidate.recordId]),
+      ...(input.attachedRecordIds ?? []),
+    ]);
+    const kind = deriveReversePackageKind({
+      ...(candidate === undefined ? {} : { candidate }),
+      ...(strategy === undefined ? {} : { strategy }),
+    });
+    const unresolvedRequirements = deriveReversePackageUnresolvedRequirements({
+      ...(candidate === undefined ? {} : { candidate }),
+      ...(strategy === undefined ? {} : { strategy }),
+      workflow,
+      resolvers,
+      guards,
+      stateSource: input.caseRecord.payload.stateSource,
+    });
+    const readiness = deriveReversePackageReadiness({
+      kind,
+      unresolvedRequirements,
+    });
+    const suggestedEdits = buildReversePackageSuggestedEdits(unresolvedRequirements);
+    return {
+      kind,
+      readiness,
+      workflow,
+      resolvers,
+      unresolvedRequirements,
+      suggestedEdits,
+      attachedTraceIds,
+      attachedArtifactIds,
+      attachedRecordIds,
+      stateSnapshots,
+      ...(input.notes === undefined ? {} : { notes: input.notes }),
+    };
+  }
+
+  private async writeReverseReportRecord(input: {
+    readonly caseRecord: ReverseCaseRecord;
+    readonly packageRecord: ReversePackageRecord;
+    readonly chosenCandidate?: OpensteerReverseCandidateRecord;
+    readonly chosenStrategy?: OpensteerReplayStrategy;
+  }): Promise<ReverseReportRecord> {
+    const root = await this.ensureRoot();
+    return root.registry.reverseReports.write({
+      key: `${input.caseRecord.key}:report:${Date.now()}`,
+      version: "1.0.0",
+      tags: input.caseRecord.tags,
+      provenance: {
+        source: "reverse.solve",
+        sourceId: input.packageRecord.id,
+      },
+      payload: {
+        caseId: input.caseRecord.id,
+        objective: input.caseRecord.payload.objective,
+        packageId: input.packageRecord.id,
+        packageKind: input.packageRecord.payload.kind,
+        packageReadiness: input.packageRecord.payload.readiness,
+        ...(input.chosenCandidate === undefined
+          ? {}
+          : { chosenCandidateId: input.chosenCandidate.id }),
+        ...(input.chosenStrategy === undefined
+          ? {}
+          : { chosenStrategyId: input.chosenStrategy.id }),
+        observations: input.caseRecord.payload.observations,
+        observationClusters: input.caseRecord.payload.observationClusters,
+        guards: input.caseRecord.payload.guards,
+        stateDeltas: input.caseRecord.payload.stateDeltas,
+        candidateRankings: input.caseRecord.payload.candidates.map((candidate) => ({
+          candidateId: candidate.id,
+          clusterId: candidate.clusterId,
+          score: candidate.score,
+          role: candidate.role,
+          dependencyClass: candidate.dependencyClass,
+          bodyCodec: candidate.bodyCodec,
+          summary: candidate.summary,
+          reasons: buildReverseCandidateRankingReasons(candidate),
+        })),
+        experiments: input.caseRecord.payload.experiments,
+        replayRuns: input.caseRecord.payload.replayRuns,
+        unresolvedRequirements: input.packageRecord.payload.unresolvedRequirements,
+        suggestedEdits: input.packageRecord.payload.suggestedEdits,
+        linkedNetworkRecordIds: input.packageRecord.payload.attachedRecordIds,
+        linkedInteractionTraceIds: input.packageRecord.payload.attachedTraceIds,
+        linkedArtifactIds: input.packageRecord.payload.attachedArtifactIds,
+        linkedStateSnapshotIds: input.packageRecord.payload.stateSnapshots.map((entry) => entry.id),
+        package: input.packageRecord,
+      },
+    });
+  }
+
+  async captureInteraction(
+    input: OpensteerInteractionCaptureInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerInteractionCaptureOutput> {
+    assertValidSemanticOperationInput("interaction.capture", input);
+    if (input.script !== undefined && input.steps !== undefined) {
+      throw new OpensteerProtocolError(
+        "invalid-argument",
+        "interaction capture accepts either script or steps, not both",
+      );
+    }
+
+    return this.runWithOperationTimeout(
+      "interaction.capture",
+      async (timeout) => {
+        const root = await this.ensureRoot();
+        const pageRef = input.pageRef ?? (await this.ensurePageRef());
+        const pageInfo = await this.requireEngine().getPageInfo({ pageRef });
+        const baselineRequestIds = await this.readLiveRequestIds(timeout, {
+          includeCurrentPageOnly: true,
+        });
+        const beforeState = await this.captureReverseStateSnapshot(pageRef, timeout, {
+          includeStorage: input.includeStorage ?? true,
+          includeSessionStorage: input.includeSessionStorage ?? false,
+          includeIndexedDb: input.includeIndexedDb ?? false,
+          ...(input.globalNames === undefined ? {} : { globalNames: input.globalNames }),
+        });
+        await timeout.runStep(() =>
+          this.requireEngine().evaluatePage({
+            pageRef,
+            script: INTERACTION_RECORDER_INSTALL_SCRIPT,
+          }),
+        );
+
+        if (input.script !== undefined) {
+          await this.runInteractionCaptureScript(pageRef, input.script, input.args, timeout);
+        } else if (input.steps !== undefined) {
+          await this.runInteractionCaptureSteps(pageRef, input.steps, timeout);
+        } else {
+          await delayWithSignal(input.durationMs ?? 2_000, timeout.signal);
+        }
+
+        const recorded = await timeout.runStep(() =>
+          this.requireEngine().evaluatePage({
+            pageRef,
+            script: INTERACTION_RECORDER_READ_SCRIPT,
+          }),
+        );
+        const afterState = await this.captureReverseStateSnapshot(pageRef, timeout, {
+          includeStorage: input.includeStorage ?? true,
+          includeSessionStorage: input.includeSessionStorage ?? false,
+          includeIndexedDb: input.includeIndexedDb ?? false,
+          ...(input.globalNames === undefined ? {} : { globalNames: input.globalNames }),
+        });
+        const deltaRecords = (
+          await this.readLiveNetworkRecords(
+            {
+              includeBodies: true,
+              includeCurrentPageOnly: true,
+            },
+            timeout.signal,
+          )
+        ).filter((record) => !baselineRequestIds.has(record.record.requestId));
+        if (deltaRecords.length > 0) {
+          await root.registry.savedNetwork.save(deltaRecords, `interaction:${pageRef}`);
+        }
+
+        const trace = await root.registry.interactionTraces.write({
+          key: input.key ?? buildInteractionTraceKey(pageInfo.url),
+          version: "1.0.0",
+          ...(input.tags === undefined ? {} : { tags: input.tags }),
+          provenance: {
+            source: "interaction.capture",
+            ...(pageInfo.url.length === 0 ? {} : { sourceId: pageInfo.url }),
+          },
+          payload: {
+            mode: input.script === undefined ? "manual" : "automated",
+            pageRef,
+            url: pageInfo.url,
+            startedAt: beforeState.capturedAt,
+            completedAt: afterState.capturedAt,
+            beforeState,
+            afterState,
+            stateDelta: buildStateDelta(beforeState, afterState),
+            events: normalizeInteractionEvents(recorded.data),
+            networkRecordIds: deltaRecords.map((record) => record.recordId),
+            ...(input.caseId === undefined ? {} : { caseId: input.caseId }),
+            ...(input.notes === undefined ? {} : { notes: input.notes }),
+          },
+        });
+
+        return {
+          trace,
+        } satisfies OpensteerInteractionCaptureOutput;
+      },
+      options,
+    );
+  }
+
+  async getInteraction(
+    input: OpensteerInteractionGetInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerInteractionGetOutput> {
+    assertValidSemanticOperationInput("interaction.get", input);
+    return this.runWithOperationTimeout(
+      "interaction.get",
+      async () => ({
+        trace: await this.resolveInteractionTraceById(input.traceId),
+      }),
+      options,
+    );
+  }
+
+  private async runInteractionCaptureScript(
+    pageRef: PageRef,
+    script: string,
+    args: OpensteerInteractionCaptureInput["args"],
+    timeout: TimeoutExecutionContext,
+  ): Promise<void> {
+    await timeout.runStep(() =>
+      this.requireEngine().evaluatePage({
+        pageRef,
+        script,
+        ...(args === undefined ? {} : { args }),
+      }),
+    );
+  }
+
+  private async runInteractionCaptureSteps(
+    pageRef: PageRef,
+    steps: readonly OpensteerInteractionCaptureStep[],
+    timeout: TimeoutExecutionContext,
+  ): Promise<void> {
+    for (const step of steps) {
+      timeout.throwIfAborted();
+      switch (step.kind) {
+        case "goto":
+          await this.navigatePage(
+            {
+              operation: "page.goto",
+              pageRef,
+              url: step.url,
+            },
+            timeout,
+          );
+          break;
+        case "click": {
+          const target = this.toDomTargetRef(step.target);
+          await timeout.runStep(() =>
+            this.requireDom().click({
+              pageRef,
+              target,
+              timeout,
+            }),
+          );
+          break;
+        }
+        case "hover": {
+          const target = this.toDomTargetRef(step.target);
+          await timeout.runStep(() =>
+            this.requireDom().hover({
+              pageRef,
+              target,
+              timeout,
+            }),
+          );
+          break;
+        }
+        case "input": {
+          const target = this.toDomTargetRef(step.target);
+          await timeout.runStep(() =>
+            this.requireDom().input({
+              pageRef,
+              target,
+              text: step.text,
+              ...(step.pressEnter === undefined ? {} : { pressEnter: step.pressEnter }),
+              timeout,
+            }),
+          );
+          break;
+        }
+        case "scroll": {
+          const target = this.toDomTargetRef(step.target);
+          await timeout.runStep(() =>
+            this.requireDom().scroll({
+              pageRef,
+              target,
+              delta: directionToDelta(step.direction, step.amount),
+              timeout,
+            }),
+          );
+          break;
+        }
+        case "wait":
+          await delayWithSignal(step.durationMs, timeout.signal);
+          break;
+      }
+    }
+  }
+
+  async diffInteraction(
+    input: OpensteerInteractionDiffInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerInteractionDiffOutput> {
+    assertValidSemanticOperationInput("interaction.diff", input);
+    return this.runWithOperationTimeout(
+      "interaction.diff",
+      async () => {
+        const [left, right] = await Promise.all([
+          this.resolveInteractionTraceById(input.leftTraceId),
+          this.resolveInteractionTraceById(input.rightTraceId),
+        ]);
+        return diffInteractionTraces(left, right);
+      },
+      options,
+    );
+  }
+
+  async replayInteraction(
+    input: OpensteerInteractionReplayInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerInteractionReplayOutput> {
+    assertValidSemanticOperationInput("interaction.replay", input);
+    return this.runWithOperationTimeout(
+      "interaction.replay",
+      async (timeout) => this.replayInteractionTraceById(input.traceId, input.pageRef, timeout),
+      options,
+    );
   }
 
   async beautifyScript(
@@ -3299,6 +5373,373 @@ export class OpensteerSessionRuntime {
     return saved;
   }
 
+  private resolveCurrentStateSource(): OpensteerStateSourceKind {
+    const browser = this.configuredBrowser;
+    if (browser === undefined || browser.kind === undefined || browser.kind === "managed") {
+      return "managed";
+    }
+    return browser.kind;
+  }
+
+  private async resolveReverseCaseById(caseId: string): Promise<ReverseCaseRecord> {
+    const record = await (await this.ensureRoot()).registry.reverseCases.getById(caseId);
+    if (record === undefined) {
+      throw new OpensteerProtocolError("not-found", `reverse case ${caseId} was not found`, {
+        details: {
+          caseId,
+          kind: "reverse-case",
+        },
+      });
+    }
+    return record;
+  }
+
+  private async tryResolveReverseCaseById(
+    caseId: string,
+  ): Promise<ReverseCaseRecord | undefined> {
+    return (await this.ensureRoot()).registry.reverseCases.getById(caseId);
+  }
+
+  private async resolveReversePackageById(packageId: string): Promise<ReversePackageRecord> {
+    const record = await (await this.ensureRoot()).registry.reversePackages.getById(packageId);
+    if (record === undefined) {
+      throw new OpensteerProtocolError(
+        "not-found",
+        `reverse package ${packageId} was not found`,
+        {
+          details: {
+            packageId,
+            kind: "reverse-package",
+          },
+        },
+      );
+    }
+    return record;
+  }
+
+  private async resolveReverseReportById(reportId: string): Promise<ReverseReportRecord> {
+    const record = await (await this.ensureRoot()).registry.reverseReports.getById(reportId);
+    if (record === undefined) {
+      throw new OpensteerProtocolError(
+        "not-found",
+        `reverse report ${reportId} was not found`,
+        {
+          details: {
+            reportId,
+            kind: "reverse-report",
+          },
+        },
+      );
+    }
+    return record;
+  }
+
+  private async resolveReverseReportByPackageId(
+    packageId: string,
+  ): Promise<ReverseReportRecord> {
+    const reports = await (await this.ensureRoot()).registry.reverseReports.list();
+    const report = reports.find((entry) => entry.payload.packageId === packageId);
+    if (report === undefined) {
+      throw new OpensteerProtocolError(
+        "not-found",
+        `reverse report for package ${packageId} was not found`,
+        {
+          details: {
+            packageId,
+            kind: "reverse-report",
+          },
+        },
+      );
+    }
+    return report;
+  }
+
+  private async resolveInteractionTraceById(traceId: string): Promise<InteractionTraceRecord> {
+    const trace = await (await this.ensureRoot()).registry.interactionTraces.getById(traceId);
+    if (trace === undefined) {
+      throw new OpensteerProtocolError(
+        "not-found",
+        `interaction trace ${traceId} was not found`,
+        {
+          details: {
+            traceId,
+            kind: "interaction-trace",
+          },
+        },
+      );
+    }
+    return trace;
+  }
+
+  private async captureReverseStateSnapshot(
+    pageRef: PageRef,
+    timeout: TimeoutExecutionContext,
+    options: {
+      readonly includeStorage: boolean;
+      readonly includeSessionStorage: boolean;
+      readonly includeIndexedDb: boolean;
+      readonly globalNames?: readonly string[];
+    },
+  ): Promise<OpensteerStateSnapshot> {
+    const pageInfo = await timeout.runStep(() => this.requireEngine().getPageInfo({ pageRef }));
+    const cookies = await timeout.runStep(() =>
+      this.requireEngine().getCookies({
+        sessionRef: pageInfo.sessionRef,
+        urls: [pageInfo.url],
+      }),
+    );
+    const storage =
+      options.includeStorage
+        ? await timeout.runStep(() =>
+            this.requireEngine().getStorageSnapshot({
+              sessionRef: pageInfo.sessionRef,
+              includeSessionStorage: options.includeSessionStorage,
+              includeIndexedDb: options.includeIndexedDb,
+            }),
+          )
+        : undefined;
+    const pageState = await timeout.runStep(() =>
+      this.requireEngine().evaluatePage({
+        pageRef,
+        script: CAPTURE_PAGE_STATE_SCRIPT,
+        args: [
+          {
+            globalNames: [...(options.globalNames ?? [])],
+          },
+        ],
+      }),
+    );
+
+    return {
+      id: `state:${randomUUID()}`,
+      capturedAt: Date.now(),
+      pageRef,
+      url: pageInfo.url,
+      cookies: cookies.map((cookie) => ({
+        name: cookie.name,
+        value: cookie.value,
+        domain: cookie.domain,
+        path: cookie.path,
+        secure: cookie.secure,
+        httpOnly: cookie.httpOnly,
+        ...(cookie.sameSite === undefined ? {} : { sameSite: cookie.sameSite }),
+        ...(cookie.priority === undefined ? {} : { priority: cookie.priority }),
+        ...(cookie.partitionKey === undefined ? {} : { partitionKey: cookie.partitionKey }),
+        session: cookie.session,
+        ...(cookie.expiresAt === undefined ? {} : { expiresAt: cookie.expiresAt }),
+      })),
+      ...(storage === undefined ? {} : { storage }),
+      ...(Array.isArray((pageState.data as { hiddenFields?: unknown }).hiddenFields)
+        ? {
+            hiddenFields: (pageState.data as { hiddenFields: readonly { path: string; name: string; value: string }[] }).hiddenFields,
+          }
+        : {}),
+      ...(pageState.data !== null &&
+      typeof pageState.data === "object" &&
+      !Array.isArray(pageState.data) &&
+      "globals" in pageState.data
+        ? {
+            globals: (pageState.data as { globals?: Readonly<Record<string, unknown>> }).globals,
+          }
+        : {}),
+    };
+  }
+
+  private async restoreReverseStateSnapshots(
+    snapshots: readonly OpensteerStateSnapshot[],
+    candidate: OpensteerReverseCandidateRecord,
+    timeout: TimeoutExecutionContext,
+    explicitPageRef: PageRef | undefined,
+  ): Promise<void> {
+    if (snapshots.length === 0) {
+      return;
+    }
+
+    const pageRef = explicitPageRef ?? (await this.ensurePageRef());
+    const engine = this.requireEngine();
+    const pageInfo = await timeout.runStep(() => engine.getPageInfo({ pageRef }));
+    const cookies = mergeReverseStateSnapshotCookies(snapshots, pageInfo.sessionRef);
+    if (cookies.length > 0) {
+      await timeout.runStep(() =>
+        engine.setCookies({
+          sessionRef: pageInfo.sessionRef,
+          cookies,
+        }),
+      );
+    }
+
+    const currentPageOrigin = originFromUrl(pageInfo.url);
+    const targetUrl = resolveReverseReplayStateRestoreUrl(
+      candidate,
+      snapshots,
+      pageInfo.url,
+    );
+    const targetOrigin = originFromUrl(targetUrl);
+    const localStorageByOrigin = mergeReverseStateSnapshotLocalStorage(snapshots);
+    const sessionStorageByOrigin = mergeReverseStateSnapshotSessionStorage(snapshots);
+
+    if (
+      targetOrigin !== undefined &&
+      (localStorageByOrigin.has(targetOrigin) || sessionStorageByOrigin.has(targetOrigin))
+    ) {
+      if (currentPageOrigin !== targetOrigin) {
+        await this.navigatePage(
+          {
+            operation: "page.goto",
+            pageRef,
+            url: buildReverseStateRestoreNavigationUrl(targetUrl, targetOrigin),
+          },
+          timeout,
+        );
+      }
+      await timeout.runStep(() =>
+        engine.evaluatePage({
+          pageRef,
+          script: RESTORE_PAGE_STORAGE_SCRIPT,
+          args: [
+            {
+              ...(localStorageByOrigin.has(targetOrigin)
+                ? { localStorageEntries: localStorageByOrigin.get(targetOrigin) ?? [] }
+                : {}),
+              ...(sessionStorageByOrigin.has(targetOrigin)
+                ? { sessionStorageEntries: sessionStorageByOrigin.get(targetOrigin) ?? [] }
+                : {}),
+            },
+          ],
+        }),
+      );
+      localStorageByOrigin.delete(targetOrigin);
+      sessionStorageByOrigin.delete(targetOrigin);
+    }
+
+    for (const [origin, localStorageEntries] of localStorageByOrigin.entries()) {
+      const createdPage = await timeout.runStep(() =>
+        engine.createPage({
+          sessionRef: pageInfo.sessionRef,
+        }),
+      );
+      const restorePageRef = createdPage.data.pageRef;
+      try {
+        await this.navigatePage(
+          {
+            operation: "page.goto",
+            pageRef: restorePageRef,
+            url: buildReverseStateRestoreNavigationUrl(undefined, origin),
+          },
+          timeout,
+        );
+        await timeout.runStep(() =>
+          engine.evaluatePage({
+            pageRef: restorePageRef,
+            script: RESTORE_PAGE_STORAGE_SCRIPT,
+            args: [
+              {
+                localStorageEntries,
+              },
+            ],
+          }),
+        );
+      } finally {
+        await engine.closePage({ pageRef: restorePageRef }).catch(() => undefined);
+      }
+    }
+  }
+
+  private async waitForObservedReplayRecord(
+    capturedRecord: NetworkQueryRecord,
+    baselineRequestIds: ReadonlySet<string>,
+    timeout: TimeoutExecutionContext,
+    pageRef: PageRef,
+  ): Promise<NetworkQueryRecord | undefined> {
+    const method = capturedRecord.record.method;
+    const url = capturedRecord.record.url;
+    while (true) {
+      timeout.throwIfAborted();
+      const records = await this.queryLiveNetwork(
+        {
+          source: "live",
+          pageRef,
+          url,
+          method,
+          includeBodies: true,
+          limit: 50,
+        },
+        timeout,
+        {
+          ignoreLimit: true,
+          redactSecretHeaders: false,
+        },
+      );
+      const match = [...records]
+        .reverse()
+        .find(
+          (record) =>
+            !baselineRequestIds.has(record.record.requestId) &&
+            this.isObservedReplayRecordSettled(record),
+        );
+      if (match !== undefined) {
+        return match;
+      }
+      const remainingMs = timeout.remainingMs();
+      if (remainingMs !== undefined && remainingMs <= 0) {
+        return undefined;
+      }
+      await runtimeDelay(Math.min(200, remainingMs ?? 200));
+    }
+  }
+
+  private isObservedReplayRecordSettled(record: NetworkQueryRecord): boolean {
+    if (record.record.captureState !== "complete") {
+      return false;
+    }
+    switch (record.record.kind) {
+      case "http":
+      case "event-stream":
+        return (
+          record.record.status !== undefined ||
+          record.record.responseBodyState === "complete" ||
+          record.record.responseBodyState === "failed" ||
+          record.record.responseBodyState === "skipped"
+        );
+      case "websocket":
+        return true;
+    }
+  }
+
+  private async replayInteractionTraceById(
+    traceId: string,
+    explicitPageRef: PageRef | undefined,
+    timeout: TimeoutExecutionContext,
+  ): Promise<OpensteerInteractionReplayOutput> {
+    const trace = await this.resolveInteractionTraceById(traceId);
+    const pageRef = explicitPageRef ?? trace.payload.pageRef ?? (await this.ensurePageRef());
+    try {
+      const result = await timeout.runStep(() =>
+        this.requireEngine().evaluatePage({
+          pageRef,
+          script: INTERACTION_REPLAY_SCRIPT,
+          args: [trace.payload.events],
+        }),
+      );
+      const replayedEventCount =
+        typeof (result.data as { replayedEventCount?: unknown }).replayedEventCount === "number"
+          ? ((result.data as { replayedEventCount: number }).replayedEventCount)
+          : trace.payload.events.length;
+      return {
+        traceId: trace.id,
+        replayedEventCount,
+        success: true,
+      };
+    } catch (error) {
+      return {
+        traceId: trace.id,
+        replayedEventCount: 0,
+        success: false,
+        error: normalizeRuntimeErrorMessage(error),
+      };
+    }
+  }
+
   private async readLiveNetworkRecords(
     input: {
       readonly pageRef?: PageRef;
@@ -3475,7 +5916,10 @@ export class OpensteerSessionRuntime {
     binding: RuntimeBrowserBinding | undefined,
   ): Promise<OpensteerRawRequestOutput> {
     const transport = normalizeTransportKind(input.transport ?? "context-http");
-    const request = this.applyCookieJarToTransportRequest(buildRawTransportRequest(input), input.cookieJar);
+    const request = finalizeMaterializedTransportRequest(
+      this.applyCookieJarToTransportRequest(buildRawTransportRequest(input), input.cookieJar),
+      transport,
+    );
 
     if (transport === "direct-http") {
       return this.executeDirectTransportRequestWithPersistence(request, timeout, input.cookieJar);
@@ -3489,9 +5933,9 @@ export class OpensteerSessionRuntime {
       return this.executeContextTransportRequestWithPersistence(request, timeout, binding, input.cookieJar);
     }
 
-    if (transport === "page-eval-http") {
-      const pageBinding = await this.resolvePageEvalBinding(request.url, input.pageRef);
-      return this.executePageEvalTransportRequestWithPersistence(
+    if (transport === "page-http") {
+      const pageBinding = await this.resolvePageHttpBinding(request.url, input.pageRef, false);
+      return this.executePageHttpTransportRequestWithPersistence(
         request,
         timeout,
         pageBinding,
@@ -3534,7 +5978,7 @@ export class OpensteerSessionRuntime {
     };
   }
 
-  private async executePageEvalTransportRequestWithPersistence(
+  private async executePageHttpTransportRequestWithPersistence(
     request: {
       readonly method: string;
       readonly url: string;
@@ -3546,13 +5990,13 @@ export class OpensteerSessionRuntime {
     binding: RuntimeBrowserBinding,
     cookieJarName?: string,
   ): Promise<OpensteerRawRequestOutput> {
-    const response = await this.executePageEvalTransportRequest(request, timeout, binding);
+    const response = await this.executePageHttpTransportRequest(request, timeout, binding);
     this.updateCookieJarFromResponse(cookieJarName, toProtocolRequestResponseResult(response), request.url);
     const recordId = await this.persistDirectTransportRecord(
       request,
       response,
       undefined,
-      "page-eval-http",
+      "page-http",
       binding,
     );
     return {
@@ -3615,7 +6059,7 @@ export class OpensteerSessionRuntime {
     };
   }
 
-  private async executePageEvalTransportRequest(
+  private async executePageHttpTransportRequest(
     request: {
       readonly method: string;
       readonly url: string;
@@ -3637,7 +6081,7 @@ export class OpensteerSessionRuntime {
     const result = await timeout.runStep(() =>
       this.requireEngine().evaluatePage({
         pageRef: binding.pageRef,
-        script: PAGE_EVAL_HTTP_SCRIPT,
+        script: PAGE_HTTP_REQUEST_SCRIPT,
         args: [
           {
             url: request.url,
@@ -3653,7 +6097,76 @@ export class OpensteerSessionRuntime {
         ...(remainingMs === undefined ? {} : { timeoutMs: remainingMs }),
       }),
     );
-    return toPageEvalTransportResponse(result.data);
+    return toPageHttpTransportResponse(result.data);
+  }
+
+  private async executePageHttpEventStreamRequest(
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly followRedirects?: boolean;
+    },
+    timeout: TimeoutExecutionContext,
+    binding: RuntimeBrowserBinding,
+  ): Promise<{
+    readonly status: number;
+    readonly firstChunkPreview?: string;
+  }> {
+    const remainingMs = timeout.remainingMs();
+    const result = await timeout.runStep(() =>
+      this.requireEngine().evaluatePage({
+        pageRef: binding.pageRef,
+        script: PAGE_HTTP_EVENT_STREAM_SCRIPT,
+        args: [
+          {
+            url: request.url,
+            method: request.method,
+            headers: request.headers ?? [],
+            bodyBase64:
+              request.body === undefined
+                ? undefined
+                : Buffer.from(request.body.bytes).toString("base64"),
+            followRedirects: request.followRedirects !== false,
+            readTimeoutMs: computeStreamReadTimeoutMs(timeout),
+          },
+        ],
+        ...(remainingMs === undefined ? {} : { timeoutMs: remainingMs }),
+      }),
+    );
+    return toPageHttpEventStreamResponse(result.data);
+  }
+
+  private async executePageHttpWebSocketRequest(
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+    },
+    timeout: TimeoutExecutionContext,
+    binding: RuntimeBrowserBinding,
+  ): Promise<{
+    readonly opened: boolean;
+    readonly messageCount: number;
+    readonly error?: string;
+  }> {
+    const remainingMs = timeout.remainingMs();
+    const result = await timeout.runStep(() =>
+      this.requireEngine().evaluatePage({
+        pageRef: binding.pageRef,
+        script: PAGE_HTTP_WEBSOCKET_SCRIPT,
+        args: [
+          {
+            url: request.url,
+            protocols: parseWebSocketProtocols(request.headers),
+            waitMs: computeStreamReadTimeoutMs(timeout),
+          },
+        ],
+        ...(remainingMs === undefined ? {} : { timeoutMs: remainingMs }),
+      }),
+    );
+    return toPageHttpWebSocketResponse(result.data);
   }
 
   private async executeContextTransportRequest(
@@ -3791,6 +6304,7 @@ export class OpensteerSessionRuntime {
     }
 
     const cookieJarName = resolvedInput.cookieJar ?? plan.payload.transport.cookieJar;
+    const transportKind = normalizeTransportKind(plan.payload.transport.kind);
     let transportRequest = this.applyCookieJarToTransportRequest(
       applyTransportRequestOverrides(
         buildTransportRequestFromPlan(plan, resolvedInput),
@@ -3798,6 +6312,7 @@ export class OpensteerSessionRuntime {
       ),
       cookieJarName,
     );
+    transportRequest = finalizeMaterializedTransportRequest(transportRequest, transportKind);
     let current = await this.executePlanTransportRequest(
       plan,
       transportRequest,
@@ -3846,6 +6361,7 @@ export class OpensteerSessionRuntime {
         ),
         cookieJarName,
       );
+      transportRequest = finalizeMaterializedTransportRequest(transportRequest, transportKind);
       current = await this.executePlanTransportRequest(
         plan,
         transportRequest,
@@ -3974,9 +6490,13 @@ export class OpensteerSessionRuntime {
       };
     }
 
-    if (transportKind === "page-eval-http") {
-      const pageBinding = await this.resolvePageEvalBinding(request.url, binding?.pageRef);
-      const response = await this.executePageEvalTransportRequest(request, timeout, pageBinding);
+    if (transportKind === "page-http") {
+      const pageBinding = await this.resolvePageHttpBinding(
+        request.url,
+        binding?.pageRef,
+        plan.payload.transport.requireSameOrigin ?? false,
+      );
+      const response = await this.executePageHttpTransportRequest(request, timeout, pageBinding);
       this.updateCookieJarFromResponse(cookieJarName, toProtocolRequestResponseResult(response), request.url);
       return {
         output: buildPlanExecuteOutput(plan, request, response),
@@ -4484,9 +7004,12 @@ export class OpensteerSessionRuntime {
       requestInput.cookieJar === undefined
         ? undefined
         : interpolateTemplate(requestInput.cookieJar, variables);
-    const request = this.applyCookieJarToTransportRequest(
-      buildRecipeRequest(requestInput, variables),
-      cookieJar,
+    const request = finalizeMaterializedTransportRequest(
+      this.applyCookieJarToTransportRequest(
+        buildRecipeRequest(requestInput, variables),
+        cookieJar,
+      ),
+      transport,
     );
 
     switch (transport) {
@@ -4499,9 +7022,9 @@ export class OpensteerSessionRuntime {
           this.requireExistingBrowserBindingForRecovery(),
           cookieJar,
         );
-      case "page-eval-http": {
-        const binding = await this.resolvePageEvalBinding(request.url, requestInput.pageRef);
-        return this.executePageEvalTransportRequestWithPersistence(request, timeout, binding, cookieJar);
+      case "page-http": {
+        const binding = await this.resolvePageHttpBinding(request.url, requestInput.pageRef, false);
+        return this.executePageHttpTransportRequestWithPersistence(request, timeout, binding, cookieJar);
       }
       case "context-http": {
         return this.executeContextTransportRequestWithPersistence(
@@ -4520,16 +7043,17 @@ export class OpensteerSessionRuntime {
     }
   }
 
-  private async resolvePageEvalBinding(
+  private async resolvePageHttpBinding(
     requestUrl: string,
     explicitPageRef: PageRef | undefined,
+    requireSameOrigin = false,
   ): Promise<RuntimeBrowserBinding> {
     const pageRef = explicitPageRef ?? (await this.ensurePageRef());
     const pageInfo = await this.requireEngine().getPageInfo({ pageRef });
-    if (new URL(pageInfo.url).origin !== new URL(requestUrl).origin) {
+    if (requireSameOrigin && new URL(pageInfo.url).origin !== new URL(requestUrl).origin) {
       throw new OpensteerProtocolError(
         "invalid-request",
-        `page-eval-http requires a bound page on the same origin as ${requestUrl}`,
+        `page-http requires a bound page on the same origin as ${requestUrl}`,
         {
           details: {
             pageRef,
@@ -4585,26 +7109,31 @@ export class OpensteerSessionRuntime {
     readonly status: number;
     readonly statusText: string;
     readonly headers: readonly HeaderEntry[];
-    readonly body?: BrowserBodyPayload;
-    readonly redirected: boolean;
+      readonly body?: BrowserBodyPayload;
+      readonly redirected: boolean;
   }> {
+    const normalizedRequest = finalizeMaterializedTransportRequest(request, transport);
     switch (transport) {
       case "direct-http":
-        return timeout.runStep(() => executeDirectTransportRequest(request, timeout.signal));
+        return timeout.runStep(() => executeDirectTransportRequest(normalizedRequest, timeout.signal));
       case "matched-tls":
-        return this.executeMatchedTlsTransportRequest(request, timeout, this.currentBinding());
+        return this.executeMatchedTlsTransportRequest(normalizedRequest, timeout, this.currentBinding());
       case "context-http":
-        return this.executeContextTransportRequest(request, timeout, this.currentBinding());
-      case "page-eval-http":
-        return this.executePageEvalTransportRequest(
-          request,
+        return this.executeContextTransportRequest(normalizedRequest, timeout, this.currentBinding());
+      case "page-http":
+        return this.executePageHttpTransportRequest(
+          normalizedRequest,
           timeout,
-          await this.resolvePageEvalBinding(request.url, this.currentBinding()?.pageRef),
+          await this.resolvePageHttpBinding(
+            normalizedRequest.url,
+            this.currentBinding()?.pageRef,
+            false,
+          ),
         );
       case "session-http": {
         const binding = this.currentBinding() ?? (await this.ensureBrowserTransportBinding());
         const output = await this.executeTransportRequestWithJournal(
-          request,
+          normalizedRequest,
           timeout,
           binding.sessionRef,
         );
@@ -5746,7 +8275,8 @@ function buildMinimizedRequestPlan(input: {
 }): OpensteerWriteRequestPlanInput {
   const url = new URL(input.request.url);
   const headers = input.request.headers ?? [];
-  const requestContentType = headerValue(headers, "content-type") ?? input.request.body?.mimeType;
+  const validHeaders = filterValidHttpHeaders(headers);
+  const requestContentType = headerValue(validHeaders, "content-type") ?? input.request.body?.mimeType;
   const body = buildMinimizedRequestPlanBody(input.request.body, requestContentType);
   const responseContentType = headerValue(input.record.record.responseHeaders, "content-type");
 
@@ -5777,10 +8307,10 @@ function buildMinimizedRequestPlan(input: {
                 value,
               })),
             }),
-        ...(headers.length === 0
+        ...(validHeaders.length === 0
           ? {}
           : {
-              defaultHeaders: headers.map((header) => ({
+              defaultHeaders: validHeaders.map((header) => ({
                 name: header.name,
                 value: header.value,
               })),
@@ -5795,9 +8325,9 @@ function buildMinimizedRequestPlan(input: {
               ...(responseContentType === undefined ? {} : { contentType: responseContentType }),
             },
           }),
-      ...(inferMinimizedPlanAuth(headers) === undefined
+      ...(inferMinimizedPlanAuth(validHeaders) === undefined
         ? {}
-        : { auth: inferMinimizedPlanAuth(headers)! }),
+        : { auth: inferMinimizedPlanAuth(validHeaders)! }),
     }),
   };
 }
@@ -5819,9 +8349,7 @@ function buildMinimizedRequestPlanBody(
         ...(contentType === undefined ? {} : { contentType }),
         template: toCanonicalJsonValue(JSON.parse(bodyText)),
       };
-    } catch {
-      // Fall through to text body handling.
-    }
+    } catch {}
   }
   if (normalizedContentType?.includes("application/x-www-form-urlencoded") === true) {
     const params = new URLSearchParams(bodyText);
@@ -5878,8 +8406,778 @@ function buildMinimizedRequestPlanKey(record: NetworkQueryRecord): string {
   return `minimized-${slug || "request"}`;
 }
 
+function buildReverseCaseKey(objective: string | undefined, pageUrl: string): string {
+  const seed = objective ?? pageUrl;
+  return seed
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || `reverse-${Date.now()}`;
+}
+
+function buildInteractionTraceKey(pageUrl: string): string {
+  return `interaction-${buildReverseCaseKey(undefined, pageUrl)}`;
+}
+
+function mergeStringArrays(
+  left: readonly string[],
+  right: readonly string[],
+): readonly string[] {
+  return [...new Set([...left, ...right])];
+}
+
+function mergeReverseGuards(
+  existing: readonly OpensteerReverseGuardRecord[],
+  incoming: readonly OpensteerReverseGuardRecord[],
+): readonly OpensteerReverseGuardRecord[] {
+  const merged = new Map(existing.map((guard) => [guard.id, guard]));
+  for (const guard of incoming) {
+    merged.set(guard.id, guard);
+  }
+  return [...merged.values()];
+}
+
+function mergeObservationClusters(
+  existing: readonly OpensteerObservationCluster[],
+  incoming: readonly OpensteerObservationCluster[],
+): readonly OpensteerObservationCluster[] {
+  const merged = new Map(existing.map((cluster) => [cluster.id, cluster]));
+  for (const cluster of incoming) {
+    merged.set(cluster.id, cluster);
+  }
+  return [...merged.values()].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function collectReverseReplayStateSnapshotsFromCase(
+  caseRecord: ReverseCaseRecord,
+  candidate: OpensteerReverseCandidateRecord,
+): readonly OpensteerStateSnapshot[] {
+  const snapshotIds = new Set<string>();
+  const observation = caseRecord.payload.observations.find(
+    (entry) => entry.id === candidate.observationId,
+  );
+  for (const snapshotId of observation?.stateSnapshotIds ?? []) {
+    snapshotIds.add(snapshotId);
+  }
+  for (const resolver of candidate.resolvers) {
+    if (resolver.stateSnapshotId !== undefined) {
+      snapshotIds.add(resolver.stateSnapshotId);
+    }
+  }
+  return caseRecord.payload.stateSnapshots.filter((snapshot) => snapshotIds.has(snapshot.id));
+}
+
+function mergeReverseStateSnapshotCookies(
+  snapshots: readonly OpensteerStateSnapshot[],
+  sessionRef: SessionRef,
+): readonly CookieRecord[] {
+  const merged = new Map<string, CookieRecord>();
+  for (const snapshot of [...snapshots].sort((left, right) => left.capturedAt - right.capturedAt)) {
+    for (const cookie of snapshot.cookies ?? []) {
+      merged.set(`${cookie.name}\u0000${cookie.domain}\u0000${cookie.path}`, {
+        sessionRef,
+        name: cookie.name,
+        value: cookie.value,
+        domain: cookie.domain,
+        path: cookie.path,
+        secure: cookie.secure,
+        httpOnly: cookie.httpOnly,
+        ...(cookie.sameSite === undefined ? {} : { sameSite: cookie.sameSite }),
+        ...(cookie.priority === undefined ? {} : { priority: cookie.priority }),
+        ...(cookie.partitionKey === undefined ? {} : { partitionKey: cookie.partitionKey }),
+        session: cookie.session,
+        ...(cookie.expiresAt === undefined ? {} : { expiresAt: cookie.expiresAt }),
+      });
+    }
+  }
+  return [...merged.values()];
+}
+
+function mergeReverseStateSnapshotLocalStorage(
+  snapshots: readonly OpensteerStateSnapshot[],
+): Map<string, readonly { readonly key: string; readonly value: string }[]> {
+  const merged = new Map<string, Map<string, string>>();
+  for (const snapshot of [...snapshots].sort((left, right) => left.capturedAt - right.capturedAt)) {
+    for (const origin of snapshot.storage?.origins ?? []) {
+      const entries = merged.get(origin.origin) ?? new Map<string, string>();
+      entries.clear();
+      for (const entry of origin.localStorage) {
+        entries.set(entry.key, entry.value);
+      }
+      merged.set(origin.origin, entries);
+    }
+  }
+  return new Map(
+    [...merged.entries()].map(([origin, entries]) => [
+      origin,
+      [...entries.entries()].map(([key, value]) => ({ key, value })),
+    ]),
+  );
+}
+
+function mergeReverseStateSnapshotSessionStorage(
+  snapshots: readonly OpensteerStateSnapshot[],
+): Map<string, readonly { readonly key: string; readonly value: string }[]> {
+  const merged = new Map<string, Map<string, string>>();
+  for (const snapshot of [...snapshots].sort((left, right) => left.capturedAt - right.capturedAt)) {
+    for (const sessionStorage of snapshot.storage?.sessionStorage ?? []) {
+      const entries = merged.get(sessionStorage.origin) ?? new Map<string, string>();
+      entries.clear();
+      for (const entry of sessionStorage.entries) {
+        entries.set(entry.key, entry.value);
+      }
+      merged.set(sessionStorage.origin, entries);
+    }
+  }
+  return new Map(
+    [...merged.entries()].map(([origin, entries]) => [
+      origin,
+      [...entries.entries()].map(([key, value]) => ({ key, value })),
+    ]),
+  );
+}
+
+function resolveReverseReplayStateRestoreUrl(
+  candidate: OpensteerReverseCandidateRecord,
+  snapshots: readonly OpensteerStateSnapshot[],
+  currentUrl: string,
+): string {
+  const navigationUrl = candidate.channel.kind === "http" ? candidate.channel.url : undefined;
+  const preferredSnapshotUrl = [...snapshots]
+    .sort((left, right) => right.capturedAt - left.capturedAt)
+    .find((snapshot) => typeof snapshot.url === "string" && snapshot.url.length > 0)?.url;
+  return preferredSnapshotUrl ?? navigationUrl ?? currentUrl;
+}
+
+function buildReverseStateRestoreNavigationUrl(
+  preferredUrl: string | undefined,
+  origin: string,
+): string {
+  if (preferredUrl !== undefined) {
+    const preferredOrigin = originFromUrl(preferredUrl);
+    if (preferredOrigin === origin) {
+      return preferredUrl;
+    }
+  }
+  return origin.endsWith("/") ? origin : `${origin}/`;
+}
+
+function originFromUrl(url: string | undefined): string | undefined {
+  if (url === undefined) {
+    return undefined;
+  }
+  try {
+    return new URL(url).origin;
+  } catch {
+    return undefined;
+  }
+}
+
+function filterReverseObservationWindow(
+  records: readonly NetworkQueryRecord[],
+  journal: NetworkJournal,
+  captureWindowMs: number | undefined,
+): readonly NetworkQueryRecord[] {
+  if (captureWindowMs === undefined) {
+    return records;
+  }
+  const observedAfter = Date.now() - captureWindowMs;
+  return records.filter((record) => (journal.getObservedAt(record.recordId) ?? 0) >= observedAfter);
+}
+
+function isReverseRelevantNetworkRecord(record: NetworkQueryRecord): boolean {
+  return (
+    record.record.resourceType === "fetch" ||
+    record.record.resourceType === "xhr" ||
+    record.record.resourceType === "websocket" ||
+    record.record.resourceType === "event-stream"
+  );
+}
+
+function resolveReverseCandidate(
+  caseRecord: ReverseCaseRecord,
+  candidateId: string,
+): OpensteerReverseCandidateRecord {
+  const candidate = caseRecord.payload.candidates.find((entry) => entry.id === candidateId);
+  if (candidate === undefined) {
+    throw new OpensteerProtocolError(
+      "not-found",
+      `reverse candidate ${candidateId} was not found in case ${caseRecord.id}`,
+    );
+  }
+  return candidate;
+}
+
+function dedupeStringList(values: readonly string[]): readonly string[] {
+  return [...new Set(values)].sort((left, right) => left.localeCompare(right));
+}
+
+function buildReverseCandidateRankingReasons(
+  candidate: OpensteerReverseCandidateRecord,
+): readonly string[] {
+  const reasons = [
+    candidate.summary,
+    `${candidate.role} ${candidate.boundary} candidate scored ${candidate.score}`,
+    `${candidate.dependencyClass} dependency class`,
+    `${candidate.bodyCodec.kind} body codec`,
+  ];
+  if (candidate.matchedTargetHints.length > 0) {
+    reasons.push(`matched target hints: ${candidate.matchedTargetHints.join(", ")}`);
+  }
+  if (candidate.guardIds.length > 0) {
+    reasons.push(`depends on ${candidate.guardIds.length} guard(s)`);
+  }
+  if (candidate.resolvers.length > 0) {
+    reasons.push(`tracks ${candidate.resolvers.length} resolver(s)`);
+  }
+  return reasons;
+}
+
+function toReverseRawRequestBodyInput(
+  body: NetworkQueryRecord["record"]["requestBody"] | undefined,
+  headers: readonly HeaderEntry[],
+): OpensteerRawRequestInput["body"] | undefined {
+  if (body === undefined) {
+    return undefined;
+  }
+  const contentType = headerValue(headers, "content-type") ?? body.mimeType;
+  const text = decodeProtocolBody(body);
+  if (text !== undefined) {
+    const normalizedContentType = contentType?.toLowerCase();
+    if (
+      normalizedContentType?.includes("application/json") === true ||
+      normalizedContentType?.includes("+json") === true
+    ) {
+      try {
+        return {
+          json: JSON.parse(text),
+          ...(contentType === undefined ? {} : { contentType }),
+        };
+      } catch {
+        return {
+          text,
+          ...(contentType === undefined ? {} : { contentType }),
+        };
+      }
+    }
+    return {
+      text,
+      ...(contentType === undefined ? {} : { contentType }),
+    };
+  }
+  return {
+    base64: body.data,
+    ...(contentType === undefined ? {} : { contentType }),
+  };
+}
+
+function normalizeReversePackageOperationInput(
+  input: unknown,
+  bindings: ReadonlyMap<string, unknown>,
+  resolverValues: ReadonlyMap<string, unknown>,
+): unknown {
+  const normalized = resolveReversePackageReference(input, bindings, resolverValues);
+  if (Array.isArray(normalized)) {
+    return normalized.map((entry) =>
+      normalizeReversePackageOperationInput(entry, bindings, resolverValues),
+    );
+  }
+  if (normalized === null || typeof normalized !== "object") {
+    return normalized;
+  }
+  const next = Object.fromEntries(
+    Object.entries(normalized).map(([key, value]) => [
+      key,
+      normalizeReversePackageOperationInput(value, bindings, resolverValues),
+    ]),
+  );
+  return next;
+}
+
+function resolveReversePackageReference(
+  value: unknown,
+  bindings: ReadonlyMap<string, unknown>,
+  resolverValues: ReadonlyMap<string, unknown>,
+): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+  const bindingName =
+    typeof (value as { readonly $binding?: unknown }).$binding === "string"
+      ? ((value as { readonly $binding: string }).$binding)
+      : undefined;
+  const resolverId =
+    typeof (value as { readonly $resolver?: unknown }).$resolver === "string"
+      ? ((value as { readonly $resolver: string }).$resolver)
+      : undefined;
+  const pointer =
+    typeof (value as { readonly pointer?: unknown }).pointer === "string"
+      ? ((value as { readonly pointer: string }).pointer)
+      : undefined;
+  if (bindingName !== undefined) {
+    return extractReverseRuntimeValue(bindings.get(bindingName), pointer);
+  }
+  if (resolverId !== undefined) {
+    return extractReverseRuntimeValue(resolverValues.get(resolverId), pointer);
+  }
+  return value;
+}
+
+function withReverseOperationPageRef(value: unknown, pageRef: PageRef): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+  if ("pageRef" in value) {
+    return value;
+  }
+  return {
+    ...(value as Record<string, unknown>),
+    pageRef,
+  };
+}
+
+function looksLikeExecutablePageResolverExpression(expression: string): boolean {
+  const normalized = expression.trim();
+  return (
+    normalized.startsWith("window.") ||
+    normalized.startsWith("document.") ||
+    normalized.startsWith("globalThis.") ||
+    normalized.startsWith("location.") ||
+    normalized.startsWith("navigator.") ||
+    normalized.startsWith("(") ||
+    normalized.startsWith("[") ||
+    normalized.startsWith("{") ||
+    normalized.startsWith("function") ||
+    normalized.includes("=>")
+  );
+}
+
+function extractReverseRuntimeValue(value: unknown, pointer: string | undefined): unknown {
+  if (pointer === undefined || pointer.length === 0) {
+    return value;
+  }
+  if (pointer.startsWith("/")) {
+    return readJsonPointer(value, pointer);
+  }
+  return readDotPath(value, pointer);
+}
+
+function readDotPath(value: unknown, path: string): unknown {
+  if (path.length === 0) {
+    return value;
+  }
+  let current = value;
+  for (const segment of path.split(".").filter((entry) => entry.length > 0)) {
+    if (current === null || current === undefined) {
+      return undefined;
+    }
+    if (Array.isArray(current)) {
+      const index = Number(segment);
+      if (!Number.isInteger(index)) {
+        return undefined;
+      }
+      current = current[index];
+      continue;
+    }
+    if (typeof current !== "object") {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return current;
+}
+
+function resolveReverseCookieResolverValue(
+  snapshots: readonly OpensteerStateSnapshot[],
+  resolver: OpensteerExecutableResolver,
+): string | undefined {
+  const cookieName = resolver.inputNames?.[0];
+  if (cookieName === undefined) {
+    return undefined;
+  }
+  for (const snapshot of [...snapshots].sort((left, right) => right.capturedAt - left.capturedAt)) {
+    const match = snapshot.cookies?.find((cookie) => cookie.name === cookieName);
+    if (match !== undefined) {
+      return match.value;
+    }
+  }
+  return undefined;
+}
+
+function resolveReverseStorageResolverValue(
+  snapshots: readonly OpensteerStateSnapshot[],
+  resolver: OpensteerExecutableResolver,
+): unknown {
+  const storageView = {
+    origins: snapshots.flatMap((snapshot) => snapshot.storage?.origins ?? []),
+    sessionStorage: snapshots.flatMap((snapshot) => snapshot.storage?.sessionStorage ?? []),
+    hiddenFields: snapshots.flatMap((snapshot) => snapshot.hiddenFields ?? []),
+    globals: snapshots
+      .map((snapshot) => snapshot.globals)
+      .filter((value): value is Record<string, unknown> => value !== undefined),
+  };
+  if (resolver.pointer !== undefined) {
+    return extractReverseRuntimeValue(storageView, resolver.pointer);
+  }
+  const inputName = resolver.inputNames?.[0];
+  if (inputName === undefined) {
+    return undefined;
+  }
+  for (const snapshot of [...snapshots].sort((left, right) => right.capturedAt - left.capturedAt)) {
+    for (const origin of snapshot.storage?.origins ?? []) {
+      const entry = origin.localStorage.find((item) => item.key === inputName);
+      if (entry !== undefined) {
+        return entry.value;
+      }
+    }
+    for (const origin of snapshot.storage?.sessionStorage ?? []) {
+      const entry = origin.entries.find((item) => item.key === inputName);
+      if (entry !== undefined) {
+        return entry.value;
+      }
+    }
+  }
+  return undefined;
+}
+
+function extractReverseRecordId(value: unknown): string | undefined {
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    typeof (value as { readonly recordId?: unknown }).recordId === "string"
+  ) {
+    return (value as { readonly recordId: string }).recordId;
+  }
+  return undefined;
+}
+
+function extractReverseStatus(value: unknown): number | undefined {
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    typeof (value as { readonly response?: { readonly status?: unknown } }).response?.status ===
+      "number"
+  ) {
+    return (value as { readonly response: { readonly status: number } }).response.status;
+  }
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    typeof (value as { readonly record?: { readonly status?: unknown } }).record?.status ===
+      "number"
+  ) {
+    return (value as { readonly record: { readonly status: number } }).record.status;
+  }
+  return undefined;
+}
+
+function evaluateReversePackageAssertion(
+  boundValue: unknown,
+  channelKind: OpensteerReverseCandidateRecord["channel"]["kind"],
+  validators: readonly OpensteerValidationRule[],
+  fallbackRecordId?: string,
+  fallbackStatus?: number,
+): {
+  readonly success: boolean;
+  readonly recordId?: string;
+  readonly status?: number;
+  readonly validation: OpensteerReverseReplayOutput["validation"];
+  readonly error?: string;
+} {
+  if (isNetworkQueryRecordValue(boundValue)) {
+    switch (channelKind) {
+      case "http": {
+        const evaluation = evaluateValidationRulesForObservedRecord(boundValue, validators);
+        return {
+          ...evaluation,
+          recordId: boundValue.recordId,
+          ...(boundValue.record.status === undefined ? {} : { status: boundValue.record.status }),
+        };
+      }
+      case "event-stream": {
+        const firstChunkPreview = firstTextPreview(decodeProtocolBody(boundValue.record.responseBody));
+        const evaluation = evaluateValidationRulesForEventStreamReplay(
+          firstChunkPreview === undefined
+            ? { status: boundValue.record.status ?? 0 }
+            : {
+                status: boundValue.record.status ?? 0,
+                firstChunkPreview,
+              },
+          validators,
+        );
+        return {
+          ...evaluation,
+          recordId: boundValue.recordId,
+          ...(boundValue.record.status === undefined ? {} : { status: boundValue.record.status }),
+        };
+      }
+      case "websocket": {
+        const evaluation = evaluateValidationRulesForWebSocketReplay(
+          {
+            opened: true,
+            messageCount: boundValue.record.responseBody === undefined ? 0 : 1,
+          },
+          validators,
+        );
+        return {
+          ...evaluation,
+          recordId: boundValue.recordId,
+          ...(boundValue.record.status === undefined ? {} : { status: boundValue.record.status }),
+        };
+      }
+    }
+  }
+
+  if (isRawRequestOutputValue(boundValue)) {
+    switch (channelKind) {
+      case "http": {
+        const evaluation = evaluateValidationRulesForHttpResponse(boundValue.response, validators);
+        return {
+          ...evaluation,
+          recordId: boundValue.recordId,
+          status: boundValue.response.status,
+        };
+      }
+      case "event-stream": {
+        const firstChunkPreview = firstTextPreview(decodeProtocolBody(boundValue.response.body));
+        const evaluation = evaluateValidationRulesForEventStreamReplay(
+          firstChunkPreview === undefined
+            ? { status: boundValue.response.status }
+            : {
+                status: boundValue.response.status,
+                firstChunkPreview,
+              },
+          validators,
+        );
+        return {
+          ...evaluation,
+          recordId: boundValue.recordId,
+          status: boundValue.response.status,
+        };
+      }
+      case "websocket":
+        return {
+          success: false,
+          ...(fallbackRecordId === undefined ? {} : { recordId: fallbackRecordId }),
+          ...(fallbackStatus === undefined ? {} : { status: fallbackStatus }),
+          validation: {},
+          error: "request.raw cannot validate websocket replay directly; await the observed websocket record instead",
+        };
+    }
+  }
+
+  if (
+    channelKind === "websocket" &&
+    boundValue !== null &&
+    typeof boundValue === "object" &&
+    typeof (boundValue as { readonly opened?: unknown }).opened === "boolean"
+  ) {
+    const evaluation = evaluateValidationRulesForWebSocketReplay(
+      {
+        opened: (boundValue as { readonly opened: boolean }).opened,
+        messageCount:
+          typeof (boundValue as { readonly messageCount?: unknown }).messageCount === "number"
+            ? ((boundValue as { readonly messageCount: number }).messageCount)
+            : 0,
+      },
+      validators,
+    );
+    return {
+      ...evaluation,
+      ...(fallbackRecordId === undefined ? {} : { recordId: fallbackRecordId }),
+      ...(fallbackStatus === undefined ? {} : { status: fallbackStatus }),
+    };
+  }
+
+  return {
+    success: false,
+    ...(fallbackRecordId === undefined ? {} : { recordId: fallbackRecordId }),
+    ...(fallbackStatus === undefined ? {} : { status: fallbackStatus }),
+    validation: {},
+    error: "assert step received an unsupported replay result binding",
+  };
+}
+
+function isNetworkQueryRecordValue(value: unknown): value is NetworkQueryRecord {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    typeof (value as { readonly recordId?: unknown }).recordId === "string" &&
+    value !== null &&
+    typeof (value as { readonly record?: unknown }).record === "object"
+  );
+}
+
+function isRawRequestOutputValue(value: unknown): value is OpensteerRawRequestOutput {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    typeof (value as { readonly recordId?: unknown }).recordId === "string" &&
+    value !== null &&
+    typeof (value as { readonly request?: unknown }).request === "object" &&
+    typeof (value as { readonly response?: unknown }).response === "object"
+  );
+}
+
+function buildCapturedRecordSuccessFingerprint(
+  record: NetworkQueryRecord,
+): {
+  readonly status: number;
+  readonly structureHash?: string;
+} {
+  const structureHash =
+    record.record.responseBody === undefined
+      ? undefined
+      : protocolJsonStructureHash(record.record.responseBody);
+  return {
+    status: record.record.status ?? 0,
+    ...(structureHash === undefined ? {} : { structureHash }),
+  };
+}
+
+function matchesSuccessFingerprintFromProtocolResponse(
+  response: OpensteerRequestResponseResult,
+  fingerprint: {
+    readonly status: number;
+    readonly structureHash?: string;
+  },
+): boolean {
+  if (response.status !== fingerprint.status) {
+    return false;
+  }
+  if (fingerprint.structureHash === undefined) {
+    return true;
+  }
+  return protocolJsonStructureHash(response.body) === fingerprint.structureHash;
+}
+
+function protocolJsonStructureHash(
+  body:
+    | OpensteerRequestResponseResult["body"]
+    | NetworkQueryRecord["record"]["responseBody"]
+    | undefined,
+): string | undefined {
+  const text = decodeProtocolBody(body);
+  if (text === undefined) {
+    return undefined;
+  }
+  return jsonStructureHash(text);
+}
+
+function normalizeInteractionEvents(value: unknown): OpensteerInteractionCaptureOutput["trace"]["payload"]["events"] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter(
+      (entry): entry is {
+        readonly type: string;
+        readonly timestamp: number;
+        readonly targetPath?: string;
+        readonly properties?: Readonly<Record<string, unknown>>;
+      } =>
+        entry !== null &&
+        typeof entry === "object" &&
+        typeof (entry as { type?: unknown }).type === "string" &&
+        typeof (entry as { timestamp?: unknown }).timestamp === "number",
+    )
+    .map((entry) => ({
+      type: entry.type,
+      timestamp: entry.timestamp,
+      ...(entry.targetPath === undefined ? {} : { targetPath: entry.targetPath }),
+      properties: stripUndefinedRecordValues(entry.properties ?? {}),
+    }));
+}
+
+function stripUndefinedRecordValues(
+  value: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => entry !== undefined),
+  );
+}
+
+function buildStateDelta(
+  before: OpensteerStateSnapshot,
+  after: OpensteerStateSnapshot,
+): OpensteerStateDelta {
+  const cookieNames = diffNamedEntries(
+    before.cookies?.map((cookie) => cookie.name) ?? [],
+    after.cookies?.map((cookie) => cookie.name) ?? [],
+  );
+  const storageNames = diffStorageSnapshot(before.storage, after.storage);
+  const hiddenFieldNames = diffNamedEntries(
+    before.hiddenFields?.map((field) => field.name) ?? [],
+    after.hiddenFields?.map((field) => field.name) ?? [],
+  );
+  const globalNames = diffNamedEntries(
+    Object.keys(before.globals ?? {}),
+    Object.keys(after.globals ?? {}),
+  );
+  return {
+    beforeStateId: before.id,
+    afterStateId: after.id,
+    cookiesChanged: cookieNames,
+    storageChanged: storageNames,
+    hiddenFieldsChanged: hiddenFieldNames,
+    globalsChanged: globalNames,
+  };
+}
+
+function diffNamedEntries(
+  left: readonly string[],
+  right: readonly string[],
+): readonly string[] {
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  return [...new Set([...left, ...right])].filter(
+    (value) => !leftSet.has(value) || !rightSet.has(value),
+  );
+}
+
+function diffStorageSnapshot(
+  left: StorageSnapshot | undefined,
+  right: StorageSnapshot | undefined,
+): readonly string[] {
+  const leftKeys = new Set<string>();
+  const rightKeys = new Set<string>();
+  for (const snapshot of left?.origins ?? []) {
+    for (const entry of snapshot.localStorage ?? []) {
+      leftKeys.add(`${snapshot.origin}:local:${entry.key}`);
+    }
+    for (const database of snapshot.indexedDb ?? []) {
+      leftKeys.add(`${snapshot.origin}:indexeddb:${database.name}`);
+    }
+  }
+  for (const snapshot of right?.origins ?? []) {
+    for (const entry of snapshot.localStorage ?? []) {
+      rightKeys.add(`${snapshot.origin}:local:${entry.key}`);
+    }
+    for (const database of snapshot.indexedDb ?? []) {
+      rightKeys.add(`${snapshot.origin}:indexeddb:${database.name}`);
+    }
+  }
+  for (const snapshot of left?.sessionStorage ?? []) {
+    for (const entry of snapshot.entries ?? []) {
+      leftKeys.add(`${snapshot.origin}:session:${entry.key}`);
+    }
+  }
+  for (const snapshot of right?.sessionStorage ?? []) {
+    for (const entry of snapshot.entries ?? []) {
+      rightKeys.add(`${snapshot.origin}:session:${entry.key}`);
+    }
+  }
+  return [...new Set([...leftKeys, ...rightKeys])].filter(
+    (value) => !leftKeys.has(value) || !rightKeys.has(value),
+  );
+}
+
 function normalizeRuntimeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function runtimeDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function applyBrowserCookiesToTransportRequest(
@@ -6116,7 +9414,244 @@ function cookieJarKey(entry: CookieJarEntry): string {
   return `${entry.domain}\u0000${entry.path}\u0000${entry.name}`;
 }
 
-const PAGE_EVAL_HTTP_SCRIPT = `(async (input) => {
+const RESTORE_PAGE_STORAGE_SCRIPT = `(input => {
+  if (Array.isArray(input.localStorageEntries)) {
+    window.localStorage.clear();
+    for (const entry of input.localStorageEntries) {
+      if (!entry || typeof entry.key !== "string") {
+        continue;
+      }
+      window.localStorage.setItem(entry.key, typeof entry.value === "string" ? entry.value : "");
+    }
+  }
+
+  if (Array.isArray(input.sessionStorageEntries)) {
+    window.sessionStorage.clear();
+    for (const entry of input.sessionStorageEntries) {
+      if (!entry || typeof entry.key !== "string") {
+        continue;
+      }
+      window.sessionStorage.setItem(entry.key, typeof entry.value === "string" ? entry.value : "");
+    }
+  }
+
+  return {
+    localStorageSize: window.localStorage.length,
+    sessionStorageSize: window.sessionStorage.length,
+  };
+})`;
+
+const CAPTURE_PAGE_STATE_SCRIPT = `(input => {
+  const cssPath = element => {
+    if (!(element instanceof Element)) {
+      return undefined;
+    }
+    const segments = [];
+    let current = element;
+    while (current instanceof Element && segments.length < 8) {
+      let segment = current.localName;
+      if (current.id) {
+        segment += "#" + CSS.escape(current.id);
+        segments.unshift(segment);
+        break;
+      }
+      const parent = current.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter(node => node.localName === current.localName);
+        const index = siblings.indexOf(current);
+        segment += ":nth-of-type(" + String(index + 1) + ")";
+      }
+      segments.unshift(segment);
+      current = parent;
+    }
+    return segments.join(" > ");
+  };
+
+  const hiddenFields = Array.from(document.querySelectorAll('input[type="hidden"], input[hidden]'))
+    .map(element => ({
+      path: cssPath(element) || "input",
+      name: element.getAttribute("name") || "",
+      value: element.getAttribute("value") || "",
+    }))
+    .filter(entry => entry.name.length > 0);
+
+  const globals = {};
+  for (const name of input.globalNames ?? []) {
+    try {
+      const value = window[name];
+      globals[name] =
+        value === null || ["string", "number", "boolean"].includes(typeof value)
+          ? value
+          : Array.isArray(value)
+            ? value
+            : typeof value === "object"
+              ? JSON.parse(JSON.stringify(value))
+              : String(value);
+    } catch (error) {
+      globals[name] = "[unavailable:" + String(error) + "]";
+    }
+  }
+
+  return { hiddenFields, globals };
+})`;
+
+const PAGE_EVAL_RESOLVER_SCRIPT = `(input => {
+  const expression = typeof input?.expression === "string" ? input.expression.trim() : "";
+  if (expression.length === 0) {
+    return undefined;
+  }
+  return Function(\`return (\${expression});\`)();
+})`;
+
+const INTERACTION_RECORDER_INSTALL_SCRIPT = `(() => {
+  const storeKey = "__opensteerInteractionRecorder";
+  const existing = window[storeKey];
+  if (existing && typeof existing.dispose === "function") {
+    existing.dispose();
+  }
+
+  const cssPath = element => {
+    if (!(element instanceof Element)) {
+      return undefined;
+    }
+    const segments = [];
+    let current = element;
+    while (current instanceof Element && segments.length < 8) {
+      let segment = current.localName;
+      if (current.id) {
+        segment += "#" + CSS.escape(current.id);
+        segments.unshift(segment);
+        break;
+      }
+      const parent = current.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter(node => node.localName === current.localName);
+        const index = siblings.indexOf(current);
+        segment += ":nth-of-type(" + String(index + 1) + ")";
+      }
+      segments.unshift(segment);
+      current = parent;
+    }
+    return segments.join(" > ");
+  };
+
+  const eventTypes = [
+    "pointerdown",
+    "pointerup",
+    "pointermove",
+    "mousedown",
+    "mouseup",
+    "click",
+    "dblclick",
+    "keydown",
+    "keyup",
+    "input",
+    "change",
+    "wheel",
+    "dragstart",
+    "dragover",
+    "drop",
+    "dragend",
+  ];
+  const events = [];
+  const listener = event => {
+    const target = event.target instanceof Element ? event.target : undefined;
+    const properties = {
+      isTrusted: event.isTrusted,
+      button: "button" in event ? event.button : undefined,
+      buttons: "buttons" in event ? event.buttons : undefined,
+      clientX: "clientX" in event ? event.clientX : undefined,
+      clientY: "clientY" in event ? event.clientY : undefined,
+      pressure: "pressure" in event ? event.pressure : undefined,
+      pointerType: "pointerType" in event ? event.pointerType : undefined,
+      key: "key" in event ? event.key : undefined,
+      code: "code" in event ? event.code : undefined,
+      deltaX: "deltaX" in event ? event.deltaX : undefined,
+      deltaY: "deltaY" in event ? event.deltaY : undefined,
+      value:
+        target && "value" in target && typeof target.value === "string"
+          ? target.value
+          : undefined,
+    };
+    events.push({
+      type: event.type,
+      timestamp: Date.now(),
+      targetPath: target ? cssPath(target) : undefined,
+      properties,
+    });
+  };
+
+  for (const type of eventTypes) {
+    window.addEventListener(type, listener, true);
+  }
+
+  window[storeKey] = {
+    read() {
+      return events.slice();
+    },
+    dispose() {
+      for (const type of eventTypes) {
+        window.removeEventListener(type, listener, true);
+      }
+    },
+  };
+
+  return { installed: true };
+})()`;
+
+const INTERACTION_RECORDER_READ_SCRIPT = `(() => {
+  const store = window.__opensteerInteractionRecorder;
+  const events = store && typeof store.read === "function" ? store.read() : [];
+  if (store && typeof store.dispose === "function") {
+    store.dispose();
+  }
+  delete window.__opensteerInteractionRecorder;
+  return events;
+})()`;
+
+const INTERACTION_REPLAY_SCRIPT = `(async events => {
+  const resolveTarget = event => {
+    if (typeof event.targetPath === "string" && event.targetPath.length > 0) {
+      const direct = document.querySelector(event.targetPath);
+      if (direct) {
+        return direct;
+      }
+    }
+    if (typeof event.properties?.clientX === "number" && typeof event.properties?.clientY === "number") {
+      const hit = document.elementFromPoint(event.properties.clientX, event.properties.clientY);
+      if (hit) {
+        return hit;
+      }
+    }
+    return document.body;
+  };
+
+  for (const event of events ?? []) {
+    const target = resolveTarget(event);
+    const properties = event.properties ?? {};
+    if ((event.type === "input" || event.type === "change") && "value" in target && typeof properties.value === "string") {
+      target.value = properties.value;
+    }
+    let dispatched;
+    if (event.type.startsWith("pointer")) {
+      dispatched = new PointerEvent(event.type, properties);
+    } else if (event.type.startsWith("mouse") || event.type === "click" || event.type === "dblclick") {
+      dispatched = new MouseEvent(event.type, properties);
+    } else if (event.type.startsWith("key")) {
+      dispatched = new KeyboardEvent(event.type, properties);
+    } else if (event.type === "wheel") {
+      dispatched = new WheelEvent(event.type, properties);
+    } else if (event.type === "input") {
+      dispatched = new InputEvent(event.type, properties);
+    } else {
+      dispatched = new Event(event.type, properties);
+    }
+    target.dispatchEvent(dispatched);
+  }
+  return { replayedEventCount: Array.isArray(events) ? events.length : 0 };
+})`;
+
+const PAGE_HTTP_REQUEST_SCRIPT = `(async (input) => {
   const decodeBase64 = (value) => {
     if (typeof value !== "string" || value.length === 0) {
       return undefined;
@@ -6162,7 +9697,94 @@ const PAGE_EVAL_HTTP_SCRIPT = `(async (input) => {
   };
 })`;
 
-function toPageEvalTransportResponse(value: unknown): {
+const PAGE_HTTP_EVENT_STREAM_SCRIPT = `(async (input) => {
+  const decodeBase64 = (value) => {
+    if (typeof value !== "string" || value.length === 0) {
+      return undefined;
+    }
+    const binary = atob(value);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+  };
+
+  const headers = new Headers();
+  for (const header of input.headers ?? []) {
+    headers.set(header.name, header.value);
+  }
+
+  const response = await fetch(input.url, {
+    method: input.method,
+    headers,
+    ...(input.bodyBase64 === undefined ? {} : { body: decodeBase64(input.bodyBase64) }),
+    redirect: input.followRedirects === false ? "manual" : "follow",
+  });
+
+  let firstChunkPreview;
+  if (response.body) {
+    const reader = response.body.getReader();
+    const readPromise = reader.read();
+    const timerPromise = new Promise(resolve => setTimeout(() => resolve(null), input.readTimeoutMs ?? 1500));
+    const readResult = await Promise.race([readPromise, timerPromise]);
+    if (readResult && !readResult.done && readResult.value) {
+      firstChunkPreview = new TextDecoder().decode(readResult.value).slice(0, 256);
+    }
+    try {
+      await reader.cancel();
+    } catch {}
+  }
+
+  return {
+    status: response.status,
+    firstChunkPreview,
+  };
+})`;
+
+const PAGE_HTTP_WEBSOCKET_SCRIPT = `(async (input) => {
+  return await new Promise(resolve => {
+    let settled = false;
+    let messageCount = 0;
+    let opened = false;
+    const finish = (payload) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      try {
+        socket.close();
+      } catch {}
+      resolve(payload);
+    };
+    const socket = Array.isArray(input.protocols) && input.protocols.length > 0
+      ? new WebSocket(input.url, input.protocols)
+      : new WebSocket(input.url);
+    const timer = setTimeout(() => {
+      finish({ opened, messageCount, ...(opened ? {} : { error: "timed out before websocket opened" }) });
+    }, input.waitMs ?? 1500);
+
+    socket.addEventListener("open", () => {
+      opened = true;
+      if ((input.waitMs ?? 1500) <= 0) {
+        finish({ opened, messageCount });
+      }
+    });
+    socket.addEventListener("message", () => {
+      messageCount += 1;
+      finish({ opened: true, messageCount });
+    });
+    socket.addEventListener("error", () => {
+      finish({ opened, messageCount, error: "websocket error" });
+    });
+    socket.addEventListener("close", () => {
+      finish({ opened, messageCount, ...(opened ? {} : { error: "websocket closed before open" }) });
+    });
+  });
+})`;
+
+function toPageHttpTransportResponse(value: unknown): {
   readonly url: string;
   readonly status: number;
   readonly statusText: string;
@@ -6173,7 +9795,7 @@ function toPageEvalTransportResponse(value: unknown): {
   if (value === null || typeof value !== "object") {
     throw new OpensteerProtocolError(
       "operation-failed",
-      "page-eval-http returned an invalid response payload",
+      "page-http returned an invalid response payload",
     );
   }
 
@@ -6204,6 +9826,51 @@ function toPageEvalTransportResponse(value: unknown): {
     headers,
     ...(body === undefined ? {} : { body }),
     redirected: response.redirected === true,
+  };
+}
+
+function toPageHttpEventStreamResponse(value: unknown): {
+  readonly status: number;
+  readonly firstChunkPreview?: string;
+} {
+  if (value === null || typeof value !== "object") {
+    throw new OpensteerProtocolError(
+      "operation-failed",
+      "page-http event-stream replay returned an invalid payload",
+    );
+  }
+  const response = value as {
+    readonly status?: unknown;
+    readonly firstChunkPreview?: unknown;
+  };
+  return {
+    status: typeof response.status === "number" ? response.status : 0,
+    ...(typeof response.firstChunkPreview === "string"
+      ? { firstChunkPreview: response.firstChunkPreview }
+      : {}),
+  };
+}
+
+function toPageHttpWebSocketResponse(value: unknown): {
+  readonly opened: boolean;
+  readonly messageCount: number;
+  readonly error?: string;
+} {
+  if (value === null || typeof value !== "object") {
+    throw new OpensteerProtocolError(
+      "operation-failed",
+      "page-http websocket replay returned an invalid payload",
+    );
+  }
+  const response = value as {
+    readonly opened?: unknown;
+    readonly messageCount?: unknown;
+    readonly error?: unknown;
+  };
+  return {
+    opened: response.opened === true,
+    messageCount: typeof response.messageCount === "number" ? response.messageCount : 0,
+    ...(typeof response.error === "string" ? { error: response.error } : {}),
   };
 }
 
@@ -6519,7 +10186,9 @@ async function executeDirectTransportRequest(
 }> {
   const response = await fetch(request.url, {
     method: request.method,
-    headers: Object.fromEntries((request.headers ?? []).map((header) => [header.name, header.value])),
+    headers: Object.fromEntries(
+      filterValidHttpHeaders(request.headers ?? []).map((header) => [header.name, header.value]),
+    ),
     ...(request.body === undefined ? {} : { body: Buffer.from(request.body.bytes) }),
     redirect: request.followRedirects === false ? "manual" : "follow",
     signal,
@@ -6538,6 +10207,92 @@ async function executeDirectTransportRequest(
       : { body: createBodyPayload(new Uint8Array(buffer), parseContentType(contentType)) }),
     redirected: response.redirected,
   };
+}
+
+async function executeDirectEventStreamRequest(
+  request: {
+    readonly method: string;
+    readonly url: string;
+    readonly headers?: readonly HeaderEntry[];
+    readonly body?: BrowserBodyPayload;
+    readonly followRedirects?: boolean;
+  },
+  signal: AbortSignal,
+  readTimeoutMs: number,
+): Promise<{
+  readonly status: number;
+  readonly firstChunkPreview?: string;
+}> {
+  const response = await fetch(request.url, {
+    method: request.method,
+    headers: Object.fromEntries(
+      filterValidHttpHeaders(request.headers ?? []).map((header) => [header.name, header.value]),
+    ),
+    ...(request.body === undefined ? {} : { body: Buffer.from(request.body.bytes) }),
+    redirect: request.followRedirects === false ? "manual" : "follow",
+    signal,
+  });
+
+  const firstChunkPreview = await readFirstResponseChunk(response.body, signal, readTimeoutMs);
+  return {
+    status: response.status,
+    ...(firstChunkPreview === undefined ? {} : { firstChunkPreview }),
+  };
+}
+
+async function readFirstResponseChunk(
+  body: ReadableStream<Uint8Array> | null,
+  signal: AbortSignal,
+  readTimeoutMs: number,
+): Promise<string | undefined> {
+  if (body === null) {
+    return undefined;
+  }
+  const reader = body.getReader();
+  try {
+    const timeoutPromise = new Promise<null>((resolve) => {
+      const timer = setTimeout(() => resolve(null), readTimeoutMs);
+      signal.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(timer);
+          resolve(null);
+        },
+        { once: true },
+      );
+    });
+    const readResult = await Promise.race([reader.read(), timeoutPromise]);
+    if (readResult === null || readResult.done || readResult.value === undefined) {
+      return undefined;
+    }
+    return firstTextPreview(new TextDecoder().decode(readResult.value));
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+}
+
+function computeStreamReadTimeoutMs(timeout: TimeoutExecutionContext): number {
+  return Math.max(250, Math.min(timeout.remainingMs() ?? 1_500, 1_500));
+}
+
+function firstTextPreview(value: string | undefined, limit = 256): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  return value.slice(0, limit);
+}
+
+function parseWebSocketProtocols(
+  headers: readonly HeaderEntry[] | undefined,
+): readonly string[] {
+  const protocols = headerValue(headers ?? [], "sec-websocket-protocol");
+  if (protocols === undefined) {
+    return [];
+  }
+  return protocols
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
 }
 
 function matchesFailurePolicy(

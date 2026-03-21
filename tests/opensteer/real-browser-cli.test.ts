@@ -82,7 +82,7 @@ describe("local browser CLI surfaces", () => {
     expect(code).toBe(0);
     expect(stdout.join("")).toContain('"endpoint":"ws://127.0.0.1:9222/devtools/browser/root"');
     expect(stdout.join("")).toContain(
-      '"attachHint":"opensteer open --browser attach --attach-endpoint \\"9222\\""',
+      '"attachHint":"opensteer open --browser attach-live --attach-endpoint \\"9222\\""',
     );
   });
 

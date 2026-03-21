@@ -11,10 +11,18 @@ import {
 import {
   createAuthRecipeRegistry,
   createDescriptorRegistry,
+  createInteractionTraceRegistry,
   createRequestPlanRegistry,
+  createReverseCaseRegistry,
+  createReversePackageRegistry,
+  createReverseReportRegistry,
   type AuthRecipeRegistryStore,
+  type InteractionTraceRegistryStore,
   type RecipeRegistryStore,
   type DescriptorRegistryStore,
+  type ReverseCaseRegistryStore,
+  type ReversePackageRegistryStore,
+  type ReverseReportRegistryStore,
   type RequestPlanRegistryStore,
 } from "./registry.js";
 import { createSavedNetworkStore, type SavedNetworkStore } from "./network/saved-store.js";
@@ -51,6 +59,10 @@ export interface FilesystemOpensteerRoot {
     readonly authRecipes: AuthRecipeRegistryStore;
     readonly recipes: RecipeRegistryStore;
     readonly savedNetwork: SavedNetworkStore;
+    readonly reverseCases: ReverseCaseRegistryStore;
+    readonly interactionTraces: InteractionTraceRegistryStore;
+    readonly reversePackages: ReversePackageRegistryStore;
+    readonly reverseReports: ReverseReportRegistryStore;
   };
 }
 
@@ -104,6 +116,18 @@ export async function createFilesystemOpensteerRoot(
   const savedNetwork = createSavedNetworkStore(options.rootPath);
   await savedNetwork.initialize();
 
+  const reverseCases = createReverseCaseRegistry(options.rootPath);
+  await reverseCases.initialize();
+
+  const interactionTraces = createInteractionTraceRegistry(options.rootPath);
+  await interactionTraces.initialize();
+
+  const reversePackages = createReversePackageRegistry(options.rootPath);
+  await reversePackages.initialize();
+
+  const reverseReports = createReverseReportRegistry(options.rootPath);
+  await reverseReports.initialize();
+
   const traces = createTraceStore(options.rootPath, artifacts);
   await traces.initialize();
 
@@ -118,6 +142,10 @@ export async function createFilesystemOpensteerRoot(
       authRecipes,
       recipes: authRecipes,
       savedNetwork,
+      reverseCases,
+      interactionTraces,
+      reversePackages,
+      reverseReports,
     },
   };
 }
