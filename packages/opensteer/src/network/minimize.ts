@@ -8,7 +8,7 @@ import type {
   NetworkQueryRecord,
 } from "@opensteer/protocol";
 
-import { headerValue, normalizeHeaderName } from "../requests/shared.js";
+import { headerValue, isValidHttpHeaderName, normalizeHeaderName } from "../requests/shared.js";
 
 type MinimizationLocation = MinimizationFieldResult["location"];
 
@@ -74,7 +74,11 @@ export function prepareMinimizationRequest(
   const requestUrl = new URL(record.record.url);
   const preservedNames = new Set(preserve.map((entry) => entry.trim().toLowerCase()).filter(Boolean));
   const headerGroups = groupNamedEntries(
-    record.record.requestHeaders.filter((header) => normalizeHeaderName(header.name) !== "cookie"),
+    record.record.requestHeaders.filter(
+      (header) =>
+        normalizeHeaderName(header.name) !== "cookie" &&
+        isValidHttpHeaderName(header.name),
+    ),
   );
   const cookies = parseCookieHeader(headerValue(record.record.requestHeaders, "cookie"));
   const queryEntries = groupNamedEntries(Array.from(requestUrl.searchParams.entries()).map(([name, value]) => ({
@@ -487,7 +491,7 @@ function parseJsonBodyEntries(
     return [];
   }
   try {
-    const parsed = JSON.parse(decoded) as unknown;
+    const parsed = JSON.parse(decoded);
     if (!isPlainObject(parsed)) {
       return [];
     }

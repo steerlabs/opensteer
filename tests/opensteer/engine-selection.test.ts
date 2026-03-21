@@ -87,14 +87,14 @@ describe("Opensteer engine selection", () => {
 
     vi.doMock("../../packages/opensteer/src/local-browser/launch-resolution.js", () => ({
       resolveManagedBrowserLaunch,
-      resolveProfileBrowserLaunch: vi.fn(),
-      resolveClonedBrowserLaunch: vi.fn(),
-      resolveAttachBrowserLaunch: vi.fn(),
+      resolveSnapshotSessionBrowserLaunch: vi.fn(),
+      resolveSnapshotAuthenticatedBrowserLaunch: vi.fn(),
+      resolveAttachLiveBrowserLaunch: vi.fn(),
     }));
     vi.doMock("../../packages/opensteer/src/local-browser/shared-session.js", () => ({
       launchManagedBrowserSession,
-      launchProfileBrowserSession: vi.fn(),
-      launchClonedBrowserSession: vi.fn(),
+      launchSnapshotSessionBrowserSession: vi.fn(),
+      launchSnapshotAuthenticatedBrowserSession: vi.fn(),
       connectAttachBrowserSession: vi.fn(),
     }));
 
@@ -152,31 +152,32 @@ describe("Opensteer engine selection", () => {
     expect(lease.close).toHaveBeenCalledTimes(1);
   });
 
-  test("routes profile launches through direct user-data-dir startup", async () => {
+  test("routes snapshot-session launches through the snapshot-backed local browser flow", async () => {
     const lease = createLease();
-    const resolveProfileBrowserLaunch = vi.fn(() => ({
+    const resolveSnapshotSessionBrowserLaunch = vi.fn(() => ({
       executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
       headless: false,
       timeoutMs: 30_000,
       args: [],
-      userDataDir: "/Users/test/Library/Application Support/Google/Chrome",
-      profileDirectory: "Profile 1",
+      copyMode: "session",
+      sourceUserDataDir: "/Users/test/Library/Application Support/Google/Chrome",
+      sourceProfileDirectory: "Profile 1",
     }));
-    const launchProfileBrowserSession = vi.fn(async () => lease);
+    const launchSnapshotSessionBrowserSession = vi.fn(async () => lease);
     const createPlaywrightBrowserCoreEngine = vi.fn(async () => ({
       dispose: vi.fn(async () => undefined),
     }));
 
     vi.doMock("../../packages/opensteer/src/local-browser/launch-resolution.js", () => ({
       resolveManagedBrowserLaunch: vi.fn(),
-      resolveProfileBrowserLaunch,
-      resolveClonedBrowserLaunch: vi.fn(),
-      resolveAttachBrowserLaunch: vi.fn(),
+      resolveSnapshotSessionBrowserLaunch,
+      resolveSnapshotAuthenticatedBrowserLaunch: vi.fn(),
+      resolveAttachLiveBrowserLaunch: vi.fn(),
     }));
     vi.doMock("../../packages/opensteer/src/local-browser/shared-session.js", () => ({
       launchManagedBrowserSession: vi.fn(),
-      launchProfileBrowserSession,
-      launchClonedBrowserSession: vi.fn(),
+      launchSnapshotSessionBrowserSession,
+      launchSnapshotAuthenticatedBrowserSession: vi.fn(),
       connectAttachBrowserSession: vi.fn(),
     }));
 
@@ -194,47 +195,48 @@ describe("Opensteer engine selection", () => {
 
     await factory({
       browser: {
-        kind: "profile",
-        userDataDir: "/Users/test/Library/Application Support/Google/Chrome",
-        profileDirectory: "Profile 1",
+        kind: "snapshot-session",
+        sourceUserDataDir: "/Users/test/Library/Application Support/Google/Chrome",
+        sourceProfileDirectory: "Profile 1",
       },
     });
 
-    expect(resolveProfileBrowserLaunch).toHaveBeenCalledWith({
-      kind: "profile",
-      userDataDir: "/Users/test/Library/Application Support/Google/Chrome",
-      profileDirectory: "Profile 1",
+    expect(resolveSnapshotSessionBrowserLaunch).toHaveBeenCalledWith({
+      kind: "snapshot-session",
+      sourceUserDataDir: "/Users/test/Library/Application Support/Google/Chrome",
+      sourceProfileDirectory: "Profile 1",
     });
-    expect(launchProfileBrowserSession).toHaveBeenCalledWith(
+    expect(launchSnapshotSessionBrowserSession).toHaveBeenCalledWith(
       expect.objectContaining({
-        userDataDir: "/Users/test/Library/Application Support/Google/Chrome",
-        profileDirectory: "Profile 1",
+        sourceUserDataDir: "/Users/test/Library/Application Support/Google/Chrome",
+        sourceProfileDirectory: "Profile 1",
       }),
     );
   });
 
-  test("routes cloned launches through the snapshot-backed local browser flow", async () => {
+  test("routes snapshot-authenticated launches through the snapshot-backed local browser flow", async () => {
     const lease = createLease();
-    const resolveClonedBrowserLaunch = vi.fn(() => ({
+    const resolveSnapshotAuthenticatedBrowserLaunch = vi.fn(() => ({
       executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
       headless: false,
       timeoutMs: 30_000,
       args: [],
+      copyMode: "authenticated",
       sourceUserDataDir: "/Users/test/Library/Application Support/Google/Chrome",
       sourceProfileDirectory: "Profile 1",
     }));
-    const launchClonedBrowserSession = vi.fn(async () => lease);
+    const launchSnapshotAuthenticatedBrowserSession = vi.fn(async () => lease);
 
     vi.doMock("../../packages/opensteer/src/local-browser/launch-resolution.js", () => ({
       resolveManagedBrowserLaunch: vi.fn(),
-      resolveProfileBrowserLaunch: vi.fn(),
-      resolveClonedBrowserLaunch,
-      resolveAttachBrowserLaunch: vi.fn(),
+      resolveSnapshotSessionBrowserLaunch: vi.fn(),
+      resolveSnapshotAuthenticatedBrowserLaunch,
+      resolveAttachLiveBrowserLaunch: vi.fn(),
     }));
     vi.doMock("../../packages/opensteer/src/local-browser/shared-session.js", () => ({
       launchManagedBrowserSession: vi.fn(),
-      launchProfileBrowserSession: vi.fn(),
-      launchClonedBrowserSession,
+      launchSnapshotSessionBrowserSession: vi.fn(),
+      launchSnapshotAuthenticatedBrowserSession,
       connectAttachBrowserSession: vi.fn(),
     }));
 
@@ -254,18 +256,18 @@ describe("Opensteer engine selection", () => {
 
     await factory({
       browser: {
-        kind: "cloned",
+        kind: "snapshot-authenticated",
         sourceUserDataDir: "/Users/test/Library/Application Support/Google/Chrome",
         sourceProfileDirectory: "Profile 1",
       },
     });
 
-    expect(resolveClonedBrowserLaunch).toHaveBeenCalledWith({
-      kind: "cloned",
+    expect(resolveSnapshotAuthenticatedBrowserLaunch).toHaveBeenCalledWith({
+      kind: "snapshot-authenticated",
       sourceUserDataDir: "/Users/test/Library/Application Support/Google/Chrome",
       sourceProfileDirectory: "Profile 1",
     });
-    expect(launchClonedBrowserSession).toHaveBeenCalledWith(
+    expect(launchSnapshotAuthenticatedBrowserSession).toHaveBeenCalledWith(
       expect.objectContaining({
         sourceUserDataDir: "/Users/test/Library/Application Support/Google/Chrome",
         sourceProfileDirectory: "Profile 1",
@@ -273,9 +275,9 @@ describe("Opensteer engine selection", () => {
     );
   });
 
-  test("routes explicit attach through the local browser attach flow", async () => {
+  test("routes explicit attach-live through the local browser attach flow", async () => {
     const lease = createLease();
-    const resolveAttachBrowserLaunch = vi.fn(() => ({
+    const resolveAttachLiveBrowserLaunch = vi.fn(() => ({
       endpoint: "ws://127.0.0.1:9222/devtools/browser/root",
       freshTab: true,
       headers: {
@@ -286,14 +288,14 @@ describe("Opensteer engine selection", () => {
 
     vi.doMock("../../packages/opensteer/src/local-browser/launch-resolution.js", () => ({
       resolveManagedBrowserLaunch: vi.fn(),
-      resolveProfileBrowserLaunch: vi.fn(),
-      resolveClonedBrowserLaunch: vi.fn(),
-      resolveAttachBrowserLaunch,
+      resolveSnapshotSessionBrowserLaunch: vi.fn(),
+      resolveSnapshotAuthenticatedBrowserLaunch: vi.fn(),
+      resolveAttachLiveBrowserLaunch,
     }));
     vi.doMock("../../packages/opensteer/src/local-browser/shared-session.js", () => ({
       launchManagedBrowserSession: vi.fn(),
-      launchProfileBrowserSession: vi.fn(),
-      launchClonedBrowserSession: vi.fn(),
+      launchSnapshotSessionBrowserSession: vi.fn(),
+      launchSnapshotAuthenticatedBrowserSession: vi.fn(),
       connectAttachBrowserSession,
     }));
 
@@ -313,7 +315,7 @@ describe("Opensteer engine selection", () => {
 
     await factory({
       browser: {
-        kind: "attach",
+        kind: "attach-live",
         endpoint: "ws://127.0.0.1:9222/devtools/browser/root",
         headers: {
           authorization: "Bearer test",
@@ -332,23 +334,23 @@ describe("Opensteer engine selection", () => {
     });
   });
 
-  test("routes auto-discovery attach through Chrome discovery and attach flow", async () => {
+  test("routes auto-discovery attach-live through Chrome discovery and attach flow", async () => {
     const lease = createLease();
-    const resolveAttachBrowserLaunch = vi.fn(() => ({
+    const resolveAttachLiveBrowserLaunch = vi.fn(() => ({
       freshTab: true,
     }));
     const connectAttachBrowserSession = vi.fn(async () => lease);
 
     vi.doMock("../../packages/opensteer/src/local-browser/launch-resolution.js", () => ({
       resolveManagedBrowserLaunch: vi.fn(),
-      resolveProfileBrowserLaunch: vi.fn(),
-      resolveClonedBrowserLaunch: vi.fn(),
-      resolveAttachBrowserLaunch,
+      resolveSnapshotSessionBrowserLaunch: vi.fn(),
+      resolveSnapshotAuthenticatedBrowserLaunch: vi.fn(),
+      resolveAttachLiveBrowserLaunch,
     }));
     vi.doMock("../../packages/opensteer/src/local-browser/shared-session.js", () => ({
       launchManagedBrowserSession: vi.fn(),
-      launchProfileBrowserSession: vi.fn(),
-      launchClonedBrowserSession: vi.fn(),
+      launchSnapshotSessionBrowserSession: vi.fn(),
+      launchSnapshotAuthenticatedBrowserSession: vi.fn(),
       connectAttachBrowserSession,
     }));
 
@@ -368,7 +370,7 @@ describe("Opensteer engine selection", () => {
 
     await factory({
       browser: {
-        kind: "attach",
+        kind: "attach-live",
       },
     });
 
@@ -527,23 +529,23 @@ describe("Opensteer engine selection", () => {
 
   test.each([
     {
-      label: "profile",
+      label: "snapshot-session",
       browser: {
-        kind: "profile" as const,
-        userDataDir: "/tmp/chrome",
-      },
-    },
-    {
-      label: "cloned",
-      browser: {
-        kind: "cloned" as const,
+        kind: "snapshot-session" as const,
         sourceUserDataDir: "/tmp/chrome",
       },
     },
     {
-      label: "attach",
+      label: "snapshot-authenticated",
       browser: {
-        kind: "attach" as const,
+        kind: "snapshot-authenticated" as const,
+        sourceUserDataDir: "/tmp/chrome",
+      },
+    },
+    {
+      label: "attach-live",
+      browser: {
+        kind: "attach-live" as const,
       },
     },
   ])("rejects ABP when browser.kind is $label", async ({ browser }) => {
@@ -559,7 +561,7 @@ describe("Opensteer engine selection", () => {
     });
 
     await expect(factory({ browser })).rejects.toThrow(
-      'ABP engine only supports managed local browser launches. Use the Playwright engine for browser.kind="profile", "cloned", or "attach".',
+      'ABP engine only supports managed local browser launches. Use the Playwright engine for browser.kind="snapshot-session", "snapshot-authenticated", or "attach-live".',
     );
   });
 });

@@ -8,7 +8,7 @@ export const TRANSPORT_PROBE_LADDER = [
   "direct-http",
   "matched-tls",
   "context-http",
-  "page-eval-http",
+  "page-http",
   "session-http",
 ] as const satisfies readonly TransportProbeLevel[];
 

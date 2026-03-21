@@ -112,6 +112,14 @@ export interface ArtifactReference {
   readonly relation: ArtifactRelation;
 }
 
+export interface OpensteerArtifactReadInput {
+  readonly artifactId: string;
+}
+
+export interface OpensteerArtifactReadOutput {
+  readonly artifact: OpensteerArtifact;
+}
+
 const artifactKindSchema: JsonSchema = enumSchema(
   [
     "screenshot",
@@ -290,5 +298,25 @@ export const artifactReferenceSchema: JsonSchema = objectSchema(
   {
     title: "ArtifactReference",
     required: ["artifactId", "kind", "relation"],
+  },
+);
+
+export const opensteerArtifactReadInputSchema: JsonSchema = objectSchema(
+  {
+    artifactId: stringSchema({ minLength: 1 }),
+  },
+  {
+    title: "OpensteerArtifactReadInput",
+    required: ["artifactId"],
+  },
+);
+
+export const opensteerArtifactReadOutputSchema: JsonSchema = objectSchema(
+  {
+    artifact: opensteerArtifactSchema,
+  },
+  {
+    title: "OpensteerArtifactReadOutput",
+    required: ["artifact"],
   },
 );

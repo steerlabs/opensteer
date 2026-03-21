@@ -480,6 +480,34 @@ function normalizeCookiePriority(value: AbpCdpCookie["priority"]): CookieRecord[
   }
 }
 
+function toCdpCookieSameSite(
+  value: CookieRecord["sameSite"],
+): "Strict" | "Lax" | "None" {
+  switch (value) {
+    case "strict":
+      return "Strict";
+    case "none":
+      return "None";
+    case "lax":
+    default:
+      return "Lax";
+  }
+}
+
+function toCdpCookiePriority(
+  value: CookieRecord["priority"],
+): "Low" | "Medium" | "High" {
+  switch (value) {
+    case "low":
+      return "Low";
+    case "high":
+      return "High";
+    case "medium":
+    default:
+      return "Medium";
+  }
+}
+
 function normalizeResourceType(value: string | undefined): NetworkResourceType {
   switch ((value ?? "").toLowerCase()) {
     case "document":
@@ -1950,6 +1978,38 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     });
 
     return input.urls ? filterCookieRecords(cookies, [...input.urls]) : cookies;
+  }
+
+  async setCookies(input: {
+    readonly sessionRef: SessionRef;
+    readonly cookies: readonly CookieRecord[];
+  }): Promise<void> {
+    const session = this.requireSession(input.sessionRef);
+    if (input.cookies.length === 0) {
+      return;
+    }
+    await session.browserCdp.send("Storage.setCookies", {
+      cookies: input.cookies.map((cookie) => ({
+        name: cookie.name,
+        value: cookie.value,
+        domain: cookie.domain,
+        path: cookie.path,
+        secure: cookie.secure,
+        httpOnly: cookie.httpOnly,
+        ...(cookie.sameSite === undefined
+          ? {}
+          : { sameSite: toCdpCookieSameSite(cookie.sameSite) }),
+        ...(cookie.priority === undefined
+          ? {}
+          : { priority: toCdpCookiePriority(cookie.priority) }),
+        ...(cookie.partitionKey === undefined
+          ? {}
+          : { partitionKey: cookie.partitionKey }),
+        ...(cookie.session || cookie.expiresAt === undefined || cookie.expiresAt === null
+          ? {}
+          : { expires: cookie.expiresAt / 1000 }),
+      })),
+    });
   }
 
   async getStorageSnapshot(input: {

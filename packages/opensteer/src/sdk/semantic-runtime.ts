@@ -1,4 +1,6 @@
 import type {
+  OpensteerArtifactReadInput,
+  OpensteerArtifactReadOutput,
   CookieRecord,
   OpensteerCaptchaSolveInput,
   OpensteerCaptchaSolveOutput,
@@ -31,6 +33,14 @@ import type {
   OpensteerNetworkQueryOutput,
   OpensteerNetworkSaveInput,
   OpensteerNetworkSaveOutput,
+  OpensteerInteractionCaptureInput,
+  OpensteerInteractionCaptureOutput,
+  OpensteerInteractionDiffInput,
+  OpensteerInteractionDiffOutput,
+  OpensteerInteractionGetInput,
+  OpensteerInteractionGetOutput,
+  OpensteerInteractionReplayInput,
+  OpensteerInteractionReplayOutput,
   OpensteerTransportProbeInput,
   OpensteerTransportProbeOutput,
   OpensteerPageActivateInput,
@@ -45,6 +55,20 @@ import type {
   OpensteerScriptDeobfuscateOutput,
   OpensteerScriptSandboxInput,
   OpensteerScriptSandboxOutput,
+  OpensteerReverseExportInput,
+  OpensteerReverseExportOutput,
+  OpensteerReversePackageGetInput,
+  OpensteerReversePackageGetOutput,
+  OpensteerReversePackageListInput,
+  OpensteerReversePackageListOutput,
+  OpensteerReversePackagePatchInput,
+  OpensteerReversePackagePatchOutput,
+  OpensteerReverseReplayInput,
+  OpensteerReverseReplayOutput,
+  OpensteerReverseReportInput,
+  OpensteerReverseReportOutput,
+  OpensteerReverseSolveInput,
+  OpensteerReverseSolveOutput,
   OpensteerPageCloseInput,
   OpensteerPageCloseOutput,
   OpensteerPageEvaluateInput,
@@ -157,6 +181,50 @@ export interface OpensteerSemanticRuntime {
     input: OpensteerTransportProbeInput,
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerTransportProbeOutput>;
+  solveReverse(
+    input: OpensteerReverseSolveInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerReverseSolveOutput>;
+  replayReverse(
+    input: OpensteerReverseReplayInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerReverseReplayOutput>;
+  exportReverse(
+    input: OpensteerReverseExportInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerReverseExportOutput>;
+  getReverseReport(
+    input: OpensteerReverseReportInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerReverseReportOutput>;
+  getReversePackage(
+    input: OpensteerReversePackageGetInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerReversePackageGetOutput>;
+  listReversePackages(
+    input?: OpensteerReversePackageListInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerReversePackageListOutput>;
+  patchReversePackage(
+    input: OpensteerReversePackagePatchInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerReversePackagePatchOutput>;
+  captureInteraction(
+    input: OpensteerInteractionCaptureInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerInteractionCaptureOutput>;
+  getInteraction(
+    input: OpensteerInteractionGetInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerInteractionGetOutput>;
+  diffInteraction(
+    input: OpensteerInteractionDiffInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerInteractionDiffOutput>;
+  replayInteraction(
+    input: OpensteerInteractionReplayInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerInteractionReplayOutput>;
   clearNetwork(
     input?: OpensteerNetworkClearInput,
     options?: OpensteerRuntimeOperationOptions,
@@ -165,6 +233,10 @@ export interface OpensteerSemanticRuntime {
     input?: OpensteerCaptureScriptsInput,
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerCaptureScriptsOutput>;
+  readArtifact(
+    input: OpensteerArtifactReadInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerArtifactReadOutput>;
   beautifyScript(
     input: OpensteerScriptBeautifyInput,
     options?: OpensteerRuntimeOperationOptions,

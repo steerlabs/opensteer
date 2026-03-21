@@ -1,16 +1,15 @@
 import type {
-  OpensteerAttachBrowserLaunchOptions,
-  OpensteerClonedBrowserLaunchOptions,
+  OpensteerAttachLiveBrowserLaunchOptions,
   OpensteerManagedBrowserLaunchOptions,
-  OpensteerProfileBrowserLaunchOptions,
+  OpensteerSnapshotAuthenticatedBrowserLaunchOptions,
+  OpensteerSnapshotSessionBrowserLaunchOptions,
 } from "@opensteer/protocol";
 
 import { expandHome, resolveChromeExecutablePath } from "./chrome-discovery.js";
 import type {
-  ResolvedAttachBrowserLaunch,
-  ResolvedClonedBrowserLaunch,
+  ResolvedAttachLiveBrowserLaunch,
   ResolvedManagedBrowserLaunch,
-  ResolvedProfileBrowserLaunch,
+  ResolvedSnapshotBrowserLaunch,
 } from "./types.js";
 import { resolve } from "node:path";
 
@@ -28,35 +27,37 @@ export function resolveManagedBrowserLaunch(
   };
 }
 
-export function resolveProfileBrowserLaunch(
-  input: OpensteerProfileBrowserLaunchOptions,
-): ResolvedProfileBrowserLaunch {
+export function resolveSnapshotSessionBrowserLaunch(
+  input: OpensteerSnapshotSessionBrowserLaunchOptions,
+): ResolvedSnapshotBrowserLaunch {
   return {
     executablePath: resolveChromeExecutablePath(input.executablePath),
     headless: input.headless ?? true,
     timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     args: [...(input.args ?? [])],
-    userDataDir: resolve(expandHome(input.userDataDir)),
-    profileDirectory: input.profileDirectory?.trim() || DEFAULT_PROFILE_DIRECTORY,
-  };
-}
-
-export function resolveClonedBrowserLaunch(
-  input: OpensteerClonedBrowserLaunchOptions,
-): ResolvedClonedBrowserLaunch {
-  return {
-    executablePath: resolveChromeExecutablePath(input.executablePath),
-    headless: input.headless ?? true,
-    timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    args: [...(input.args ?? [])],
+    copyMode: "session",
     sourceUserDataDir: resolve(expandHome(input.sourceUserDataDir)),
     sourceProfileDirectory: input.sourceProfileDirectory?.trim() || DEFAULT_PROFILE_DIRECTORY,
   };
 }
 
-export function resolveAttachBrowserLaunch(
-  input: OpensteerAttachBrowserLaunchOptions,
-): ResolvedAttachBrowserLaunch {
+export function resolveSnapshotAuthenticatedBrowserLaunch(
+  input: OpensteerSnapshotAuthenticatedBrowserLaunchOptions,
+): ResolvedSnapshotBrowserLaunch {
+  return {
+    executablePath: resolveChromeExecutablePath(input.executablePath),
+    headless: input.headless ?? true,
+    timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    args: [...(input.args ?? [])],
+    copyMode: "authenticated",
+    sourceUserDataDir: resolve(expandHome(input.sourceUserDataDir)),
+    sourceProfileDirectory: input.sourceProfileDirectory?.trim() || DEFAULT_PROFILE_DIRECTORY,
+  };
+}
+
+export function resolveAttachLiveBrowserLaunch(
+  input: OpensteerAttachLiveBrowserLaunchOptions,
+): ResolvedAttachLiveBrowserLaunch {
   const endpoint = input.endpoint?.trim();
   if (endpoint !== undefined && endpoint.length === 0) {
     throw new Error("browser.endpoint must be a non-empty CDP port or URL.");

@@ -1,25 +1,25 @@
 import type { BrowserCoreEngine } from "@opensteer/browser-core";
 import type {
-  OpensteerAttachBrowserLaunchOptions,
+  OpensteerAttachLiveBrowserLaunchOptions,
   OpensteerBrowserContextOptions,
   OpensteerBrowserLaunchOptions,
-  OpensteerClonedBrowserLaunchOptions,
   OpensteerManagedBrowserLaunchOptions,
-  OpensteerProfileBrowserLaunchOptions,
+  OpensteerSnapshotAuthenticatedBrowserLaunchOptions,
+  OpensteerSnapshotSessionBrowserLaunchOptions,
 } from "@opensteer/protocol";
 
 import { OPENSTEER_COMPUTER_DISPLAY_PROFILE } from "../runtimes/computer-use/display.js";
 import {
-  resolveAttachBrowserLaunch,
-  resolveClonedBrowserLaunch,
+  resolveAttachLiveBrowserLaunch,
   resolveManagedBrowserLaunch,
-  resolveProfileBrowserLaunch,
+  resolveSnapshotAuthenticatedBrowserLaunch,
+  resolveSnapshotSessionBrowserLaunch,
 } from "../local-browser/launch-resolution.js";
 import {
   connectAttachBrowserSession,
-  launchClonedBrowserSession,
   launchManagedBrowserSession,
-  launchProfileBrowserSession,
+  launchSnapshotAuthenticatedBrowserSession,
+  launchSnapshotSessionBrowserSession,
 } from "../local-browser/shared-session.js";
 import {
   generateStealthProfile,
@@ -221,9 +221,9 @@ async function acquireLocalBrowserLease(input: {
     });
   }
 
-  if (isProfileBrowserLaunchOptions(browser)) {
-    const resolved = resolveProfileBrowserLaunch(browser);
-    return launchProfileBrowserSession({
+  if (isSnapshotSessionBrowserLaunchOptions(browser)) {
+    const resolved = resolveSnapshotSessionBrowserLaunch(browser);
+    return launchSnapshotSessionBrowserSession({
       ...resolved,
       args: mergeManagedLaunchArgs(resolved.args, input.context?.viewport) ?? [],
       ...(stealthProfile === undefined ? {} : { stealthProfile }),
@@ -231,9 +231,9 @@ async function acquireLocalBrowserLease(input: {
     });
   }
 
-  if (isClonedBrowserLaunchOptions(browser)) {
-    const resolved = resolveClonedBrowserLaunch(browser);
-    return launchClonedBrowserSession({
+  if (isSnapshotAuthenticatedBrowserLaunchOptions(browser)) {
+    const resolved = resolveSnapshotAuthenticatedBrowserLaunch(browser);
+    return launchSnapshotAuthenticatedBrowserSession({
       ...resolved,
       args: mergeManagedLaunchArgs(resolved.args, input.context?.viewport) ?? [],
       ...(stealthProfile === undefined ? {} : { stealthProfile }),
@@ -241,8 +241,8 @@ async function acquireLocalBrowserLease(input: {
     });
   }
 
-  if (isAttachBrowserLaunchOptions(browser)) {
-    const resolved = resolveAttachBrowserLaunch(browser);
+  if (isAttachLiveBrowserLaunchOptions(browser)) {
+    const resolved = resolveAttachLiveBrowserLaunch(browser);
     return connectAttachBrowserSession({
       ...resolved,
       ...(stealthProfile === undefined ? {} : { stealthProfile }),
@@ -318,7 +318,7 @@ function toAbpLaunchOptions(
 function assertSupportedAbpEngineOptions(options: OpensteerNamedEngineFactoryOptions): void {
   if (options.browser && !isManagedBrowserLaunchOptions(options.browser)) {
     throw new Error(
-      'ABP engine only supports managed local browser launches. Use the Playwright engine for browser.kind="profile", "cloned", or "attach".',
+      'ABP engine only supports managed local browser launches. Use the Playwright engine for browser.kind="snapshot-session", "snapshot-authenticated", or "attach-live".',
     );
   }
 
@@ -468,22 +468,22 @@ function isManagedBrowserLaunchOptions(
   return options === undefined || options.kind === undefined || options.kind === "managed";
 }
 
-function isProfileBrowserLaunchOptions(
+function isSnapshotSessionBrowserLaunchOptions(
   options: OpensteerBrowserLaunchOptions,
-): options is OpensteerProfileBrowserLaunchOptions {
-  return options.kind === "profile";
+): options is OpensteerSnapshotSessionBrowserLaunchOptions {
+  return options.kind === "snapshot-session";
 }
 
-function isClonedBrowserLaunchOptions(
+function isSnapshotAuthenticatedBrowserLaunchOptions(
   options: OpensteerBrowserLaunchOptions,
-): options is OpensteerClonedBrowserLaunchOptions {
-  return options.kind === "cloned";
+): options is OpensteerSnapshotAuthenticatedBrowserLaunchOptions {
+  return options.kind === "snapshot-authenticated";
 }
 
-function isAttachBrowserLaunchOptions(
+function isAttachLiveBrowserLaunchOptions(
   options: OpensteerBrowserLaunchOptions,
-): options is OpensteerAttachBrowserLaunchOptions {
-  return options.kind === "attach";
+): options is OpensteerAttachLiveBrowserLaunchOptions {
+  return options.kind === "attach-live";
 }
 
 function asConnectedCdpBrowser(

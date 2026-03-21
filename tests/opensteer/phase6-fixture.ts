@@ -121,17 +121,17 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
-  if (url.pathname === "/phase10/page-eval") {
+  if (url.pathname === "/phase10/page-http") {
     response.setHeader("content-type", "text/html; charset=utf-8");
     response.end(
       html(
         `
-          <div id="phase10-page-eval">page eval ready</div>
+          <div id="phase10-page-http">page http ready</div>
           <script>
             const originalFetch = window.fetch.bind(window);
             window.fetch = (input, init = {}) => {
               const headers = new Headers(init.headers ?? {});
-              headers.set("x-page-eval", "active");
+              headers.set("x-page-http", "active");
               return originalFetch(input, {
                 ...init,
                 headers
@@ -139,7 +139,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
             };
           </script>
         `,
-        "Phase 10 page eval",
+        "Phase 10 page http",
       ),
     );
     return;
@@ -214,6 +214,98 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
+  if (url.pathname === "/phase10/interaction") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(
+      html(
+        `
+          <label for="phase10-interaction-input">Tracking number</label>
+          <input
+            id="phase10-interaction-input"
+            name="trackingNumber"
+            type="text"
+            placeholder="Enter tracking number"
+          />
+          <button id="phase10-interaction-submit" type="button">Track</button>
+          <div id="phase10-interaction-status">idle</div>
+          <script>
+            const input = document.getElementById("phase10-interaction-input");
+            const status = document.getElementById("phase10-interaction-status");
+            document.getElementById("phase10-interaction-submit").addEventListener("click", async () => {
+              status.textContent = "submitting";
+              const response = await fetch("/phase10/api/interaction-submit", {
+                method: "POST",
+                headers: {
+                  "content-type": "application/json; charset=utf-8"
+                },
+                body: JSON.stringify({
+                  trackingNumber: input.value
+                })
+              });
+              const data = await response.json();
+              status.textContent = data.trackingNumber;
+            });
+          </script>
+        `,
+        "Phase 10 interaction",
+      ),
+    );
+    return;
+  }
+
+  if (url.pathname === "/phase10/stateful-prime") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.setHeader("set-cookie", "phase10-state=armed; Path=/; SameSite=Lax");
+    response.end(
+      html(
+        `
+          <div id="phase10-stateful-prime">state primed</div>
+          <script>
+            window.localStorage.setItem("phase10-state-token", "armed-token");
+            window.sessionStorage.setItem("phase10-state-session", "armed-session");
+          </script>
+        `,
+        "Phase 10 stateful prime",
+      ),
+    );
+    return;
+  }
+
+  if (url.pathname === "/phase10/stateful-target") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(
+      html(
+        `
+          <div id="phase10-stateful-target">stateful target</div>
+          <div id="phase10-stateful-status">idle</div>
+          <script>
+            window.addEventListener("load", async () => {
+              const token = window.localStorage.getItem("phase10-state-token");
+              const status = document.getElementById("phase10-stateful-status");
+              if (!token) {
+                status.textContent = "missing-token";
+                return;
+              }
+              try {
+                const response = await fetch("/phase10/api/stateful-replay", {
+                  headers: {
+                    "x-phase10-state-token": token
+                  }
+                });
+                const data = await response.json();
+                status.textContent = data.ok ? "ok" : "blocked";
+              } catch (error) {
+                status.textContent = "failed";
+              }
+            });
+          </script>
+        `,
+        "Phase 10 stateful target",
+      ),
+    );
+    return;
+  }
+
   if (url.pathname === "/phase10/api/capture") {
     response.setHeader("content-type", "application/json; charset=utf-8");
     response.setHeader("set-cookie", "phase10-capture=server; Path=/; SameSite=Lax");
@@ -221,6 +313,43 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       JSON.stringify({
         ok: true,
         step: url.searchParams.get("step"),
+      }),
+    );
+    return;
+  }
+
+  if (url.pathname === "/phase10/api/interaction-submit") {
+    const body = JSON.parse((await readRequestBody(request)).toString("utf8"));
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    response.setHeader("set-cookie", "phase10-interaction=server; Path=/; SameSite=Lax");
+    response.end(
+      JSON.stringify({
+        ok: true,
+        trackingNumber: body.trackingNumber ?? null,
+      }),
+    );
+    return;
+  }
+
+  if (url.pathname === "/phase10/api/stateful-replay") {
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    const hasCookie = (request.headers.cookie ?? "").includes("phase10-state=armed");
+    const token = request.headers["x-phase10-state-token"];
+    if (!hasCookie || token !== "armed-token") {
+      response.statusCode = 401;
+      response.end(
+        JSON.stringify({
+          ok: false,
+          hasCookie,
+          token: token ?? null,
+        }),
+      );
+      return;
+    }
+    response.end(
+      JSON.stringify({
+        ok: true,
+        mode: "stateful-replay",
       }),
     );
     return;
@@ -355,9 +484,9 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
-  if (url.pathname === "/phase10/api/page-eval-protected") {
+  if (url.pathname === "/phase10/api/page-http-protected") {
     response.setHeader("content-type", "application/json; charset=utf-8");
-    if (request.headers["x-page-eval"] !== "active") {
+    if (request.headers["x-page-http"] !== "active") {
       response.statusCode = 403;
       response.end(
         JSON.stringify({
@@ -367,10 +496,30 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       );
       return;
     }
+      response.end(
+        JSON.stringify({
+          ok: true,
+          mode: "page-http",
+        }),
+      );
+      return;
+  }
+
+  if (url.pathname === "/phase10/api/page-http-cors") {
+    response.setHeader("access-control-allow-origin", "*");
+    response.setHeader("access-control-allow-headers", "x-page-http, content-type");
+    response.setHeader("access-control-allow-methods", "GET, OPTIONS");
+    if (request.method === "OPTIONS") {
+      response.statusCode = 204;
+      response.end();
+      return;
+    }
+    response.setHeader("content-type", "application/json; charset=utf-8");
     response.end(
       JSON.stringify({
         ok: true,
-        mode: "page-eval-http",
+        mode: "page-http",
+        cors: true,
       }),
     );
     return;

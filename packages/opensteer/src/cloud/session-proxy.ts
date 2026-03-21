@@ -1,4 +1,6 @@
 import type {
+  OpensteerArtifactReadInput,
+  OpensteerArtifactReadOutput,
   CookieRecord,
   OpensteerAddInitScriptInput,
   OpensteerAddInitScriptOutput,
@@ -34,6 +36,14 @@ import type {
   OpensteerNetworkQueryOutput,
   OpensteerNetworkSaveInput,
   OpensteerNetworkSaveOutput,
+  OpensteerInteractionCaptureInput,
+  OpensteerInteractionCaptureOutput,
+  OpensteerInteractionDiffInput,
+  OpensteerInteractionDiffOutput,
+  OpensteerInteractionGetInput,
+  OpensteerInteractionGetOutput,
+  OpensteerInteractionReplayInput,
+  OpensteerInteractionReplayOutput,
   OpensteerPageActivateInput,
   OpensteerPageActivateOutput,
   OpensteerPageCloseInput,
@@ -62,6 +72,20 @@ import type {
   OpensteerScriptDeobfuscateOutput,
   OpensteerScriptSandboxInput,
   OpensteerScriptSandboxOutput,
+  OpensteerReverseExportInput,
+  OpensteerReverseExportOutput,
+  OpensteerReversePackageGetInput,
+  OpensteerReversePackageGetOutput,
+  OpensteerReversePackageListInput,
+  OpensteerReversePackageListOutput,
+  OpensteerReversePackagePatchInput,
+  OpensteerReversePackagePatchOutput,
+  OpensteerReverseReplayInput,
+  OpensteerReverseReplayOutput,
+  OpensteerReverseReportInput,
+  OpensteerReverseReportOutput,
+  OpensteerReverseSolveInput,
+  OpensteerReverseSolveOutput,
   OpensteerSessionCloseOutput,
   OpensteerSessionOpenInput,
   OpensteerSessionOpenOutput,
@@ -196,6 +220,83 @@ export class CloudSessionProxy implements OpensteerSemanticRuntime {
     return this.requireClient().invoke("network.probe", input);
   }
 
+  async solveReverse(
+    input: OpensteerReverseSolveInput,
+  ): Promise<OpensteerReverseSolveOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("reverse.solve", input);
+  }
+
+  async replayReverse(
+    input: OpensteerReverseReplayInput,
+  ): Promise<OpensteerReverseReplayOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("reverse.replay", input);
+  }
+
+  async exportReverse(
+    input: OpensteerReverseExportInput,
+  ): Promise<OpensteerReverseExportOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("reverse.export", input);
+  }
+
+  async getReverseReport(
+    input: OpensteerReverseReportInput,
+  ): Promise<OpensteerReverseReportOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("reverse.report", input);
+  }
+
+  async getReversePackage(
+    input: OpensteerReversePackageGetInput,
+  ): Promise<OpensteerReversePackageGetOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("reverse.package.get", input);
+  }
+
+  async listReversePackages(
+    input: OpensteerReversePackageListInput = {},
+  ): Promise<OpensteerReversePackageListOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("reverse.package.list", input);
+  }
+
+  async patchReversePackage(
+    input: OpensteerReversePackagePatchInput,
+  ): Promise<OpensteerReversePackagePatchOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("reverse.package.patch", input);
+  }
+
+  async captureInteraction(
+    input: OpensteerInteractionCaptureInput,
+  ): Promise<OpensteerInteractionCaptureOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("interaction.capture", input);
+  }
+
+  async getInteraction(
+    input: OpensteerInteractionGetInput,
+  ): Promise<OpensteerInteractionGetOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("interaction.get", input);
+  }
+
+  async diffInteraction(
+    input: OpensteerInteractionDiffInput,
+  ): Promise<OpensteerInteractionDiffOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("interaction.diff", input);
+  }
+
+  async replayInteraction(
+    input: OpensteerInteractionReplayInput,
+  ): Promise<OpensteerInteractionReplayOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("interaction.replay", input);
+  }
+
   async clearNetwork(input: OpensteerNetworkClearInput = {}): Promise<OpensteerNetworkClearOutput> {
     await this.ensureSession();
     return this.requireClient().invoke("network.clear", input);
@@ -206,6 +307,11 @@ export class CloudSessionProxy implements OpensteerSemanticRuntime {
   ): Promise<OpensteerCaptureScriptsOutput> {
     await this.ensureSession();
     return this.requireClient().invoke("scripts.capture", input);
+  }
+
+  async readArtifact(input: OpensteerArtifactReadInput): Promise<OpensteerArtifactReadOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("artifact.read", input);
   }
 
   async beautifyScript(

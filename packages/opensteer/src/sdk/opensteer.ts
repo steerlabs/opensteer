@@ -1,4 +1,6 @@
 import type {
+  OpensteerArtifactReadInput,
+  OpensteerArtifactReadOutput,
   CookieRecord,
   OpensteerAddInitScriptInput,
   OpensteerAddInitScriptOutput,
@@ -28,6 +30,14 @@ import type {
   OpensteerNetworkQueryOutput,
   OpensteerNetworkSaveInput,
   OpensteerNetworkSaveOutput,
+  OpensteerInteractionCaptureInput,
+  OpensteerInteractionCaptureOutput,
+  OpensteerInteractionDiffInput,
+  OpensteerInteractionDiffOutput,
+  OpensteerInteractionGetInput,
+  OpensteerInteractionGetOutput,
+  OpensteerInteractionReplayInput,
+  OpensteerInteractionReplayOutput,
   OpensteerPageActivateInput,
   OpensteerPageActivateOutput,
   OpensteerPageCloseInput,
@@ -57,6 +67,20 @@ import type {
   OpensteerScriptDeobfuscateOutput,
   OpensteerScriptSandboxInput,
   OpensteerScriptSandboxOutput,
+  OpensteerReverseExportInput,
+  OpensteerReverseExportOutput,
+  OpensteerReversePackageGetInput,
+  OpensteerReversePackageGetOutput,
+  OpensteerReversePackageListInput,
+  OpensteerReversePackageListOutput,
+  OpensteerReversePackagePatchInput,
+  OpensteerReversePackagePatchOutput,
+  OpensteerReverseReplayInput,
+  OpensteerReverseReplayOutput,
+  OpensteerReverseReportInput,
+  OpensteerReverseReportOutput,
+  OpensteerReverseSolveInput,
+  OpensteerReverseSolveOutput,
   OpensteerSessionCloseOutput,
   OpensteerSessionOpenInput,
   OpensteerSessionOpenOutput,
@@ -135,6 +159,28 @@ export type OpensteerNetworkDiffOptions = OpensteerNetworkDiffInput;
 export type OpensteerNetworkDiffResult = OpensteerNetworkDiffOutput;
 export type OpensteerNetworkProbeOptions = OpensteerTransportProbeInput;
 export type OpensteerNetworkProbeResult = OpensteerTransportProbeOutput;
+export type OpensteerReverseSolveOptions = OpensteerReverseSolveInput;
+export type OpensteerReverseSolveResult = OpensteerReverseSolveOutput;
+export type OpensteerReverseReplayOptions = OpensteerReverseReplayInput;
+export type OpensteerReverseReplayResult = OpensteerReverseReplayOutput;
+export type OpensteerReverseExportOptions = OpensteerReverseExportInput;
+export type OpensteerReverseExportResult = OpensteerReverseExportOutput;
+export type OpensteerReverseReportOptions = OpensteerReverseReportInput;
+export type OpensteerReverseReportResult = OpensteerReverseReportOutput;
+export type OpensteerReversePackageGetOptions = OpensteerReversePackageGetInput;
+export type OpensteerReversePackageGetResult = OpensteerReversePackageGetOutput;
+export type OpensteerReversePackageListOptions = OpensteerReversePackageListInput;
+export type OpensteerReversePackageListResult = OpensteerReversePackageListOutput;
+export type OpensteerReversePackagePatchOptions = OpensteerReversePackagePatchInput;
+export type OpensteerReversePackagePatchResult = OpensteerReversePackagePatchOutput;
+export type OpensteerInteractionCaptureOptions = OpensteerInteractionCaptureInput;
+export type OpensteerInteractionCaptureResult = OpensteerInteractionCaptureOutput;
+export type OpensteerInteractionGetOptions = OpensteerInteractionGetInput;
+export type OpensteerInteractionGetResult = OpensteerInteractionGetOutput;
+export type OpensteerInteractionDiffOptions = OpensteerInteractionDiffInput;
+export type OpensteerInteractionDiffResult = OpensteerInteractionDiffOutput;
+export type OpensteerInteractionReplayOptions = OpensteerInteractionReplayInput;
+export type OpensteerInteractionReplayResult = OpensteerInteractionReplayOutput;
 export type OpensteerNetworkClearOptions = OpensteerNetworkClearInput;
 export type OpensteerNetworkClearResult = OpensteerNetworkClearOutput;
 export type OpensteerRawRequestOptions = OpensteerRawRequestInput;
@@ -149,6 +195,8 @@ export type OpensteerScriptDeobfuscateOptions = OpensteerScriptDeobfuscateInput;
 export type OpensteerScriptDeobfuscateResult = OpensteerScriptDeobfuscateOutput;
 export type OpensteerScriptSandboxOptions = OpensteerScriptSandboxInput;
 export type OpensteerScriptSandboxResult = OpensteerScriptSandboxOutput;
+export type OpensteerArtifactReadOptions = OpensteerArtifactReadInput;
+export type OpensteerArtifactReadResult = OpensteerArtifactReadOutput;
 export type OpensteerCaptchaSolveOptions = OpensteerCaptchaSolveInput;
 export type OpensteerCaptchaSolveResult = OpensteerCaptchaSolveOutput;
 export type OpensteerAddInitScriptOptions = OpensteerAddInitScriptInput;
@@ -359,6 +407,72 @@ export class Opensteer {
     return this.runtime.probeNetwork(input);
   }
 
+  async reverseSolve(
+    input: OpensteerReverseSolveOptions = {},
+  ): Promise<OpensteerReverseSolveResult> {
+    return this.runtime.solveReverse(input);
+  }
+
+  async reverseReplay(
+    input: OpensteerReverseReplayOptions,
+  ): Promise<OpensteerReverseReplayResult> {
+    return this.runtime.replayReverse(input);
+  }
+
+  async reverseExport(
+    input: OpensteerReverseExportOptions,
+  ): Promise<OpensteerReverseExportResult> {
+    return this.runtime.exportReverse(input);
+  }
+
+  async reverseReport(
+    input: OpensteerReverseReportOptions,
+  ): Promise<OpensteerReverseReportResult> {
+    return this.runtime.getReverseReport(input);
+  }
+
+  async getReversePackage(
+    input: OpensteerReversePackageGetOptions,
+  ): Promise<OpensteerReversePackageGetResult> {
+    return this.runtime.getReversePackage(input);
+  }
+
+  async listReversePackages(
+    input: OpensteerReversePackageListOptions = {},
+  ): Promise<OpensteerReversePackageListResult> {
+    return this.runtime.listReversePackages(input);
+  }
+
+  async patchReversePackage(
+    input: OpensteerReversePackagePatchOptions,
+  ): Promise<OpensteerReversePackagePatchResult> {
+    return this.runtime.patchReversePackage(input);
+  }
+
+  async interactionCapture(
+    input: OpensteerInteractionCaptureOptions,
+  ): Promise<OpensteerInteractionCaptureResult> {
+    return this.runtime.captureInteraction(input);
+  }
+
+  async getInteraction(
+    input: OpensteerInteractionGetOptions,
+  ): Promise<OpensteerInteractionGetResult> {
+    return this.runtime.getInteraction(input);
+  }
+
+  async interactionDiff(
+    input: OpensteerInteractionDiffOptions,
+  ): Promise<OpensteerInteractionDiffResult> {
+    return this.runtime.diffInteraction(input);
+  }
+
+  async interactionReplay(
+    input: OpensteerInteractionReplayOptions,
+  ): Promise<OpensteerInteractionReplayResult> {
+    return this.runtime.replayInteraction(input);
+  }
+
   async clearNetwork(
     input: OpensteerNetworkClearOptions = {},
   ): Promise<OpensteerNetworkClearResult> {
@@ -369,6 +483,12 @@ export class Opensteer {
     input: OpensteerCaptureScriptsOptions = {},
   ): Promise<OpensteerCaptureScriptsResult> {
     return this.runtime.captureScripts(input);
+  }
+
+  async readArtifact(
+    input: OpensteerArtifactReadOptions,
+  ): Promise<OpensteerArtifactReadResult> {
+    return this.runtime.readArtifact(input);
   }
 
   async beautifyScript(

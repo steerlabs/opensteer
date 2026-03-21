@@ -1,7 +1,7 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import { promisify } from "node:util";
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import { readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type {
@@ -226,12 +226,12 @@ describe("Phase 10 request workflows", () => {
 
       const waitedPagePromise = opensteer.waitForPage({
         openerPageRef: opened.pageRef,
-        urlIncludes: "/phase10/page-eval",
+        urlIncludes: "/phase10/page-http",
         timeoutMs: 10_000,
       });
       const created = await opensteer.newPage({
         openerPageRef: opened.pageRef,
-        url: `${baseUrl}/phase10/page-eval`,
+        url: `${baseUrl}/phase10/page-http`,
       });
       const waitedPage = await waitedPagePromise;
       expect(waitedPage.pageRef).toBe(created.pageRef);
@@ -244,11 +244,11 @@ describe("Phase 10 request workflows", () => {
       const pageEvalData = await opensteer.evaluateJson({
         pageRef: created.pageRef,
         script:
-          "() => ({ href: window.location.href, marker: document.querySelector('#phase10-page-eval')?.textContent?.trim() ?? '' })",
+          "() => ({ href: window.location.href, marker: document.querySelector('#phase10-page-http')?.textContent?.trim() ?? '' })",
       });
       expect(pageEvalData).toEqual({
-        href: `${baseUrl}/phase10/page-eval`,
-        marker: "page eval ready",
+        href: `${baseUrl}/phase10/page-http`,
+        marker: "page http ready",
       });
 
       await opensteer.activatePage({
@@ -288,11 +288,11 @@ describe("Phase 10 request workflows", () => {
     }
   }, 60_000);
 
-  test("page-eval-http runs inside the live page context while context-http does not", async () => {
+  test("page-http runs inside the live page context while context-http does not", async () => {
     const rootDir = await createPhase6TemporaryRoot();
     const baseUrl = requireFixtureServer().url;
     const opensteer = new Opensteer({
-      name: "phase10-page-eval-transport",
+      name: "phase10-page-http-transport",
       rootDir,
       browser: {
         headless: true,
@@ -300,10 +300,10 @@ describe("Phase 10 request workflows", () => {
     });
 
     try {
-      await opensteer.open(`${baseUrl}/phase10/page-eval`);
+      await opensteer.open(`${baseUrl}/phase10/page-http`);
 
       const contextResult = await opensteer.rawRequest({
-        url: `${baseUrl}/phase10/api/page-eval-protected`,
+        url: `${baseUrl}/phase10/api/page-http-protected`,
         transport: "context-http",
       });
       expect(contextResult.response.status).toBe(403);
@@ -312,26 +312,131 @@ describe("Phase 10 request workflows", () => {
         code: "missing-page-context",
       });
 
-      const pageEvalResult = await opensteer.rawRequest({
-        url: `${baseUrl}/phase10/api/page-eval-protected`,
-        transport: "page-eval-http",
+      const pageHttpResult = await opensteer.rawRequest({
+        url: `${baseUrl}/phase10/api/page-http-protected`,
+        transport: "page-http",
       });
-      expect(pageEvalResult.response.status).toBe(200);
-      expect(pageEvalResult.data).toMatchObject({
+      expect(pageHttpResult.response.status).toBe(200);
+      expect(pageHttpResult.data).toMatchObject({
         ok: true,
-        mode: "page-eval-http",
+        mode: "page-http",
       });
 
-      const crossOriginUrl = new URL(`${baseUrl}/phase10/api/page-eval-protected`);
+      const crossOriginUrl = new URL(`${baseUrl}/phase10/api/page-http-cors`);
       crossOriginUrl.hostname = "localhost";
-      await expect(
-        opensteer.rawRequest({
-          url: crossOriginUrl.toString(),
-          transport: "page-eval-http",
-        }),
-      ).rejects.toMatchObject({
-        code: "invalid-request",
+      const crossOriginResult = await opensteer.rawRequest({
+        url: crossOriginUrl.toString(),
+        transport: "page-http",
       });
+      expect(crossOriginResult.response.status).toBe(200);
+      expect(crossOriginResult.data).toMatchObject({
+        ok: true,
+        mode: "page-http",
+        cors: true,
+      });
+    } finally {
+      await opensteer.close().catch(() => undefined);
+    }
+  }, 60_000);
+
+  test("interaction.capture accepts primitive args for automated scripts", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const opensteer = new Opensteer({
+      name: "phase10-interaction-args",
+      rootDir,
+      browser: {
+        headless: true,
+      },
+    });
+
+    try {
+      const opened = await opensteer.open(`${baseUrl}/phase10/interaction`);
+      const trace = await opensteer.interactionCapture({
+        pageRef: opened.pageRef,
+        script: `(...args) => {
+          document.body.setAttribute("data-phase10-args", JSON.stringify(args));
+        }`,
+        args: ["hello", 7, true, null],
+      });
+      expect(trace.trace.payload.mode).toBe("automated");
+      const fetchedTrace = await opensteer.getInteraction({
+        traceId: trace.trace.id,
+      });
+      expect(fetchedTrace.trace.id).toBe(trace.trace.id);
+      expect(
+        await opensteer.evaluateJson({
+          pageRef: opened.pageRef,
+          script: `() => document.body.getAttribute("data-phase10-args")`,
+        }),
+      ).toBe('["hello",7,true,null]');
+    } finally {
+      await opensteer.close().catch(() => undefined);
+    }
+  }, 60_000);
+
+  test("interaction.capture steps execute browser actions and capture downstream network", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const opensteer = new Opensteer({
+      name: "phase10-interaction-steps",
+      rootDir,
+      browser: {
+        headless: true,
+      },
+    });
+
+    try {
+      const opened = await opensteer.open(`${baseUrl}/phase10/interaction`);
+      const trace = await opensteer.interactionCapture({
+        pageRef: opened.pageRef,
+        includeStorage: true,
+        steps: [
+          {
+            kind: "input",
+            target: {
+              kind: "selector",
+              selector: "#phase10-interaction-input",
+            },
+            text: "MRSU6648297",
+          },
+          {
+            kind: "click",
+            target: {
+              kind: "selector",
+              selector: "#phase10-interaction-submit",
+            },
+          },
+          {
+            kind: "wait",
+            durationMs: 250,
+          },
+        ],
+      });
+
+      expect(trace.trace.payload.events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: "input" }),
+          expect.objectContaining({ type: "click" }),
+        ]),
+      );
+      expect(trace.trace.payload.networkRecordIds.length).toBeGreaterThan(0);
+      expect(trace.trace.payload.stateDelta?.cookiesChanged).toContain("phase10-interaction");
+      expect(
+        await opensteer.evaluateJson({
+          pageRef: opened.pageRef,
+          script: `() => document.querySelector("#phase10-interaction-status")?.textContent?.trim() ?? ""`,
+        }),
+      ).toBe("MRSU6648297");
+
+      const captured = await opensteer.waitForNetwork({
+        path: "/phase10/api/interaction-submit",
+        resourceType: "fetch",
+        includeBodies: true,
+      });
+      expect(captured.record.method).toBe("POST");
+      expect(captured.record.status).toBe(200);
+      expect(captured.record.responseBody).toBeDefined();
     } finally {
       await opensteer.close().catch(() => undefined);
     }
@@ -374,6 +479,10 @@ describe("Phase 10 request workflows", () => {
       expect(captured.scripts.some((script) => script.source === "dynamic" && script.url?.includes("/phase10/assets/script-dynamic.js"))).toBe(true);
       expect(captured.scripts.some((script) => script.source === "worker" && script.url?.includes("/phase10/assets/script-worker.js"))).toBe(true);
       expect(captured.scripts.every((script) => script.artifactId !== undefined)).toBe(true);
+      const artifact = await opensteer.readArtifact({
+        artifactId: captured.scripts[0]!.artifactId!,
+      });
+      expect(artifact.artifact.kind).toBe("script-source");
 
       await runCliCommand(rootDir, [
         "open",
@@ -1185,6 +1294,247 @@ describe("Phase 10 request workflows", () => {
     }
   }, 60_000);
 
+  test("reverse.solve emits a runnable portable package with report and export artifacts", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const opensteer = new Opensteer({
+      name: "phase10-reverse-solve",
+      rootDir,
+      browser: {
+        headless: true,
+      },
+    });
+
+    try {
+      await opensteer.open();
+      await opensteer.goto(`${baseUrl}/phase10/route-target`);
+      await expect(
+        opensteer.waitForNetwork({
+          path: "/phase10/api/route-data",
+          resourceType: "fetch",
+          includeBodies: true,
+        }),
+      ).resolves.toBeDefined();
+
+      const solved = await opensteer.reverseSolve({
+        objective: "Reverse engineer phase10 route target",
+        network: {
+          path: "/phase10/api/route-data",
+          includeBodies: true,
+        },
+      });
+      expect(solved.package.payload.kind).toBe("portable-http");
+      expect(solved.package.payload.readiness).toBe("runnable");
+      expect(solved.package.payload.requestPlanId).toEqual(expect.any(String));
+      expect(solved.package.payload.workflow).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: "operation",
+            operation: "request.raw",
+          }),
+          expect.objectContaining({
+            kind: "assert",
+          }),
+        ]),
+      );
+      expect(solved.package.payload.validators).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: "status",
+          }),
+        ]),
+      );
+      expect(solved.report.payload.packageId).toBe(solved.package.id);
+      expect(solved.report.payload.packageKind).toBe("portable-http");
+      expect(solved.report.payload.candidateRankings[0]?.candidateId).toBe(
+        solved.report.payload.chosenCandidateId,
+      );
+      const fetchedPackage = await opensteer.getReversePackage({
+        packageId: solved.package.id,
+      });
+      expect(fetchedPackage.package.id).toBe(solved.package.id);
+      const listedPackages = await opensteer.listReversePackages({
+        caseId: solved.caseId,
+      });
+      expect(listedPackages.packages.map((entry) => entry.id)).toContain(solved.package.id);
+      const patchedPackage = await opensteer.patchReversePackage({
+        packageId: solved.package.id,
+        notes: "patched portable package",
+      });
+      expect(patchedPackage.package.id).not.toBe(solved.package.id);
+      expect(patchedPackage.package.payload.parentPackageId).toBe(solved.package.id);
+      expect(patchedPackage.package.payload.notes).toBe("patched portable package");
+      expect(patchedPackage.report.payload.packageId).toBe(patchedPackage.package.id);
+
+      const replayed = await opensteer.reverseReplay({
+        packageId: solved.package.id,
+      });
+      expect(replayed.success).toBe(true);
+      expect(replayed.kind).toBe("portable-http");
+      expect(replayed.status).toBe(200);
+
+      const root = await createFilesystemOpensteerRoot({
+        rootPath: path.join(rootDir, ".opensteer"),
+      });
+      const caseRecordPath = await findRegistryRecordPathById(
+        root.registry.reverseCases.recordsDirectory,
+        solved.caseId,
+      );
+      expect(caseRecordPath).toBeDefined();
+      if (caseRecordPath === undefined) {
+        throw new Error(`expected reverse case record ${solved.caseId} to exist`);
+      }
+      await unlink(caseRecordPath);
+
+      const replayedFromStandalonePackage = await opensteer.reverseReplay({
+        packageId: solved.package.id,
+      });
+      expect(replayedFromStandalonePackage.success).toBe(true);
+      expect(replayedFromStandalonePackage.kind).toBe("portable-http");
+
+      const exported = await opensteer.reverseExport({
+        packageId: solved.package.id,
+      });
+      expect(exported.package.id).toBe(solved.package.id);
+      expect(exported.requestPlan?.id).toBe(solved.package.payload.requestPlanId);
+
+      const report = await opensteer.reverseReport({
+        packageId: solved.package.id,
+      });
+      expect(report.report.id).toBe(solved.report.id);
+      expect(report.report.payload.replayRuns.length).toBeGreaterThan(0);
+    } finally {
+      await opensteer.close().catch(() => undefined);
+    }
+  }, 60_000);
+
+  test("browser-workflow packages restore captured observation state before standalone replay", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const baseUrl = requireFixtureServer().url;
+    const solvingOpensteer = new Opensteer({
+      name: "phase10-reverse-state-restore",
+      rootDir,
+      browser: {
+        headless: true,
+      },
+    });
+
+    try {
+      await solvingOpensteer.open(`${baseUrl}/phase10/stateful-prime`);
+      await solvingOpensteer.goto(`${baseUrl}/phase10/stateful-target`);
+      await expect(
+        solvingOpensteer.waitForNetwork({
+          path: "/phase10/api/stateful-replay",
+          resourceType: "fetch",
+          includeBodies: true,
+        }),
+      ).resolves.toBeDefined();
+
+      const solved = await solvingOpensteer.reverseSolve({
+        objective: "Reverse engineer phase10 stateful replay",
+        targetHints: {
+          paths: ["/phase10/api/stateful-replay"],
+        },
+        network: {
+          path: "/phase10/api/stateful-replay",
+          includeBodies: true,
+        },
+      });
+
+      expect(solved.package.payload.kind).toBe("browser-workflow");
+      expect(solved.package.payload.readiness).toBe("runnable");
+      expect(solved.package.payload.stateSnapshots.length).toBeGreaterThan(0);
+      expect(solved.package.payload.stateSnapshots[0]?.cookies).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: "phase10-state",
+            value: "armed",
+          }),
+        ]),
+      );
+      expect(solved.package.payload.stateSnapshots[0]?.storage?.origins).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            origin: baseUrl,
+            localStorage: expect.arrayContaining([
+              expect.objectContaining({
+                key: "phase10-state-token",
+                value: "armed-token",
+              }),
+            ]),
+          }),
+        ]),
+      );
+
+      await solvingOpensteer.close();
+
+      const root = await createFilesystemOpensteerRoot({
+        rootPath: path.join(rootDir, ".opensteer"),
+      });
+      const caseRecordPath = await findRegistryRecordPathById(
+        root.registry.reverseCases.recordsDirectory,
+        solved.caseId,
+      );
+      expect(caseRecordPath).toBeDefined();
+      if (caseRecordPath === undefined) {
+        throw new Error(`expected reverse case record ${solved.caseId} to exist`);
+      }
+      await unlink(caseRecordPath);
+
+      const replayOpensteer = new Opensteer({
+        name: "phase10-reverse-state-restore-replay",
+        rootDir,
+        browser: {
+          headless: true,
+        },
+      });
+
+      try {
+        await replayOpensteer.open();
+        const replayed = await replayOpensteer.reverseReplay({
+          packageId: solved.package.id,
+        });
+        expect(replayed.success).toBe(true);
+        expect(replayed.kind).toBe("browser-workflow");
+        expect(replayed.status).toBe(200);
+
+        const storage = await replayOpensteer.getStorageSnapshot({
+          includeSessionStorage: true,
+        });
+        expect(storage.origins).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              origin: baseUrl,
+              localStorage: expect.arrayContaining([
+                expect.objectContaining({
+                  key: "phase10-state-token",
+                  value: "armed-token",
+                }),
+              ]),
+            }),
+          ]),
+        );
+        expect(storage.sessionStorage).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              origin: baseUrl,
+              entries: expect.arrayContaining([
+                expect.objectContaining({
+                  key: "phase10-state-session",
+                  value: "armed-session",
+                }),
+              ]),
+            }),
+          ]),
+        );
+      } finally {
+        await replayOpensteer.close().catch(() => undefined);
+      }
+    } finally {
+      await solvingOpensteer.close().catch(() => undefined);
+    }
+  }, 60_000);
+
   test("inferred plans from saved records replay without pseudo-header cleanup", async () => {
     const rootDir = await createPhase6TemporaryRoot();
     const baseUrl = requireFixtureServer().url;
@@ -1619,5 +1969,19 @@ async function runCliCommand(rootDir: string, args: readonly string[]): Promise<
   if (trimmed.length === 0) {
     return undefined;
   }
-  return JSON.parse(trimmed) as unknown;
+  return JSON.parse(trimmed);
+}
+
+async function findRegistryRecordPathById(
+  directory: string,
+  recordId: string,
+): Promise<string | undefined> {
+  for (const fileName of await readdir(directory)) {
+    const filePath = path.join(directory, fileName);
+    const parsed = JSON.parse(await readFile(filePath, "utf8"));
+    if (parsed !== null && typeof parsed === "object" && "id" in parsed && parsed.id === recordId) {
+      return filePath;
+    }
+  }
+  return undefined;
 }

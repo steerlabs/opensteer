@@ -28,7 +28,7 @@ export type TransportKind =
   | "direct-http"
   | "matched-tls"
   | "context-http"
-  | "page-eval-http"
+  | "page-http"
   | "session-http";
 
 export interface OpensteerRequestEntry {
@@ -636,7 +636,7 @@ export const opensteerRequestPlanParameterSchema: JsonSchema = objectSchema(
 export const opensteerRequestPlanTransportSchema: JsonSchema = objectSchema(
   {
     kind: enumSchema(
-      ["direct-http", "matched-tls", "context-http", "page-eval-http", "session-http"] as const,
+      ["direct-http", "matched-tls", "context-http", "page-http", "session-http"] as const,
     ),
     requiresBrowser: { type: "boolean" },
     requireSameOrigin: { type: "boolean" },
@@ -678,7 +678,7 @@ export const opensteerRequestPlanBodySchema: JsonSchema = objectSchema(
 );
 
 export const transportKindSchema: JsonSchema = enumSchema(
-  ["direct-http", "matched-tls", "context-http", "page-eval-http", "session-http"] as const,
+  ["direct-http", "matched-tls", "context-http", "page-http", "session-http"] as const,
   {
     title: "TransportKind",
   },

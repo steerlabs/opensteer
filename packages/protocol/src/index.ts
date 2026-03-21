@@ -23,6 +23,8 @@ export * from "./diff.js";
 export * from "./minimize.js";
 export * from "./probe.js";
 export * from "./scripts.js";
+export * from "./reverse.js";
+export * from "./interaction.js";
 export * from "./semantic.js";
 export * from "./computer-use-bridge.js";
 export * from "./dom-action-bridge.js";

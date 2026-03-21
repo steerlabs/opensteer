@@ -457,17 +457,17 @@ function normalizeTransport(
         requiresBrowser: true,
         ...(transport.cookieJar === undefined ? {} : { cookieJar: transport.cookieJar }),
       };
-    case "page-eval-http":
+    case "page-http":
       if (transport.requiresBrowser === false) {
-        throw invalidRequestPlanError("page-eval-http transport always requiresBrowser", {
+        throw invalidRequestPlanError("page-http transport always requiresBrowser", {
           field: "transport.requiresBrowser",
           transport: transport.kind,
         });
       }
       return {
-        kind: "page-eval-http",
+        kind: "page-http",
         requiresBrowser: true,
-        requireSameOrigin: transport.requireSameOrigin ?? true,
+        requireSameOrigin: transport.requireSameOrigin ?? false,
         ...(transport.cookieJar === undefined ? {} : { cookieJar: transport.cookieJar }),
       };
     case "matched-tls":

@@ -1126,6 +1126,36 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     });
   }
 
+  async setCookies(input: {
+    readonly sessionRef: SessionRef;
+    readonly cookies: readonly CookieRecord[];
+  }): Promise<void> {
+    const session = this.requireSession(input.sessionRef);
+    if (input.cookies.length === 0) {
+      return;
+    }
+    await session.context.addCookies(
+      input.cookies.map((cookie) => ({
+        name: cookie.name,
+        value: cookie.value,
+        domain: cookie.domain,
+        path: cookie.path,
+        secure: cookie.secure,
+        httpOnly: cookie.httpOnly,
+        ...(cookie.sameSite === undefined
+          ? {}
+          : { sameSite: toPlaywrightCookieSameSite(cookie.sameSite) }),
+        ...(cookie.partitionKey === undefined
+          ? {}
+          : { partitionKey: cookie.partitionKey }),
+        expires:
+          cookie.session || cookie.expiresAt === undefined || cookie.expiresAt === null
+            ? -1
+            : Math.max(1, Math.floor(cookie.expiresAt / 1000)),
+      })),
+    );
+  }
+
   async getStorageSnapshot(input: {
     readonly sessionRef: SessionRef;
     readonly includeSessionStorage?: boolean;
@@ -2109,7 +2139,10 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   }
 
   private bindPlaywrightRequest(controller: PageController, request: Request): boolean {
-    const session = this.requireSession(controller.sessionRef);
+    const session = this.sessions.get(controller.sessionRef);
+    if (!session) {
+      return false;
+    }
     const record = [...session.networkRecords]
       .reverse()
       .find(
@@ -2926,6 +2959,20 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     if (this.disposed) {
       throw createBrowserCoreError("operation-failed", "engine has been disposed");
     }
+  }
+}
+
+function toPlaywrightCookieSameSite(
+  value: CookieRecord["sameSite"],
+): "Strict" | "Lax" | "None" {
+  switch (value) {
+    case "strict":
+      return "Strict";
+    case "none":
+      return "None";
+    case "lax":
+    default:
+      return "Lax";
   }
 }
 
