@@ -18,6 +18,7 @@ import {
   createSize,
   hasCapability,
   createDialogRef,
+  isBrowserCoreError,
   matchesNetworkRecordFilters,
   waitForCdpVisualStability,
   unsupportedCapabilityError,
@@ -270,6 +271,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
           ? true
           : (this.options.closeAttachedContextOnSessionClose ?? false),
       activePageRef: undefined,
+      lifecycleState: "open",
     };
     this.sessions.set(sessionRef, session);
 
@@ -304,13 +306,22 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
 
   async closeSession(input: { readonly sessionRef: SessionRef }): Promise<void> {
     const session = this.requireSession(input.sessionRef);
+    if (session.lifecycleState !== "open") {
+      return;
+    }
+    session.lifecycleState = "closing";
     for (const controller of Array.from(this.pages.values())) {
       if (controller.sessionRef === session.sessionRef) {
         controller.explicitCloseInFlight = true;
       }
     }
     if (session.closeContextOnSessionClose) {
-      await session.context.close();
+      await session.context.close().catch((error) => {
+        if (isContextClosedError(error)) {
+          return;
+        }
+        throw error;
+      });
     }
     for (const pageRef of Array.from(session.pageRefs)) {
       const controller = this.pages.get(pageRef);
@@ -318,6 +329,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
         this.cleanupPageController(controller);
       }
     }
+    session.lifecycleState = "closed";
     this.sessions.delete(session.sessionRef);
   }
 
@@ -842,11 +854,25 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
 
   async listPages(input: { readonly sessionRef: SessionRef }): Promise<readonly PageInfo[]> {
     const session = this.requireSession(input.sessionRef);
-    const infos = await Promise.all(
-      Array.from(session.pageRefs, async (pageRef) =>
-        this.buildPageInfo(this.requirePage(pageRef)),
-      ),
-    );
+    const infos: PageInfo[] = [];
+    for (const pageRef of session.pageRefs) {
+      const controller = this.pages.get(pageRef);
+      if (!controller || controller.lifecycleState === "closed") {
+        continue;
+      }
+      try {
+        infos.push(await this.buildPageInfo(controller));
+      } catch (error) {
+        if (
+          isBrowserCoreError(error) &&
+          (error.code === "page-closed" ||
+            (error.code === "operation-failed" && error.message.includes("has no main frame")))
+        ) {
+          continue;
+        }
+        throw error;
+      }
+    }
     return infos;
   }
 
@@ -1487,6 +1513,9 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   }
 
   private async handleContextPage(session: SessionState, page: Page): Promise<void> {
+    if (session.lifecycleState !== "open") {
+      return;
+    }
     const registration = session.pendingRegistrations.shift();
     try {
       const controller = await this.initializePageController(
@@ -1503,6 +1532,9 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   }
 
   private async handleAttachedInitialPage(session: SessionState, page: Page): Promise<void> {
+    if (session.lifecycleState !== "open") {
+      return;
+    }
     if (this.pageByPlaywrightPage.has(page)) {
       return;
     }
@@ -1556,61 +1588,95 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     await cdp.send("DOM.getDocument", { depth: 0 });
 
     cdp.on("Page.frameAttached", (payload) =>
-      this.handleFrameAttached(controller, payload.frameId, payload.parentFrameId),
+      this.runControllerEvent(controller, () =>
+        this.handleFrameAttached(controller, payload.frameId, payload.parentFrameId),
+      ),
     );
     cdp.on("Page.frameDetached", (payload) =>
-      this.handleFrameDetached(controller, payload.frameId),
+      this.runControllerEvent(controller, () =>
+        this.handleFrameDetached(controller, payload.frameId),
+      ),
     );
     cdp.on("Page.frameNavigated", (payload) =>
-      this.handleFrameNavigated(controller, payload.frame),
+      this.runControllerEvent(controller, () =>
+        this.handleFrameNavigated(controller, payload.frame),
+      ),
     );
     cdp.on("Page.navigatedWithinDocument", (payload) =>
-      this.handleNavigatedWithinDocument(controller, payload.frameId, payload.url),
+      this.runControllerEvent(controller, () =>
+        this.handleNavigatedWithinDocument(controller, payload.frameId, payload.url),
+      ),
     );
     cdp.on("Page.fileChooserOpened", (payload) =>
-      this.handleFileChooserOpened(controller, payload.mode),
+      this.runControllerEvent(controller, () =>
+        this.handleFileChooserOpened(controller, payload.mode),
+      ),
     );
     cdp.on("Network.requestWillBeSent", (payload) =>
-      this.handleNetworkRequestWillBeSent(controller, payload),
+      this.runControllerEvent(controller, () =>
+        this.handleNetworkRequestWillBeSent(controller, payload),
+      ),
     );
     cdp.on("Network.responseReceived", (payload) =>
-      this.handleNetworkResponseReceived(controller, payload),
+      this.runControllerEvent(controller, () =>
+        this.handleNetworkResponseReceived(controller, payload),
+      ),
     );
     cdp.on("Network.responseReceivedExtraInfo", (payload) =>
-      this.handleNetworkResponseReceivedExtraInfo(controller, payload),
+      this.runControllerEvent(controller, () =>
+        this.handleNetworkResponseReceivedExtraInfo(controller, payload),
+      ),
     );
     cdp.on("Network.loadingFinished", (payload) =>
-      this.handleNetworkLoadingFinished(controller, payload),
+      this.runControllerEvent(controller, () =>
+        this.handleNetworkLoadingFinished(controller, payload),
+      ),
     );
     cdp.on("Network.loadingFailed", (payload) =>
-      this.handleNetworkLoadingFailed(controller, payload),
+      this.runControllerEvent(controller, () =>
+        this.handleNetworkLoadingFailed(controller, payload),
+      ),
     );
-    cdp.on("DOM.documentUpdated", () => this.handleDocumentUpdated(controller));
+    cdp.on("DOM.documentUpdated", () =>
+      this.runControllerEvent(controller, () => this.handleDocumentUpdated(controller)),
+    );
 
-    page.on("console", (message) => this.handleConsole(controller, message));
-    page.on("popup", (popupPage) => {
-      const popupPageRef = createPageRef(`playwright-${++this.pageCounter}`);
-      this.preassignedPopupPageRefs.set(popupPage, popupPageRef);
-      this.pendingPopupOpeners.set(popupPage, controller.pageRef);
-      this.queueEvent(
-        controller.pageRef,
-        this.createEvent<"popup-opened">({
-          kind: "popup-opened",
-          sessionRef: controller.sessionRef,
-          pageRef: popupPageRef,
-          openerPageRef: controller.pageRef,
-        }),
-      );
-    });
-    page.on("dialog", (dialog) => {
-      void this.handleDialog(controller, dialog);
-    });
-    page.on("download", (download) => {
-      void this.handleDownload(controller, download);
-    });
-    page.on("pageerror", (error) => this.handlePageError(controller, error));
-    page.on("request", (request) => this.handlePlaywrightRequest(controller, request));
-    page.on("response", (response) => this.handlePlaywrightResponse(controller, response));
+    page.on("console", (message) =>
+      this.runControllerEvent(controller, () => this.handleConsole(controller, message)),
+    );
+    page.on("popup", (popupPage) =>
+      this.runControllerEvent(controller, () => {
+        const popupPageRef = createPageRef(`playwright-${++this.pageCounter}`);
+        this.preassignedPopupPageRefs.set(popupPage, popupPageRef);
+        this.pendingPopupOpeners.set(popupPage, controller.pageRef);
+        this.queueEvent(
+          controller.pageRef,
+          this.createEvent<"popup-opened">({
+            kind: "popup-opened",
+            sessionRef: controller.sessionRef,
+            pageRef: popupPageRef,
+            openerPageRef: controller.pageRef,
+          }),
+        );
+      }),
+    );
+    page.on("dialog", (dialog) =>
+      this.runControllerEvent(controller, () => this.handleDialog(controller, dialog)),
+    );
+    page.on("download", (download) =>
+      this.runControllerEvent(controller, () => this.handleDownload(controller, download)),
+    );
+    page.on("pageerror", (error) =>
+      this.runControllerEvent(controller, () => this.handlePageError(controller, error)),
+    );
+    page.on("request", (request) =>
+      this.runControllerEvent(controller, () => this.handlePlaywrightRequest(controller, request)),
+    );
+    page.on("response", (response) =>
+      this.runControllerEvent(controller, () =>
+        this.handlePlaywrightResponse(controller, response),
+      ),
+    );
     page.on("close", () => this.handleUnexpectedPageClose(controller));
 
     const frameTree = await cdp.send("Page.getFrameTree");
@@ -2029,6 +2095,10 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       };
     },
   ): void {
+    const session = this.sessions.get(controller.sessionRef);
+    if (!session || session.lifecycleState !== "open" || controller.lifecycleState !== "open") {
+      return;
+    }
     const prior = controller.networkByCdpRequestId.get(payload.requestId);
     let redirectFromRequestId: NetworkRecordState["requestId"] | undefined;
     if (prior && payload.redirectResponse) {
@@ -2101,7 +2171,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     }
 
     controller.networkByCdpRequestId.set(payload.requestId, record);
-    this.requireSession(controller.sessionRef).networkRecords.push(record);
+    session.networkRecords.push(record);
   }
 
   private handlePlaywrightRequest(controller: PageController, request: Request): void {
@@ -2385,14 +2455,15 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
 
   private async buildPageInfo(controller: PageController): Promise<PageInfo> {
     controller.lastKnownTitle = await this.readTitle(controller.page, controller.lastKnownTitle);
-    const mainFrame = this.requireMainFrame(controller);
+    const mainFrame =
+      controller.mainFrameRef === undefined ? undefined : this.frames.get(controller.mainFrameRef);
     return {
       pageRef: controller.pageRef,
       sessionRef: controller.sessionRef,
       ...(controller.openerPageRef === undefined
         ? {}
         : { openerPageRef: controller.openerPageRef }),
-      url: mainFrame.currentDocument.url,
+      url: mainFrame?.currentDocument.url ?? this.readUrl(controller.page, "about:blank"),
       title: controller.lastKnownTitle,
       lifecycleState: controller.lifecycleState,
     };
@@ -2825,6 +2896,38 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     controller.responseBodyTasks.clear();
   }
 
+  private isControllerAcceptingEvents(controller: PageController): boolean {
+    if (controller.lifecycleState !== "open" || controller.explicitCloseInFlight) {
+      return false;
+    }
+    const session = this.sessions.get(controller.sessionRef);
+    return session?.lifecycleState === "open";
+  }
+
+  private runControllerEvent(
+    controller: PageController,
+    handler: () => void | Promise<void>,
+  ): void {
+    if (!this.isControllerAcceptingEvents(controller)) {
+      return;
+    }
+    try {
+      const result = handler();
+      if (result instanceof Promise) {
+        void result.catch((error) => this.handleControllerEventError(controller, error));
+      }
+    } catch (error) {
+      this.handleControllerEventError(controller, error);
+    }
+  }
+
+  private handleControllerEventError(controller: PageController, error: unknown): void {
+    if (!this.isControllerAcceptingEvents(controller) || shouldIgnoreBackgroundTaskError(controller, error)) {
+      return;
+    }
+    controller.backgroundError ??= normalizePlaywrightError(error, controller.pageRef);
+  }
+
   private trackBackgroundTask(controller: PageController, promise: Promise<void>): Promise<void> {
     const tracked = promise.catch((error) => {
       if (shouldIgnoreBackgroundTaskError(controller, error)) {
@@ -2945,6 +3048,14 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   private async readTitle(page: Page, fallback: string): Promise<string> {
     try {
       return await page.title();
+    } catch {
+      return fallback;
+    }
+  }
+
+  private readUrl(page: Page, fallback: string): string {
+    try {
+      return page.url();
     } catch {
       return fallback;
     }

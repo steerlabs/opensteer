@@ -2,16 +2,18 @@ import type {
   NetworkQueryRecord,
   OpensteerBodyCodecDescriptor,
   OpensteerChannelDescriptor,
+  OpensteerExecutableResolverKind,
   OpensteerExecutableResolver,
-  OpensteerReplayStrategy,
+  OpensteerReverseAdvisorySignals,
+  OpensteerReverseAdvisoryTag,
+  OpensteerReverseConstraintKind,
   OpensteerRequestInputClassification,
   OpensteerRequestInputDescriptor,
   OpensteerRequestInputExportPolicy,
   OpensteerRequestInputMaterializationPolicy,
   OpensteerRequestInputSource,
+  OpensteerReverseAdvisoryTemplate,
   OpensteerReverseCandidateBoundary,
-  OpensteerReverseCandidateDependencyClass,
-  OpensteerReverseCandidateRole,
   OpensteerReverseGuardRecord,
   OpensteerReverseTargetHints,
   OpensteerStateSourceKind,
@@ -98,19 +100,35 @@ const CONTEXTUAL_NAME_PATTERNS = [
 
 export interface ReverseAnalysisResult {
   readonly boundary: OpensteerReverseCandidateBoundary;
-  readonly role: OpensteerReverseCandidateRole;
-  readonly dependencyClass: OpensteerReverseCandidateDependencyClass;
-  readonly score: number;
+  readonly advisoryTags: readonly OpensteerReverseAdvisoryTag[];
+  readonly constraints: readonly OpensteerReverseConstraintKind[];
+  readonly signals: OpensteerReverseAdvisorySignals;
   readonly channel: OpensteerChannelDescriptor;
   readonly bodyCodec: OpensteerBodyCodecDescriptor;
   readonly summary: string;
   readonly matchedTargetHints: readonly string[];
   readonly inputs: readonly OpensteerRequestInputDescriptor[];
   readonly resolvers: readonly OpensteerExecutableResolver[];
-  readonly replayStrategies: readonly OpensteerReplayStrategy[];
+  readonly advisoryTemplates: readonly OpensteerReverseAdvisoryTemplate[];
 }
 
-const ROLE_PRIORITY: Readonly<Record<OpensteerReverseCandidateRole, number>> = {
+type ReverseCandidateRole =
+  | "primary-data"
+  | "facet-data"
+  | "telemetry"
+  | "subscription"
+  | "navigation"
+  | "unknown";
+
+type ReverseCandidateDependencyClass =
+  | "portable"
+  | "browser-state"
+  | "script-signed"
+  | "behavior-gated"
+  | "anti-bot"
+  | "blocked";
+
+const ROLE_PRIORITY: Readonly<Record<ReverseCandidateRole, number>> = {
   "primary-data": 5,
   "facet-data": 4,
   unknown: 3,
@@ -156,7 +174,19 @@ export function analyzeReverseCandidate(input: {
     input.targetHints,
   );
   const dependencyClass = classifyDependency(inputs, input.guards ?? [], bodyAnalysis.codec);
-  const score = scoreCandidate(
+  const advisoryTags = buildAdvisoryTags({
+    record: input.record,
+    channel,
+    role,
+  });
+  const constraints = buildConstraints({
+    inputs,
+    guards: input.guards ?? [],
+    stateSource: input.stateSource,
+    dependencyClass,
+    codec: bodyAnalysis.codec,
+  });
+  const signals = buildRankingSignals(
     input.record,
     role,
     dependencyClass,
@@ -164,6 +194,8 @@ export function analyzeReverseCandidate(input: {
     bodyAnalysis.codec,
     matchedTargetHints,
     input.targetHints !== undefined,
+    inputs,
+    input.guards ?? [],
   );
   const resolvers = buildResolvers(
     inputs,
@@ -171,7 +203,7 @@ export function analyzeReverseCandidate(input: {
     input.scriptArtifactIds ?? [],
     input.stateSource,
   );
-  const replayStrategies = buildReplayStrategies({
+  const advisoryTemplates = buildCandidateTemplates({
     observationId: input.observationId,
     channel,
     inputs,
@@ -184,16 +216,16 @@ export function analyzeReverseCandidate(input: {
 
   return {
     boundary,
-    role,
-    dependencyClass,
-    score,
+    advisoryTags,
+    constraints,
+    signals,
     channel,
     bodyCodec: bodyAnalysis.codec,
-    summary: buildSummary(channel, role, dependencyClass, bodyAnalysis.codec),
+    summary: buildSummary(channel, advisoryTags, constraints, bodyAnalysis.codec),
     matchedTargetHints,
     inputs,
     resolvers,
-    replayStrategies,
+    advisoryTemplates,
   };
 }
 
@@ -362,7 +394,7 @@ function classifyRole(
   record: NetworkQueryRecord,
   channel: OpensteerChannelDescriptor,
   codec: OpensteerBodyCodecDescriptor,
-): OpensteerReverseCandidateRole {
+): ReverseCandidateRole {
   const url = channel.url.toLowerCase();
   const hostname = new URL(channel.url).hostname.toLowerCase();
   if (
@@ -388,6 +420,48 @@ function classifyRole(
     return "navigation";
   }
   return "primary-data";
+}
+
+function buildAdvisoryTags(input: {
+  readonly record: NetworkQueryRecord;
+  readonly channel: OpensteerChannelDescriptor;
+  readonly role: ReverseCandidateRole;
+}): readonly OpensteerReverseAdvisoryTag[] {
+  const tags = new Set<OpensteerReverseAdvisoryTag>();
+  switch (input.role) {
+    case "primary-data":
+      tags.add("data");
+      break;
+    case "facet-data":
+      tags.add("facet");
+      break;
+    case "telemetry":
+      tags.add("telemetry");
+      break;
+    case "subscription":
+      tags.add("subscription");
+      break;
+    case "navigation":
+      tags.add("navigation");
+      break;
+    default:
+      tags.add("unknown");
+      break;
+  }
+  if (input.record.record.resourceType === "document") {
+    tags.add("document");
+  }
+  const url = input.channel.url.toLowerCase();
+  if (url.includes("/search") || url.includes("query=") || url.includes("&q=")) {
+    tags.add("search");
+  }
+  if (url.includes("/tracking") || url.includes("/track")) {
+    tags.add("tracking");
+  }
+  if (input.record.record.resourceType === "document" || url.includes("_rsc=")) {
+    tags.add("route-data");
+  }
+  return [...tags].sort((left, right) => left.localeCompare(right));
 }
 
 export function matchReverseTargetHints(
@@ -423,15 +497,17 @@ export function matchReverseTargetHints(
   return [...matches].sort((left, right) => left.localeCompare(right));
 }
 
-function scoreCandidate(
+function buildRankingSignals(
   record: NetworkQueryRecord,
-  role: OpensteerReverseCandidateRole,
-  dependencyClass: OpensteerReverseCandidateDependencyClass,
+  role: ReverseCandidateRole,
+  dependencyClass: ReverseCandidateDependencyClass,
   boundary: OpensteerReverseCandidateBoundary,
   codec: OpensteerBodyCodecDescriptor,
   matchedTargetHints: readonly string[],
   hasTargetHints: boolean,
-): number {
+  inputs: readonly OpensteerRequestInputDescriptor[],
+  guards: readonly OpensteerReverseGuardRecord[],
+): OpensteerReverseAdvisorySignals {
   let score = 0;
   if (
     record.record.status !== undefined &&
@@ -502,18 +578,45 @@ function scoreCandidate(
   if (dependencyClass === "blocked") {
     score -= 50;
   }
-  return Math.max(0, Math.min(100, score));
+  return {
+    advisoryRank: Math.max(0, Math.min(100, score)),
+    targetHintMatches: matchedTargetHints.length,
+    responseRichness: computeResponseRichness(record, codec),
+    portabilityWeight: portabilityWeight(dependencyClass),
+    boundaryWeight: BOUNDARY_PRIORITY[boundary],
+    successfulStatus:
+      record.record.status !== undefined &&
+      record.record.status >= 200 &&
+      record.record.status < 400,
+    fetchLike: record.record.resourceType === "fetch" || record.record.resourceType === "xhr",
+    hasResponseBody: record.record.responseBody !== undefined,
+    dataPathMatch: DATA_PATH_PATTERNS.some((pattern) =>
+      record.record.url.toLowerCase().includes(pattern),
+    ),
+    cookieInputCount: inputs.filter((input) => input.location === "cookie").length,
+    storageInputCount: inputs.filter((input) => input.source === "storage").length,
+    volatileInputCount: inputs.filter((input) => input.classification === "volatile").length,
+    guardCount: guards.length,
+  };
 }
 
 export function compareReverseAnalysisResults(
-  left: Pick<ReverseAnalysisResult, "score" | "matchedTargetHints" | "boundary" | "role">,
-  right: Pick<ReverseAnalysisResult, "score" | "matchedTargetHints" | "boundary" | "role">,
+  left: Pick<
+    ReverseAnalysisResult,
+    "signals" | "matchedTargetHints" | "boundary" | "advisoryTags"
+  >,
+  right: Pick<
+    ReverseAnalysisResult,
+    "signals" | "matchedTargetHints" | "boundary" | "advisoryTags"
+  >,
 ): number {
   return (
-    right.score - left.score ||
-    right.matchedTargetHints.length - left.matchedTargetHints.length ||
+    right.signals.advisoryRank - left.signals.advisoryRank ||
+    right.signals.targetHintMatches - left.signals.targetHintMatches ||
+    right.signals.portabilityWeight - left.signals.portabilityWeight ||
+    right.signals.responseRichness - left.signals.responseRichness ||
     BOUNDARY_PRIORITY[right.boundary] - BOUNDARY_PRIORITY[left.boundary] ||
-    ROLE_PRIORITY[right.role] - ROLE_PRIORITY[left.role]
+    advisoryTagPriority(right.advisoryTags) - advisoryTagPriority(left.advisoryTags)
   );
 }
 
@@ -707,7 +810,7 @@ function classifyDependency(
   inputs: readonly OpensteerRequestInputDescriptor[],
   guards: readonly OpensteerReverseGuardRecord[],
   codec: OpensteerBodyCodecDescriptor,
-): OpensteerReverseCandidateDependencyClass {
+): ReverseCandidateDependencyClass {
   if (codec.kind === "opaque-binary") {
     return "blocked";
   }
@@ -723,6 +826,57 @@ function classifyDependency(
     return "browser-state";
   }
   return "portable";
+}
+
+function buildConstraints(input: {
+  readonly inputs: readonly OpensteerRequestInputDescriptor[];
+  readonly guards: readonly OpensteerReverseGuardRecord[];
+  readonly stateSource: OpensteerStateSourceKind;
+  readonly dependencyClass: ReverseCandidateDependencyClass;
+  readonly codec: OpensteerBodyCodecDescriptor;
+}): readonly OpensteerReverseConstraintKind[] {
+  const constraints = new Set<OpensteerReverseConstraintKind>();
+  if (input.codec.kind === "opaque-binary") {
+    constraints.add("opaque-body");
+    constraints.add("unsupported");
+  }
+  if (input.guards.length > 0) {
+    constraints.add("requires-guard");
+    constraints.add("requires-browser");
+  }
+  if (input.inputs.some((entry) => entry.location === "cookie")) {
+    constraints.add("requires-cookie");
+    constraints.add("requires-browser");
+  }
+  if (
+    input.inputs.some(
+      (entry) => entry.classification === "contextual" || entry.source === "storage",
+    )
+  ) {
+    constraints.add("requires-storage");
+    constraints.add("requires-browser");
+  }
+  if (input.inputs.some((entry) => entry.source === "script")) {
+    constraints.add("requires-script");
+    constraints.add("requires-browser");
+  }
+  if (input.inputs.some((entry) => entry.classification === "volatile")) {
+    constraints.add("requires-browser");
+  }
+  if (input.stateSource === "attach-live") {
+    constraints.add("requires-live-state");
+  }
+  if (
+    input.dependencyClass === "anti-bot" ||
+    input.dependencyClass === "behavior-gated" ||
+    input.dependencyClass === "script-signed"
+  ) {
+    constraints.add("requires-live-state");
+  }
+  if (input.dependencyClass === "blocked") {
+    constraints.add("unsupported");
+  }
+  return [...constraints].sort((left, right) => left.localeCompare(right));
 }
 
 function buildResolvers(
@@ -742,131 +896,156 @@ function buildResolvers(
       input.unlockedByGuardIds !== undefined && input.unlockedByGuardIds.length > 0;
     const cookieBacked = input.location === "cookie";
     const runtimeManaged = input.source === "runtime-managed";
-    const status =
-      runtimeManaged || cookieBacked
-        ? "ready"
+    const resolverKind: OpensteerExecutableResolverKind = runtimeManaged
+      ? "runtime-managed"
+      : cookieBacked
+        ? "cookie"
         : scriptBacked
-          ? scriptArtifactIds.length > 0
-            ? "ready"
-            : "missing"
+          ? scriptArtifactIds[0] === undefined
+            ? "manual"
+            : "artifact"
           : guardBacked
-            ? input.unlockedByGuardIds!.some((id) => guards.some((guard) => guard.id === id))
-              ? "ready"
-              : "missing"
-            : stateSource === "attach-live" || input.classification === "contextual"
-              ? "ready"
-              : "missing";
+            ? "manual"
+            : input.classification === "contextual"
+              ? "storage"
+              : "literal";
+    const status = classifyResolverStatus({
+      resolverKind,
+      guardBacked,
+      scriptBacked,
+      guards,
+      stateSource,
+      hasScriptArtifact: scriptArtifactIds[0] !== undefined,
+    });
 
     resolvers.push({
       id: `resolver:${input.location}:${input.name}`,
-      kind: runtimeManaged
-        ? "runtime-managed"
-        : cookieBacked
-          ? "cookie"
-          : scriptBacked
-            ? "script-sandbox"
-            : guardBacked
-              ? "guard-output"
-              : input.classification === "contextual"
-                ? "page-eval"
-                : "literal",
+      kind: resolverKind,
       label: `Resolve ${input.location} ${input.name}`,
       status,
       requiresBrowser:
-        !runtimeManaged &&
-        !cookieBacked &&
-        (guardBacked || scriptBacked || input.classification === "contextual"),
-      requiresLiveState:
+        resolverKind === "storage" ||
+        resolverKind === "artifact" ||
         guardBacked ||
-        stateSource === "attach-live" ||
-        (scriptBacked && scriptArtifactIds.length === 0),
+        stateSource === "attach-live",
+      requiresLiveState:
+        guardBacked || stateSource === "attach-live",
       inputNames: [input.name],
-      description: runtimeManaged
+      description: resolverKind === "runtime-managed"
         ? "Generated by the request materializer."
         : guardBacked
           ? "Derived from a recorded unlock interaction."
           : scriptBacked
             ? "Derived from a captured script or signer."
-            : input.classification === "contextual"
+            : resolverKind === "storage"
               ? "Resolved from live browser state at replay time."
               : "Resolved directly from the captured value.",
       ...(input.unlockedByGuardIds?.[0] === undefined
         ? {}
         : { guardId: input.unlockedByGuardIds[0] }),
-      ...(scriptBacked && scriptArtifactIds[0] !== undefined
-        ? { scriptArtifactId: scriptArtifactIds[0] }
-        : {}),
-      ...(scriptBacked || input.classification === "contextual"
-        ? input.provenance?.sourcePointer === undefined
-          ? {}
-          : { expression: input.provenance.sourcePointer }
-        : {}),
+      valueRef:
+        resolverKind === "runtime-managed"
+          ? {
+              kind: "manual",
+              placeholder: "materialized by runtime",
+            }
+          : resolverKind === "cookie"
+            ? {
+                kind: "state-snapshot",
+                ...(input.provenance?.sourcePointer === undefined
+                  ? {}
+                  : { pointer: input.provenance.sourcePointer }),
+              }
+            : resolverKind === "storage"
+              ? {
+                  kind: "state-snapshot",
+                  ...(input.provenance?.sourcePointer === undefined
+                    ? {}
+                    : { pointer: input.provenance.sourcePointer }),
+                }
+              : resolverKind === "artifact" && scriptArtifactIds[0] !== undefined
+                ? {
+                    kind: "artifact",
+                    artifactId: scriptArtifactIds[0],
+                    ...(input.provenance?.sourcePointer === undefined
+                      ? {}
+                      : { pointer: input.provenance.sourcePointer }),
+                  }
+                : guardBacked
+                  ? {
+                      kind: "manual",
+                      placeholder: `satisfy guard ${input.unlockedByGuardIds?.[0] ?? input.name}`,
+                    }
+                  : {
+                      kind: "literal",
+                      ...(input.originalValue === undefined ? {} : { value: input.originalValue }),
+                    },
     });
   }
   return dedupeResolvers(resolvers);
 }
 
-function buildReplayStrategies(input: {
+function buildCandidateTemplates(input: {
   readonly observationId: string;
   readonly observationUrl?: string;
   readonly channel: OpensteerChannelDescriptor;
   readonly inputs: readonly OpensteerRequestInputDescriptor[];
-  readonly dependencyClass: OpensteerReverseCandidateDependencyClass;
+  readonly dependencyClass: ReverseCandidateDependencyClass;
   readonly stateSource: OpensteerStateSourceKind;
   readonly guards: readonly OpensteerReverseGuardRecord[];
   readonly resolvers: readonly OpensteerExecutableResolver[];
-}): readonly OpensteerReplayStrategy[] {
+}): readonly OpensteerReverseAdvisoryTemplate[] {
   switch (input.channel.kind) {
     case "http":
-      return buildHttpReplayStrategies(input);
+      return buildHttpTemplates(input);
     case "event-stream":
-      return buildEventStreamReplayStrategies(input);
+      return buildEventStreamTemplates(input);
     case "websocket":
-      return buildWebSocketReplayStrategies(input);
+      return buildWebSocketTemplates(input);
   }
 }
 
-function buildHttpReplayStrategies(input: {
+function buildHttpTemplates(input: {
   readonly observationId: string;
   readonly observationUrl?: string;
   readonly channel: OpensteerChannelDescriptor;
   readonly inputs: readonly OpensteerRequestInputDescriptor[];
-  readonly dependencyClass: OpensteerReverseCandidateDependencyClass;
+  readonly dependencyClass: ReverseCandidateDependencyClass;
   readonly stateSource: OpensteerStateSourceKind;
   readonly guards: readonly OpensteerReverseGuardRecord[];
   readonly resolvers: readonly OpensteerExecutableResolver[];
-}): readonly OpensteerReplayStrategy[] {
+}): readonly OpensteerReverseAdvisoryTemplate[] {
   switch (input.dependencyClass) {
     case "portable":
       return [
-        createReplayStrategy("direct", "direct-http", input.stateSource, true, input),
-        createReplayStrategy("page", "page-http", input.stateSource, true, input),
+        createCandidateTemplate("direct", "direct-http", input.stateSource, "ready", input),
+        createCandidateTemplate("page", "page-http", input.stateSource, "ready", input),
       ];
     case "browser-state":
-      return withObservationReplayStrategy(
+      return withObservationTemplate(
         [
-          createReplayStrategy("page", "page-http", "snapshot-authenticated", true, input),
-          createReplayStrategy("session", "session-http", "snapshot-authenticated", true, input),
-          createReplayStrategy("attach", "page-http", "attach-live", true, input),
+          createCandidateTemplate("page", "page-http", "snapshot-authenticated", "ready", input),
+          createCandidateTemplate("session", "session-http", "snapshot-authenticated", "ready", input),
+          createCandidateTemplate("attach", "page-http", "attach-live", "ready", input),
         ],
         input,
       );
     case "behavior-gated":
-      return withObservationReplayStrategy(
+      return withObservationTemplate(
         [
-          createReplayStrategy("guarded-page", "page-http", "attach-live", true, input),
-          createReplayStrategy("guarded-session", "session-http", "attach-live", true, input),
+          createCandidateTemplate("guarded-page", "page-http", "attach-live", "draft", input),
+          createCandidateTemplate("guarded-session", "session-http", "attach-live", "draft", input),
         ],
         input,
       );
     case "script-signed":
-      return withObservationReplayStrategy(
+      return withObservationTemplate(
         [
-          createReplayStrategy(
+          createCandidateTemplate(
             "page-signed",
             "page-http",
             "attach-live",
-            false,
+            "draft",
             input,
             "script-derived inputs require a replay-time resolver",
           ),
@@ -874,13 +1053,13 @@ function buildHttpReplayStrategies(input: {
         input,
       );
     case "anti-bot":
-      return withObservationReplayStrategy(
+      return withObservationTemplate(
         [
-          createReplayStrategy(
+          createCandidateTemplate(
             "anti-bot-browser",
             "page-http",
             "attach-live",
-            false,
+            "draft",
             input,
             "volatile anti-bot input must be resolved from live browser state",
           ),
@@ -889,11 +1068,11 @@ function buildHttpReplayStrategies(input: {
       );
     case "blocked":
       return [
-        createReplayStrategy(
+        createCandidateTemplate(
           "blocked",
           "session-http",
           input.stateSource,
-          false,
+          "unsupported",
           input,
           "candidate is not exportable as a replayable HTTP request",
         ),
@@ -901,43 +1080,43 @@ function buildHttpReplayStrategies(input: {
   }
 }
 
-function buildEventStreamReplayStrategies(input: {
+function buildEventStreamTemplates(input: {
   readonly observationId: string;
   readonly observationUrl?: string;
   readonly channel: OpensteerChannelDescriptor;
   readonly inputs: readonly OpensteerRequestInputDescriptor[];
-  readonly dependencyClass: OpensteerReverseCandidateDependencyClass;
+  readonly dependencyClass: ReverseCandidateDependencyClass;
   readonly stateSource: OpensteerStateSourceKind;
   readonly guards: readonly OpensteerReverseGuardRecord[];
   readonly resolvers: readonly OpensteerExecutableResolver[];
-}): readonly OpensteerReplayStrategy[] {
+}): readonly OpensteerReverseAdvisoryTemplate[] {
   switch (input.dependencyClass) {
     case "portable":
       return [
-        createReplayStrategy("stream-direct", "direct-http", input.stateSource, true, input),
-        createReplayStrategy("stream-page", "page-http", input.stateSource, true, input),
+        createCandidateTemplate("stream-direct", "direct-http", input.stateSource, "ready", input),
+        createCandidateTemplate("stream-page", "page-http", input.stateSource, "ready", input),
       ];
     case "browser-state":
-      return withObservationReplayStrategy(
+      return withObservationTemplate(
         [
-          createReplayStrategy("stream-page", "page-http", "snapshot-authenticated", true, input),
-          createReplayStrategy("stream-attach", "page-http", "attach-live", true, input),
+          createCandidateTemplate("stream-page", "page-http", "snapshot-authenticated", "ready", input),
+          createCandidateTemplate("stream-attach", "page-http", "attach-live", "ready", input),
         ],
         input,
       );
     case "behavior-gated":
-      return withObservationReplayStrategy(
-        [createReplayStrategy("stream-guarded", "page-http", "attach-live", true, input)],
+      return withObservationTemplate(
+        [createCandidateTemplate("stream-guarded", "page-http", "attach-live", "draft", input)],
         input,
       );
     case "script-signed":
-      return withObservationReplayStrategy(
+      return withObservationTemplate(
         [
-          createReplayStrategy(
+          createCandidateTemplate(
             "stream-script",
             "page-http",
             "attach-live",
-            false,
+            "draft",
             input,
             "script-derived inputs require a replay-time resolver",
           ),
@@ -945,13 +1124,13 @@ function buildEventStreamReplayStrategies(input: {
         input,
       );
     case "anti-bot":
-      return withObservationReplayStrategy(
+      return withObservationTemplate(
         [
-          createReplayStrategy(
+          createCandidateTemplate(
             "stream-anti-bot",
             "page-http",
             "attach-live",
-            false,
+            "draft",
             input,
             "volatile anti-bot input must be resolved from live browser state",
           ),
@@ -960,11 +1139,11 @@ function buildEventStreamReplayStrategies(input: {
       );
     case "blocked":
       return [
-        createReplayStrategy(
+        createCandidateTemplate(
           "stream-blocked",
           "page-http",
           input.stateSource,
-          false,
+          "unsupported",
           input,
           "candidate is not exportable as a replayable event stream",
         ),
@@ -972,92 +1151,92 @@ function buildEventStreamReplayStrategies(input: {
   }
 }
 
-function buildWebSocketReplayStrategies(input: {
+function buildWebSocketTemplates(input: {
   readonly channel: OpensteerChannelDescriptor;
   readonly inputs: readonly OpensteerRequestInputDescriptor[];
-  readonly dependencyClass: OpensteerReverseCandidateDependencyClass;
+  readonly dependencyClass: ReverseCandidateDependencyClass;
   readonly stateSource: OpensteerStateSourceKind;
   readonly guards: readonly OpensteerReverseGuardRecord[];
   readonly resolvers: readonly OpensteerExecutableResolver[];
-}): readonly OpensteerReplayStrategy[] {
+}): readonly OpensteerReverseAdvisoryTemplate[] {
   const unsupportedHeader = findUnsupportedBrowserWebSocketHeader(input.inputs);
   const headerFailureReason =
     unsupportedHeader === undefined
       ? undefined
       : `browser websocket replay cannot set captured header ${unsupportedHeader}`;
-  const supported = headerFailureReason === undefined;
+  const viability = headerFailureReason === undefined ? "ready" : "draft";
 
   switch (input.dependencyClass) {
     case "portable":
       return [
-        createReplayStrategy(
+        createCandidateTemplate(
           "socket-page",
           "page-http",
           input.stateSource,
-          supported,
+          viability,
           input,
           headerFailureReason,
         ),
       ];
     case "browser-state":
       return [
-        createReplayStrategy(
+        createCandidateTemplate(
           "socket-page",
           "page-http",
           "snapshot-authenticated",
-          supported,
+          viability,
           input,
           headerFailureReason,
         ),
-        createReplayStrategy(
+        createCandidateTemplate(
           "socket-attach",
           "page-http",
           "attach-live",
-          supported,
+          viability,
           input,
           headerFailureReason,
         ),
       ];
     case "behavior-gated":
       return [
-        createReplayStrategy(
+        createCandidateTemplate(
           "socket-guarded",
           "page-http",
           "attach-live",
-          supported,
+          headerFailureReason === undefined ? "draft" : "unsupported",
           input,
           headerFailureReason,
         ),
       ];
     case "script-signed":
       return [
-        createReplayStrategy(
+        createCandidateTemplate(
           "socket-script",
           "page-http",
           "attach-live",
-          false,
+          "draft",
           input,
           headerFailureReason ?? "script-derived inputs require a replay-time resolver",
         ),
       ];
     case "anti-bot":
       return [
-        createReplayStrategy(
+        createCandidateTemplate(
           "socket-anti-bot",
           "page-http",
           "attach-live",
-          false,
+          "draft",
           input,
           headerFailureReason ?? "volatile anti-bot input must be resolved from live browser state",
         ),
       ];
     case "blocked":
       return [
-        createReplayStrategy(
+        createCandidateTemplate(
           "socket-blocked",
           "page-http",
           input.stateSource,
-          false,
+          "unsupported",
           input,
           headerFailureReason ?? "candidate is not exportable as a replayable websocket workflow",
         ),
@@ -1065,42 +1244,43 @@ function buildWebSocketReplayStrategies(input: {
   }
 }
 
-function createReplayStrategy(
+function createCandidateTemplate(
   slug: string,
   transport: TransportKind,
   stateSource: OpensteerStateSourceKind,
-  supported: boolean,
+  viability: OpensteerReverseAdvisoryTemplate["viability"],
   input: {
     readonly channel: OpensteerChannelDescriptor;
     readonly guards: readonly OpensteerReverseGuardRecord[];
     readonly resolvers: readonly OpensteerExecutableResolver[];
   },
-  failureReason?: string,
-): OpensteerReplayStrategy {
+  notes?: string,
+): OpensteerReverseAdvisoryTemplate {
   return {
-    id: `strategy:${slug}:${transport}`,
+    id: `template:${slug}:${transport}`,
     label: `${transport} via ${stateSource}`,
     channel: input.channel.kind,
     execution: "transport",
     stateSource,
     transport,
-    supported,
     guardIds: input.guards.map((guard) => guard.id),
     resolverIds: input.resolvers.map((resolver) => resolver.id),
     requiresBrowser: transport !== "direct-http",
     requiresLiveState: stateSource === "attach-live",
-    ...(failureReason === undefined ? {} : { failureReason }),
+    viability,
+    ...(notes === undefined ? {} : { notes }),
   };
 }
 
-function createPageObservationReplayStrategy(input: {
+function createObservationTemplate(input: {
   readonly observationId: string;
   readonly observationUrl?: string;
   readonly channel: OpensteerChannelDescriptor;
   readonly guards: readonly OpensteerReverseGuardRecord[];
   readonly resolvers: readonly OpensteerExecutableResolver[];
   readonly stateSource: OpensteerStateSourceKind;
-}): OpensteerReplayStrategy | undefined {
+  readonly viability: OpensteerReverseAdvisoryTemplate["viability"];
+}): OpensteerReverseAdvisoryTemplate | undefined {
   if (
     input.observationUrl === undefined ||
     input.observationUrl.length === 0 ||
@@ -1109,22 +1289,22 @@ function createPageObservationReplayStrategy(input: {
     return undefined;
   }
   return {
-    id: `strategy:page-observation:${input.observationId}`,
+    id: `template:page-observation:${input.observationId}`,
     label: `page observation via ${input.stateSource}`,
     channel: input.channel.kind,
     execution: "page-observation",
     stateSource: input.stateSource,
     observationId: input.observationId,
-    supported: true,
     guardIds: input.guards.map((guard) => guard.id),
-    resolverIds: input.resolvers.map((resolver) => resolver.id),
+    resolverIds: [],
     requiresBrowser: true,
     requiresLiveState: input.stateSource === "attach-live",
+    viability: input.viability,
   };
 }
 
-function withObservationReplayStrategy(
-  strategies: readonly OpensteerReplayStrategy[],
+function withObservationTemplate(
+  strategies: readonly OpensteerReverseAdvisoryTemplate[],
   input: {
     readonly observationId: string;
     readonly observationUrl?: string;
@@ -1132,10 +1312,19 @@ function withObservationReplayStrategy(
     readonly guards: readonly OpensteerReverseGuardRecord[];
     readonly resolvers: readonly OpensteerExecutableResolver[];
     readonly stateSource: OpensteerStateSourceKind;
+    readonly dependencyClass: ReverseCandidateDependencyClass;
   },
-): readonly OpensteerReplayStrategy[] {
-  const observationStrategy = createPageObservationReplayStrategy(input);
-  return observationStrategy === undefined ? strategies : [observationStrategy, ...strategies];
+): readonly OpensteerReverseAdvisoryTemplate[] {
+  const observationTemplate = createObservationTemplate({
+    ...input,
+    viability:
+      input.dependencyClass === "blocked"
+        ? "unsupported"
+        : input.dependencyClass === "portable" || input.dependencyClass === "browser-state"
+          ? "ready"
+          : "draft",
+  });
+  return observationTemplate === undefined ? strategies : [observationTemplate, ...strategies];
 }
 
 function findUnsupportedBrowserWebSocketHeader(
@@ -1157,13 +1346,105 @@ function findUnsupportedBrowserWebSocketHeader(
   return undefined;
 }
 
+function portabilityWeight(
+  dependencyClass: ReverseCandidateDependencyClass,
+): number {
+  switch (dependencyClass) {
+    case "portable":
+      return 5;
+    case "browser-state":
+      return 4;
+    case "behavior-gated":
+      return 3;
+    case "script-signed":
+      return 2;
+    case "anti-bot":
+      return 1;
+    case "blocked":
+      return 0;
+  }
+}
+
+function advisoryTagPriority(tags: readonly OpensteerReverseAdvisoryTag[]): number {
+  if (tags.includes("data") || tags.includes("search") || tags.includes("tracking")) {
+    return 3;
+  }
+  if (tags.includes("facet") || tags.includes("route-data") || tags.includes("document")) {
+    return 2;
+  }
+  if (tags.includes("subscription")) {
+    return 1;
+  }
+  if (tags.includes("telemetry")) {
+    return -1;
+  }
+  return 0;
+}
+
+function computeResponseRichness(
+  record: NetworkQueryRecord,
+  codec: OpensteerBodyCodecDescriptor,
+): number {
+  let richness = 0;
+  if (record.record.responseBody !== undefined) {
+    richness += 2;
+  }
+  if (record.record.status !== undefined) {
+    richness += 1;
+  }
+  if (codec.fieldPaths.length > 0) {
+    richness += Math.min(6, codec.fieldPaths.length);
+  }
+  if (codec.kind === "graphql" || codec.kind === "persisted-graphql") {
+    richness += 3;
+  }
+  return richness;
+}
+
+function classifyResolverStatus(input: {
+  readonly resolverKind: OpensteerExecutableResolverKind;
+  readonly guardBacked: boolean;
+  readonly scriptBacked: boolean;
+  readonly guards: readonly OpensteerReverseGuardRecord[];
+  readonly stateSource: OpensteerStateSourceKind;
+  readonly hasScriptArtifact: boolean;
+}): OpensteerExecutableResolver["status"] {
+  switch (input.resolverKind) {
+    case "candidate":
+    case "case":
+    case "runtime-managed":
+    case "cookie":
+    case "literal":
+    case "state-snapshot":
+      return "ready";
+    case "storage":
+      return input.stateSource === "attach-live" ? "ready" : "missing";
+    case "artifact":
+      return input.hasScriptArtifact ? "ready" : "missing";
+    case "binding":
+      return "missing";
+    case "prior-record":
+      return "ready";
+    case "manual":
+      if (!input.guardBacked && !input.scriptBacked) {
+        return "missing";
+      }
+      return input.guardBacked &&
+        input.guards.some((guard) => guard.status === "satisfied" && guard.interactionTraceId)
+        ? "ready"
+        : "missing";
+  }
+}
+
 function buildSummary(
   channel: OpensteerChannelDescriptor,
-  role: OpensteerReverseCandidateRole,
-  dependencyClass: OpensteerReverseCandidateDependencyClass,
+  advisoryTags: readonly OpensteerReverseAdvisoryTag[],
+  constraints: readonly OpensteerReverseConstraintKind[],
   codec: OpensteerBodyCodecDescriptor,
 ): string {
-  return `${channel.kind} ${codec.kind} ${role} candidate classified as ${dependencyClass}`;
+  const tag = advisoryTags[0] ?? "unknown";
+  const constraint = constraints[0] ?? "portable";
+  return `${channel.kind} ${codec.kind} ${tag} candidate with ${constraint}`;
 }
 
 function parseCookieHeader(header: string): readonly { name: string; value: string }[] {

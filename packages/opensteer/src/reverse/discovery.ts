@@ -3,6 +3,7 @@ import type {
   OpensteerBodyCodecDescriptor,
   OpensteerChannelDescriptor,
   OpensteerObservationCluster,
+  OpensteerObservationClusterRelationshipKind,
 } from "@opensteer/protocol";
 
 interface ClusterableReverseRecord {
@@ -20,10 +21,6 @@ interface MutableCluster {
   readonly channel: OpensteerChannelDescriptor["kind"];
   readonly method?: string;
   readonly url: string;
-  primaryRecordId: string;
-  readonly recordIds: string[];
-  readonly suppressedRecordIds: string[];
-  readonly suppressionReasons: Set<string>;
   readonly matchedTargetHints: Set<string>;
   readonly records: ClusterableReverseRecord[];
 }
@@ -36,62 +33,66 @@ export function clusterReverseObservationRecords(input: {
   for (const item of sortClusterableRecords(input.records)) {
     const key = buildClusterKey(item);
     const existing = groups.get(key);
-    if (existing === undefined) {
-      groups.set(key, {
-        id: `cluster:${input.observationId}:${groups.size + 1}`,
-        observationId: input.observationId,
-        label: buildClusterLabel(item),
-        channel: item.channel.kind,
-        ...(item.channel.method === undefined ? {} : { method: item.channel.method }),
-        url: item.channel.url,
-        primaryRecordId: item.record.recordId,
-        recordIds: [item.record.recordId],
-        suppressedRecordIds: [],
-        suppressionReasons: new Set<string>(),
-        matchedTargetHints: new Set(item.matchedTargetHints),
-        records: [item],
-      });
+    if (existing !== undefined) {
+      existing.records.push(item);
+      for (const hint of item.matchedTargetHints) {
+        existing.matchedTargetHints.add(hint);
+      }
       continue;
     }
 
-    existing.records.push(item);
-    existing.recordIds.push(item.record.recordId);
-    for (const hint of item.matchedTargetHints) {
-      existing.matchedTargetHints.add(hint);
-    }
-    const currentPrimary =
-      existing.records.find((entry) => entry.record.recordId === existing.primaryRecordId) ??
-      existing.records[0]!;
-    if (comparePrimaryCandidate(item, currentPrimary) > 0) {
-      existing.suppressedRecordIds.push(existing.primaryRecordId);
-      existing.suppressionReasons.add(inferSuppressionReason(currentPrimary.record, item.record));
-      existing.primaryRecordId = item.record.recordId;
-      continue;
-    }
-    existing.suppressedRecordIds.push(item.record.recordId);
-    existing.suppressionReasons.add(inferSuppressionReason(item.record, currentPrimary.record));
+    groups.set(key, {
+      id: `cluster:${input.observationId}:${groups.size + 1}`,
+      observationId: input.observationId,
+      label: buildClusterLabel(item),
+      channel: item.channel.kind,
+      ...(item.channel.method === undefined ? {} : { method: item.channel.method }),
+      url: item.channel.url,
+      matchedTargetHints: new Set(item.matchedTargetHints),
+      records: [item],
+    });
   }
 
   return [...groups.values()]
-    .map(
-      (cluster): OpensteerObservationCluster => ({
+    .map((cluster) => {
+      const orderedRecords = sortClusterableRecords(cluster.records);
+      const seedRecord = orderedRecords[0];
+      if (seedRecord === undefined) {
+        throw new Error(`reverse cluster ${cluster.id} does not contain any records`);
+      }
+      return {
         id: cluster.id,
         observationId: cluster.observationId,
         label: cluster.label,
         channel: cluster.channel,
         ...(cluster.method === undefined ? {} : { method: cluster.method }),
         url: cluster.url,
-        primaryRecordId: cluster.primaryRecordId,
-        recordIds: cluster.recordIds,
-        suppressedRecordIds: cluster.suppressedRecordIds,
-        suppressionReasons: [...cluster.suppressionReasons].sort((left, right) =>
-          left.localeCompare(right),
-        ),
         matchedTargetHints: [...cluster.matchedTargetHints].sort((left, right) =>
           left.localeCompare(right),
         ),
-      }),
-    )
+        members: orderedRecords.map((record, index) => {
+          const relation =
+            index === 0
+              ? "seed"
+              : inferClusterRelationship(seedRecord.record, record.record);
+          return {
+            recordId: record.record.recordId,
+            ...(record.observedAt === undefined ? {} : { observedAt: record.observedAt }),
+            ...(record.record.record.resourceType === undefined
+              ? {}
+              : { resourceType: record.record.record.resourceType }),
+            ...(record.record.record.status === undefined
+              ? {}
+              : { status: record.record.record.status }),
+            relation,
+            ...(index === 0 ? {} : { relatedRecordId: seedRecord.record.recordId }),
+            matchedTargetHints: [...record.matchedTargetHints].sort((left, right) =>
+              left.localeCompare(right),
+            ),
+          };
+        }),
+      } satisfies OpensteerObservationCluster;
+    })
     .sort((left, right) => left.id.localeCompare(right.id));
 }
 
@@ -137,57 +138,32 @@ function buildClusterLabel(record: ClusterableReverseRecord): string {
   return `${method} ${url.pathname}`;
 }
 
-function comparePrimaryCandidate(
-  left: ClusterableReverseRecord,
-  right: ClusterableReverseRecord,
-): number {
-  const leftScore = rankClusterPrimary(left.record);
-  const rightScore = rankClusterPrimary(right.record);
-  if (leftScore !== rightScore) {
-    return leftScore - rightScore;
-  }
-  return (left.observedAt ?? 0) - (right.observedAt ?? 0);
-}
-
-function rankClusterPrimary(record: NetworkQueryRecord): number {
-  let score = 0;
-  if (
-    record.record.status !== undefined &&
-    record.record.status >= 200 &&
-    record.record.status < 400
-  ) {
-    score += 5;
-  }
-  if (record.record.responseBody !== undefined) {
-    score += 3;
-  }
-  if (
-    record.record.redirectToRequestId !== undefined ||
-    record.record.redirectFromRequestId !== undefined
-  ) {
-    score -= 2;
-  }
+function inferClusterRelationship(
+  seed: NetworkQueryRecord,
+  record: NetworkQueryRecord,
+): OpensteerObservationClusterRelationshipKind {
   if (record.record.resourceType === "preflight" || record.record.method === "OPTIONS") {
-    score -= 10;
-  }
-  return score;
-}
-
-function inferSuppressionReason(
-  suppressed: NetworkQueryRecord,
-  primary: NetworkQueryRecord,
-): string {
-  if (suppressed.record.resourceType === "preflight" || suppressed.record.method === "OPTIONS") {
     return "preflight";
   }
   if (
-    suppressed.record.redirectFromRequestId !== undefined ||
-    suppressed.record.redirectToRequestId !== undefined
+    record.record.redirectFromRequestId !== undefined ||
+    record.record.redirectToRequestId !== undefined
   ) {
-    return "redirect-chain";
+    return "redirect";
   }
-  if ((suppressed.record.status ?? 0) >= 500 && (primary.record.status ?? 0) < 500) {
+  if (
+    (seed.record.status ?? 0) >= 500 &&
+    record.record.status !== undefined &&
+    record.record.status < 500
+  ) {
     return "retry";
   }
-  return "duplicate";
+  if (
+    seed.record.requestId !== record.record.requestId &&
+    seed.record.url === record.record.url &&
+    seed.record.method === record.record.method
+  ) {
+    return "duplicate";
+  }
+  return "follow-on";
 }

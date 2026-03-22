@@ -21,10 +21,12 @@ import {
   assertValidSemanticOperationInput,
   createNetworkRequestId,
   createSessionRef,
+  opensteerSemanticOperationSpecificationMap,
   type OpensteerArtifactReadInput,
   type OpensteerArtifactReadOutput,
   type CaptchaDetectionResult,
   type CookieRecord,
+  type JsonValue,
   type OpensteerCaptchaSolveInput,
   type OpensteerCaptchaSolveOutput,
   type OpensteerActionResult,
@@ -114,15 +116,28 @@ import {
   type OpensteerInteractionGetOutput,
   type OpensteerInteractionReplayInput,
   type OpensteerInteractionReplayOutput,
+  type OpensteerObservationCluster,
+  type OpensteerReverseAdvisoryTemplate,
   type OpensteerReverseCandidateRecord,
   type OpensteerExecutableResolver,
   type OpensteerReverseExperimentRecord,
+  type OpensteerReverseDiscoverInput,
+  type OpensteerReverseDiscoverOutput,
   type OpensteerReverseExportInput,
   type OpensteerReverseExportOutput,
   type OpensteerReverseGuardRecord,
   type OpensteerReverseManualCalibrationMode,
   type OpensteerReverseObservationRecord,
-  type OpensteerObservationCluster,
+  type OpensteerReverseObservedRecord,
+  type OpensteerReverseQueryFilters,
+  type OpensteerReverseQueryInput,
+  type OpensteerReverseQueryOutput,
+  type OpensteerReverseSortKey,
+  type OpensteerReverseQuerySort,
+  type OpensteerReverseQuerySnapshot,
+  type OpensteerReverseQueryView,
+  type OpensteerReversePackageCreateInput,
+  type OpensteerReversePackageCreateOutput,
   type OpensteerReversePackageGetInput,
   type OpensteerReversePackageGetOutput,
   type OpensteerReversePackageKind,
@@ -131,21 +146,21 @@ import {
   type OpensteerReversePackagePatchInput,
   type OpensteerReversePackagePatchOutput,
   type OpensteerReversePackageReadiness,
-  type OpensteerReplayStrategy,
   type OpensteerReverseReplayRunRecord,
-  type OpensteerReverseReplayInput,
-  type OpensteerReverseReplayOutput,
+  type OpensteerReversePackageRunInput,
+  type OpensteerReversePackageRunOutput,
   type OpensteerReverseReportInput,
   type OpensteerReverseReportOutput,
+  type OpensteerReverseReportKind,
   type OpensteerReverseRequirement,
-  type OpensteerReverseSolveInput,
-  type OpensteerReverseSolveOutput,
   type OpensteerReverseSuggestedEdit,
   type OpensteerReverseTargetHints,
   type OpensteerReverseWorkflowStep,
   type OpensteerStateDelta,
   type OpensteerStateSnapshot,
   type OpensteerStateSourceKind,
+  type OpensteerValueReference,
+  type OpensteerValueTemplate,
   type OpensteerValidationRule,
   type OpensteerEvent,
   type OpensteerWriteRecipeInput,
@@ -194,6 +209,7 @@ import type {
   OpensteerRouteOptions,
   OpensteerRouteRegistration,
 } from "./instrumentation.js";
+import { dispatchSemanticOperation } from "./semantic-dispatch.js";
 import { inferRequestPlanFromNetworkRecord } from "../requests/inference.js";
 import { normalizeRequestPlanPayload } from "../requests/plans/index.js";
 import {
@@ -302,14 +318,6 @@ interface PersistedComputerArtifacts {
   readonly output: OpensteerComputerExecuteOutput;
 }
 
-interface ReverseReplaySelectionInput {
-  readonly caseId: string;
-  readonly candidateId: string;
-  readonly strategyId?: string;
-  readonly pageRef?: PageRef;
-  readonly packageId?: string;
-}
-
 interface InternalReverseCaptureInput {
   readonly caseId?: string;
   readonly key?: string;
@@ -343,7 +351,6 @@ interface InternalReverseAnalyzeInput {
   readonly caseId: string;
   readonly observationId?: string;
   readonly targetHints?: OpensteerReverseTargetHints;
-  readonly candidateLimit?: number;
 }
 
 interface InternalReverseAnalyzeOutput {
@@ -352,10 +359,26 @@ interface InternalReverseAnalyzeOutput {
   readonly candidateCount: number;
 }
 
+interface ReverseQueryExecutionInput {
+  readonly caseRecord: ReverseCaseRecord;
+  readonly view: OpensteerReverseQueryView;
+  readonly filters?: OpensteerReverseQueryFilters;
+  readonly sort?: OpensteerReverseQuerySort;
+  readonly limit?: number;
+  readonly cursor?: string;
+}
+
+interface ReverseQueryExecutionResult {
+  readonly query: OpensteerReverseQuerySnapshot;
+  readonly output: OpensteerReverseQueryOutput;
+}
+
 interface ReversePackageWriteInput {
   readonly caseRecord: ReverseCaseRecord;
+  readonly source: OpensteerReversePackageCreateInput["source"];
+  readonly sourceRecordId: string;
   readonly candidate?: OpensteerReverseCandidateRecord;
-  readonly strategy?: OpensteerReverseCandidateRecord["replayStrategies"][number];
+  readonly template?: OpensteerReverseAdvisoryTemplate;
   readonly kind: OpensteerReversePackageKind;
   readonly readiness: OpensteerReversePackageReadiness;
   readonly validators: readonly OpensteerValidationRule[];
@@ -373,7 +396,11 @@ interface ReversePackageWriteInput {
   readonly manualCalibration?: OpensteerReverseManualCalibrationMode;
   readonly key?: string;
   readonly version?: string;
-  readonly provenanceSource: "reverse.solve" | "reverse.export" | "reverse.package.patch";
+  readonly provenanceSource:
+    | "reverse.discover"
+    | "reverse.package.create"
+    | "reverse.export"
+    | "reverse.package.patch";
 }
 
 interface OpensteerSessionTraceInput {
@@ -1776,263 +1803,59 @@ export class OpensteerSessionRuntime {
     }
   }
 
-  async solveReverse(
-    input: OpensteerReverseSolveInput,
+  async discoverReverse(
+    input: OpensteerReverseDiscoverInput,
     options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerReverseSolveOutput> {
-    assertValidSemanticOperationInput("reverse.solve", input);
+  ): Promise<OpensteerReverseDiscoverOutput> {
+    assertValidSemanticOperationInput("reverse.discover", input);
 
     const startedAt = Date.now();
     try {
       const output = await this.runWithOperationTimeout(
-        "reverse.solve",
+        "reverse.discover",
         async (timeout) => {
-          const root = await this.ensureRoot();
           const capture = await this.captureReverseCaseInternal(input, timeout);
           const analyzed = await this.analyzeReverseCaseInternal(
             {
               caseId: capture.case.id,
               observationId: capture.observation.id,
               ...(input.targetHints === undefined ? {} : { targetHints: input.targetHints }),
-              ...(input.candidateLimit === undefined
-                ? {}
-                : { candidateLimit: input.candidateLimit }),
             },
             timeout,
           );
-          let caseRecord = analyzed.case;
-          const maxReplayAttempts = input.maxReplayAttempts ?? 6;
-          const replayRuns: OpensteerReverseReplayRunRecord[] = [];
-          const experiments: OpensteerReverseExperimentRecord[] = [];
-          let selectedCandidate: OpensteerReverseCandidateRecord | undefined;
-          let selectedStrategy:
-            | OpensteerReverseCandidateRecord["replayStrategies"][number]
-            | undefined;
-          let selectedRun: OpensteerReverseReplayRunRecord | undefined;
-          let attempts = 0;
-
-          outer: for (const candidate of caseRecord.payload.candidates) {
-            for (const strategy of candidate.replayStrategies) {
-              if (!strategy.supported) {
-                experiments.push({
-                  id: `experiment:${randomUUID()}`,
-                  createdAt: Date.now(),
-                  candidateId: candidate.id,
-                  strategyId: strategy.id,
-                  kind: "replay-attempt",
-                  hypothesis: `replay ${candidate.id} via ${strategy.id}`,
-                  success: false,
-                  ...(strategy.failureReason === undefined
-                    ? {}
-                    : { notes: strategy.failureReason }),
-                });
-                continue;
-              }
-
-              if (attempts >= maxReplayAttempts) {
-                break outer;
-              }
-
-              attempts += 1;
-              const replay = await this.replayReverseSelectionInternal(
-                {
-                  caseId: caseRecord.id,
-                  candidateId: candidate.id,
-                  strategyId: strategy.id,
-                  ...(input.pageRef === undefined ? {} : { pageRef: input.pageRef }),
-                },
-                timeout,
-              );
-              replayRuns.push(replay.run);
-              experiments.push({
-                id: `experiment:${randomUUID()}`,
-                createdAt: replay.run.createdAt,
-                candidateId: candidate.id,
-                strategyId: strategy.id,
-                kind: "replay-attempt",
-                hypothesis: `replay ${candidate.id} via ${strategy.id}`,
-                success: replay.run.success,
-                ...(replay.run.status === undefined ? {} : { status: replay.run.status }),
-                ...(replay.run.error === undefined ? {} : { notes: replay.run.error }),
-                validation: replay.run.validation,
-              });
-
-              if (replay.run.success) {
-                selectedCandidate = replay.candidate;
-                selectedStrategy = replay.strategy;
-                selectedRun = replay.run;
-                break outer;
-              }
-            }
-          }
-
-          const chosenCandidate = selectedCandidate ?? caseRecord.payload.candidates[0];
-          const chosenStrategy =
-            selectedStrategy ??
-            (chosenCandidate === undefined
-              ? undefined
-              : (chosenCandidate.replayStrategies.find((strategy) => strategy.supported) ??
-                chosenCandidate.replayStrategies[0]));
-          const packageValidators =
-            chosenCandidate === undefined
-              ? []
-              : buildReverseValidationRules({
-                  record: await this.resolveNetworkRecordByRecordId(
-                    chosenCandidate.recordId,
-                    timeout,
-                    {
-                      includeBodies: true,
-                      redactSecretHeaders: false,
-                    },
-                  ),
-                  channel: chosenCandidate.channel,
-                });
-          const packageDraft = await this.buildReversePackageDraft(
-            {
-              caseRecord,
-              ...(chosenCandidate === undefined ? {} : { candidate: chosenCandidate }),
-              ...(chosenStrategy === undefined ? {} : { strategy: chosenStrategy }),
-              validators: packageValidators,
-              ...(input.manualCalibration === undefined
-                ? {}
-                : { manualCalibration: input.manualCalibration }),
-              ...(input.notes === undefined ? {} : { notes: input.notes }),
-            },
-            timeout,
-          );
-          const requestPlan =
-            packageDraft.kind === "portable-http" &&
-            packageDraft.readiness === "runnable" &&
-            chosenCandidate !== undefined &&
-            chosenStrategy !== undefined
-              ? await this.writePortableReverseRequestPlan(
-                  caseRecord,
-                  chosenCandidate,
-                  chosenStrategy,
-                  timeout,
-                  {
-                    key: `${caseRecord.key}:portable`,
-                    version: "1.0.0",
-                    provenanceSource: "reverse.solve",
-                  },
-                )
-              : undefined;
-          const packageRecord = await this.writeReversePackage({
-            caseRecord,
-            ...(chosenCandidate === undefined ? {} : { candidate: chosenCandidate }),
-            ...(chosenStrategy === undefined ? {} : { strategy: chosenStrategy }),
-            kind: packageDraft.kind,
-            readiness: packageDraft.readiness,
-            validators: packageValidators,
-            workflow: packageDraft.workflow,
-            resolvers: packageDraft.resolvers,
-            unresolvedRequirements: packageDraft.unresolvedRequirements,
-            suggestedEdits: packageDraft.suggestedEdits,
-            attachedTraceIds: packageDraft.attachedTraceIds,
-            attachedArtifactIds: packageDraft.attachedArtifactIds,
-            attachedRecordIds: packageDraft.attachedRecordIds,
-            stateSnapshots: packageDraft.stateSnapshots,
-            ...(requestPlan === undefined ? {} : { requestPlan }),
-            ...(packageDraft.notes === undefined ? {} : { notes: packageDraft.notes }),
-            ...(input.manualCalibration === undefined
-              ? {}
-              : { manualCalibration: input.manualCalibration }),
-            provenanceSource: "reverse.solve",
-          });
-
-          const finalRun: OpensteerReverseReplayRunRecord =
-            selectedRun === undefined
-              ? {
-                  id: `reverse-replay:${randomUUID()}`,
-                  createdAt: Date.now(),
-                  candidateId: chosenCandidate?.id ?? "candidate:none",
-                  ...(chosenStrategy === undefined ? {} : { strategyId: chosenStrategy.id }),
-                  packageId: packageRecord.id,
-                  success: false,
-                  ...(chosenCandidate === undefined
-                    ? {}
-                    : { channel: chosenCandidate.channel.kind }),
-                  kind: packageRecord.payload.kind,
-                  readiness: packageRecord.payload.readiness,
-                  ...(chosenStrategy?.transport === undefined
-                    ? {}
-                    : { transport: chosenStrategy.transport }),
-                  ...(chosenStrategy?.stateSource === undefined
-                    ? {}
-                    : { stateSource: chosenStrategy.stateSource }),
-                  validation: {},
-                  error:
-                    packageRecord.payload.unresolvedRequirements[0]?.label ??
-                    "reverse solve produced a draft package that still needs agent edits before replay can run",
-                }
-              : {
-                  ...selectedRun,
-                  packageId: packageRecord.id,
-                  kind: packageRecord.payload.kind,
-                  readiness: packageRecord.payload.readiness,
-                };
-          const finalReplayRuns =
-            selectedRun === undefined
-              ? [...replayRuns, finalRun]
-              : replayRuns.map((run) => (run.id === selectedRun.id ? finalRun : run));
-          const exportRecord =
-            chosenCandidate === undefined
-              ? undefined
-              : {
-                  id: `export:${randomUUID()}`,
-                  createdAt: Date.now(),
-                  candidateId: chosenCandidate.id,
-                  ...(chosenStrategy === undefined ? {} : { strategyId: chosenStrategy.id }),
-                  packageId: packageRecord.id,
-                  kind: packageRecord.payload.kind,
-                  readiness: packageRecord.payload.readiness,
-                  ...(requestPlan === undefined ? {} : { requestPlanId: requestPlan.id }),
-                };
-          caseRecord = await root.registry.reverseCases.update({
-            id: caseRecord.id,
-            payload: {
-              ...caseRecord.payload,
-              status: packageRecord.payload.readiness === "runnable" ? "ready" : "attention",
-              experiments: [...caseRecord.payload.experiments, ...experiments],
-              replayRuns: [...caseRecord.payload.replayRuns, ...finalReplayRuns],
-              exports:
-                exportRecord === undefined
-                  ? caseRecord.payload.exports
-                  : [...caseRecord.payload.exports, exportRecord],
-            },
-          });
-
           const report = await this.writeReverseReportRecord({
-            caseRecord,
-            packageRecord,
-            ...(chosenCandidate === undefined ? {} : { chosenCandidate }),
-            ...(chosenStrategy === undefined ? {} : { chosenStrategy }),
+            kind: "discovery",
+            caseRecord: analyzed.case,
           });
-
           return {
-            caseId: caseRecord.id,
-            package: packageRecord,
-            report,
-          } satisfies OpensteerReverseSolveOutput;
+            caseId: analyzed.case.id,
+            reportId: report.id,
+            summary: {
+              observationIds: analyzed.analyzedObservationIds,
+              recordCount: analyzed.case.payload.observedRecords.length,
+              clusterCount: analyzed.case.payload.observationClusters.length,
+              candidateCount: analyzed.case.payload.candidates.length,
+            },
+            index: buildReverseDiscoveryIndex(analyzed.case),
+          } satisfies OpensteerReverseDiscoverOutput;
         },
         options,
       );
 
       await this.appendTrace({
-        operation: "reverse.solve",
+        operation: "reverse.discover",
         startedAt,
         completedAt: Date.now(),
         outcome: "ok",
         data: {
           caseId: output.caseId,
-          packageId: output.package.id,
-          reportId: output.report.id,
+          reportId: output.reportId,
         },
       });
       return output;
     } catch (error) {
       await this.appendTrace({
-        operation: "reverse.solve",
+        operation: "reverse.discover",
         startedAt,
         completedAt: Date.now(),
         outcome: "error",
@@ -2042,36 +1865,106 @@ export class OpensteerSessionRuntime {
     }
   }
 
-  async replayReverse(
-    input: OpensteerReverseReplayInput,
+  async queryReverse(
+    input: OpensteerReverseQueryInput,
     options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerReverseReplayOutput> {
-    assertValidSemanticOperationInput("reverse.replay", input);
+  ): Promise<OpensteerReverseQueryOutput> {
+    assertValidSemanticOperationInput("reverse.query", input);
+    return this.runWithOperationTimeout(
+      "reverse.query",
+      async () => {
+        const caseRecord = await this.resolveReverseCaseById(input.caseId);
+        return this.queryReverseCaseInternal({
+          caseRecord,
+          view: input.view ?? "candidates",
+          ...(input.filters === undefined ? {} : { filters: input.filters }),
+          ...(input.sort === undefined ? {} : { sort: input.sort }),
+          ...(input.limit === undefined ? {} : { limit: input.limit }),
+          ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+        }).output;
+      },
+      options,
+    );
+  }
+
+  async createReversePackage(
+    input: OpensteerReversePackageCreateInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerReversePackageCreateOutput> {
+    assertValidSemanticOperationInput("reverse.package.create", input);
+    return this.runWithOperationTimeout(
+      "reverse.package.create",
+      async (timeout) => {
+        const caseRecord = await this.resolveReverseCaseById(input.caseId);
+        const source = await this.resolveReversePackageSource(caseRecord, input.source, timeout);
+        const template =
+          source.candidate === undefined
+            ? undefined
+            : resolveReverseTemplate(source.candidate, input.templateId);
+        const sourceChannel = source.candidate?.channel ?? source.observedRecord.channel;
+        const validators = buildReverseValidationRules({
+          record: await this.resolveNetworkRecordByRecordId(source.sourceRecordId, timeout, {
+            includeBodies: true,
+            redactSecretHeaders: false,
+          }),
+          channel: sourceChannel,
+        });
+        const draft = await this.buildReversePackageDraft(
+          {
+            caseRecord,
+            ...(source.candidate === undefined ? {} : { candidate: source.candidate }),
+            ...(template === undefined ? {} : { template }),
+            validators,
+            ...(input.notes === undefined ? {} : { notes: input.notes }),
+          },
+          timeout,
+        );
+        const packageRecord = await this.writeReversePackage({
+          caseRecord,
+          source: input.source,
+          sourceRecordId: source.sourceRecordId,
+          ...(source.candidate === undefined ? {} : { candidate: source.candidate }),
+          ...(template === undefined ? {} : { template }),
+          kind: draft.kind,
+          readiness: draft.readiness,
+          validators,
+          workflow: draft.workflow,
+          resolvers: draft.resolvers,
+          unresolvedRequirements: draft.unresolvedRequirements,
+          suggestedEdits: draft.suggestedEdits,
+          attachedTraceIds: draft.attachedTraceIds,
+          attachedArtifactIds: draft.attachedArtifactIds,
+          attachedRecordIds: draft.attachedRecordIds,
+          stateSnapshots: draft.stateSnapshots,
+          ...(draft.notes === undefined ? {} : { notes: draft.notes }),
+          ...(input.key === undefined ? {} : { key: input.key }),
+          ...(input.version === undefined ? {} : { version: input.version }),
+          provenanceSource: "reverse.package.create",
+        });
+        const report = await this.writeReverseReportRecord({
+          kind: "package",
+          caseRecord,
+          packageRecord,
+        });
+        return {
+          package: packageRecord,
+          report,
+        } satisfies OpensteerReversePackageCreateOutput;
+      },
+      options,
+    );
+  }
+
+  async runReversePackage(
+    input: OpensteerReversePackageRunInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerReversePackageRunOutput> {
+    assertValidSemanticOperationInput("reverse.package.run", input);
 
     return this.runWithOperationTimeout(
-      "reverse.replay",
+      "reverse.package.run",
       async (timeout) => {
         const packageRecord = await this.resolveReversePackageById(input.packageId);
-
-        if (
-          packageRecord.payload.readiness !== "runnable" ||
-          packageRecord.payload.candidate === undefined ||
-          packageRecord.payload.strategy === undefined
-        ) {
-          return {
-            packageId: packageRecord.id,
-            caseId: packageRecord.payload.caseId,
-            success: false,
-            kind: packageRecord.payload.kind,
-            readiness: packageRecord.payload.readiness,
-            validation: {},
-            unresolvedRequirements: packageRecord.payload.unresolvedRequirements,
-            suggestedEdits: packageRecord.payload.suggestedEdits,
-            error:
-              packageRecord.payload.unresolvedRequirements[0]?.label ??
-              "reverse package is still a draft and cannot be replayed yet",
-          } satisfies OpensteerReverseReplayOutput;
-        }
 
         const replay = await this.replayReversePackageInternal(
           packageRecord,
@@ -2091,10 +1984,10 @@ export class OpensteerSessionRuntime {
                 {
                   id: `experiment:${randomUUID()}`,
                   createdAt: replay.run.createdAt,
-                  candidateId: replay.candidate.id,
-                  strategyId: replay.strategy.id,
+                  ...(replay.candidate === undefined ? {} : { candidateId: replay.candidate.id }),
+                  ...(replay.template === undefined ? {} : { templateId: replay.template.id }),
                   kind: "replay-attempt",
-                  hypothesis: `replay ${replay.candidate.id} via package ${packageRecord.id}`,
+                  hypothesis: `replay ${replay.candidate?.id ?? packageRecord.payload.source.id} via package ${packageRecord.id}`,
                   success: replay.run.success,
                   ...(replay.run.status === undefined ? {} : { status: replay.run.status }),
                   ...(replay.run.error === undefined ? {} : { notes: replay.run.error }),
@@ -2104,28 +1997,39 @@ export class OpensteerSessionRuntime {
               replayRuns: [...caseRecord.payload.replayRuns, replay.run],
             },
           });
+          const refreshedCaseRecord = await this.resolveReverseCaseById(caseRecord.id);
+          await this.writeReverseReportRecord({
+            kind: "package",
+            caseRecord: refreshedCaseRecord,
+            packageRecord,
+          });
         }
 
         return {
           packageId: packageRecord.id,
           caseId: packageRecord.payload.caseId,
-          candidateId: replay.candidate.id,
-          strategyId: replay.strategy.id,
+          source: packageRecord.payload.source,
+          ...(replay.candidate === undefined ? {} : { candidateId: replay.candidate.id }),
+          ...(replay.template === undefined ? {} : { templateId: replay.template.id }),
           success: replay.run.success,
           kind: packageRecord.payload.kind,
           readiness: packageRecord.payload.readiness,
-          channel: replay.candidate.channel.kind,
-          ...(replay.strategy.transport === undefined
+          ...(replay.candidate === undefined ? {} : { channel: replay.candidate.channel.kind }),
+          ...(replay.template?.transport === undefined ? {} : { transport: replay.template.transport }),
+          ...(packageRecord.payload.stateSource === undefined
             ? {}
-            : { transport: replay.strategy.transport }),
-          stateSource: replay.strategy.stateSource,
+            : { stateSource: packageRecord.payload.stateSource }),
           ...(replay.run.recordId === undefined ? {} : { recordId: replay.run.recordId }),
           ...(replay.run.status === undefined ? {} : { status: replay.run.status }),
           validation: replay.run.validation,
+          executedStepIds: replay.run.executedStepIds,
+          ...(replay.run.failedStepId === undefined ? {} : { failedStepId: replay.run.failedStepId }),
+          bindings: replay.run.bindings ?? {},
+          replayRunId: replay.run.id,
           unresolvedRequirements: packageRecord.payload.unresolvedRequirements,
           suggestedEdits: packageRecord.payload.suggestedEdits,
           ...(replay.run.error === undefined ? {} : { error: replay.run.error }),
-        } satisfies OpensteerReverseReplayOutput;
+        } satisfies OpensteerReversePackageRunOutput;
       },
       options,
     );
@@ -2139,11 +2043,44 @@ export class OpensteerSessionRuntime {
 
     return this.runWithOperationTimeout(
       "reverse.export",
-      async () => {
+      async (timeout) => {
         const root = await this.ensureRoot();
         const sourcePackage = await this.resolveReversePackageById(input.packageId);
+        let requestPlan =
+          sourcePackage.payload.requestPlanId === undefined
+            ? undefined
+            : await root.registry.requestPlans.getById(sourcePackage.payload.requestPlanId);
+        let exportedPayload = sourcePackage.payload;
+
+        if (
+          requestPlan === undefined &&
+          sourcePackage.payload.kind === "portable-http" &&
+          sourcePackage.payload.readiness === "runnable" &&
+          sourcePackage.payload.candidate !== undefined &&
+          sourcePackage.payload.template !== undefined
+        ) {
+          const caseRecord = await this.resolveReverseCaseById(sourcePackage.payload.caseId);
+          requestPlan = await this.writePortableReverseRequestPlan(
+            caseRecord,
+            sourcePackage.payload.candidate,
+            sourcePackage.payload.template,
+            timeout,
+            {
+              key: `${caseRecord.key}:portable:${Date.now()}`,
+              version: "1.0.0",
+              provenanceSource: "reverse.export",
+            },
+          );
+          exportedPayload = {
+            ...exportedPayload,
+            requestPlanId: requestPlan.id,
+          };
+        }
+
         const packageRecord =
-          input.key === undefined && input.version === undefined
+          input.key === undefined &&
+          input.version === undefined &&
+          exportedPayload === sourcePackage.payload
             ? sourcePackage
             : await root.registry.reversePackages.write({
                 key: input.key ?? `${sourcePackage.key}:copy:${Date.now()}`,
@@ -2153,17 +2090,10 @@ export class OpensteerSessionRuntime {
                   source: "reverse.export",
                   sourceId: sourcePackage.id,
                 },
-                payload: sourcePackage.payload,
+                payload: exportedPayload,
               });
-        const requestPlan =
-          packageRecord.payload.requestPlanId === undefined
-            ? undefined
-            : await root.registry.requestPlans.getById(packageRecord.payload.requestPlanId);
 
-        if (
-          packageRecord.id !== sourcePackage.id &&
-          packageRecord.payload.candidateId !== undefined
-        ) {
+        if (packageRecord.payload.candidateId !== undefined) {
           const caseRecord = await this.tryResolveReverseCaseById(packageRecord.payload.caseId);
           if (caseRecord !== undefined) {
             await root.registry.reverseCases.update({
@@ -2176,9 +2106,9 @@ export class OpensteerSessionRuntime {
                     id: `export:${randomUUID()}`,
                     createdAt: Date.now(),
                     candidateId: packageRecord.payload.candidateId,
-                    ...(packageRecord.payload.strategyId === undefined
+                    ...(packageRecord.payload.templateId === undefined
                       ? {}
-                      : { strategyId: packageRecord.payload.strategyId }),
+                      : { templateId: packageRecord.payload.templateId }),
                     packageId: packageRecord.id,
                     kind: packageRecord.payload.kind,
                     readiness: packageRecord.payload.readiness,
@@ -2208,16 +2138,18 @@ export class OpensteerSessionRuntime {
     return this.runWithOperationTimeout(
       "reverse.report",
       async () => {
-        if (input.packageId === undefined && input.reportId === undefined) {
+        if (input.packageId === undefined && input.reportId === undefined && input.caseId === undefined) {
           throw new OpensteerProtocolError(
             "invalid-argument",
-            "reverse report requires packageId or reportId",
+            "reverse report requires packageId, caseId, or reportId",
           );
         }
         const report =
-          input.reportId === undefined
-            ? await this.resolveReverseReportByPackageId(input.packageId!)
-            : await this.resolveReverseReportById(input.reportId);
+          input.reportId !== undefined
+            ? await this.resolveReverseReportById(input.reportId)
+            : input.packageId !== undefined
+              ? await this.resolveReverseReportByPackageId(input.packageId)
+              : await this.resolveReverseReportByCaseId(input.caseId!, input.kind ?? "discovery");
         return {
           report,
         } satisfies OpensteerReverseReportOutput;
@@ -2281,30 +2213,8 @@ export class OpensteerSessionRuntime {
       async (timeout) => {
         const sourcePackage = await this.resolveReversePackageById(input.packageId);
         const caseRecord = await this.resolveReverseCaseById(sourcePackage.payload.caseId);
-        const candidate =
-          input.candidateId === undefined
-            ? sourcePackage.payload.candidate
-            : caseRecord.payload.candidates.find((entry) => entry.id === input.candidateId);
-        if (input.candidateId !== undefined && candidate === undefined) {
-          throw new OpensteerProtocolError(
-            "not-found",
-            `reverse candidate ${input.candidateId} was not found`,
-          );
-        }
-        const selectedStrategyId = input.strategyId ?? sourcePackage.payload.strategy?.id;
-        const strategy =
-          candidate === undefined
-            ? undefined
-            : selectedStrategyId === undefined
-              ? (candidate.replayStrategies.find((entry) => entry.supported) ??
-                candidate.replayStrategies[0])
-              : candidate.replayStrategies.find((entry) => entry.id === selectedStrategyId);
-        if (input.strategyId !== undefined && strategy === undefined) {
-          throw new OpensteerProtocolError(
-            "not-found",
-            `reverse strategy ${input.strategyId} was not found`,
-          );
-        }
+        const candidate = sourcePackage.payload.candidate;
+        const template = sourcePackage.payload.template;
 
         const validators =
           input.validators ??
@@ -2322,7 +2232,7 @@ export class OpensteerSessionRuntime {
           {
             caseRecord,
             ...(candidate === undefined ? {} : { candidate }),
-            ...(strategy === undefined ? {} : { strategy }),
+            ...(template === undefined ? {} : { template }),
             validators,
             ...(input.workflow === undefined ? {} : { workflow: input.workflow }),
             ...(input.resolvers === undefined ? {} : { resolvers: input.resolvers }),
@@ -2342,21 +2252,12 @@ export class OpensteerSessionRuntime {
           },
           timeout,
         );
-        const requestPlan =
-          draft.kind === "portable-http" &&
-          draft.readiness === "runnable" &&
-          candidate !== undefined &&
-          strategy !== undefined
-            ? await this.writePortableReverseRequestPlan(caseRecord, candidate, strategy, timeout, {
-                key: `${caseRecord.key}:portable:${Date.now()}`,
-                version: "1.0.0",
-                provenanceSource: "reverse.export",
-              })
-            : undefined;
         const packageRecord = await this.writeReversePackage({
           caseRecord,
+          source: sourcePackage.payload.source,
+          sourceRecordId: sourcePackage.payload.sourceRecordId,
           ...(candidate === undefined ? {} : { candidate }),
-          ...(strategy === undefined ? {} : { strategy }),
+          ...(template === undefined ? {} : { template }),
           kind: draft.kind,
           readiness: draft.readiness,
           validators,
@@ -2369,17 +2270,15 @@ export class OpensteerSessionRuntime {
           attachedRecordIds: draft.attachedRecordIds,
           stateSnapshots: draft.stateSnapshots,
           ...(draft.notes === undefined ? {} : { notes: draft.notes }),
-          ...(requestPlan === undefined ? {} : { requestPlan }),
           parentPackageId: sourcePackage.id,
           key: input.key ?? `${sourcePackage.key}:patch:${Date.now()}`,
           version: input.version ?? sourcePackage.version,
           provenanceSource: "reverse.package.patch",
         });
         const report = await this.writeReverseReportRecord({
+          kind: "package",
           caseRecord,
           packageRecord,
-          ...(candidate === undefined ? {} : { chosenCandidate: candidate }),
-          ...(strategy === undefined ? {} : { chosenStrategy: strategy }),
         });
         return {
           package: packageRecord,
@@ -2407,7 +2306,7 @@ export class OpensteerSessionRuntime {
         version: "1.0.0",
         ...(input.tags === undefined ? {} : { tags: input.tags }),
         provenance: {
-          source: "reverse.solve",
+          source: "reverse.discover",
           ...(pageInfo.url.length === 0 ? {} : { sourceId: pageInfo.url }),
         },
         payload: {
@@ -2417,6 +2316,7 @@ export class OpensteerSessionRuntime {
           stateSource,
           observations: [],
           observationClusters: [],
+          observedRecords: [],
           candidates: [],
           guards: [],
           stateSnapshots: [],
@@ -2559,6 +2459,7 @@ export class OpensteerSessionRuntime {
 
     const analyzedCandidates: OpensteerReverseCandidateRecord[] = [];
     const analyzedClusters: OpensteerObservationCluster[] = [];
+    const analyzedObservedRecords: OpensteerReverseObservedRecord[] = [];
     for (const observation of targetObservations) {
       const guards = caseRecord.payload.guards.filter((guard) =>
         observation.interactionTraceIds.includes(guard.interactionTraceId ?? ""),
@@ -2589,13 +2490,26 @@ export class OpensteerSessionRuntime {
         records: clusteredRecords,
       });
       analyzedClusters.push(...clusters);
-
+      const clusterByRecordId = new Map<string, OpensteerObservationCluster>();
+      const relationKindsByRecordId = new Map<
+        string,
+        Set<OpensteerObservationCluster["members"][number]["relation"]>
+      >();
       for (const cluster of clusters) {
-        const recordId = cluster.primaryRecordId;
-        const record = await this.resolveNetworkRecordByRecordId(recordId, timeout, {
-          includeBodies: true,
-          redactSecretHeaders: false,
-        });
+        for (const member of cluster.members) {
+          clusterByRecordId.set(member.recordId, cluster);
+          const relationKinds = relationKindsByRecordId.get(member.recordId) ?? new Set();
+          relationKinds.add(member.relation);
+          relationKindsByRecordId.set(member.recordId, relationKinds);
+        }
+      }
+
+      for (const entry of clusteredRecords) {
+        const record = entry.record;
+        const cluster = clusterByRecordId.get(record.recordId);
+        if (cluster === undefined) {
+          continue;
+        }
         const analysis = analyzeReverseCandidate({
           observationId: observation.id,
           record,
@@ -2613,34 +2527,65 @@ export class OpensteerSessionRuntime {
           channel: analysis.channel,
           bodyCodec: analysis.bodyCodec,
           boundary: analysis.boundary,
-          role: analysis.role,
-          dependencyClass: analysis.dependencyClass,
-          score: analysis.score,
           summary: analysis.summary,
           matchedTargetHints: analysis.matchedTargetHints,
+          advisoryTags: analysis.advisoryTags,
+          constraints: analysis.constraints,
+          signals: analysis.signals,
           inputs: analysis.inputs,
           resolvers: analysis.resolvers,
           guardIds: Array.from(
-            new Set(analysis.replayStrategies.flatMap((strategy) => strategy.guardIds)),
+            new Set(analysis.advisoryTemplates.flatMap((template) => template.guardIds)),
           ).sort((left, right) => left.localeCompare(right)),
           scriptArtifactIds: observation.scriptArtifactIds,
-          replayStrategies: analysis.replayStrategies,
+          advisoryTemplates: analysis.advisoryTemplates,
         });
       }
+
+      analyzedObservedRecords.push(
+        ...clusteredRecords.map((entry) => {
+          const cluster = clusterByRecordId.get(entry.record.recordId);
+          if (cluster === undefined) {
+            throw new OpensteerProtocolError(
+              "operation-failed",
+              `reverse observation cluster missing record ${entry.record.recordId}`,
+            );
+          }
+          return {
+            recordId: entry.record.recordId,
+            observationId: observation.id,
+            clusterId: cluster.id,
+            ...(entry.observedAt === undefined ? {} : { observedAt: entry.observedAt }),
+            channel: entry.channel,
+            bodyCodec: entry.bodyCodec,
+            ...(entry.record.record.resourceType === undefined
+              ? {}
+              : { resourceType: entry.record.record.resourceType }),
+            ...(entry.record.record.status === undefined
+              ? {}
+              : { status: entry.record.record.status }),
+            matchedTargetHints: entry.matchedTargetHints,
+            relationKinds: [...(relationKindsByRecordId.get(entry.record.recordId) ?? new Set())],
+          } satisfies OpensteerReverseObservedRecord;
+        }),
+      );
     }
 
     analyzedCandidates.sort(
       (left, right) =>
         compareReverseAnalysisResults(left, right) || left.id.localeCompare(right.id),
     );
-    const limitedCandidates =
-      input.candidateLimit === undefined
-        ? analyzedCandidates
-        : analyzedCandidates.slice(0, input.candidateLimit);
     const untouchedCandidates = caseRecord.payload.candidates.filter(
       (candidate) => !targetObservationIds.includes(candidate.observationId),
     );
-    const nextCandidates = [...untouchedCandidates, ...limitedCandidates];
+    const untouchedObservedRecords = caseRecord.payload.observedRecords.filter(
+      (record) => !targetObservationIds.includes(record.observationId),
+    );
+    const nextCandidates = [...untouchedCandidates, ...analyzedCandidates];
+    const nextObservedRecords = [...untouchedObservedRecords, ...analyzedObservedRecords].sort(
+      (left, right) =>
+        (right.observedAt ?? 0) - (left.observedAt ?? 0) || left.recordId.localeCompare(right.recordId),
+    );
 
     const updatedCase = await root.registry.reverseCases.update({
       id: caseRecord.id,
@@ -2651,6 +2596,7 @@ export class OpensteerSessionRuntime {
           caseRecord.payload.observationClusters,
           analyzedClusters,
         ),
+        observedRecords: nextObservedRecords,
         candidates: nextCandidates,
       },
     });
@@ -2662,125 +2608,208 @@ export class OpensteerSessionRuntime {
     };
   }
 
-  private async replayReverseSelectionInternal(
-    input: ReverseReplaySelectionInput,
-    timeout: TimeoutExecutionContext,
-  ): Promise<{
-    readonly caseRecord: ReverseCaseRecord;
-    readonly candidate: OpensteerReverseCandidateRecord;
-    readonly strategy: OpensteerReverseCandidateRecord["replayStrategies"][number];
-    readonly run: OpensteerReverseReplayRunRecord;
-  }> {
-    const caseRecord = await this.resolveReverseCaseById(input.caseId);
-    const candidate = resolveReverseCandidate(caseRecord, input.candidateId);
-    const strategy =
-      input.strategyId === undefined
-        ? (candidate.replayStrategies.find((entry) => entry.supported) ??
-          candidate.replayStrategies[0])
-        : candidate.replayStrategies.find((entry) => entry.id === input.strategyId);
-    if (strategy === undefined) {
-      throw new OpensteerProtocolError(
-        "not-found",
-        `reverse replay strategy ${input.strategyId ?? "<default>"} was not found for ${candidate.id}`,
-      );
-    }
-    const validationRules = buildReverseValidationRules({
-      record: await this.resolveNetworkRecordByRecordId(candidate.recordId, timeout, {
-        includeBodies: true,
-        redactSecretHeaders: false,
-      }),
-      channel: candidate.channel,
-    });
-    const draft = await this.buildReversePackageDraft(
-      {
-        caseRecord,
-        candidate,
-        strategy,
-        validators: validationRules,
-      },
-      timeout,
-    );
-    if (draft.readiness !== "runnable") {
-      const packageId = input.packageId ?? `reverse-package:ephemeral:${randomUUID()}`;
+  private queryReverseCaseInternal(input: ReverseQueryExecutionInput): ReverseQueryExecutionResult {
+    const view = input.view;
+    const sort = normalizeReverseQuerySort(input.sort);
+    const limit = normalizeReverseQueryLimit(input.limit);
+    const offset = parseReverseQueryCursor(input.cursor);
+
+    if (view === "records") {
+      const rankedRecords = input.caseRecord.payload.observedRecords
+        .filter((record) =>
+          matchesReverseRecordFilters(record, input.caseRecord.payload.candidates, input.filters),
+        )
+        .sort((left, right) =>
+          compareReverseObservedRecords(
+            left,
+            right,
+            input.caseRecord.payload.candidates,
+            sort,
+          ),
+        );
+      const page = rankedRecords.slice(offset, offset + limit).map((record) => ({
+        record,
+        candidateIds: input.caseRecord.payload.candidates
+          .filter((candidate) => candidate.recordId === record.recordId)
+          .map((candidate) => candidate.id),
+      }));
+      const query = buildReverseQuerySnapshot({
+        view,
+        ...(input.filters === undefined ? {} : { filters: input.filters }),
+        sort,
+        limit,
+        totalCount: rankedRecords.length,
+        offset,
+        resultIds: page.map((item) => item.record.recordId),
+      });
       return {
-        caseRecord,
-        candidate,
-        strategy,
-        run: {
-          id: `reverse-replay:${randomUUID()}`,
-          createdAt: Date.now(),
-          candidateId: candidate.id,
-          strategyId: strategy.id,
-          packageId,
-          success: false,
-          channel: candidate.channel.kind,
-          kind: draft.kind,
-          readiness: draft.readiness,
-          ...(strategy.transport === undefined ? {} : { transport: strategy.transport }),
-          stateSource: strategy.stateSource,
-          validation: {},
-          error:
-            draft.unresolvedRequirements[0]?.label ??
-            strategy.failureReason ??
-            "strategy draft still needs agent edits before replay can run",
+        query,
+        output: {
+          caseId: input.caseRecord.id,
+          view,
+          query,
+          totalCount: rankedRecords.length,
+          ...(query.nextCursor === undefined ? {} : { nextCursor: query.nextCursor }),
+          records: page,
         },
       };
     }
-    const ephemeralPackage: ReversePackageRecord = {
-      id: input.packageId ?? `reverse-package:ephemeral:${randomUUID()}`,
-      key: `${caseRecord.key}:advisory:${candidate.id}`,
-      version: "1.0.0",
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      contentHash: sha256Hex(Buffer.from(candidate.id, "utf8")),
-      tags: caseRecord.tags,
-      provenance: {
-        source: "reverse.solve",
-        sourceId: candidate.id,
-      },
-      payload: {
-        kind: draft.kind,
-        readiness: draft.readiness,
-        caseId: caseRecord.id,
-        objective: caseRecord.payload.objective,
-        candidateId: candidate.id,
-        candidate,
-        strategyId: strategy.id,
-        strategy,
-        channel: candidate.channel,
-        stateSource: strategy.stateSource,
-        observationId: candidate.observationId,
-        ...(strategy.transport === undefined ? {} : { transport: strategy.transport }),
-        guardIds: strategy.guardIds,
-        workflow: draft.workflow,
-        resolvers: draft.resolvers,
-        validators: validationRules,
-        stateSnapshots: draft.stateSnapshots,
-        requirements: buildReversePackageRequirements({
-          stateSource: caseRecord.payload.stateSource,
-          strategy,
-          candidate,
+
+    if (view === "clusters") {
+      const rankedClusters = input.caseRecord.payload.observationClusters
+        .filter((cluster) =>
+          matchesReverseClusterFilters(cluster, input.caseRecord.payload.candidates, input.filters),
+        )
+        .sort((left, right) =>
+          compareReverseClusters(left, right, input.caseRecord.payload.candidates, sort),
+        );
+      const page = rankedClusters.slice(offset, offset + limit).map((cluster) => ({
+        cluster,
+        candidateIds: input.caseRecord.payload.candidates
+          .filter((candidate) => candidate.clusterId === cluster.id)
+          .map((candidate) => candidate.id),
+      }));
+      const query = buildReverseQuerySnapshot({
+        view,
+        ...(input.filters === undefined ? {} : { filters: input.filters }),
+        sort,
+        limit,
+        totalCount: rankedClusters.length,
+        offset,
+        resultIds: page.map((item) => item.cluster.id),
+      });
+      return {
+        query,
+        output: {
+          caseId: input.caseRecord.id,
+          view,
+          query,
+          totalCount: rankedClusters.length,
+          ...(query.nextCursor === undefined ? {} : { nextCursor: query.nextCursor }),
+          clusters: page,
+        },
+      };
+    }
+
+    const rankedCandidates = input.caseRecord.payload.candidates
+      .filter((candidate) =>
+        matchesReverseCandidateFilters(candidate, input.filters, {
+          ...(input.caseRecord.payload.observedRecords.find(
+            (entry) => entry.recordId === candidate.recordId,
+          ) === undefined
+            ? {}
+            : {
+                observedRecord: input.caseRecord.payload.observedRecords.find(
+                  (entry) => entry.recordId === candidate.recordId,
+                )!,
+              }),
+          ...(input.caseRecord.payload.observations.find(
+            (entry) => entry.id === candidate.observationId,
+          ) === undefined
+            ? {}
+            : {
+                observation: input.caseRecord.payload.observations.find(
+                  (entry) => entry.id === candidate.observationId,
+                )!,
+              }),
         }),
-        unresolvedRequirements: draft.unresolvedRequirements,
-        suggestedEdits: draft.suggestedEdits,
-        attachedTraceIds: draft.attachedTraceIds,
-        attachedArtifactIds: draft.attachedArtifactIds,
-        attachedRecordIds: draft.attachedRecordIds,
+      )
+      .sort((left, right) => compareReverseCandidates(left, right, sort));
+    const page = rankedCandidates.slice(offset, offset + limit).map((candidate) => ({
+      candidate,
+      reasons: buildReverseCandidateRankingReasons(candidate),
+    }));
+    const query = buildReverseQuerySnapshot({
+      view,
+      ...(input.filters === undefined ? {} : { filters: input.filters }),
+      sort,
+      limit,
+      totalCount: rankedCandidates.length,
+      offset,
+      resultIds: page.map((item) => item.candidate.id),
+    });
+    return {
+      query,
+      output: {
+        caseId: input.caseRecord.id,
+        view,
+        query,
+        totalCount: rankedCandidates.length,
+        ...(query.nextCursor === undefined ? {} : { nextCursor: query.nextCursor }),
+        candidates: page,
       },
     };
-    const replay = await this.replayReversePackageInternal(
-      ephemeralPackage,
-      timeout,
-      input.pageRef,
-    );
+  }
 
+  private async resolveReversePackageSource(
+    caseRecord: ReverseCaseRecord,
+    source: OpensteerReversePackageCreateInput["source"],
+    timeout: TimeoutExecutionContext,
+  ): Promise<{
+    readonly sourceRecordId: string;
+    readonly observedRecord: OpensteerReverseObservedRecord;
+    readonly candidate?: OpensteerReverseCandidateRecord;
+  }> {
+    if (source.kind === "candidate") {
+      const candidate = resolveReverseCandidate(caseRecord, source.id);
+      const observedRecord = resolveReverseObservedRecord(caseRecord, candidate.recordId);
+      return {
+        sourceRecordId: candidate.recordId,
+        observedRecord,
+        candidate,
+      };
+    }
+
+    const observedRecord = resolveReverseObservedRecord(caseRecord, source.id);
+    const existingCandidate = caseRecord.payload.candidates.find(
+      (entry) => entry.recordId === observedRecord.recordId,
+    );
+    if (existingCandidate !== undefined) {
+      return {
+        sourceRecordId: existingCandidate.recordId,
+        observedRecord,
+        candidate: existingCandidate,
+      };
+    }
+
+    const observation = caseRecord.payload.observations.find(
+      (entry) => entry.id === observedRecord.observationId,
+    );
+    const record = await this.resolveNetworkRecordByRecordId(observedRecord.recordId, timeout, {
+      includeBodies: true,
+      redactSecretHeaders: false,
+    });
+    const analysis = analyzeReverseCandidate({
+      observationId: observedRecord.observationId,
+      record,
+      ...(observation?.url === undefined ? {} : { observationUrl: observation.url }),
+      stateSource: caseRecord.payload.stateSource,
+      guards: caseRecord.payload.guards,
+      scriptArtifactIds: observation?.scriptArtifactIds ?? [],
+    });
     return {
-      caseRecord,
-      candidate,
-      strategy,
-      run: {
-        ...replay.run,
-        ...(input.packageId === undefined ? {} : { packageId: input.packageId }),
+      sourceRecordId: observedRecord.recordId,
+      observedRecord,
+      candidate: {
+        id: `candidate:${observedRecord.recordId}`,
+        observationId: observedRecord.observationId,
+        clusterId: observedRecord.clusterId,
+        recordId: observedRecord.recordId,
+        channel: analysis.channel,
+        bodyCodec: analysis.bodyCodec,
+        boundary: analysis.boundary,
+        summary: analysis.summary,
+        matchedTargetHints: analysis.matchedTargetHints,
+        advisoryTags: analysis.advisoryTags,
+        constraints: analysis.constraints,
+        signals: analysis.signals,
+        inputs: analysis.inputs,
+        resolvers: analysis.resolvers,
+        guardIds: Array.from(
+          new Set(analysis.advisoryTemplates.flatMap((entry) => entry.guardIds)),
+        ).sort((left, right) => left.localeCompare(right)),
+        scriptArtifactIds: observation?.scriptArtifactIds ?? [],
+        advisoryTemplates: analysis.advisoryTemplates,
       },
     };
   }
@@ -2790,20 +2819,14 @@ export class OpensteerSessionRuntime {
     timeout: TimeoutExecutionContext,
     explicitPageRef: PageRef | undefined,
   ): Promise<{
-    readonly candidate: OpensteerReverseCandidateRecord;
-    readonly strategy: OpensteerReplayStrategy;
+    readonly candidate?: OpensteerReverseCandidateRecord;
+    readonly template?: OpensteerReverseAdvisoryTemplate;
     readonly run: OpensteerReverseReplayRunRecord;
   }> {
     const candidate = packageRecord.payload.candidate;
-    const strategy = packageRecord.payload.strategy;
-    if (candidate === undefined || strategy === undefined) {
-      throw new OpensteerProtocolError(
-        "invalid-argument",
-        `reverse package ${packageRecord.id} is missing its executable candidate or strategy`,
-      );
-    }
+    const template = packageRecord.payload.template;
 
-    if (packageRecord.payload.stateSnapshots.length > 0) {
+    if (candidate !== undefined && packageRecord.payload.stateSnapshots.length > 0) {
       await this.restoreReverseStateSnapshots(
         packageRecord.payload.stateSnapshots,
         candidate,
@@ -2813,27 +2836,30 @@ export class OpensteerSessionRuntime {
     }
     const replayResult = await this.executeReversePackageWorkflow(
       packageRecord,
-      candidate,
-      strategy,
       timeout,
       explicitPageRef,
     );
 
     return {
-      candidate,
-      strategy,
+      ...(candidate === undefined ? {} : { candidate }),
+      ...(template === undefined ? {} : { template }),
       run: {
         id: `reverse-replay:${randomUUID()}`,
         createdAt: Date.now(),
-        candidateId: candidate.id,
-        strategyId: strategy.id,
+        ...(candidate === undefined ? {} : { candidateId: candidate.id }),
+        ...(template === undefined ? {} : { templateId: template.id }),
         packageId: packageRecord.id,
         success: replayResult.success,
-        channel: candidate.channel.kind,
+        ...(candidate === undefined ? {} : { channel: candidate.channel.kind }),
         kind: packageRecord.payload.kind,
         readiness: packageRecord.payload.readiness,
-        stateSource: strategy.stateSource,
-        ...(strategy.transport === undefined ? {} : { transport: strategy.transport }),
+        ...(packageRecord.payload.stateSource === undefined
+          ? {}
+          : { stateSource: packageRecord.payload.stateSource }),
+        ...(template?.transport === undefined ? {} : { transport: template.transport }),
+        executedStepIds: replayResult.executedStepIds,
+        ...(replayResult.failedStepId === undefined ? {} : { failedStepId: replayResult.failedStepId }),
+        ...(replayResult.bindings === undefined ? {} : { bindings: replayResult.bindings }),
         ...(replayResult.recordId === undefined ? {} : { recordId: replayResult.recordId }),
         ...(replayResult.status === undefined ? {} : { status: replayResult.status }),
         validation: replayResult.validation,
@@ -2844,17 +2870,28 @@ export class OpensteerSessionRuntime {
 
   private async executeReversePackageWorkflow(
     packageRecord: ReversePackageRecord,
-    candidate: OpensteerReverseCandidateRecord,
-    strategy: OpensteerReplayStrategy,
     timeout: TimeoutExecutionContext,
     explicitPageRef: PageRef | undefined,
   ): Promise<{
     readonly success: boolean;
+    readonly executedStepIds: readonly string[];
+    readonly failedStepId?: string;
+    readonly bindings?: Readonly<Record<string, JsonValue>>;
     readonly recordId?: string;
     readonly status?: number;
-    readonly validation: OpensteerReverseReplayOutput["validation"];
+    readonly validation: OpensteerReversePackageRunOutput["validation"];
     readonly error?: string;
   }> {
+    const caseRecord = await this.tryResolveReverseCaseById(packageRecord.payload.caseId);
+    if (packageRecord.payload.workflow.length === 0) {
+      return {
+        success: false,
+        executedStepIds: [],
+        bindings: {},
+        validation: {},
+        error: "package workflow is empty",
+      };
+    }
     const bindings = new Map<string, unknown>();
     const baselineRequestIds = await this.beginMutationCapture(timeout);
     const pageRef = explicitPageRef ?? (await this.ensurePageRef());
@@ -2864,10 +2901,12 @@ export class OpensteerSessionRuntime {
     let lastAssertable: unknown;
     let lastRecordId: string | undefined;
     let lastStatus: number | undefined;
+    const executedStepIds: string[] = [];
 
     for (const step of packageRecord.payload.workflow) {
       const resolverValues = await this.resolveReversePackageResolverValues(
         packageRecord,
+        caseRecord,
         bindings,
         pageRef,
         timeout,
@@ -2876,6 +2915,8 @@ export class OpensteerSessionRuntime {
         case "operation": {
           const result = await this.executeReversePackageOperationStep(
             step,
+            packageRecord,
+            caseRecord,
             timeout,
             pageRef,
             bindings,
@@ -2884,22 +2925,15 @@ export class OpensteerSessionRuntime {
           if (step.bindAs !== undefined) {
             bindings.set(step.bindAs, result);
           }
+          executedStepIds.push(step.id);
           lastAssertable = result;
           lastRecordId = extractReverseRecordId(result);
           lastStatus = extractReverseStatus(result);
           break;
         }
         case "await-record": {
-          const record = await this.resolveNetworkRecordByRecordId(
-            step.recordId ?? candidate.recordId,
-            timeout,
-            {
-              includeBodies: true,
-              redactSecretHeaders: false,
-            },
-          );
-          const matchedRecord = await this.waitForObservedReplayRecord(
-            record,
+          const matchedRecord = await this.waitForReversePackageRecord(
+            step,
             baselineRequestIds,
             timeout,
             pageRef,
@@ -2907,12 +2941,16 @@ export class OpensteerSessionRuntime {
           if (matchedRecord === undefined) {
             return {
               success: false,
+              executedStepIds,
+              failedStepId: step.id,
+              bindings: serializeReverseBindings(bindings),
               validation: {},
               error: "package workflow did not emit the expected observed record",
             };
           }
           const bindingName = step.bindAs ?? `record:${step.id}`;
           bindings.set(bindingName, matchedRecord);
+          executedStepIds.push(step.id);
           lastAssertable = matchedRecord;
           lastRecordId = matchedRecord.recordId;
           lastStatus = matchedRecord.record.status;
@@ -2927,16 +2965,23 @@ export class OpensteerSessionRuntime {
           if (boundValue === undefined) {
             return {
               success: false,
+              executedStepIds,
+              failedStepId: step.id,
+              bindings: serializeReverseBindings(bindings),
               validation: {},
               error: `assert step ${step.id} did not find a bound result`,
             };
           }
+          executedStepIds.push(step.id);
           return evaluateReversePackageAssertion(
             boundValue,
-            candidate.channel.kind,
+            packageRecord.payload.channel?.kind ?? "http",
             validators,
             lastRecordId,
             lastStatus,
+            executedStepIds,
+            serializeReverseBindings(bindings),
+            step.id,
           );
         }
       }
@@ -2944,6 +2989,8 @@ export class OpensteerSessionRuntime {
 
     return {
       success: true,
+      executedStepIds,
+      bindings: serializeReverseBindings(bindings),
       ...(lastRecordId === undefined ? {} : { recordId: lastRecordId }),
       ...(lastStatus === undefined ? {} : { status: lastStatus }),
       validation: {},
@@ -2952,59 +2999,37 @@ export class OpensteerSessionRuntime {
 
   private async executeReversePackageOperationStep(
     step: Extract<OpensteerReverseWorkflowStep, { readonly kind: "operation" }>,
+    packageRecord: ReversePackageRecord,
+    caseRecord: ReverseCaseRecord | undefined,
     timeout: TimeoutExecutionContext,
     pageRef: PageRef,
     bindings: ReadonlyMap<string, unknown>,
     resolverValues: ReadonlyMap<string, unknown>,
   ): Promise<unknown> {
-    const input = normalizeReversePackageOperationInput(step.input, bindings, resolverValues);
-    switch (step.operation) {
-      case "page.goto":
-        return this.goto(input as OpensteerPageGotoInput, { signal: timeout.signal });
-      case "page.evaluate":
-        return this.evaluate(
-          withReverseOperationPageRef(input, pageRef) as OpensteerPageEvaluateInput,
-          {
-            signal: timeout.signal,
-          },
-        );
-      case "dom.click":
-        return this.click(withReverseOperationPageRef(input, pageRef) as OpensteerDomClickInput, {
-          signal: timeout.signal,
-        });
-      case "dom.hover":
-        return this.hover(withReverseOperationPageRef(input, pageRef) as OpensteerDomHoverInput, {
-          signal: timeout.signal,
-        });
-      case "dom.input":
-        return this.input(withReverseOperationPageRef(input, pageRef) as OpensteerDomInputInput, {
-          signal: timeout.signal,
-        });
-      case "dom.scroll":
-        return this.scroll(withReverseOperationPageRef(input, pageRef) as OpensteerDomScrollInput, {
-          signal: timeout.signal,
-        });
-      case "interaction.replay":
-        return this.replayInteraction(
-          withReverseOperationPageRef(input, pageRef) as OpensteerInteractionReplayInput,
-          {
-            signal: timeout.signal,
-          },
-        );
-      case "request.raw":
-        return this.rawRequest(input as OpensteerRawRequestInput, {
-          signal: timeout.signal,
-        });
-      default:
-        throw new OpensteerProtocolError(
-          "invalid-argument",
-          `reverse package operation ${step.operation} is not supported by the workflow runner`,
-        );
+    const operationName = step.operation as OpensteerSemanticOperationName;
+    const spec = opensteerSemanticOperationSpecificationMap[operationName];
+    if (spec === undefined || spec.packageRunnable !== true) {
+      throw new OpensteerProtocolError(
+        "invalid-argument",
+        `reverse package operation ${step.operation} is not runnable inside packages`,
+      );
     }
+    const input = await this.resolveReverseValueTemplate(
+      step.input,
+      packageRecord,
+      caseRecord,
+      bindings,
+      resolverValues,
+      pageRef,
+      timeout,
+    );
+    assertValidSemanticOperationInput(operationName, input);
+    return dispatchSemanticOperation(this, operationName, input, { signal: timeout.signal });
   }
 
   private async resolveReversePackageResolverValues(
     packageRecord: ReversePackageRecord,
+    caseRecord: ReverseCaseRecord | undefined,
     bindings: ReadonlyMap<string, unknown>,
     pageRef: PageRef,
     timeout: TimeoutExecutionContext,
@@ -3013,8 +3038,9 @@ export class OpensteerSessionRuntime {
     for (const resolver of packageRecord.payload.resolvers) {
       const value = await this.resolveReversePackageResolverValue(
         resolver,
+        packageRecord,
+        caseRecord,
         bindings,
-        packageRecord.payload.stateSnapshots,
         pageRef,
         timeout,
       );
@@ -3027,96 +3053,219 @@ export class OpensteerSessionRuntime {
 
   private async resolveReversePackageResolverValue(
     resolver: OpensteerExecutableResolver,
+    packageRecord: ReversePackageRecord,
+    caseRecord: ReverseCaseRecord | undefined,
     bindings: ReadonlyMap<string, unknown>,
-    stateSnapshots: readonly OpensteerStateSnapshot[],
     pageRef: PageRef,
     timeout: TimeoutExecutionContext,
   ): Promise<unknown> {
-    if (resolver.value !== undefined) {
-      return resolver.value;
-    }
-
-    if (resolver.binding !== undefined) {
-      const boundValue = bindings.get(resolver.binding);
-      return extractReverseRuntimeValue(boundValue, resolver.pointer);
-    }
-
     switch (resolver.kind) {
-      case "literal":
       case "manual":
       case "runtime-managed":
         return undefined;
       case "cookie":
-        return resolveReverseCookieResolverValue(stateSnapshots, resolver);
+        return resolveReverseCookieResolverValue(packageRecord.payload.stateSnapshots, resolver);
       case "storage":
-        return resolveReverseStorageResolverValue(stateSnapshots, resolver);
-      case "prior-response":
-        if (resolver.sourceRecordId === undefined) {
+      case "state-snapshot":
+        return resolveReverseStorageResolverValue(packageRecord.payload.stateSnapshots, resolver);
+      case "prior-record":
+      case "literal":
+      case "binding":
+      case "candidate":
+      case "case":
+      case "artifact":
+        return this.resolveReverseValueReference(
+          resolver.valueRef,
+          packageRecord,
+          caseRecord,
+          bindings,
+          pageRef,
+          timeout,
+        );
+    }
+  }
+
+  private async resolveReverseValueTemplate(
+    template: OpensteerValueTemplate,
+    packageRecord: ReversePackageRecord,
+    caseRecord: ReverseCaseRecord | undefined,
+    bindings: ReadonlyMap<string, unknown>,
+    resolverValues: ReadonlyMap<string, unknown>,
+    pageRef: PageRef,
+    timeout: TimeoutExecutionContext,
+  ): Promise<unknown> {
+    if (Array.isArray(template)) {
+      return Promise.all(
+        template.map((entry) =>
+          this.resolveReverseValueTemplate(
+            entry,
+            packageRecord,
+            caseRecord,
+            bindings,
+            resolverValues,
+            pageRef,
+            timeout,
+          ),
+        ),
+      );
+    }
+    if (template === null || typeof template !== "object") {
+      return template;
+    }
+    if (
+      "$ref" in (template as Record<string, unknown>) &&
+      (template as { readonly $ref?: unknown }).$ref !== undefined
+    ) {
+      return this.resolveReverseValueReference(
+        (template as { readonly $ref: OpensteerValueReference }).$ref,
+        packageRecord,
+        caseRecord,
+        bindings,
+        pageRef,
+        timeout,
+        resolverValues,
+      );
+    }
+    const entries = await Promise.all(
+      Object.entries(template as Record<string, OpensteerValueTemplate>).map(async ([key, value]) => [
+        key,
+        await this.resolveReverseValueTemplate(
+          value,
+          packageRecord,
+          caseRecord,
+          bindings,
+          resolverValues,
+          pageRef,
+          timeout,
+        ),
+      ]),
+    );
+    return Object.fromEntries(entries);
+  }
+
+  private async resolveReverseValueReference(
+    valueRef: OpensteerValueReference | undefined,
+    packageRecord: ReversePackageRecord,
+    caseRecord: ReverseCaseRecord | undefined,
+    bindings: ReadonlyMap<string, unknown>,
+    pageRef: PageRef,
+    timeout: TimeoutExecutionContext,
+    resolverValues?: ReadonlyMap<string, unknown>,
+  ): Promise<unknown> {
+    if (valueRef === undefined) {
+      return undefined;
+    }
+    switch (valueRef.kind) {
+      case "literal":
+        return valueRef.value;
+      case "resolver":
+        return extractReverseRuntimeValue(resolverValues?.get(valueRef.resolverId ?? ""), valueRef.pointer);
+      case "binding":
+        return extractReverseRuntimeValue(bindings.get(valueRef.binding ?? ""), valueRef.pointer);
+      case "candidate":
+        return extractReverseRuntimeValue(packageRecord.payload.candidate, valueRef.pointer);
+      case "case":
+        return extractReverseRuntimeValue(caseRecord, valueRef.pointer);
+      case "record":
+        if (valueRef.recordId === undefined) {
           return undefined;
         }
         return extractReverseRuntimeValue(
-          await this.resolveNetworkRecordByRecordId(resolver.sourceRecordId, timeout, {
+          await this.resolveNetworkRecordByRecordId(valueRef.recordId, timeout, {
             includeBodies: true,
             redactSecretHeaders: false,
           }),
-          resolver.pointer,
+          valueRef.pointer,
         );
-      case "guard-output":
-        if (resolver.traceId !== undefined) {
-          return extractReverseRuntimeValue(
-            await this.resolveInteractionTraceById(resolver.traceId),
-            resolver.pointer,
-          );
-        }
-        return undefined;
-      case "page-eval":
-        if (
-          resolver.expression === undefined ||
-          !looksLikeExecutablePageResolverExpression(resolver.expression)
-        ) {
+      case "artifact":
+        if (valueRef.artifactId === undefined) {
           return undefined;
         }
-        return (
-          await this.evaluate(
-            {
-              pageRef,
-              script: PAGE_EVAL_RESOLVER_SCRIPT,
-              args: [
-                {
-                  expression: resolver.expression,
-                },
-              ],
-            },
-            { signal: timeout.signal },
-          )
-        ).value;
-      case "script-sandbox":
+        return extractReverseRuntimeValue(
+          await this.readArtifact({ artifactId: valueRef.artifactId }, { signal: timeout.signal }),
+          valueRef.pointer,
+        );
+      case "state-snapshot": {
+        const snapshots = packageRecord.payload.stateSnapshots;
+        const snapshot =
+          valueRef.stateSnapshotId === undefined
+            ? snapshots.length === 1
+              ? snapshots[0]
+              : snapshots.at(-1)
+            : snapshots.find((entry) => entry.id === valueRef.stateSnapshotId);
+        return extractReverseRuntimeValue(snapshot, valueRef.pointer);
+      }
+      case "runtime":
+        return extractReverseRuntimeValue(
+          resolveReversePackageRuntimeValue(packageRecord, pageRef, valueRef.runtimeKey),
+          valueRef.pointer,
+        );
+      case "manual":
         return undefined;
     }
   }
 
-  private async buildReverseTransportOperationInput(
-    candidate: OpensteerReverseCandidateRecord,
-    strategy: OpensteerReplayStrategy,
+  private async waitForReversePackageRecord(
+    step: Extract<OpensteerReverseWorkflowStep, { readonly kind: "await-record" }>,
+    baselineRequestIds: ReadonlySet<string>,
     timeout: TimeoutExecutionContext,
-  ): Promise<OpensteerRawRequestInput> {
-    if (strategy.transport === undefined) {
+    pageRef: PageRef,
+  ): Promise<NetworkQueryRecord | undefined> {
+    let expectedRecord: NetworkQueryRecord | undefined;
+    if (step.recordId !== undefined || step.match?.recordId !== undefined) {
+      expectedRecord = await this.resolveNetworkRecordByRecordId(
+        step.recordId ?? step.match!.recordId!,
+        timeout,
+        {
+          includeBodies: true,
+          redactSecretHeaders: false,
+        },
+      );
+    }
+    if (expectedRecord !== undefined && step.match === undefined) {
+      return this.waitForObservedReplayRecord(expectedRecord, baselineRequestIds, timeout, pageRef);
+    }
+    if (expectedRecord === undefined && step.match === undefined) {
       throw new OpensteerProtocolError(
         "invalid-argument",
-        `reverse strategy ${strategy.id} is missing a transport`,
+        `await-record step ${step.id} requires a recordId or match filter`,
+      );
+    }
+    const method = step.match?.method ?? expectedRecord?.record.method;
+    const filter = {
+      channel: step.channel.kind,
+      ...(method === undefined ? {} : { method }),
+      ...(expectedRecord?.record.url === undefined ? {} : { url: expectedRecord.record.url }),
+      ...(step.match?.host === undefined ? {} : { host: step.match.host }),
+      ...(step.match?.path === undefined ? {} : { path: step.match.path }),
+      ...(step.match?.status === undefined ? {} : { status: step.match.status }),
+      ...(step.match?.text === undefined ? {} : { text: step.match.text }),
+    };
+    return this.waitForMatchingReplayRecord(filter, baselineRequestIds, timeout, pageRef);
+  }
+
+  private async buildReverseTransportOperationInput(
+    candidate: OpensteerReverseCandidateRecord,
+    template: OpensteerReverseAdvisoryTemplate,
+    timeout: TimeoutExecutionContext,
+  ): Promise<OpensteerRawRequestInput> {
+    if (template.transport === undefined) {
+      throw new OpensteerProtocolError(
+        "invalid-argument",
+        `reverse template ${template.id} is missing a transport`,
       );
     }
     const record = await this.resolveNetworkRecordByRecordId(candidate.recordId, timeout, {
       includeBodies: true,
       redactSecretHeaders: false,
     });
-    const headers = stripManagedRequestHeaders(record.record.requestHeaders, strategy.transport);
+    const headers = stripManagedRequestHeaders(record.record.requestHeaders, template.transport);
     const body = toReverseRawRequestBodyInput(
       record.record.requestBody,
       record.record.requestHeaders,
     );
     return {
-      transport: strategy.transport,
+      transport: template.transport,
       url: record.record.url,
       method: record.record.method,
       ...(headers === undefined ? {} : { headers }),
@@ -3127,12 +3276,12 @@ export class OpensteerSessionRuntime {
   private async writePortableReverseRequestPlan(
     caseRecord: ReverseCaseRecord,
     candidate: OpensteerReverseCandidateRecord,
-    strategy: OpensteerReverseCandidateRecord["replayStrategies"][number],
+    template: OpensteerReverseAdvisoryTemplate,
     timeout: TimeoutExecutionContext,
     input: {
       readonly key: string;
       readonly version: string;
-      readonly provenanceSource: "reverse.solve" | "reverse.export";
+      readonly provenanceSource: "reverse.package.create" | "reverse.export";
     },
   ): Promise<RequestPlanRecord> {
     const root = await this.ensureRoot();
@@ -3151,13 +3300,13 @@ export class OpensteerSessionRuntime {
         ? undefined
         : stripManagedRequestHeaders(
             inferred.payload.endpoint.defaultHeaders,
-            strategy.transport ?? "direct-http",
+            template.transport ?? "direct-http",
           );
     const payload = normalizeRequestPlanPayload({
       ...inferred.payload,
       transport: {
-        kind: strategy.transport ?? "direct-http",
-        ...(strategy.transport === "page-http" ? { requireSameOrigin: false } : {}),
+        kind: template.transport ?? "direct-http",
+        ...(template.transport === "page-http" ? { requireSameOrigin: false } : {}),
       },
       endpoint: {
         ...inferred.payload.endpoint,
@@ -3184,7 +3333,7 @@ export class OpensteerSessionRuntime {
     const candidate = input.candidate;
     const requirements = buildReversePackageRequirements({
       stateSource: input.caseRecord.payload.stateSource,
-      ...(input.strategy === undefined ? {} : { strategy: input.strategy }),
+      ...(input.template === undefined ? {} : { template: input.template }),
       ...(candidate === undefined ? {} : { candidate }),
       ...(input.manualCalibration === undefined
         ? {}
@@ -3196,24 +3345,26 @@ export class OpensteerSessionRuntime {
       tags: input.caseRecord.tags,
       provenance: {
         source: input.provenanceSource,
-        sourceId: candidate?.id ?? input.caseRecord.id,
+        sourceId: input.source.id,
       },
       payload: {
         kind: input.kind,
         readiness: input.readiness,
         caseId: input.caseRecord.id,
         objective: input.caseRecord.payload.objective,
+        source: input.source,
+        sourceRecordId: input.sourceRecordId,
         ...(candidate === undefined ? {} : { candidateId: candidate.id }),
         ...(candidate === undefined ? {} : { candidate }),
-        ...(input.strategy === undefined ? {} : { strategyId: input.strategy.id }),
-        ...(input.strategy === undefined ? {} : { strategy: input.strategy }),
+        ...(input.template === undefined ? {} : { templateId: input.template.id }),
+        ...(input.template === undefined ? {} : { template: input.template }),
         ...(candidate === undefined ? {} : { channel: candidate.channel }),
-        ...(input.strategy === undefined
+        ...(input.template === undefined
           ? { stateSource: input.caseRecord.payload.stateSource }
-          : { stateSource: input.strategy.stateSource }),
+          : { stateSource: input.template.stateSource }),
         ...(candidate === undefined ? {} : { observationId: candidate.observationId }),
-        ...(input.strategy?.transport === undefined ? {} : { transport: input.strategy.transport }),
-        guardIds: input.strategy?.guardIds ?? candidate?.guardIds ?? ([] as readonly string[]),
+        ...(input.template?.transport === undefined ? {} : { transport: input.template.transport }),
+        guardIds: input.template?.guardIds ?? candidate?.guardIds ?? ([] as readonly string[]),
         workflow: input.workflow,
         resolvers: cloneReversePackageResolvers(input.resolvers ?? []),
         validators: input.validators,
@@ -3235,7 +3386,7 @@ export class OpensteerSessionRuntime {
     input: {
       readonly caseRecord: ReverseCaseRecord;
       readonly candidate?: OpensteerReverseCandidateRecord;
-      readonly strategy?: OpensteerReplayStrategy;
+      readonly template?: OpensteerReverseAdvisoryTemplate;
       readonly validators: readonly OpensteerValidationRule[];
       readonly workflow?: readonly OpensteerReverseWorkflowStep[];
       readonly resolvers?: readonly OpensteerExecutableResolver[];
@@ -3261,7 +3412,7 @@ export class OpensteerSessionRuntime {
     readonly notes?: string;
   }> {
     const candidate = input.candidate;
-    const strategy = input.strategy;
+    const template = input.template;
     const observation =
       candidate === undefined
         ? undefined
@@ -3269,9 +3420,9 @@ export class OpensteerSessionRuntime {
             (entry) => entry.id === candidate.observationId,
           );
     const guards =
-      strategy === undefined
+      template === undefined
         ? []
-        : input.caseRecord.payload.guards.filter((guard) => strategy.guardIds.includes(guard.id));
+        : input.caseRecord.payload.guards.filter((guard) => template.guardIds.includes(guard.id));
     const resolvers = input.resolvers ?? candidate?.resolvers ?? [];
     const stateSnapshots =
       input.stateSnapshotIds === undefined
@@ -3291,21 +3442,23 @@ export class OpensteerSessionRuntime {
             return snapshot;
           });
     const executeStepInput =
-      candidate === undefined || strategy === undefined || strategy.execution === "page-observation"
+      candidate === undefined || template === undefined || template.execution === "page-observation"
         ? undefined
-        : await this.buildReverseTransportOperationInput(candidate, strategy, timeout);
+        : await this.buildReverseTransportOperationInput(candidate, template, timeout);
     const executeStepValue =
       executeStepInput === undefined ? undefined : toCanonicalJsonValue(executeStepInput);
     const workflow =
       input.workflow ??
-      buildReversePackageWorkflow({
-        ...(candidate === undefined ? {} : { candidate }),
-        ...(strategy === undefined ? {} : { strategy }),
-        ...(observation === undefined ? {} : { observation }),
-        guards,
-        validators: input.validators,
-        ...(executeStepValue === undefined ? {} : { executeStepInput: executeStepValue }),
-      });
+      (candidate === undefined
+        ? []
+        : buildReversePackageWorkflow({
+            candidate,
+            ...(template === undefined ? {} : { template }),
+            ...(observation === undefined ? {} : { observation }),
+            guards,
+            validators: input.validators,
+            ...(executeStepValue === undefined ? {} : { executeStepInput: executeStepValue }),
+          }));
     const attachedTraceIds = dedupeStringList([
       ...(observation?.interactionTraceIds ?? []),
       ...guards.flatMap((guard) =>
@@ -3316,11 +3469,10 @@ export class OpensteerSessionRuntime {
     const attachedArtifactIds = dedupeStringList([
       ...(observation?.scriptArtifactIds ?? []),
       ...(candidate?.scriptArtifactIds ?? []),
-      ...resolvers.flatMap((resolver) =>
-        resolver.artifactId === undefined && resolver.scriptArtifactId === undefined
-          ? []
-          : [resolver.artifactId ?? resolver.scriptArtifactId!],
-      ),
+      ...resolvers.flatMap((resolver) => {
+        const artifactId = extractReverseResolverArtifactId(resolver);
+        return artifactId === undefined ? [] : [artifactId];
+      }),
       ...(input.attachedArtifactIds ?? []),
     ]);
     const attachedRecordIds = dedupeStringList([
@@ -3330,11 +3482,14 @@ export class OpensteerSessionRuntime {
     ]);
     const kind = deriveReversePackageKind({
       ...(candidate === undefined ? {} : { candidate }),
-      ...(strategy === undefined ? {} : { strategy }),
+      ...(template === undefined ? {} : { template }),
+      workflow,
+      resolvers,
+      stateSnapshots,
     });
     const unresolvedRequirements = deriveReversePackageUnresolvedRequirements({
       ...(candidate === undefined ? {} : { candidate }),
-      ...(strategy === undefined ? {} : { strategy }),
+      ...(template === undefined ? {} : { template }),
       workflow,
       resolvers,
       guards,
@@ -3361,55 +3516,70 @@ export class OpensteerSessionRuntime {
   }
 
   private async writeReverseReportRecord(input: {
+    readonly kind: OpensteerReverseReportKind;
     readonly caseRecord: ReverseCaseRecord;
-    readonly packageRecord: ReversePackageRecord;
-    readonly chosenCandidate?: OpensteerReverseCandidateRecord;
-    readonly chosenStrategy?: OpensteerReplayStrategy;
+    readonly packageRecord?: ReversePackageRecord;
+    readonly query?: OpensteerReverseQuerySnapshot;
   }): Promise<ReverseReportRecord> {
     const root = await this.ensureRoot();
     return root.registry.reverseReports.write({
-      key: `${input.caseRecord.key}:report:${Date.now()}`,
+      key: `${input.caseRecord.key}:${input.kind}-report:${Date.now()}`,
       version: "1.0.0",
       tags: input.caseRecord.tags,
       provenance: {
-        source: "reverse.solve",
-        sourceId: input.packageRecord.id,
+        source: input.kind === "discovery" ? "reverse.discover" : "reverse.package.create",
+        sourceId: input.packageRecord?.id ?? input.caseRecord.id,
       },
       payload: {
+        kind: input.kind,
         caseId: input.caseRecord.id,
         objective: input.caseRecord.payload.objective,
-        packageId: input.packageRecord.id,
-        packageKind: input.packageRecord.payload.kind,
-        packageReadiness: input.packageRecord.payload.readiness,
-        ...(input.chosenCandidate === undefined
+        ...(input.packageRecord === undefined ? {} : { packageId: input.packageRecord.id }),
+        ...(input.packageRecord === undefined
           ? {}
-          : { chosenCandidateId: input.chosenCandidate.id }),
-        ...(input.chosenStrategy === undefined
+          : { packageKind: input.packageRecord.payload.kind }),
+        ...(input.packageRecord === undefined
           ? {}
-          : { chosenStrategyId: input.chosenStrategy.id }),
+          : { packageReadiness: input.packageRecord.payload.readiness }),
         observations: input.caseRecord.payload.observations,
         observationClusters: input.caseRecord.payload.observationClusters,
+        observedRecords: input.caseRecord.payload.observedRecords,
         guards: input.caseRecord.payload.guards,
         stateDeltas: input.caseRecord.payload.stateDeltas,
-        candidateRankings: input.caseRecord.payload.candidates.map((candidate) => ({
+        summaryCounts: buildReverseSummaryCounts(input.caseRecord),
+        ...(input.query === undefined ? {} : { query: input.query }),
+        candidateAdvisories: input.caseRecord.payload.candidates.map((candidate) => ({
           candidateId: candidate.id,
           clusterId: candidate.clusterId,
-          score: candidate.score,
-          role: candidate.role,
-          dependencyClass: candidate.dependencyClass,
+          advisoryRank: candidate.signals.advisoryRank,
           bodyCodec: candidate.bodyCodec,
           summary: candidate.summary,
+          advisoryTags: candidate.advisoryTags,
+          constraints: candidate.constraints,
+          signals: candidate.signals,
           reasons: buildReverseCandidateRankingReasons(candidate),
         })),
         experiments: input.caseRecord.payload.experiments,
         replayRuns: input.caseRecord.payload.replayRuns,
-        unresolvedRequirements: input.packageRecord.payload.unresolvedRequirements,
-        suggestedEdits: input.packageRecord.payload.suggestedEdits,
-        linkedNetworkRecordIds: input.packageRecord.payload.attachedRecordIds,
-        linkedInteractionTraceIds: input.packageRecord.payload.attachedTraceIds,
-        linkedArtifactIds: input.packageRecord.payload.attachedArtifactIds,
-        linkedStateSnapshotIds: input.packageRecord.payload.stateSnapshots.map((entry) => entry.id),
-        package: input.packageRecord,
+        ...(input.packageRecord === undefined
+          ? {}
+          : { unresolvedRequirements: input.packageRecord.payload.unresolvedRequirements }),
+        ...(input.packageRecord === undefined
+          ? {}
+          : { suggestedEdits: input.packageRecord.payload.suggestedEdits }),
+        linkedNetworkRecordIds:
+          input.packageRecord?.payload.attachedRecordIds ??
+          input.caseRecord.payload.observedRecords.map((record) => record.recordId),
+        linkedInteractionTraceIds:
+          input.packageRecord?.payload.attachedTraceIds ??
+          input.caseRecord.payload.observations.flatMap((entry) => entry.interactionTraceIds),
+        linkedArtifactIds:
+          input.packageRecord?.payload.attachedArtifactIds ??
+          input.caseRecord.payload.observations.flatMap((entry) => entry.scriptArtifactIds),
+        linkedStateSnapshotIds:
+          input.packageRecord?.payload.stateSnapshots.map((entry) => entry.id) ??
+          input.caseRecord.payload.stateSnapshots.map((entry) => entry.id),
+        ...(input.packageRecord === undefined ? {} : { package: input.packageRecord }),
       },
     });
   }
@@ -5387,7 +5557,9 @@ export class OpensteerSessionRuntime {
 
   private async resolveReverseReportByPackageId(packageId: string): Promise<ReverseReportRecord> {
     const reports = await (await this.ensureRoot()).registry.reverseReports.list();
-    const report = reports.find((entry) => entry.payload.packageId === packageId);
+    const report = reports
+      .filter((entry) => entry.payload.packageId === packageId)
+      .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))[0];
     if (report === undefined) {
       throw new OpensteerProtocolError(
         "not-found",
@@ -5395,6 +5567,29 @@ export class OpensteerSessionRuntime {
         {
           details: {
             packageId,
+            kind: "reverse-report",
+          },
+        },
+      );
+    }
+    return report;
+  }
+
+  private async resolveReverseReportByCaseId(
+    caseId: string,
+    kind: OpensteerReverseReportKind,
+  ): Promise<ReverseReportRecord> {
+    const reports = await (await this.ensureRoot()).registry.reverseReports.list();
+    const report = reports
+      .filter((entry) => entry.payload.caseId === caseId && entry.payload.kind === kind)
+      .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))[0];
+    if (report === undefined) {
+      throw new OpensteerProtocolError(
+        "not-found",
+        `reverse ${kind} report for case ${caseId} was not found`,
+        {
+          details: {
+            caseId,
             kind: "reverse-report",
           },
         },
@@ -5620,6 +5815,57 @@ export class OpensteerSessionRuntime {
           (record) =>
             !baselineRequestIds.has(record.record.requestId) &&
             this.isObservedReplayRecordSettled(record),
+        );
+      if (match !== undefined) {
+        return match;
+      }
+      const remainingMs = timeout.remainingMs();
+      if (remainingMs !== undefined && remainingMs <= 0) {
+        return undefined;
+      }
+      await runtimeDelay(Math.min(200, remainingMs ?? 200));
+    }
+  }
+
+  private async waitForMatchingReplayRecord(
+    filter: {
+      readonly channel?: OpensteerReverseCandidateRecord["channel"]["kind"];
+      readonly method?: string;
+      readonly url?: string;
+      readonly host?: string;
+      readonly path?: string;
+      readonly status?: number;
+      readonly text?: string;
+    },
+    baselineRequestIds: ReadonlySet<string>,
+    timeout: TimeoutExecutionContext,
+    pageRef: PageRef,
+  ): Promise<NetworkQueryRecord | undefined> {
+    while (true) {
+      timeout.throwIfAborted();
+      const records = await this.queryLiveNetwork(
+        {
+          source: "live",
+          pageRef,
+          ...(filter.url === undefined ? {} : { url: filter.url }),
+          ...(filter.host === undefined ? {} : { hostname: filter.host }),
+          ...(filter.path === undefined ? {} : { path: filter.path }),
+          ...(filter.method === undefined ? {} : { method: filter.method }),
+          includeBodies: true,
+          limit: 100,
+        },
+        timeout,
+        {
+          ignoreLimit: true,
+          redactSecretHeaders: false,
+        },
+      );
+      const match = [...records]
+        .reverse()
+        .find((record) =>
+          !baselineRequestIds.has(record.record.requestId) &&
+          this.isObservedReplayRecordSettled(record) &&
+          matchesReverseAwaitRecordFilter(record, filter),
         );
       if (match !== undefined) {
         return match;
@@ -8505,8 +8751,8 @@ function collectReverseReplayStateSnapshotsFromCase(
     snapshotIds.add(snapshotId);
   }
   for (const resolver of candidate.resolvers) {
-    if (resolver.stateSnapshotId !== undefined) {
-      snapshotIds.add(resolver.stateSnapshotId);
+    if (resolver.valueRef?.kind === "state-snapshot" && resolver.valueRef.stateSnapshotId !== undefined) {
+      snapshotIds.add(resolver.valueRef.stateSnapshotId);
     }
   }
   return caseRecord.payload.stateSnapshots.filter((snapshot) => snapshotIds.has(snapshot.id));
@@ -8632,6 +8878,7 @@ function filterReverseObservationWindow(
 
 function isReverseRelevantNetworkRecord(record: NetworkQueryRecord): boolean {
   return (
+    record.record.resourceType === "document" ||
     record.record.resourceType === "fetch" ||
     record.record.resourceType === "xhr" ||
     record.record.resourceType === "websocket" ||
@@ -8653,8 +8900,104 @@ function resolveReverseCandidate(
   return candidate;
 }
 
+function resolveReverseTemplate(
+  candidate: OpensteerReverseCandidateRecord,
+  templateId: string | undefined,
+): OpensteerReverseAdvisoryTemplate | undefined {
+  if (templateId === undefined) {
+    return undefined;
+  }
+  const template = candidate.advisoryTemplates.find((entry) => entry.id === templateId);
+  if (template === undefined) {
+    throw new OpensteerProtocolError(
+      "not-found",
+      `reverse template ${templateId} was not found for ${candidate.id}`,
+    );
+  }
+  return template;
+}
+
 function dedupeStringList(values: readonly string[]): readonly string[] {
   return [...new Set(values)].sort((left, right) => left.localeCompare(right));
+}
+
+function resolveReverseObservedRecord(
+  caseRecord: ReverseCaseRecord,
+  recordId: string,
+): OpensteerReverseObservedRecord {
+  const record = caseRecord.payload.observedRecords.find((entry) => entry.recordId === recordId);
+  if (record === undefined) {
+    throw new OpensteerProtocolError(
+      "not-found",
+      `reverse observed record ${recordId} was not found in case ${caseRecord.id}`,
+    );
+  }
+  return record;
+}
+
+function buildReverseDiscoveryIndex(caseRecord: ReverseCaseRecord): OpensteerReverseDiscoverOutput["index"] {
+  return {
+    views: ["records", "clusters", "candidates"],
+    sortableKeys: [
+      "observed-at",
+      "advisory-rank",
+      "target-hint-matches",
+      "response-richness",
+      "portability",
+      "boundary",
+      "success",
+    ],
+    channels: dedupeStringList(
+      caseRecord.payload.observedRecords.map((entry) => entry.channel.kind),
+    ) as OpensteerReverseDiscoverOutput["index"]["channels"],
+    hosts: dedupeStringList(
+      caseRecord.payload.observedRecords.map((entry) => new URL(entry.channel.url).hostname),
+    ),
+    relationKinds: dedupeStringList(
+      caseRecord.payload.observedRecords.flatMap((entry) => entry.relationKinds),
+    ) as OpensteerReverseDiscoverOutput["index"]["relationKinds"],
+  };
+}
+
+function buildReverseSummaryCounts(
+  caseRecord: ReverseCaseRecord,
+): ReverseReportRecord["payload"]["summaryCounts"] {
+  const hosts: Record<string, number> = {};
+  const channels: Record<string, number> = {};
+  const resourceTypes: Record<string, number> = {};
+  const advisoryTags: Record<string, number> = {};
+  const constraints: Record<string, number> = {};
+  const relationKinds: Record<string, number> = {};
+
+  for (const record of caseRecord.payload.observedRecords) {
+    const host = new URL(record.channel.url).hostname;
+    hosts[host] = (hosts[host] ?? 0) + 1;
+    channels[record.channel.kind] = (channels[record.channel.kind] ?? 0) + 1;
+    if (record.resourceType !== undefined) {
+      resourceTypes[record.resourceType] = (resourceTypes[record.resourceType] ?? 0) + 1;
+    }
+    for (const relationKind of record.relationKinds) {
+      relationKinds[relationKind] = (relationKinds[relationKind] ?? 0) + 1;
+    }
+  }
+
+  for (const candidate of caseRecord.payload.candidates) {
+    for (const tag of candidate.advisoryTags) {
+      advisoryTags[tag] = (advisoryTags[tag] ?? 0) + 1;
+    }
+    for (const constraint of candidate.constraints) {
+      constraints[constraint] = (constraints[constraint] ?? 0) + 1;
+    }
+  }
+
+  return {
+    hosts,
+    channels,
+    resourceTypes,
+    advisoryTags,
+    constraints,
+    relationKinds,
+  };
 }
 
 function buildReverseCandidateRankingReasons(
@@ -8662,10 +9005,15 @@ function buildReverseCandidateRankingReasons(
 ): readonly string[] {
   const reasons = [
     candidate.summary,
-    `${candidate.role} ${candidate.boundary} candidate scored ${candidate.score}`,
-    `${candidate.dependencyClass} dependency class`,
+    `${candidate.boundary} candidate advisory rank ${candidate.signals.advisoryRank}`,
     `${candidate.bodyCodec.kind} body codec`,
   ];
+  if (candidate.advisoryTags.length > 0) {
+    reasons.push(`advisory tags: ${candidate.advisoryTags.join(", ")}`);
+  }
+  if (candidate.constraints.length > 0) {
+    reasons.push(`constraints: ${candidate.constraints.join(", ")}`);
+  }
   if (candidate.matchedTargetHints.length > 0) {
     reasons.push(`matched target hints: ${candidate.matchedTargetHints.join(", ")}`);
   }
@@ -8676,6 +9024,411 @@ function buildReverseCandidateRankingReasons(
     reasons.push(`tracks ${candidate.resolvers.length} resolver(s)`);
   }
   return reasons;
+}
+
+function normalizeReverseQuerySort(sort: OpensteerReverseQuerySort | undefined): {
+  readonly preset?: OpensteerReverseQuerySort["preset"];
+  readonly keys: readonly {
+    readonly key: OpensteerReverseSortKey;
+    readonly direction: "asc" | "desc";
+  }[];
+} {
+  const normalizedKeys =
+    sort?.keys?.map((entry) => ({
+      key: entry.key,
+      direction: entry.direction ?? "desc",
+    })) ?? [];
+  if (normalizedKeys.length > 0) {
+    return {
+      ...(sort?.preset === undefined ? {} : { preset: sort.preset }),
+      keys: normalizedKeys,
+    };
+  }
+  const preset = sort?.preset ?? "observed-at";
+  return {
+    ...(preset === undefined ? {} : { preset }),
+    keys: presetToReverseSortKeys(preset),
+  };
+}
+
+function normalizeReverseQueryLimit(limit: number | undefined): number {
+  if (limit === undefined) {
+    return 20;
+  }
+  return Math.max(1, Math.min(200, Math.trunc(limit)));
+}
+
+function presetToReverseSortKeys(
+  preset: NonNullable<OpensteerReverseQuerySort["preset"]>,
+): readonly {
+  readonly key: OpensteerReverseSortKey;
+  readonly direction: "asc" | "desc";
+}[] {
+  switch (preset) {
+    case "advisory-rank":
+      return [{ key: "advisory-rank", direction: "desc" }];
+    case "portability":
+      return [{ key: "portability", direction: "desc" }];
+    case "first-party":
+      return [{ key: "boundary", direction: "desc" }];
+    case "hint-match":
+      return [{ key: "target-hint-matches", direction: "desc" }];
+    case "response-richness":
+      return [{ key: "response-richness", direction: "desc" }];
+    case "observed-at":
+    default:
+      return [{ key: "observed-at", direction: "desc" }];
+  }
+}
+
+function primaryReverseSortDirection(
+  sort: ReturnType<typeof normalizeReverseQuerySort>,
+): "asc" | "desc" {
+  return sort.keys[0]?.direction ?? "desc";
+}
+
+function reverseCandidateSortValue(
+  candidate: OpensteerReverseCandidateRecord,
+  key: OpensteerReverseSortKey,
+): number {
+  switch (key) {
+    case "observed-at":
+      return candidate.signals.observedAt ?? 0;
+    case "advisory-rank":
+      return candidate.signals.advisoryRank;
+    case "target-hint-matches":
+      return candidate.signals.targetHintMatches;
+    case "response-richness":
+      return candidate.signals.responseRichness;
+    case "portability":
+      return candidate.signals.portabilityWeight;
+    case "boundary":
+      return candidate.signals.boundaryWeight;
+    case "success":
+      return candidate.signals.successfulStatus ? 1 : 0;
+  }
+}
+
+function parseReverseQueryCursor(cursor: string | undefined): number {
+  if (cursor === undefined) {
+    return 0;
+  }
+  const value = Number.parseInt(cursor, 10);
+  return Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function buildReverseQuerySnapshot(input: {
+  readonly view: OpensteerReverseQueryView;
+  readonly filters?: OpensteerReverseQueryFilters;
+  readonly sort: ReturnType<typeof normalizeReverseQuerySort>;
+  readonly limit: number;
+  readonly totalCount: number;
+  readonly offset: number;
+  readonly resultIds: readonly string[];
+}): OpensteerReverseQuerySnapshot {
+  const nextOffset = input.offset + input.resultIds.length;
+  return {
+    view: input.view,
+    ...(input.filters === undefined ? {} : { filters: input.filters }),
+    sort:
+      input.sort.preset === undefined
+        ? { keys: input.sort.keys }
+        : { preset: input.sort.preset, keys: input.sort.keys },
+    limit: input.limit,
+    totalCount: input.totalCount,
+    ...(nextOffset >= input.totalCount ? {} : { nextCursor: String(nextOffset) }),
+    resultIds: input.resultIds,
+  };
+}
+
+function compareReverseCandidates(
+  left: OpensteerReverseCandidateRecord,
+  right: OpensteerReverseCandidateRecord,
+  sort: ReturnType<typeof normalizeReverseQuerySort>,
+): number {
+  for (const entry of sort.keys) {
+    const compare = compareNumbers(
+      reverseCandidateSortValue(left, entry.key),
+      reverseCandidateSortValue(right, entry.key),
+      entry.direction === "asc" ? 1 : -1,
+    );
+    if (compare !== 0) {
+      return compare;
+    }
+  }
+  return left.id.localeCompare(right.id);
+}
+
+function compareReverseObservedRecords(
+  left: OpensteerReverseObservedRecord,
+  right: OpensteerReverseObservedRecord,
+  candidates: readonly OpensteerReverseCandidateRecord[],
+  sort: ReturnType<typeof normalizeReverseQuerySort>,
+): number {
+  const leftCandidate = bestReverseCandidateForRecord(left.recordId, candidates, sort);
+  const rightCandidate = bestReverseCandidateForRecord(right.recordId, candidates, sort);
+  return (
+    compareReverseCandidatesProxy(leftCandidate, rightCandidate, sort) ||
+    compareNumbers(
+      left.observedAt ?? 0,
+      right.observedAt ?? 0,
+      primaryReverseSortDirection(sort) === "asc" ? 1 : -1,
+    ) ||
+    left.recordId.localeCompare(right.recordId)
+  );
+}
+
+function compareReverseClusters(
+  left: OpensteerObservationCluster,
+  right: OpensteerObservationCluster,
+  candidates: readonly OpensteerReverseCandidateRecord[],
+  sort: ReturnType<typeof normalizeReverseQuerySort>,
+): number {
+  const leftCandidate = bestReverseCandidateForCluster(left.id, candidates, sort);
+  const rightCandidate = bestReverseCandidateForCluster(right.id, candidates, sort);
+  return compareReverseCandidatesProxy(leftCandidate, rightCandidate, sort) || left.id.localeCompare(right.id);
+}
+
+function compareReverseCandidatesProxy(
+  left: OpensteerReverseCandidateRecord | undefined,
+  right: OpensteerReverseCandidateRecord | undefined,
+  sort: ReturnType<typeof normalizeReverseQuerySort>,
+): number {
+  if (left === undefined && right === undefined) {
+    return 0;
+  }
+  if (left === undefined) {
+    return 1;
+  }
+  if (right === undefined) {
+    return -1;
+  }
+  return compareReverseCandidates(left, right, sort);
+}
+
+function compareNumbers(left: number, right: number, direction: 1 | -1): number {
+  return direction === 1 ? left - right : right - left;
+}
+
+function bestReverseCandidateForRecord(
+  recordId: string,
+  candidates: readonly OpensteerReverseCandidateRecord[],
+  sort: ReturnType<typeof normalizeReverseQuerySort>,
+): OpensteerReverseCandidateRecord | undefined {
+  return [...candidates]
+    .filter((candidate) => candidate.recordId === recordId)
+    .sort((left, right) => compareReverseCandidates(left, right, sort))[0];
+}
+
+function bestReverseCandidateForCluster(
+  clusterId: string,
+  candidates: readonly OpensteerReverseCandidateRecord[],
+  sort: ReturnType<typeof normalizeReverseQuerySort>,
+): OpensteerReverseCandidateRecord | undefined {
+  return [...candidates]
+    .filter((candidate) => candidate.clusterId === clusterId)
+    .sort((left, right) => compareReverseCandidates(left, right, sort))[0];
+}
+
+function matchesReverseCandidateFilters(
+  candidate: OpensteerReverseCandidateRecord,
+  filters: OpensteerReverseQueryFilters | undefined,
+  context: {
+    readonly observedRecord?: OpensteerReverseObservedRecord;
+    readonly observation?: OpensteerReverseObservationRecord;
+  } = {},
+): boolean {
+  if (filters === undefined) {
+    return true;
+  }
+  if (filters.candidateId !== undefined && candidate.id !== filters.candidateId) {
+    return false;
+  }
+  if (filters.clusterId !== undefined && candidate.clusterId !== filters.clusterId) {
+    return false;
+  }
+  if (filters.recordId !== undefined && candidate.recordId !== filters.recordId) {
+    return false;
+  }
+  if (filters.channel !== undefined && candidate.channel.kind !== filters.channel) {
+    return false;
+  }
+  if (filters.boundary !== undefined && candidate.boundary !== filters.boundary) {
+    return false;
+  }
+  if (filters.advisoryTag !== undefined && !candidate.advisoryTags.includes(filters.advisoryTag)) {
+    return false;
+  }
+  if (filters.constraint !== undefined && !candidate.constraints.includes(filters.constraint)) {
+    return false;
+  }
+  if (filters.bodyCodec !== undefined && candidate.bodyCodec.kind !== filters.bodyCodec) {
+    return false;
+  }
+  if (
+    filters.relationKind !== undefined &&
+    context.observedRecord !== undefined &&
+    !context.observedRecord.relationKinds.includes(filters.relationKind)
+  ) {
+    return false;
+  }
+  if (filters.hasGuards !== undefined && (candidate.guardIds.length > 0) !== filters.hasGuards) {
+    return false;
+  }
+  if (
+    filters.hasResolvers !== undefined &&
+    (candidate.resolvers.length > 0) !== filters.hasResolvers
+  ) {
+    return false;
+  }
+  const url = new URL(candidate.channel.url);
+  if (filters.host !== undefined && url.hostname !== filters.host) {
+    return false;
+  }
+  if (filters.path !== undefined && !url.pathname.includes(filters.path)) {
+    return false;
+  }
+  if (filters.method !== undefined && candidate.channel.method !== filters.method) {
+    return false;
+  }
+  if (filters.status !== undefined) {
+    const matchesStatus = candidate.signals.successfulStatus
+      ? filters.status === "2xx" || filters.status === "200"
+      : true;
+    if (!matchesStatus) {
+      return false;
+    }
+  }
+  if (
+    filters.artifactId !== undefined &&
+    !candidate.scriptArtifactIds.includes(filters.artifactId) &&
+    !candidate.resolvers.some((resolver) => extractReverseResolverArtifactId(resolver) === filters.artifactId)
+  ) {
+    return false;
+  }
+  if (
+    filters.stateSnapshotId !== undefined &&
+    !candidate.resolvers.some(
+      (resolver) =>
+        resolver.valueRef?.kind === "state-snapshot" &&
+        resolver.valueRef.stateSnapshotId === filters.stateSnapshotId,
+    ) &&
+    !(context.observation?.stateSnapshotIds.includes(filters.stateSnapshotId) === true)
+  ) {
+    return false;
+  }
+  if (
+    filters.traceId !== undefined &&
+    !candidate.resolvers.some((resolver) => resolver.traceId === filters.traceId) &&
+    !(context.observation?.interactionTraceIds.includes(filters.traceId) === true)
+  ) {
+    return false;
+  }
+  if (filters.evidenceRef !== undefined) {
+    const matchesEvidence =
+      candidate.id === filters.evidenceRef ||
+      candidate.clusterId === filters.evidenceRef ||
+      candidate.recordId === filters.evidenceRef ||
+      candidate.scriptArtifactIds.includes(filters.evidenceRef) ||
+      candidate.guardIds.includes(filters.evidenceRef) ||
+      candidate.resolvers.some(
+        (resolver) =>
+          resolver.id === filters.evidenceRef ||
+          resolver.traceId === filters.evidenceRef ||
+          extractReverseResolverArtifactId(resolver) === filters.evidenceRef ||
+          extractReverseResolverRecordId(resolver) === filters.evidenceRef,
+      );
+    if (!matchesEvidence) {
+      return false;
+    }
+  }
+  if (filters.text !== undefined) {
+    const haystack = [
+      candidate.summary,
+      candidate.channel.url,
+      candidate.bodyCodec.operationName,
+      ...candidate.matchedTargetHints,
+    ]
+      .filter((value): value is string => typeof value === "string" && value.length > 0)
+      .join("\n")
+      .toLowerCase();
+    if (!haystack.includes(filters.text.toLowerCase())) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function matchesReverseRecordFilters(
+  record: OpensteerReverseObservedRecord,
+  candidates: readonly OpensteerReverseCandidateRecord[],
+  filters: OpensteerReverseQueryFilters | undefined,
+): boolean {
+  if (filters === undefined) {
+    return true;
+  }
+  if (filters.recordId !== undefined && record.recordId !== filters.recordId) {
+    return false;
+  }
+  if (filters.clusterId !== undefined && record.clusterId !== filters.clusterId) {
+    return false;
+  }
+  if (filters.channel !== undefined && record.channel.kind !== filters.channel) {
+    return false;
+  }
+  if (filters.resourceType !== undefined && record.resourceType !== filters.resourceType) {
+    return false;
+  }
+  if (filters.bodyCodec !== undefined && record.bodyCodec.kind !== filters.bodyCodec) {
+    return false;
+  }
+  const url = new URL(record.channel.url);
+  if (filters.host !== undefined && url.hostname !== filters.host) {
+    return false;
+  }
+  if (filters.path !== undefined && !url.pathname.includes(filters.path)) {
+    return false;
+  }
+  if (filters.method !== undefined && record.channel.method !== filters.method) {
+    return false;
+  }
+  if (filters.status !== undefined && String(record.status ?? "") !== filters.status) {
+    return false;
+  }
+  const relatedCandidates = candidates.filter((candidate) => candidate.recordId === record.recordId);
+  return relatedCandidates.length === 0
+    ? true
+    : relatedCandidates.some((candidate) => matchesReverseCandidateFilters(candidate, filters));
+}
+
+function matchesReverseClusterFilters(
+  cluster: OpensteerObservationCluster,
+  candidates: readonly OpensteerReverseCandidateRecord[],
+  filters: OpensteerReverseQueryFilters | undefined,
+): boolean {
+  if (filters === undefined) {
+    return true;
+  }
+  if (filters.clusterId !== undefined && cluster.id !== filters.clusterId) {
+    return false;
+  }
+  if (filters.channel !== undefined && cluster.channel !== filters.channel) {
+    return false;
+  }
+  const url = new URL(cluster.url);
+  if (filters.host !== undefined && url.hostname !== filters.host) {
+    return false;
+  }
+  if (filters.path !== undefined && !url.pathname.includes(filters.path)) {
+    return false;
+  }
+  if (filters.method !== undefined && cluster.method !== filters.method) {
+    return false;
+  }
+  const relatedCandidates = candidates.filter((candidate) => candidate.clusterId === cluster.id);
+  return relatedCandidates.length === 0
+    ? true
+    : relatedCandidates.some((candidate) => matchesReverseCandidateFilters(candidate, filters));
 }
 
 function toReverseRawRequestBodyInput(
@@ -8716,87 +9469,6 @@ function toReverseRawRequestBodyInput(
   };
 }
 
-function normalizeReversePackageOperationInput(
-  input: unknown,
-  bindings: ReadonlyMap<string, unknown>,
-  resolverValues: ReadonlyMap<string, unknown>,
-): unknown {
-  const normalized = resolveReversePackageReference(input, bindings, resolverValues);
-  if (Array.isArray(normalized)) {
-    return normalized.map((entry) =>
-      normalizeReversePackageOperationInput(entry, bindings, resolverValues),
-    );
-  }
-  if (normalized === null || typeof normalized !== "object") {
-    return normalized;
-  }
-  const next = Object.fromEntries(
-    Object.entries(normalized).map(([key, value]) => [
-      key,
-      normalizeReversePackageOperationInput(value, bindings, resolverValues),
-    ]),
-  );
-  return next;
-}
-
-function resolveReversePackageReference(
-  value: unknown,
-  bindings: ReadonlyMap<string, unknown>,
-  resolverValues: ReadonlyMap<string, unknown>,
-): unknown {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return value;
-  }
-  const bindingName =
-    typeof (value as { readonly $binding?: unknown }).$binding === "string"
-      ? (value as { readonly $binding: string }).$binding
-      : undefined;
-  const resolverId =
-    typeof (value as { readonly $resolver?: unknown }).$resolver === "string"
-      ? (value as { readonly $resolver: string }).$resolver
-      : undefined;
-  const pointer =
-    typeof (value as { readonly pointer?: unknown }).pointer === "string"
-      ? (value as { readonly pointer: string }).pointer
-      : undefined;
-  if (bindingName !== undefined) {
-    return extractReverseRuntimeValue(bindings.get(bindingName), pointer);
-  }
-  if (resolverId !== undefined) {
-    return extractReverseRuntimeValue(resolverValues.get(resolverId), pointer);
-  }
-  return value;
-}
-
-function withReverseOperationPageRef(value: unknown, pageRef: PageRef): unknown {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return value;
-  }
-  if ("pageRef" in value) {
-    return value;
-  }
-  return {
-    ...(value as Record<string, unknown>),
-    pageRef,
-  };
-}
-
-function looksLikeExecutablePageResolverExpression(expression: string): boolean {
-  const normalized = expression.trim();
-  return (
-    normalized.startsWith("window.") ||
-    normalized.startsWith("document.") ||
-    normalized.startsWith("globalThis.") ||
-    normalized.startsWith("location.") ||
-    normalized.startsWith("navigator.") ||
-    normalized.startsWith("(") ||
-    normalized.startsWith("[") ||
-    normalized.startsWith("{") ||
-    normalized.startsWith("function") ||
-    normalized.includes("=>")
-  );
-}
-
 function extractReverseRuntimeValue(value: unknown, pointer: string | undefined): unknown {
   if (pointer === undefined || pointer.length === 0) {
     return value;
@@ -8832,15 +9504,83 @@ function readDotPath(value: unknown, path: string): unknown {
   return current;
 }
 
+function resolveReversePackageRuntimeValue(
+  packageRecord: ReversePackageRecord,
+  pageRef: PageRef,
+  runtimeKey: OpensteerValueReference["runtimeKey"] | undefined,
+): unknown {
+  switch (runtimeKey) {
+    case "pageRef":
+      return pageRef;
+    case "packageId":
+      return packageRecord.id;
+    case "caseId":
+      return packageRecord.payload.caseId;
+    case "candidateId":
+      return packageRecord.payload.candidateId;
+    case "objective":
+      return packageRecord.payload.objective;
+    case undefined:
+      return undefined;
+  }
+}
+
+function matchesReverseAwaitRecordFilter(
+  record: NetworkQueryRecord,
+  filter: {
+    readonly channel?: OpensteerReverseCandidateRecord["channel"]["kind"];
+    readonly method?: string;
+    readonly url?: string;
+    readonly host?: string;
+    readonly path?: string;
+    readonly status?: number;
+    readonly text?: string;
+  },
+): boolean {
+  if (filter.channel !== undefined && buildChannelDescriptor(record).kind !== filter.channel) {
+    return false;
+  }
+  if (filter.method !== undefined && record.record.method !== filter.method) {
+    return false;
+  }
+  if (filter.url !== undefined && record.record.url !== filter.url) {
+    return false;
+  }
+  const parsedUrl = new URL(record.record.url);
+  if (filter.host !== undefined && parsedUrl.hostname !== filter.host) {
+    return false;
+  }
+  if (filter.path !== undefined && !parsedUrl.pathname.includes(filter.path)) {
+    return false;
+  }
+  if (filter.status !== undefined && record.record.status !== filter.status) {
+    return false;
+  }
+  if (filter.text !== undefined) {
+    const haystack = [
+      record.record.url,
+      decodeProtocolBody(record.record.requestBody) ?? "",
+      decodeProtocolBody(record.record.responseBody) ?? "",
+    ]
+      .join("\n")
+      .toLowerCase();
+    if (!haystack.includes(filter.text.toLowerCase())) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function resolveReverseCookieResolverValue(
   snapshots: readonly OpensteerStateSnapshot[],
   resolver: OpensteerExecutableResolver,
 ): string | undefined {
+  const scopedSnapshots = filterSnapshotsForResolver(snapshots, resolver);
   const cookieName = resolver.inputNames?.[0];
   if (cookieName === undefined) {
     return undefined;
   }
-  for (const snapshot of [...snapshots].sort((left, right) => right.capturedAt - left.capturedAt)) {
+  for (const snapshot of [...scopedSnapshots].sort((left, right) => right.capturedAt - left.capturedAt)) {
     const match = snapshot.cookies?.find((cookie) => cookie.name === cookieName);
     if (match !== undefined) {
       return match.value;
@@ -8853,22 +9593,23 @@ function resolveReverseStorageResolverValue(
   snapshots: readonly OpensteerStateSnapshot[],
   resolver: OpensteerExecutableResolver,
 ): unknown {
+  const scopedSnapshots = filterSnapshotsForResolver(snapshots, resolver);
   const storageView = {
-    origins: snapshots.flatMap((snapshot) => snapshot.storage?.origins ?? []),
-    sessionStorage: snapshots.flatMap((snapshot) => snapshot.storage?.sessionStorage ?? []),
-    hiddenFields: snapshots.flatMap((snapshot) => snapshot.hiddenFields ?? []),
-    globals: snapshots
+    origins: scopedSnapshots.flatMap((snapshot) => snapshot.storage?.origins ?? []),
+    sessionStorage: scopedSnapshots.flatMap((snapshot) => snapshot.storage?.sessionStorage ?? []),
+    hiddenFields: scopedSnapshots.flatMap((snapshot) => snapshot.hiddenFields ?? []),
+    globals: scopedSnapshots
       .map((snapshot) => snapshot.globals)
       .filter((value): value is Record<string, unknown> => value !== undefined),
   };
-  if (resolver.pointer !== undefined) {
-    return extractReverseRuntimeValue(storageView, resolver.pointer);
+  if (resolver.valueRef?.pointer !== undefined) {
+    return extractReverseRuntimeValue(storageView, resolver.valueRef.pointer);
   }
   const inputName = resolver.inputNames?.[0];
   if (inputName === undefined) {
     return undefined;
   }
-  for (const snapshot of [...snapshots].sort((left, right) => right.capturedAt - left.capturedAt)) {
+  for (const snapshot of [...scopedSnapshots].sort((left, right) => right.capturedAt - left.capturedAt)) {
     for (const origin of snapshot.storage?.origins ?? []) {
       const entry = origin.localStorage.find((item) => item.key === inputName);
       if (entry !== undefined) {
@@ -8883,6 +9624,28 @@ function resolveReverseStorageResolverValue(
     }
   }
   return undefined;
+}
+
+function filterSnapshotsForResolver(
+  snapshots: readonly OpensteerStateSnapshot[],
+  resolver: OpensteerExecutableResolver,
+): readonly OpensteerStateSnapshot[] {
+  if (resolver.valueRef?.stateSnapshotId === undefined) {
+    return snapshots;
+  }
+  return snapshots.filter((snapshot) => snapshot.id === resolver.valueRef?.stateSnapshotId);
+}
+
+function extractReverseResolverArtifactId(
+  resolver: OpensteerExecutableResolver,
+): string | undefined {
+  return resolver.valueRef?.kind === "artifact" ? resolver.valueRef.artifactId : undefined;
+}
+
+function extractReverseResolverRecordId(
+  resolver: OpensteerExecutableResolver,
+): string | undefined {
+  return resolver.valueRef?.kind === "record" ? resolver.valueRef.recordId : undefined;
 }
 
 function extractReverseRecordId(value: unknown): string | undefined {
@@ -8916,17 +9679,30 @@ function extractReverseStatus(value: unknown): number | undefined {
   return undefined;
 }
 
+function serializeReverseBindings(
+  bindings: ReadonlyMap<string, unknown>,
+): Readonly<Record<string, JsonValue>> {
+  const entries = [...bindings.entries()].map(([key, value]) => [key, toCanonicalJsonValue(value)]);
+  return Object.fromEntries(entries);
+}
+
 function evaluateReversePackageAssertion(
   boundValue: unknown,
-  channelKind: OpensteerReverseCandidateRecord["channel"]["kind"],
+  channelKind: NonNullable<OpensteerReversePackageRunOutput["channel"]>,
   validators: readonly OpensteerValidationRule[],
   fallbackRecordId?: string,
   fallbackStatus?: number,
+  executedStepIds: readonly string[] = [],
+  bindings: Readonly<Record<string, JsonValue>> = {},
+  failedStepId?: string,
 ): {
   readonly success: boolean;
+  readonly executedStepIds: readonly string[];
+  readonly failedStepId?: string;
+  readonly bindings?: Readonly<Record<string, JsonValue>>;
   readonly recordId?: string;
   readonly status?: number;
-  readonly validation: OpensteerReverseReplayOutput["validation"];
+  readonly validation: OpensteerReversePackageRunOutput["validation"];
   readonly error?: string;
 } {
   if (isNetworkQueryRecordValue(boundValue)) {
@@ -8935,6 +9711,8 @@ function evaluateReversePackageAssertion(
         const evaluation = evaluateValidationRulesForObservedRecord(boundValue, validators);
         return {
           ...evaluation,
+          executedStepIds,
+          bindings,
           recordId: boundValue.recordId,
           ...(boundValue.record.status === undefined ? {} : { status: boundValue.record.status }),
         };
@@ -8954,6 +9732,8 @@ function evaluateReversePackageAssertion(
         );
         return {
           ...evaluation,
+          executedStepIds,
+          bindings,
           recordId: boundValue.recordId,
           ...(boundValue.record.status === undefined ? {} : { status: boundValue.record.status }),
         };
@@ -8968,6 +9748,8 @@ function evaluateReversePackageAssertion(
         );
         return {
           ...evaluation,
+          executedStepIds,
+          bindings,
           recordId: boundValue.recordId,
           ...(boundValue.record.status === undefined ? {} : { status: boundValue.record.status }),
         };
@@ -8981,6 +9763,8 @@ function evaluateReversePackageAssertion(
         const evaluation = evaluateValidationRulesForHttpResponse(boundValue.response, validators);
         return {
           ...evaluation,
+          executedStepIds,
+          bindings,
           recordId: boundValue.recordId,
           status: boundValue.response.status,
         };
@@ -8998,6 +9782,8 @@ function evaluateReversePackageAssertion(
         );
         return {
           ...evaluation,
+          executedStepIds,
+          bindings,
           recordId: boundValue.recordId,
           status: boundValue.response.status,
         };
@@ -9005,6 +9791,9 @@ function evaluateReversePackageAssertion(
       case "websocket":
         return {
           success: false,
+          executedStepIds,
+          ...(failedStepId === undefined ? {} : { failedStepId }),
+          bindings,
           ...(fallbackRecordId === undefined ? {} : { recordId: fallbackRecordId }),
           ...(fallbackStatus === undefined ? {} : { status: fallbackStatus }),
           validation: {},
@@ -9032,6 +9821,8 @@ function evaluateReversePackageAssertion(
     );
     return {
       ...evaluation,
+      executedStepIds,
+      bindings,
       ...(fallbackRecordId === undefined ? {} : { recordId: fallbackRecordId }),
       ...(fallbackStatus === undefined ? {} : { status: fallbackStatus }),
     };
@@ -9039,6 +9830,9 @@ function evaluateReversePackageAssertion(
 
   return {
     success: false,
+    executedStepIds,
+    ...(failedStepId === undefined ? {} : { failedStepId }),
+    bindings,
     ...(fallbackRecordId === undefined ? {} : { recordId: fallbackRecordId }),
     ...(fallbackStatus === undefined ? {} : { status: fallbackStatus }),
     validation: {},

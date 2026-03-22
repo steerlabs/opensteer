@@ -458,7 +458,7 @@ async function main(argv: readonly string[]): Promise<void> {
       return;
     }
 
-    case "reverse.solve": {
+    case "reverse.discover": {
       const runtime = await resolveCliSemanticRuntime(
         sessionOptions,
         resolveCliExecutionMode(options),
@@ -488,9 +488,7 @@ async function main(argv: readonly string[]): Promise<void> {
         ["allow", "avoid", "require"] as const,
         "--manual-calibration",
       );
-      const candidateLimit = readOptionalNumber(options.candidateLimit);
-      const maxReplayAttempts = readOptionalNumber(options.maxReplayAttempts);
-      const result = await runtime.solveReverse({
+      const result = await runtime.discoverReverse({
         ...(caseId === undefined ? {} : { caseId }),
         ...(key === undefined ? {} : { key }),
         ...(objective === undefined ? {} : { objective }),
@@ -523,24 +521,64 @@ async function main(argv: readonly string[]): Promise<void> {
             }),
         ...(captureWindowMs === undefined ? {} : { captureWindowMs }),
         ...(manualCalibration === undefined ? {} : { manualCalibration }),
-        ...(candidateLimit === undefined ? {} : { candidateLimit }),
-        ...(maxReplayAttempts === undefined ? {} : { maxReplayAttempts }),
       });
       await writeJsonOutput(result, readOptionalString(options.output));
       return;
     }
 
-    case "reverse.replay": {
+    case "reverse.query": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const caseId = readOptionalString(options.caseId);
+      if (!caseId) {
+        throw new Error("reverse query requires --case-id");
+      }
+      const view = readOptionalEnum(
+        options.view,
+        ["records", "clusters", "candidates"] as const,
+        "--view",
+      );
+      const filtersJson = readOptionalJsonObject(options.filtersJson, "--filters-json");
+      const sortPreset = readOptionalEnum(
+        options.sortPreset,
+        ["advisory-rank", "observed-at", "portability", "first-party", "hint-match", "response-richness"] as const,
+        "--sort-preset",
+      );
+      const sortJson = readOptionalJsonObject(options.sortJson, "--sort-json");
+      if (sortJson !== undefined && sortPreset !== undefined) {
+        throw new Error("reverse query accepts either --sort-json or --sort-preset, not both");
+      }
+      const limit = readOptionalNumber(options.limit);
+      const cursor = readOptionalString(options.cursor);
+      const result = await runtime.queryReverse({
+        caseId,
+        ...(view === undefined ? {} : { view }),
+        ...(filtersJson === undefined ? {} : { filters: filtersJson }),
+        ...(sortJson !== undefined
+          ? { sort: sortJson }
+          : sortPreset === undefined
+            ? {}
+            : { sort: { preset: sortPreset } }),
+        ...(limit === undefined ? {} : { limit }),
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "reverse.package.run": {
       const runtime = await resolveCliSemanticRuntime(
         sessionOptions,
         resolveCliExecutionMode(options),
       );
       const packageId = readOptionalString(options.packageId);
       if (!packageId) {
-        throw new Error("reverse replay requires --package-id");
+        throw new Error("reverse package run requires --package-id");
       }
       const pageRef = readOptionalPageRef(options.pageRef, "--page-ref");
-      const result = await runtime.replayReverse({
+      const result = await runtime.runReversePackage({
         packageId,
         ...(pageRef === undefined ? {} : { pageRef }),
       });
@@ -575,12 +613,56 @@ async function main(argv: readonly string[]): Promise<void> {
       );
       const packageId = readOptionalString(options.packageId);
       const reportId = readOptionalString(options.reportId);
-      if (!packageId && !reportId) {
-        throw new Error("reverse report requires --package-id or --report-id");
+      const caseId = readOptionalString(options.caseId);
+      const kind = readOptionalEnum(
+        options.kind,
+        ["discovery", "package"] as const,
+        "--kind",
+      );
+      if (!packageId && !reportId && !caseId) {
+        throw new Error("reverse report requires --package-id, --case-id, or --report-id");
       }
       const result = await runtime.getReverseReport({
         ...(packageId === undefined ? {} : { packageId }),
+        ...(caseId === undefined ? {} : { caseId }),
         ...(reportId === undefined ? {} : { reportId }),
+        ...(kind === undefined ? {} : { kind }),
+      });
+      await writeJsonOutput(result, readOptionalString(options.output));
+      return;
+    }
+
+    case "reverse.package.create": {
+      const runtime = await resolveCliSemanticRuntime(
+        sessionOptions,
+        resolveCliExecutionMode(options),
+      );
+      const caseId = readOptionalString(options.caseId);
+      const candidateId = readOptionalString(options.candidateId);
+      const recordId = readOptionalString(options.recordId);
+      if (!caseId || (!candidateId && !recordId)) {
+        throw new Error("reverse package create requires --case-id and either --candidate-id or --record-id");
+      }
+      const templateId = readOptionalString(options.templateId);
+      const key = readOptionalString(options.key);
+      const version = readOptionalString(options.version);
+      const notes = readOptionalString(options.notes);
+      const source =
+        candidateId !== undefined
+          ? { kind: "candidate" as const, id: candidateId }
+          : recordId !== undefined
+            ? { kind: "record" as const, id: recordId }
+            : undefined;
+      if (source === undefined) {
+        throw new Error("reverse package create requires --case-id and either --candidate-id or --record-id");
+      }
+      const result = await runtime.createReversePackage({
+        caseId,
+        source,
+        ...(templateId === undefined ? {} : { templateId }),
+        ...(key === undefined ? {} : { key }),
+        ...(version === undefined ? {} : { version }),
+        ...(notes === undefined ? {} : { notes }),
       });
       await writeJsonOutput(result, readOptionalString(options.output));
       return;
@@ -639,8 +721,6 @@ async function main(argv: readonly string[]): Promise<void> {
       const key = readOptionalString(options.key);
       const version = readOptionalString(options.version);
       const notes = readOptionalString(options.notes);
-      const candidateId = readOptionalString(options.candidateId);
-      const strategyId = readOptionalString(options.strategyId);
       const workflowJson = readOptionalJsonArray(options.workflowJson, "--workflow-json");
       const resolversJson = readOptionalJsonArray(options.resolversJson, "--resolvers-json");
       const validatorsJson = readOptionalJsonArray(options.validatorsJson, "--validators-json");
@@ -653,8 +733,6 @@ async function main(argv: readonly string[]): Promise<void> {
         ...(key === undefined ? {} : { key }),
         ...(version === undefined ? {} : { version }),
         ...(notes === undefined ? {} : { notes }),
-        ...(candidateId === undefined ? {} : { candidateId }),
-        ...(strategyId === undefined ? {} : { strategyId }),
         ...(workflowJson === undefined
           ? {}
           : { workflow: parseReverseWorkflowSteps(workflowJson, "--workflow-json") }),
@@ -1856,9 +1934,15 @@ function readOptionalJson(value: unknown): unknown {
   return value;
 }
 
-function readOptionalJsonObject(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+function readOptionalJsonObject(
+  value: unknown,
+  label = "JSON value",
+): Record<string, unknown> | undefined {
+  if (value === undefined) {
     return undefined;
+  }
+  if (typeof value !== "object" || Array.isArray(value) || value === null) {
+    throw new Error(`${label} must be a JSON object`);
   }
   return value as Record<string, unknown>;
 }

@@ -1373,6 +1373,45 @@ test("does not crash when a page closes with network capture work still in fligh
   }
 });
 
+test("does not crash when a session closes with network capture work still in flight", async () => {
+  const engine = await createPlaywrightBrowserCoreEngine({
+    launch: { headless: true },
+  });
+  const uncaughtErrors: unknown[] = [];
+  const handleUncaughtException = (error: unknown) => {
+    uncaughtErrors.push(error);
+  };
+  const handleUnhandledRejection = (reason: unknown) => {
+    uncaughtErrors.push(reason);
+  };
+
+  process.on("uncaughtException", handleUncaughtException);
+  process.on("unhandledRejection", handleUnhandledRejection);
+
+  try {
+    const sessionRef = await engine.createSession();
+    const created = await engine.createPage({
+      sessionRef,
+      url: `${baseUrl}/network-on-close`,
+    });
+
+    await engine.mouseClick({
+      pageRef: created.data.pageRef,
+      point: createPoint(40, 40),
+      coordinateSpace: "layout-viewport-css",
+    });
+    await wait(150);
+    await engine.closeSession({ sessionRef });
+    await wait(500);
+
+    expect(uncaughtErrors).toEqual([]);
+  } finally {
+    process.off("uncaughtException", handleUncaughtException);
+    process.off("unhandledRejection", handleUnhandledRejection);
+    await engine.dispose();
+  }
+});
+
 test("computer-use bridge renders annotation and cursor overlays", async () => {
   const engine = await createPlaywrightBrowserCoreEngine({
     launch: { headless: true },

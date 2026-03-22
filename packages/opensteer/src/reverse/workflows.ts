@@ -1,8 +1,8 @@
 import type {
-  JsonValue,
   OpensteerExecutableResolver,
-  OpensteerReplayStrategy,
+  OpensteerReverseAdvisoryTemplate,
   OpensteerReverseCandidateRecord,
+  OpensteerReverseConstraintKind,
   OpensteerReverseGuardRecord,
   OpensteerReverseManualCalibrationMode,
   OpensteerReverseObservationRecord,
@@ -13,27 +13,27 @@ import type {
   OpensteerReverseSuggestedEdit,
   OpensteerReverseWorkflowStep,
   OpensteerStateSourceKind,
+  OpensteerValueReference,
+  OpensteerValueTemplate,
   OpensteerValidationRule,
 } from "@opensteer/protocol";
 
 export function buildReversePackageWorkflow(input: {
-  readonly candidate?: OpensteerReverseCandidateRecord;
-  readonly strategy?: OpensteerReplayStrategy;
+  readonly candidate: OpensteerReverseCandidateRecord;
+  readonly template?: OpensteerReverseAdvisoryTemplate;
   readonly observation?: OpensteerReverseObservationRecord;
   readonly guards: readonly OpensteerReverseGuardRecord[];
   readonly validators: readonly OpensteerValidationRule[];
-  readonly executeStepInput?: JsonValue;
+  readonly executeStepInput?: OpensteerValueTemplate;
 }): readonly OpensteerReverseWorkflowStep[] {
-  const candidate = input.candidate;
-  const strategy = input.strategy;
-  if (candidate === undefined || strategy === undefined) {
+  if (input.template === undefined && input.executeStepInput === undefined) {
     return [];
   }
 
   const steps: OpensteerReverseWorkflowStep[] = [];
-  if (strategy.execution === "page-observation" && input.observation?.url !== undefined) {
+  if (input.template?.execution === "page-observation" && input.observation?.url !== undefined) {
     steps.push({
-      id: `workflow:goto:${candidate.id}`,
+      id: `workflow:goto:${input.candidate.id}`,
       kind: "operation",
       label: `Open ${input.observation.url}`,
       operation: "page.goto",
@@ -41,7 +41,7 @@ export function buildReversePackageWorkflow(input: {
     });
   }
 
-  for (const guardId of strategy.guardIds) {
+  for (const guardId of input.template?.guardIds ?? input.candidate.guardIds) {
     const guard = input.guards.find((entry) => entry.id === guardId);
     if (guard?.interactionTraceId === undefined) {
       continue;
@@ -53,26 +53,27 @@ export function buildReversePackageWorkflow(input: {
       operation: "interaction.replay",
       input: {
         traceId: guard.interactionTraceId,
+        pageRef: runtimeValueRef("pageRef"),
       },
       bindAs: `trace:${guard.id}`,
     });
   }
 
-  if (strategy.execution === "page-observation") {
+  if (input.template?.execution === "page-observation") {
     steps.push({
-      id: `workflow:await:${candidate.id}`,
+      id: `workflow:await:${input.candidate.id}`,
       kind: "await-record",
-      label: `Wait for ${candidate.channel.url}`,
-      channel: candidate.channel,
-      recordId: candidate.recordId,
+      label: `Wait for ${input.candidate.channel.url}`,
+      channel: input.candidate.channel,
+      recordId: input.candidate.recordId,
       validationRuleIds: input.validators.map((validator) => validator.id),
       bindAs: "observed-record",
     });
   } else if (input.executeStepInput !== undefined) {
     steps.push({
-      id: `workflow:execute:${candidate.id}`,
+      id: `workflow:execute:${input.candidate.id}`,
       kind: "operation",
-      label: `Execute ${candidate.channel.kind} replay`,
+      label: `Execute ${input.candidate.channel.kind} replay`,
       operation: "request.raw",
       input: input.executeStepInput,
       bindAs: "channel-response",
@@ -80,29 +81,34 @@ export function buildReversePackageWorkflow(input: {
   }
 
   steps.push({
-    id: `workflow:assert:${candidate.id}`,
+    id: `workflow:assert:${input.candidate.id}`,
     kind: "assert",
     label: "Validate replay result against captured success",
     validationRuleIds: input.validators.map((validator) => validator.id),
-    binding: strategy.execution === "page-observation" ? "observed-record" : "channel-response",
+    binding: input.template?.execution === "page-observation" ? "observed-record" : "channel-response",
   });
+
   return steps;
 }
 
 export function buildReversePackageRequirements(input: {
   readonly stateSource: OpensteerStateSourceKind;
-  readonly strategy?: OpensteerReplayStrategy;
+  readonly template?: OpensteerReverseAdvisoryTemplate;
   readonly candidate?: OpensteerReverseCandidateRecord;
   readonly manualCalibration?: OpensteerReverseManualCalibrationMode;
 }): OpensteerReversePackageRequirements {
   const stateSources = dedupeStateSources([
     input.stateSource,
-    ...(input.strategy === undefined ? [] : [input.strategy.stateSource]),
+    ...(input.template === undefined ? [] : [input.template.stateSource]),
   ]);
   return {
     requiresBrowser:
-      input.strategy?.requiresBrowser ?? input.candidate?.dependencyClass !== "portable",
-    requiresLiveState: input.strategy?.requiresLiveState ?? false,
+      input.template?.requiresBrowser ??
+      ((input.candidate?.guardIds.length !== 0) ||
+        input.candidate?.resolvers.some((resolver) => resolver.requiresBrowser) === true),
+    requiresLiveState:
+      input.template?.requiresLiveState ??
+      (input.candidate?.resolvers.some((resolver) => resolver.requiresLiveState) === true),
     manualCalibration: classifyManualCalibrationRequirement(
       input.candidate,
       input.manualCalibration,
@@ -113,20 +119,35 @@ export function buildReversePackageRequirements(input: {
 
 export function deriveReversePackageKind(input: {
   readonly candidate?: OpensteerReverseCandidateRecord;
-  readonly strategy?: OpensteerReplayStrategy;
+  readonly template?: OpensteerReverseAdvisoryTemplate;
+  readonly workflow?: readonly OpensteerReverseWorkflowStep[];
+  readonly resolvers?: readonly OpensteerExecutableResolver[];
+  readonly stateSnapshots?: readonly { readonly id: string }[];
 }): OpensteerReversePackageKind {
-  if (input.strategy?.execution === "page-observation") {
+  if (input.template?.execution === "page-observation") {
     return "browser-workflow";
   }
-  if (input.candidate?.dependencyClass === "portable") {
-    return "portable-http";
+  if (workflowUsesBrowser(input.workflow ?? [])) {
+    return "browser-workflow";
   }
-  return "browser-workflow";
+  if ((input.resolvers ?? []).some((resolver) => resolver.requiresBrowser)) {
+    return "browser-workflow";
+  }
+  if (
+    (input.stateSnapshots?.length ?? 0) > 0 &&
+    input.candidate !== undefined &&
+    !isPortableCandidate(input.candidate)
+  ) {
+    return "browser-workflow";
+  }
+  return input.candidate !== undefined && isPortableCandidate(input.candidate)
+    ? "portable-http"
+    : "browser-workflow";
 }
 
 export function deriveReversePackageUnresolvedRequirements(input: {
   readonly candidate?: OpensteerReverseCandidateRecord;
-  readonly strategy?: OpensteerReplayStrategy;
+  readonly template?: OpensteerReverseAdvisoryTemplate;
   readonly workflow: readonly OpensteerReverseWorkflowStep[];
   readonly resolvers: readonly OpensteerExecutableResolver[];
   readonly guards: readonly OpensteerReverseGuardRecord[];
@@ -145,7 +166,7 @@ export function deriveReversePackageUnresolvedRequirements(input: {
     return requirements;
   }
 
-  if (input.candidate.dependencyClass === "blocked") {
+  if (input.candidate.constraints.includes("unsupported")) {
     requirements.push({
       id: `requirement:unsupported:${input.candidate.id}`,
       kind: "unsupported",
@@ -158,28 +179,28 @@ export function deriveReversePackageUnresolvedRequirements(input: {
     });
   }
 
-  if (input.strategy === undefined) {
-    requirements.push({
-      id: `requirement:no-strategy:${input.candidate.id}`,
-      kind: "workflow-step",
-      status: "required",
-      label: "No replay strategy is attached",
-      description: "Pick or author a strategy before replay can run.",
-      blocking: true,
-      recordId: input.candidate.recordId,
-    });
-  } else if (!input.strategy.supported) {
-    requirements.push({
-      id: `requirement:strategy:${input.strategy.id}`,
-      kind: input.candidate.dependencyClass === "blocked" ? "unsupported" : "channel",
-      status: "required",
-      label: input.strategy.failureReason ?? "Strategy is not runnable as generated",
-      ...(input.strategy.failureReason === undefined
-        ? {}
-        : { description: input.strategy.failureReason }),
-      blocking: true,
-      recordId: input.candidate.recordId,
-    });
+  if (input.template !== undefined) {
+    if (input.template.viability === "unsupported") {
+      requirements.push({
+        id: `requirement:template:${input.template.id}`,
+        kind: "unsupported",
+        status: "required",
+        label: input.template.notes ?? "Template is unsupported as generated",
+        ...(input.template.notes === undefined ? {} : { description: input.template.notes }),
+        blocking: true,
+        recordId: input.candidate.recordId,
+      });
+    } else if (input.template.viability === "draft") {
+      requirements.push({
+        id: `requirement:template:${input.template.id}`,
+        kind: "workflow-step",
+        status: "recommended",
+        label: input.template.notes ?? "Template needs agent edits before replay",
+        ...(input.template.notes === undefined ? {} : { description: input.template.notes }),
+        blocking: false,
+        recordId: input.candidate.recordId,
+      });
+    }
   }
 
   if (input.workflow.length === 0) {
@@ -195,9 +216,44 @@ export function deriveReversePackageUnresolvedRequirements(input: {
   }
 
   const referencedResolverIds = collectReferencedResolverIds(input.workflow);
-  const requireAllResolvers = input.strategy?.execution !== "page-observation";
+  const requiredResolverIds =
+    input.template === undefined
+      ? new Set(referencedResolverIds)
+      : new Set(input.template.resolverIds);
+  for (const resolver of input.resolvers) {
+    if (input.template !== undefined && !requiredResolverIds.has(resolver.id)) {
+      continue;
+    }
+    if (
+      input.template === undefined &&
+      requiredResolverIds.size > 0 &&
+      !requiredResolverIds.has(resolver.id)
+    ) {
+      continue;
+    }
+    if (resolver.status === "ready") {
+      continue;
+    }
+    const artifactId = extractResolverArtifactId(resolver);
+    const recordId = extractResolverRecordId(resolver);
+    requirements.push({
+      id: `requirement:resolver:${resolver.id}`,
+      kind: "resolver",
+      status: "required",
+      label: resolver.label,
+      description:
+        resolver.description ?? "Provide a resolver value or binding before replay can run.",
+      blocking: true,
+      resolverId: resolver.id,
+      ...(resolver.inputNames === undefined ? {} : { inputNames: resolver.inputNames }),
+      ...(resolver.traceId === undefined ? {} : { traceId: resolver.traceId }),
+      ...(artifactId === undefined ? {} : { artifactId }),
+      ...(recordId === undefined ? {} : { recordId }),
+    });
+  }
 
-  for (const guardId of input.candidate.guardIds ?? []) {
+  const requiredGuardIds = new Set(input.template?.guardIds ?? input.candidate.guardIds);
+  for (const guardId of requiredGuardIds) {
     const guard = input.guards.find((entry) => entry.id === guardId);
     if (guard?.status === "satisfied") {
       continue;
@@ -216,39 +272,14 @@ export function deriveReversePackageUnresolvedRequirements(input: {
     });
   }
 
-  for (const resolver of input.resolvers) {
-    if (!requireAllResolvers && !referencedResolverIds.has(resolver.id)) {
-      continue;
-    }
-    if (resolver.status === "ready") {
-      continue;
-    }
-    requirements.push({
-      id: `requirement:resolver:${resolver.id}`,
-      kind: "resolver",
-      status: "required",
-      label: resolver.label,
-      description:
-        resolver.description ?? "Provide a resolver value or binding before replay can run.",
-      blocking: true,
-      resolverId: resolver.id,
-      ...(resolver.inputNames === undefined ? {} : { inputNames: resolver.inputNames }),
-      ...(resolver.traceId === undefined ? {} : { traceId: resolver.traceId }),
-      ...(resolver.artifactId === undefined && resolver.scriptArtifactId === undefined
-        ? {}
-        : { artifactId: resolver.artifactId ?? resolver.scriptArtifactId }),
-      ...(resolver.sourceRecordId === undefined ? {} : { recordId: resolver.sourceRecordId }),
-    });
-  }
-
-  if (input.strategy?.requiresLiveState === true && input.stateSource !== "attach-live") {
+  if (input.template?.requiresLiveState === true && input.stateSource !== "attach-live") {
     requirements.push({
       id: `requirement:state:${input.candidate.id}`,
       kind: "state",
       status: "recommended",
       label: "Live browser state may still be required",
       description:
-        "Replay strategy expects live state. Consider using attach-live or patching the package to reacquire the state.",
+        "Template expects live state. Consider using attach-live or patching the package to reacquire the state.",
       blocking: false,
       recordId: input.candidate.recordId,
     });
@@ -352,7 +383,7 @@ export function cloneReversePackageResolvers(
   return resolvers.map((resolver) => ({
     ...resolver,
     ...(resolver.inputNames === undefined ? {} : { inputNames: [...resolver.inputNames] }),
-    ...(resolver.value === undefined ? {} : { value: resolver.value }),
+    ...(resolver.valueRef === undefined ? {} : { valueRef: cloneValueReference(resolver.valueRef) }),
   }));
 }
 
@@ -363,10 +394,13 @@ function classifyManualCalibrationRequirement(
   if (manualCalibration === "require") {
     return "required";
   }
-  if (candidate?.dependencyClass === "behavior-gated") {
+  if (candidate?.constraints.includes("requires-guard")) {
     return manualCalibration === "avoid" ? "recommended" : "required";
   }
-  if (candidate?.dependencyClass === "anti-bot" || candidate?.dependencyClass === "script-signed") {
+  if (
+    candidate?.constraints.includes("requires-live-state") ||
+    candidate?.constraints.includes("requires-script")
+  ) {
     return "recommended";
   }
   return "not-needed";
@@ -401,16 +435,71 @@ function visitResolverReferences(value: unknown, resolverIds: Set<string>): void
   if (value === null || typeof value !== "object") {
     return;
   }
-  const resolverId =
-    typeof (value as { readonly $resolver?: unknown }).$resolver === "string"
-      ? (value as { readonly $resolver: string }).$resolver
+  const ref =
+    "$ref" in (value as Record<string, unknown>) &&
+    (value as { readonly $ref?: unknown }).$ref !== undefined &&
+    (value as { readonly $ref?: unknown }).$ref !== null &&
+    typeof (value as { readonly $ref?: unknown }).$ref === "object"
+      ? ((value as { readonly $ref: unknown }).$ref as Record<string, unknown>)
       : undefined;
-  if (resolverId !== undefined) {
-    resolverIds.add(resolverId);
+  const referencedResolverId =
+    ref?.kind === "resolver" && typeof ref.resolverId === "string" ? ref.resolverId : undefined;
+  if (referencedResolverId !== undefined) {
+    resolverIds.add(referencedResolverId);
   }
   for (const entry of Object.values(value as Record<string, unknown>)) {
     visitResolverReferences(entry, resolverIds);
   }
+}
+
+function runtimeValueRef(
+  runtimeKey: NonNullable<OpensteerValueReference["runtimeKey"]>,
+): OpensteerValueTemplate {
+  return {
+    $ref: {
+      kind: "runtime",
+      runtimeKey,
+    },
+  };
+}
+
+function workflowUsesBrowser(workflow: readonly OpensteerReverseWorkflowStep[]): boolean {
+  return workflow.some((step) => {
+    if (step.kind === "await-record") {
+      return true;
+    }
+    if (step.kind !== "operation") {
+      return false;
+    }
+    return step.operation.startsWith("page.") || step.operation.startsWith("dom.") || step.operation.startsWith("interaction.") || step.operation === "computer.execute" || step.operation === "captcha.solve";
+  });
+}
+
+function isPortableCandidate(candidate: OpensteerReverseCandidateRecord): boolean {
+  return (
+    !candidate.constraints.includes("requires-browser") &&
+    !candidate.constraints.includes("requires-cookie") &&
+    !candidate.constraints.includes("requires-storage") &&
+    !candidate.constraints.includes("requires-script") &&
+    !candidate.constraints.includes("requires-guard") &&
+    !candidate.constraints.includes("requires-live-state") &&
+    !candidate.constraints.includes("unsupported")
+  );
+}
+
+function extractResolverArtifactId(resolver: OpensteerExecutableResolver): string | undefined {
+  return resolver.valueRef?.kind === "artifact" ? resolver.valueRef.artifactId : undefined;
+}
+
+function extractResolverRecordId(resolver: OpensteerExecutableResolver): string | undefined {
+  return resolver.valueRef?.kind === "record" ? resolver.valueRef.recordId : undefined;
+}
+
+function cloneValueReference(valueRef: OpensteerValueReference): OpensteerValueReference {
+  return {
+    ...valueRef,
+    ...(valueRef.value === undefined ? {} : { value: valueRef.value }),
+  };
 }
 
 function dedupeRequirements(

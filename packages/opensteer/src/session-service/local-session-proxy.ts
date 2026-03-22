@@ -75,18 +75,22 @@ import type {
   OpensteerScriptSandboxOutput,
   OpensteerReverseExportInput,
   OpensteerReverseExportOutput,
+  OpensteerReverseDiscoverInput,
+  OpensteerReverseDiscoverOutput,
+  OpensteerReverseQueryInput,
+  OpensteerReverseQueryOutput,
+  OpensteerReversePackageCreateInput,
+  OpensteerReversePackageCreateOutput,
   OpensteerReversePackageGetInput,
   OpensteerReversePackageGetOutput,
   OpensteerReversePackageListInput,
   OpensteerReversePackageListOutput,
   OpensteerReversePackagePatchInput,
   OpensteerReversePackagePatchOutput,
-  OpensteerReverseReplayInput,
-  OpensteerReverseReplayOutput,
+  OpensteerReversePackageRunInput,
+  OpensteerReversePackageRunOutput,
   OpensteerReverseReportInput,
   OpensteerReverseReportOutput,
-  OpensteerReverseSolveInput,
-  OpensteerReverseSolveOutput,
   OpensteerSessionCloseOutput,
   OpensteerSessionOpenInput,
   OpensteerSessionOpenOutput,
@@ -202,12 +206,26 @@ export class LocalOpensteerSessionProxy implements OpensteerDisconnectableRuntim
     return (await this.ensureClient()).invoke("network.probe", input);
   }
 
-  async solveReverse(input: OpensteerReverseSolveInput): Promise<OpensteerReverseSolveOutput> {
-    return (await this.ensureClient()).invoke("reverse.solve", input);
+  async discoverReverse(
+    input: OpensteerReverseDiscoverInput,
+  ): Promise<OpensteerReverseDiscoverOutput> {
+    return (await this.ensureClient()).invoke("reverse.discover", input);
   }
 
-  async replayReverse(input: OpensteerReverseReplayInput): Promise<OpensteerReverseReplayOutput> {
-    return (await this.ensureClient()).invoke("reverse.replay", input);
+  async queryReverse(input: OpensteerReverseQueryInput): Promise<OpensteerReverseQueryOutput> {
+    return (await this.ensureClient()).invoke("reverse.query", input);
+  }
+
+  async createReversePackage(
+    input: OpensteerReversePackageCreateInput,
+  ): Promise<OpensteerReversePackageCreateOutput> {
+    return (await this.ensureClient()).invoke("reverse.package.create", input);
+  }
+
+  async runReversePackage(
+    input: OpensteerReversePackageRunInput,
+  ): Promise<OpensteerReversePackageRunOutput> {
+    return (await this.ensureClient()).invoke("reverse.package.run", input);
   }
 
   async exportReverse(input: OpensteerReverseExportInput): Promise<OpensteerReverseExportOutput> {
