@@ -50,7 +50,11 @@ export function shouldIgnoreBackgroundTaskError(
   controller: PageController,
   error: unknown,
 ): boolean {
-  return controller.lifecycleState === "closed" || isContextClosedError(error);
+  return (
+    controller.lifecycleState === "closed" ||
+    controller.explicitCloseInFlight ||
+    isContextClosedError(error)
+  );
 }
 
 export function isNodeLookupFailure(error: unknown): boolean {

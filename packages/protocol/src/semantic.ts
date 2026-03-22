@@ -146,18 +146,28 @@ import {
 import {
   opensteerReverseExportInputSchema,
   opensteerReverseExportOutputSchema,
+  opensteerReverseDiscoverInputSchema,
+  opensteerReverseDiscoverOutputSchema,
+  opensteerReverseQueryInputSchema,
+  opensteerReverseQueryOutputSchema,
+  opensteerReversePackageCreateInputSchema,
+  opensteerReversePackageCreateOutputSchema,
   opensteerReversePackageGetInputSchema,
   opensteerReversePackageGetOutputSchema,
   opensteerReversePackageListInputSchema,
   opensteerReversePackageListOutputSchema,
   opensteerReversePackagePatchInputSchema,
   opensteerReversePackagePatchOutputSchema,
-  opensteerReverseReplayInputSchema,
-  opensteerReverseReplayOutputSchema,
+  opensteerReversePackageRunInputSchema,
+  opensteerReversePackageRunOutputSchema,
   opensteerReverseReportInputSchema,
   opensteerReverseReportOutputSchema,
-  opensteerReverseSolveInputSchema,
-  opensteerReverseSolveOutputSchema,
+  type OpensteerReverseDiscoverInput,
+  type OpensteerReverseDiscoverOutput,
+  type OpensteerReverseQueryInput,
+  type OpensteerReverseQueryOutput,
+  type OpensteerReversePackageCreateInput,
+  type OpensteerReversePackageCreateOutput,
   type OpensteerReverseExportInput,
   type OpensteerReverseExportOutput,
   type OpensteerReversePackageGetInput,
@@ -166,12 +176,10 @@ import {
   type OpensteerReversePackageListOutput,
   type OpensteerReversePackagePatchInput,
   type OpensteerReversePackagePatchOutput,
-  type OpensteerReverseReplayInput,
-  type OpensteerReverseReplayOutput,
+  type OpensteerReversePackageRunInput,
+  type OpensteerReversePackageRunOutput,
   type OpensteerReverseReportInput,
   type OpensteerReverseReportOutput,
-  type OpensteerReverseSolveInput,
-  type OpensteerReverseSolveOutput,
 } from "./reverse.js";
 import {
   opensteerInteractionCaptureInputSchema,
@@ -637,8 +645,10 @@ export const opensteerSemanticOperationNames = [
   "network.minimize",
   "network.diff",
   "network.probe",
-  "reverse.solve",
-  "reverse.replay",
+  "reverse.discover",
+  "reverse.query",
+  "reverse.package.create",
+  "reverse.package.run",
   "reverse.export",
   "reverse.report",
   "reverse.package.get",
@@ -682,6 +692,7 @@ export interface OpensteerSemanticOperationSpec<TInput = unknown, TOutput = unkn
   readonly inputSchema: JsonSchema;
   readonly outputSchema: JsonSchema;
   readonly requiredCapabilities: readonly OpensteerCapability[];
+  readonly packageRunnable?: boolean;
   resolveRequiredCapabilities?(input: TInput): readonly OpensteerCapability[];
 }
 
@@ -699,6 +710,43 @@ function defineSemanticOperationSpec<TInput, TOutput>(
 ): OpensteerSemanticOperationSpec<TInput, TOutput> {
   return spec;
 }
+
+const opensteerPackageRunnableSemanticOperationNames = new Set<OpensteerSemanticOperationName>([
+  "page.list",
+  "page.new",
+  "page.activate",
+  "page.close",
+  "page.goto",
+  "page.evaluate",
+  "page.add-init-script",
+  "page.snapshot",
+  "dom.click",
+  "dom.hover",
+  "dom.input",
+  "dom.scroll",
+  "dom.extract",
+  "network.query",
+  "network.save",
+  "network.clear",
+  "network.minimize",
+  "network.diff",
+  "network.probe",
+  "interaction.capture",
+  "interaction.get",
+  "interaction.diff",
+  "interaction.replay",
+  "artifact.read",
+  "inspect.cookies",
+  "inspect.storage",
+  "scripts.capture",
+  "scripts.beautify",
+  "scripts.deobfuscate",
+  "scripts.sandbox",
+  "captcha.solve",
+  "request.raw",
+  "request.execute",
+  "computer.execute",
+]);
 
 function resolveTransportRequiredCapabilities(
   transport: TransportKind | undefined,
@@ -1600,7 +1648,7 @@ export function assertValidSemanticOperationInput(
   );
 }
 
-export const opensteerSemanticOperationSpecifications = [
+const opensteerSemanticOperationSpecificationsBase = [
   defineSemanticOperationSpec<OpensteerSessionOpenInput, OpensteerSessionOpenOutput>({
     name: "session.open",
     description: "Open or resume the current Opensteer session and primary page.",
@@ -1765,20 +1813,39 @@ export const opensteerSemanticOperationSpecifications = [
     outputSchema: opensteerTransportProbeOutputSchema,
     requiredCapabilities: [],
   }),
-  defineSemanticOperationSpec<OpensteerReverseSolveInput, OpensteerReverseSolveOutput>({
-    name: "reverse.solve",
+  defineSemanticOperationSpec<OpensteerReverseDiscoverInput, OpensteerReverseDiscoverOutput>({
+    name: "reverse.discover",
     description:
-      "Solve a browser-driven reverse-engineering target end to end by capturing evidence, ranking candidates, replaying strategies, and emitting a default runnable package.",
-    inputSchema: opensteerReverseSolveInputSchema,
-    outputSchema: opensteerReverseSolveOutputSchema,
+      "Capture and index a bounded reverse-engineering observation window, then return the case handle, summary, report id, and query metadata only.",
+    inputSchema: opensteerReverseDiscoverInputSchema,
+    outputSchema: opensteerReverseDiscoverOutputSchema,
     requiredCapabilities: [],
   }),
-  defineSemanticOperationSpec<OpensteerReverseReplayInput, OpensteerReverseReplayOutput>({
-    name: "reverse.replay",
+  defineSemanticOperationSpec<OpensteerReverseQueryInput, OpensteerReverseQueryOutput>({
+    name: "reverse.query",
     description:
-      "Replay a solved reverse-engineering package through its required state, guard, and channel execution phases.",
-    inputSchema: opensteerReverseReplayInputSchema,
-    outputSchema: opensteerReverseReplayOutputSchema,
+      "Query a cached reverse case with deterministic filters and explicit sort keys or preset shortcuts over records, clusters, or candidates.",
+    inputSchema: opensteerReverseQueryInputSchema,
+    outputSchema: opensteerReverseQueryOutputSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<
+    OpensteerReversePackageCreateInput,
+    OpensteerReversePackageCreateOutput
+  >({
+    name: "reverse.package.create",
+    description:
+      "Create an explicit reverse package draft from a chosen observed record or advisory candidate, with an optional advisory template.",
+    inputSchema: opensteerReversePackageCreateInputSchema,
+    outputSchema: opensteerReversePackageCreateOutputSchema,
+    requiredCapabilities: [],
+  }),
+  defineSemanticOperationSpec<OpensteerReversePackageRunInput, OpensteerReversePackageRunOutput>({
+    name: "reverse.package.run",
+    description:
+      "Run a reverse package draft through its operation, await-record, and assertion steps, returning executed bindings and first failure details.",
+    inputSchema: opensteerReversePackageRunInputSchema,
+    outputSchema: opensteerReversePackageRunOutputSchema,
     requiredCapabilities: [],
   }),
   defineSemanticOperationSpec<OpensteerReverseExportInput, OpensteerReverseExportOutput>({
@@ -1792,7 +1859,7 @@ export const opensteerSemanticOperationSpecifications = [
   defineSemanticOperationSpec<OpensteerReverseReportInput, OpensteerReverseReportOutput>({
     name: "reverse.report",
     description:
-      "Read the reverse-engineering report for a package, including ranked candidates, evidence links, replay attempts, and package suggestions.",
+      "Read an evidence-centered discovery report or a draft-centered package report, including linked evidence, replay attempts, and advisory suggestions.",
     inputSchema: opensteerReverseReportInputSchema,
     outputSchema: opensteerReverseReportOutputSchema,
     requiredCapabilities: [],
@@ -2068,6 +2135,12 @@ export const opensteerSemanticOperationSpecifications = [
     requiredCapabilities: ["sessions.manage"],
   }),
 ] as const satisfies readonly OpensteerSemanticOperationSpec[];
+
+export const opensteerSemanticOperationSpecifications =
+  opensteerSemanticOperationSpecificationsBase.map((spec) => ({
+    ...spec,
+    packageRunnable: opensteerPackageRunnableSemanticOperationNames.has(spec.name),
+  })) as readonly OpensteerSemanticOperationSpec[];
 
 export const opensteerSemanticOperationSpecificationMap = Object.fromEntries(
   opensteerSemanticOperationSpecifications.map((spec) => [spec.name, spec]),

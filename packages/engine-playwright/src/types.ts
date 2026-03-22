@@ -28,6 +28,7 @@ export interface SessionState {
   initialPage: Page | undefined;
   readonly closeContextOnSessionClose: boolean;
   activePageRef: PageRef | undefined;
+  lifecycleState: "open" | "closing" | "closed";
 }
 
 export interface PendingPageRegistration {

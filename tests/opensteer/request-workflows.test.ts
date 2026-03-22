@@ -1312,11 +1312,11 @@ describe("Phase 10 request workflows", () => {
     }
   }, 60_000);
 
-  test("reverse.solve emits a runnable portable package with report and export artifacts", async () => {
+  test("reverse discovery and package build emit runnable portable packages with report and export artifacts", async () => {
     const rootDir = await createPhase6TemporaryRoot();
     const baseUrl = requireFixtureServer().url;
     const opensteer = new Opensteer({
-      name: "phase10-reverse-solve",
+      name: "phase10-reverse-discover",
       rootDir,
       browser: {
         headless: true,
@@ -1334,17 +1334,91 @@ describe("Phase 10 request workflows", () => {
         }),
       ).resolves.toBeDefined();
 
-      const solved = await opensteer.reverseSolve({
+      const discovered = await opensteer.reverseDiscover({
         objective: "Reverse engineer phase10 route target",
         network: {
           path: "/phase10/api/route-data",
           includeBodies: true,
         },
       });
-      expect(solved.package.payload.kind).toBe("portable-http");
-      expect(solved.package.payload.readiness).toBe("runnable");
-      expect(solved.package.payload.requestPlanId).toEqual(expect.any(String));
-      expect(solved.package.payload.workflow).toEqual(
+      expect(discovered.summary.candidateCount).toBeGreaterThan(0);
+      expect(discovered.index.views).toEqual(
+        expect.arrayContaining(["records", "clusters", "candidates"]),
+      );
+
+      const recordPage = await opensteer.reverseQuery({
+        caseId: discovered.caseId,
+        view: "records",
+        filters: {
+          path: "/phase10/api/route-data",
+        },
+      });
+      const record = recordPage.records?.[0]?.record;
+      expect(record).toBeDefined();
+      if (record === undefined) {
+        throw new Error("expected reverse query to return a route-data record");
+      }
+
+      const candidatePage = await opensteer.reverseQuery({
+        caseId: discovered.caseId,
+        view: "candidates",
+        filters: {
+          path: "/phase10/api/route-data",
+        },
+      });
+      const candidate = candidatePage.candidates?.[0]?.candidate;
+      expect(candidate).toBeDefined();
+      if (candidate === undefined) {
+        throw new Error("expected reverse query to return a route-data candidate");
+      }
+
+      const neutralPackage = await opensteer.createReversePackage({
+        caseId: discovered.caseId,
+        source: {
+          kind: "record",
+          id: record.recordId,
+        },
+      });
+      expect(neutralPackage.package.payload.readiness).toBe("draft");
+      expect(neutralPackage.package.payload.source).toEqual({
+        kind: "record",
+        id: record.recordId,
+      });
+      expect(neutralPackage.package.payload.templateId).toBeUndefined();
+      expect(neutralPackage.package.payload.workflow).toEqual([]);
+      expect(neutralPackage.package.payload.unresolvedRequirements).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: expect.stringContaining("requirement:workflow:"),
+          }),
+        ]),
+      );
+
+      const template = candidate.advisoryTemplates.find(
+        (entry) => entry.transport === "direct-http" && entry.viability === "ready",
+      );
+      expect(template).toBeDefined();
+      if (template === undefined) {
+        throw new Error("expected a runnable direct-http template");
+      }
+
+      const built = await opensteer.createReversePackage({
+        caseId: discovered.caseId,
+        source: {
+          kind: "candidate",
+          id: candidate.id,
+        },
+        templateId: template.id,
+      });
+      expect(built.package.payload.kind).toBe("portable-http");
+      expect(built.package.payload.readiness).toBe("runnable");
+      expect(built.package.payload.source).toEqual({
+        kind: "candidate",
+        id: candidate.id,
+      });
+      expect(built.package.payload.templateId).toBe(template.id);
+      expect(built.package.payload.requestPlanId).toBeUndefined();
+      expect(built.package.payload.workflow).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             kind: "operation",
@@ -1355,71 +1429,82 @@ describe("Phase 10 request workflows", () => {
           }),
         ]),
       );
-      expect(solved.package.payload.validators).toEqual(
+      expect(built.package.payload.validators).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             kind: "status",
           }),
         ]),
       );
-      expect(solved.report.payload.packageId).toBe(solved.package.id);
-      expect(solved.report.payload.packageKind).toBe("portable-http");
-      expect(solved.report.payload.candidateRankings[0]?.candidateId).toBe(
-        solved.report.payload.chosenCandidateId,
-      );
+      expect(built.report.payload.kind).toBe("package");
+      expect(built.report.payload.packageId).toBe(built.package.id);
+      expect(built.report.payload.packageKind).toBe("portable-http");
       const fetchedPackage = await opensteer.getReversePackage({
-        packageId: solved.package.id,
+        packageId: built.package.id,
       });
-      expect(fetchedPackage.package.id).toBe(solved.package.id);
+      expect(fetchedPackage.package.id).toBe(built.package.id);
       const listedPackages = await opensteer.listReversePackages({
-        caseId: solved.caseId,
+        caseId: discovered.caseId,
       });
-      expect(listedPackages.packages.map((entry) => entry.id)).toContain(solved.package.id);
+      expect(listedPackages.packages.map((entry) => entry.id)).toContain(built.package.id);
       const patchedPackage = await opensteer.patchReversePackage({
-        packageId: solved.package.id,
+        packageId: built.package.id,
         notes: "patched portable package",
       });
-      expect(patchedPackage.package.id).not.toBe(solved.package.id);
-      expect(patchedPackage.package.payload.parentPackageId).toBe(solved.package.id);
+      expect(patchedPackage.package.id).not.toBe(built.package.id);
+      expect(patchedPackage.package.payload.parentPackageId).toBe(built.package.id);
       expect(patchedPackage.package.payload.notes).toBe("patched portable package");
+      expect(patchedPackage.package.payload.source).toEqual(built.package.payload.source);
+      expect(patchedPackage.package.payload.templateId).toBe(built.package.payload.templateId);
       expect(patchedPackage.report.payload.packageId).toBe(patchedPackage.package.id);
 
-      const replayed = await opensteer.reverseReplay({
-        packageId: solved.package.id,
+      const replayed = await opensteer.runReversePackage({
+        packageId: built.package.id,
       });
       expect(replayed.success).toBe(true);
       expect(replayed.kind).toBe("portable-http");
       expect(replayed.status).toBe(200);
+
+      const discoveryReport = await opensteer.reverseReport({
+        caseId: discovered.caseId,
+        kind: "discovery",
+      });
+      expect(discoveryReport.report.id).toBe(discovered.reportId);
+      expect(discoveryReport.report.payload.kind).toBe("discovery");
+
+      const exported = await opensteer.reverseExport({
+        packageId: built.package.id,
+      });
+      expect(exported.package.id).not.toBe(built.package.id);
+      expect(exported.package.payload.parentPackageId).toBeUndefined();
+      expect(exported.package.payload.source).toEqual(built.package.payload.source);
+      expect(exported.package.payload.templateId).toBe(built.package.payload.templateId);
+      expect(exported.requestPlan?.id).toBe(exported.package.payload.requestPlanId);
 
       const root = await createFilesystemOpensteerRoot({
         rootPath: path.join(rootDir, ".opensteer"),
       });
       const caseRecordPath = await findRegistryRecordPathById(
         root.registry.reverseCases.recordsDirectory,
-        solved.caseId,
+        discovered.caseId,
       );
       expect(caseRecordPath).toBeDefined();
       if (caseRecordPath === undefined) {
-        throw new Error(`expected reverse case record ${solved.caseId} to exist`);
+        throw new Error(`expected reverse case record ${discovered.caseId} to exist`);
       }
       await unlink(caseRecordPath);
 
-      const replayedFromStandalonePackage = await opensteer.reverseReplay({
-        packageId: solved.package.id,
+      const replayedFromStandalonePackage = await opensteer.runReversePackage({
+        packageId: built.package.id,
       });
       expect(replayedFromStandalonePackage.success).toBe(true);
       expect(replayedFromStandalonePackage.kind).toBe("portable-http");
 
-      const exported = await opensteer.reverseExport({
-        packageId: solved.package.id,
-      });
-      expect(exported.package.id).toBe(solved.package.id);
-      expect(exported.requestPlan?.id).toBe(solved.package.payload.requestPlanId);
-
       const report = await opensteer.reverseReport({
-        packageId: solved.package.id,
+        packageId: built.package.id,
       });
-      expect(report.report.id).toBe(solved.report.id);
+      expect(report.report.payload.kind).toBe("package");
+      expect(report.report.payload.packageId).toBe(built.package.id);
       expect(report.report.payload.replayRuns.length).toBeGreaterThan(0);
     } finally {
       await opensteer.close().catch(() => undefined);
@@ -1448,7 +1533,7 @@ describe("Phase 10 request workflows", () => {
         }),
       ).resolves.toBeDefined();
 
-      const solved = await solvingOpensteer.reverseSolve({
+      const discovered = await solvingOpensteer.reverseDiscover({
         objective: "Reverse engineer phase10 stateful replay",
         targetHints: {
           paths: ["/phase10/api/stateful-replay"],
@@ -1458,11 +1543,42 @@ describe("Phase 10 request workflows", () => {
           includeBodies: true,
         },
       });
+      const queried = await solvingOpensteer.reverseQuery({
+        caseId: discovered.caseId,
+        view: "candidates",
+        filters: {
+          path: "/phase10/api/stateful-replay",
+        },
+      });
+      const candidate = queried.candidates?.find((entry) =>
+        entry.candidate.channel.url.includes("/phase10/api/stateful-replay"),
+      )?.candidate;
+      expect(candidate).toBeDefined();
+      if (candidate === undefined) {
+        throw new Error("expected a stateful replay candidate");
+      }
 
-      expect(solved.package.payload.kind).toBe("browser-workflow");
-      expect(solved.package.payload.readiness).toBe("runnable");
-      expect(solved.package.payload.stateSnapshots.length).toBeGreaterThan(0);
-      expect(solved.package.payload.stateSnapshots[0]?.cookies).toEqual(
+      const template = candidate.advisoryTemplates.find(
+        (entry) => entry.execution === "page-observation" && entry.viability === "ready",
+      );
+      expect(template).toBeDefined();
+      if (template === undefined) {
+        throw new Error("expected a runnable page-observation template");
+      }
+
+      const built = await solvingOpensteer.createReversePackage({
+        caseId: discovered.caseId,
+        source: {
+          kind: "candidate",
+          id: candidate.id,
+        },
+        templateId: template.id,
+      });
+
+      expect(built.package.payload.kind).toBe("browser-workflow");
+      expect(built.package.payload.readiness).toBe("runnable");
+      expect(built.package.payload.stateSnapshots.length).toBeGreaterThan(0);
+      expect(built.package.payload.stateSnapshots[0]?.cookies).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             name: "phase10-state",
@@ -1470,7 +1586,7 @@ describe("Phase 10 request workflows", () => {
           }),
         ]),
       );
-      expect(solved.package.payload.stateSnapshots[0]?.storage?.origins).toEqual(
+      expect(built.package.payload.stateSnapshots[0]?.storage?.origins).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             origin: baseUrl,
@@ -1491,11 +1607,11 @@ describe("Phase 10 request workflows", () => {
       });
       const caseRecordPath = await findRegistryRecordPathById(
         root.registry.reverseCases.recordsDirectory,
-        solved.caseId,
+        discovered.caseId,
       );
       expect(caseRecordPath).toBeDefined();
       if (caseRecordPath === undefined) {
-        throw new Error(`expected reverse case record ${solved.caseId} to exist`);
+        throw new Error(`expected reverse case record ${discovered.caseId} to exist`);
       }
       await unlink(caseRecordPath);
 
@@ -1509,8 +1625,8 @@ describe("Phase 10 request workflows", () => {
 
       try {
         await replayOpensteer.open();
-        const replayed = await replayOpensteer.reverseReplay({
-          packageId: solved.package.id,
+        const replayed = await replayOpensteer.runReversePackage({
+          packageId: built.package.id,
         });
         expect(replayed.success).toBe(true);
         expect(replayed.kind).toBe("browser-workflow");

@@ -69,18 +69,22 @@ import type {
   OpensteerScriptSandboxOutput,
   OpensteerReverseExportInput,
   OpensteerReverseExportOutput,
+  OpensteerReverseDiscoverInput,
+  OpensteerReverseDiscoverOutput,
+  OpensteerReverseQueryInput,
+  OpensteerReverseQueryOutput,
+  OpensteerReversePackageCreateInput,
+  OpensteerReversePackageCreateOutput,
   OpensteerReversePackageGetInput,
   OpensteerReversePackageGetOutput,
   OpensteerReversePackageListInput,
   OpensteerReversePackageListOutput,
   OpensteerReversePackagePatchInput,
   OpensteerReversePackagePatchOutput,
-  OpensteerReverseReplayInput,
-  OpensteerReverseReplayOutput,
+  OpensteerReversePackageRunInput,
+  OpensteerReversePackageRunOutput,
   OpensteerReverseReportInput,
   OpensteerReverseReportOutput,
-  OpensteerReverseSolveInput,
-  OpensteerReverseSolveOutput,
   OpensteerSessionCloseOutput,
   OpensteerSessionOpenInput,
   OpensteerSessionOpenOutput,
@@ -159,10 +163,14 @@ export type OpensteerNetworkDiffOptions = OpensteerNetworkDiffInput;
 export type OpensteerNetworkDiffResult = OpensteerNetworkDiffOutput;
 export type OpensteerNetworkProbeOptions = OpensteerTransportProbeInput;
 export type OpensteerNetworkProbeResult = OpensteerTransportProbeOutput;
-export type OpensteerReverseSolveOptions = OpensteerReverseSolveInput;
-export type OpensteerReverseSolveResult = OpensteerReverseSolveOutput;
-export type OpensteerReverseReplayOptions = OpensteerReverseReplayInput;
-export type OpensteerReverseReplayResult = OpensteerReverseReplayOutput;
+export type OpensteerReverseDiscoverOptions = OpensteerReverseDiscoverInput;
+export type OpensteerReverseDiscoverResult = OpensteerReverseDiscoverOutput;
+export type OpensteerReverseQueryOptions = OpensteerReverseQueryInput;
+export type OpensteerReverseQueryResult = OpensteerReverseQueryOutput;
+export type OpensteerReversePackageCreateOptions = OpensteerReversePackageCreateInput;
+export type OpensteerReversePackageCreateResult = OpensteerReversePackageCreateOutput;
+export type OpensteerReversePackageRunOptions = OpensteerReversePackageRunInput;
+export type OpensteerReversePackageRunResult = OpensteerReversePackageRunOutput;
 export type OpensteerReverseExportOptions = OpensteerReverseExportInput;
 export type OpensteerReverseExportResult = OpensteerReverseExportOutput;
 export type OpensteerReverseReportOptions = OpensteerReverseReportInput;
@@ -415,14 +423,26 @@ export class Opensteer {
     return this.runtime.probeNetwork(input);
   }
 
-  async reverseSolve(
-    input: OpensteerReverseSolveOptions = {},
-  ): Promise<OpensteerReverseSolveResult> {
-    return this.runtime.solveReverse(input);
+  async reverseDiscover(
+    input: OpensteerReverseDiscoverOptions = {},
+  ): Promise<OpensteerReverseDiscoverResult> {
+    return this.runtime.discoverReverse(input);
   }
 
-  async reverseReplay(input: OpensteerReverseReplayOptions): Promise<OpensteerReverseReplayResult> {
-    return this.runtime.replayReverse(input);
+  async reverseQuery(input: OpensteerReverseQueryOptions): Promise<OpensteerReverseQueryResult> {
+    return this.runtime.queryReverse(input);
+  }
+
+  async createReversePackage(
+    input: OpensteerReversePackageCreateOptions,
+  ): Promise<OpensteerReversePackageCreateResult> {
+    return this.runtime.createReversePackage(input);
+  }
+
+  async runReversePackage(
+    input: OpensteerReversePackageRunOptions,
+  ): Promise<OpensteerReversePackageRunResult> {
+    return this.runtime.runReversePackage(input);
   }
 
   async reverseExport(input: OpensteerReverseExportOptions): Promise<OpensteerReverseExportResult> {

@@ -37,21 +37,27 @@ export type OpensteerReverseManualCalibrationMode = "allow" | "avoid" | "require
 
 export type OpensteerReverseCandidateBoundary = "first-party" | "same-site" | "third-party";
 
-export type OpensteerReverseCandidateRole =
-  | "primary-data"
-  | "facet-data"
+export type OpensteerReverseAdvisoryTag =
+  | "data"
+  | "facet"
   | "telemetry"
   | "subscription"
   | "navigation"
+  | "document"
+  | "route-data"
+  | "search"
+  | "tracking"
   | "unknown";
 
-export type OpensteerReverseCandidateDependencyClass =
-  | "portable"
-  | "browser-state"
-  | "script-signed"
-  | "behavior-gated"
-  | "anti-bot"
-  | "blocked";
+export type OpensteerReverseConstraintKind =
+  | "requires-browser"
+  | "requires-cookie"
+  | "requires-storage"
+  | "requires-script"
+  | "requires-guard"
+  | "requires-live-state"
+  | "opaque-body"
+  | "unsupported";
 
 export type OpensteerRequestInputLocation = "path" | "query" | "header" | "cookie" | "body-field";
 
@@ -74,11 +80,40 @@ export type OpensteerRequestInputMaterializationPolicy = "copy" | "omit" | "reco
 
 export type OpensteerRequestInputExportPolicy = "portable" | "browser-bound" | "blocked";
 
-export type OpensteerReplayStrategyExecution = "transport" | "page-observation";
+export type OpensteerReverseQueryView = "records" | "clusters" | "candidates";
+
+export type OpensteerReverseSortKey =
+  | "observed-at"
+  | "advisory-rank"
+  | "target-hint-matches"
+  | "response-richness"
+  | "portability"
+  | "boundary"
+  | "success";
+
+export type OpensteerReverseSortPreset =
+  | "advisory-rank"
+  | "observed-at"
+  | "portability"
+  | "first-party"
+  | "hint-match"
+  | "response-richness";
+
+export type OpensteerReverseSortDirection = "asc" | "desc";
+
+export type OpensteerObservationClusterRelationshipKind =
+  | "seed"
+  | "preflight"
+  | "redirect"
+  | "retry"
+  | "duplicate"
+  | "follow-on";
 
 export type OpensteerReversePackageKind = "portable-http" | "browser-workflow";
 
 export type OpensteerReversePackageReadiness = "runnable" | "draft" | "unsupported";
+
+export type OpensteerReverseReportKind = "discovery" | "package";
 
 export type OpensteerBodyCodecKind =
   | "json"
@@ -97,12 +132,33 @@ export type OpensteerExecutableResolverKind =
   | "literal"
   | "cookie"
   | "storage"
-  | "prior-response"
-  | "page-eval"
-  | "script-sandbox"
-  | "guard-output"
+  | "prior-record"
+  | "binding"
+  | "candidate"
+  | "case"
+  | "state-snapshot"
+  | "artifact"
   | "manual"
   | "runtime-managed";
+
+export type OpensteerValueReferenceKind =
+  | "literal"
+  | "resolver"
+  | "binding"
+  | "candidate"
+  | "case"
+  | "record"
+  | "artifact"
+  | "state-snapshot"
+  | "runtime"
+  | "manual";
+
+export type OpensteerRuntimeValueKey =
+  | "pageRef"
+  | "packageId"
+  | "caseId"
+  | "candidateId"
+  | "objective";
 
 export type OpensteerValidationRuleKind =
   | "status"
@@ -133,6 +189,33 @@ export type OpensteerReverseSuggestedEditKind =
   | "inspect-evidence"
   | "mark-unsupported";
 
+export interface OpensteerValueReference {
+  readonly kind: OpensteerValueReferenceKind;
+  readonly pointer?: string;
+  readonly resolverId?: string;
+  readonly binding?: string;
+  readonly recordId?: string;
+  readonly artifactId?: string;
+  readonly stateSnapshotId?: string;
+  readonly runtimeKey?: OpensteerRuntimeValueKey;
+  readonly value?: JsonValue;
+  readonly placeholder?: string;
+}
+
+export interface OpensteerValueReferenceEnvelope {
+  readonly $ref: OpensteerValueReference;
+}
+
+export interface OpensteerValueTemplateObject {
+  readonly [key: string]: OpensteerValueTemplate;
+}
+
+export type OpensteerValueTemplate =
+  | JsonValue
+  | OpensteerValueReferenceEnvelope
+  | OpensteerValueTemplateObject
+  | readonly OpensteerValueTemplate[];
+
 export interface OpensteerReverseTargetHints {
   readonly hosts?: readonly string[];
   readonly paths?: readonly string[];
@@ -154,10 +237,17 @@ export interface OpensteerObservationCluster {
   readonly channel: OpensteerReverseChannelKind;
   readonly method?: string;
   readonly url: string;
-  readonly primaryRecordId: string;
-  readonly recordIds: readonly string[];
-  readonly suppressedRecordIds: readonly string[];
-  readonly suppressionReasons: readonly string[];
+  readonly matchedTargetHints: readonly string[];
+  readonly members: readonly OpensteerObservationClusterMember[];
+}
+
+export interface OpensteerObservationClusterMember {
+  readonly recordId: string;
+  readonly observedAt?: number;
+  readonly resourceType?: string;
+  readonly status?: number;
+  readonly relation: OpensteerObservationClusterRelationshipKind;
+  readonly relatedRecordId?: string;
   readonly matchedTargetHints: readonly string[];
 }
 
@@ -228,14 +318,24 @@ export interface OpensteerExecutableResolver {
   readonly inputNames?: readonly string[];
   readonly guardId?: string;
   readonly traceId?: string;
-  readonly scriptArtifactId?: string;
-  readonly artifactId?: string;
-  readonly sourceRecordId?: string;
-  readonly stateSnapshotId?: string;
-  readonly binding?: string;
-  readonly pointer?: string;
-  readonly expression?: string;
-  readonly value?: JsonValue;
+  readonly valueRef?: OpensteerValueReference;
+}
+
+export interface OpensteerReverseAdvisorySignals {
+  readonly advisoryRank: number;
+  readonly observedAt?: number;
+  readonly targetHintMatches: number;
+  readonly responseRichness: number;
+  readonly portabilityWeight: number;
+  readonly boundaryWeight: number;
+  readonly successfulStatus: boolean;
+  readonly fetchLike: boolean;
+  readonly hasResponseBody: boolean;
+  readonly dataPathMatch: boolean;
+  readonly cookieInputCount: number;
+  readonly storageInputCount: number;
+  readonly volatileInputCount: number;
+  readonly guardCount: number;
 }
 
 export interface OpensteerValidationRule {
@@ -254,8 +354,18 @@ export interface OpensteerReverseOperationWorkflowStep {
   readonly kind: "operation";
   readonly label: string;
   readonly operation: OpensteerSemanticOperationName | string;
-  readonly input: JsonValue;
+  readonly input: OpensteerValueTemplate;
   readonly bindAs?: string;
+}
+
+export interface OpensteerReverseAwaitRecordMatch {
+  readonly recordId?: string;
+  readonly host?: string;
+  readonly path?: string;
+  readonly method?: string;
+  readonly channel?: OpensteerReverseChannelKind;
+  readonly status?: number;
+  readonly text?: string;
 }
 
 export interface OpensteerReverseAwaitRecordWorkflowStep {
@@ -264,6 +374,7 @@ export interface OpensteerReverseAwaitRecordWorkflowStep {
   readonly label: string;
   readonly channel: OpensteerChannelDescriptor;
   readonly recordId?: string;
+  readonly match?: OpensteerReverseAwaitRecordMatch;
   readonly validationRuleIds?: readonly string[];
   readonly timeoutMs?: number;
   readonly bindAs?: string;
@@ -297,21 +408,20 @@ export interface OpensteerChannelDescriptor {
   readonly subprotocol?: string;
 }
 
-export interface OpensteerReplayStrategy {
+export interface OpensteerReverseAdvisoryTemplate {
   readonly id: string;
   readonly label: string;
   readonly channel: OpensteerReverseChannelKind;
-  readonly execution: OpensteerReplayStrategyExecution;
+  readonly execution: "transport" | "page-observation";
   readonly stateSource: OpensteerStateSourceKind;
   readonly observationId?: string;
   readonly transport?: TransportKind;
-  readonly supported: boolean;
   readonly guardIds: readonly string[];
   readonly resolverIds: readonly string[];
   readonly requiresBrowser: boolean;
   readonly requiresLiveState: boolean;
-  readonly observedSuccess?: boolean;
-  readonly failureReason?: string;
+  readonly viability: "ready" | "draft" | "unsupported";
+  readonly notes?: string;
 }
 
 export interface OpensteerReverseGuardRecord {
@@ -344,16 +454,16 @@ export interface OpensteerReverseCandidateRecord {
   readonly channel: OpensteerChannelDescriptor;
   readonly bodyCodec: OpensteerBodyCodecDescriptor;
   readonly boundary: OpensteerReverseCandidateBoundary;
-  readonly role: OpensteerReverseCandidateRole;
-  readonly dependencyClass: OpensteerReverseCandidateDependencyClass;
-  readonly score: number;
   readonly summary: string;
   readonly matchedTargetHints: readonly string[];
+  readonly advisoryTags: readonly OpensteerReverseAdvisoryTag[];
+  readonly constraints: readonly OpensteerReverseConstraintKind[];
+  readonly signals: OpensteerReverseAdvisorySignals;
   readonly inputs: readonly OpensteerRequestInputDescriptor[];
   readonly resolvers: readonly OpensteerExecutableResolver[];
   readonly guardIds: readonly string[];
   readonly scriptArtifactIds: readonly string[];
-  readonly replayStrategies: readonly OpensteerReplayStrategy[];
+  readonly advisoryTemplates: readonly OpensteerReverseAdvisoryTemplate[];
 }
 
 export interface OpensteerReverseReplayValidation {
@@ -370,7 +480,7 @@ export interface OpensteerReverseReplayRunRecord {
   readonly id: string;
   readonly createdAt: number;
   readonly candidateId?: string;
-  readonly strategyId?: string;
+  readonly templateId?: string;
   readonly packageId: string;
   readonly success: boolean;
   readonly channel?: OpensteerReverseChannelKind;
@@ -378,6 +488,9 @@ export interface OpensteerReverseReplayRunRecord {
   readonly readiness: OpensteerReversePackageReadiness;
   readonly transport?: TransportKind;
   readonly stateSource?: OpensteerStateSourceKind;
+  readonly executedStepIds: readonly string[];
+  readonly failedStepId?: string;
+  readonly bindings?: Readonly<Record<string, JsonValue>>;
   readonly recordId?: string;
   readonly status?: number;
   readonly validation: OpensteerReverseReplayValidation;
@@ -388,7 +501,7 @@ export interface OpensteerReverseExperimentRecord {
   readonly id: string;
   readonly createdAt: number;
   readonly candidateId?: string;
-  readonly strategyId?: string;
+  readonly templateId?: string;
   readonly kind: "replay-attempt" | "field-variation";
   readonly hypothesis: string;
   readonly success: boolean;
@@ -431,7 +544,7 @@ export interface OpensteerReverseExportRecord {
   readonly id: string;
   readonly createdAt: number;
   readonly candidateId?: string;
-  readonly strategyId?: string;
+  readonly templateId?: string;
   readonly packageId: string;
   readonly kind: OpensteerReversePackageKind;
   readonly readiness: OpensteerReversePackageReadiness;
@@ -445,6 +558,7 @@ export interface OpensteerReverseCasePayload {
   readonly stateSource: OpensteerStateSourceKind;
   readonly observations: readonly OpensteerReverseObservationRecord[];
   readonly observationClusters: readonly OpensteerObservationCluster[];
+  readonly observedRecords: readonly OpensteerReverseObservedRecord[];
   readonly candidates: readonly OpensteerReverseCandidateRecord[];
   readonly guards: readonly OpensteerReverseGuardRecord[];
   readonly stateSnapshots: readonly OpensteerStateSnapshot[];
@@ -471,10 +585,15 @@ export interface OpensteerReversePackagePayload {
   readonly readiness: OpensteerReversePackageReadiness;
   readonly caseId: string;
   readonly objective: string;
+  readonly source: {
+    readonly kind: "record" | "candidate";
+    readonly id: string;
+  };
+  readonly sourceRecordId: string;
   readonly candidateId?: string;
   readonly candidate?: OpensteerReverseCandidateRecord;
-  readonly strategyId?: string;
-  readonly strategy?: OpensteerReplayStrategy;
+  readonly templateId?: string;
+  readonly template?: OpensteerReverseAdvisoryTemplate;
   readonly channel?: OpensteerChannelDescriptor;
   readonly stateSource?: OpensteerStateSourceKind;
   readonly observationId?: string;
@@ -507,39 +626,51 @@ export interface OpensteerReversePackageRecord {
   readonly payload: OpensteerReversePackagePayload;
 }
 
-export interface OpensteerReverseCandidateReportItem {
+export interface OpensteerReverseCandidateAdvisoryItem {
   readonly candidateId: string;
   readonly clusterId: string;
-  readonly score: number;
-  readonly role: OpensteerReverseCandidateRole;
-  readonly dependencyClass: OpensteerReverseCandidateDependencyClass;
+  readonly advisoryRank: number;
   readonly bodyCodec: OpensteerBodyCodecDescriptor;
   readonly summary: string;
+  readonly advisoryTags: readonly OpensteerReverseAdvisoryTag[];
+  readonly constraints: readonly OpensteerReverseConstraintKind[];
+  readonly signals: OpensteerReverseAdvisorySignals;
   readonly reasons: readonly string[];
 }
 
+export interface OpensteerReverseDiscoverySummaryCounts {
+  readonly hosts: Readonly<Record<string, number>>;
+  readonly channels: Readonly<Record<string, number>>;
+  readonly resourceTypes: Readonly<Record<string, number>>;
+  readonly advisoryTags: Readonly<Record<string, number>>;
+  readonly constraints: Readonly<Record<string, number>>;
+  readonly relationKinds: Readonly<Record<string, number>>;
+}
+
 export interface OpensteerReverseReportPayload {
+  readonly kind: OpensteerReverseReportKind;
   readonly caseId: string;
   readonly objective: string;
-  readonly packageId: string;
-  readonly packageKind: OpensteerReversePackageKind;
-  readonly packageReadiness: OpensteerReversePackageReadiness;
-  readonly chosenCandidateId?: string;
-  readonly chosenStrategyId?: string;
   readonly observations: readonly OpensteerReverseObservationRecord[];
   readonly observationClusters: readonly OpensteerObservationCluster[];
+  readonly observedRecords: readonly OpensteerReverseObservedRecord[];
   readonly guards: readonly OpensteerReverseGuardRecord[];
   readonly stateDeltas: readonly OpensteerStateDelta[];
-  readonly candidateRankings: readonly OpensteerReverseCandidateReportItem[];
+  readonly summaryCounts: OpensteerReverseDiscoverySummaryCounts;
+  readonly candidateAdvisories: readonly OpensteerReverseCandidateAdvisoryItem[];
+  readonly query?: OpensteerReverseQuerySnapshot;
   readonly experiments: readonly OpensteerReverseExperimentRecord[];
   readonly replayRuns: readonly OpensteerReverseReplayRunRecord[];
-  readonly unresolvedRequirements: readonly OpensteerReverseRequirement[];
-  readonly suggestedEdits: readonly OpensteerReverseSuggestedEdit[];
   readonly linkedNetworkRecordIds: readonly string[];
   readonly linkedInteractionTraceIds: readonly string[];
   readonly linkedArtifactIds: readonly string[];
   readonly linkedStateSnapshotIds: readonly string[];
-  readonly package: OpensteerReversePackageRecord;
+  readonly packageId?: string;
+  readonly packageKind?: OpensteerReversePackageKind;
+  readonly packageReadiness?: OpensteerReversePackageReadiness;
+  readonly unresolvedRequirements?: readonly OpensteerReverseRequirement[];
+  readonly suggestedEdits?: readonly OpensteerReverseSuggestedEdit[];
+  readonly package?: OpensteerReversePackageRecord;
 }
 
 export interface OpensteerReverseReportRecord {
@@ -554,7 +685,79 @@ export interface OpensteerReverseReportRecord {
   readonly payload: OpensteerReverseReportPayload;
 }
 
-export interface OpensteerReverseSolveInput {
+export interface OpensteerReverseObservedRecord {
+  readonly recordId: string;
+  readonly observationId: string;
+  readonly clusterId: string;
+  readonly observedAt?: number;
+  readonly channel: OpensteerChannelDescriptor;
+  readonly bodyCodec: OpensteerBodyCodecDescriptor;
+  readonly resourceType?: string;
+  readonly status?: number;
+  readonly matchedTargetHints: readonly string[];
+  readonly relationKinds: readonly OpensteerObservationClusterRelationshipKind[];
+}
+
+export interface OpensteerReverseQueryFilters {
+  readonly recordId?: string;
+  readonly clusterId?: string;
+  readonly candidateId?: string;
+  readonly host?: string;
+  readonly path?: string;
+  readonly method?: string;
+  readonly status?: string;
+  readonly resourceType?: string;
+  readonly channel?: OpensteerReverseChannelKind;
+  readonly boundary?: OpensteerReverseCandidateBoundary;
+  readonly advisoryTag?: OpensteerReverseAdvisoryTag;
+  readonly constraint?: OpensteerReverseConstraintKind;
+  readonly bodyCodec?: OpensteerBodyCodecKind;
+  readonly relationKind?: OpensteerObservationClusterRelationshipKind;
+  readonly hasGuards?: boolean;
+  readonly hasResolvers?: boolean;
+  readonly artifactId?: string;
+  readonly stateSnapshotId?: string;
+  readonly traceId?: string;
+  readonly evidenceRef?: string;
+  readonly text?: string;
+}
+
+export interface OpensteerReverseSortTerm {
+  readonly key: OpensteerReverseSortKey;
+  readonly direction?: OpensteerReverseSortDirection;
+}
+
+export interface OpensteerReverseQuerySort {
+  readonly preset?: OpensteerReverseSortPreset;
+  readonly keys?: readonly OpensteerReverseSortTerm[];
+}
+
+export interface OpensteerReverseQuerySnapshot {
+  readonly view: OpensteerReverseQueryView;
+  readonly filters?: OpensteerReverseQueryFilters;
+  readonly sort: OpensteerReverseQuerySort;
+  readonly limit: number;
+  readonly totalCount: number;
+  readonly nextCursor?: string;
+  readonly resultIds: readonly string[];
+}
+
+export interface OpensteerReverseQueryRecordItem {
+  readonly record: OpensteerReverseObservedRecord;
+  readonly candidateIds: readonly string[];
+}
+
+export interface OpensteerReverseQueryClusterItem {
+  readonly cluster: OpensteerObservationCluster;
+  readonly candidateIds: readonly string[];
+}
+
+export interface OpensteerReverseQueryCandidateItem {
+  readonly candidate: OpensteerReverseCandidateRecord;
+  readonly reasons: readonly string[];
+}
+
+export interface OpensteerReverseDiscoverInput {
   readonly caseId?: string;
   readonly key?: string;
   readonly objective?: string;
@@ -578,26 +781,77 @@ export interface OpensteerReverseSolveInput {
   readonly targetHints?: OpensteerReverseTargetHints;
   readonly captureWindowMs?: number;
   readonly manualCalibration?: OpensteerReverseManualCalibrationMode;
-  readonly candidateLimit?: number;
-  readonly maxReplayAttempts?: number;
 }
 
-export interface OpensteerReverseSolveOutput {
+export interface OpensteerReverseDiscoverOutput {
   readonly caseId: string;
+  readonly reportId: string;
+  readonly summary: {
+    readonly observationIds: readonly string[];
+    readonly recordCount: number;
+    readonly clusterCount: number;
+    readonly candidateCount: number;
+  };
+  readonly index: {
+    readonly views: readonly OpensteerReverseQueryView[];
+    readonly sortableKeys: readonly OpensteerReverseSortKey[];
+    readonly channels: readonly OpensteerReverseChannelKind[];
+    readonly hosts: readonly string[];
+    readonly relationKinds: readonly OpensteerObservationClusterRelationshipKind[];
+  };
+}
+
+export interface OpensteerReverseQueryInput {
+  readonly caseId: string;
+  readonly view?: OpensteerReverseQueryView;
+  readonly filters?: OpensteerReverseQueryFilters;
+  readonly sort?: OpensteerReverseQuerySort;
+  readonly limit?: number;
+  readonly cursor?: string;
+}
+
+export interface OpensteerReverseQueryOutput {
+  readonly caseId: string;
+  readonly view: OpensteerReverseQueryView;
+  readonly query: OpensteerReverseQuerySnapshot;
+  readonly totalCount: number;
+  readonly nextCursor?: string;
+  readonly records?: readonly OpensteerReverseQueryRecordItem[];
+  readonly clusters?: readonly OpensteerReverseQueryClusterItem[];
+  readonly candidates?: readonly OpensteerReverseQueryCandidateItem[];
+}
+
+export interface OpensteerReversePackageCreateInput {
+  readonly caseId: string;
+  readonly source: {
+    readonly kind: "record" | "candidate";
+    readonly id: string;
+  };
+  readonly templateId?: string;
+  readonly key?: string;
+  readonly version?: string;
+  readonly notes?: string;
+}
+
+export interface OpensteerReversePackageCreateOutput {
   readonly package: OpensteerReversePackageRecord;
   readonly report: OpensteerReverseReportRecord;
 }
 
-export interface OpensteerReverseReplayInput {
+export interface OpensteerReversePackageRunInput {
   readonly packageId: string;
   readonly pageRef?: PageRef;
 }
 
-export interface OpensteerReverseReplayOutput {
+export interface OpensteerReversePackageRunOutput {
   readonly packageId: string;
   readonly caseId?: string;
+  readonly source: {
+    readonly kind: "record" | "candidate";
+    readonly id: string;
+  };
   readonly candidateId?: string;
-  readonly strategyId?: string;
+  readonly templateId?: string;
   readonly success: boolean;
   readonly kind: OpensteerReversePackageKind;
   readonly readiness: OpensteerReversePackageReadiness;
@@ -607,6 +861,10 @@ export interface OpensteerReverseReplayOutput {
   readonly recordId?: string;
   readonly status?: number;
   readonly validation: OpensteerReverseReplayValidation;
+  readonly executedStepIds: readonly string[];
+  readonly failedStepId?: string;
+  readonly bindings: Readonly<Record<string, JsonValue>>;
+  readonly replayRunId?: string;
   readonly unresolvedRequirements: readonly OpensteerReverseRequirement[];
   readonly suggestedEdits: readonly OpensteerReverseSuggestedEdit[];
   readonly error?: string;
@@ -624,8 +882,10 @@ export interface OpensteerReverseExportOutput {
 }
 
 export interface OpensteerReverseReportInput {
+  readonly caseId?: string;
   readonly packageId?: string;
   readonly reportId?: string;
+  readonly kind?: OpensteerReverseReportKind;
 }
 
 export interface OpensteerReverseReportOutput {
@@ -656,8 +916,6 @@ export interface OpensteerReversePackagePatchInput {
   readonly key?: string;
   readonly version?: string;
   readonly notes?: string;
-  readonly candidateId?: string;
-  readonly strategyId?: string;
   readonly workflow?: readonly OpensteerReverseWorkflowStep[];
   readonly resolvers?: readonly OpensteerExecutableResolver[];
   readonly validators?: readonly OpensteerValidationRule[];
@@ -697,14 +955,34 @@ export const opensteerReverseCandidateBoundarySchema: JsonSchema = enumSchema(
   { title: "OpensteerReverseCandidateBoundary" },
 );
 
-export const opensteerReverseCandidateRoleSchema: JsonSchema = enumSchema(
-  ["primary-data", "facet-data", "telemetry", "subscription", "navigation", "unknown"] as const,
-  { title: "OpensteerReverseCandidateRole" },
+export const opensteerReverseAdvisoryTagSchema: JsonSchema = enumSchema(
+  [
+    "data",
+    "facet",
+    "telemetry",
+    "subscription",
+    "navigation",
+    "document",
+    "route-data",
+    "search",
+    "tracking",
+    "unknown",
+  ] as const,
+  { title: "OpensteerReverseAdvisoryTag" },
 );
 
-export const opensteerReverseCandidateDependencyClassSchema: JsonSchema = enumSchema(
-  ["portable", "browser-state", "script-signed", "behavior-gated", "anti-bot", "blocked"] as const,
-  { title: "OpensteerReverseCandidateDependencyClass" },
+export const opensteerReverseConstraintKindSchema: JsonSchema = enumSchema(
+  [
+    "requires-browser",
+    "requires-cookie",
+    "requires-storage",
+    "requires-script",
+    "requires-guard",
+    "requires-live-state",
+    "opaque-body",
+    "unsupported",
+  ] as const,
+  { title: "OpensteerReverseConstraintKind" },
 );
 
 export const opensteerRequestInputLocationSchema: JsonSchema = enumSchema(
@@ -747,9 +1025,48 @@ export const opensteerRequestInputExportPolicySchema: JsonSchema = enumSchema(
   { title: "OpensteerRequestInputExportPolicy" },
 );
 
-export const opensteerReplayStrategyExecutionSchema: JsonSchema = enumSchema(
-  ["transport", "page-observation"] as const,
-  { title: "OpensteerReplayStrategyExecution" },
+export const opensteerReverseQueryViewSchema: JsonSchema = enumSchema(
+  ["records", "clusters", "candidates"] as const,
+  { title: "OpensteerReverseQueryView" },
+);
+
+export const opensteerReverseSortKeySchema: JsonSchema = enumSchema(
+  [
+    "observed-at",
+    "advisory-rank",
+    "target-hint-matches",
+    "response-richness",
+    "portability",
+    "boundary",
+    "success",
+  ] as const,
+  { title: "OpensteerReverseSortKey" },
+);
+
+export const opensteerReverseSortPresetSchema: JsonSchema = enumSchema(
+  [
+    "advisory-rank",
+    "observed-at",
+    "portability",
+    "first-party",
+    "hint-match",
+    "response-richness",
+  ] as const,
+  { title: "OpensteerReverseSortPreset" },
+);
+
+export const opensteerReverseSortDirectionSchema: JsonSchema = enumSchema(["asc", "desc"] as const, {
+  title: "OpensteerReverseSortDirection",
+});
+
+export const opensteerObservationClusterRelationshipKindSchema: JsonSchema = enumSchema(
+  ["seed", "preflight", "redirect", "retry", "duplicate", "follow-on"] as const,
+  { title: "OpensteerObservationClusterRelationshipKind" },
+);
+
+export const opensteerReverseReportKindSchema: JsonSchema = enumSchema(
+  ["discovery", "package"] as const,
+  { title: "OpensteerReverseReportKind" },
 );
 
 export const opensteerReversePackageKindSchema: JsonSchema = enumSchema(
@@ -784,14 +1101,37 @@ export const opensteerExecutableResolverKindSchema: JsonSchema = enumSchema(
     "literal",
     "cookie",
     "storage",
-    "prior-response",
-    "page-eval",
-    "script-sandbox",
-    "guard-output",
+    "prior-record",
+    "binding",
+    "candidate",
+    "case",
+    "state-snapshot",
+    "artifact",
     "manual",
     "runtime-managed",
   ] as const,
   { title: "OpensteerExecutableResolverKind" },
+);
+
+export const opensteerValueReferenceKindSchema: JsonSchema = enumSchema(
+  [
+    "literal",
+    "resolver",
+    "binding",
+    "candidate",
+    "case",
+    "record",
+    "artifact",
+    "state-snapshot",
+    "runtime",
+    "manual",
+  ] as const,
+  { title: "OpensteerValueReferenceKind" },
+);
+
+export const opensteerRuntimeValueKeySchema: JsonSchema = enumSchema(
+  ["pageRef", "packageId", "caseId", "candidateId", "objective"] as const,
+  { title: "OpensteerRuntimeValueKey" },
 );
 
 export const opensteerValidationRuleKindSchema: JsonSchema = enumSchema(
@@ -838,6 +1178,29 @@ const jsonValueSchema: JsonSchema = defineSchema({
   title: "JsonValue",
 });
 
+export const opensteerValueReferenceSchema: JsonSchema = objectSchema(
+  {
+    kind: opensteerValueReferenceKindSchema,
+    pointer: stringSchema({ minLength: 1 }),
+    resolverId: stringSchema({ minLength: 1 }),
+    binding: stringSchema({ minLength: 1 }),
+    recordId: stringSchema({ minLength: 1 }),
+    artifactId: stringSchema({ minLength: 1 }),
+    stateSnapshotId: stringSchema({ minLength: 1 }),
+    runtimeKey: opensteerRuntimeValueKeySchema,
+    value: jsonValueSchema,
+    placeholder: stringSchema({ minLength: 1 }),
+  },
+  {
+    title: "OpensteerValueReference",
+    required: ["kind"],
+  },
+);
+
+export const opensteerValueTemplateSchema: JsonSchema = defineSchema({
+  title: "OpensteerValueTemplate",
+});
+
 export const opensteerReverseTargetHintsSchema: JsonSchema = objectSchema(
   {
     hosts: arraySchema(stringSchema({ minLength: 1 }), { uniqueItems: true }),
@@ -871,26 +1234,28 @@ export const opensteerObservationClusterSchema: JsonSchema = objectSchema(
     channel: opensteerReverseChannelKindSchema,
     method: stringSchema({ minLength: 1 }),
     url: stringSchema({ minLength: 1 }),
-    primaryRecordId: stringSchema({ minLength: 1 }),
-    recordIds: arraySchema(stringSchema({ minLength: 1 }), { uniqueItems: true }),
-    suppressedRecordIds: arraySchema(stringSchema({ minLength: 1 }), { uniqueItems: true }),
-    suppressionReasons: arraySchema(stringSchema({ minLength: 1 }), { uniqueItems: true }),
     matchedTargetHints: arraySchema(stringSchema({ minLength: 1 }), { uniqueItems: true }),
+    members: arraySchema(
+      objectSchema(
+        {
+          recordId: stringSchema({ minLength: 1 }),
+          observedAt: integerSchema({ minimum: 0 }),
+          resourceType: stringSchema({ minLength: 1 }),
+          status: integerSchema({ minimum: 0 }),
+          relation: opensteerObservationClusterRelationshipKindSchema,
+          relatedRecordId: stringSchema({ minLength: 1 }),
+          matchedTargetHints: arraySchema(stringSchema({ minLength: 1 }), { uniqueItems: true }),
+        },
+        {
+          title: "OpensteerObservationClusterMember",
+          required: ["recordId", "relation", "matchedTargetHints"],
+        },
+      ),
+    ),
   },
   {
     title: "OpensteerObservationCluster",
-    required: [
-      "id",
-      "observationId",
-      "label",
-      "channel",
-      "url",
-      "primaryRecordId",
-      "recordIds",
-      "suppressedRecordIds",
-      "suppressionReasons",
-      "matchedTargetHints",
-    ],
+    required: ["id", "observationId", "label", "channel", "url", "matchedTargetHints", "members"],
   },
 );
 
@@ -1009,18 +1374,48 @@ export const opensteerExecutableResolverSchema: JsonSchema = objectSchema(
     inputNames: arraySchema(stringSchema({ minLength: 1 }), { uniqueItems: true }),
     guardId: stringSchema({ minLength: 1 }),
     traceId: stringSchema({ minLength: 1 }),
-    scriptArtifactId: stringSchema({ minLength: 1 }),
-    artifactId: stringSchema({ minLength: 1 }),
-    sourceRecordId: stringSchema({ minLength: 1 }),
-    stateSnapshotId: stringSchema({ minLength: 1 }),
-    binding: stringSchema({ minLength: 1 }),
-    pointer: stringSchema({ minLength: 1 }),
-    expression: stringSchema({ minLength: 1 }),
-    value: jsonValueSchema,
+    valueRef: opensteerValueReferenceSchema,
   },
   {
     title: "OpensteerExecutableResolver",
     required: ["id", "kind", "label", "status", "requiresBrowser", "requiresLiveState"],
+  },
+);
+
+export const opensteerReverseAdvisorySignalsSchema: JsonSchema = objectSchema(
+  {
+    advisoryRank: numberSchema(),
+    observedAt: integerSchema({ minimum: 0 }),
+    targetHintMatches: integerSchema({ minimum: 0 }),
+    responseRichness: integerSchema({ minimum: 0 }),
+    portabilityWeight: integerSchema({ minimum: 0 }),
+    boundaryWeight: integerSchema({ minimum: 0 }),
+    successfulStatus: { type: "boolean" },
+    fetchLike: { type: "boolean" },
+    hasResponseBody: { type: "boolean" },
+    dataPathMatch: { type: "boolean" },
+    cookieInputCount: integerSchema({ minimum: 0 }),
+    storageInputCount: integerSchema({ minimum: 0 }),
+    volatileInputCount: integerSchema({ minimum: 0 }),
+    guardCount: integerSchema({ minimum: 0 }),
+  },
+  {
+    title: "OpensteerReverseAdvisorySignals",
+    required: [
+      "advisoryRank",
+      "targetHintMatches",
+      "responseRichness",
+      "portabilityWeight",
+      "boundaryWeight",
+      "successfulStatus",
+      "fetchLike",
+      "hasResponseBody",
+      "dataPathMatch",
+      "cookieInputCount",
+      "storageInputCount",
+      "volatileInputCount",
+      "guardCount",
+    ],
   },
 );
 
@@ -1061,7 +1456,7 @@ const opensteerReverseOperationWorkflowStepSchema: JsonSchema = objectSchema(
     kind: enumSchema(["operation"] as const),
     label: stringSchema({ minLength: 1 }),
     operation: stringSchema({ minLength: 1 }),
-    input: jsonValueSchema,
+    input: opensteerValueTemplateSchema,
     bindAs: stringSchema({ minLength: 1 }),
   },
   {
@@ -1077,6 +1472,20 @@ const opensteerReverseAwaitRecordWorkflowStepSchema: JsonSchema = objectSchema(
     label: stringSchema({ minLength: 1 }),
     channel: opensteerChannelDescriptorSchema,
     recordId: stringSchema({ minLength: 1 }),
+    match: objectSchema(
+      {
+        recordId: stringSchema({ minLength: 1 }),
+        host: stringSchema({ minLength: 1 }),
+        path: stringSchema({ minLength: 1 }),
+        method: stringSchema({ minLength: 1 }),
+        channel: opensteerReverseChannelKindSchema,
+        status: integerSchema({ minimum: 0 }),
+        text: stringSchema({ minLength: 1 }),
+      },
+      {
+        title: "OpensteerReverseAwaitRecordMatch",
+      },
+    ),
     validationRuleIds: arraySchema(stringSchema({ minLength: 1 }), { uniqueItems: true }),
     timeoutMs: integerSchema({ minimum: 0 }),
     bindAs: stringSchema({ minLength: 1 }),
@@ -1125,36 +1534,35 @@ export const opensteerReversePackageRequirementsSchema: JsonSchema = objectSchem
   },
 );
 
-export const opensteerReplayStrategySchema: JsonSchema = objectSchema(
+export const opensteerReverseAdvisoryTemplateSchema: JsonSchema = objectSchema(
   {
     id: stringSchema({ minLength: 1 }),
     label: stringSchema({ minLength: 1 }),
     channel: opensteerReverseChannelKindSchema,
-    execution: opensteerReplayStrategyExecutionSchema,
+    execution: enumSchema(["transport", "page-observation"] as const),
     stateSource: opensteerStateSourceKindSchema,
     observationId: stringSchema({ minLength: 1 }),
     transport: transportKindSchema,
-    supported: { type: "boolean" },
     guardIds: arraySchema(stringSchema({ minLength: 1 }), { uniqueItems: true }),
     resolverIds: arraySchema(stringSchema({ minLength: 1 }), { uniqueItems: true }),
     requiresBrowser: { type: "boolean" },
     requiresLiveState: { type: "boolean" },
-    observedSuccess: { type: "boolean" },
-    failureReason: stringSchema({ minLength: 1 }),
+    viability: enumSchema(["ready", "draft", "unsupported"] as const),
+    notes: stringSchema({ minLength: 1 }),
   },
   {
-    title: "OpensteerReplayStrategy",
+    title: "OpensteerReverseAdvisoryTemplate",
     required: [
       "id",
       "label",
       "channel",
       "execution",
       "stateSource",
-      "supported",
       "guardIds",
       "resolverIds",
       "requiresBrowser",
       "requiresLiveState",
+      "viability",
     ],
   },
 );
@@ -1201,6 +1609,35 @@ export const opensteerReverseObservationRecordSchema: JsonSchema = objectSchema(
   },
 );
 
+export const opensteerReverseObservedRecordSchema: JsonSchema = objectSchema(
+  {
+    recordId: stringSchema({ minLength: 1 }),
+    observationId: stringSchema({ minLength: 1 }),
+    clusterId: stringSchema({ minLength: 1 }),
+    observedAt: integerSchema({ minimum: 0 }),
+    channel: opensteerChannelDescriptorSchema,
+    bodyCodec: opensteerBodyCodecDescriptorSchema,
+    resourceType: stringSchema({ minLength: 1 }),
+    status: integerSchema({ minimum: 0 }),
+    matchedTargetHints: arraySchema(stringSchema({ minLength: 1 }), { uniqueItems: true }),
+    relationKinds: arraySchema(opensteerObservationClusterRelationshipKindSchema, {
+      uniqueItems: true,
+    }),
+  },
+  {
+    title: "OpensteerReverseObservedRecord",
+    required: [
+      "recordId",
+      "observationId",
+      "clusterId",
+      "channel",
+      "bodyCodec",
+      "matchedTargetHints",
+      "relationKinds",
+    ],
+  },
+);
+
 export const opensteerReverseCandidateRecordSchema: JsonSchema = objectSchema(
   {
     id: stringSchema({ minLength: 1 }),
@@ -1210,16 +1647,16 @@ export const opensteerReverseCandidateRecordSchema: JsonSchema = objectSchema(
     channel: opensteerChannelDescriptorSchema,
     bodyCodec: opensteerBodyCodecDescriptorSchema,
     boundary: opensteerReverseCandidateBoundarySchema,
-    role: opensteerReverseCandidateRoleSchema,
-    dependencyClass: opensteerReverseCandidateDependencyClassSchema,
-    score: numberSchema(),
     summary: stringSchema({ minLength: 1 }),
     matchedTargetHints: arraySchema(stringSchema({ minLength: 1 }), { uniqueItems: true }),
+    advisoryTags: arraySchema(opensteerReverseAdvisoryTagSchema, { uniqueItems: true }),
+    constraints: arraySchema(opensteerReverseConstraintKindSchema, { uniqueItems: true }),
+    signals: opensteerReverseAdvisorySignalsSchema,
     inputs: arraySchema(opensteerRequestInputDescriptorSchema),
     resolvers: arraySchema(opensteerExecutableResolverSchema),
     guardIds: arraySchema(stringSchema({ minLength: 1 }), { uniqueItems: true }),
     scriptArtifactIds: arraySchema(stringSchema({ minLength: 1 }), { uniqueItems: true }),
-    replayStrategies: arraySchema(opensteerReplayStrategySchema),
+    advisoryTemplates: arraySchema(opensteerReverseAdvisoryTemplateSchema),
   },
   {
     title: "OpensteerReverseCandidateRecord",
@@ -1231,16 +1668,16 @@ export const opensteerReverseCandidateRecordSchema: JsonSchema = objectSchema(
       "channel",
       "bodyCodec",
       "boundary",
-      "role",
-      "dependencyClass",
-      "score",
       "summary",
       "matchedTargetHints",
+      "advisoryTags",
+      "constraints",
+      "signals",
       "inputs",
       "resolvers",
       "guardIds",
       "scriptArtifactIds",
-      "replayStrategies",
+      "advisoryTemplates",
     ],
   },
 );
@@ -1265,7 +1702,7 @@ export const opensteerReverseReplayRunRecordSchema: JsonSchema = objectSchema(
     id: stringSchema({ minLength: 1 }),
     createdAt: integerSchema({ minimum: 0 }),
     candidateId: stringSchema({ minLength: 1 }),
-    strategyId: stringSchema({ minLength: 1 }),
+    templateId: stringSchema({ minLength: 1 }),
     packageId: stringSchema({ minLength: 1 }),
     success: { type: "boolean" },
     channel: opensteerReverseChannelKindSchema,
@@ -1273,6 +1710,9 @@ export const opensteerReverseReplayRunRecordSchema: JsonSchema = objectSchema(
     readiness: opensteerReversePackageReadinessSchema,
     transport: transportKindSchema,
     stateSource: opensteerStateSourceKindSchema,
+    executedStepIds: arraySchema(stringSchema({ minLength: 1 }), { uniqueItems: true }),
+    failedStepId: stringSchema({ minLength: 1 }),
+    bindings: recordSchema({}, { title: "OpensteerReverseReplayRunBindings" }),
     recordId: stringSchema({ minLength: 1 }),
     status: integerSchema({ minimum: 0 }),
     validation: opensteerReverseReplayValidationSchema,
@@ -1280,7 +1720,16 @@ export const opensteerReverseReplayRunRecordSchema: JsonSchema = objectSchema(
   },
   {
     title: "OpensteerReverseReplayRunRecord",
-    required: ["id", "createdAt", "packageId", "success", "kind", "readiness", "validation"],
+    required: [
+      "id",
+      "createdAt",
+      "packageId",
+      "success",
+      "kind",
+      "readiness",
+      "executedStepIds",
+      "validation",
+    ],
   },
 );
 
@@ -1289,7 +1738,7 @@ export const opensteerReverseExperimentRecordSchema: JsonSchema = objectSchema(
     id: stringSchema({ minLength: 1 }),
     createdAt: integerSchema({ minimum: 0 }),
     candidateId: stringSchema({ minLength: 1 }),
-    strategyId: stringSchema({ minLength: 1 }),
+    templateId: stringSchema({ minLength: 1 }),
     kind: enumSchema(["replay-attempt", "field-variation"] as const),
     hypothesis: stringSchema({ minLength: 1 }),
     success: { type: "boolean" },
@@ -1350,7 +1799,7 @@ export const opensteerReverseExportRecordSchema: JsonSchema = objectSchema(
     id: stringSchema({ minLength: 1 }),
     createdAt: integerSchema({ minimum: 0 }),
     candidateId: stringSchema({ minLength: 1 }),
-    strategyId: stringSchema({ minLength: 1 }),
+    templateId: stringSchema({ minLength: 1 }),
     packageId: stringSchema({ minLength: 1 }),
     kind: opensteerReversePackageKindSchema,
     readiness: opensteerReversePackageReadinessSchema,
@@ -1370,6 +1819,7 @@ export const opensteerReverseCasePayloadSchema: JsonSchema = objectSchema(
     stateSource: opensteerStateSourceKindSchema,
     observations: arraySchema(opensteerReverseObservationRecordSchema),
     observationClusters: arraySchema(opensteerObservationClusterSchema),
+    observedRecords: arraySchema(opensteerReverseObservedRecordSchema),
     candidates: arraySchema(opensteerReverseCandidateRecordSchema),
     guards: arraySchema(opensteerReverseGuardRecordSchema),
     stateSnapshots: arraySchema(opensteerStateSnapshotSchema),
@@ -1386,6 +1836,7 @@ export const opensteerReverseCasePayloadSchema: JsonSchema = objectSchema(
       "stateSource",
       "observations",
       "observationClusters",
+      "observedRecords",
       "candidates",
       "guards",
       "stateSnapshots",
@@ -1421,10 +1872,21 @@ export const opensteerReversePackagePayloadSchema: JsonSchema = objectSchema(
     readiness: opensteerReversePackageReadinessSchema,
     caseId: stringSchema({ minLength: 1 }),
     objective: stringSchema({ minLength: 1 }),
+    source: objectSchema(
+      {
+        kind: enumSchema(["record", "candidate"] as const),
+        id: stringSchema({ minLength: 1 }),
+      },
+      {
+        title: "OpensteerReversePackageSource",
+        required: ["kind", "id"],
+      },
+    ),
+    sourceRecordId: stringSchema({ minLength: 1 }),
     candidateId: stringSchema({ minLength: 1 }),
     candidate: opensteerReverseCandidateRecordSchema,
-    strategyId: stringSchema({ minLength: 1 }),
-    strategy: opensteerReplayStrategySchema,
+    templateId: stringSchema({ minLength: 1 }),
+    template: opensteerReverseAdvisoryTemplateSchema,
     channel: opensteerChannelDescriptorSchema,
     stateSource: opensteerStateSourceKindSchema,
     observationId: stringSchema({ minLength: 1 }),
@@ -1451,6 +1913,8 @@ export const opensteerReversePackagePayloadSchema: JsonSchema = objectSchema(
       "readiness",
       "caseId",
       "objective",
+      "source",
+      "sourceRecordId",
       "guardIds",
       "workflow",
       "resolvers",
@@ -1488,42 +1952,139 @@ export const opensteerReverseCandidateReportItemSchema: JsonSchema = objectSchem
   {
     candidateId: stringSchema({ minLength: 1 }),
     clusterId: stringSchema({ minLength: 1 }),
-    score: numberSchema(),
-    role: opensteerReverseCandidateRoleSchema,
-    dependencyClass: opensteerReverseCandidateDependencyClassSchema,
+    advisoryRank: numberSchema(),
     bodyCodec: opensteerBodyCodecDescriptorSchema,
     summary: stringSchema({ minLength: 1 }),
+    advisoryTags: arraySchema(opensteerReverseAdvisoryTagSchema, { uniqueItems: true }),
+    constraints: arraySchema(opensteerReverseConstraintKindSchema, { uniqueItems: true }),
+    signals: opensteerReverseAdvisorySignalsSchema,
     reasons: arraySchema(stringSchema({ minLength: 1 })),
   },
   {
-    title: "OpensteerReverseCandidateReportItem",
+    title: "OpensteerReverseCandidateAdvisoryItem",
     required: [
       "candidateId",
       "clusterId",
-      "score",
-      "role",
-      "dependencyClass",
+      "advisoryRank",
       "bodyCodec",
       "summary",
+      "advisoryTags",
+      "constraints",
+      "signals",
       "reasons",
+    ],
+  },
+);
+
+const opensteerReverseDiscoverySummaryCountsSchema: JsonSchema = objectSchema(
+  {
+    hosts: recordSchema(integerSchema({ minimum: 0 }), { title: "OpensteerReverseSummaryHosts" }),
+    channels: recordSchema(integerSchema({ minimum: 0 }), {
+      title: "OpensteerReverseSummaryChannels",
+    }),
+    resourceTypes: recordSchema(integerSchema({ minimum: 0 }), {
+      title: "OpensteerReverseSummaryResourceTypes",
+    }),
+    advisoryTags: recordSchema(integerSchema({ minimum: 0 }), {
+      title: "OpensteerReverseSummaryAdvisoryTags",
+    }),
+    constraints: recordSchema(integerSchema({ minimum: 0 }), {
+      title: "OpensteerReverseSummaryConstraints",
+    }),
+    relationKinds: recordSchema(integerSchema({ minimum: 0 }), {
+      title: "OpensteerReverseSummaryRelationKinds",
+    }),
+  },
+  {
+    title: "OpensteerReverseDiscoverySummaryCounts",
+    required: [
+      "hosts",
+      "channels",
+      "resourceTypes",
+      "advisoryTags",
+      "constraints",
+      "relationKinds",
     ],
   },
 );
 
 export const opensteerReverseReportPayloadSchema: JsonSchema = objectSchema(
   {
+    kind: opensteerReverseReportKindSchema,
     caseId: stringSchema({ minLength: 1 }),
     objective: stringSchema({ minLength: 1 }),
     packageId: stringSchema({ minLength: 1 }),
     packageKind: opensteerReversePackageKindSchema,
     packageReadiness: opensteerReversePackageReadinessSchema,
-    chosenCandidateId: stringSchema({ minLength: 1 }),
-    chosenStrategyId: stringSchema({ minLength: 1 }),
     observations: arraySchema(opensteerReverseObservationRecordSchema),
     observationClusters: arraySchema(opensteerObservationClusterSchema),
+    observedRecords: arraySchema(opensteerReverseObservedRecordSchema),
     guards: arraySchema(opensteerReverseGuardRecordSchema),
     stateDeltas: arraySchema(opensteerStateDeltaSchema),
-    candidateRankings: arraySchema(opensteerReverseCandidateReportItemSchema),
+    summaryCounts: opensteerReverseDiscoverySummaryCountsSchema,
+    candidateAdvisories: arraySchema(opensteerReverseCandidateReportItemSchema),
+    query: objectSchema(
+      {
+        view: opensteerReverseQueryViewSchema,
+        filters: objectSchema(
+          {
+            recordId: stringSchema({ minLength: 1 }),
+            clusterId: stringSchema({ minLength: 1 }),
+            candidateId: stringSchema({ minLength: 1 }),
+            host: stringSchema({ minLength: 1 }),
+            path: stringSchema({ minLength: 1 }),
+            method: stringSchema({ minLength: 1 }),
+            status: stringSchema({ minLength: 1 }),
+            resourceType: stringSchema({ minLength: 1 }),
+            channel: opensteerReverseChannelKindSchema,
+            boundary: opensteerReverseCandidateBoundarySchema,
+            advisoryTag: opensteerReverseAdvisoryTagSchema,
+            constraint: opensteerReverseConstraintKindSchema,
+            bodyCodec: opensteerBodyCodecKindSchema,
+            relationKind: opensteerObservationClusterRelationshipKindSchema,
+            hasGuards: { type: "boolean" },
+            hasResolvers: { type: "boolean" },
+            artifactId: stringSchema({ minLength: 1 }),
+            stateSnapshotId: stringSchema({ minLength: 1 }),
+            traceId: stringSchema({ minLength: 1 }),
+            evidenceRef: stringSchema({ minLength: 1 }),
+            text: stringSchema({ minLength: 1 }),
+          },
+          {
+            title: "OpensteerReverseReportQueryFilters",
+          },
+        ),
+        sort: objectSchema(
+          {
+            preset: opensteerReverseSortPresetSchema,
+            keys: arraySchema(
+              objectSchema(
+                {
+                  key: opensteerReverseSortKeySchema,
+                  direction: opensteerReverseSortDirectionSchema,
+                },
+                {
+                  title: "OpensteerReverseReportQuerySortTerm",
+                  required: ["key"],
+                },
+              ),
+              { minItems: 1 },
+            ),
+          },
+          {
+            title: "OpensteerReverseReportQuerySort",
+          },
+        ),
+        limit: integerSchema({ minimum: 1 }),
+        totalCount: integerSchema({ minimum: 0 }),
+        nextCursor: stringSchema({ minLength: 1 }),
+        resultIds: arraySchema(stringSchema({ minLength: 1 }), { uniqueItems: true }),
+      },
+      {
+        title: "OpensteerReverseQuerySnapshot",
+        required: ["view", "sort", "limit", "totalCount", "resultIds"],
+      },
+    ),
     experiments: arraySchema(opensteerReverseExperimentRecordSchema),
     replayRuns: arraySchema(opensteerReverseReplayRunRecordSchema),
     unresolvedRequirements: arraySchema(opensteerReverseRequirementSchema),
@@ -1539,25 +2100,22 @@ export const opensteerReverseReportPayloadSchema: JsonSchema = objectSchema(
   {
     title: "OpensteerReverseReportPayload",
     required: [
+      "kind",
       "caseId",
       "objective",
-      "packageId",
-      "packageKind",
-      "packageReadiness",
       "observations",
       "observationClusters",
+      "observedRecords",
       "guards",
       "stateDeltas",
-      "candidateRankings",
+      "summaryCounts",
+      "candidateAdvisories",
       "experiments",
       "replayRuns",
-      "unresolvedRequirements",
-      "suggestedEdits",
       "linkedNetworkRecordIds",
       "linkedInteractionTraceIds",
       "linkedArtifactIds",
       "linkedStateSnapshotIds",
-      "package",
     ],
   },
 );
@@ -1594,7 +2152,107 @@ const opensteerReverseNetworkFilterSchema: JsonSchema = objectSchema(
   },
 );
 
-export const opensteerReverseSolveInputSchema: JsonSchema = objectSchema(
+const opensteerReverseQueryFiltersSchema: JsonSchema = objectSchema(
+  {
+    recordId: stringSchema({ minLength: 1 }),
+    clusterId: stringSchema({ minLength: 1 }),
+    candidateId: stringSchema({ minLength: 1 }),
+    host: stringSchema({ minLength: 1 }),
+    path: stringSchema({ minLength: 1 }),
+    method: stringSchema({ minLength: 1 }),
+    status: stringSchema({ minLength: 1 }),
+    resourceType: stringSchema({ minLength: 1 }),
+    channel: opensteerReverseChannelKindSchema,
+    boundary: opensteerReverseCandidateBoundarySchema,
+    advisoryTag: opensteerReverseAdvisoryTagSchema,
+    constraint: opensteerReverseConstraintKindSchema,
+    bodyCodec: opensteerBodyCodecKindSchema,
+    relationKind: opensteerObservationClusterRelationshipKindSchema,
+    hasGuards: { type: "boolean" },
+    hasResolvers: { type: "boolean" },
+    artifactId: stringSchema({ minLength: 1 }),
+    stateSnapshotId: stringSchema({ minLength: 1 }),
+    traceId: stringSchema({ minLength: 1 }),
+    evidenceRef: stringSchema({ minLength: 1 }),
+    text: stringSchema({ minLength: 1 }),
+  },
+  {
+    title: "OpensteerReverseQueryFilters",
+  },
+);
+
+const opensteerReverseQuerySortSchema: JsonSchema = objectSchema(
+  {
+    preset: opensteerReverseSortPresetSchema,
+    keys: arraySchema(
+      objectSchema(
+        {
+          key: opensteerReverseSortKeySchema,
+          direction: opensteerReverseSortDirectionSchema,
+        },
+        {
+          title: "OpensteerReverseSortTerm",
+          required: ["key"],
+        },
+      ),
+      { minItems: 1 },
+    ),
+  },
+  {
+    title: "OpensteerReverseQuerySort",
+  },
+);
+
+const opensteerReverseQuerySnapshotSchema: JsonSchema = objectSchema(
+  {
+    view: opensteerReverseQueryViewSchema,
+    filters: opensteerReverseQueryFiltersSchema,
+    sort: opensteerReverseQuerySortSchema,
+    limit: integerSchema({ minimum: 1, maximum: 200 }),
+    totalCount: integerSchema({ minimum: 0 }),
+    nextCursor: stringSchema({ minLength: 1 }),
+    resultIds: arraySchema(stringSchema({ minLength: 1 }), { uniqueItems: true }),
+  },
+  {
+    title: "OpensteerReverseQuerySnapshot",
+    required: ["view", "sort", "limit", "totalCount", "resultIds"],
+  },
+);
+
+const opensteerReverseQueryRecordItemSchema: JsonSchema = objectSchema(
+  {
+    record: opensteerReverseObservedRecordSchema,
+    candidateIds: arraySchema(stringSchema({ minLength: 1 }), { uniqueItems: true }),
+  },
+  {
+    title: "OpensteerReverseQueryRecordItem",
+    required: ["record", "candidateIds"],
+  },
+);
+
+const opensteerReverseQueryClusterItemSchema: JsonSchema = objectSchema(
+  {
+    cluster: opensteerObservationClusterSchema,
+    candidateIds: arraySchema(stringSchema({ minLength: 1 }), { uniqueItems: true }),
+  },
+  {
+    title: "OpensteerReverseQueryClusterItem",
+    required: ["cluster", "candidateIds"],
+  },
+);
+
+const opensteerReverseQueryCandidateItemSchema: JsonSchema = objectSchema(
+  {
+    candidate: opensteerReverseCandidateRecordSchema,
+    reasons: arraySchema(stringSchema({ minLength: 1 })),
+  },
+  {
+    title: "OpensteerReverseQueryCandidateItem",
+    required: ["candidate", "reasons"],
+  },
+);
+
+export const opensteerReverseDiscoverInputSchema: JsonSchema = objectSchema(
   {
     caseId: stringSchema({ minLength: 1 }),
     key: stringSchema({ minLength: 1 }),
@@ -1612,43 +2270,144 @@ export const opensteerReverseSolveInputSchema: JsonSchema = objectSchema(
     targetHints: opensteerReverseTargetHintsSchema,
     captureWindowMs: integerSchema({ minimum: 0 }),
     manualCalibration: opensteerReverseManualCalibrationModeSchema,
-    candidateLimit: integerSchema({ minimum: 1 }),
-    maxReplayAttempts: integerSchema({ minimum: 0 }),
   },
   {
-    title: "OpensteerReverseSolveInput",
+    title: "OpensteerReverseDiscoverInput",
   },
 );
 
-export const opensteerReverseSolveOutputSchema: JsonSchema = objectSchema(
+export const opensteerReverseDiscoverOutputSchema: JsonSchema = objectSchema(
   {
     caseId: stringSchema({ minLength: 1 }),
+    reportId: stringSchema({ minLength: 1 }),
+    summary: objectSchema(
+      {
+        observationIds: arraySchema(stringSchema({ minLength: 1 }), { uniqueItems: true }),
+        recordCount: integerSchema({ minimum: 0 }),
+        clusterCount: integerSchema({ minimum: 0 }),
+        candidateCount: integerSchema({ minimum: 0 }),
+      },
+      {
+        title: "OpensteerReverseDiscoverSummary",
+        required: ["observationIds", "recordCount", "clusterCount", "candidateCount"],
+      },
+    ),
+    index: objectSchema(
+      {
+        views: arraySchema(opensteerReverseQueryViewSchema, { uniqueItems: true }),
+        sortableKeys: arraySchema(opensteerReverseSortKeySchema, { uniqueItems: true }),
+        channels: arraySchema(opensteerReverseChannelKindSchema, { uniqueItems: true }),
+        hosts: arraySchema(stringSchema({ minLength: 1 }), { uniqueItems: true }),
+        relationKinds: arraySchema(opensteerObservationClusterRelationshipKindSchema, {
+          uniqueItems: true,
+        }),
+      },
+      {
+        title: "OpensteerReverseDiscoverIndex",
+        required: ["views", "sortableKeys", "channels", "hosts", "relationKinds"],
+      },
+    ),
+  },
+  {
+    title: "OpensteerReverseDiscoverOutput",
+    required: ["caseId", "reportId", "summary", "index"],
+  },
+);
+
+export const opensteerReverseQueryInputSchema: JsonSchema = objectSchema(
+  {
+    caseId: stringSchema({ minLength: 1 }),
+    view: opensteerReverseQueryViewSchema,
+    filters: opensteerReverseQueryFiltersSchema,
+    sort: opensteerReverseQuerySortSchema,
+    limit: integerSchema({ minimum: 1, maximum: 200 }),
+    cursor: stringSchema({ minLength: 1 }),
+  },
+  {
+    title: "OpensteerReverseQueryInput",
+    required: ["caseId"],
+  },
+);
+
+export const opensteerReverseQueryOutputSchema: JsonSchema = objectSchema(
+  {
+    caseId: stringSchema({ minLength: 1 }),
+    view: opensteerReverseQueryViewSchema,
+    query: opensteerReverseQuerySnapshotSchema,
+    totalCount: integerSchema({ minimum: 0 }),
+    nextCursor: stringSchema({ minLength: 1 }),
+    records: arraySchema(opensteerReverseQueryRecordItemSchema),
+    clusters: arraySchema(opensteerReverseQueryClusterItemSchema),
+    candidates: arraySchema(opensteerReverseQueryCandidateItemSchema),
+  },
+  {
+    title: "OpensteerReverseQueryOutput",
+    required: ["caseId", "view", "query", "totalCount"],
+  },
+);
+
+export const opensteerReversePackageCreateInputSchema: JsonSchema = objectSchema(
+  {
+    caseId: stringSchema({ minLength: 1 }),
+    source: objectSchema(
+      {
+        kind: enumSchema(["record", "candidate"] as const),
+        id: stringSchema({ minLength: 1 }),
+      },
+      {
+        title: "OpensteerReversePackageCreateSource",
+        required: ["kind", "id"],
+      },
+    ),
+    templateId: stringSchema({ minLength: 1 }),
+    key: stringSchema({ minLength: 1 }),
+    version: stringSchema({ minLength: 1 }),
+    notes: stringSchema({ minLength: 1 }),
+  },
+  {
+    title: "OpensteerReversePackageCreateInput",
+    required: ["caseId", "source"],
+  },
+);
+
+export const opensteerReversePackageCreateOutputSchema: JsonSchema = objectSchema(
+  {
     package: opensteerReversePackageRecordSchema,
     report: opensteerReverseReportRecordSchema,
   },
   {
-    title: "OpensteerReverseSolveOutput",
-    required: ["caseId", "package", "report"],
+    title: "OpensteerReversePackageCreateOutput",
+    required: ["package", "report"],
   },
 );
 
-export const opensteerReverseReplayInputSchema: JsonSchema = objectSchema(
+export const opensteerReversePackageRunInputSchema: JsonSchema = objectSchema(
   {
     packageId: stringSchema({ minLength: 1 }),
     pageRef: pageRefSchema,
   },
   {
-    title: "OpensteerReverseReplayInput",
+    title: "OpensteerReversePackageRunInput",
     required: ["packageId"],
   },
 );
 
-export const opensteerReverseReplayOutputSchema: JsonSchema = objectSchema(
+export const opensteerReversePackageRunOutputSchema: JsonSchema = objectSchema(
   {
     packageId: stringSchema({ minLength: 1 }),
     caseId: stringSchema({ minLength: 1 }),
+    source: objectSchema(
+      {
+        kind: enumSchema(["record", "candidate"] as const),
+        id: stringSchema({ minLength: 1 }),
+      },
+      {
+        title: "OpensteerReversePackageRunSource",
+        required: ["kind", "id"],
+      },
+    ),
     candidateId: stringSchema({ minLength: 1 }),
-    strategyId: stringSchema({ minLength: 1 }),
+    templateId: stringSchema({ minLength: 1 }),
     success: { type: "boolean" },
     kind: opensteerReversePackageKindSchema,
     readiness: opensteerReversePackageReadinessSchema,
@@ -1658,18 +2417,25 @@ export const opensteerReverseReplayOutputSchema: JsonSchema = objectSchema(
     recordId: stringSchema({ minLength: 1 }),
     status: integerSchema({ minimum: 0 }),
     validation: opensteerReverseReplayValidationSchema,
+    executedStepIds: arraySchema(stringSchema({ minLength: 1 }), { uniqueItems: true }),
+    failedStepId: stringSchema({ minLength: 1 }),
+    bindings: recordSchema({}, { title: "OpensteerReversePackageRunBindings" }),
+    replayRunId: stringSchema({ minLength: 1 }),
     unresolvedRequirements: arraySchema(opensteerReverseRequirementSchema),
     suggestedEdits: arraySchema(opensteerReverseSuggestedEditSchema),
     error: stringSchema({ minLength: 1 }),
   },
   {
-    title: "OpensteerReverseReplayOutput",
+    title: "OpensteerReversePackageRunOutput",
     required: [
       "packageId",
+      "source",
       "success",
       "kind",
       "readiness",
       "validation",
+      "executedStepIds",
+      "bindings",
       "unresolvedRequirements",
       "suggestedEdits",
     ],
@@ -1701,8 +2467,10 @@ export const opensteerReverseExportOutputSchema: JsonSchema = objectSchema(
 
 export const opensteerReverseReportInputSchema: JsonSchema = objectSchema(
   {
+    caseId: stringSchema({ minLength: 1 }),
     packageId: stringSchema({ minLength: 1 }),
     reportId: stringSchema({ minLength: 1 }),
+    kind: opensteerReverseReportKindSchema,
   },
   {
     title: "OpensteerReverseReportInput",
@@ -1767,8 +2535,6 @@ export const opensteerReversePackagePatchInputSchema: JsonSchema = objectSchema(
     key: stringSchema({ minLength: 1 }),
     version: stringSchema({ minLength: 1 }),
     notes: stringSchema({ minLength: 1 }),
-    candidateId: stringSchema({ minLength: 1 }),
-    strategyId: stringSchema({ minLength: 1 }),
     workflow: arraySchema(opensteerReverseWorkflowStepSchema),
     resolvers: arraySchema(opensteerExecutableResolverSchema),
     validators: arraySchema(opensteerValidationRuleSchema),

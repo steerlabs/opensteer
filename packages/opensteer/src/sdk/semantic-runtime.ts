@@ -61,14 +61,18 @@ import type {
   OpensteerReversePackageGetOutput,
   OpensteerReversePackageListInput,
   OpensteerReversePackageListOutput,
+  OpensteerReversePackageCreateInput,
+  OpensteerReversePackageCreateOutput,
   OpensteerReversePackagePatchInput,
   OpensteerReversePackagePatchOutput,
-  OpensteerReverseReplayInput,
-  OpensteerReverseReplayOutput,
+  OpensteerReversePackageRunInput,
+  OpensteerReversePackageRunOutput,
   OpensteerReverseReportInput,
   OpensteerReverseReportOutput,
-  OpensteerReverseSolveInput,
-  OpensteerReverseSolveOutput,
+  OpensteerReverseDiscoverInput,
+  OpensteerReverseDiscoverOutput,
+  OpensteerReverseQueryInput,
+  OpensteerReverseQueryOutput,
   OpensteerPageCloseInput,
   OpensteerPageCloseOutput,
   OpensteerPageEvaluateInput,
@@ -181,14 +185,22 @@ export interface OpensteerSemanticRuntime {
     input: OpensteerTransportProbeInput,
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerTransportProbeOutput>;
-  solveReverse(
-    input: OpensteerReverseSolveInput,
+  discoverReverse(
+    input: OpensteerReverseDiscoverInput,
     options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerReverseSolveOutput>;
-  replayReverse(
-    input: OpensteerReverseReplayInput,
+  ): Promise<OpensteerReverseDiscoverOutput>;
+  queryReverse(
+    input: OpensteerReverseQueryInput,
     options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerReverseReplayOutput>;
+  ): Promise<OpensteerReverseQueryOutput>;
+  createReversePackage(
+    input: OpensteerReversePackageCreateInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerReversePackageCreateOutput>;
+  runReversePackage(
+    input: OpensteerReversePackageRunInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerReversePackageRunOutput>;
   exportReverse(
     input: OpensteerReverseExportInput,
     options?: OpensteerRuntimeOperationOptions,
