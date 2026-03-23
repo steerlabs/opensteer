@@ -1,8 +1,7 @@
 import { promisify } from "node:util";
 import { execFile as execFileCallback } from "node:child_process";
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
@@ -85,31 +84,21 @@ describe("Phase 6 source-mode CLI", () => {
     await expect(access(metadataPath)).rejects.toThrow();
   }, 60_000);
 
-  test("source CLI open surfaces structured profile inspection errors", async () => {
+  test("source CLI rejects removed legacy browser mode aliases", async () => {
     const rootDir = await createPhase6TemporaryRoot();
-    const userDataDir = await mkdtemp(path.join(tmpdir(), "opensteer-cli-profile-blocked-"));
+    const { stdout, stderr } = await runFailingSourceCliCommand(rootDir, [
+      "open",
+      "https://example.com",
+      "--browser",
+      "profile",
+      "--headless",
+      "true",
+    ]);
 
-    try {
-      await writeFile(path.join(userDataDir, "lockfile"), "");
-
-      const { stdout, stderr } = await runFailingSourceCliCommand(rootDir, [
-        "open",
-        "https://example.com",
-        "--browser",
-        "profile",
-        "--user-data-dir",
-        userDataDir,
-        "--headless",
-        "true",
-      ]);
-
-      expect(stdout.trim()).toBe("");
-      expect(stderr).toContain('"code":"profile-unavailable"');
-      expect(stderr).toContain('"status":"browser_owned"');
-      expect(stderr).toContain('"evidence":"singleton_artifacts"');
-    } finally {
-      await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
-    }
+    expect(stdout.trim()).toBe("");
+    expect(stderr).toContain(
+      '"message":"Option \\"--browser\\" must be one of: managed, snapshot-session, snapshot-authenticated, attach-live."',
+    );
   }, 60_000);
 });
 

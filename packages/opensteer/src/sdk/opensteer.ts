@@ -99,7 +99,7 @@ import type {
 } from "@opensteer/protocol";
 
 import type { AuthRecipeRecord, RecipeRecord, RequestPlanRecord } from "../registry.js";
-import { LocalOpensteerSessionProxy } from "../session-service/local-session-proxy.js";
+import { AttachedOpensteerSessionProxy } from "../session-service/attached-session-proxy.js";
 import type {
   OpensteerDisconnectableRuntime,
   OpensteerSemanticRuntime,
@@ -232,7 +232,7 @@ export class Opensteer {
 
   static attach(options: OpensteerAttachOptions = {}): Opensteer {
     return Opensteer.fromRuntime(
-      new LocalOpensteerSessionProxy({
+      new AttachedOpensteerSessionProxy({
         ...(options.name === undefined ? {} : { name: options.name }),
         ...(options.rootDir === undefined ? {} : { rootDir: options.rootDir }),
       }),

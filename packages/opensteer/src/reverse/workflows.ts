@@ -85,7 +85,8 @@ export function buildReversePackageWorkflow(input: {
     kind: "assert",
     label: "Validate replay result against captured success",
     validationRuleIds: input.validators.map((validator) => validator.id),
-    binding: input.template?.execution === "page-observation" ? "observed-record" : "channel-response",
+    binding:
+      input.template?.execution === "page-observation" ? "observed-record" : "channel-response",
   });
 
   return steps;
@@ -104,11 +105,11 @@ export function buildReversePackageRequirements(input: {
   return {
     requiresBrowser:
       input.template?.requiresBrowser ??
-      ((input.candidate?.guardIds.length !== 0) ||
+      (input.candidate?.guardIds.length !== 0 ||
         input.candidate?.resolvers.some((resolver) => resolver.requiresBrowser) === true),
     requiresLiveState:
       input.template?.requiresLiveState ??
-      (input.candidate?.resolvers.some((resolver) => resolver.requiresLiveState) === true),
+      input.candidate?.resolvers.some((resolver) => resolver.requiresLiveState) === true,
     manualCalibration: classifyManualCalibrationRequirement(
       input.candidate,
       input.manualCalibration,
@@ -383,7 +384,9 @@ export function cloneReversePackageResolvers(
   return resolvers.map((resolver) => ({
     ...resolver,
     ...(resolver.inputNames === undefined ? {} : { inputNames: [...resolver.inputNames] }),
-    ...(resolver.valueRef === undefined ? {} : { valueRef: cloneValueReference(resolver.valueRef) }),
+    ...(resolver.valueRef === undefined
+      ? {}
+      : { valueRef: cloneValueReference(resolver.valueRef) }),
   }));
 }
 
@@ -471,7 +474,13 @@ function workflowUsesBrowser(workflow: readonly OpensteerReverseWorkflowStep[]):
     if (step.kind !== "operation") {
       return false;
     }
-    return step.operation.startsWith("page.") || step.operation.startsWith("dom.") || step.operation.startsWith("interaction.") || step.operation === "computer.execute" || step.operation === "captcha.solve";
+    return (
+      step.operation.startsWith("page.") ||
+      step.operation.startsWith("dom.") ||
+      step.operation.startsWith("interaction.") ||
+      step.operation === "computer.execute" ||
+      step.operation === "captcha.solve"
+    );
   });
 }
 

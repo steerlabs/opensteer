@@ -1256,11 +1256,18 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
     const bodyRect = createRect(0, 0, 1280, 2400);
     const buttonRect = createRect(16, 16, 160, 48);
     const obscuredRect = createRect(240, 16, 160, 48);
+    const titleRect = createRect(16, 96, 220, 32);
     const buttonRef = createNodeRef(`fake-${++this.nodeCounter}`);
     const obscuredRef = createNodeRef(`fake-${++this.nodeCounter}`);
     const documentNodeRef = createNodeRef(`fake-${++this.nodeCounter}`);
     const htmlNodeRef = createNodeRef(`fake-${++this.nodeCounter}`);
     const bodyNodeRef = createNodeRef(`fake-${++this.nodeCounter}`);
+    const titleRef = createNodeRef(`fake-${++this.nodeCounter}`);
+    const hiddenPanelRef = createNodeRef(`fake-${++this.nodeCounter}`);
+    const shadowHostRef = createNodeRef(`fake-${++this.nodeCounter}`);
+    const shadowActionRef = createNodeRef(`fake-${++this.nodeCounter}`);
+    const nestedShadowHostRef = createNodeRef(`fake-${++this.nodeCounter}`);
+    const nestedShadowActionRef = createNodeRef(`fake-${++this.nodeCounter}`);
 
     const nodes: DomSnapshotNode[] = [
       {
@@ -1286,7 +1293,7 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
         snapshotNodeId: 3,
         nodeRef: bodyNodeRef,
         parentSnapshotNodeId: 2,
-        childSnapshotNodeIds: [4, 5],
+        childSnapshotNodeIds: [4, 5, 6, 7, 8, 9, 10, 11],
         nodeType: 1,
         nodeName: "BODY",
         nodeValue: "",
@@ -1332,6 +1339,82 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
           paintOrder: 3,
         },
       },
+      {
+        snapshotNodeId: 6,
+        nodeRef: titleRef,
+        parentSnapshotNodeId: 3,
+        childSnapshotNodeIds: [],
+        nodeType: 1,
+        nodeName: "H1",
+        nodeValue: "",
+        textContent: "Snapshot Heading",
+        attributes: [{ name: "id", value: "snapshot-title" }],
+        layout: {
+          rect: titleRect,
+          quad: rectToQuad(titleRect),
+          paintOrder: 4,
+        },
+      },
+      {
+        snapshotNodeId: 7,
+        nodeRef: hiddenPanelRef,
+        parentSnapshotNodeId: 3,
+        childSnapshotNodeIds: [],
+        nodeType: 1,
+        nodeName: "DIV",
+        nodeValue: "",
+        textContent: "Hidden panel",
+        computedStyle: {
+          display: "none",
+        },
+        attributes: [{ name: "id", value: "hidden-panel" }],
+      },
+      {
+        snapshotNodeId: 8,
+        nodeRef: shadowHostRef,
+        parentSnapshotNodeId: 3,
+        childSnapshotNodeIds: [],
+        nodeType: 1,
+        nodeName: "DIV",
+        nodeValue: "",
+        textContent: "",
+        attributes: [{ name: "id", value: "shadow-host" }],
+      },
+      {
+        snapshotNodeId: 9,
+        nodeRef: shadowActionRef,
+        parentSnapshotNodeId: 3,
+        childSnapshotNodeIds: [],
+        shadowHostNodeRef: shadowHostRef,
+        nodeType: 1,
+        nodeName: "BUTTON",
+        nodeValue: "",
+        textContent: "Shadow Action",
+        attributes: [{ name: "id", value: "shadow-action" }],
+      },
+      {
+        snapshotNodeId: 10,
+        nodeRef: nestedShadowHostRef,
+        parentSnapshotNodeId: 3,
+        childSnapshotNodeIds: [],
+        nodeType: 1,
+        nodeName: "DIV",
+        nodeValue: "",
+        textContent: "",
+        attributes: [{ name: "id", value: "nested-shadow-host" }],
+      },
+      {
+        snapshotNodeId: 11,
+        nodeRef: nestedShadowActionRef,
+        parentSnapshotNodeId: 3,
+        childSnapshotNodeIds: [],
+        shadowHostNodeRef: nestedShadowHostRef,
+        nodeType: 1,
+        nodeName: "BUTTON",
+        nodeValue: "",
+        textContent: "Nested Shadow",
+        attributes: [{ name: "id", value: "nested-shadow-action" }],
+      },
     ];
 
     const domSnapshot: DomSnapshot = {
@@ -1350,6 +1433,12 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
     const nodeText = new Map<NodeRef, string | null>([
       [buttonRef, "Continue"],
       [obscuredRef, "Overlay"],
+      [titleRef, "Snapshot Heading"],
+      [hiddenPanelRef, "Hidden panel"],
+      [shadowHostRef, ""],
+      [shadowActionRef, "Shadow Action"],
+      [nestedShadowHostRef, ""],
+      [nestedShadowActionRef, "Nested Shadow"],
       [documentNodeRef, null],
       [htmlNodeRef, null],
       [bodyNodeRef, null],
@@ -1360,6 +1449,12 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
     >([
       [buttonRef, nodes[3]!.attributes],
       [obscuredRef, nodes[4]!.attributes],
+      [titleRef, nodes[5]!.attributes],
+      [hiddenPanelRef, nodes[6]!.attributes],
+      [shadowHostRef, nodes[7]!.attributes],
+      [shadowActionRef, nodes[8]!.attributes],
+      [nestedShadowHostRef, nodes[9]!.attributes],
+      [nestedShadowActionRef, nodes[10]!.attributes],
       [documentNodeRef, []],
       [htmlNodeRef, []],
       [bodyNodeRef, []],
@@ -1367,6 +1462,7 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
     const nodeRects = new Map<NodeRef, Rect>([
       [buttonRef, buttonRect],
       [obscuredRef, obscuredRect],
+      [titleRef, titleRect],
       [bodyNodeRef, bodyRect],
     ]);
     const hitTests = new Map<string, Omit<HitTestResult, "inputPoint" | "inputCoordinateSpace">>([
@@ -1425,7 +1521,17 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
         documentEpoch,
         url,
         capturedAt: this.timestampMs,
-        html: `<html><head><title>${title}</title></head><body><button id="continue" type="button">Continue</button><div id="overlay">Overlay</div></body></html>`,
+        html:
+          `<html><head><title>${title}</title></head><body>` +
+          `<button id="continue" type="button">Continue</button>` +
+          `<div id="overlay">Overlay</div>` +
+          `<h1 id="snapshot-title">Snapshot Heading</h1>` +
+          `<div id="hidden-panel" style="display:none">Hidden panel</div>` +
+          `<div id="shadow-host"></div>` +
+          `<button id="shadow-action">Shadow Action</button>` +
+          `<div id="nested-shadow-host"></div>` +
+          `<button id="nested-shadow-action">Nested Shadow</button>` +
+          `</body></html>`,
       },
       domSnapshot,
       nodeText,

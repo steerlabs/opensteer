@@ -1,10 +1,27 @@
 {
   "name": "opensteer",
   "version": "0.0.0",
-  "description": "Opensteer product semantics, CLI, and SDK package for the rewrite.",
+  "description": "Opensteer browser automation, replay, and reverse-engineering toolkit.",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/steerlabs/opensteer.git",
+    "directory": "packages/opensteer"
+  },
+  "bugs": {
+    "url": "https://github.com/steerlabs/opensteer/issues"
+  },
+  "homepage": "https://github.com/steerlabs/opensteer/tree/main/packages/opensteer#readme",
+  "keywords": [
+    "browser-automation",
+    "playwright",
+    "web-automation",
+    "agents",
+    "scraping",
+    "reverse-engineering"
+  ],
   "engines": {
     "node": ">=22"
   },
@@ -16,9 +33,14 @@
   },
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     }
   },
   "files": [
@@ -26,6 +48,7 @@
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
+    "@opensteer/engine-playwright": "workspace:*",
     "cheerio": "^1.1.2",
     "css-select": "^6.0.0",
     "domhandler": "^5.0.3",
@@ -34,13 +57,9 @@
     "webcrack": "^2.15.1"
   },
   "peerDependencies": {
-    "@opensteer/engine-abp": "workspace:*",
-    "@opensteer/engine-playwright": "workspace:*"
+    "@opensteer/engine-abp": "workspace:*"
   },
   "peerDependenciesMeta": {
-    "@opensteer/engine-playwright": {
-      "optional": true
-    },
     "@opensteer/engine-abp": {
       "optional": true
     }
@@ -49,7 +68,6 @@
     "@opensteer/browser-core": "workspace:*",
     "@opensteer/cloud-contracts": "workspace:*",
     "@opensteer/engine-abp": "workspace:*",
-    "@opensteer/engine-playwright": "workspace:*",
     "@opensteer/protocol": "workspace:*"
   },
   "scripts": {

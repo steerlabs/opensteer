@@ -14,7 +14,10 @@ export async function dispatchSemanticOperation(
     case "session.open":
       return runtime.open(input as Parameters<OpensteerSemanticRuntime["open"]>[0], options);
     case "page.list":
-      return runtime.listPages(input as Parameters<OpensteerSemanticRuntime["listPages"]>[0], options);
+      return runtime.listPages(
+        input as Parameters<OpensteerSemanticRuntime["listPages"]>[0],
+        options,
+      );
     case "page.new":
       return runtime.newPage(input as Parameters<OpensteerSemanticRuntime["newPage"]>[0], options);
     case "page.activate":
@@ -30,14 +33,20 @@ export async function dispatchSemanticOperation(
     case "page.goto":
       return runtime.goto(input as Parameters<OpensteerSemanticRuntime["goto"]>[0], options);
     case "page.evaluate":
-      return runtime.evaluate(input as Parameters<OpensteerSemanticRuntime["evaluate"]>[0], options);
+      return runtime.evaluate(
+        input as Parameters<OpensteerSemanticRuntime["evaluate"]>[0],
+        options,
+      );
     case "page.add-init-script":
       return runtime.addInitScript(
         input as Parameters<OpensteerSemanticRuntime["addInitScript"]>[0],
         options,
       );
     case "page.snapshot":
-      return runtime.snapshot(input as Parameters<OpensteerSemanticRuntime["snapshot"]>[0], options);
+      return runtime.snapshot(
+        input as Parameters<OpensteerSemanticRuntime["snapshot"]>[0],
+        options,
+      );
     case "dom.click":
       return runtime.click(input as Parameters<OpensteerSemanticRuntime["click"]>[0], options);
     case "dom.hover":

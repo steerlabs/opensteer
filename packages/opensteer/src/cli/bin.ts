@@ -66,7 +66,7 @@ import {
   removeOpensteerServiceMetadata,
   writeOpensteerServiceMetadata,
 } from "./service-metadata.js";
-import { LocalOpensteerSessionProxy } from "../session-service/local-session-proxy.js";
+import { AttachedOpensteerSessionProxy } from "../session-service/attached-session-proxy.js";
 import { runOpensteerMcpServer } from "./mcp.js";
 import { runOpensteerServiceHost } from "./service-host.js";
 
@@ -543,7 +543,14 @@ async function main(argv: readonly string[]): Promise<void> {
       const filtersJson = readOptionalJsonObject(options.filtersJson, "--filters-json");
       const sortPreset = readOptionalEnum(
         options.sortPreset,
-        ["advisory-rank", "observed-at", "portability", "first-party", "hint-match", "response-richness"] as const,
+        [
+          "advisory-rank",
+          "observed-at",
+          "portability",
+          "first-party",
+          "hint-match",
+          "response-richness",
+        ] as const,
         "--sort-preset",
       );
       const sortJson = readOptionalJsonObject(options.sortJson, "--sort-json");
@@ -614,11 +621,7 @@ async function main(argv: readonly string[]): Promise<void> {
       const packageId = readOptionalString(options.packageId);
       const reportId = readOptionalString(options.reportId);
       const caseId = readOptionalString(options.caseId);
-      const kind = readOptionalEnum(
-        options.kind,
-        ["discovery", "package"] as const,
-        "--kind",
-      );
+      const kind = readOptionalEnum(options.kind, ["discovery", "package"] as const, "--kind");
       if (!packageId && !reportId && !caseId) {
         throw new Error("reverse report requires --package-id, --case-id, or --report-id");
       }
@@ -641,7 +644,9 @@ async function main(argv: readonly string[]): Promise<void> {
       const candidateId = readOptionalString(options.candidateId);
       const recordId = readOptionalString(options.recordId);
       if (!caseId || (!candidateId && !recordId)) {
-        throw new Error("reverse package create requires --case-id and either --candidate-id or --record-id");
+        throw new Error(
+          "reverse package create requires --case-id and either --candidate-id or --record-id",
+        );
       }
       const templateId = readOptionalString(options.templateId);
       const key = readOptionalString(options.key);
@@ -654,7 +659,9 @@ async function main(argv: readonly string[]): Promise<void> {
             ? { kind: "record" as const, id: recordId }
             : undefined;
       if (source === undefined) {
-        throw new Error("reverse package create requires --case-id and either --candidate-id or --record-id");
+        throw new Error(
+          "reverse package create requires --case-id and either --candidate-id or --record-id",
+        );
       }
       const result = await runtime.createReversePackage({
         caseId,
@@ -1409,7 +1416,7 @@ async function resolveCliSemanticRuntime(
 
   const attached = await connectOpensteerService(sessionOptions);
   if (attached) {
-    return new LocalOpensteerSessionProxy(sessionOptions);
+    return new AttachedOpensteerSessionProxy(sessionOptions);
   }
 
   return new OpensteerSessionRuntime({

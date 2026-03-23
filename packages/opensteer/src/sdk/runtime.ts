@@ -2015,7 +2015,9 @@ export class OpensteerSessionRuntime {
           kind: packageRecord.payload.kind,
           readiness: packageRecord.payload.readiness,
           ...(replay.candidate === undefined ? {} : { channel: replay.candidate.channel.kind }),
-          ...(replay.template?.transport === undefined ? {} : { transport: replay.template.transport }),
+          ...(replay.template?.transport === undefined
+            ? {}
+            : { transport: replay.template.transport }),
           ...(packageRecord.payload.stateSource === undefined
             ? {}
             : { stateSource: packageRecord.payload.stateSource }),
@@ -2023,7 +2025,9 @@ export class OpensteerSessionRuntime {
           ...(replay.run.status === undefined ? {} : { status: replay.run.status }),
           validation: replay.run.validation,
           executedStepIds: replay.run.executedStepIds,
-          ...(replay.run.failedStepId === undefined ? {} : { failedStepId: replay.run.failedStepId }),
+          ...(replay.run.failedStepId === undefined
+            ? {}
+            : { failedStepId: replay.run.failedStepId }),
           bindings: replay.run.bindings ?? {},
           replayRunId: replay.run.id,
           unresolvedRequirements: packageRecord.payload.unresolvedRequirements,
@@ -2138,7 +2142,11 @@ export class OpensteerSessionRuntime {
     return this.runWithOperationTimeout(
       "reverse.report",
       async () => {
-        if (input.packageId === undefined && input.reportId === undefined && input.caseId === undefined) {
+        if (
+          input.packageId === undefined &&
+          input.reportId === undefined &&
+          input.caseId === undefined
+        ) {
           throw new OpensteerProtocolError(
             "invalid-argument",
             "reverse report requires packageId, caseId, or reportId",
@@ -2584,7 +2592,8 @@ export class OpensteerSessionRuntime {
     const nextCandidates = [...untouchedCandidates, ...analyzedCandidates];
     const nextObservedRecords = [...untouchedObservedRecords, ...analyzedObservedRecords].sort(
       (left, right) =>
-        (right.observedAt ?? 0) - (left.observedAt ?? 0) || left.recordId.localeCompare(right.recordId),
+        (right.observedAt ?? 0) - (left.observedAt ?? 0) ||
+        left.recordId.localeCompare(right.recordId),
     );
 
     const updatedCase = await root.registry.reverseCases.update({
@@ -2620,12 +2629,7 @@ export class OpensteerSessionRuntime {
           matchesReverseRecordFilters(record, input.caseRecord.payload.candidates, input.filters),
         )
         .sort((left, right) =>
-          compareReverseObservedRecords(
-            left,
-            right,
-            input.caseRecord.payload.candidates,
-            sort,
-          ),
+          compareReverseObservedRecords(left, right, input.caseRecord.payload.candidates, sort),
         );
       const page = rankedRecords.slice(offset, offset + limit).map((record) => ({
         record,
@@ -2858,7 +2862,9 @@ export class OpensteerSessionRuntime {
           : { stateSource: packageRecord.payload.stateSource }),
         ...(template?.transport === undefined ? {} : { transport: template.transport }),
         executedStepIds: replayResult.executedStepIds,
-        ...(replayResult.failedStepId === undefined ? {} : { failedStepId: replayResult.failedStepId }),
+        ...(replayResult.failedStepId === undefined
+          ? {}
+          : { failedStepId: replayResult.failedStepId }),
         ...(replayResult.bindings === undefined ? {} : { bindings: replayResult.bindings }),
         ...(replayResult.recordId === undefined ? {} : { recordId: replayResult.recordId }),
         ...(replayResult.status === undefined ? {} : { status: replayResult.status }),
@@ -3127,18 +3133,20 @@ export class OpensteerSessionRuntime {
       );
     }
     const entries = await Promise.all(
-      Object.entries(template as Record<string, OpensteerValueTemplate>).map(async ([key, value]) => [
-        key,
-        await this.resolveReverseValueTemplate(
-          value,
-          packageRecord,
-          caseRecord,
-          bindings,
-          resolverValues,
-          pageRef,
-          timeout,
-        ),
-      ]),
+      Object.entries(template as Record<string, OpensteerValueTemplate>).map(
+        async ([key, value]) => [
+          key,
+          await this.resolveReverseValueTemplate(
+            value,
+            packageRecord,
+            caseRecord,
+            bindings,
+            resolverValues,
+            pageRef,
+            timeout,
+          ),
+        ],
+      ),
     );
     return Object.fromEntries(entries);
   }
@@ -3159,7 +3167,10 @@ export class OpensteerSessionRuntime {
       case "literal":
         return valueRef.value;
       case "resolver":
-        return extractReverseRuntimeValue(resolverValues?.get(valueRef.resolverId ?? ""), valueRef.pointer);
+        return extractReverseRuntimeValue(
+          resolverValues?.get(valueRef.resolverId ?? ""),
+          valueRef.pointer,
+        );
       case "binding":
         return extractReverseRuntimeValue(bindings.get(valueRef.binding ?? ""), valueRef.pointer);
       case "candidate":
@@ -5559,7 +5570,9 @@ export class OpensteerSessionRuntime {
     const reports = await (await this.ensureRoot()).registry.reverseReports.list();
     const report = reports
       .filter((entry) => entry.payload.packageId === packageId)
-      .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))[0];
+      .sort(
+        (left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id),
+      )[0];
     if (report === undefined) {
       throw new OpensteerProtocolError(
         "not-found",
@@ -5582,7 +5595,9 @@ export class OpensteerSessionRuntime {
     const reports = await (await this.ensureRoot()).registry.reverseReports.list();
     const report = reports
       .filter((entry) => entry.payload.caseId === caseId && entry.payload.kind === kind)
-      .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))[0];
+      .sort(
+        (left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id),
+      )[0];
     if (report === undefined) {
       throw new OpensteerProtocolError(
         "not-found",
@@ -5862,10 +5877,11 @@ export class OpensteerSessionRuntime {
       );
       const match = [...records]
         .reverse()
-        .find((record) =>
-          !baselineRequestIds.has(record.record.requestId) &&
-          this.isObservedReplayRecordSettled(record) &&
-          matchesReverseAwaitRecordFilter(record, filter),
+        .find(
+          (record) =>
+            !baselineRequestIds.has(record.record.requestId) &&
+            this.isObservedReplayRecordSettled(record) &&
+            matchesReverseAwaitRecordFilter(record, filter),
         );
       if (match !== undefined) {
         return match;
@@ -8751,7 +8767,10 @@ function collectReverseReplayStateSnapshotsFromCase(
     snapshotIds.add(snapshotId);
   }
   for (const resolver of candidate.resolvers) {
-    if (resolver.valueRef?.kind === "state-snapshot" && resolver.valueRef.stateSnapshotId !== undefined) {
+    if (
+      resolver.valueRef?.kind === "state-snapshot" &&
+      resolver.valueRef.stateSnapshotId !== undefined
+    ) {
       snapshotIds.add(resolver.valueRef.stateSnapshotId);
     }
   }
@@ -8935,7 +8954,9 @@ function resolveReverseObservedRecord(
   return record;
 }
 
-function buildReverseDiscoveryIndex(caseRecord: ReverseCaseRecord): OpensteerReverseDiscoverOutput["index"] {
+function buildReverseDiscoveryIndex(
+  caseRecord: ReverseCaseRecord,
+): OpensteerReverseDiscoverOutput["index"] {
   return {
     views: ["records", "clusters", "candidates"],
     sortableKeys: [
@@ -9186,7 +9207,10 @@ function compareReverseClusters(
 ): number {
   const leftCandidate = bestReverseCandidateForCluster(left.id, candidates, sort);
   const rightCandidate = bestReverseCandidateForCluster(right.id, candidates, sort);
-  return compareReverseCandidatesProxy(leftCandidate, rightCandidate, sort) || left.id.localeCompare(right.id);
+  return (
+    compareReverseCandidatesProxy(leftCandidate, rightCandidate, sort) ||
+    left.id.localeCompare(right.id)
+  );
 }
 
 function compareReverseCandidatesProxy(
@@ -9272,12 +9296,12 @@ function matchesReverseCandidateFilters(
   ) {
     return false;
   }
-  if (filters.hasGuards !== undefined && (candidate.guardIds.length > 0) !== filters.hasGuards) {
+  if (filters.hasGuards !== undefined && candidate.guardIds.length > 0 !== filters.hasGuards) {
     return false;
   }
   if (
     filters.hasResolvers !== undefined &&
-    (candidate.resolvers.length > 0) !== filters.hasResolvers
+    candidate.resolvers.length > 0 !== filters.hasResolvers
   ) {
     return false;
   }
@@ -9302,7 +9326,9 @@ function matchesReverseCandidateFilters(
   if (
     filters.artifactId !== undefined &&
     !candidate.scriptArtifactIds.includes(filters.artifactId) &&
-    !candidate.resolvers.some((resolver) => extractReverseResolverArtifactId(resolver) === filters.artifactId)
+    !candidate.resolvers.some(
+      (resolver) => extractReverseResolverArtifactId(resolver) === filters.artifactId,
+    )
   ) {
     return false;
   }
@@ -9395,7 +9421,9 @@ function matchesReverseRecordFilters(
   if (filters.status !== undefined && String(record.status ?? "") !== filters.status) {
     return false;
   }
-  const relatedCandidates = candidates.filter((candidate) => candidate.recordId === record.recordId);
+  const relatedCandidates = candidates.filter(
+    (candidate) => candidate.recordId === record.recordId,
+  );
   return relatedCandidates.length === 0
     ? true
     : relatedCandidates.some((candidate) => matchesReverseCandidateFilters(candidate, filters));
@@ -9580,7 +9608,9 @@ function resolveReverseCookieResolverValue(
   if (cookieName === undefined) {
     return undefined;
   }
-  for (const snapshot of [...scopedSnapshots].sort((left, right) => right.capturedAt - left.capturedAt)) {
+  for (const snapshot of [...scopedSnapshots].sort(
+    (left, right) => right.capturedAt - left.capturedAt,
+  )) {
     const match = snapshot.cookies?.find((cookie) => cookie.name === cookieName);
     if (match !== undefined) {
       return match.value;
@@ -9609,7 +9639,9 @@ function resolveReverseStorageResolverValue(
   if (inputName === undefined) {
     return undefined;
   }
-  for (const snapshot of [...scopedSnapshots].sort((left, right) => right.capturedAt - left.capturedAt)) {
+  for (const snapshot of [...scopedSnapshots].sort(
+    (left, right) => right.capturedAt - left.capturedAt,
+  )) {
     for (const origin of snapshot.storage?.origins ?? []) {
       const entry = origin.localStorage.find((item) => item.key === inputName);
       if (entry !== undefined) {
@@ -9642,9 +9674,7 @@ function extractReverseResolverArtifactId(
   return resolver.valueRef?.kind === "artifact" ? resolver.valueRef.artifactId : undefined;
 }
 
-function extractReverseResolverRecordId(
-  resolver: OpensteerExecutableResolver,
-): string | undefined {
+function extractReverseResolverRecordId(resolver: OpensteerExecutableResolver): string | undefined {
   return resolver.valueRef?.kind === "record" ? resolver.valueRef.recordId : undefined;
 }
 

@@ -1055,9 +1055,12 @@ export const opensteerReverseSortPresetSchema: JsonSchema = enumSchema(
   { title: "OpensteerReverseSortPreset" },
 );
 
-export const opensteerReverseSortDirectionSchema: JsonSchema = enumSchema(["asc", "desc"] as const, {
-  title: "OpensteerReverseSortDirection",
-});
+export const opensteerReverseSortDirectionSchema: JsonSchema = enumSchema(
+  ["asc", "desc"] as const,
+  {
+    title: "OpensteerReverseSortDirection",
+  },
+);
 
 export const opensteerObservationClusterRelationshipKindSchema: JsonSchema = enumSchema(
   ["seed", "preflight", "redirect", "retry", "duplicate", "follow-on"] as const,

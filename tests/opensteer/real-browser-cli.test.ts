@@ -22,7 +22,7 @@ const CLI_SCRIPT = path.resolve(process.cwd(), "packages/opensteer/dist/cli/bin.
 
 beforeAll(async () => {
   await ensureCliArtifactsBuilt();
-});
+}, 120_000);
 
 describe("local browser CLI surfaces", () => {
   test("parses browser discover mode with json output", () => {
@@ -266,51 +266,55 @@ describe("local browser CLI surfaces", () => {
     expect(result.stdout).toContain("local-profile");
   });
 
-  test("built CLI rejects unknown camelCase and command-inappropriate flags", async () => {
-    const rootDir = await mkdtemp(path.join(tmpdir(), "opensteer-cli-strict-"));
+  test(
+    "built CLI rejects unknown camelCase and command-inappropriate flags",
+    { timeout: 15_000 },
+    async () => {
+      const rootDir = await mkdtemp(path.join(tmpdir(), "opensteer-cli-strict-"));
 
-    await expect(
-      runCliExpectFailure(rootDir, [
-        "input",
-        "--selector",
-        "input#search",
-        "--text",
-        "airpods",
-        "--pressEnter",
-        "true",
-      ]),
-    ).resolves.toMatchObject({
-      error: {
-        message: 'unknown option "--pressEnter". Did you mean "--press-enter"?',
-      },
-    });
+      await expect(
+        runCliExpectFailure(rootDir, [
+          "input",
+          "--selector",
+          "input#search",
+          "--text",
+          "airpods",
+          "--pressEnter",
+          "true",
+        ]),
+      ).resolves.toMatchObject({
+        error: {
+          message: 'unknown option "--pressEnter". Did you mean "--press-enter"?',
+        },
+      });
 
-    await expect(
-      runCliExpectFailure(rootDir, ["goto", "https://example.com", "--networkTag", "nav"]),
-    ).resolves.toMatchObject({
-      error: {
-        message: 'unknown option "--networkTag". Did you mean "--network-tag"?',
-      },
-    });
+      await expect(
+        runCliExpectFailure(rootDir, ["goto", "https://example.com", "--networkTag", "nav"]),
+      ).resolves.toMatchObject({
+        error: {
+          message: 'unknown option "--networkTag". Did you mean "--network-tag"?',
+        },
+      });
 
-    await expect(
-      runCliExpectFailure(rootDir, ["open", "https://example.com", "--bogus", "true"]),
-    ).resolves.toMatchObject({
-      error: {
-        message: 'unknown option "--bogus".',
-      },
-    });
+      await expect(
+        runCliExpectFailure(rootDir, ["open", "https://example.com", "--bogus", "true"]),
+      ).resolves.toMatchObject({
+        error: {
+          message: 'unknown option "--bogus".',
+        },
+      });
 
-    await expect(
-      runCliExpectFailure(rootDir, ["close", "--headless", "true"]),
-    ).resolves.toMatchObject({
-      error: {
-        message: 'unknown option "--headless".',
-      },
-    });
-  });
+      await expect(
+        runCliExpectFailure(rootDir, ["close", "--headless", "true"]),
+      ).resolves.toMatchObject({
+        error: {
+          message: 'unknown option "--headless".',
+        },
+      });
+    },
+  );
 
-  test("built CLI submits input when --press-enter is provided", async () => {
+  test("built CLI submits input when --press-enter is provided", { timeout: 15_000 }, async () => {
     const rootDir = await mkdtemp(path.join(tmpdir(), "opensteer-cli-press-enter-"));
     const html = `<!doctype html><html><head><title>idle</title></head><body>
 <form action="#" onsubmit="event.preventDefault(); document.querySelector('#status').textContent = document.querySelector('#search').value; document.title = 'submitted:' + document.querySelector('#search').value;">

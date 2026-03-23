@@ -70,7 +70,7 @@ const OPENSTEER_ABP_SUPPORTED_BROWSER_OPTIONS = [
 const OPENSTEER_ENGINE_REGISTRY = {
   playwright: {
     createFactory: (importers) => async (options) => {
-      const playwrightModule = await importers.importPlaywrightModule();
+      const playwrightModule = await loadPlaywrightEngineModule(importers);
       const normalizedContext = normalizeOpensteerBrowserContextOptions(options.context);
       return createPlaywrightBrowserEngine({
         playwrightModule,
@@ -260,6 +260,19 @@ async function loadAbpEngineModule(importers: OpensteerEngineModuleImporters) {
     if (isMissingPackageError(error, "@opensteer/engine-abp")) {
       throw new Error(
         'ABP engine selected but "@opensteer/engine-abp" is not installed. Install it to use --engine abp or OPENSTEER_ENGINE=abp.',
+      );
+    }
+    throw error;
+  }
+}
+
+async function loadPlaywrightEngineModule(importers: OpensteerEngineModuleImporters) {
+  try {
+    return await importers.importPlaywrightModule();
+  } catch (error) {
+    if (isMissingPackageError(error, "@opensteer/engine-playwright")) {
+      throw new Error(
+        'Default "playwright" engine is unavailable because "@opensteer/engine-playwright" is not installed.',
       );
     }
     throw error;

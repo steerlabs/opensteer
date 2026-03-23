@@ -1033,7 +1033,8 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
           },
           {
             name: "manual-calibration",
-            description: "How strongly discovery should assume manual unlock calibration is acceptable",
+            description:
+              "How strongly discovery should assume manual unlock calibration is acceptable",
             kind: "enum",
             valueLabel: "mode",
             values: ["allow", "avoid", "require"],
@@ -1044,7 +1045,8 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
       {
         name: "query",
         id: "reverse.query",
-        summary: "Query an existing reverse case with deterministic filters and explicit sort keys.",
+        summary:
+          "Query an existing reverse case with deterministic filters and explicit sort keys.",
         options: [
           ...SESSION_OPTIONS,
           OUTPUT_OPTION,
@@ -1074,7 +1076,14 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
             description: "Query sort preset shortcut",
             kind: "enum",
             valueLabel: "preset",
-            values: ["advisory-rank", "observed-at", "portability", "first-party", "hint-match", "response-richness"],
+            values: [
+              "advisory-rank",
+              "observed-at",
+              "portability",
+              "first-party",
+              "hint-match",
+              "response-richness",
+            ],
             internalName: "sortPreset",
           },
           {
@@ -1085,7 +1094,12 @@ const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
             internalName: "sortJson",
           },
           { name: "limit", description: "Result page size", kind: "number", valueLabel: "count" },
-          { name: "cursor", description: "Result page cursor", kind: "string", valueLabel: "cursor" },
+          {
+            name: "cursor",
+            description: "Result page cursor",
+            kind: "string",
+            valueLabel: "cursor",
+          },
         ],
       },
       {

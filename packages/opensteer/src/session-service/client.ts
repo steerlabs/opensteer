@@ -145,7 +145,7 @@ export async function requireOpensteerService(
   return client;
 }
 
-export async function requireAttachedLocalOpensteerService(
+export async function requireAttachedOpensteerService(
   options: OpensteerCliSessionOptions = {},
 ): Promise<OpensteerSessionServiceClient> {
   const metadata = await resolveLiveOpensteerServiceMetadata(options);
@@ -153,12 +153,6 @@ export async function requireAttachedLocalOpensteerService(
     const rootPath = resolveOpensteerSessionRootPath(options.rootDir);
     throw new Error(
       `Opensteer session "${normalizeOpensteerSessionName(options.name)}" is not running. Expected metadata at ${getOpensteerServiceMetadataPath(rootPath, normalizeOpensteerSessionName(options.name))}. Open the session first before attaching.`,
-    );
-  }
-
-  if (!isLocalOpensteerServiceMetadata(metadata)) {
-    throw new Error(
-      `Opensteer.attach only supports local sessions in this release. Session "${metadata.name}" is running in cloud mode.`,
     );
   }
 

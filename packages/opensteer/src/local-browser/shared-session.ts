@@ -18,6 +18,8 @@ import type {
 } from "./types.js";
 
 const DEVTOOLS_POLL_INTERVAL_MS = 50;
+const SESSION_PAGE_RETRY_ATTEMPTS = 20;
+const SESSION_PAGE_RETRY_DELAY_MS = 50;
 export async function launchManagedBrowserSession(
   options: LaunchOwnedBrowserOptions & {
     readonly connectBrowser: ConnectCdpBrowserOptions["connectBrowser"];
@@ -396,9 +398,7 @@ async function getSessionPage(
   freshTab: boolean,
 ): Promise<LocalBrowserLease["page"]> {
   if (freshTab) {
-    const page = await context.newPage();
-    await page.bringToFront?.();
-    return page;
+    return await openSessionPage(context);
   }
 
   const existing = context.pages()[0];
@@ -407,9 +407,22 @@ async function getSessionPage(
     return existing;
   }
 
-  const page = await context.newPage();
-  await page.bringToFront?.();
-  return page;
+  for (let attempt = 0; ; attempt += 1) {
+    const current = context.pages()[0];
+    if (current) {
+      await current.bringToFront?.();
+      return current;
+    }
+
+    try {
+      return await openSessionPage(context);
+    } catch (error) {
+      if (!shouldRetrySessionPageOpen(error) || attempt >= SESSION_PAGE_RETRY_ATTEMPTS - 1) {
+        throw error;
+      }
+      await sleep(SESSION_PAGE_RETRY_DELAY_MS);
+    }
+  }
 }
 
 async function closeBrowserSession(input: {
@@ -477,4 +490,28 @@ function wrapLeaseClose(
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function openSessionPage(
+  context: LocalBrowserLease["context"],
+): Promise<LocalBrowserLease["page"]> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const page = await context.newPage();
+      await page.bringToFront?.();
+      return page;
+    } catch (error) {
+      if (!shouldRetrySessionPageOpen(error) || attempt >= SESSION_PAGE_RETRY_ATTEMPTS - 1) {
+        throw error;
+      }
+      await sleep(SESSION_PAGE_RETRY_DELAY_MS);
+    }
+  }
+}
+
+function shouldRetrySessionPageOpen(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.includes("Cannot read properties of undefined (reading '_page')")
+  );
 }

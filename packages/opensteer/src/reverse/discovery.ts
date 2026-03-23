@@ -72,9 +72,7 @@ export function clusterReverseObservationRecords(input: {
         ),
         members: orderedRecords.map((record, index) => {
           const relation =
-            index === 0
-              ? "seed"
-              : inferClusterRelationship(seedRecord.record, record.record);
+            index === 0 ? "seed" : inferClusterRelationship(seedRecord.record, record.record);
           return {
             recordId: record.record.recordId,
             ...(record.observedAt === undefined ? {} : { observedAt: record.observedAt }),
