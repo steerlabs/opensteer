@@ -1,8 +1,20 @@
 import type { PortableBrowserProfileCookieRecord } from "@opensteer/cloud-contracts";
-import type { Cookie } from "playwright";
+
+// Keep this helper engine-agnostic so opensteer does not depend on Playwright types.
+export interface BrowserProfileSyncCookie {
+  readonly name: string;
+  readonly value: string;
+  readonly domain: string;
+  readonly path?: string;
+  readonly secure: boolean;
+  readonly httpOnly: boolean;
+  readonly expires?: number;
+  readonly sameSite?: "Strict" | "Lax" | "None";
+  readonly partitionKey?: string;
+}
 
 export interface PrepareBrowserProfileSyncCookiesInput {
-  readonly cookies: readonly Cookie[];
+  readonly cookies: readonly BrowserProfileSyncCookie[];
   readonly domains?: readonly string[];
 }
 
@@ -47,7 +59,7 @@ export function normalizeCookieDomain(value: string): string {
 }
 
 function cookieMatchesDomainFilters(
-  cookie: Pick<Cookie, "domain">,
+  cookie: Pick<BrowserProfileSyncCookie, "domain">,
   filteredDomains: readonly string[],
 ): boolean {
   if (filteredDomains.length === 0) {
@@ -64,7 +76,7 @@ function cookieMatchesDomainFilters(
   });
 }
 
-function extractCookieDomain(cookie: Pick<Cookie, "domain">): string | null {
+function extractCookieDomain(cookie: Pick<BrowserProfileSyncCookie, "domain">): string | null {
   if (typeof cookie.domain !== "string" || cookie.domain.trim().length === 0) {
     return null;
   }
@@ -73,7 +85,7 @@ function extractCookieDomain(cookie: Pick<Cookie, "domain">): string | null {
 }
 
 function toPortableBrowserProfileCookieRecord(
-  cookie: Cookie,
+  cookie: BrowserProfileSyncCookie,
 ): PortableBrowserProfileCookieRecord | null {
   const name = typeof cookie.name === "string" ? cookie.name.trim() : "";
   const domain = typeof cookie.domain === "string" ? cookie.domain.trim() : "";
@@ -103,7 +115,7 @@ function toPortableBrowserProfileCookieRecord(
 }
 
 function normalizeSameSite(
-  value: Cookie["sameSite"],
+  value: BrowserProfileSyncCookie["sameSite"],
 ): PortableBrowserProfileCookieRecord["sameSite"] {
   if (value === "Strict") return "strict";
   if (value === "Lax") return "lax";
