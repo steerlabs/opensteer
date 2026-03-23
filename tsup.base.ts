@@ -7,7 +7,7 @@ export function createPackageConfig() {
     entry: ["src/index.ts"],
     format: ["esm", "cjs"],
     sourcemap: true,
-    target: "node20",
+    target: "node22",
     treeshake: true,
   });
 }

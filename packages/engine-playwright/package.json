@@ -1,28 +1,55 @@
 {
   "name": "@opensteer/engine-playwright",
-  "private": true,
   "version": "0.0.0",
-  "description": "Reference Playwright backend for the Opensteer rewrite.",
+  "description": "Playwright-backed browser engine for Opensteer.",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/steerlabs/opensteer.git",
+    "directory": "packages/engine-playwright"
+  },
+  "bugs": {
+    "url": "https://github.com/steerlabs/opensteer/issues"
+  },
+  "homepage": "https://github.com/steerlabs/opensteer/tree/main/packages/engine-playwright#readme",
+  "keywords": [
+    "opensteer",
+    "playwright",
+    "browser-engine",
+    "browser-automation"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     }
   },
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
-    "@opensteer/browser-core": "workspace:*",
-    "@opensteer/protocol": "workspace:*",
     "playwright": "1.58.2"
+  },
+  "devDependencies": {
+    "@opensteer/browser-core": "workspace:*",
+    "@opensteer/protocol": "workspace:*"
   },
   "scripts": {
     "build": "tsup",

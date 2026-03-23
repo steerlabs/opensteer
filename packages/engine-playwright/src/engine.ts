@@ -343,6 +343,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     if (session.initialPage) {
       const initialPage = session.initialPage;
       session.initialPage = undefined;
+      await this.flushPendingPageTasks(session.sessionRef);
       const controller =
         this.pageByPlaywrightPage.get(initialPage) ??
         (await this.initializePageController(session, initialPage, input.openerPageRef, true));
@@ -781,6 +782,24 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     if (clip === undefined && !input.fullPage) {
       artifact = (await captureLayoutViewportScreenshotArtifact(controller, mainFrame, format))
         .artifact;
+    } else if (input.fullPage && (format === "png" || format === "jpeg")) {
+      const bytes = await controller.page.screenshot({
+        type: format,
+        fullPage: true,
+        scale: "css",
+      });
+      artifact = {
+        pageRef: controller.pageRef,
+        frameRef: mainFrame.frameRef,
+        documentRef: mainFrame.currentDocument.documentRef,
+        documentEpoch: mainFrame.currentDocument.documentEpoch,
+        payload: createBodyPayload(new Uint8Array(bytes), {
+          mimeType: `image/${format}`,
+        }),
+        format,
+        size,
+        coordinateSpace,
+      };
     } else {
       const response = await controller.cdp.send("Page.captureScreenshot", {
         format,
@@ -1537,6 +1556,9 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     }
     if (this.pageByPlaywrightPage.has(page)) {
       return;
+    }
+    if (this.contextOptions?.viewport !== undefined && this.contextOptions.viewport !== null) {
+      await page.setViewportSize(this.contextOptions.viewport);
     }
     await this.initializePageController(session, page, undefined, true);
   }
@@ -2711,6 +2733,9 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     if (record.responseBodyState !== "pending") {
       return;
     }
+    if (record.captureState === "pending") {
+      return;
+    }
     const skipReason = getResponseBodySkipReason(record);
     if (skipReason !== undefined) {
       record.responseBodyState = "skipped";
@@ -2922,7 +2947,10 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   }
 
   private handleControllerEventError(controller: PageController, error: unknown): void {
-    if (!this.isControllerAcceptingEvents(controller) || shouldIgnoreBackgroundTaskError(controller, error)) {
+    if (
+      !this.isControllerAcceptingEvents(controller) ||
+      shouldIgnoreBackgroundTaskError(controller, error)
+    ) {
       return;
     }
     controller.backgroundError ??= normalizePlaywrightError(error, controller.pageRef);

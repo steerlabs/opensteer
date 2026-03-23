@@ -1,18 +1,27 @@
 {
   "name": "@opensteer/cloud-contracts",
+  "private": true,
   "version": "0.0.0",
-  "description": "Cloud session and browser-profile contracts shared by the rewrite and Opensteer Cloud.",
+  "description": "Cloud session and browser-profile contracts shared within the Opensteer repo.",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     }
   },
   "files": [

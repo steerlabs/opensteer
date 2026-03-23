@@ -4,6 +4,9 @@
 
 Opensteer follows Semantic Versioning for documented stable APIs.
 
+Documented exports in published packages follow SemVer. Workspace-private
+packages and undocumented internals can change without notice.
+
 ## Deprecation Policy
 
 - New stable behavior must be documented before release.

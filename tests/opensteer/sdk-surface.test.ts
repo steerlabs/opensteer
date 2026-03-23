@@ -36,8 +36,8 @@ vi.mock("../../packages/opensteer/src/sdk/runtime-resolution.js", () => ({
   createOpensteerSemanticRuntime: runtimeState.createRuntime,
 }));
 
-vi.mock("../../packages/opensteer/src/session-service/local-session-proxy.js", () => ({
-  LocalOpensteerSessionProxy: runtimeState.attachFactory,
+vi.mock("../../packages/opensteer/src/session-service/attached-session-proxy.js", () => ({
+  AttachedOpensteerSessionProxy: runtimeState.attachFactory,
 }));
 
 import { Opensteer } from "../../packages/opensteer/src/sdk/opensteer.js";
@@ -99,7 +99,7 @@ describe("Opensteer SDK surface", () => {
     expect(runtimeState.ownedRuntime.close).toHaveBeenCalledTimes(1);
   });
 
-  test("attach uses the local session proxy and attached disconnect is non-destructive", async () => {
+  test("attach uses the attached session proxy and attached disconnect is non-destructive", async () => {
     const opensteer = Opensteer.attach({
       name: "sdk-surface-attached",
       rootDir: "/tmp/sdk-surface-attached",

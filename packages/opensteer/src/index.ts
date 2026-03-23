@@ -235,8 +235,6 @@ export type {
   CloudSelectorCacheImportEntry,
   CloudSelectorCacheImportRequest,
   CloudSelectorCacheImportResponse,
-  CloudSessionCreateRequest,
-  CloudSessionCreateResponse,
   CloudSessionLaunchConfig,
   CloudSessionSourceType,
   CloudSessionStatus,

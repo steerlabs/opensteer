@@ -77,9 +77,6 @@ export const cloudSessionStatuses = [
 
 export type CloudSessionStatus = (typeof cloudSessionStatuses)[number];
 
-export const cloudSessionContractVersion = "v3" as const;
-export type CloudSessionContractVersion = typeof cloudSessionContractVersion;
-
 export const cloudSessionSourceTypes = [
   "agent-thread",
   "agent-run",
@@ -195,17 +192,6 @@ export interface CloudSessionLaunchConfig {
   readonly browserProfile?: CloudBrowserProfilePreference;
 }
 
-export interface CloudSessionCreateRequest {
-  readonly cloudSessionContractVersion: CloudSessionContractVersion;
-  readonly sourceType: "local-cloud";
-  readonly clientSessionHint: string;
-  readonly localRunId: string;
-  readonly name?: string;
-  readonly model?: string;
-  readonly launchContext?: Readonly<Record<string, unknown>>;
-  readonly launchConfig?: CloudSessionLaunchConfig;
-}
-
 export interface CloudSessionSummary {
   readonly sessionId: string;
   readonly workspaceId: string;
@@ -214,17 +200,6 @@ export interface CloudSessionSummary {
   readonly sourceType: CloudSessionSourceType;
   readonly sourceRef?: string;
   readonly label?: string;
-}
-
-export interface CloudSessionCreateResponse {
-  readonly sessionId: string;
-  readonly actionWsUrl: string;
-  readonly cdpWsUrl: string;
-  readonly actionToken: string;
-  readonly cdpToken: string;
-  readonly expiresAt?: number;
-  readonly cloudSessionUrl: string;
-  readonly cloudSession: CloudSessionSummary;
 }
 
 export interface CloudSelectorCacheImportEntry {

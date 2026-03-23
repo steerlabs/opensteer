@@ -26,6 +26,12 @@ pnpm exec playwright install chromium
 pnpm add @opensteer/engine-abp
 ```
 
+`opensteer` installs the Playwright-backed local engine by default. Add
+`@opensteer/engine-abp` only when you need the ABP backend.
+
+Cloud features require access to an Opensteer Cloud deployment; the hosted
+control plane implementation is not part of this repository.
+
 ## SDK
 
 ```ts

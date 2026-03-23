@@ -5,6 +5,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
+import { createSuccessEnvelope } from "@opensteer/protocol";
 
 import { writeOpensteerServiceMetadata } from "../../packages/opensteer/src/cli/service-metadata.js";
 import { resolveLiveOpensteerServiceMetadata } from "../../packages/opensteer/src/session-service/client.js";
@@ -12,6 +13,7 @@ import {
   createOpensteerSemanticRuntime,
   resolveOpensteerRuntimeConfig,
 } from "../../packages/opensteer/src/sdk/runtime-resolution.js";
+import { Opensteer } from "../../packages/opensteer/src/sdk/opensteer.js";
 import { ensureCliArtifactsBuilt } from "./cli-artifacts.js";
 
 const execFile = promisify(execFileCallback);
@@ -19,7 +21,7 @@ const CLI_SCRIPT = path.resolve(process.cwd(), "packages/opensteer/dist/cli/bin.
 
 beforeAll(async () => {
   await ensureCliArtifactsBuilt();
-});
+}, 120_000);
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -164,6 +166,75 @@ describe("Opensteer runtime modes", () => {
 
     await expect(readFile(metadataPath, "utf8")).rejects.toMatchObject({
       code: "ENOENT",
+    });
+  });
+
+  test("Opensteer.attach reuses live cloud session metadata", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "opensteer-cloud-attach-"));
+    const opensteerRoot = path.join(rootDir, ".opensteer");
+
+    vi.stubEnv("OPENSTEER_API_KEY", "osk_test");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/runtime/ping")) {
+          return new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+            },
+          });
+        }
+
+        if (url.endsWith("/api/v2/semantic/operations/session/open")) {
+          const request = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+          return new Response(
+            JSON.stringify(
+              createSuccessEnvelope(request as Parameters<typeof createSuccessEnvelope>[0], {
+                sessionRef: "session:cloud",
+                pageRef: "page:cloud",
+                url: "https://example.com",
+                title: "Cloud Session",
+              }),
+            ),
+            {
+              status: 200,
+              headers: {
+                "content-type": "application/json",
+              },
+            },
+          );
+        }
+
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    await writeOpensteerServiceMetadata(opensteerRoot, {
+      mode: "cloud",
+      name: "remote",
+      rootPath: opensteerRoot,
+      startedAt: 1,
+      baseUrl: "https://api.opensteer.dev/v1/sessions/session-123",
+      sessionId: "session-123",
+      authSource: "env",
+    });
+
+    const attached = Opensteer.attach({
+      name: "remote",
+      rootDir,
+    });
+
+    await expect(
+      attached.open({
+        url: "https://example.com",
+      }),
+    ).resolves.toMatchObject({
+      sessionRef: "session:cloud",
+      pageRef: "page:cloud",
+      url: "https://example.com",
+      title: "Cloud Session",
     });
   });
 

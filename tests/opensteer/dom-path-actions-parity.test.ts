@@ -189,9 +189,7 @@ for (const harness of harnesses) {
               target: { kind: "path", path },
             });
 
-            expect(await readTextById(engine, childFrame, "shadow-hosted-status")).toBe(
-              "clicked:open",
-            );
+            await waitForTextById(engine, childFrame, "shadow-hosted-status", "clicked:open");
           },
           "/path-parity-shadow-host-open-main",
         );
@@ -477,6 +475,22 @@ async function readTextById(
   const snapshot = await engine.getDomSnapshot({ frameRef });
   const node = expectValue(findNodeById(snapshot, id), `node #${id} was not found`);
   return engine.readText(createLocator(snapshot, node));
+}
+
+async function waitForTextById(
+  engine: BrowserCoreEngine,
+  frameRef: string,
+  id: string,
+  expected: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    if ((await readTextById(engine, frameRef, id)) === expected) {
+      return;
+    }
+    await wait(100);
+  }
+
+  expect(await readTextById(engine, frameRef, id)).toBe(expected);
 }
 
 function createLocator(snapshot: DomSnapshot, node: DomSnapshotNode) {

@@ -11,6 +11,7 @@ import {
   resolveDomActionBridge,
 } from "../../packages/protocol/src/index.js";
 import { createPlaywrightBrowserCoreEngine } from "../../packages/engine-playwright/src/index.js";
+import { chromium } from "playwright";
 import {
   bodyPayloadFromUtf8,
   createNodeLocator,
@@ -483,6 +484,29 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitForValue<T>(
+  read: () => Promise<T | undefined>,
+  failureMessage: string,
+  options: {
+    readonly timeoutMs?: number;
+    readonly intervalMs?: number;
+  } = {},
+): Promise<T> {
+  const timeoutMs = options.timeoutMs ?? 5_000;
+  const intervalMs = options.intervalMs ?? 100;
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const value = await read();
+    if (value !== undefined) {
+      return value;
+    }
+    await wait(intervalMs);
+  }
+
+  throw new Error(failureMessage);
+}
+
 beforeAll(async () => {
   const started = await startServer();
   baseUrl = started.url;
@@ -497,6 +521,7 @@ afterAll(async () => {
 
 defineBrowserCoreConformanceSuite({
   name: "PlaywrightBrowserCoreEngine conformance",
+  testTimeoutMs: 15_000,
   createHarness: async () => {
     const engine = await createPlaywrightBrowserCoreEngine({
       launch: {
@@ -518,6 +543,56 @@ defineBrowserCoreConformanceSuite({
     };
   },
 });
+
+test(
+  "reuses an attached bootstrap page instead of duplicating its controller",
+  { timeout: 15_000 },
+  async () => {
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const context = await browser.newContext({
+        viewport: {
+          width: 800,
+          height: 600,
+        },
+      });
+      const attachedPage = await context.newPage();
+      await attachedPage.goto(`${baseUrl}/basic`, {
+        waitUntil: "domcontentloaded",
+      });
+
+      const engine = await createPlaywrightBrowserCoreEngine({
+        browser,
+        attachedContext: context,
+        attachedPage,
+        closeBrowserOnDispose: true,
+        closeAttachedContextOnSessionClose: false,
+        context: {
+          viewport: {
+            width: 800,
+            height: 600,
+          },
+        },
+      });
+
+      try {
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({ sessionRef });
+        const pages = await engine.listPages({ sessionRef });
+
+        expect(pages).toHaveLength(1);
+        expect(pages[0]?.pageRef).toBe(created.data.pageRef);
+        expect(pages[0]?.url).toBe(`${baseUrl}/basic`);
+      } finally {
+        await engine.dispose();
+      }
+    } finally {
+      if (browser.isConnected()) {
+        await browser.close().catch(() => undefined);
+      }
+    }
+  },
+);
 
 test(
   "captures DOM snapshots, stale nodes, hit-testing, text input, screenshots, and freeze state",
@@ -1149,19 +1224,28 @@ test("captures network, cookies, storage, and async page events", { timeout: 60_
       url: `${baseUrl}/integration`,
     });
 
-    await wait(400);
-
-    const frames = await engine.listFrames({ pageRef: created.data.pageRef });
-    const mainFrame = frames.find((frame) => frame.isMainFrame)!;
-    const childFrame = frames.find((frame) => !frame.isMainFrame)!;
+    const { mainFrame, childFrame } = await waitForValue(async () => {
+      const frames = await engine.listFrames({ pageRef: created.data.pageRef });
+      const mainFrame = frames.find((frame) => frame.isMainFrame);
+      const childFrame = frames.find((frame) => !frame.isMainFrame);
+      return mainFrame && childFrame ? { mainFrame, childFrame } : undefined;
+    }, "expected integration page frames to stabilize");
 
     await engine.mouseClick({
       pageRef: created.data.pageRef,
       point: createPoint(50, 40),
       coordinateSpace: "layout-viewport-css",
     });
-    await wait(150);
-    const popupDrain = await engine.activatePage({ pageRef: created.data.pageRef });
+    await waitForValue(
+      async () => ((await engine.listPages({ sessionRef })).length === 2 ? true : undefined),
+      "expected popup page to register",
+    );
+    const popupDrain = await waitForValue(async () => {
+      const activated = await engine.activatePage({ pageRef: created.data.pageRef });
+      return activated.events.some((event) => event.kind === "popup-opened")
+        ? activated
+        : undefined;
+    }, "expected popup-opened event to be queued on the opener page");
     expect(popupDrain.events.map((event) => event.kind)).toContain("popup-opened");
     expect((await engine.listPages({ sessionRef })).length).toBe(2);
 
@@ -1177,14 +1261,15 @@ test("captures network, cookies, storage, and async page events", { timeout: 60_
       point: createPoint(50, 160),
       coordinateSpace: "layout-viewport-css",
     });
-    await wait(200);
-
-    const records = await engine.getNetworkRecords({
-      sessionRef,
-      pageRef: created.data.pageRef,
-      includeBodies: true,
-    });
-    const fetchRecord = records.find((record) => record.url.endsWith("/api/echo"));
+    const fetchRecord = await waitForValue(async () => {
+      const records = await engine.getNetworkRecords({
+        sessionRef,
+        pageRef: created.data.pageRef,
+        includeBodies: true,
+      });
+      const fetchRecord = records.find((record) => record.url.endsWith("/api/echo"));
+      return fetchRecord?.responseBody?.truncated === true ? fetchRecord : undefined;
+    }, "expected integration fetch response body to be captured");
     expect(fetchRecord?.status).toBe(200);
     const responseHeaderNames = fetchRecord?.responseHeaders.map((header) =>
       header.name.toLowerCase(),

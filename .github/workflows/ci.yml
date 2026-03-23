@@ -6,14 +6,18 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         node-version:
-          - 20
+          - 22
           - 24
 
     steps:
@@ -45,3 +49,6 @@ jobs:
 
       - name: Build
         run: pnpm run build
+
+      - name: Package lint
+        run: pnpm run package:check

@@ -63,17 +63,37 @@ export async function captureLayoutViewportScreenshotArtifact(
   readonly viewport: ViewportMetrics;
 }> {
   const viewport = await getViewportMetricsFromCdp(controller);
-  const response = await controller.cdp.send("Page.captureScreenshot", {
-    format,
-    clip: {
-      x: viewport.visualViewport.origin.x,
-      y: viewport.visualViewport.origin.y,
-      width: viewport.visualViewport.size.width,
-      height: viewport.visualViewport.size.height,
-      scale: 1,
-    },
-    fromSurface: true,
-  });
+  const clip = {
+    x: viewport.visualViewport.origin.x,
+    y: viewport.visualViewport.origin.y,
+    width: viewport.visualViewport.size.width,
+    height: viewport.visualViewport.size.height,
+  };
+  const bytes =
+    format === "png" || format === "jpeg"
+      ? await controller.page.screenshot({
+          type: format,
+          scale: "css",
+          clip: {
+            x: 0,
+            y: 0,
+            width: clip.width,
+            height: clip.height,
+          },
+        })
+      : Buffer.from(
+          (
+            await controller.cdp.send("Page.captureScreenshot", {
+              format,
+              clip: {
+                ...clip,
+                scale: 1 / Math.max(1, viewport.devicePixelRatio),
+              },
+              fromSurface: true,
+            })
+          ).data,
+          "base64",
+        );
 
   return {
     viewport,
@@ -82,7 +102,7 @@ export async function captureLayoutViewportScreenshotArtifact(
       frameRef: frame.frameRef,
       documentRef: frame.currentDocument.documentRef,
       documentEpoch: frame.currentDocument.documentEpoch,
-      payload: createBodyPayload(new Uint8Array(Buffer.from(response.data, "base64")), {
+      payload: createBodyPayload(new Uint8Array(bytes), {
         mimeType: `image/${format}`,
       }),
       format,

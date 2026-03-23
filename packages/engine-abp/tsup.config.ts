@@ -1,3 +1,12 @@
-import { createPackageConfig } from "../../tsup.base";
+import { defineConfig } from "tsup";
 
-export default createPackageConfig();
+export default defineConfig({
+  clean: true,
+  dts: true,
+  entry: ["src/index.ts"],
+  format: ["esm", "cjs"],
+  noExternal: ["@opensteer/browser-core", "@opensteer/protocol"],
+  sourcemap: true,
+  target: "node22",
+  treeshake: true,
+});

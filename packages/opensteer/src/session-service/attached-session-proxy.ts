@@ -110,12 +110,12 @@ import {
   normalizeOpensteerSessionName,
 } from "./metadata.js";
 import {
-  requireAttachedLocalOpensteerService,
+  requireAttachedOpensteerService,
   type OpensteerCliSessionOptions,
   type OpensteerSessionServiceClient,
 } from "./client.js";
 
-export class LocalOpensteerSessionProxy implements OpensteerDisconnectableRuntime {
+export class AttachedOpensteerSessionProxy implements OpensteerDisconnectableRuntime {
   private client: OpensteerSessionServiceClient | undefined;
 
   constructor(private readonly options: OpensteerCliSessionOptions = {}) {}
@@ -414,7 +414,7 @@ export class LocalOpensteerSessionProxy implements OpensteerDisconnectableRuntim
 
   private async ensureClient(): Promise<OpensteerSessionServiceClient> {
     if (!this.client) {
-      this.client = await requireAttachedLocalOpensteerService(this.options);
+      this.client = await requireAttachedOpensteerService(this.options);
     }
 
     return this.client;

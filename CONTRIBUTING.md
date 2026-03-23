@@ -7,7 +7,7 @@ before participating in issues or pull requests.
 
 ## Development Setup
 
-1. Install Node.js `>=24`.
+1. Install Node.js `>=22`.
 2. Install `pnpm` `10.29.3`.
 3. Run `pnpm install`.
 
@@ -18,6 +18,7 @@ before participating in issues or pull requests.
 - `pnpm test`
 - `pnpm check`
 - `pnpm format`
+- `pnpm run package:check`
 - `pnpm run opensteer:local -- <args>` for local CLI testing in this repo
 
 ## Local CLI Workflow
@@ -56,6 +57,7 @@ pnpm run opensteer:local -- close
 - Include tests for behavior changes.
 - Update docs when package boundaries, public contracts, or developer workflows
   change.
+- Run `pnpm run package:check` when you change package metadata, entry points, or publishable files.
 - Call out assumptions and open questions in the pull request description.
 - Do not add a new stable top-level API without:
   - one generic fixture test
