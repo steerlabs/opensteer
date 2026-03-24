@@ -1,9 +1,8 @@
-import { webcrack } from "webcrack";
-
 export async function deobfuscateScriptContent(input: { readonly content: string }): Promise<{
   readonly content: string;
   readonly transforms: readonly string[];
 }> {
+  const webcrack = await loadWebcrack();
   const result = await webcrack(input.content, {
     unpack: false,
     deobfuscate: true,
@@ -16,6 +15,29 @@ export async function deobfuscateScriptContent(input: { readonly content: string
     content,
     transforms: inferTransforms(input.content, content),
   };
+}
+
+async function loadWebcrack(): Promise<(typeof import("webcrack"))["webcrack"]> {
+  try {
+    const { webcrack } = await import("webcrack");
+    return webcrack;
+  } catch (error) {
+    if (isMissingPackageError(error, "webcrack")) {
+      throw new Error(
+        'Script deobfuscation requires the optional "webcrack" dependency. Install it with `npm install webcrack` in the environment running Opensteer.',
+      );
+    }
+    throw error;
+  }
+}
+
+function isMissingPackageError(error: unknown, packageName: string): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    error.code === "ERR_MODULE_NOT_FOUND" &&
+    error.message.includes(packageName)
+  );
 }
 
 function inferTransforms(original: string, deobfuscated: string): readonly string[] {
