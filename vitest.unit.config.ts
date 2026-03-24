@@ -30,6 +30,7 @@ export default defineConfig({
       "tests/opensteer/match-policy.test.ts",
       "tests/opensteer/policy.test.ts",
       "tests/opensteer/sdk-surface.test.ts",
+      "tests/opensteer/skills-installer.test.ts",
       "tests/protocol/public-contract.test.ts",
     ],
     passWithNoTests: true,

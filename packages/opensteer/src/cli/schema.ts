@@ -295,7 +295,79 @@ function createRecipeCommandDefinition(input: {
   };
 }
 
+const SKILLS_INSTALL_OPTIONS = [
+  {
+    name: "agent",
+    description: "Install to a specific agent (repeatable)",
+    kind: "string",
+    valueLabel: "name",
+    multiple: true,
+  },
+  {
+    name: "skill",
+    description: "Install a specific first-party skill (repeatable)",
+    kind: "string",
+    valueLabel: "name",
+    multiple: true,
+  },
+  {
+    name: "global",
+    description: "Install globally instead of project-local",
+    kind: "boolean",
+  },
+  {
+    name: "yes",
+    description: "Skip interactive confirmations",
+    kind: "boolean",
+  },
+  {
+    name: "copy",
+    description: "Copy files instead of symlinking",
+    kind: "boolean",
+  },
+  {
+    name: "all",
+    description: "Install all first-party skills to all agents",
+    kind: "boolean",
+  },
+  {
+    name: "list",
+    description: "List the packaged first-party skills without installing them",
+    kind: "boolean",
+  },
+] as const;
+
+function createSkillsInstallCommandDefinition(input: {
+  readonly name: string;
+  readonly id: string;
+  readonly summary: string;
+}): CliCommandDefinition {
+  return {
+    name: input.name,
+    id: input.id,
+    summary: input.summary,
+    options: SKILLS_INSTALL_OPTIONS,
+    examples: [
+      "opensteer skills install",
+      "opensteer skills install --agent codex --global --yes",
+      "opensteer skills install --all",
+      "opensteer skills install --list",
+    ],
+  };
+}
+
 const ROOT_COMMANDS: readonly CliCommandDefinition[] = [
+  {
+    name: "skills",
+    summary: "Install or list first-party Opensteer skills.",
+    subcommands: [
+      createSkillsInstallCommandDefinition({
+        name: "install",
+        id: "skills.install",
+        summary: "Install the packaged Opensteer skills with the upstream skills CLI.",
+      }),
+    ],
+  },
   {
     name: "open",
     id: "open",

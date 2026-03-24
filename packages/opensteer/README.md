@@ -18,19 +18,34 @@ The package is organized around three lanes:
 
 ## Install
 
+CLI:
+
+```bash
+npm i -g opensteer
+opensteer skills install
+```
+
+SDK:
+
 ```bash
 pnpm add opensteer
 pnpm exec playwright install chromium
+
+# npm
+npm install opensteer
 
 # Optional ABP backend for `--engine abp`
 pnpm add @opensteer/engine-abp
 ```
 
+`opensteer skills install` installs the packaged first-party skill pack through the upstream
+`skills` CLI.
+
 `opensteer` installs the Playwright-backed local engine by default. Add
 `@opensteer/engine-abp` only when you need the ABP backend.
 
-Cloud features require access to an Opensteer Cloud deployment; the hosted
-control plane implementation is not part of this repository.
+Cloud features require access to an Opensteer Cloud deployment. This repository includes cloud
+client code and shared contracts; the managed Opensteer Cloud service is operated separately.
 
 ## SDK
 
