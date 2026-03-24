@@ -1,7 +1,7 @@
 {
   "name": "@opensteer/browser-core",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.7.0",
   "description": "Engine-neutral primitives and contracts for Opensteer browser backends.",
   "license": "MIT",
   "type": "module",
