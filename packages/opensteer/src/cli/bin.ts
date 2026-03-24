@@ -70,10 +70,16 @@ import {
 import { AttachedOpensteerSessionProxy } from "../session-service/attached-session-proxy.js";
 import { runOpensteerMcpServer } from "./mcp.js";
 import { runOpensteerServiceHost } from "./service-host.js";
+import { isOpensteerVersionFlag, readOpensteerCliVersion } from "./version.js";
 
 type ParsedCliOptions = Readonly<Record<string, unknown>>;
 
 async function main(argv: readonly string[]): Promise<void> {
+  if (argv.length === 1 && isOpensteerVersionFlag(argv[0])) {
+    process.stdout.write(`${await readOpensteerCliVersion()}\n`);
+    return;
+  }
+
   if (argv[0] === "browser") {
     const exitCode = await runOpensteerBrowserCli(argv.slice(1));
     if (exitCode !== 0) {
