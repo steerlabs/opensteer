@@ -44,7 +44,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "skills"
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
@@ -54,6 +55,7 @@
     "domhandler": "^5.0.3",
     "prettier": "^3.8.1",
     "sharp": "^0.34.5",
+    "skills": "^1.4.6",
     "webcrack": "^2.15.1"
   },
   "peerDependencies": {
@@ -71,8 +73,9 @@
     "@opensteer/protocol": "workspace:*"
   },
   "scripts": {
-    "build": "tsup",
-    "clean": "rimraf dist",
+    "build": "tsup && node ../../scripts/sync-package-skills.mjs",
+    "clean": "rimraf dist skills",
+    "prepack": "node ../../scripts/sync-package-skills.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   }
 }

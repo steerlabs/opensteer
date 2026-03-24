@@ -25,6 +25,9 @@ importers:
       sharp:
         specifier: ^0.34.5
         version: 0.34.5
+      skills:
+        specifier: ^1.4.6
+        version: 1.4.6
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(postcss@8.5.8)(tsx@4.21.0)(typescript@5.9.3)
@@ -114,6 +117,9 @@ importers:
       sharp:
         specifier: ^0.34.5
         version: 0.34.5
+      skills:
+        specifier: ^1.4.6
+        version: 1.4.6
       webcrack:
         specifier: ^2.15.1
         version: 2.15.1
@@ -2799,6 +2805,14 @@ packages:
         integrity: sha512-brv7p5WgH0jmQJr1ZDDfKDOSeWWg+OVypG99A/5vYGPqJ6pxiaHLy8nxtFjBA7oMa01ebA9gfh1uMCFqOuXxvA==,
       }
 
+  skills@1.4.6:
+    resolution:
+      {
+        integrity: sha512-6YWJl/MgxJxt5Ydqj+TBOtql4aZWrrM7pmOy6NzuXZtLUeepN+c/0A8+QLX3j8IxZwa10mmWp7R63TWhptZLkA==,
+      }
+    engines: { node: ">=18" }
+    hasBin: true
+
   source-map-js@1.2.1:
     resolution:
       {
@@ -4682,6 +4696,8 @@ snapshots:
       decompress-response: 6.0.0
       once: 1.4.0
       simple-concat: 1.0.1
+
+  skills@1.4.6: {}
 
   source-map-js@1.2.1: {}
 

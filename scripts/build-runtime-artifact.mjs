@@ -24,6 +24,7 @@ await mkdir(packDir, { recursive: true });
 await cp(path.join(packageDir, "dist"), path.join(packDir, "dist"), {
   recursive: true,
 });
+await copyDirIfExists(path.join(packageDir, "skills"), path.join(packDir, "skills"));
 await copyIfExists(path.join(packageDir, "README.md"), path.join(packDir, "README.md"));
 await writeFile(
   path.join(packDir, "package.json"),
@@ -63,7 +64,7 @@ async function createRuntimePackageManifest() {
     types: packageJson.types,
     bin: packageJson.bin,
     exports: packageJson.exports,
-    files: ["dist", "README.md"],
+    files: ["dist", "skills", "README.md"],
     dependencies: packageJson.dependencies,
   };
 }
@@ -76,6 +77,16 @@ async function copyIfExists(source, target) {
   }
 
   await copyFile(source, target);
+}
+
+async function copyDirIfExists(source, target) {
+  try {
+    await access(source);
+  } catch {
+    return;
+  }
+
+  await cp(source, target, { recursive: true });
 }
 
 function run(command, commandArgs, options = {}) {
