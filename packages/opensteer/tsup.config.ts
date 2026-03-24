@@ -4,6 +4,7 @@ export default defineConfig({
   clean: true,
   dts: true,
   entry: ["src/index.ts", "src/cli/bin.ts"],
+  external: ["webcrack"],
   format: ["esm", "cjs"],
   noExternal: ["@opensteer/browser-core", "@opensteer/cloud-contracts", "@opensteer/protocol"],
   sourcemap: true,
