@@ -65,6 +65,12 @@ const HELP_OPTION: CliOptionDefinition = {
   kind: "boolean",
 };
 
+const VERSION_OPTION: CliOptionDefinition = {
+  name: "version",
+  description: "Show the installed Opensteer version",
+  kind: "boolean",
+};
+
 const SESSION_NAME_OPTION: CliOptionDefinition = {
   name: "name",
   description: 'Session name (default: "default")',
@@ -2994,7 +3000,11 @@ function renderCommandHelp(
     }
   }
 
-  const options = [...(command.options ?? []), HELP_OPTION];
+  const options = [
+    ...(commandPath.length === 0 ? [VERSION_OPTION] : []),
+    ...(command.options ?? []),
+    HELP_OPTION,
+  ];
   if (options.length > 0) {
     lines.push("");
     lines.push("Options:");

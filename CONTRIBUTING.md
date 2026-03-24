@@ -14,6 +14,8 @@ before participating in issues or pull requests.
 ## Common Commands
 
 - `pnpm build`
+- `pnpm changeset`
+- `pnpm changeset --empty`
 - `pnpm typecheck`
 - `pnpm test`
 - `pnpm check`
@@ -55,6 +57,8 @@ pnpm run opensteer:local -- close
 
 - Prefer small, reviewable pull requests.
 - Include tests for behavior changes.
+- Add a changeset for publishable or user-facing changes with `pnpm changeset`.
+- Use `pnpm changeset --empty` for CI, tooling, or docs-only changes that should not release a package.
 - Update docs when package boundaries, public contracts, or developer workflows
   change.
 - Run `pnpm run package:check` when you change package metadata, entry points, or publishable files.
@@ -63,3 +67,10 @@ pnpm run opensteer:local -- close
   - one generic fixture test
   - one documented usage snippet in a README or guide
   - docs that explain capability requirements and failure behavior
+
+## Releases
+
+- Package versions are coordinated with Changesets. Do not hand-edit package versions for normal releases.
+- Merges to `main` update a release PR automatically when unreleased changesets are present.
+- Publishing runs from GitHub Actions on `main` with npm trusted publishing and provenance.
+- Configure npm trusted publishers for `.github/workflows/publish.yml` before relying on the automated publish job.

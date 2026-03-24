@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   opensteerCliSchema,
+  renderHelp,
   type CliCommandDefinition,
 } from "../../packages/opensteer/src/cli/schema.js";
 
@@ -19,6 +20,16 @@ describe("CLI schema contract", () => {
       const names = (command.options ?? []).map((option) => option.name);
       expect(new Set(names).size).toBe(names.length);
     }
+  });
+
+  test("shows the root version flag in help output", () => {
+    const help = renderHelp({
+      schema: opensteerCliSchema,
+      programName: "opensteer",
+    });
+
+    expect(help).toContain("--version");
+    expect(help).toContain("Show the installed Opensteer version");
   });
 });
 
