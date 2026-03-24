@@ -9,6 +9,7 @@ const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const publishOrder = ["packages/engine-playwright", "packages/engine-abp", "packages/opensteer"];
+const publishCommand = "pnpm";
 
 const summaryPath = process.env.GITHUB_STEP_SUMMARY;
 const results = [];
@@ -28,13 +29,13 @@ for (const relativePackageDir of publishOrder) {
     continue;
   }
 
-  const publishArgs = ["publish", "--provenance"];
+  const publishArgs = ["publish", "--no-git-checks", "--provenance"];
   if (manifest.publishConfig?.access === "public") {
     publishArgs.push("--access", "public");
   }
 
   console.log(`publish ${manifest.name}@${manifest.version}`);
-  await runCommand("npm", publishArgs, packageDir);
+  await runCommand(publishCommand, publishArgs, packageDir);
   results.push({
     name: manifest.name,
     version: manifest.version,
@@ -100,7 +101,7 @@ async function writeSummary(entries) {
   }
 
   const lines = [
-    "## npm publish",
+    `## ${publishCommand} publish`,
     "",
     "| Package | Version | Status |",
     "| --- | --- | --- |",

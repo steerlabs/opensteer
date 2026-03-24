@@ -23,6 +23,7 @@ export default defineConfig({
       "tests/browser-core/identity-and-geometry.test.ts",
       "tests/engine-abp/abp-unit.test.ts",
       "tests/opensteer/cli-schema.test.ts",
+      "tests/opensteer/cli-version.test.ts",
       "tests/opensteer/cloud-browser-profile.test.ts",
       "tests/opensteer/cookie-sync.test.ts",
       "tests/opensteer/engine-selection.test.ts",

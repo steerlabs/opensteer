@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -19,12 +19,23 @@ import { ensureCliArtifactsBuilt } from "./cli-artifacts.js";
 
 const execFile = promisify(execFileCallback);
 const CLI_SCRIPT = path.resolve(process.cwd(), "packages/opensteer/dist/cli/bin.js");
+const OPENSTEER_PACKAGE_JSON = path.resolve(process.cwd(), "packages/opensteer/package.json");
 
 beforeAll(async () => {
   await ensureCliArtifactsBuilt();
 }, 120_000);
 
 describe("local browser CLI surfaces", () => {
+  test("root CLI prints the installed package version", async () => {
+    const manifest = JSON.parse(await readFile(OPENSTEER_PACKAGE_JSON, "utf8")) as {
+      readonly version: string;
+    };
+    const { stdout, stderr } = await execFile(process.execPath, [CLI_SCRIPT, "--version"]);
+
+    expect(stderr).toBe("");
+    expect(stdout.trim()).toBe(manifest.version);
+  });
+
   test("parses browser discover mode with json output", () => {
     expect(parseOpensteerBrowserArgs(["discover", "--json"])).toEqual({
       mode: "discover",
