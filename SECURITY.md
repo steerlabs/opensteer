@@ -1,29 +1,19 @@
 # Security Policy
 
+Please do not report security vulnerabilities in public issues or discussions.
+
+Use GitHub's private vulnerability reporting workflow if it is enabled for this
+repository. If that workflow is unavailable, contact the maintainers privately
+before any public disclosure.
+
 ## Supported Versions
 
-Security fixes are provided for:
+Until versioned release lines are established, security fixes are tracked on
+`main` only.
 
-- `main` (latest unreleased code)
-- latest published npm release line
+When reporting a vulnerability, include:
 
-Older versions may not receive patches.
-
-## Reporting a Vulnerability
-
-Please report vulnerabilities privately to `tim@opensteer.dev`.
-
-Include:
-
-- affected version and environment
-- clear reproduction steps or proof of concept
-- impact assessment
-- any suggested remediation
-
-Do not open public GitHub issues for suspected vulnerabilities.
-
-## Response Process
-
-- Initial acknowledgment target: within 3 business days
-- Triage and severity assessment after reproduction
-- Coordinated disclosure once a fix or mitigation is available
+- Affected package or app
+- Reproduction steps
+- Impact assessment
+- Any suggested mitigation or fix

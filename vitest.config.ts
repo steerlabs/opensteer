@@ -1,19 +1,22 @@
-import { defineConfig } from 'vitest/config'
+import path from "node:path";
 
-export default defineConfig(() => ({
-    test: {
-        env: {
-            OPENSTEER_DISABLE_DOTENV_AUTOLOAD: 'true',
-        },
-        include: ['tests/**/*.test.ts'],
-        exclude: ['tests/live-web/**/*.test.ts'],
-        globalSetup: ['./tests/globalSetup.ts'],
-        testTimeout: 30000,
-        hookTimeout: 30000,
-        poolOptions: {
-            threads: {
-                singleThread: true,
-            },
-        },
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+  resolve: {
+    alias: {
+      "@opensteer/browser-core": path.resolve(__dirname, "packages/browser-core/src/index.ts"),
+      "@opensteer/engine-abp": path.resolve(__dirname, "packages/engine-abp/src/index.ts"),
+      "@opensteer/engine-playwright": path.resolve(
+        __dirname,
+        "packages/engine-playwright/src/index.ts",
+      ),
+      "@opensteer/protocol": path.resolve(__dirname, "packages/protocol/src/index.ts"),
     },
-}))
+  },
+  test: {
+    environment: "node",
+    include: ["tests/**/*.test.ts"],
+    passWithNoTests: true,
+  },
+});

@@ -1,21 +1,31 @@
 # Code of Conduct
 
-We are committed to providing a welcoming and respectful community for everyone.
+Opensteer is committed to providing a respectful, harassment-free community for
+everyone.
 
 ## Expected Behavior
 
-- Be kind and respectful.
-- Assume good intent.
-- Give constructive feedback.
+- Be respectful in language, tone, and technical disagreement.
+- Focus feedback on ideas, code, and behavior rather than people.
+- Assume good intent, but take impact seriously when someone reports harm.
+- Help keep the project welcoming to contributors with different backgrounds and
+  levels of experience.
 
 ## Unacceptable Behavior
 
-- Harassment, discrimination, or personal attacks.
-- Publishing others' private information.
+- Harassment, intimidation, discrimination, or personal attacks.
+- Sexualized language or imagery.
+- Publishing private information without permission.
+- Trolling, derailing, or sustained disruptive behavior.
 
 ## Enforcement
 
-Report concerns to `tim@opensteer.com`.
-All reports are reviewed and handled in good faith.
+Project maintainers may remove, edit, or reject comments, commits, issues,
+pull requests, and other contributions that violate this code of conduct. They
+may also temporarily or permanently ban contributors from project spaces.
 
-This code is adapted from [Contributor Covenant v2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).
+## Reporting
+
+If you experience or witness unacceptable behavior, report it privately to the
+project maintainers. Public issue threads are not an appropriate place for
+personal safety reports.
