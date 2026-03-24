@@ -52,3 +52,6 @@ jobs:
 
       - name: Package lint
         run: pnpm run package:check
+
+      - name: Validate skills pack
+        run: pnpm run skills:check

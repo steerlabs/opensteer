@@ -52,6 +52,7 @@ import { OpensteerLocalProfileUnavailableError } from "../local-browser/profile-
 import { runOpensteerBrowserCli } from "./browser.js";
 import { runOpensteerLocalProfileCli } from "./local-profile.js";
 import { runOpensteerProfileSyncCli } from "./profile-sync.js";
+import { runOpensteerSkillsInstaller } from "./skills-installer.js";
 import { opensteerCliSchema, parseCliArguments } from "./schema.js";
 import {
   assertExecutionModeSupportsEngine,
@@ -153,6 +154,38 @@ async function main(argv: readonly string[]): Promise<void> {
   };
 
   switch (invocation.commandId) {
+    case "skills.install": {
+      const installSkillsOptions: {
+        agents?: readonly string[];
+        skills?: readonly string[];
+        global: boolean;
+        yes: boolean;
+        copy: boolean;
+        all: boolean;
+        list: boolean;
+      } = {
+        global: readOptionalBoolean(options.global) === true,
+        yes: readOptionalBoolean(options.yes) === true,
+        copy: readOptionalBoolean(options.copy) === true,
+        all: readOptionalBoolean(options.all) === true,
+        list: readOptionalBoolean(options.list) === true,
+      };
+      const agents = readOptionalStringArray(options.agent, "--agent");
+      if (agents !== undefined) {
+        installSkillsOptions.agents = agents;
+      }
+      const skills = readOptionalStringArray(options.skill, "--skill");
+      if (skills !== undefined) {
+        installSkillsOptions.skills = skills;
+      }
+
+      const exitCode = await runOpensteerSkillsInstaller(installSkillsOptions);
+      if (exitCode !== 0) {
+        process.exitCode = exitCode;
+      }
+      return;
+    }
+
     case "open": {
       const mode = resolveCliExecutionMode(options);
       const engine = resolveOpensteerEngineName({

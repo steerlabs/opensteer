@@ -12,6 +12,7 @@ coverage/
 *.tgz
 *.log
 artifacts/
+packages/opensteer/skills/
 
 # Environment and local overrides
 .env
