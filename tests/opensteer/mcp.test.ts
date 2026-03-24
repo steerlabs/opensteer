@@ -1,0 +1,154 @@
+import { afterEach, describe, expect, test } from "vitest";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
+import {
+  cleanupPhase6TemporaryRoots,
+  createPhase6TemporaryRoot,
+  startPhase6FixtureServer,
+} from "./phase6-fixture.js";
+
+afterEach(async () => {
+  await cleanupPhase6TemporaryRoots();
+});
+
+describe("Opensteer MCP server", () => {
+  test("lists semantic tools and returns screenshot image content for computer.execute", async () => {
+    const rootDir = await createPhase6TemporaryRoot();
+    const fixtureServer = await startPhase6FixtureServer();
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [
+        "--import",
+        "tsx",
+        "packages/opensteer/src/cli/bin.ts",
+        "mcp",
+        "--name",
+        "phase9-mcp-server",
+        "--root-dir",
+        rootDir,
+      ],
+      env: process.env as Record<string, string>,
+    });
+    const client = new Client({
+      name: "opensteer-vitest",
+      version: "1.0.0",
+    });
+
+    try {
+      await client.connect(transport);
+
+      const listed = await client.listTools();
+      const toolNames = listed.tools.map((tool) => tool.name);
+      expect(toolNames).toContain("opensteer_session_open");
+      expect(toolNames).toContain("opensteer_computer_execute");
+      expect(toolNames).toContain("opensteer_request_raw");
+
+      await client.callTool({
+        name: "opensteer_session_open",
+        arguments: {
+          url: `${fixtureServer.url}/phase6/main`,
+          browser: {
+            headless: true,
+          },
+        },
+      });
+
+      const result = await client.callTool({
+        name: "opensteer_computer_execute",
+        arguments: {
+          action: {
+            type: "screenshot",
+          },
+        },
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(result.content?.some((entry) => entry.type === "image")).toBe(true);
+      const image = result.content?.find(
+        (entry): entry is Extract<(typeof result.content)[number], { readonly type: "image" }> =>
+          entry.type === "image",
+      );
+      expect(image?.mimeType).toBe("image/webp");
+      expect(typeof image?.data).toBe("string");
+      expect(image?.data.length).toBeGreaterThan(0);
+      expect(
+        (
+          result.structuredContent as {
+            readonly screenshot?: {
+              readonly format?: string;
+              readonly payload?: {
+                readonly delivery?: string;
+                readonly uri?: string;
+                readonly mimeType?: string;
+              };
+            };
+          }
+        ).screenshot?.payload,
+      ).toMatchObject({
+        delivery: "external",
+        mimeType: "image/webp",
+      });
+      expect(
+        (
+          result.structuredContent as {
+            readonly screenshot?: { readonly format?: string };
+          }
+        ).screenshot?.format,
+      ).toBe("webp");
+
+      const rawResult = await client.callTool({
+        name: "opensteer_request_raw",
+        arguments: {
+          url: `${fixtureServer.url}/phase10/api/session-http?source=mcp`,
+          transport: "session-http",
+          method: "POST",
+          headers: [{ name: "x-csrf-token", value: "csrf-mcp" }],
+          body: {
+            json: {
+              item: "mcp",
+            },
+          },
+        },
+      });
+      expect(rawResult.isError).not.toBe(true);
+      expect(rawResult.content?.some((entry) => entry.type === "text")).toBe(true);
+      expect(
+        (
+          rawResult.structuredContent as {
+            readonly data?: { readonly source?: string; readonly csrf?: string };
+          }
+        ).data,
+      ).toMatchObject({
+        source: "mcp",
+        csrf: "csrf-mcp",
+      });
+
+      const networkResult = await client.callTool({
+        name: "opensteer_network_query",
+        arguments: {
+          hostname: new URL(fixtureServer.url).hostname,
+          path: "/phase10/api/session-http",
+          method: "POST",
+          status: "200",
+          resourceType: "fetch",
+        },
+      });
+      expect(networkResult.isError).not.toBe(true);
+      expect(
+        (
+          networkResult.structuredContent as {
+            readonly records?: readonly { readonly record?: { readonly url?: string } }[];
+          }
+        ).records?.some((record) => record.record?.url?.includes("/phase10/api/session-http")),
+      ).toBe(true);
+
+      await client.callTool({
+        name: "opensteer_session_close",
+        arguments: {},
+      });
+    } finally {
+      await client.close().catch(() => undefined);
+    }
+  }, 60_000);
+});

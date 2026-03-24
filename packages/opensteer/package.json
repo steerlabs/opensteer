@@ -1,0 +1,78 @@
+{
+  "name": "opensteer",
+  "version": "0.0.0",
+  "description": "Opensteer browser automation, replay, and reverse-engineering toolkit.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/steerlabs/opensteer.git",
+    "directory": "packages/opensteer"
+  },
+  "bugs": {
+    "url": "https://github.com/steerlabs/opensteer/issues"
+  },
+  "homepage": "https://github.com/steerlabs/opensteer/tree/main/packages/opensteer#readme",
+  "keywords": [
+    "browser-automation",
+    "playwright",
+    "web-automation",
+    "agents",
+    "scraping",
+    "reverse-engineering"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "opensteer": "./dist/cli/bin.js"
+  },
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@opensteer/engine-playwright": "workspace:*",
+    "cheerio": "^1.1.2",
+    "css-select": "^6.0.0",
+    "domhandler": "^5.0.3",
+    "prettier": "^3.8.1",
+    "sharp": "^0.34.5",
+    "webcrack": "^2.15.1"
+  },
+  "peerDependencies": {
+    "@opensteer/engine-abp": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "@opensteer/engine-abp": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@opensteer/browser-core": "workspace:*",
+    "@opensteer/cloud-contracts": "workspace:*",
+    "@opensteer/engine-abp": "workspace:*",
+    "@opensteer/protocol": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "clean": "rimraf dist",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

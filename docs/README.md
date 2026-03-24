@@ -1,11 +1,22 @@
-# Opensteer Docs
+# Documentation
 
-- [Getting Started](getting-started.md)
-- [API Reference](api-reference.md)
-- [CLI Reference](cli-reference.md)
-- [Cloud Integration](cloud-integration.md)
-- [Selectors and Storage](selectors.md)
-- [HTML Cleaning and Snapshot Modes](html-cleaning.md)
-- [Live Web Validation Suite](live-web-tests.md)
-- [Skills](skills.md)
-- [Releasing](releasing.md)
+Opensteer documentation is organized around the public product shape rather than
+internal implementation phases.
+
+## Guides
+
+- [Workflows](./workflows.md): the three standard ways to use Opensteer
+- [Instrumentation](./instrumentation.md): script capture, init scripts, request routing, and script replacement
+- [Governance](./governance.md): SemVer, deprecation policy, and API admission rules
+
+## Scope
+
+Documentation in this repository should explain:
+
+- package boundaries
+- public contracts
+- runtime semantics
+- contributor workflows
+- open-source support and release policy
+
+Avoid duplicating implementation details that belong in source code or tests.
