@@ -14,6 +14,7 @@ import {
   resolveOpensteerRuntimeConfig,
 } from "../../packages/opensteer/src/sdk/runtime-resolution.js";
 import { Opensteer } from "../../packages/opensteer/src/sdk/opensteer.js";
+import { OpensteerCloudClient } from "../../packages/opensteer/src/cloud/client.js";
 import { ensureCliArtifactsBuilt } from "./cli-artifacts.js";
 
 const execFile = promisify(execFileCallback);
@@ -66,6 +67,27 @@ describe("Opensteer runtime modes", () => {
         cloud: true,
       }),
     ).toThrow("ABP is not supported in cloud mode.");
+  });
+
+  test("cloud client surfaces unreachable base URL details on fetch failures", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("fetch failed");
+      }),
+    );
+
+    const client = new OpensteerCloudClient({
+      apiKey: "osk_test",
+      baseUrl: "https://agent.example.com/sandbox/thread-1",
+    });
+
+    await expect(client.createSession({ name: "remote" })).rejects.toMatchObject({
+      name: "TypeError",
+      message: expect.stringContaining(
+        "Failed to reach Opensteer cloud endpoint POST https://agent.example.com/sandbox/thread-1/v1/sessions",
+      ),
+    });
   });
 
   test("cloud session metadata persists routing data without secrets", async () => {

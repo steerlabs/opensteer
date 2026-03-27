@@ -104,15 +104,23 @@ export class OpensteerCloudClient {
     readonly uploadUrl: string;
     readonly payload: Buffer | Uint8Array;
   }): Promise<BrowserProfileImportDescriptor> {
-    const response = await fetch(input.uploadUrl, {
-      method: "PUT",
-      headers: {
-        authorization: this.buildAuthorizationHeader(),
-        "content-type": "application/octet-stream",
-      },
-      body: input.payload,
-      signal: AbortSignal.timeout(10 * 60_000),
-    });
+    let response: Response;
+    try {
+      response = await fetch(input.uploadUrl, {
+        method: "PUT",
+        headers: {
+          authorization: this.buildAuthorizationHeader(),
+          "content-type": "application/octet-stream",
+        },
+        body: input.payload,
+        signal: AbortSignal.timeout(10 * 60_000),
+      });
+    } catch (error) {
+      throw wrapCloudFetchError(error, {
+        method: "PUT",
+        url: input.uploadUrl,
+      });
+    }
     if (!response.ok) {
       throw new Error(`PUT ${input.uploadUrl} failed with ${String(response.status)}.`);
     }
@@ -154,12 +162,21 @@ export class OpensteerCloudClient {
       readonly body?: unknown;
     },
   ): Promise<Response> {
-    const response = await fetch(`${this.config.baseUrl}${pathname}`, {
-      method: init.method,
-      headers: this.buildHeaders(),
-      ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
-      signal: AbortSignal.timeout(30_000),
-    });
+    const url = `${this.config.baseUrl}${pathname}`;
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: init.method,
+        headers: this.buildHeaders(),
+        ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (error) {
+      throw wrapCloudFetchError(error, {
+        method: init.method,
+        url,
+      });
+    }
     if (!response.ok) {
       throw new Error(`${init.method} ${pathname} failed with ${String(response.status)}.`);
     }
@@ -190,4 +207,27 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function wrapCloudFetchError(
+  error: unknown,
+  input: {
+    readonly method: string;
+    readonly url: string;
+  },
+): Error {
+  if (!(error instanceof Error)) {
+    return new Error(
+      `Failed to reach Opensteer cloud endpoint ${input.method} ${input.url}. Check OPENSTEER_BASE_URL and network reachability from this environment.`,
+    );
+  }
+
+  const wrapped = new Error(
+    `Failed to reach Opensteer cloud endpoint ${input.method} ${input.url}. Check OPENSTEER_BASE_URL and network reachability from this environment.`,
+    {
+      cause: error,
+    },
+  );
+  wrapped.name = error.name;
+  return wrapped;
 }
