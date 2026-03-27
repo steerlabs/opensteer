@@ -203,6 +203,7 @@ import {
   type ComputerUseRuntimeOutput,
 } from "../runtimes/computer-use/index.js";
 import { OpensteerBrowserManager } from "../browser-manager.js";
+import { type OpensteerEngineName } from "../internal/engine-selection.js";
 import type {
   OpensteerInterceptScriptOptions,
   OpensteerRouteOptions,
@@ -317,6 +318,7 @@ export interface OpensteerRuntimeOptions {
   readonly workspace?: string;
   readonly rootDir?: string;
   readonly rootPath?: string;
+  readonly engineName?: OpensteerEngineName;
   readonly browser?: OpensteerBrowserOptions;
   readonly launch?: OpensteerBrowserLaunchOptions;
   readonly context?: OpensteerBrowserContextOptions;
@@ -465,6 +467,7 @@ export class OpensteerRuntime {
   private readonly configuredBrowser: OpensteerBrowserOptions | undefined;
   private readonly configuredLaunch: OpensteerBrowserLaunchOptions | undefined;
   private readonly configuredContext: OpensteerBrowserContextOptions | undefined;
+  private readonly configuredEngineName: OpensteerEngineName | undefined;
   private readonly injectedEngine: BrowserCoreEngine | undefined;
   private readonly engineFactory: OpensteerEngineFactory;
   private readonly policy: OpensteerPolicy;
@@ -506,6 +509,7 @@ export class OpensteerRuntime {
     this.configuredBrowser = options.browser;
     this.configuredLaunch = options.launch;
     this.configuredContext = options.context;
+    this.configuredEngineName = options.engineName;
     this.injectedEngine = options.engine;
     this.engineFactory =
       options.engineFactory ??
@@ -516,6 +520,9 @@ export class OpensteerRuntime {
         return new OpensteerBrowserManager({
           rootPath: this.rootPath,
           ...(this.publicWorkspace === undefined ? {} : { workspace: this.publicWorkspace }),
+          ...(this.configuredEngineName === undefined
+            ? {}
+            : { engineName: this.configuredEngineName }),
           ...(browser === undefined ? {} : { browser }),
           ...(launch === undefined ? {} : { launch }),
           ...(context === undefined ? {} : { context }),
@@ -2425,10 +2432,25 @@ export class OpensteerRuntime {
       this.networkJournal,
       input.captureWindowMs,
     );
+    const fallbackSavedNetwork =
+      persistedNetwork.length === 0
+        ? (
+            await root.registry.savedNetwork.query({
+              ...(input.network?.url === undefined ? {} : { url: input.network.url }),
+              ...(input.network?.hostname === undefined ? {} : { hostname: input.network.hostname }),
+              ...(input.network?.path === undefined ? {} : { path: input.network.path }),
+              ...(input.network?.method === undefined ? {} : { method: input.network.method }),
+              includeBodies: input.network?.includeBodies ?? true,
+              limit: 200,
+            })
+          ).filter(isReverseRelevantNetworkRecord)
+        : [];
+    const observationNetwork =
+      persistedNetwork.length > 0 ? persistedNetwork : fallbackSavedNetwork;
     const observationId = `observation:${randomUUID()}`;
     const networkTag = `reverse-case:${caseRecord.id}:${observationId}`;
-    if (persistedNetwork.length > 0) {
-      await root.registry.savedNetwork.save(persistedNetwork, networkTag);
+    if (observationNetwork.length > 0) {
+      await root.registry.savedNetwork.save(observationNetwork, networkTag);
     }
 
     const scriptArtifactIds =
@@ -2490,7 +2512,7 @@ export class OpensteerRuntime {
       pageRef,
       url: pageInfo.url,
       stateSource,
-      networkRecordIds: persistedNetwork.map((record) => record.recordId),
+      networkRecordIds: observationNetwork.map((record) => record.recordId),
       scriptArtifactIds,
       interactionTraceIds: linkedInteractionTraceIds,
       stateSnapshotIds: [stateSnapshot.id],

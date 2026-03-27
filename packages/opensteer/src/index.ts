@@ -225,12 +225,24 @@ export type {
   OpensteerRouteRegistration,
 } from "./sdk/instrumentation.js";
 export { Opensteer } from "./sdk/opensteer.js";
+export {
+  DEFAULT_OPENSTEER_ENGINE,
+  normalizeOpensteerEngineName,
+  OPENSTEER_ENGINE_NAMES,
+  resolveOpensteerEngineName,
+} from "./internal/engine-selection.js";
+export type { OpensteerEngineName } from "./internal/engine-selection.js";
 export type {
   OpensteerEngineFactory,
   OpensteerEngineFactoryOptions,
   OpensteerRuntimeOptions,
 } from "./sdk/runtime.js";
 export { OpensteerRuntime } from "./sdk/runtime.js";
+export type { OpensteerCloudOptions } from "./sdk/runtime-resolution.js";
+export {
+  createOpensteerSemanticRuntime,
+  resolveOpensteerRuntimeConfig,
+} from "./sdk/runtime-resolution.js";
 export type {
   OpensteerDisconnectableRuntime,
   OpensteerSemanticRuntime,
@@ -243,6 +255,58 @@ export type {
   WorkspaceLiveBrowserRecord,
 } from "./browser-manager.js";
 export { OpensteerBrowserManager } from "./browser-manager.js";
+export type { OpensteerExecutionMode } from "./mode/config.js";
+export {
+  normalizeOpensteerExecutionMode,
+  resolveOpensteerExecutionMode,
+} from "./mode/config.js";
+export type { OpensteerCloudConfig } from "./cloud/config.js";
+export { resolveCloudConfig } from "./cloud/config.js";
+export type {
+  BrowserProfileArchiveFormat,
+  BrowserProfileCreateRequest,
+  BrowserProfileDescriptor,
+  BrowserProfileImportCreateRequest,
+  BrowserProfileImportCreateResponse,
+  BrowserProfileImportDescriptor,
+  BrowserProfileImportStatus,
+  BrowserProfileListResponse,
+  BrowserProfileStatus,
+  CloudBrowserContextConfig,
+  CloudBrowserExtensionConfig,
+  CloudBrowserLaunchConfig,
+  CloudBrowserProfilePreference,
+  CloudBrowserProfileLaunchPreference,
+  CloudFingerprintMode,
+  CloudFingerprintPreference,
+  CloudGeolocation,
+  CloudProxyMode,
+  CloudProxyPreference,
+  CloudProxyProtocol,
+  CloudSelectorCacheImportEntry,
+  CloudSelectorCacheImportRequest,
+  CloudSelectorCacheImportResponse,
+  CloudSessionLaunchConfig,
+  CloudSessionSourceType,
+  CloudSessionStatus,
+  CloudSessionSummary,
+  CloudSessionVisibilityScope,
+  CloudViewport,
+} from "@opensteer/cloud-contracts";
+export {
+  OpensteerCloudClient,
+  type OpensteerCloudSessionCreateInput,
+  type OpensteerCloudSessionDescriptor,
+  type SyncBrowserProfileCookiesInput,
+} from "./cloud/client.js";
+export {
+  CloudSessionProxy,
+  hasPersistedCloudSession,
+  readPersistedCloudSessionRecord,
+  resolveCloudSessionRecordPath,
+  type CloudSessionProxyOptions,
+  type PersistedCloudSessionRecord,
+} from "./cloud/session-proxy.js";
 export { dispatchSemanticOperation } from "./cli/dispatch.js";
 export type {
   InspectedCdpEndpoint,

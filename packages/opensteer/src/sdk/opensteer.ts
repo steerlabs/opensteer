@@ -105,11 +105,17 @@ import {
   type WorkspaceBrowserManifest,
 } from "../browser-manager.js";
 import { OpensteerRuntime, type OpensteerRuntimeOptions } from "./runtime.js";
+import {
+  createOpensteerSemanticRuntime,
+  resolveOpensteerRuntimeConfig,
+  type OpensteerCloudOptions,
+} from "./runtime-resolution.js";
 import type {
   OpensteerInterceptScriptOptions,
   OpensteerRouteOptions,
   OpensteerRouteRegistration,
 } from "./instrumentation.js";
+import type { OpensteerDisconnectableRuntime } from "./semantic-runtime.js";
 
 export interface OpensteerTargetOptions {
   readonly element?: number;
@@ -205,7 +211,9 @@ export type OpensteerCaptchaSolveOptions = OpensteerCaptchaSolveInput;
 export type OpensteerCaptchaSolveResult = OpensteerCaptchaSolveOutput;
 export type OpensteerAddInitScriptOptions = OpensteerAddInitScriptInput;
 
-export interface OpensteerOptions extends OpensteerRuntimeOptions {}
+export interface OpensteerOptions extends OpensteerRuntimeOptions {
+  readonly cloud?: boolean | OpensteerCloudOptions;
+}
 
 export interface OpensteerBrowserCloneOptions {
   readonly sourceUserDataDir: string;
@@ -220,29 +228,56 @@ export interface OpensteerBrowserController {
 }
 
 export class Opensteer {
-  private readonly runtime: OpensteerRuntime;
-  private readonly browserManager: OpensteerBrowserManager;
+  private readonly runtime: OpensteerDisconnectableRuntime;
+  private readonly browserManager: OpensteerBrowserManager | undefined;
   readonly browser: OpensteerBrowserController;
 
   constructor(options: OpensteerOptions = {}) {
+    const runtimeConfig = resolveOpensteerRuntimeConfig({
+      ...(options.cloud === undefined ? {} : { cloud: options.cloud }),
+      ...(process.env.OPENSTEER_MODE === undefined
+        ? {}
+        : { environmentMode: process.env.OPENSTEER_MODE }),
+    });
+
+    if (runtimeConfig.mode === "cloud") {
+      this.browserManager = undefined;
+      this.runtime = createOpensteerSemanticRuntime({
+        mode: runtimeConfig.mode,
+        ...(options.cloud === undefined ? {} : { cloud: options.cloud }),
+        ...(options.engineName === undefined ? {} : { engine: options.engineName }),
+        runtimeOptions: {
+          ...options,
+        },
+      });
+      this.browser = createUnsupportedBrowserController();
+      return;
+    }
+
     this.browserManager = new OpensteerBrowserManager({
       ...(options.rootDir === undefined ? {} : { rootDir: options.rootDir }),
       ...(options.rootPath === undefined ? {} : { rootPath: options.rootPath }),
       ...(options.workspace === undefined ? {} : { workspace: options.workspace }),
+      ...(options.engineName === undefined ? {} : { engineName: options.engineName }),
       ...(options.browser === undefined ? {} : { browser: options.browser }),
       ...(options.launch === undefined ? {} : { launch: options.launch }),
       ...(options.context === undefined ? {} : { context: options.context }),
     });
-    this.runtime = new OpensteerRuntime({
-      ...options,
-      rootPath: this.browserManager.rootPath,
-      cleanupRootOnClose: this.browserManager.cleanupRootOnDisconnect,
+    this.runtime = createOpensteerSemanticRuntime({
+      mode: runtimeConfig.mode,
+      ...(options.cloud === undefined ? {} : { cloud: options.cloud }),
+      ...(options.engineName === undefined ? {} : { engine: options.engineName }),
+      runtimeOptions: {
+        ...options,
+        rootPath: this.browserManager.rootPath,
+        cleanupRootOnClose: this.browserManager.cleanupRootOnDisconnect,
+      },
     });
     this.browser = {
-      status: () => this.browserManager.status(),
-      clone: (input) => this.browserManager.clonePersistentBrowser(input),
-      reset: () => this.browserManager.reset(),
-      delete: () => this.browserManager.delete(),
+      status: () => this.browserManager!.status(),
+      clone: (input) => this.browserManager!.clonePersistentBrowser(input),
+      reset: () => this.browserManager!.reset(),
+      delete: () => this.browserManager!.delete(),
     };
   }
 
@@ -627,7 +662,7 @@ export class Opensteer {
   }
 
   async close(): Promise<OpensteerSessionCloseOutput> {
-    if (this.browserManager.mode === "temporary") {
+    if (this.browserManager === undefined || this.browserManager.mode === "temporary") {
       return this.runtime.close();
     }
 
@@ -648,6 +683,19 @@ export class Opensteer {
     }
     throw new Error(`${method}() is only available on owned local SDK sessions.`);
   }
+}
+
+function createUnsupportedBrowserController(): OpensteerBrowserController {
+  const fail = async (): Promise<never> => {
+    throw new Error("browser.* helpers are only available in local mode.");
+  };
+
+  return {
+    status: fail,
+    clone: fail,
+    reset: fail,
+    delete: fail,
+  };
 }
 
 function normalizeTargetOptions(input: OpensteerTargetOptions): {
