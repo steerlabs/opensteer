@@ -22,6 +22,7 @@ export default defineConfig({
       "tests/browser-core/identity-and-geometry.test.ts",
       "tests/opensteer/browser-manager.test.ts",
       "tests/opensteer/cli-v2.test.ts",
+      "tests/opensteer/extraction-descriptor.test.ts",
       "tests/opensteer/runtime-recipes.test.ts",
       "tests/opensteer/sdk-surface.test.ts",
       "tests/opensteer/workspace-root.test.ts",
