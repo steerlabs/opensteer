@@ -5,9 +5,24 @@ import process from "node:process";
 import type { OpensteerBrowserOptions, OpensteerSemanticOperationName } from "@opensteer/protocol";
 
 import { OpensteerBrowserManager } from "../browser-manager.js";
+import { hasPersistedCloudSession } from "../cloud/session-proxy.js";
 import { dispatchSemanticOperation } from "./dispatch.js";
 import { discoverLocalCdpBrowsers, inspectCdpEndpoint } from "../local-browser/cdp-discovery.js";
-import { OpensteerRuntime } from "../sdk/runtime.js";
+import {
+  resolveOpensteerEngineName,
+  type OpensteerEngineName,
+} from "../internal/engine-selection.js";
+import { runOpensteerSkillsInstaller } from "./skills-installer.js";
+import {
+  assertExecutionModeSupportsEngine,
+  resolveOpensteerExecutionMode,
+  type OpensteerExecutionMode,
+} from "../mode/config.js";
+import { resolveFilesystemWorkspacePath } from "../root.js";
+import {
+  createOpensteerSemanticRuntime,
+  type OpensteerCloudOptions,
+} from "../sdk/runtime-resolution.js";
 
 const OPERATION_ALIASES = new Map<string, OpensteerSemanticOperationName>([
   ["open", "session.open"],
@@ -75,6 +90,22 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (parsed.command[0] === "skills" && parsed.command[1] === "install") {
+    const exitCode = await runOpensteerSkillsInstaller({
+      ...(parsed.options.agents === undefined ? {} : { agents: parsed.options.agents }),
+      ...(parsed.options.skills === undefined ? {} : { skills: parsed.options.skills }),
+      global: parsed.options.global === true,
+      yes: parsed.options.yes === true,
+      copy: parsed.options.copy === true,
+      all: parsed.options.all === true,
+      list: parsed.options.list === true,
+    });
+    if (exitCode !== 0) {
+      process.exitCode = exitCode;
+    }
+    return;
+  }
+
   const operation =
     parsed.command[0] === "run"
       ? (parsed.rest[0] as OpensteerSemanticOperationName | undefined)
@@ -87,10 +118,40 @@ async function main(): Promise<void> {
     throw new Error('Stateful commands require "--workspace <id>".');
   }
 
+  const mode = await resolveCliExecutionMode(parsed);
+  assertExecutionModeSupportsEngine(mode, parsed.options.engineName);
+  const cloudOptions = buildCliCloudOptions(parsed);
+  if (
+    mode !== "cloud" &&
+    (parsed.options.cloudProfileId !== undefined ||
+      parsed.options.cloudProfileReuseIfActive === true)
+  ) {
+    throw new Error("Cloud profile options require cloud mode.");
+  }
+
   if (operation === "session.close") {
+    if (mode === "cloud") {
+      const runtime = createOpensteerSemanticRuntime({
+        mode,
+        ...(cloudOptions === undefined ? {} : { cloud: cloudOptions }),
+        engine: parsed.options.engineName,
+        runtimeOptions: {
+          workspace: parsed.options.workspace,
+          rootDir: process.cwd(),
+          browser: "persistent",
+          ...(parsed.options.launch === undefined ? {} : { launch: parsed.options.launch }),
+          ...(parsed.options.context === undefined ? {} : { context: parsed.options.context }),
+        },
+      });
+      const result = await runtime.close();
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return;
+    }
+
     const manager = new OpensteerBrowserManager({
       rootDir: process.cwd(),
       workspace: parsed.options.workspace,
+      engineName: parsed.options.engineName,
       browser: "persistent",
       ...(parsed.options.launch === undefined ? {} : { launch: parsed.options.launch }),
       ...(parsed.options.context === undefined ? {} : { context: parsed.options.context }),
@@ -100,12 +161,17 @@ async function main(): Promise<void> {
     return;
   }
 
-  const runtime = new OpensteerRuntime({
-    ...(parsed.options.workspace === undefined ? {} : { workspace: parsed.options.workspace }),
-    rootDir: process.cwd(),
-    ...(parsed.options.browser === undefined ? {} : { browser: parsed.options.browser }),
-    ...(parsed.options.launch === undefined ? {} : { launch: parsed.options.launch }),
-    ...(parsed.options.context === undefined ? {} : { context: parsed.options.context }),
+  const runtime = createOpensteerSemanticRuntime({
+    mode,
+    ...(cloudOptions === undefined ? {} : { cloud: cloudOptions }),
+    engine: parsed.options.engineName,
+    runtimeOptions: {
+      workspace: parsed.options.workspace,
+      rootDir: process.cwd(),
+      ...(parsed.options.browser === undefined ? {} : { browser: parsed.options.browser }),
+      ...(parsed.options.launch === undefined ? {} : { launch: parsed.options.launch }),
+      ...(parsed.options.context === undefined ? {} : { context: parsed.options.context }),
+    },
   });
 
   let result: unknown;
@@ -164,6 +230,7 @@ async function handleBrowserCommand(parsed: ParsedCommandLine): Promise<void> {
   const manager = new OpensteerBrowserManager({
     rootDir: process.cwd(),
     workspace: parsed.options.workspace,
+    ...(parsed.options.engineName === undefined ? {} : { engineName: parsed.options.engineName }),
     browser: "persistent",
     ...(parsed.options.launch === undefined ? {} : { launch: parsed.options.launch }),
     ...(parsed.options.context === undefined ? {} : { context: parsed.options.context }),
@@ -303,6 +370,18 @@ function resolveOperation(command: readonly string[]): OpensteerSemanticOperatio
 
 interface ParsedCliOptions {
   readonly workspace?: string;
+  readonly engineName: OpensteerEngineName;
+  readonly local?: boolean;
+  readonly cloud?: boolean;
+  readonly cloudProfileId?: string;
+  readonly cloudProfileReuseIfActive?: boolean;
+  readonly agents?: readonly string[];
+  readonly skills?: readonly string[];
+  readonly global?: boolean;
+  readonly yes?: boolean;
+  readonly copy?: boolean;
+  readonly all?: boolean;
+  readonly list?: boolean;
   readonly browser?: OpensteerBrowserOptions;
   readonly launch?: {
     readonly headless?: boolean;
@@ -374,6 +453,13 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
   }
 
   const browserKind = readSingle(rawOptions, "browser");
+  const requestedEngine = readSingle(rawOptions, "engine");
+  const engineName = resolveOpensteerEngineName({
+    ...(requestedEngine === undefined ? {} : { requested: requestedEngine }),
+    ...(process.env.OPENSTEER_ENGINE === undefined
+      ? {}
+      : { environment: process.env.OPENSTEER_ENGINE }),
+  });
   const attachEndpoint = readSingle(rawOptions, "attach-endpoint");
   const attachHeaders = parseKeyValueList(rawOptions.get("attach-header"));
   const freshTab = readOptionalBoolean(rawOptions, "fresh-tab");
@@ -422,9 +508,32 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
   const contextJson = readJsonObject(rawOptions, "context-json");
   const inputJson = readJsonObject(rawOptions, "input-json");
   const schemaJson = readJsonObject(rawOptions, "schema-json");
+  const local = readOptionalBoolean(rawOptions, "local");
+  const cloud = readOptionalBoolean(rawOptions, "cloud");
+  const cloudProfileId = readSingle(rawOptions, "cloud-profile-id");
+  const cloudProfileReuseIfActive = readOptionalBoolean(rawOptions, "cloud-profile-reuse-if-active");
+  const agents = rawOptions.get("agent");
+  const skills = rawOptions.get("skill");
+  const global = readOptionalBoolean(rawOptions, "global");
+  const yes = readOptionalBoolean(rawOptions, "yes");
+  const copy = readOptionalBoolean(rawOptions, "copy");
+  const all = readOptionalBoolean(rawOptions, "all");
+  const list = readOptionalBoolean(rawOptions, "list");
 
   const options: ParsedCliOptions = {
     ...(workspace === undefined ? {} : { workspace }),
+    engineName,
+    ...(local === undefined ? {} : { local }),
+    ...(cloud === undefined ? {} : { cloud }),
+    ...(cloudProfileId === undefined ? {} : { cloudProfileId }),
+    ...(cloudProfileReuseIfActive === undefined ? {} : { cloudProfileReuseIfActive }),
+    ...(agents === undefined ? {} : { agents }),
+    ...(skills === undefined ? {} : { skills }),
+    ...(global === undefined ? {} : { global }),
+    ...(yes === undefined ? {} : { yes }),
+    ...(copy === undefined ? {} : { copy }),
+    ...(all === undefined ? {} : { all }),
+    ...(list === undefined ? {} : { list }),
     ...(browser === undefined ? {} : { browser }),
     ...(Object.keys(launch).length === 0 ? {} : { launch }),
     ...(contextJson === undefined ? {} : { context: contextJson }),
@@ -449,6 +558,65 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
     options,
     help,
   };
+}
+
+async function resolveCliExecutionMode(
+  parsed: ParsedCommandLine,
+): Promise<OpensteerExecutionMode> {
+  const environmentMode = process.env.OPENSTEER_MODE;
+  if (
+    parsed.options.local === undefined &&
+    parsed.options.cloud === undefined &&
+    (environmentMode === undefined || environmentMode.trim().length === 0) &&
+    parsed.options.workspace !== undefined
+  ) {
+    const rootPath = resolveFilesystemWorkspacePath({
+      rootDir: process.cwd(),
+      workspace: parsed.options.workspace,
+    });
+    if (await hasPersistedCloudSession(rootPath)) {
+      return "cloud";
+    }
+  }
+
+  return resolveOpensteerExecutionMode({
+    ...(parsed.options.local === undefined ? {} : { local: parsed.options.local }),
+    ...(parsed.options.cloud === undefined ? {} : { cloud: parsed.options.cloud }),
+    ...(environmentMode === undefined ? {} : { environment: environmentMode }),
+  });
+}
+
+function buildCliCloudOptions(
+  parsed: ParsedCommandLine,
+): boolean | OpensteerCloudOptions | undefined {
+  if (
+    parsed.options.cloudProfileReuseIfActive === true &&
+    parsed.options.cloudProfileId === undefined
+  ) {
+    throw new Error(
+      '"--cloud-profile-reuse-if-active" requires "--cloud-profile-id <id>".',
+    );
+  }
+
+  const browserProfile =
+    parsed.options.cloudProfileId === undefined
+      ? undefined
+      : {
+          profileId: parsed.options.cloudProfileId,
+          ...(parsed.options.cloudProfileReuseIfActive === true
+            ? { reuseIfActive: true }
+            : {}),
+        };
+
+  if (browserProfile !== undefined) {
+    return { browserProfile };
+  }
+
+  if (parsed.options.cloud === true) {
+    return true;
+  }
+
+  return undefined;
 }
 
 function parseKeyValueList(
@@ -524,6 +692,9 @@ function resolveCommandLength(tokens: readonly string[]): number {
   if (tokens[0] === "browser") {
     return Math.min(tokens.length, 2);
   }
+  if (tokens[0] === "skills") {
+    return Math.min(tokens.length, 2);
+  }
   if (tokens[0] === "run") {
     return 1;
   }
@@ -553,11 +724,17 @@ Usage:
   opensteer browser delete --workspace <id>
   opensteer browser discover
   opensteer browser inspect --attach-endpoint <url>
+  opensteer skills install [--skill <name>] [--agent <name>] [--global] [--yes]
 
   opensteer run <semantic-operation> --workspace <id> --input-json <json>
 
 Common options:
   --workspace <id>
+  --local
+  --cloud
+  --cloud-profile-id <id>
+  --cloud-profile-reuse-if-active <true|false>
+  --engine playwright|abp
   --browser temporary|persistent|attach
   --attach-endpoint <url>
   --fresh-tab <true|false>
@@ -567,6 +744,8 @@ Common options:
   --timeout-ms <ms>
   --context-json <json>
   --input-json <json>
+  --skill <name>      repeatable
+  --agent <name>      repeatable
 `);
 }
 

@@ -60,8 +60,18 @@
   "optionalDependencies": {
     "webcrack": "^2.15.1"
   },
+  "peerDependencies": {
+    "@opensteer/engine-abp": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "@opensteer/engine-abp": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@opensteer/browser-core": "workspace:*",
+    "@opensteer/cloud-contracts": "workspace:*",
+    "@opensteer/engine-abp": "workspace:*",
     "@opensteer/protocol": "workspace:*"
   },
   "scripts": {

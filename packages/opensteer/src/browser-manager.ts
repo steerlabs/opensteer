@@ -38,6 +38,12 @@ import {
   readJsonFile,
   writeJsonFileAtomic,
 } from "./internal/filesystem.js";
+import {
+  assertSupportedEngineOptions,
+  DEFAULT_OPENSTEER_ENGINE,
+  toAbpLaunchOptions,
+  type OpensteerEngineName,
+} from "./internal/engine-selection.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEVTOOLS_POLL_INTERVAL_MS = 50;
@@ -65,21 +71,27 @@ export interface WorkspaceBrowserManifest {
 
 export interface WorkspaceLiveBrowserRecord {
   readonly mode: "persistent";
-  readonly endpoint: string;
+  readonly engine: OpensteerEngineName;
+  readonly endpoint?: string;
+  readonly baseUrl?: string;
+  readonly remoteDebuggingUrl?: string;
+  readonly sessionDir?: string;
   readonly pid: number;
   readonly startedAt: number;
-  readonly executablePath: string;
+  readonly executablePath?: string;
   readonly userDataDir: string;
 }
 
 export interface OpensteerBrowserStatus {
   readonly mode: "temporary" | "persistent" | "attach";
+  readonly engine: OpensteerEngineName;
   readonly workspace?: string;
   readonly rootPath: string;
   readonly live: boolean;
   readonly browserPath?: string;
   readonly userDataDir?: string;
   readonly endpoint?: string;
+  readonly baseUrl?: string;
   readonly manifest?: WorkspaceBrowserManifest;
 }
 
@@ -87,6 +99,7 @@ export interface OpensteerBrowserManagerOptions {
   readonly rootDir?: string;
   readonly rootPath?: string;
   readonly workspace?: string;
+  readonly engineName?: OpensteerEngineName;
   readonly browser?: OpensteerBrowserOptions;
   readonly launch?: OpensteerBrowserLaunchOptions;
   readonly context?: OpensteerBrowserContextOptions;
@@ -94,6 +107,7 @@ export interface OpensteerBrowserManagerOptions {
 
 export class OpensteerBrowserManager {
   readonly mode: "temporary" | "persistent" | "attach";
+  readonly engineName: OpensteerEngineName;
   readonly rootPath: string;
   readonly workspace: string | undefined;
   readonly cleanupRootOnDisconnect: boolean;
@@ -109,6 +123,12 @@ export class OpensteerBrowserManager {
     this.browserOptions = isAttachBrowserOptions(options.browser) ? options.browser : undefined;
     this.launchOptions = options.launch;
     this.contextOptions = normalizeBrowserContextOptions(options.context);
+    this.engineName = options.engineName ?? DEFAULT_OPENSTEER_ENGINE;
+    assertSupportedEngineOptions({
+      engineName: this.engineName,
+      ...(options.browser === undefined ? {} : { browser: options.browser }),
+      ...(this.contextOptions === undefined ? {} : { context: this.contextOptions }),
+    });
     this.rootPath =
       options.rootPath ??
       (this.workspace === undefined
@@ -121,6 +141,17 @@ export class OpensteerBrowserManager {
   }
 
   async createEngine(): Promise<DisposableBrowserCoreEngine> {
+    if (this.mode === "persistent") {
+      const effectiveEngine = (await this.resolveLivePersistentEngineName()) ?? this.engineName;
+      if (effectiveEngine === "abp") {
+        return this.createAbpEngine();
+      }
+      return this.createPersistentEngine();
+    }
+
+    if (this.engineName === "abp") {
+      return this.createAbpEngine();
+    }
     if (this.mode === "temporary") {
       return this.createTemporaryEngine();
     }
@@ -134,6 +165,7 @@ export class OpensteerBrowserManager {
     if (this.mode === "temporary") {
       return {
         mode: "temporary",
+        engine: this.engineName,
         rootPath: this.rootPath,
         live: false,
       };
@@ -144,12 +176,14 @@ export class OpensteerBrowserManager {
     const liveRecord = await this.readLivePersistentBrowser(workspace);
     return {
       mode: this.mode,
+      engine: liveRecord?.engine ?? this.engineName,
       ...(this.workspace === undefined ? {} : { workspace: this.workspace }),
       rootPath: workspace.rootPath,
       live: liveRecord !== undefined,
       browserPath: workspace.browserPath,
       userDataDir: workspace.browserUserDataDir,
-      ...(liveRecord === undefined ? {} : { endpoint: liveRecord.endpoint }),
+      ...(liveRecord?.endpoint === undefined ? {} : { endpoint: liveRecord.endpoint }),
+      ...(liveRecord?.baseUrl === undefined ? {} : { baseUrl: liveRecord.baseUrl }),
       ...(manifest === undefined ? {} : { manifest }),
     };
   }
@@ -196,6 +230,7 @@ export class OpensteerBrowserManager {
     const workspace = await this.ensureWorkspaceStore();
     await workspace.lock(async () => {
       await this.closePersistentBrowser(workspace);
+      await rm(resolveAbpSessionDir(workspace), { recursive: true, force: true });
       await rm(workspace.browserPath, { recursive: true, force: true });
       await rm(workspace.liveBrowserPath, { force: true });
       await ensureDirectory(workspace.browserUserDataDir);
@@ -207,6 +242,7 @@ export class OpensteerBrowserManager {
     const workspace = await this.ensureWorkspaceStore();
     await workspace.lock(async () => {
       await this.closePersistentBrowser(workspace);
+      await rm(resolveAbpSessionDir(workspace), { recursive: true, force: true });
       await rm(workspace.browserPath, { recursive: true, force: true });
       await rm(workspace.liveBrowserPath, { force: true });
     });
@@ -221,6 +257,107 @@ export class OpensteerBrowserManager {
     await workspace.lock(async () => {
       await this.closePersistentBrowser(workspace);
     });
+  }
+
+  private async createAbpEngine(): Promise<DisposableBrowserCoreEngine> {
+    if (this.mode === "attach") {
+      throw new Error(
+        'ABP engine does not support browser.mode="attach". Use the Playwright engine for attach flows.',
+      );
+    }
+    if (this.mode === "temporary") {
+      return this.createTemporaryAbpEngine();
+    }
+    return this.createPersistentAbpEngine();
+  }
+
+  private async createTemporaryAbpEngine(): Promise<DisposableBrowserCoreEngine> {
+    const workspace = await this.ensureWorkspaceStore();
+    await clearChromeSingletonEntries(workspace.browserUserDataDir);
+    const { createAbpBrowserCoreEngine } = await loadAbpModule();
+    const launch = toAbpLaunchOptions({
+      ...(this.launchOptions === undefined ? {} : { launch: this.launchOptions }),
+      ...(this.contextOptions === undefined ? {} : { context: this.contextOptions }),
+      userDataDir: workspace.browserUserDataDir,
+      sessionDir: resolveAbpSessionDir(workspace),
+    });
+    return (await createAbpBrowserCoreEngine(
+      launch === undefined ? {} : { launch },
+    )) as DisposableBrowserCoreEngine;
+  }
+
+  private async createPersistentAbpEngine(): Promise<DisposableBrowserCoreEngine> {
+    const workspace = await this.ensureWorkspaceStore();
+    return workspace.lock(async () => {
+      const live = await this.readLivePersistentBrowser(workspace);
+      if (live !== undefined) {
+        if (live.engine !== "abp") {
+          throw new Error(
+            `workspace "${this.workspace}" already has a live ${live.engine} browser. Close it before reopening with engine "abp".`,
+          );
+        }
+        return this.createAdoptedAbpEngine(live);
+      }
+
+      await this.ensurePersistentBrowserManifest(workspace);
+      await clearChromeSingletonEntries(workspace.browserUserDataDir);
+      const { launchAbpProcess } = await loadAbpModule();
+      const launch = toAbpLaunchOptions({
+        ...(this.launchOptions === undefined ? {} : { launch: this.launchOptions }),
+        ...(this.contextOptions === undefined ? {} : { context: this.contextOptions }),
+        userDataDir: workspace.browserUserDataDir,
+        sessionDir: resolveAbpSessionDir(workspace),
+      });
+      const launched = await launchAbpProcess({
+        port: await allocateEphemeralPort(),
+        userDataDir: workspace.browserUserDataDir,
+        sessionDir: resolveAbpSessionDir(workspace),
+        headless: launch?.headless ?? true,
+        args: launch?.args ?? [],
+        verbose: false,
+        ...(launch?.browserExecutablePath === undefined
+          ? {}
+          : { browserExecutablePath: launch.browserExecutablePath }),
+      });
+      const liveRecord: WorkspaceLiveBrowserRecord = {
+        mode: "persistent",
+        engine: "abp",
+        baseUrl: launched.baseUrl,
+        remoteDebuggingUrl: launched.remoteDebuggingUrl,
+        pid: launched.process.pid ?? 0,
+        startedAt: Date.now(),
+        userDataDir: workspace.browserUserDataDir,
+        sessionDir: resolveAbpSessionDir(workspace),
+        ...(launch?.browserExecutablePath === undefined
+          ? {}
+          : { executablePath: launch.browserExecutablePath }),
+      };
+      await writeJsonFileAtomic(workspace.liveBrowserPath, liveRecord);
+
+      try {
+        return await this.createAdoptedAbpEngine(liveRecord);
+      } catch (error) {
+        await terminateProcess(launched.process.pid ?? 0).catch(() => undefined);
+        await rm(workspace.liveBrowserPath, { force: true }).catch(() => undefined);
+        throw error;
+      }
+    });
+  }
+
+  private async createAdoptedAbpEngine(
+    live: WorkspaceLiveBrowserRecord,
+  ): Promise<DisposableBrowserCoreEngine> {
+    if (live.baseUrl === undefined || live.remoteDebuggingUrl === undefined) {
+      throw new Error("workspace live browser record is missing ABP connection metadata.");
+    }
+
+    const { createAbpBrowserCoreEngine } = await loadAbpModule();
+    return (await createAbpBrowserCoreEngine({
+      browser: {
+        baseUrl: live.baseUrl,
+        remoteDebuggingUrl: live.remoteDebuggingUrl,
+      },
+    })) as DisposableBrowserCoreEngine;
   }
 
   private async createTemporaryEngine(): Promise<DisposableBrowserCoreEngine> {
@@ -264,6 +401,14 @@ export class OpensteerBrowserManager {
     return workspace.lock(async () => {
       const live = await this.readLivePersistentBrowser(workspace);
       if (live) {
+        if (live.engine !== "playwright") {
+          throw new Error(
+            `workspace "${this.workspace}" already has a live ${live.engine} browser. Close it before reopening with engine "playwright".`,
+          );
+        }
+        if (live.endpoint === undefined) {
+          throw new Error("workspace live browser record is missing a DevTools endpoint.");
+        }
         return this.createAttachedEngine({
           endpoint: live.endpoint,
           freshTab: false,
@@ -278,6 +423,7 @@ export class OpensteerBrowserManager {
       });
       const liveRecord: WorkspaceLiveBrowserRecord = {
         mode: "persistent",
+        engine: "playwright",
         endpoint: launched.endpoint,
         pid: launched.pid,
         startedAt: Date.now(),
@@ -427,9 +573,18 @@ export class OpensteerBrowserManager {
       await rm(workspace.liveBrowserPath, { force: true }).catch(() => undefined);
       return undefined;
     }
-    if (!(await isEndpointReachable(live.endpoint))) {
+    if (live.engine === "playwright") {
+      if (live.endpoint === undefined || !(await isEndpointReachable(live.endpoint))) {
+        throw new Error(
+          `workspace "${this.workspace}" browser process ${String(live.pid)} is still running, but its DevTools endpoint is unavailable`,
+        );
+      }
+      return live;
+    }
+
+    if (live.baseUrl === undefined || !(await isAbpBaseUrlReachable(live.baseUrl))) {
       throw new Error(
-        `workspace "${this.workspace}" browser process ${String(live.pid)} is still running, but its DevTools endpoint is unavailable`,
+        `workspace "${this.workspace}" browser process ${String(live.pid)} is still running, but its ABP endpoint is unavailable`,
       );
     }
     return live;
@@ -441,7 +596,26 @@ export class OpensteerBrowserManager {
     if (!(await pathExists(workspace.liveBrowserPath))) {
       return undefined;
     }
-    return readJsonFile<WorkspaceLiveBrowserRecord>(workspace.liveBrowserPath);
+    const live = await readJsonFile<WorkspaceLiveBrowserRecord & { readonly engine?: string }>(
+      workspace.liveBrowserPath,
+    );
+    if (live.engine === "abp") {
+      return live;
+    }
+    return {
+      ...live,
+      engine: "playwright",
+    };
+  }
+
+  private async resolveLivePersistentEngineName(): Promise<OpensteerEngineName | undefined> {
+    if (this.mode !== "persistent") {
+      return undefined;
+    }
+
+    const workspace = await this.ensureWorkspaceStore();
+    const live = await this.readStoredLiveBrowser(workspace);
+    return live?.engine;
   }
 
   private async assertPersistentBrowserClosed(
@@ -461,11 +635,19 @@ export class OpensteerBrowserManager {
       return;
     }
 
-    await requestBrowserClose(live.endpoint).catch(() => undefined);
-    if (await waitForProcessExit(live.pid, BROWSER_CLOSE_TIMEOUT_MS)) {
+    if (live.engine === "playwright") {
+      if (live.endpoint !== undefined) {
+        await requestBrowserClose(live.endpoint).catch(() => undefined);
+      }
+      if (await waitForProcessExit(live.pid, BROWSER_CLOSE_TIMEOUT_MS)) {
+        await rm(workspace.liveBrowserPath, { force: true }).catch(() => undefined);
+        return;
+      }
+      await terminateProcess(live.pid).catch(() => undefined);
       await rm(workspace.liveBrowserPath, { force: true }).catch(() => undefined);
       return;
     }
+
     await terminateProcess(live.pid).catch(() => undefined);
     await rm(workspace.liveBrowserPath, { force: true }).catch(() => undefined);
   }
@@ -655,6 +837,17 @@ async function isEndpointReachable(endpoint: string): Promise<boolean> {
   }
 }
 
+async function isAbpBaseUrlReachable(baseUrl: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${baseUrl}/browser/status`, {
+      signal: AbortSignal.timeout(1_500),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function terminateProcess(pid: number): Promise<void> {
   if (!Number.isInteger(pid) || pid <= 0) {
     return;
@@ -742,6 +935,40 @@ async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boole
   }
 
   return !isProcessRunning(pid);
+}
+
+function resolveAbpSessionDir(workspace: FilesystemOpensteerWorkspace): string {
+  return path.join(workspace.livePath, "abp-session");
+}
+
+async function allocateEphemeralPort(): Promise<number> {
+  const { allocatePort } = await loadAbpModule();
+  return allocatePort();
+}
+
+async function loadAbpModule() {
+  try {
+    return await import("@opensteer/engine-abp");
+  } catch (error) {
+    if (isMissingPackageError(error, "@opensteer/engine-abp")) {
+      throw new Error(
+        'ABP engine selected but "@opensteer/engine-abp" is not installed. Install it to use --engine abp or OPENSTEER_ENGINE=abp.',
+      );
+    }
+    throw error;
+  }
+}
+
+function isMissingPackageError(error: unknown, packageName: string): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return (
+    error.message.includes(`Cannot find package '${packageName}'`) ||
+    error.message.includes(`Cannot find module '${packageName}'`) ||
+    error.message.includes(`Cannot find module "${packageName}"`)
+  );
 }
 
 function normalizeBrowserContextOptions(
