@@ -259,11 +259,14 @@ import {
 } from "../reverse/workflows.js";
 import {
   assertValidOpensteerExtractionSchemaRoot,
-  compileOpensteerExtractionPayload,
+  compileOpensteerExtractionFieldTargets,
+  compilePersistedOpensteerExtractionPayloadFromFieldTargets,
   createOpensteerExtractionDescriptorStore,
+  extractOpensteerExtractionFieldTargets,
   replayOpensteerExtractionPayload,
   type OpensteerExtractionDescriptorRecord,
 } from "./extraction.js";
+import { inflateDataPathObject } from "./extraction-data-path.js";
 import { compileOpensteerSnapshot, type CompiledOpensteerSnapshot } from "./snapshot/compiler.js";
 import type {
   AuthRecipeRecord,
@@ -1265,16 +1268,35 @@ export class OpensteerRuntime {
         "dom.extract",
         async (timeout) => {
           let descriptor: OpensteerExtractionDescriptorRecord | undefined;
+          let data: JsonValue;
           if (input.schema !== undefined) {
             assertValidOpensteerExtractionSchemaRoot(input.schema);
-            const payload = await timeout.runStep(() =>
-              compileOpensteerExtractionPayload({
+            const fieldTargets = await timeout.runStep(() =>
+              compileOpensteerExtractionFieldTargets({
                 pageRef,
                 schema: input.schema as Record<string, unknown>,
                 dom: this.requireDom(),
                 ...(this.latestSnapshot?.counterRecords === undefined
                   ? {}
                   : { latestSnapshotCounters: this.latestSnapshot.counterRecords }),
+              }),
+            );
+            data = toCanonicalJsonValue(
+              inflateDataPathObject(
+                await timeout.runStep(() =>
+                  extractOpensteerExtractionFieldTargets({
+                    pageRef,
+                    dom: this.requireDom(),
+                    fieldTargets,
+                  }),
+                ),
+              ),
+            );
+            const payload = await timeout.runStep(() =>
+              compilePersistedOpensteerExtractionPayloadFromFieldTargets({
+                pageRef,
+                dom: this.requireDom(),
+                fieldTargets,
               }),
             );
             const pageInfo = await timeout.runStep(() =>
@@ -1307,15 +1329,17 @@ export class OpensteerRuntime {
                 },
               );
             }
+            const replayDescriptor = descriptor;
+
+            data = await timeout.runStep(() =>
+              replayOpensteerExtractionPayload({
+                pageRef,
+                dom: this.requireDom(),
+                payload: replayDescriptor.payload.root,
+              }),
+            );
           }
 
-          const data = await timeout.runStep(() =>
-            replayOpensteerExtractionPayload({
-              pageRef,
-              dom: this.requireDom(),
-              payload: descriptor.payload.root,
-            }),
-          );
           const artifacts = await this.captureSnapshotArtifacts(
             pageRef,
             {

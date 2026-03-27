@@ -1,17 +1,19 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import type { PageRef } from "@opensteer/browser-core";
+import type { NodeLocator, PageRef } from "@opensteer/browser-core";
 
 import type { JsonValue } from "../json.js";
 import { canonicalJsonString, toCanonicalJsonValue } from "../json.js";
 import type { DescriptorRecord, DescriptorRegistryStore } from "../registry.js";
 import type { FilesystemOpensteerWorkspace } from "../root.js";
 import {
+  buildArrayFieldPathCandidates,
   sanitizeElementPath,
   type DomArrayFieldSelector,
   type DomArraySelector,
   type DomRuntime,
   type ElementPath,
+  type StructuralElementAnchor,
 } from "../runtimes/dom/index.js";
 import {
   buildPersistedOpensteerExtractionPayload,
@@ -47,6 +49,29 @@ type OpensteerSchemaNode =
   | OpensteerSchemaField
   | readonly OpensteerSchemaNode[]
   | { readonly [key: string]: OpensteerSchemaNode };
+
+interface OpensteerExtractionPathFieldTarget {
+  readonly key: string;
+  readonly path: ElementPath;
+  readonly attribute?: string;
+}
+
+interface OpensteerExtractionLiveFieldTarget {
+  readonly key: string;
+  readonly locator: NodeLocator;
+  readonly anchor: StructuralElementAnchor;
+  readonly attribute?: string;
+}
+
+interface OpensteerExtractionSourceFieldTarget {
+  readonly key: string;
+  readonly source: "current_url";
+}
+
+type OpensteerExtractionFieldTarget =
+  | OpensteerExtractionPathFieldTarget
+  | OpensteerExtractionLiveFieldTarget
+  | OpensteerExtractionSourceFieldTarget;
 
 export interface PersistedOpensteerExtractionValueNode {
   readonly $path: ElementPath;
@@ -180,8 +205,30 @@ export async function compileOpensteerExtractionPayload(options: {
   readonly latestSnapshotCounters?: ReadonlyMap<number, CompiledOpensteerSnapshotCounterRecord>;
 }): Promise<PersistedOpensteerExtractionPayload> {
   assertValidOpensteerExtractionSchemaRoot(options.schema);
-  const fields: PersistableOpensteerExtractionField[] = [];
-  await collectPersistableFieldsFromSchemaObject({
+  const fieldTargets = await compileOpensteerExtractionFieldTargets({
+    dom: options.dom,
+    pageRef: options.pageRef,
+    schema: options.schema,
+    ...(options.latestSnapshotCounters
+      ? { latestSnapshotCounters: options.latestSnapshotCounters }
+      : {}),
+  });
+  return compilePersistedOpensteerExtractionPayloadFromFieldTargets({
+    pageRef: options.pageRef,
+    dom: options.dom,
+    fieldTargets,
+  });
+}
+
+export async function compileOpensteerExtractionFieldTargets(options: {
+  readonly pageRef: PageRef;
+  readonly schema: Record<string, unknown>;
+  readonly dom: DomRuntime;
+  readonly latestSnapshotCounters?: ReadonlyMap<number, CompiledOpensteerSnapshotCounterRecord>;
+}): Promise<readonly OpensteerExtractionFieldTarget[]> {
+  assertValidOpensteerExtractionSchemaRoot(options.schema);
+  const fields: OpensteerExtractionFieldTarget[] = [];
+  await collectFieldTargetsFromSchemaObject({
     dom: options.dom,
     pageRef: options.pageRef,
     latestSnapshotCounters: options.latestSnapshotCounters,
@@ -190,7 +237,64 @@ export async function compileOpensteerExtractionPayload(options: {
     fields,
     insideArray: false,
   });
-  return buildPersistedOpensteerExtractionPayload(fields);
+  return fields;
+}
+
+export async function extractOpensteerExtractionFieldTargets(options: {
+  readonly pageRef: PageRef;
+  readonly dom: DomRuntime;
+  readonly fieldTargets: readonly OpensteerExtractionFieldTarget[];
+}): Promise<Readonly<Record<string, string | null>>> {
+  return options.dom.extractFields({
+    pageRef: options.pageRef,
+    fields: options.fieldTargets.map((field) => {
+      if ("source" in field) {
+        return {
+          key: field.key,
+          source: "current_url",
+        };
+      }
+
+      if ("path" in field) {
+        return {
+          key: field.key,
+          target: {
+            kind: "path" as const,
+            path: field.path,
+          },
+          ...(field.attribute === undefined ? {} : { attribute: field.attribute }),
+        };
+      }
+
+      return {
+        key: field.key,
+        target: {
+          kind: "live" as const,
+          locator: field.locator,
+          anchor: field.anchor,
+        },
+        ...(field.attribute === undefined ? {} : { attribute: field.attribute }),
+      };
+    }),
+  });
+}
+
+export async function compilePersistedOpensteerExtractionPayloadFromFieldTargets(options: {
+  readonly pageRef: PageRef;
+  readonly dom: DomRuntime;
+  readonly fieldTargets: readonly OpensteerExtractionFieldTarget[];
+}): Promise<PersistedOpensteerExtractionPayload> {
+  const fields = await resolvePersistableFieldTargets({
+    pageRef: options.pageRef,
+    dom: options.dom,
+    fieldTargets: options.fieldTargets,
+  });
+  const payload = buildPersistedOpensteerExtractionPayload(fields);
+  return stripRedundantPositionClausesFromPersistedExtraction({
+    pageRef: options.pageRef,
+    dom: options.dom,
+    payload,
+  });
 }
 
 export async function replayOpensteerExtractionPayload(options: {
@@ -216,7 +320,7 @@ export function createOpensteerExtractionDescriptorStore(options: {
   return new MemoryOpensteerExtractionDescriptorStore(namespace);
 }
 
-async function collectPersistableFieldsFromSchemaObject(options: {
+async function collectFieldTargetsFromSchemaObject(options: {
   readonly dom: DomRuntime;
   readonly pageRef: PageRef;
   readonly latestSnapshotCounters:
@@ -224,7 +328,7 @@ async function collectPersistableFieldsFromSchemaObject(options: {
     | undefined;
   readonly value: Record<string, unknown>;
   readonly path: string;
-  readonly fields: PersistableOpensteerExtractionField[];
+  readonly fields: OpensteerExtractionFieldTarget[];
   readonly insideArray: boolean;
 }): Promise<void> {
   for (const [key, childValue] of Object.entries(options.value)) {
@@ -233,7 +337,7 @@ async function collectPersistableFieldsFromSchemaObject(options: {
       continue;
     }
 
-    await collectPersistableFieldsFromSchemaValue({
+    await collectFieldTargetsFromSchemaValue({
       dom: options.dom,
       pageRef: options.pageRef,
       latestSnapshotCounters: options.latestSnapshotCounters,
@@ -245,7 +349,7 @@ async function collectPersistableFieldsFromSchemaObject(options: {
   }
 }
 
-async function collectPersistableFieldsFromSchemaValue(options: {
+async function collectFieldTargetsFromSchemaValue(options: {
   readonly dom: DomRuntime;
   readonly pageRef: PageRef;
   readonly latestSnapshotCounters:
@@ -253,13 +357,13 @@ async function collectPersistableFieldsFromSchemaValue(options: {
     | undefined;
   readonly value: unknown;
   readonly path: string;
-  readonly fields: PersistableOpensteerExtractionField[];
+  readonly fields: OpensteerExtractionFieldTarget[];
   readonly insideArray: boolean;
 }): Promise<void> {
   const normalizedField = normalizeSchemaField(options.value);
   if (normalizedField !== null) {
     options.fields.push(
-      await compilePersistableSchemaField({
+      await compileFieldTarget({
         dom: options.dom,
         pageRef: options.pageRef,
         latestSnapshotCounters: options.latestSnapshotCounters,
@@ -291,7 +395,7 @@ async function collectPersistableFieldsFromSchemaValue(options: {
       }
 
       const fieldCountBeforeItem = options.fields.length;
-      await collectPersistableFieldsFromSchemaObject({
+      await collectFieldTargetsFromSchemaObject({
         dom: options.dom,
         pageRef: options.pageRef,
         latestSnapshotCounters: options.latestSnapshotCounters,
@@ -302,7 +406,7 @@ async function collectPersistableFieldsFromSchemaValue(options: {
       });
 
       const itemFields = options.fields.slice(fieldCountBeforeItem);
-      if (!itemFields.some((field) => "path" in field)) {
+      if (!itemFields.some((field) => !("source" in field))) {
         throw new Error(
           `Extraction array "${labelForPath(options.path)}" item ${String(index)} must include at least one element- or selector-backed field.`,
         );
@@ -317,7 +421,7 @@ async function collectPersistableFieldsFromSchemaValue(options: {
     );
   }
 
-  await collectPersistableFieldsFromSchemaObject({
+  await collectFieldTargetsFromSchemaObject({
     dom: options.dom,
     pageRef: options.pageRef,
     latestSnapshotCounters: options.latestSnapshotCounters,
@@ -328,7 +432,7 @@ async function collectPersistableFieldsFromSchemaValue(options: {
   });
 }
 
-async function compilePersistableSchemaField(options: {
+async function compileFieldTarget(options: {
   readonly dom: DomRuntime;
   readonly pageRef: PageRef;
   readonly latestSnapshotCounters:
@@ -336,7 +440,7 @@ async function compilePersistableSchemaField(options: {
     | undefined;
   readonly field: OpensteerSchemaField;
   readonly path: string;
-}): Promise<PersistableOpensteerExtractionField> {
+}): Promise<OpensteerExtractionFieldTarget> {
   if ("source" in options.field) {
     return {
       key: options.path,
@@ -344,47 +448,57 @@ async function compilePersistableSchemaField(options: {
     };
   }
 
-  const compiledPath = await resolveFieldPath({
-    dom: options.dom,
-    pageRef: options.pageRef,
-    latestSnapshotCounters: options.latestSnapshotCounters,
-    field: options.field,
-    path: options.path,
-  });
+  if ("selector" in options.field) {
+    return {
+      key: options.path,
+      path: await resolveSelectorFieldPath({
+        dom: options.dom,
+        pageRef: options.pageRef,
+        selector: options.field.selector,
+      }),
+      ...(options.field.attribute === undefined ? {} : { attribute: options.field.attribute }),
+    };
+  }
 
   return {
     key: options.path,
-    path: compiledPath,
+    ...(await resolveLiveFieldTarget({
+      latestSnapshotCounters: options.latestSnapshotCounters,
+      field: options.field,
+      path: options.path,
+    })),
     ...(options.field.attribute === undefined ? {} : { attribute: options.field.attribute }),
   };
 }
 
-async function resolveFieldPath(options: {
+async function resolveSelectorFieldPath(options: {
   readonly dom: DomRuntime;
   readonly pageRef: PageRef;
+  readonly selector: string;
+}): Promise<ElementPath> {
+  const resolved = await options.dom.resolveTarget({
+    pageRef: options.pageRef,
+    method: "extract",
+    target: {
+      kind: "selector",
+      selector: options.selector,
+    },
+  });
+  return (
+    resolved.replayPath ??
+    (await options.dom.buildPath({
+      locator: resolved.locator,
+    }))
+  );
+}
+
+async function resolveLiveFieldTarget(options: {
   readonly latestSnapshotCounters:
     | ReadonlyMap<number, CompiledOpensteerSnapshotCounterRecord>
     | undefined;
-  readonly field: OpensteerSchemaFieldByElement | OpensteerSchemaFieldBySelector;
+  readonly field: OpensteerSchemaFieldByElement;
   readonly path: string;
-}): Promise<ElementPath> {
-  if ("selector" in options.field) {
-    const resolved = await options.dom.resolveTarget({
-      pageRef: options.pageRef,
-      method: "extract",
-      target: {
-        kind: "selector",
-        selector: options.field.selector,
-      },
-    });
-    return (
-      resolved.replayPath ??
-      (await options.dom.buildPath({
-        locator: resolved.locator,
-      }))
-    );
-  }
-
+}): Promise<Pick<OpensteerExtractionLiveFieldTarget, "locator" | "anchor">> {
   const counters = options.latestSnapshotCounters;
   if (counters === undefined) {
     throw new Error(
@@ -399,22 +513,235 @@ async function resolveFieldPath(options: {
     );
   }
 
-  const resolved = await options.dom.resolveTarget({
-    pageRef: options.pageRef,
-    method: "extract",
-    target: {
-      kind: "live",
-      locator: counter.locator,
-      anchor: counter.anchor,
-    },
-  });
+  return {
+    locator: counter.locator,
+    anchor: counter.anchor,
+  };
+}
 
-  return (
-    resolved.replayPath ??
-    (await options.dom.buildPath({
-      locator: resolved.locator,
-    }))
+async function resolvePersistableFieldTargets(options: {
+  readonly pageRef: PageRef;
+  readonly dom: DomRuntime;
+  readonly fieldTargets: readonly OpensteerExtractionFieldTarget[];
+}): Promise<PersistableOpensteerExtractionField[]> {
+  const fields: PersistableOpensteerExtractionField[] = [];
+
+  for (const field of options.fieldTargets) {
+    if ("source" in field) {
+      fields.push({
+        key: field.key,
+        source: "current_url",
+      });
+      continue;
+    }
+
+    if ("path" in field) {
+      fields.push({
+        key: field.key,
+        path: sanitizeElementPath(field.path),
+        ...(field.attribute === undefined ? {} : { attribute: field.attribute }),
+      });
+      continue;
+    }
+
+    const resolved = await options.dom.resolveTarget({
+      pageRef: options.pageRef,
+      method: "extract",
+      target: {
+        kind: "live",
+        locator: field.locator,
+        anchor: field.anchor,
+      },
+    });
+    const path =
+      resolved.replayPath ??
+      (await options.dom.buildPath({
+        locator: resolved.locator,
+      }));
+
+    fields.push({
+      key: field.key,
+      path: sanitizeElementPath(path),
+      ...(field.attribute === undefined ? {} : { attribute: field.attribute }),
+    });
+  }
+
+  return fields;
+}
+
+async function stripRedundantPositionClausesFromPersistedExtraction(options: {
+  readonly pageRef: PageRef;
+  readonly dom: DomRuntime;
+  readonly payload: PersistedOpensteerExtractionPayload;
+}): Promise<PersistedOpensteerExtractionPayload> {
+  const cloned = structuredClone(options.payload) as PersistedOpensteerExtractionPayload;
+  await processPersistedExtractionObjectNode(options.pageRef, options.dom, cloned);
+  return cloned;
+}
+
+async function processPersistedExtractionNode(
+  pageRef: PageRef,
+  dom: DomRuntime,
+  node: PersistedOpensteerExtractionNode,
+): Promise<void> {
+  if (isPersistedOpensteerExtractionArrayNode(node)) {
+    await processPersistedExtractionArrayNode(pageRef, dom, node);
+    return;
+  }
+
+  if (isPersistedObjectNode(node)) {
+    await processPersistedExtractionObjectNode(pageRef, dom, node);
+  }
+}
+
+async function processPersistedExtractionObjectNode(
+  pageRef: PageRef,
+  dom: DomRuntime,
+  node: PersistedOpensteerExtractionObjectNode,
+): Promise<void> {
+  for (const child of Object.values(node)) {
+    await processPersistedExtractionNode(pageRef, dom, child);
+  }
+}
+
+async function processPersistedExtractionArrayNode(
+  pageRef: PageRef,
+  dom: DomRuntime,
+  node: PersistedOpensteerExtractionArrayNode,
+): Promise<void> {
+  for (const variant of node.$array.variants) {
+    await pruneVariantFieldPositions(pageRef, dom, variant);
+    await processPersistedExtractionNode(pageRef, dom, variant.item);
+  }
+}
+
+async function pruneVariantFieldPositions(
+  pageRef: PageRef,
+  dom: DomRuntime,
+  variant: PersistedOpensteerExtractionArrayVariantNode,
+): Promise<void> {
+  const refs = collectPersistedValueNodeRefs(variant.item).filter((ref) =>
+    hasPositionClause(ref.path),
   );
+  if (!refs.length) {
+    return;
+  }
+
+  const plans = refs
+    .map((ref, index) => {
+      const withPositions = buildCandidateSelectors(ref.path);
+      const strippedPath = stripPositionClauses(ref.path);
+      const withoutPositions = buildCandidateSelectors(strippedPath);
+      if (sameSelectorList(withPositions, withoutPositions)) {
+        return null;
+      }
+
+      return {
+        key: String(index),
+        originalPath: ref.path,
+        strippedPath,
+        replacePath: ref.replacePath,
+      };
+    })
+    .filter(
+      (
+        plan,
+      ): plan is {
+        readonly key: string;
+        readonly originalPath: ElementPath;
+        readonly strippedPath: ElementPath;
+        readonly replacePath: (path: ElementPath) => void;
+      } => plan !== null,
+    );
+  if (!plans.length) {
+    return;
+  }
+
+  let validated: Readonly<Record<string, boolean>>;
+  try {
+    validated = await dom.validateArrayFieldPositionStripping({
+      pageRef,
+      itemParentPath: variant.itemParentPath,
+      fields: plans.map((plan) => ({
+        key: plan.key,
+        originalPath: plan.originalPath,
+        strippedPath: plan.strippedPath,
+      })),
+    });
+  } catch {
+    return;
+  }
+
+  for (const plan of plans) {
+    if (!validated[plan.key]) {
+      continue;
+    }
+    plan.replacePath(plan.strippedPath);
+  }
+}
+
+function collectPersistedValueNodeRefs(node: PersistedOpensteerExtractionNode): Array<{
+  readonly path: ElementPath;
+  readonly replacePath: (path: ElementPath) => void;
+}> {
+  if (isPersistedOpensteerExtractionValueNode(node)) {
+    return [
+      {
+        path: sanitizeElementPath(node.$path),
+        replacePath: (path) => {
+          (node as { $path: ElementPath }).$path = sanitizeElementPath(path);
+        },
+      },
+    ];
+  }
+
+  if (!isPersistedObjectNode(node)) {
+    return [];
+  }
+
+  const refs: Array<{
+    readonly path: ElementPath;
+    readonly replacePath: (path: ElementPath) => void;
+  }> = [];
+
+  for (const child of Object.values(node)) {
+    refs.push(...collectPersistedValueNodeRefs(child));
+  }
+
+  return refs;
+}
+
+function hasPositionClause(path: ElementPath): boolean {
+  return path.nodes.some((node) => node.match.some((clause) => clause.kind === "position"));
+}
+
+function stripPositionClauses(path: ElementPath): ElementPath {
+  return sanitizeElementPath({
+    resolution: "deterministic",
+    context: path.context,
+    nodes: path.nodes.map((node) => ({
+      ...node,
+      match: node.match.filter((clause) => clause.kind !== "position"),
+    })),
+  });
+}
+
+function buildCandidateSelectors(path: ElementPath): readonly string[] {
+  return buildArrayFieldPathCandidates(path);
+}
+
+function sameSelectorList(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function isPersistedObjectNode(value: unknown): value is PersistedOpensteerExtractionObjectNode {
