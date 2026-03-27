@@ -579,6 +579,54 @@ export class FilesystemAuthRecipeRegistry
   }
 }
 
+export class FilesystemRecipeRegistry
+  extends FilesystemRegistryStore<RecipeRecord>
+  implements RecipeRegistryStore
+{
+  constructor(rootPath: string) {
+    super(rootPath, ["registry", "recipes"]);
+  }
+
+  async write(input: WriteRecipeInput): Promise<RecipeRecord> {
+    const id = normalizeNonEmptyString("id", input.id ?? `recipe:${randomUUID()}`);
+    const key = normalizeNonEmptyString("key", input.key);
+    const version = normalizeNonEmptyString("version", input.version);
+    const createdAt = normalizeTimestamp("createdAt", input.createdAt ?? Date.now());
+    const updatedAt = normalizeTimestamp("updatedAt", input.updatedAt ?? createdAt);
+
+    if (updatedAt < createdAt) {
+      throw new RangeError("updatedAt must be greater than or equal to createdAt");
+    }
+
+    const payload = input.payload;
+    const contentHash = sha256Hex(Buffer.from(canonicalJsonString(payload), "utf8"));
+    const provenance = normalizeProvenance(input.provenance);
+    const record: RecipeRecord = {
+      id,
+      key,
+      version,
+      createdAt,
+      updatedAt,
+      contentHash,
+      tags: normalizeTags(input.tags),
+      ...(provenance === undefined ? {} : { provenance }),
+      payload,
+    };
+
+    return this.writeRecord(record);
+  }
+
+  async list(input: ListRegistryRecordsInput = {}): Promise<readonly RecipeRecord[]> {
+    const key = input.key === undefined ? undefined : normalizeNonEmptyString("key", input.key);
+    const records = await this.readAllRecords();
+    return key === undefined ? records : records.filter((record) => record.key === key);
+  }
+
+  protected isActive(_record: RecipeRecord): boolean {
+    return true;
+  }
+}
+
 export class FilesystemInteractionTraceRegistry
   extends FilesystemRegistryStore<InteractionTraceRecord>
   implements InteractionTraceRegistryStore
@@ -814,6 +862,10 @@ export function createRequestPlanRegistry(rootPath: string): FilesystemRequestPl
 
 export function createAuthRecipeRegistry(rootPath: string): FilesystemAuthRecipeRegistry {
   return new FilesystemAuthRecipeRegistry(rootPath);
+}
+
+export function createRecipeRegistry(rootPath: string): FilesystemRecipeRegistry {
+  return new FilesystemRecipeRegistry(rootPath);
 }
 
 export function createInteractionTraceRegistry(

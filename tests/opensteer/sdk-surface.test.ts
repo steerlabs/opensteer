@@ -114,9 +114,9 @@ describe("Opensteer v2 SDK surface", () => {
 
     await opensteer.close();
 
-    expect(state.runtime.disconnect).toHaveBeenCalledTimes(1);
+    expect(state.runtime.close).toHaveBeenCalledTimes(1);
     expect(state.browserManager.close).toHaveBeenCalledTimes(1);
-    expect(state.runtime.close).not.toHaveBeenCalled();
+    expect(state.runtime.disconnect).not.toHaveBeenCalled();
   });
 
   test("browser admin helpers delegate to the browser manager", async () => {

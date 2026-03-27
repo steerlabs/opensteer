@@ -31,6 +31,12 @@ describe("workspace root layout", () => {
     expect(workspace.registryPath).toBe(path.join(rootPath, "registry"));
     expect(workspace.tracesPath).toBe(path.join(rootPath, "traces"));
     expect(workspace.artifactsPath).toBe(path.join(rootPath, "artifacts"));
+    expect(workspace.registry.recipes.recordsDirectory).toBe(
+      path.join(rootPath, "registry", "recipes", "records"),
+    );
+    expect(workspace.registry.authRecipes.recordsDirectory).toBe(
+      path.join(rootPath, "registry", "auth-recipes", "records"),
+    );
 
     const manifest = JSON.parse(await readFile(workspace.manifestPath, "utf8")) as {
       readonly layout: string;

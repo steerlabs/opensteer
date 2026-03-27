@@ -23,10 +23,7 @@ import {
 import { storageSnapshotSchema, type StorageSnapshot } from "./storage.js";
 import type { OpensteerSemanticOperationName } from "./semantic.js";
 
-export type OpensteerStateSourceKind =
-  | "temporary"
-  | "persistent"
-  | "attach";
+export type OpensteerStateSourceKind = "temporary" | "persistent" | "attach";
 
 export type OpensteerReverseCaseStatus = "capturing" | "analyzing" | "ready" | "attention";
 

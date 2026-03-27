@@ -287,6 +287,17 @@ type DisposableBrowserCoreEngine = BrowserCoreEngine & {
   dispose?: () => Promise<void>;
 };
 
+type RecipeRegistryKind = "recipe" | "auth-recipe";
+
+interface ResolvedRecipeBinding {
+  readonly source: RecipeRegistryKind;
+  readonly recipe: {
+    readonly key: string;
+    readonly version?: string;
+  };
+  readonly cachePolicy?: "none" | "untilFailure";
+}
+
 const requireForAuthRecipeHook = createRequire(import.meta.url);
 
 export interface OpensteerEngineFactoryOptions {
@@ -4328,7 +4339,39 @@ export class OpensteerRuntime {
     options: RuntimeOperationOptions = {},
   ): Promise<RecipeRecord> {
     assertValidSemanticOperationInput("recipe.write", input);
-    return this.writeAuthRecipe(input, options);
+
+    const root = await this.ensureRoot();
+    const startedAt = Date.now();
+    try {
+      const record = await this.runWithOperationTimeout(
+        "recipe.write",
+        async (timeout) => timeout.runStep(() => root.registry.recipes.write(input)),
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "recipe.write",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          id: record.id,
+          key: record.key,
+          version: record.version,
+        },
+      });
+
+      return record;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "recipe.write",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+      });
+      throw error;
+    }
   }
 
   async getAuthRecipe(
@@ -4391,7 +4434,54 @@ export class OpensteerRuntime {
     options: RuntimeOperationOptions = {},
   ): Promise<RecipeRecord> {
     assertValidSemanticOperationInput("recipe.get", input);
-    return this.getAuthRecipe(input, options);
+
+    const root = await this.ensureRoot();
+    const startedAt = Date.now();
+    try {
+      const record = await this.runWithOperationTimeout(
+        "recipe.get",
+        async (timeout) => timeout.runStep(() => root.registry.recipes.resolve(input)),
+        options,
+      );
+      if (record === undefined) {
+        throw new OpensteerProtocolError(
+          "not-found",
+          input.version === undefined
+            ? `no recipe found for "${input.key}"`
+            : `no recipe found for "${input.key}" version "${input.version}"`,
+          {
+            details: {
+              key: input.key,
+              ...(input.version === undefined ? {} : { version: input.version }),
+              kind: "recipe",
+            },
+          },
+        );
+      }
+
+      await this.appendTrace({
+        operation: "recipe.get",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          id: record.id,
+          key: record.key,
+          version: record.version,
+        },
+      });
+
+      return record;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "recipe.get",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+      });
+      throw error;
+    }
   }
 
   async listAuthRecipes(
@@ -4440,7 +4530,40 @@ export class OpensteerRuntime {
     options: RuntimeOperationOptions = {},
   ): Promise<OpensteerListRecipesOutput> {
     assertValidSemanticOperationInput("recipe.list", input);
-    return this.listAuthRecipes(input, options);
+
+    const root = await this.ensureRoot();
+    const startedAt = Date.now();
+    try {
+      const output = await this.runWithOperationTimeout(
+        "recipe.list",
+        async (timeout) => ({
+          recipes: await timeout.runStep(() => root.registry.recipes.list(input)),
+        }),
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "recipe.list",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          ...(input.key === undefined ? {} : { key: input.key }),
+          count: output.recipes.length,
+        },
+      });
+
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "recipe.list",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+      });
+      throw error;
+    }
   }
 
   async getCookies(
@@ -4570,7 +4693,7 @@ export class OpensteerRuntime {
     try {
       const output = await this.runWithOperationTimeout(
         "auth-recipe.run",
-        async (timeout) => this.runResolvedAuthRecipe(input, timeout),
+        async (timeout) => this.runResolvedRecipe("auth-recipe", input, timeout),
         options,
       );
 
@@ -4612,7 +4735,47 @@ export class OpensteerRuntime {
     options: RuntimeOperationOptions = {},
   ): Promise<OpensteerRunRecipeOutput> {
     assertValidSemanticOperationInput("recipe.run", input);
-    return this.runAuthRecipe(input, options);
+
+    await this.ensureRoot();
+    const startedAt = Date.now();
+    try {
+      const output = await this.runWithOperationTimeout(
+        "recipe.run",
+        async (timeout) => this.runResolvedRecipe("recipe", input, timeout),
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "recipe.run",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          recipe: output.recipe,
+          variables: Object.keys(output.variables).sort(),
+          ...(output.overrides === undefined ? {} : { overrides: output.overrides }),
+        },
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "recipe.run",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+      throw error;
+    }
   }
 
   async rawRequest(
@@ -6597,7 +6760,13 @@ export class OpensteerRuntime {
     timeout: TimeoutExecutionContext,
     binding: RuntimeBrowserBinding | undefined,
   ): Promise<OpensteerRequestExecuteOutput> {
-    const prepareBinding = plan.payload.recipes?.prepare;
+    const prepareBinding =
+      plan.payload.recipes?.prepare === undefined
+        ? undefined
+        : {
+            source: "recipe" as const,
+            ...plan.payload.recipes.prepare,
+          };
     let resolvedInput = input;
     let executionOverrides: OpensteerAuthRecipeRetryOverrides | undefined;
     if (prepareBinding !== undefined) {
@@ -6846,16 +7015,10 @@ export class OpensteerRuntime {
   }
 
   private async executeConfiguredRecipeBinding(
-    binding: {
-      readonly recipe: {
-        readonly key: string;
-        readonly version?: string;
-      };
-      readonly cachePolicy?: "none" | "untilFailure";
-    },
+    binding: ResolvedRecipeBinding,
     timeout: TimeoutExecutionContext,
   ): Promise<OpensteerRunRecipeOutput> {
-    const cacheKey = `${binding.recipe.key}@${binding.recipe.version ?? "latest"}`;
+    const cacheKey = `${binding.source}:${binding.recipe.key}@${binding.recipe.version ?? "latest"}`;
     if (binding.cachePolicy === "untilFailure") {
       const cached = this.recipeCache.get(cacheKey);
       if (cached !== undefined) {
@@ -6863,10 +7026,11 @@ export class OpensteerRuntime {
       }
     }
 
-    const output = await this.executeAuthRecipeRecord(
-      await this.resolveAuthRecipe(binding.recipe.key, binding.recipe.version),
+    const output = await this.executeRecipeRecord(
+      await this.resolveRecipeRecord(binding.source, binding.recipe.key, binding.recipe.version),
       timeout,
       {},
+      binding.source,
     );
     if (binding.cachePolicy === "untilFailure") {
       this.recipeCache.set(cacheKey, output);
@@ -6874,13 +7038,8 @@ export class OpensteerRuntime {
     return output;
   }
 
-  private clearRecipeBindingCache(binding: {
-    readonly recipe: {
-      readonly key: string;
-      readonly version?: string;
-    };
-  }): void {
-    const cacheKey = `${binding.recipe.key}@${binding.recipe.version ?? "latest"}`;
+  private clearRecipeBindingCache(binding: ResolvedRecipeBinding): void {
+    const cacheKey = `${binding.source}:${binding.recipe.key}@${binding.recipe.version ?? "latest"}`;
     this.recipeCache.delete(cacheKey);
   }
 
@@ -6938,25 +7097,31 @@ export class OpensteerRuntime {
     return latest;
   }
 
-  private async resolveAuthRecipe(
+  private async resolveRecipeRecord(
+    kind: RecipeRegistryKind,
     key: string,
     version: string | undefined,
-  ): Promise<AuthRecipeRecord> {
-    const recipe = await this.requireRoot().registry.authRecipes.resolve({
+  ): Promise<RecipeRecord | AuthRecipeRecord> {
+    const registry =
+      kind === "auth-recipe"
+        ? this.requireRoot().registry.authRecipes
+        : this.requireRoot().registry.recipes;
+    const recipe = await registry.resolve({
       key,
       ...(version === undefined ? {} : { version }),
     });
     if (recipe === undefined) {
+      const label = kind === "auth-recipe" ? "auth recipe" : "recipe";
       throw new OpensteerProtocolError(
         "not-found",
         version === undefined
-          ? `auth recipe ${key} was not found`
-          : `auth recipe ${key}@${version} was not found`,
+          ? `${label} ${key} was not found`
+          : `${label} ${key}@${version} was not found`,
         {
           details: {
             key,
             ...(version === undefined ? {} : { version }),
-            kind: "auth-recipe",
+            kind,
           },
         },
       );
@@ -6964,29 +7129,31 @@ export class OpensteerRuntime {
     return recipe;
   }
 
-  private async runResolvedAuthRecipe(
-    input: OpensteerRunAuthRecipeInput,
+  private async runResolvedRecipe(
+    kind: RecipeRegistryKind,
+    input: OpensteerRunRecipeInput | OpensteerRunAuthRecipeInput,
     timeout: TimeoutExecutionContext,
-  ): Promise<OpensteerRunAuthRecipeOutput> {
-    const recipe = await this.resolveAuthRecipe(input.key, input.version);
-    return this.executeAuthRecipeRecord(recipe, timeout, input.variables ?? {});
+  ): Promise<OpensteerRunRecipeOutput> {
+    const recipe = await this.resolveRecipeRecord(kind, input.key, input.version);
+    return this.executeRecipeRecord(recipe, timeout, input.variables ?? {}, kind);
   }
 
-  private async executeAuthRecipeRecord(
-    recipe: AuthRecipeRecord,
+  private async executeRecipeRecord(
+    recipe: RecipeRecord | AuthRecipeRecord,
     timeout: TimeoutExecutionContext,
     initialVariables: Readonly<Record<string, string>>,
-  ): Promise<OpensteerRunAuthRecipeOutput> {
+    kind: RecipeRegistryKind,
+  ): Promise<OpensteerRunRecipeOutput> {
     const variables = new Map<string, string>(Object.entries(initialVariables));
     let overrides: OpensteerAuthRecipeRetryOverrides | undefined;
 
     for (const [index, step] of recipe.payload.steps.entries()) {
-      const stepResult = await this.executeAuthRecipeStep(step, variables, timeout);
+      const stepResult = await this.executeRecipeStep(step, variables, timeout);
       mergeVariables(variables, stepResult.variables);
       overrides = mergeAuthRecipeOverrides(overrides, stepResult.overrides);
 
       await this.appendTrace({
-        operation: "auth-recipe.step",
+        operation: `${kind}.step`,
         startedAt: Date.now(),
         completedAt: Date.now(),
         outcome: "ok",
@@ -7021,7 +7188,7 @@ export class OpensteerRuntime {
     };
   }
 
-  private async executeAuthRecipeStep(
+  private async executeRecipeStep(
     step: OpensteerAuthRecipeStep,
     variables: ReadonlyMap<string, string>,
     timeout: TimeoutExecutionContext,
@@ -11559,14 +11726,20 @@ function mergeExecutionInputOverrides(
   };
 }
 
-function resolveRecoverRecipeBinding(
-  plan: RequestPlanRecord,
-): NonNullable<RequestPlanRecord["payload"]["recipes"]>["recover"] | undefined {
+function resolveRecoverRecipeBinding(plan: RequestPlanRecord):
+  | (ResolvedRecipeBinding & {
+      readonly failurePolicy: OpensteerRequestFailurePolicy;
+    })
+  | undefined {
   if (plan.payload.recipes?.recover !== undefined) {
-    return plan.payload.recipes.recover;
+    return {
+      source: "recipe",
+      ...plan.payload.recipes.recover,
+    };
   }
   if (plan.payload.auth?.recipe !== undefined && plan.payload.auth.failurePolicy !== undefined) {
     return {
+      source: "auth-recipe",
       recipe: plan.payload.auth.recipe,
       failurePolicy: plan.payload.auth.failurePolicy,
       cachePolicy: "none",

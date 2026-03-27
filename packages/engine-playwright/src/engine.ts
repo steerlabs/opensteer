@@ -3144,6 +3144,10 @@ export async function connectPlaywrightChromiumBrowser(input: {
   });
 }
 
+export async function disconnectPlaywrightChromiumBrowser(browser: Browser): Promise<void> {
+  void browser.close().catch(() => undefined);
+}
+
 function objectHeadersToEntries(
   headers: Record<string, unknown> | undefined,
 ): ReturnType<typeof createHeaderEntry>[] {

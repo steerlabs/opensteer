@@ -1022,13 +1022,7 @@ function buildHttpTemplates(input: {
       return withObservationTemplate(
         [
           createCandidateTemplate("page", "page-http", "persistent", "ready", input),
-          createCandidateTemplate(
-            "session",
-            "session-http",
-            "persistent",
-            "ready",
-            input,
-          ),
+          createCandidateTemplate("session", "session-http", "persistent", "ready", input),
           createCandidateTemplate("attach", "page-http", "attach", "ready", input),
         ],
         input,
@@ -1102,13 +1096,7 @@ function buildEventStreamTemplates(input: {
     case "browser-state":
       return withObservationTemplate(
         [
-          createCandidateTemplate(
-            "stream-page",
-            "page-http",
-            "persistent",
-            "ready",
-            input,
-          ),
+          createCandidateTemplate("stream-page", "page-http", "persistent", "ready", input),
           createCandidateTemplate("stream-attach", "page-http", "attach", "ready", input),
         ],
         input,
