@@ -204,46 +204,25 @@ import { OPENSTEER_PROTOCOL_REST_BASE_PATH } from "./version.js";
 
 export type OpensteerSnapshotMode = "action" | "extraction";
 
-export interface OpensteerManagedBrowserLaunchOptions {
-  readonly kind?: "managed";
+export interface OpensteerBrowserLaunchOptions {
   readonly headless?: boolean;
   readonly executablePath?: string;
   readonly args?: readonly string[];
   readonly timeoutMs?: number;
 }
 
-export interface OpensteerSnapshotSessionBrowserLaunchOptions {
-  readonly kind: "snapshot-session";
-  readonly headless?: boolean;
-  readonly executablePath?: string;
-  readonly sourceUserDataDir: string;
-  readonly sourceProfileDirectory?: string;
-  readonly args?: readonly string[];
-  readonly timeoutMs?: number;
-}
-
-export interface OpensteerSnapshotAuthenticatedBrowserLaunchOptions {
-  readonly kind: "snapshot-authenticated";
-  readonly headless?: boolean;
-  readonly executablePath?: string;
-  readonly sourceUserDataDir: string;
-  readonly sourceProfileDirectory?: string;
-  readonly args?: readonly string[];
-  readonly timeoutMs?: number;
-}
-
-export interface OpensteerAttachLiveBrowserLaunchOptions {
-  readonly kind: "attach-live";
+export interface OpensteerAttachBrowserOptions {
+  readonly mode: "attach";
   readonly endpoint?: string;
   readonly headers?: Readonly<Record<string, string>>;
   readonly freshTab?: boolean;
 }
 
-export type OpensteerBrowserLaunchOptions =
-  | OpensteerManagedBrowserLaunchOptions
-  | OpensteerSnapshotSessionBrowserLaunchOptions
-  | OpensteerSnapshotAuthenticatedBrowserLaunchOptions
-  | OpensteerAttachLiveBrowserLaunchOptions;
+export type OpensteerBrowserMode = "temporary" | "persistent";
+
+export type OpensteerBrowserOptions =
+  | OpensteerBrowserMode
+  | OpensteerAttachBrowserOptions;
 
 export interface OpensteerBrowserContextOptions {
   readonly ignoreHTTPSErrors?: boolean;
@@ -353,14 +332,15 @@ export interface OpensteerSessionState {
   readonly title: string;
 }
 
-export interface OpensteerSessionOpenInput {
+export interface OpensteerOpenInput {
   readonly url?: string;
-  readonly name?: string;
-  readonly browser?: OpensteerBrowserLaunchOptions;
+  readonly workspace?: string;
+  readonly browser?: OpensteerBrowserOptions;
+  readonly launch?: OpensteerBrowserLaunchOptions;
   readonly context?: OpensteerBrowserContextOptions;
 }
 
-export interface OpensteerSessionOpenOutput extends OpensteerSessionState {}
+export interface OpensteerOpenOutput extends OpensteerSessionState {}
 
 export interface OpensteerPageListInput {}
 
@@ -788,75 +768,40 @@ const viewportSchema: JsonSchema = oneOfSchema(
   },
 );
 
-const managedBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
+const opensteerBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
   {
-    kind: enumSchema(["managed"] as const),
     headless: { type: "boolean" },
     executablePath: stringSchema(),
     args: arraySchema(stringSchema()),
     timeoutMs: integerSchema({ minimum: 0 }),
   },
   {
-    title: "OpensteerManagedBrowserLaunchOptions",
+    title: "OpensteerBrowserLaunchOptions",
   },
 );
 
-const snapshotSessionBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
+const attachBrowserOptionsSchema: JsonSchema = objectSchema(
   {
-    kind: enumSchema(["snapshot-session"] as const),
-    headless: { type: "boolean" },
-    executablePath: stringSchema(),
-    sourceUserDataDir: stringSchema(),
-    sourceProfileDirectory: stringSchema(),
-    args: arraySchema(stringSchema()),
-    timeoutMs: integerSchema({ minimum: 0 }),
-  },
-  {
-    title: "OpensteerSnapshotSessionBrowserLaunchOptions",
-    required: ["kind", "sourceUserDataDir"],
-  },
-);
-
-const snapshotAuthenticatedBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
-  {
-    kind: enumSchema(["snapshot-authenticated"] as const),
-    headless: { type: "boolean" },
-    executablePath: stringSchema(),
-    sourceUserDataDir: stringSchema(),
-    sourceProfileDirectory: stringSchema(),
-    args: arraySchema(stringSchema()),
-    timeoutMs: integerSchema({ minimum: 0 }),
-  },
-  {
-    title: "OpensteerSnapshotAuthenticatedBrowserLaunchOptions",
-    required: ["kind", "sourceUserDataDir"],
-  },
-);
-
-const attachLiveBrowserLaunchOptionsSchema: JsonSchema = objectSchema(
-  {
-    kind: enumSchema(["attach-live"] as const),
+    mode: enumSchema(["attach"] as const),
     endpoint: stringSchema(),
     headers: recordSchema(stringSchema(), {
-      title: "OpensteerAttachLiveBrowserHeaders",
+      title: "OpensteerAttachBrowserHeaders",
     }),
     freshTab: { type: "boolean" },
   },
   {
-    title: "OpensteerAttachLiveBrowserLaunchOptions",
-    required: ["kind"],
+    title: "OpensteerAttachBrowserOptions",
+    required: ["mode"],
   },
 );
 
-const opensteerBrowserLaunchOptionsSchema: JsonSchema = oneOfSchema(
+const opensteerBrowserOptionsSchema: JsonSchema = oneOfSchema(
   [
-    managedBrowserLaunchOptionsSchema,
-    snapshotSessionBrowserLaunchOptionsSchema,
-    snapshotAuthenticatedBrowserLaunchOptionsSchema,
-    attachLiveBrowserLaunchOptionsSchema,
+    enumSchema(["temporary", "persistent"] as const),
+    attachBrowserOptionsSchema,
   ],
   {
-    title: "OpensteerBrowserLaunchOptions",
+    title: "OpensteerBrowserOptions",
   },
 );
 
@@ -1035,15 +980,16 @@ const opensteerSessionStateSchema: JsonSchema = objectSchema(
   },
 );
 
-const opensteerSessionOpenInputSchema: JsonSchema = objectSchema(
+const opensteerOpenInputSchema: JsonSchema = objectSchema(
   {
     url: stringSchema(),
-    name: stringSchema(),
-    browser: opensteerBrowserLaunchOptionsSchema,
+    workspace: stringSchema(),
+    browser: opensteerBrowserOptionsSchema,
+    launch: opensteerBrowserLaunchOptionsSchema,
     context: opensteerBrowserContextOptionsSchema,
   },
   {
-    title: "OpensteerSessionOpenInput",
+    title: "OpensteerOpenInput",
   },
 );
 
@@ -1649,10 +1595,10 @@ export function assertValidSemanticOperationInput(
 }
 
 const opensteerSemanticOperationSpecificationsBase = [
-  defineSemanticOperationSpec<OpensteerSessionOpenInput, OpensteerSessionOpenOutput>({
+  defineSemanticOperationSpec<OpensteerOpenInput, OpensteerOpenOutput>({
     name: "session.open",
     description: "Open or resume the current Opensteer session and primary page.",
-    inputSchema: opensteerSessionOpenInputSchema,
+    inputSchema: opensteerOpenInputSchema,
     outputSchema: opensteerSessionStateSchema,
     requiredCapabilities: ["sessions.manage", "pages.manage"],
     resolveRequiredCapabilities: (input) =>

@@ -2,10 +2,12 @@ import path from "node:path";
 
 import { createArtifactStore, type OpensteerArtifactStore } from "./artifacts.js";
 import {
+  encodePathSegment,
   ensureDirectory,
   normalizeTimestamp,
   pathExists,
   readJsonFile,
+  withFilesystemLock,
   writeJsonFileAtomic,
 } from "./internal/filesystem.js";
 import {
@@ -17,40 +19,56 @@ import {
   createReversePackageRegistry,
   createReverseReportRegistry,
   type AuthRecipeRegistryStore,
+  type DescriptorRegistryStore,
   type InteractionTraceRegistryStore,
   type RecipeRegistryStore,
-  type DescriptorRegistryStore,
+  type RequestPlanRegistryStore,
   type ReverseCaseRegistryStore,
   type ReversePackageRegistryStore,
   type ReverseReportRegistryStore,
-  type RequestPlanRegistryStore,
 } from "./registry.js";
 import { createSavedNetworkStore, type SavedNetworkStore } from "./network/saved-store.js";
 import { createTraceStore, type OpensteerTraceStore } from "./traces.js";
 
-export const OPENSTEER_FILESYSTEM_ROOT_LAYOUT = "opensteer-filesystem-root";
-export const OPENSTEER_FILESYSTEM_ROOT_VERSION = 1;
+export const OPENSTEER_FILESYSTEM_WORKSPACE_LAYOUT = "opensteer-workspace";
+export const OPENSTEER_FILESYSTEM_WORKSPACE_VERSION = 2;
 
-export interface OpensteerRootManifest {
-  readonly layout: typeof OPENSTEER_FILESYSTEM_ROOT_LAYOUT;
-  readonly version: typeof OPENSTEER_FILESYSTEM_ROOT_VERSION;
+export interface OpensteerWorkspaceManifest {
+  readonly layout: typeof OPENSTEER_FILESYSTEM_WORKSPACE_LAYOUT;
+  readonly version: typeof OPENSTEER_FILESYSTEM_WORKSPACE_VERSION;
+  readonly scope: "workspace" | "temporary";
+  readonly workspace?: string;
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly paths: {
+    readonly browser: "browser";
+    readonly live: "live";
     readonly artifacts: "artifacts";
     readonly traces: "traces";
     readonly registry: "registry";
   };
 }
 
-export interface CreateFilesystemOpensteerRootOptions {
+export interface CreateFilesystemOpensteerWorkspaceOptions {
   readonly rootPath: string;
+  readonly workspace?: string;
+  readonly scope?: "workspace" | "temporary";
   readonly createdAt?: number;
 }
 
-export interface FilesystemOpensteerRoot {
+export interface FilesystemOpensteerWorkspace {
   readonly rootPath: string;
-  readonly manifest: OpensteerRootManifest;
+  readonly manifestPath: string;
+  readonly manifest: OpensteerWorkspaceManifest;
+  readonly browserPath: string;
+  readonly browserManifestPath: string;
+  readonly browserUserDataDir: string;
+  readonly livePath: string;
+  readonly liveBrowserPath: string;
+  readonly artifactsPath: string;
+  readonly tracesPath: string;
+  readonly registryPath: string;
+  readonly lockPath: string;
   readonly artifacts: OpensteerArtifactStore;
   readonly traces: OpensteerTraceStore;
   readonly registry: {
@@ -64,35 +82,61 @@ export interface FilesystemOpensteerRoot {
     readonly reversePackages: ReversePackageRegistryStore;
     readonly reverseReports: ReverseReportRegistryStore;
   };
+  lock<T>(task: () => Promise<T>): Promise<T>;
 }
 
-export async function createFilesystemOpensteerRoot(
-  options: CreateFilesystemOpensteerRootOptions,
-): Promise<FilesystemOpensteerRoot> {
-  await ensureDirectory(options.rootPath);
-  const manifestPath = path.join(options.rootPath, "opensteer-root.json");
+export function normalizeWorkspaceId(workspace: string): string {
+  return encodePathSegment(workspace);
+}
 
-  let manifest: OpensteerRootManifest;
+export function resolveFilesystemWorkspacePath(input: {
+  readonly rootDir: string;
+  readonly workspace: string;
+}): string {
+  return path.join(input.rootDir, ".opensteer", "workspaces", normalizeWorkspaceId(input.workspace));
+}
+
+export async function createFilesystemOpensteerWorkspace(
+  options: CreateFilesystemOpensteerWorkspaceOptions,
+): Promise<FilesystemOpensteerWorkspace> {
+  await ensureDirectory(options.rootPath);
+
+  const manifestPath = path.join(options.rootPath, "workspace.json");
+  const browserPath = path.join(options.rootPath, "browser");
+  const browserManifestPath = path.join(browserPath, "manifest.json");
+  const browserUserDataDir = path.join(browserPath, "user-data");
+  const livePath = path.join(options.rootPath, "live");
+  const liveBrowserPath = path.join(livePath, "browser.json");
+  const artifactsPath = path.join(options.rootPath, "artifacts");
+  const tracesPath = path.join(options.rootPath, "traces");
+  const registryPath = path.join(options.rootPath, "registry");
+  const lockPath = path.join(options.rootPath, ".lock");
+
+  let manifest: OpensteerWorkspaceManifest;
   if (await pathExists(manifestPath)) {
-    manifest = await readJsonFile<OpensteerRootManifest>(manifestPath);
-    if (manifest.layout !== OPENSTEER_FILESYSTEM_ROOT_LAYOUT) {
+    manifest = await readJsonFile<OpensteerWorkspaceManifest>(manifestPath);
+    if (manifest.layout !== OPENSTEER_FILESYSTEM_WORKSPACE_LAYOUT) {
       throw new Error(
-        `root ${options.rootPath} is not an ${OPENSTEER_FILESYSTEM_ROOT_LAYOUT} layout`,
+        `workspace ${options.rootPath} is not an ${OPENSTEER_FILESYSTEM_WORKSPACE_LAYOUT} layout`,
       );
     }
-    if (manifest.version !== OPENSTEER_FILESYSTEM_ROOT_VERSION) {
+    if (manifest.version !== OPENSTEER_FILESYSTEM_WORKSPACE_VERSION) {
       throw new Error(
-        `root ${options.rootPath} uses unsupported version ${String(manifest.version)}`,
+        `workspace ${options.rootPath} uses unsupported version ${String(manifest.version)}`,
       );
     }
   } else {
     const createdAt = normalizeTimestamp("createdAt", options.createdAt ?? Date.now());
     manifest = {
-      layout: OPENSTEER_FILESYSTEM_ROOT_LAYOUT,
-      version: OPENSTEER_FILESYSTEM_ROOT_VERSION,
+      layout: OPENSTEER_FILESYSTEM_WORKSPACE_LAYOUT,
+      version: OPENSTEER_FILESYSTEM_WORKSPACE_VERSION,
+      scope: options.scope ?? (options.workspace === undefined ? "temporary" : "workspace"),
+      ...(options.workspace === undefined ? {} : { workspace: options.workspace }),
       createdAt,
       updatedAt: createdAt,
       paths: {
+        browser: "browser",
+        live: "live",
         artifacts: "artifacts",
         traces: "traces",
         registry: "registry",
@@ -100,6 +144,15 @@ export async function createFilesystemOpensteerRoot(
     };
     await writeJsonFileAtomic(manifestPath, manifest);
   }
+
+  await Promise.all([
+    ensureDirectory(browserPath),
+    ensureDirectory(browserUserDataDir),
+    ensureDirectory(livePath),
+    ensureDirectory(artifactsPath),
+    ensureDirectory(tracesPath),
+    ensureDirectory(registryPath),
+  ]);
 
   const artifacts = createArtifactStore(options.rootPath);
   await artifacts.initialize();
@@ -133,7 +186,17 @@ export async function createFilesystemOpensteerRoot(
 
   return {
     rootPath: options.rootPath,
+    manifestPath,
     manifest,
+    browserPath,
+    browserManifestPath,
+    browserUserDataDir,
+    livePath,
+    liveBrowserPath,
+    artifactsPath,
+    tracesPath,
+    registryPath,
+    lockPath,
     artifacts,
     traces,
     registry: {
@@ -146,6 +209,9 @@ export async function createFilesystemOpensteerRoot(
       interactionTraces,
       reversePackages,
       reverseReports,
+    },
+    lock<T>(task: () => Promise<T>): Promise<T> {
+      return withFilesystemLock(lockPath, task);
     },
   };
 }

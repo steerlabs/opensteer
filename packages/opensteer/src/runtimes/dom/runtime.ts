@@ -12,7 +12,7 @@ import {
 import { OpensteerProtocolError } from "@opensteer/protocol";
 
 import { defaultPolicy, type OpensteerPolicy } from "../../policy/index.js";
-import type { FilesystemOpensteerRoot } from "../../root.js";
+import type { FilesystemOpensteerWorkspace } from "../../root.js";
 import { createDomDescriptorStore } from "./descriptors.js";
 import { DomActionExecutor } from "./executor.js";
 import { normalizeExtractedValue, resolveExtractedValueInContext } from "./extraction.js";
@@ -131,7 +131,7 @@ class DefaultDomRuntime implements DomRuntime {
 
   constructor(options: {
     readonly engine: BrowserCoreEngine;
-    readonly root?: FilesystemOpensteerRoot;
+    readonly root?: FilesystemOpensteerWorkspace;
     readonly namespace?: string;
     readonly policy?: OpensteerPolicy;
   }) {
@@ -332,7 +332,12 @@ class DefaultDomRuntime implements DomRuntime {
     let resolved: ResolvedDomTarget;
     switch (input.target.kind) {
       case "descriptor":
-        resolved = await this.resolveDescriptorTarget(session, input.pageRef, input.target);
+        resolved = await this.resolveDescriptorTarget(
+          session,
+          input.pageRef,
+          input.method,
+          input.target,
+        );
         break;
       case "live":
         resolved = await this.resolveLiveTarget(session, input.pageRef, input.target);
@@ -373,9 +378,13 @@ class DefaultDomRuntime implements DomRuntime {
   private async resolveDescriptorTarget(
     session: SnapshotSession,
     pageRef: PageRef,
+    method: string,
     target: Extract<DomTargetRef, { readonly kind: "descriptor" }>,
   ): Promise<ResolvedDomTarget> {
-    const descriptor = await this.descriptors.read({ description: target.description });
+    const descriptor = await this.descriptors.read({
+      method,
+      description: target.description,
+    });
     if (!descriptor) {
       throw new OpensteerProtocolError(
         "not-found",
@@ -964,7 +973,7 @@ class DefaultDomRuntime implements DomRuntime {
 
 export function createDomRuntime(options: {
   readonly engine: BrowserCoreEngine;
-  readonly root?: FilesystemOpensteerRoot;
+  readonly root?: FilesystemOpensteerWorkspace;
   readonly namespace?: string;
   readonly policy?: OpensteerPolicy;
 }): DomRuntime {

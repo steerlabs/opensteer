@@ -24,10 +24,9 @@ import { storageSnapshotSchema, type StorageSnapshot } from "./storage.js";
 import type { OpensteerSemanticOperationName } from "./semantic.js";
 
 export type OpensteerStateSourceKind =
-  | "managed"
-  | "attach-live"
-  | "snapshot-session"
-  | "snapshot-authenticated";
+  | "temporary"
+  | "persistent"
+  | "attach";
 
 export type OpensteerReverseCaseStatus = "capturing" | "analyzing" | "ready" | "attention";
 
@@ -931,7 +930,7 @@ export interface OpensteerReversePackagePatchOutput {
 }
 
 export const opensteerStateSourceKindSchema: JsonSchema = enumSchema(
-  ["managed", "attach-live", "snapshot-session", "snapshot-authenticated"] as const,
+  ["temporary", "persistent", "attach"] as const,
   { title: "OpensteerStateSourceKind" },
 );
 

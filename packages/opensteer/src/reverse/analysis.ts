@@ -860,7 +860,7 @@ function buildConstraints(input: {
   if (input.inputs.some((entry) => entry.classification === "volatile")) {
     constraints.add("requires-browser");
   }
-  if (input.stateSource === "attach-live") {
+  if (input.stateSource === "attach") {
     constraints.add("requires-live-state");
   }
   if (
@@ -924,8 +924,8 @@ function buildResolvers(
         resolverKind === "storage" ||
         resolverKind === "artifact" ||
         guardBacked ||
-        stateSource === "attach-live",
-      requiresLiveState: guardBacked || stateSource === "attach-live",
+        stateSource === "attach",
+      requiresLiveState: guardBacked || stateSource === "attach",
       inputNames: [input.name],
       description:
         resolverKind === "runtime-managed"
@@ -1021,23 +1021,23 @@ function buildHttpTemplates(input: {
     case "browser-state":
       return withObservationTemplate(
         [
-          createCandidateTemplate("page", "page-http", "snapshot-authenticated", "ready", input),
+          createCandidateTemplate("page", "page-http", "persistent", "ready", input),
           createCandidateTemplate(
             "session",
             "session-http",
-            "snapshot-authenticated",
+            "persistent",
             "ready",
             input,
           ),
-          createCandidateTemplate("attach", "page-http", "attach-live", "ready", input),
+          createCandidateTemplate("attach", "page-http", "attach", "ready", input),
         ],
         input,
       );
     case "behavior-gated":
       return withObservationTemplate(
         [
-          createCandidateTemplate("guarded-page", "page-http", "attach-live", "draft", input),
-          createCandidateTemplate("guarded-session", "session-http", "attach-live", "draft", input),
+          createCandidateTemplate("guarded-page", "page-http", "attach", "draft", input),
+          createCandidateTemplate("guarded-session", "session-http", "attach", "draft", input),
         ],
         input,
       );
@@ -1047,7 +1047,7 @@ function buildHttpTemplates(input: {
           createCandidateTemplate(
             "page-signed",
             "page-http",
-            "attach-live",
+            "attach",
             "draft",
             input,
             "script-derived inputs require a replay-time resolver",
@@ -1061,7 +1061,7 @@ function buildHttpTemplates(input: {
           createCandidateTemplate(
             "anti-bot-browser",
             "page-http",
-            "attach-live",
+            "attach",
             "draft",
             input,
             "volatile anti-bot input must be resolved from live browser state",
@@ -1105,17 +1105,17 @@ function buildEventStreamTemplates(input: {
           createCandidateTemplate(
             "stream-page",
             "page-http",
-            "snapshot-authenticated",
+            "persistent",
             "ready",
             input,
           ),
-          createCandidateTemplate("stream-attach", "page-http", "attach-live", "ready", input),
+          createCandidateTemplate("stream-attach", "page-http", "attach", "ready", input),
         ],
         input,
       );
     case "behavior-gated":
       return withObservationTemplate(
-        [createCandidateTemplate("stream-guarded", "page-http", "attach-live", "draft", input)],
+        [createCandidateTemplate("stream-guarded", "page-http", "attach", "draft", input)],
         input,
       );
     case "script-signed":
@@ -1124,7 +1124,7 @@ function buildEventStreamTemplates(input: {
           createCandidateTemplate(
             "stream-script",
             "page-http",
-            "attach-live",
+            "attach",
             "draft",
             input,
             "script-derived inputs require a replay-time resolver",
@@ -1138,7 +1138,7 @@ function buildEventStreamTemplates(input: {
           createCandidateTemplate(
             "stream-anti-bot",
             "page-http",
-            "attach-live",
+            "attach",
             "draft",
             input,
             "volatile anti-bot input must be resolved from live browser state",
@@ -1192,7 +1192,7 @@ function buildWebSocketTemplates(input: {
         createCandidateTemplate(
           "socket-page",
           "page-http",
-          "snapshot-authenticated",
+          "persistent",
           viability,
           input,
           headerFailureReason,
@@ -1200,7 +1200,7 @@ function buildWebSocketTemplates(input: {
         createCandidateTemplate(
           "socket-attach",
           "page-http",
-          "attach-live",
+          "attach",
           viability,
           input,
           headerFailureReason,
@@ -1211,7 +1211,7 @@ function buildWebSocketTemplates(input: {
         createCandidateTemplate(
           "socket-guarded",
           "page-http",
-          "attach-live",
+          "attach",
           headerFailureReason === undefined ? "draft" : "unsupported",
           input,
           headerFailureReason,
@@ -1222,7 +1222,7 @@ function buildWebSocketTemplates(input: {
         createCandidateTemplate(
           "socket-script",
           "page-http",
-          "attach-live",
+          "attach",
           "draft",
           input,
           headerFailureReason ?? "script-derived inputs require a replay-time resolver",
@@ -1233,7 +1233,7 @@ function buildWebSocketTemplates(input: {
         createCandidateTemplate(
           "socket-anti-bot",
           "page-http",
-          "attach-live",
+          "attach",
           "draft",
           input,
           headerFailureReason ?? "volatile anti-bot input must be resolved from live browser state",
@@ -1275,7 +1275,7 @@ function createCandidateTemplate(
     guardIds: input.guards.map((guard) => guard.id),
     resolverIds: input.resolvers.map((resolver) => resolver.id),
     requiresBrowser: transport !== "direct-http",
-    requiresLiveState: stateSource === "attach-live",
+    requiresLiveState: stateSource === "attach",
     viability,
     ...(notes === undefined ? {} : { notes }),
   };
@@ -1307,7 +1307,7 @@ function createObservationTemplate(input: {
     guardIds: input.guards.map((guard) => guard.id),
     resolverIds: [],
     requiresBrowser: true,
-    requiresLiveState: input.stateSource === "attach-live",
+    requiresLiveState: input.stateSource === "attach",
     viability: input.viability,
   };
 }
@@ -1425,7 +1425,7 @@ function classifyResolverStatus(input: {
     case "state-snapshot":
       return "ready";
     case "storage":
-      return input.stateSource === "attach-live" ? "ready" : "missing";
+      return input.stateSource === "attach" ? "ready" : "missing";
     case "artifact":
       return input.hasScriptArtifact ? "ready" : "missing";
     case "binding":

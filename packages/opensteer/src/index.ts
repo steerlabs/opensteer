@@ -10,14 +10,16 @@ export type {
   WriteStructuredArtifactInput,
 } from "./artifacts.js";
 export type {
-  CreateFilesystemOpensteerRootOptions,
-  FilesystemOpensteerRoot,
-  OpensteerRootManifest,
+  CreateFilesystemOpensteerWorkspaceOptions,
+  FilesystemOpensteerWorkspace,
+  OpensteerWorkspaceManifest,
 } from "./root.js";
 export {
-  createFilesystemOpensteerRoot,
-  OPENSTEER_FILESYSTEM_ROOT_LAYOUT,
-  OPENSTEER_FILESYSTEM_ROOT_VERSION,
+  createFilesystemOpensteerWorkspace,
+  normalizeWorkspaceId,
+  OPENSTEER_FILESYSTEM_WORKSPACE_LAYOUT,
+  OPENSTEER_FILESYSTEM_WORKSPACE_VERSION,
+  resolveFilesystemWorkspacePath,
 } from "./root.js";
 export type {
   AuthRecipeRecord,
@@ -150,47 +152,70 @@ export type {
   TraceRunManifest,
 } from "./traces.js";
 export type {
+  OpensteerAddInitScriptOptions,
+  OpensteerArtifactReadOptions,
+  OpensteerArtifactReadResult,
+  OpensteerBrowserCloneOptions,
+  OpensteerBrowserController,
   OpensteerCaptureScriptsOptions,
   OpensteerCaptureScriptsResult,
-  OpensteerAddInitScriptOptions,
-  OpensteerAttachOptions,
+  OpensteerCaptchaSolveOptions,
+  OpensteerCaptchaSolveResult,
   OpensteerComputerExecuteOptions,
   OpensteerComputerExecuteResult,
   OpensteerExtractOptions,
   OpensteerInputOptions,
-  OpensteerNetworkClearOptions,
-  OpensteerNetworkClearResult,
-  OpensteerNetworkQueryOptions,
-  OpensteerNetworkQueryResult,
-  OpensteerNetworkSaveOptions,
-  OpensteerNetworkSaveResult,
   OpensteerInteractionCaptureOptions,
   OpensteerInteractionCaptureResult,
   OpensteerInteractionDiffOptions,
   OpensteerInteractionDiffResult,
   OpensteerInteractionReplayOptions,
   OpensteerInteractionReplayResult,
+  OpensteerNetworkClearOptions,
+  OpensteerNetworkClearResult,
+  OpensteerNetworkDiffOptions,
+  OpensteerNetworkDiffResult,
+  OpensteerNetworkMinimizeOptions,
+  OpensteerNetworkMinimizeResult,
+  OpensteerNetworkProbeOptions,
+  OpensteerNetworkProbeResult,
+  OpensteerNetworkQueryOptions,
+  OpensteerNetworkQueryResult,
+  OpensteerNetworkSaveOptions,
+  OpensteerNetworkSaveResult,
+  OpensteerOptions,
   OpensteerRawRequestOptions,
   OpensteerRawRequestResult,
-  OpensteerReverseExportOptions,
-  OpensteerReverseExportResult,
-  OpensteerReverseDiscoverOptions,
-  OpensteerReverseDiscoverResult,
-  OpensteerReverseQueryOptions,
-  OpensteerReverseQueryResult,
-  OpensteerReversePackageCreateOptions,
-  OpensteerReversePackageCreateResult,
-  OpensteerReverseReportOptions,
-  OpensteerReverseReportResult,
-  OpensteerReversePackageRunOptions,
-  OpensteerReversePackageRunResult,
   OpensteerRequestOptions,
   OpensteerRequestResult,
+  OpensteerReverseDiscoverOptions,
+  OpensteerReverseDiscoverResult,
+  OpensteerReverseExportOptions,
+  OpensteerReverseExportResult,
+  OpensteerReversePackageCreateOptions,
+  OpensteerReversePackageCreateResult,
+  OpensteerReversePackageGetOptions,
+  OpensteerReversePackageGetResult,
+  OpensteerReversePackageListOptions,
+  OpensteerReversePackageListResult,
+  OpensteerReversePackagePatchOptions,
+  OpensteerReversePackagePatchResult,
+  OpensteerReversePackageRunOptions,
+  OpensteerReversePackageRunResult,
+  OpensteerReverseQueryOptions,
+  OpensteerReverseQueryResult,
+  OpensteerReverseReportOptions,
+  OpensteerReverseReportResult,
+  OpensteerScrollOptions,
+  OpensteerScriptBeautifyOptions,
+  OpensteerScriptBeautifyResult,
+  OpensteerScriptDeobfuscateOptions,
+  OpensteerScriptDeobfuscateResult,
+  OpensteerScriptSandboxOptions,
+  OpensteerScriptSandboxResult,
+  OpensteerTargetOptions,
   OpensteerWaitForNetworkOptions,
   OpensteerWaitForPageOptions,
-  OpensteerScrollOptions,
-  OpensteerTargetOptions,
-  OpensteerOptions,
 } from "./sdk/opensteer.js";
 export type {
   OpensteerFetchedRouteResponse,
@@ -200,99 +225,33 @@ export type {
   OpensteerRouteRegistration,
 } from "./sdk/instrumentation.js";
 export { Opensteer } from "./sdk/opensteer.js";
-export type { OpensteerCloudOptions } from "./sdk/runtime-resolution.js";
 export type {
   OpensteerEngineFactory,
   OpensteerEngineFactoryOptions,
   OpensteerRuntimeOptions,
 } from "./sdk/runtime.js";
-export { OpensteerSessionRuntime } from "./sdk/runtime.js";
-export type { OpensteerExecutionMode } from "./mode/config.js";
-export { normalizeOpensteerExecutionMode, resolveOpensteerExecutionMode } from "./mode/config.js";
-export type { OpensteerCloudConfig } from "./cloud/config.js";
-export { resolveCloudConfig } from "./cloud/config.js";
-export type {
-  BrowserProfileArchiveFormat,
-  BrowserProfileCreateRequest,
-  BrowserProfileDescriptor,
-  BrowserProfileImportCreateRequest,
-  BrowserProfileImportCreateResponse,
-  BrowserProfileImportDescriptor,
-  BrowserProfileImportStatus,
-  BrowserProfileListResponse,
-  BrowserProfileStatus,
-  CloudBrowserContextConfig,
-  CloudBrowserExtensionConfig,
-  CloudBrowserLaunchConfig,
-  CloudBrowserProfilePreference,
-  CloudBrowserProfileLaunchPreference,
-  CloudFingerprintMode,
-  CloudFingerprintPreference,
-  CloudGeolocation,
-  CloudProxyMode,
-  CloudProxyPreference,
-  CloudProxyProtocol,
-  CloudSelectorCacheImportEntry,
-  CloudSelectorCacheImportRequest,
-  CloudSelectorCacheImportResponse,
-  CloudSessionLaunchConfig,
-  CloudSessionSourceType,
-  CloudSessionStatus,
-  CloudSessionSummary,
-  CloudSessionVisibilityScope,
-  CloudViewport,
-} from "@opensteer/cloud-contracts";
-export {
-  OpensteerCloudClient,
-  type OpensteerCloudSessionCreateInput,
-  type OpensteerCloudSessionDescriptor,
-  type SyncBrowserProfileCookiesInput,
-} from "./cloud/client.js";
-export { CloudSessionProxy } from "./cloud/session-proxy.js";
+export { OpensteerRuntime } from "./sdk/runtime.js";
 export type {
   OpensteerDisconnectableRuntime,
   OpensteerSemanticRuntime,
 } from "./sdk/semantic-runtime.js";
-export { dispatchSemanticOperation } from "./cli/dispatch.js";
-export { ServiceOperationScheduler, parseRequestEnvelope } from "./cli/service-host.js";
 export type {
-  LocalBrowserInstallation,
+  OpensteerBrowserManagerOptions,
+  OpensteerBrowserStatus,
+  WorkspaceBrowserBootstrap,
+  WorkspaceBrowserManifest,
+  WorkspaceLiveBrowserRecord,
+} from "./browser-manager.js";
+export { OpensteerBrowserManager } from "./browser-manager.js";
+export { dispatchSemanticOperation } from "./cli/dispatch.js";
+export type {
   InspectedCdpEndpoint,
   LocalCdpBrowserCandidate,
   LocalChromeProfileDescriptor,
 } from "./local-browser/types.js";
 export { listLocalChromeProfiles } from "./local-browser/chrome-discovery.js";
-export type { BrowserBrandId, BrowserBrandRecord } from "./local-browser/browser-brands.js";
-export {
-  detectInstalledBrowserBrands,
-  getAllBrowserBrands,
-  getBrowserBrand,
-} from "./local-browser/browser-brands.js";
-export type {
-  CookieCaptureSourceInput,
-  CookieCaptureStrategy,
-} from "./local-browser/cookie-capture.js";
-export { resolveCookieCaptureStrategy } from "./local-browser/cookie-capture.js";
 export {
   discoverLocalCdpBrowsers,
   inspectCdpEndpoint,
   OpensteerAttachAmbiguousError,
 } from "./local-browser/cdp-discovery.js";
-export type {
-  OpensteerLocalProfileInspection,
-  OpensteerLocalProfileUnlockResult,
-} from "./local-browser/profile-inspection.js";
-export {
-  inspectLocalBrowserProfile,
-  OpensteerLocalProfileUnavailableError,
-  unlockLocalBrowserProfile,
-} from "./local-browser/profile-inspection.js";
-export type { StealthProfile, StealthProfileOverrides } from "./local-browser/stealth-profiles.js";
-export { generateStealthProfile } from "./local-browser/stealth-profiles.js";
-export { generateStealthInitScript } from "./local-browser/stealth-init-script.js";
-export type { MousePath, MousePathPoint } from "./behavior/mouse.js";
-export { generateDragTrail, generateMousePath } from "./behavior/mouse.js";
-export type { TypingCadenceSample } from "./behavior/typing.js";
-export { generateTypingCadence } from "./behavior/typing.js";
-export type { ScrollPattern, ScrollPatternPoint } from "./behavior/scroll.js";
-export { generateScrollPattern } from "./behavior/scroll.js";
