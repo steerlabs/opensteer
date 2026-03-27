@@ -14,6 +14,7 @@ import {
   createAuthRecipeRegistry,
   createDescriptorRegistry,
   createInteractionTraceRegistry,
+  createRecipeRegistry,
   createRequestPlanRegistry,
   createReverseCaseRegistry,
   createReversePackageRegistry,
@@ -93,7 +94,12 @@ export function resolveFilesystemWorkspacePath(input: {
   readonly rootDir: string;
   readonly workspace: string;
 }): string {
-  return path.join(input.rootDir, ".opensteer", "workspaces", normalizeWorkspaceId(input.workspace));
+  return path.join(
+    input.rootDir,
+    ".opensteer",
+    "workspaces",
+    normalizeWorkspaceId(input.workspace),
+  );
 }
 
 export async function createFilesystemOpensteerWorkspace(
@@ -166,6 +172,9 @@ export async function createFilesystemOpensteerWorkspace(
   const authRecipes = createAuthRecipeRegistry(options.rootPath);
   await authRecipes.initialize();
 
+  const recipes = createRecipeRegistry(options.rootPath);
+  await recipes.initialize();
+
   const savedNetwork = createSavedNetworkStore(options.rootPath);
   await savedNetwork.initialize();
 
@@ -203,7 +212,7 @@ export async function createFilesystemOpensteerWorkspace(
       descriptors,
       requestPlans,
       authRecipes,
-      recipes: authRecipes,
+      recipes,
       savedNetwork,
       reverseCases,
       interactionTraces,

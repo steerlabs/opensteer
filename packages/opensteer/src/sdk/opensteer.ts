@@ -631,11 +631,9 @@ export class Opensteer {
       return this.runtime.close();
     }
 
-    await this.runtime.disconnect();
+    const output = await this.runtime.close();
     await this.browserManager.close();
-    return {
-      closed: true,
-    };
+    return output;
   }
 
   async disconnect(): Promise<void> {

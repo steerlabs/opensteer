@@ -8,6 +8,7 @@ import type { BrowserCoreEngine } from "@opensteer/browser-core";
 import {
   connectPlaywrightChromiumBrowser,
   createPlaywrightBrowserCoreEngine,
+  disconnectPlaywrightChromiumBrowser,
 } from "@opensteer/engine-playwright";
 import type {
   OpensteerAttachBrowserOptions,
@@ -16,14 +17,12 @@ import type {
   OpensteerBrowserOptions,
 } from "@opensteer/protocol";
 
-import {
-  CURRENT_PROCESS_OWNER,
-  getProcessLiveness,
-  isProcessRunning,
-  type ProcessOwner,
-} from "./local-browser/process-owner.js";
+import { isProcessRunning } from "./local-browser/process-owner.js";
 import { clearChromeSingletonEntries } from "./local-browser/chrome-singletons.js";
-import { readDevToolsActivePort, resolveChromeExecutablePath } from "./local-browser/chrome-discovery.js";
+import {
+  readDevToolsActivePort,
+  resolveChromeExecutablePath,
+} from "./local-browser/chrome-discovery.js";
 import { inspectCdpEndpoint, selectAttachBrowserCandidate } from "./local-browser/cdp-discovery.js";
 import { createBrowserProfileSnapshot } from "./local-browser/profile-clone.js";
 import { injectBrowserStealthScripts } from "./local-browser/stealth.js";
@@ -68,7 +67,6 @@ export interface WorkspaceLiveBrowserRecord {
   readonly mode: "persistent";
   readonly endpoint: string;
   readonly pid: number;
-  readonly owner: ProcessOwner;
   readonly startedAt: number;
   readonly executablePath: string;
   readonly userDataDir: string;
@@ -253,7 +251,9 @@ export class OpensteerBrowserManager {
     const endpoint = await resolveAttachEndpoint(this.browserOptions);
     return this.createAttachedEngine({
       endpoint,
-      ...(this.browserOptions?.headers === undefined ? {} : { headers: this.browserOptions.headers }),
+      ...(this.browserOptions?.headers === undefined
+        ? {}
+        : { headers: this.browserOptions.headers }),
       freshTab: this.browserOptions?.freshTab ?? true,
       onDispose: async () => undefined,
     });
@@ -280,7 +280,6 @@ export class OpensteerBrowserManager {
         mode: "persistent",
         endpoint: launched.endpoint,
         pid: launched.pid,
-        owner: CURRENT_PROCESS_OWNER,
         startedAt: Date.now(),
         executablePath: launched.executablePath,
         userDataDir: workspace.browserUserDataDir,
@@ -311,65 +310,69 @@ export class OpensteerBrowserManager {
       url: input.endpoint,
       ...(input.headers === undefined ? {} : { headers: input.headers }),
     });
-    const context = browser.contexts()[0];
-    if (!context) {
-      await browser.close().catch(() => undefined);
-      throw new Error("Connected browser did not expose a Chromium browser context.");
+    try {
+      const context = browser.contexts()[0];
+      if (!context) {
+        throw new Error("Connected browser did not expose a Chromium browser context.");
+      }
+
+      const stealthProfile = resolveStealthProfile(this.contextOptions?.stealthProfile);
+      await injectBrowserStealthScripts(
+        context as Parameters<typeof injectBrowserStealthScripts>[0],
+        stealthProfile === undefined ? {} : { profile: stealthProfile },
+      );
+
+      const page =
+        input.freshTab || context.pages()[0] === undefined
+          ? await context.newPage()
+          : context.pages()[0]!;
+      await page.bringToFront?.();
+
+      const engine = (await createPlaywrightBrowserCoreEngine({
+        browser: browser as never,
+        attachedContext: context,
+        attachedPage: page,
+        closeAttachedContextOnSessionClose: false,
+        closeBrowserOnDispose: false,
+        ...(this.contextOptions === undefined
+          ? {}
+          : { context: toEngineBrowserContextOptions(this.contextOptions) }),
+      })) as DisposableBrowserCoreEngine;
+
+      const originalDispose = engine.dispose?.bind(engine);
+      const originalAsyncDispose = engine[Symbol.asyncDispose]?.bind(engine);
+      let disposed = false;
+      const disposeConnection = async () => {
+        if (disposed) {
+          return;
+        }
+        disposed = true;
+        try {
+          await originalDispose?.();
+        } finally {
+          await disconnectPlaywrightChromiumBrowser(browser).catch(() => undefined);
+          await input.onDispose().catch(() => undefined);
+        }
+      };
+
+      engine.dispose = disposeConnection;
+      engine[Symbol.asyncDispose] = async () => {
+        if (disposed) {
+          return;
+        }
+        disposed = true;
+        try {
+          await originalAsyncDispose?.();
+        } finally {
+          await disconnectPlaywrightChromiumBrowser(browser).catch(() => undefined);
+          await input.onDispose().catch(() => undefined);
+        }
+      };
+      return engine;
+    } catch (error) {
+      await disconnectPlaywrightChromiumBrowser(browser).catch(() => undefined);
+      throw error;
     }
-
-    const stealthProfile = resolveStealthProfile(this.contextOptions?.stealthProfile);
-    await injectBrowserStealthScripts(
-      context as Parameters<typeof injectBrowserStealthScripts>[0],
-      stealthProfile === undefined ? {} : { profile: stealthProfile },
-    );
-
-    const page =
-      input.freshTab || context.pages()[0] === undefined
-        ? await context.newPage()
-        : context.pages()[0]!;
-    await page.bringToFront?.();
-
-    const engine = (await createPlaywrightBrowserCoreEngine({
-      browser: browser as never,
-      attachedContext: context,
-      attachedPage: page,
-      closeAttachedContextOnSessionClose: false,
-      closeBrowserOnDispose: false,
-      ...(this.contextOptions === undefined
-        ? {}
-        : { context: toEngineBrowserContextOptions(this.contextOptions) }),
-    })) as DisposableBrowserCoreEngine;
-
-    const originalDispose = engine.dispose?.bind(engine);
-    const originalAsyncDispose = engine[Symbol.asyncDispose]?.bind(engine);
-    let disposed = false;
-    const disposeConnection = async () => {
-      if (disposed) {
-        return;
-      }
-      disposed = true;
-      try {
-        await originalDispose?.();
-      } finally {
-        await browser.close().catch(() => undefined);
-        await input.onDispose().catch(() => undefined);
-      }
-    };
-
-    engine.dispose = disposeConnection;
-    engine[Symbol.asyncDispose] = async () => {
-      if (disposed) {
-        return;
-      }
-      disposed = true;
-      try {
-        await originalAsyncDispose?.();
-      } finally {
-        await browser.close().catch(() => undefined);
-        await input.onDispose().catch(() => undefined);
-      }
-    };
-    return engine;
   }
 
   private async ensureWorkspaceStore(): Promise<FilesystemOpensteerWorkspace> {
@@ -420,16 +423,14 @@ export class OpensteerBrowserManager {
     if (live === undefined) {
       return undefined;
     }
-    const liveness = await getProcessLiveness(live.owner);
-    if (liveness === "dead") {
+    if (!isProcessRunning(live.pid)) {
       await rm(workspace.liveBrowserPath, { force: true }).catch(() => undefined);
       return undefined;
     }
     if (!(await isEndpointReachable(live.endpoint))) {
-      if (liveness !== "live") {
-        await rm(workspace.liveBrowserPath, { force: true }).catch(() => undefined);
-      }
-      return undefined;
+      throw new Error(
+        `workspace "${this.workspace}" browser process ${String(live.pid)} is still running, but its DevTools endpoint is unavailable`,
+      );
     }
     return live;
   }
@@ -538,6 +539,13 @@ async function launchOwnedBrowser(input: {
   child.stderr?.on("data", (chunk) => {
     stderrLines.push(String(chunk));
   });
+  (
+    child.stderr as
+      | (NodeJS.ReadableStream & {
+          unref?: () => void;
+        })
+      | undefined
+  )?.unref?.();
 
   const endpoint = await waitForDevToolsEndpoint({
     userDataDir: input.userDataDir,
@@ -704,9 +712,7 @@ async function requestBrowserClose(endpoint: string): Promise<void> {
         if (message.id !== 1) {
           return;
         }
-        finish(
-          message.error?.message === undefined ? undefined : new Error(message.error.message),
-        );
+        finish(message.error?.message === undefined ? undefined : new Error(message.error.message));
       } catch (error) {
         finish(error instanceof Error ? error : new Error(String(error)));
       }
@@ -751,8 +757,7 @@ function normalizeBrowserContextOptions(
     ...(locale === undefined ? {} : { locale }),
     ...(timezoneId === undefined ? {} : { timezoneId }),
     ...(userAgent === undefined ? {} : { userAgent }),
-    viewport:
-      context?.viewport ??
+    viewport: context?.viewport ??
       stealthProfile?.viewport ?? {
         width: 1440,
         height: 900,

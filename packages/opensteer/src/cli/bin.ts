@@ -115,9 +115,7 @@ async function main(): Promise<void> {
       operation,
       buildOperationInput(
         operation,
-        parsed.command[0] === "run"
-          ? { ...parsed, rest: parsed.rest.slice(1) }
-          : parsed,
+        parsed.command[0] === "run" ? { ...parsed, rest: parsed.rest.slice(1) } : parsed,
       ),
     );
   } finally {
@@ -142,7 +140,9 @@ async function handleBrowserCommand(parsed: ParsedCommandLine): Promise<void> {
   if (subcommand === "inspect") {
     const endpoint = parsed.options.attachEndpoint ?? parsed.rest[0];
     if (!endpoint) {
-      throw new Error('browser inspect requires "--attach-endpoint <url>" or a positional endpoint.');
+      throw new Error(
+        'browser inspect requires "--attach-endpoint <url>" or a positional endpoint.',
+      );
     }
     const result = await inspectCdpEndpoint({
       endpoint,
@@ -415,7 +415,9 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
   const element = readOptionalNumber(rawOptions, "element");
   const text = readSingle(rawOptions, "text");
   const pressEnter = readOptionalBoolean(rawOptions, "press-enter");
-  const direction = readSingle(rawOptions, "direction") as ParsedCliOptions["direction"] | undefined;
+  const direction = readSingle(rawOptions, "direction") as
+    | ParsedCliOptions["direction"]
+    | undefined;
   const amount = readOptionalNumber(rawOptions, "amount");
   const contextJson = readJsonObject(rawOptions, "context-json");
   const inputJson = readJsonObject(rawOptions, "input-json");

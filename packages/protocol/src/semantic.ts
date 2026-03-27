@@ -220,9 +220,7 @@ export interface OpensteerAttachBrowserOptions {
 
 export type OpensteerBrowserMode = "temporary" | "persistent";
 
-export type OpensteerBrowserOptions =
-  | OpensteerBrowserMode
-  | OpensteerAttachBrowserOptions;
+export type OpensteerBrowserOptions = OpensteerBrowserMode | OpensteerAttachBrowserOptions;
 
 export interface OpensteerBrowserContextOptions {
   readonly ignoreHTTPSErrors?: boolean;
@@ -796,10 +794,7 @@ const attachBrowserOptionsSchema: JsonSchema = objectSchema(
 );
 
 const opensteerBrowserOptionsSchema: JsonSchema = oneOfSchema(
-  [
-    enumSchema(["temporary", "persistent"] as const),
-    attachBrowserOptionsSchema,
-  ],
+  [enumSchema(["temporary", "persistent"] as const), attachBrowserOptionsSchema],
   {
     title: "OpensteerBrowserOptions",
   },
