@@ -7,6 +7,7 @@ import type {
   Quad,
   Rect,
 } from "@opensteer/browser-core";
+import type { ReplayElementPath } from "./dom-path-types.js";
 
 export const OPENSTEER_DOM_ACTION_BRIDGE_SYMBOL = Symbol.for("@opensteer/dom-action-bridge");
 
@@ -56,6 +57,7 @@ export interface DomPointerHitAssessment {
 }
 
 export interface DomActionBridge {
+  buildReplayPath(locator: NodeLocator): Promise<ReplayElementPath>;
   inspectActionTarget(locator: NodeLocator): Promise<DomActionTargetInspection>;
   canonicalizePointerTarget(locator: NodeLocator): Promise<NodeLocator>;
   classifyPointerHit(input: {

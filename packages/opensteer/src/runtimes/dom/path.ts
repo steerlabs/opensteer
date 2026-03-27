@@ -4,7 +4,6 @@ import { ElementPathError } from "./errors.js";
 import { buildArrayFieldPathCandidates } from "./extraction.js";
 import { buildPathCandidates, buildSegmentSelector } from "./match-selectors.js";
 import {
-  collectDeferredMatchClauses,
   DEFERRED_MATCH_ATTR_KEYS,
   MATCH_ATTRIBUTE_PRIORITY,
   STABLE_PRIMARY_ATTR_KEYS,
@@ -166,33 +165,6 @@ export function buildLocalStructuralElementAnchor(
     context: [
       ...hostAnchor.context,
       { kind: "shadow", host: cloneStructuralElementAnchor(hostAnchor).nodes },
-    ],
-    nodes,
-  });
-}
-
-export function buildLocalReplayElementPath(
-  index: DomSnapshotIndex,
-  rawTargetNode: DomSnapshotNode,
-): ReplayElementPath {
-  const targetNode = requireElementNode(index, rawTargetNode);
-  const localAnchor = captureLocalScopedStructuralAnchor(index, targetNode);
-  const nodes = finalizeScopedReplayNodes(index, targetNode, localAnchor.nodes);
-  const shadowHost = findContainingShadowHostNode(index, targetNode);
-  if (!shadowHost) {
-    return sanitizeReplayElementPath({
-      resolution: "deterministic",
-      context: [],
-      nodes,
-    });
-  }
-
-  const hostPath = buildLocalReplayElementPath(index, shadowHost);
-  return sanitizeReplayElementPath({
-    resolution: "deterministic",
-    context: [
-      ...hostPath.context,
-      { kind: "shadow", host: cloneReplayElementPath(hostPath).nodes },
     ],
     nodes,
   });
@@ -523,10 +495,6 @@ function cloneMatchClause(clause: MatchClause): MatchClause {
       };
 }
 
-function serializeMatchClause(clause: MatchClause): string {
-  return JSON.stringify(clause);
-}
-
 function normalizeMatch(
   rawMatch: unknown,
   attrs: Record<string, string>,
@@ -638,17 +606,6 @@ function isPseudoElementNodeName(nodeName: string): boolean {
   return String(nodeName || "").startsWith("::");
 }
 
-function captureLocalScopedStructuralAnchor(
-  index: DomSnapshotIndex,
-  targetNode: DomSnapshotNode,
-): StructuralElementAnchor {
-  return {
-    resolution: "structural",
-    context: [],
-    nodes: captureScopedStructuralNodes(index, targetNode),
-  };
-}
-
 function captureScopedStructuralNodes(
   index: DomSnapshotIndex,
   targetNode: DomSnapshotNode,
@@ -668,95 +625,6 @@ function captureScopedStructuralNodes(
       position: toPosition(index, element, scopeHostNodeRef),
       match: [],
     }),
-  );
-}
-
-function finalizeScopedReplayNodes(
-  index: DomSnapshotIndex,
-  targetNode: DomSnapshotNode,
-  structuralNodes: readonly PathNode[],
-): PathNode[] {
-  const scopeHostNodeRef = getShadowScopeNodeRef(index, targetNode);
-  const chain = buildScopedElementChain(index, targetNode, scopeHostNodeRef);
-  if (!chain.length) {
-    throw new Error(
-      `target node ${String(targetNode.snapshotNodeId)} has no scoped ancestor chain`,
-    );
-  }
-
-  const nodes: Array<{
-    tag: string;
-    attrs: Record<string, string>;
-    position: PathNodePosition;
-    match: MatchClause[];
-  }> = structuralNodes.map((node) => ({
-    tag: node.tag,
-    attrs: { ...node.attrs },
-    position: {
-      nthChild: node.position.nthChild,
-      nthOfType: node.position.nthOfType,
-    },
-    match: [],
-  }));
-
-  const pools = nodes.map((node) => {
-    const cloned = [...buildLocalClausePool(node)];
-    const seen = new Set(cloned.map(serializeMatchClause));
-    for (const clause of collectDeferredMatchClauses(node)) {
-      const key = serializeMatchClause(clause);
-      if (seen.has(key)) {
-        continue;
-      }
-      seen.add(key);
-      cloned.push(clause);
-    }
-    node.match = [];
-    return cloned;
-  });
-
-  for (let indexOfNode = 0; indexOfNode < pools.length; indexOfNode += 1) {
-    const pool = pools[indexOfNode]!;
-    const classIndex = pool.findIndex((clause) => clause.kind === "attr" && clause.key === "class");
-    if (classIndex < 0) {
-      continue;
-    }
-    const classClause = pool[classIndex];
-    if (!classClause) {
-      continue;
-    }
-    nodes[indexOfNode]!.match = [...nodes[indexOfNode]!.match, classClause];
-    pool.splice(classIndex, 1);
-  }
-
-  const totalRemaining = pools.reduce((sum, pool) => sum + pool.length, 0);
-  const expectedTarget = chain[chain.length - 1]!;
-  const scope = createPathScope(scopeHostNodeRef);
-
-  for (let iteration = 0; iteration <= totalRemaining; iteration += 1) {
-    const selected = resolveDomPathInScope(index, nodes, scope);
-    if (selected && selected.mode === "unique" && selected.node === expectedTarget) {
-      return nodes;
-    }
-
-    let added = false;
-    for (let poolIndex = pools.length - 1; poolIndex >= 0; poolIndex -= 1) {
-      const pool = pools[poolIndex]!;
-      const nextClause = pool[0];
-      if (!nextClause) {
-        continue;
-      }
-      nodes[poolIndex]!.match = [...nodes[poolIndex]!.match, nextClause];
-      pool.shift();
-      added = true;
-      break;
-    }
-    if (!added) {
-      break;
-    }
-  }
-
-  throw new Error(
-    `failed to finalize element path for node ${String(expectedTarget.snapshotNodeId)} in ${index.snapshot.documentRef}`,
   );
 }
 

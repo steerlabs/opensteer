@@ -3,6 +3,7 @@ import {
   createRect,
   quadBounds,
   staleNodeRefError,
+  type FrameRef,
   type KeyModifier,
   type NodeLocator,
   type PageRef,
@@ -14,7 +15,9 @@ import type {
   DomActionBridge,
   DomPointerHitAssessment,
   DomActionTargetInspection,
+  ReplayElementPath,
 } from "@opensteer/protocol";
+import type { ElementHandle, Frame } from "playwright";
 
 import { rethrowNodeLookupError } from "./errors.js";
 import type { DocumentState, PageController } from "./types.js";
@@ -25,6 +28,10 @@ interface PlaywrightDomActionBridgeContext {
   flushPendingPageTasks(sessionRef: SessionRef): Promise<void>;
   flushDomUpdateTask(controller: PageController): Promise<void>;
   locateBackendNode(document: DocumentState, backendNodeId: number): NodeLocator;
+  requireFrame(frameRef: FrameRef): {
+    readonly controller: PageController;
+    readonly frame: Frame;
+  };
   requireLiveNode(locator: NodeLocator): {
     readonly controller: PageController;
     readonly document: DocumentState;
@@ -298,10 +305,424 @@ const CLASSIFY_POINTER_HIT_DECLARATION =
   };
 }`;
 
+const LIVE_REPLAY_PATH_MATCH_ATTRIBUTE_PRIORITY = [
+  "class",
+  "data-testid",
+  "data-test",
+  "data-qa",
+  "data-cy",
+  "name",
+  "role",
+  "type",
+  "aria-label",
+  "title",
+  "placeholder",
+  "for",
+  "aria-controls",
+  "aria-labelledby",
+  "aria-describedby",
+  "id",
+  "href",
+  "value",
+  "src",
+  "srcset",
+  "imagesrcset",
+  "ping",
+  "alt",
+] as const;
+
+const LIVE_REPLAY_PATH_STABLE_PRIMARY_ATTR_KEYS = [
+  "data-testid",
+  "data-test",
+  "data-qa",
+  "data-cy",
+  "name",
+  "role",
+  "type",
+  "aria-label",
+  "title",
+  "placeholder",
+] as const;
+
+const LIVE_REPLAY_PATH_DEFERRED_MATCH_ATTR_KEYS = [
+  "href",
+  "src",
+  "srcset",
+  "imagesrcset",
+  "ping",
+  "value",
+  "for",
+  "aria-controls",
+  "aria-labelledby",
+  "aria-describedby",
+] as const;
+
+const BUILD_LIVE_REPLAY_PATH_DECLARATION = String.raw`function(policy, source) {
+  const buildReplayPath = (0, eval)(source);
+  return buildReplayPath(this, policy);
+}`;
+
+const BUILD_LIVE_REPLAY_PATH_SOURCE = String.raw`(target, policy) => {
+  const MAX_ATTRIBUTE_VALUE_LENGTH = 300;
+
+  function isValidAttrKey(key) {
+    const trimmed = String(key || "").trim();
+    if (!trimmed) return false;
+    if (/[\s"'<>/]/.test(trimmed)) return false;
+    return /^[A-Za-z_][A-Za-z0-9_:\-.]*$/.test(trimmed);
+  }
+
+  function isMediaTag(tag) {
+    return new Set(["img", "video", "source", "iframe"]).has(String(tag || "").toLowerCase());
+  }
+
+  function shouldKeepAttr(tag, key, value) {
+    const normalized = String(key || "").trim().toLowerCase();
+    if (!normalized || !String(value || "").trim()) return false;
+    if (!isValidAttrKey(key)) return false;
+    if (normalized === "c") return false;
+    if (/^on[a-z]/i.test(normalized)) return false;
+    if (new Set(["style", "nonce", "integrity", "crossorigin", "referrerpolicy", "autocomplete"]).has(normalized)) {
+      return false;
+    }
+    if (normalized.startsWith("data-os-") || normalized.startsWith("data-opensteer-")) {
+      return false;
+    }
+    if (
+      isMediaTag(tag) &&
+      new Set([
+        "data-src",
+        "data-lazy-src",
+        "data-original",
+        "data-lazy",
+        "data-image",
+        "data-url",
+        "data-srcset",
+        "data-lazy-srcset",
+        "data-was-processed",
+      ]).has(normalized)
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  function collectAttrs(node) {
+    const tag = node.tagName.toLowerCase();
+    const attrs = {};
+    for (const attr of Array.from(node.attributes)) {
+      if (!shouldKeepAttr(tag, attr.name, attr.value)) {
+        continue;
+      }
+      const value = String(attr.value || "");
+      if (!value.trim()) continue;
+      if (value.length > MAX_ATTRIBUTE_VALUE_LENGTH) continue;
+      attrs[attr.name] = value;
+    }
+    return attrs;
+  }
+
+  function getSiblings(node, root) {
+    if (node.parentElement) return Array.from(node.parentElement.children);
+    return Array.from(root.children || []);
+  }
+
+  function toPosition(node, root) {
+    const siblings = getSiblings(node, root);
+    const tag = node.tagName.toLowerCase();
+    const sameTag = siblings.filter((candidate) => candidate.tagName.toLowerCase() === tag);
+    return {
+      nthChild: siblings.indexOf(node) + 1,
+      nthOfType: sameTag.indexOf(node) + 1,
+    };
+  }
+
+  function buildChain(node) {
+    const chain = [];
+    let current = node;
+    while (current) {
+      chain.push(current);
+      if (current.parentElement) {
+        current = current.parentElement;
+        continue;
+      }
+      break;
+    }
+    chain.reverse();
+    return chain;
+  }
+
+  function sortAttributeKeys(keys) {
+    const priority = Array.isArray(policy?.matchAttributePriority)
+      ? policy.matchAttributePriority.map((value) => String(value))
+      : [];
+    return [...keys].sort((left, right) => {
+      const leftIndex = priority.indexOf(left);
+      const rightIndex = priority.indexOf(right);
+      const leftRank = leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex;
+      const rightRank = rightIndex === -1 ? Number.MAX_SAFE_INTEGER : rightIndex;
+      if (leftRank !== rightRank) {
+        return leftRank - rightRank;
+      }
+      return left.localeCompare(right);
+    });
+  }
+
+  function tokenizeClassValue(value) {
+    const seen = new Set();
+    const out = [];
+    for (const token of String(value || "").split(/\s+/)) {
+      const normalized = token.trim();
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      out.push(normalized);
+    }
+    return out;
+  }
+
+  function clauseKey(clause) {
+    return JSON.stringify(clause);
+  }
+
+  function shouldDeferMatchAttribute(rawKey) {
+    const key = String(rawKey || "").trim().toLowerCase();
+    if (!key || key === "class") return false;
+    if (key === "id" || /(?:^|[-_:])id$/.test(key)) return true;
+    const deferred = new Set(
+      Array.isArray(policy?.deferredMatchAttrKeys)
+        ? policy.deferredMatchAttrKeys.map((value) => String(value))
+        : [],
+    );
+    if (deferred.has(key)) return true;
+    const stablePrimary = new Set(
+      Array.isArray(policy?.stablePrimaryAttrKeys)
+        ? policy.stablePrimaryAttrKeys.map((value) => String(value))
+        : [],
+    );
+    if (key.startsWith("data-") && !stablePrimary.has(key)) return true;
+    return !stablePrimary.has(key);
+  }
+
+  function buildSegmentSelector(data) {
+    let selector = String(data.tag || "*").toLowerCase();
+    for (const clause of data.match || []) {
+      if (clause.kind === "position") {
+        if (clause.axis === "nthOfType") {
+          selector += ":nth-of-type(" + Math.max(1, Number(data.position?.nthOfType || 1)) + ")";
+        } else {
+          selector += ":nth-child(" + Math.max(1, Number(data.position?.nthChild || 1)) + ")";
+        }
+        continue;
+      }
+
+      const key = String(clause.key || "");
+      const value = typeof clause.value === "string" ? clause.value : data.attrs?.[key];
+      if (!key || !value) continue;
+      if (key === "class" && (clause.op || "exact") === "exact") {
+        for (const token of tokenizeClassValue(value)) {
+          const escapedToken = String(token).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+          selector += '[class~="' + escapedToken + '"]';
+        }
+        continue;
+      }
+      const escaped = String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      const op = clause.op || "exact";
+      if (op === "startsWith") selector += "[" + key + '^="' + escaped + '"]';
+      else if (op === "contains") selector += "[" + key + '*="' + escaped + '"]';
+      else selector += "[" + key + '="' + escaped + '"]';
+    }
+    return selector;
+  }
+
+  function buildCandidates(nodes) {
+    const parts = nodes.map((node) => buildSegmentSelector(node));
+    const out = [];
+    const seen = new Set();
+    for (let start = 0; start < parts.length; start += 1) {
+      const selector = parts.slice(start).join(" ");
+      if (!selector || seen.has(selector)) continue;
+      seen.add(selector);
+      out.push(selector);
+    }
+    return out;
+  }
+
+  function selectReplayCandidate(nodes, root) {
+    const selectors = buildCandidates(nodes);
+    let fallback = null;
+    let fallbackSelector = null;
+    let fallbackCount = 0;
+    for (const selector of selectors) {
+      let matches = [];
+      try {
+        matches = Array.from(root.querySelectorAll(selector));
+      } catch {
+        matches = [];
+      }
+      if (!matches.length) continue;
+      if (matches.length === 1) {
+        return {
+          element: matches[0],
+          selector,
+          count: 1,
+          mode: "unique",
+        };
+      }
+      if (!fallback) {
+        fallback = matches[0];
+        fallbackSelector = selector;
+        fallbackCount = matches.length;
+      }
+    }
+    if (fallback && fallbackSelector) {
+      return {
+        element: fallback,
+        selector: fallbackSelector,
+        count: fallbackCount,
+        mode: "fallback",
+      };
+    }
+    return null;
+  }
+
+  function buildClausePool(data) {
+    const attrs = data.attrs || {};
+    const pool = [];
+    const deferred = [];
+    const used = new Set();
+
+    const classValue = String(attrs.class || "").trim();
+    if (classValue) {
+      const clause = { kind: "attr", key: "class", op: "exact", value: classValue };
+      used.add(clauseKey(clause));
+      pool.push(clause);
+    }
+
+    for (const key of sortAttributeKeys(Object.keys(attrs))) {
+      if (key === "class") continue;
+      const value = attrs[key];
+      if (!value || !String(value).trim()) continue;
+      const clause = { kind: "attr", key, op: "exact" };
+      const keyId = clauseKey(clause);
+      if (used.has(keyId)) continue;
+      used.add(keyId);
+      if (shouldDeferMatchAttribute(key)) deferred.push(clause);
+      else pool.push(clause);
+    }
+
+    for (const clause of [
+      { kind: "position", axis: "nthOfType" },
+      { kind: "position", axis: "nthChild" },
+    ]) {
+      const keyId = clauseKey(clause);
+      if (used.has(keyId)) continue;
+      used.add(keyId);
+      pool.push(clause);
+    }
+
+    if (!pool.some((clause) => clause.kind === "attr")) {
+      pool.push(...deferred);
+    }
+
+    return pool;
+  }
+
+  function finalizePath(elements, root) {
+    if (!elements.length) return null;
+    const nodes = elements.map((element) => ({
+      tag: element.tagName.toLowerCase(),
+      attrs: collectAttrs(element),
+      position: toPosition(element, root),
+      match: [],
+    }));
+
+    const pools = nodes.map((node) => {
+      node.match = [];
+      return [...buildClausePool(node)];
+    });
+
+    for (let index = 0; index < pools.length; index += 1) {
+      const classIndex = pools[index].findIndex(
+        (clause) => clause.kind === "attr" && clause.key === "class",
+      );
+      if (classIndex < 0) continue;
+      const classClause = pools[index][classIndex];
+      if (!classClause) continue;
+      nodes[index].match.push(classClause);
+      pools[index].splice(classIndex, 1);
+    }
+
+    const expected = elements[elements.length - 1];
+    const totalRemaining = pools.reduce((count, pool) => count + pool.length, 0);
+    for (let iteration = 0; iteration <= totalRemaining; iteration += 1) {
+      const chosen = selectReplayCandidate(nodes, root);
+      if (chosen && chosen.mode === "unique" && chosen.element === expected) {
+        return {
+          nodes,
+          selector: chosen.selector,
+        };
+      }
+
+      let added = false;
+      for (let index = pools.length - 1; index >= 0; index -= 1) {
+        const next = pools[index][0];
+        if (!next) continue;
+        nodes[index].match.push(next);
+        pools[index].shift();
+        added = true;
+        break;
+      }
+      if (!added) break;
+    }
+
+    return null;
+  }
+
+  if (!(target instanceof Element)) return null;
+
+  const context = [];
+  let currentRoot = target.getRootNode() instanceof ShadowRoot ? target.getRootNode() : document;
+  const targetChain = buildChain(target);
+  const finalizedTarget = finalizePath(targetChain, currentRoot);
+  if (!finalizedTarget) return null;
+
+  while (currentRoot instanceof ShadowRoot) {
+    const host = currentRoot.host;
+    const hostRoot =
+      host.getRootNode() instanceof ShadowRoot ? host.getRootNode() : document;
+    const hostChain = buildChain(host);
+    const finalizedHost = finalizePath(hostChain, hostRoot);
+    if (!finalizedHost) return null;
+    context.unshift({
+      kind: "shadow",
+      host: finalizedHost.nodes,
+    });
+    currentRoot = hostRoot;
+  }
+
+  return {
+    resolution: "deterministic",
+    context,
+    nodes: finalizedTarget.nodes,
+  };
+}`;
+
 export function createPlaywrightDomActionBridge(
   context: PlaywrightDomActionBridgeContext,
 ): DomActionBridge {
   return {
+    buildReplayPath(locator) {
+      return withLiveNode(context, locator, async ({ controller, document, backendNodeId }) => {
+        const localPath = await buildLiveReplayPathForLocator(
+          controller,
+          document,
+          locator,
+          backendNodeId,
+        );
+        return prefixIframeReplayPath(context, document.frameRef, localPath);
+      });
+    },
+
     inspectActionTarget(locator) {
       return withLiveNode(context, locator, async ({ controller, document, backendNodeId }) => {
         const nodeId = await resolveFrontendNodeId(controller, document, locator, backendNodeId);
@@ -749,6 +1170,90 @@ function normalizePointerHitAssessment(
     ...(candidate.ambiguous === undefined ? {} : { ambiguous: candidate.ambiguous }),
     canonicalTarget,
   };
+}
+
+function createLiveReplayPathPolicy() {
+  return {
+    matchAttributePriority: [...LIVE_REPLAY_PATH_MATCH_ATTRIBUTE_PRIORITY],
+    stablePrimaryAttrKeys: [...LIVE_REPLAY_PATH_STABLE_PRIMARY_ATTR_KEYS],
+    deferredMatchAttrKeys: [...LIVE_REPLAY_PATH_DEFERRED_MATCH_ATTR_KEYS],
+  };
+}
+
+async function buildLiveReplayPathForLocator(
+  controller: PageController,
+  document: DocumentState,
+  locator: NodeLocator,
+  backendNodeId: number,
+): Promise<ReplayElementPath> {
+  const raw = await callNodeFunction(controller, document, locator, backendNodeId, {
+    functionDeclaration: BUILD_LIVE_REPLAY_PATH_DECLARATION,
+    arguments: [{ value: createLiveReplayPathPolicy() }, { value: BUILD_LIVE_REPLAY_PATH_SOURCE }],
+    returnByValue: true,
+  });
+  return requireReplayPath(raw, locator);
+}
+
+async function prefixIframeReplayPath(
+  context: PlaywrightDomActionBridgeContext,
+  frameRef: FrameRef,
+  localPath: ReplayElementPath,
+): Promise<ReplayElementPath> {
+  let currentPath = localPath;
+  let currentFrame = context.requireFrame(frameRef).frame;
+
+  while (currentFrame.parentFrame() !== null) {
+    const frameElement = await currentFrame.frameElement();
+    try {
+      const hostPath = await buildLiveReplayPathForHandle(frameElement);
+      currentPath = {
+        resolution: "deterministic",
+        context: [
+          ...hostPath.context,
+          { kind: "iframe", host: hostPath.nodes },
+          ...currentPath.context,
+        ],
+        nodes: currentPath.nodes,
+      };
+    } finally {
+      await frameElement.dispose().catch(() => undefined);
+    }
+
+    currentFrame = currentFrame.parentFrame()!;
+  }
+
+  return currentPath;
+}
+
+async function buildLiveReplayPathForHandle(handle: ElementHandle): Promise<ReplayElementPath> {
+  const raw = await handle.evaluate(
+    (element, input) => {
+      const buildReplayPath = (0, eval)(input.source);
+      return buildReplayPath(element, input.policy);
+    },
+    {
+      policy: createLiveReplayPathPolicy(),
+      source: BUILD_LIVE_REPLAY_PATH_SOURCE,
+    },
+  );
+  return requireReplayPath(raw);
+}
+
+function requireReplayPath(value: unknown, locator?: NodeLocator): ReplayElementPath {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    (value as { readonly resolution?: unknown }).resolution !== "deterministic"
+  ) {
+    throw new Error(
+      locator === undefined
+        ? "live DOM replay path builder returned an invalid result"
+        : `live DOM replay path builder returned an invalid result for ${locator.nodeRef}`,
+    );
+  }
+
+  return value as ReplayElementPath;
 }
 
 function unionQuadBounds(quads: readonly Quad[]): Rect {

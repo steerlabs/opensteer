@@ -247,6 +247,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
           document.documentEpoch,
           this.nodeRefForBackendNode(document, backendNodeId),
         ),
+      requireFrame: (frameRef) => this.requireLiveFrame(frameRef),
       requireLiveNode: (locator) => this.requireLiveNode(locator),
     });
     return this.domActionBridge;
@@ -2887,6 +2888,26 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       });
     }
     return frame;
+  }
+
+  private requireLiveFrame(frameRef: FrameRef): {
+    readonly controller: PageController;
+    readonly frame: Frame;
+  } {
+    const state = this.requireFrame(frameRef);
+    const controller = this.requirePage(state.pageRef);
+    for (const frame of controller.page.frames()) {
+      if (controller.frameBindings.get(frame) === frameRef) {
+        return {
+          controller,
+          frame,
+        };
+      }
+    }
+
+    throw createBrowserCoreError("not-found", `frame ${frameRef} is not attached to a live page`, {
+      details: { frameRef },
+    });
   }
 
   private requireDocument(documentRef: DocumentRef): DocumentState {
