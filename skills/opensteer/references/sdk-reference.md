@@ -128,14 +128,14 @@ Reverse rules:
 
 Common errors and fixes:
 
-| Error | Cause | Fix |
-|---|---|---|
-| `"networkTag is not allowed"` | Used `networkTag` on `open()` | Move to `goto({ url, networkTag })` |
-| `"must be array"` on `rawRequest` | Headers passed as `{key: value}` | Use `[{name, value}]` array |
-| `"must match exactly one supported shape"` | Body passed as raw string | Wrap in `{json: {...}}` or `{text: "..."}` |
-| `"Specify exactly one of element, selector, or description"` | `scroll()` called without a target | Add `selector: "body"` or a `description` |
-| `"registry record already exists"` | `inferRequestPlan` called twice with same key+version | Catch the error or use a new version |
-| `"no stored extraction descriptor"` | `extract()` called with `description` but no `schema` | Always provide `schema` unless a descriptor was previously stored |
+| Error                                                        | Cause                                                 | Fix                                                               |
+| ------------------------------------------------------------ | ----------------------------------------------------- | ----------------------------------------------------------------- |
+| `"networkTag is not allowed"`                                | Used `networkTag` on `open()`                         | Move to `goto({ url, networkTag })`                               |
+| `"must be array"` on `rawRequest`                            | Headers passed as `{key: value}`                      | Use `[{name, value}]` array                                       |
+| `"must match exactly one supported shape"`                   | Body passed as raw string                             | Wrap in `{json: {...}}` or `{text: "..."}`                        |
+| `"Specify exactly one of element, selector, or description"` | `scroll()` called without a target                    | Add `selector: "body"` or a `description`                         |
+| `"registry record already exists"`                           | `inferRequestPlan` called twice with same key+version | Catch the error or use a new version                              |
+| `"no stored extraction descriptor"`                          | `extract()` called with `description` but no `schema` | Always provide `schema` unless a descriptor was previously stored |
 
 ## Common Methods
 
