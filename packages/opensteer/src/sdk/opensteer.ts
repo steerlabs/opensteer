@@ -86,8 +86,8 @@ import type {
   OpensteerReverseReportInput,
   OpensteerReverseReportOutput,
   OpensteerSessionCloseOutput,
-  OpensteerSessionOpenInput,
-  OpensteerSessionOpenOutput,
+  OpensteerOpenInput,
+  OpensteerOpenOutput,
   OpensteerSnapshotMode,
   OpensteerTargetInput,
   OpensteerTransportProbeInput,
@@ -99,21 +99,17 @@ import type {
 } from "@opensteer/protocol";
 
 import type { AuthRecipeRecord, RecipeRecord, RequestPlanRecord } from "../registry.js";
-import { AttachedOpensteerSessionProxy } from "../session-service/attached-session-proxy.js";
-import type {
-  OpensteerDisconnectableRuntime,
-  OpensteerSemanticRuntime,
-} from "./semantic-runtime.js";
-import { OpensteerSessionRuntime, type OpensteerRuntimeOptions } from "./runtime.js";
+import {
+  OpensteerBrowserManager,
+  type OpensteerBrowserStatus,
+  type WorkspaceBrowserManifest,
+} from "../browser-manager.js";
+import { OpensteerRuntime, type OpensteerRuntimeOptions } from "./runtime.js";
 import type {
   OpensteerInterceptScriptOptions,
   OpensteerRouteOptions,
   OpensteerRouteRegistration,
 } from "./instrumentation.js";
-import {
-  createOpensteerSemanticRuntime,
-  type OpensteerCloudOptions,
-} from "./runtime-resolution.js";
 
 export interface OpensteerTargetOptions {
   readonly element?: number;
@@ -209,44 +205,49 @@ export type OpensteerCaptchaSolveOptions = OpensteerCaptchaSolveInput;
 export type OpensteerCaptchaSolveResult = OpensteerCaptchaSolveOutput;
 export type OpensteerAddInitScriptOptions = OpensteerAddInitScriptInput;
 
-export interface OpensteerOptions extends OpensteerRuntimeOptions {
-  readonly cloud?: boolean | OpensteerCloudOptions;
+export interface OpensteerOptions extends OpensteerRuntimeOptions {}
+
+export interface OpensteerBrowserCloneOptions {
+  readonly sourceUserDataDir: string;
+  readonly sourceProfileDirectory?: string;
 }
 
-export interface OpensteerAttachOptions {
-  readonly name?: string;
-  readonly rootDir?: string;
+export interface OpensteerBrowserController {
+  status(): Promise<OpensteerBrowserStatus>;
+  clone(input: OpensteerBrowserCloneOptions): Promise<WorkspaceBrowserManifest>;
+  reset(): Promise<void>;
+  delete(): Promise<void>;
 }
 
 export class Opensteer {
-  private runtime!: OpensteerSemanticRuntime;
-  private ownership!: "owned" | "attached";
+  private readonly runtime: OpensteerRuntime;
+  private readonly browserManager: OpensteerBrowserManager;
+  readonly browser: OpensteerBrowserController;
 
   constructor(options: OpensteerOptions = {}) {
-    this.runtime = createOpensteerSemanticRuntime({
-      runtimeOptions: options,
-      ...(options.cloud === undefined ? {} : { cloud: options.cloud }),
+    this.browserManager = new OpensteerBrowserManager({
+      ...(options.rootDir === undefined ? {} : { rootDir: options.rootDir }),
+      ...(options.rootPath === undefined ? {} : { rootPath: options.rootPath }),
+      ...(options.workspace === undefined ? {} : { workspace: options.workspace }),
+      ...(options.browser === undefined ? {} : { browser: options.browser }),
+      ...(options.launch === undefined ? {} : { launch: options.launch }),
+      ...(options.context === undefined ? {} : { context: options.context }),
     });
-    this.ownership = "owned";
+    this.runtime = new OpensteerRuntime({
+      ...options,
+      rootPath: this.browserManager.rootPath,
+      cleanupRootOnClose: this.browserManager.cleanupRootOnDisconnect,
+    });
+    this.browser = {
+      status: () => this.browserManager.status(),
+      clone: (input) => this.browserManager.clonePersistentBrowser(input),
+      reset: () => this.browserManager.reset(),
+      delete: () => this.browserManager.delete(),
+    };
   }
 
-  static attach(options: OpensteerAttachOptions = {}): Opensteer {
-    return Opensteer.fromRuntime(
-      new AttachedOpensteerSessionProxy({
-        ...(options.name === undefined ? {} : { name: options.name }),
-        ...(options.rootDir === undefined ? {} : { rootDir: options.rootDir }),
-      }),
-      "attached",
-    );
-  }
-
-  async open(input: string | OpensteerSessionOpenInput = {}): Promise<OpensteerSessionOpenOutput> {
-    const normalized = typeof input === "string" ? { url: input } : input;
-    if (this.ownership === "attached") {
-      assertAttachedOpenInputAllowed(normalized);
-    }
-
-    return this.runtime.open(normalized);
+  async open(input: string | OpensteerOpenInput = {}): Promise<OpensteerOpenOutput> {
+    return this.runtime.open(typeof input === "string" ? { url: input } : input);
   }
 
   async listPages(input: OpensteerPageListInput = {}): Promise<OpensteerPageListOutput> {
@@ -626,52 +627,29 @@ export class Opensteer {
   }
 
   async close(): Promise<OpensteerSessionCloseOutput> {
-    return this.runtime.close();
+    if (this.browserManager.mode === "temporary") {
+      return this.runtime.close();
+    }
+
+    await this.runtime.disconnect();
+    await this.browserManager.close();
+    return {
+      closed: true,
+    };
   }
 
   async disconnect(): Promise<void> {
-    if (this.ownership === "owned") {
-      await this.close();
-      return;
-    }
-
-    if (isDisconnectableRuntime(this.runtime)) {
-      await this.runtime.disconnect();
-    }
-  }
-
-  private static fromRuntime(
-    runtime: OpensteerSemanticRuntime,
-    ownership: "owned" | "attached",
-  ): Opensteer {
-    const instance = Object.create(Opensteer.prototype) as Opensteer;
-    instance.runtime = runtime;
-    instance.ownership = ownership;
-    return instance;
+    await this.runtime.disconnect();
   }
 
   private requireOwnedInstrumentationRuntime(
     method: "route" | "interceptScript",
-  ): OpensteerSessionRuntime {
-    if (this.runtime instanceof OpensteerSessionRuntime) {
+  ): OpensteerRuntime {
+    if (this.runtime instanceof OpensteerRuntime) {
       return this.runtime;
     }
     throw new Error(`${method}() is only available on owned local SDK sessions.`);
   }
-}
-
-function assertAttachedOpenInputAllowed(input: OpensteerSessionOpenInput): void {
-  if (input.browser !== undefined || input.context !== undefined || input.name !== undefined) {
-    throw new Error(
-      "Opensteer.attach(...) reuses an existing session. open() may only receive url when attached.",
-    );
-  }
-}
-
-function isDisconnectableRuntime(
-  runtime: OpensteerSemanticRuntime,
-): runtime is OpensteerDisconnectableRuntime {
-  return "disconnect" in runtime;
 }
 
 function normalizeTargetOptions(input: OpensteerTargetOptions): {

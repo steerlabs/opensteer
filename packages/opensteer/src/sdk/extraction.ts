@@ -5,7 +5,7 @@ import type { PageRef } from "@opensteer/browser-core";
 import type { JsonValue } from "../json.js";
 import { canonicalJsonString, toCanonicalJsonValue } from "../json.js";
 import type { DescriptorRecord, DescriptorRegistryStore } from "../registry.js";
-import type { FilesystemOpensteerRoot } from "../root.js";
+import type { FilesystemOpensteerWorkspace } from "../root.js";
 import {
   sanitizeElementPath,
   type DomArrayFieldSelector,
@@ -202,7 +202,7 @@ export async function replayOpensteerExtractionPayload(options: {
 }
 
 export function createOpensteerExtractionDescriptorStore(options: {
-  readonly root?: FilesystemOpensteerRoot;
+  readonly root?: FilesystemOpensteerWorkspace;
   readonly namespace?: string;
 }): OpensteerExtractionDescriptorStore {
   const namespace = normalizeNamespace(options.namespace);

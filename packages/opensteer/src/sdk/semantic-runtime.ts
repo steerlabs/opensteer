@@ -94,8 +94,8 @@ import type {
   OpensteerRunAuthRecipeInput,
   OpensteerRunAuthRecipeOutput,
   OpensteerSessionCloseOutput,
-  OpensteerSessionOpenInput,
-  OpensteerSessionOpenOutput,
+  OpensteerOpenInput,
+  OpensteerOpenOutput,
   OpensteerWriteRecipeInput,
   OpensteerWriteAuthRecipeInput,
   OpensteerWriteRequestPlanInput,
@@ -110,9 +110,9 @@ export interface OpensteerRuntimeOperationOptions {
 
 export interface OpensteerSemanticRuntime {
   open(
-    input?: OpensteerSessionOpenInput,
+    input?: OpensteerOpenInput,
     options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerSessionOpenOutput>;
+  ): Promise<OpensteerOpenOutput>;
   listPages(
     input?: OpensteerPageListInput,
     options?: OpensteerRuntimeOperationOptions,

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
@@ -35,6 +36,7 @@ import {
   type OpensteerGetRecipeInput,
   type OpensteerAuthRecipeRetryOverrides,
   type OpensteerAuthRecipeStep,
+  type OpensteerBrowserOptions,
   type OpensteerBrowserContextOptions,
   type OpensteerBrowserLaunchOptions,
   type OpensteerComputerExecuteInput,
@@ -92,11 +94,11 @@ import {
   type OpensteerRunAuthRecipeInput,
   type OpensteerRunAuthRecipeOutput,
   type NetworkQueryRecord,
+  type OpensteerOpenInput,
+  type OpensteerOpenOutput,
   type OpensteerResolvedTarget,
   type OpensteerSemanticOperationName,
   type OpensteerSessionCloseOutput,
-  type OpensteerSessionOpenInput,
-  type OpensteerSessionOpenOutput,
   type OpensteerScriptBeautifyInput,
   type OpensteerScriptBeautifyOutput,
   type OpensteerScriptDeobfuscateInput,
@@ -185,7 +187,7 @@ import {
   type OpensteerPolicy,
   type TimeoutExecutionContext,
 } from "../policy/index.js";
-import { createFilesystemOpensteerRoot, type FilesystemOpensteerRoot } from "../root.js";
+import { createFilesystemOpensteerWorkspace, type FilesystemOpensteerWorkspace } from "../root.js";
 import {
   buildPathSelectorHint,
   createDomRuntime,
@@ -200,10 +202,7 @@ import {
   type ComputerUseRuntime,
   type ComputerUseRuntimeOutput,
 } from "../runtimes/computer-use/index.js";
-import {
-  defaultOpensteerEngineFactory,
-  normalizeOpensteerBrowserContextOptions,
-} from "../internal/engine-selection.js";
+import { OpensteerBrowserManager } from "../browser-manager.js";
 import type {
   OpensteerInterceptScriptOptions,
   OpensteerRouteOptions,
@@ -291,7 +290,8 @@ type DisposableBrowserCoreEngine = BrowserCoreEngine & {
 const requireForAuthRecipeHook = createRequire(import.meta.url);
 
 export interface OpensteerEngineFactoryOptions {
-  readonly browser?: OpensteerBrowserLaunchOptions;
+  readonly browser?: OpensteerBrowserOptions;
+  readonly launch?: OpensteerBrowserLaunchOptions;
   readonly context?: OpensteerBrowserContextOptions;
 }
 
@@ -300,13 +300,16 @@ export type OpensteerEngineFactory = (
 ) => Promise<BrowserCoreEngine>;
 
 export interface OpensteerRuntimeOptions {
-  readonly name?: string;
+  readonly workspace?: string;
   readonly rootDir?: string;
-  readonly browser?: OpensteerBrowserLaunchOptions;
+  readonly rootPath?: string;
+  readonly browser?: OpensteerBrowserOptions;
+  readonly launch?: OpensteerBrowserLaunchOptions;
   readonly context?: OpensteerBrowserContextOptions;
   readonly engine?: BrowserCoreEngine;
   readonly engineFactory?: OpensteerEngineFactory;
   readonly policy?: OpensteerPolicy;
+  readonly cleanupRootOnClose?: boolean;
 }
 
 interface OpensteerTraceArtifacts {
@@ -440,17 +443,20 @@ interface ScriptTransformSource {
   readonly scope?: ArtifactManifest["scope"];
 }
 
-export class OpensteerSessionRuntime {
-  readonly name: string;
+export class OpensteerRuntime {
+  readonly workspace: string;
   readonly rootPath: string;
 
-  private readonly configuredBrowser: OpensteerBrowserLaunchOptions | undefined;
+  private readonly publicWorkspace: string | undefined;
+  private readonly configuredBrowser: OpensteerBrowserOptions | undefined;
+  private readonly configuredLaunch: OpensteerBrowserLaunchOptions | undefined;
   private readonly configuredContext: OpensteerBrowserContextOptions | undefined;
   private readonly injectedEngine: BrowserCoreEngine | undefined;
   private readonly engineFactory: OpensteerEngineFactory;
   private readonly policy: OpensteerPolicy;
+  private readonly cleanupRootOnClose: boolean;
 
-  private root: FilesystemOpensteerRoot | undefined;
+  private root: FilesystemOpensteerWorkspace | undefined;
   private engine: DisposableBrowserCoreEngine | undefined;
   private dom: DomRuntime | undefined;
   private computer: ComputerUseRuntime | undefined;
@@ -468,24 +474,52 @@ export class OpensteerSessionRuntime {
   private ownsEngine = false;
 
   constructor(options: OpensteerRuntimeOptions = {}) {
-    this.name = normalizeNamespace(options.name);
-    this.rootPath = path.resolve(options.rootDir ?? process.cwd(), ".opensteer");
+    this.publicWorkspace =
+      options.workspace?.trim() === undefined || options.workspace?.trim().length === 0
+        ? undefined
+        : options.workspace.trim();
+    this.workspace = normalizeNamespace(options.workspace);
+    this.rootPath =
+      options.rootPath ??
+      (this.publicWorkspace === undefined
+        ? path.resolve(options.rootDir ?? process.cwd(), ".opensteer", "temporary", randomUUID())
+        : path.resolve(
+            options.rootDir ?? process.cwd(),
+            ".opensteer",
+            "workspaces",
+            encodeURIComponent(this.publicWorkspace),
+          ));
     this.configuredBrowser = options.browser;
+    this.configuredLaunch = options.launch;
     this.configuredContext = options.context;
     this.injectedEngine = options.engine;
-    this.engineFactory = options.engineFactory ?? defaultOpensteerEngineFactory;
+    this.engineFactory =
+      options.engineFactory ??
+      ((factoryOptions) => {
+        const browser = factoryOptions.browser ?? this.configuredBrowser;
+        const launch = factoryOptions.launch ?? this.configuredLaunch;
+        const context = factoryOptions.context ?? this.configuredContext;
+        return new OpensteerBrowserManager({
+          rootPath: this.rootPath,
+          ...(this.publicWorkspace === undefined ? {} : { workspace: this.publicWorkspace }),
+          ...(browser === undefined ? {} : { browser }),
+          ...(launch === undefined ? {} : { launch }),
+          ...(context === undefined ? {} : { context }),
+        }).createEngine();
+      });
     this.policy = options.policy ?? defaultPolicy();
+    this.cleanupRootOnClose = options.cleanupRootOnClose ?? this.publicWorkspace === undefined;
   }
 
   async open(
-    input: OpensteerSessionOpenInput = {},
+    input: OpensteerOpenInput = {},
     options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerSessionOpenOutput> {
+  ): Promise<OpensteerOpenOutput> {
     assertValidSemanticOperationInput("session.open", input);
 
-    if (input.name !== undefined && normalizeNamespace(input.name) !== this.name) {
+    if (input.workspace !== undefined && normalizeNamespace(input.workspace) !== this.workspace) {
       throw new Error(
-        `session.open requested namespace "${input.name}" but runtime is bound to "${this.name}"`,
+        `session.open requested workspace "${input.workspace}" but runtime is bound to "${this.workspace}"`,
       );
     }
 
@@ -505,6 +539,7 @@ export class OpensteerSessionRuntime {
     const root = await this.ensureRoot();
     const engine = await this.ensureEngine({
       ...(input.browser === undefined ? {} : { browser: input.browser }),
+      ...(input.launch === undefined ? {} : { launch: input.launch }),
       ...(input.context === undefined ? {} : { context: input.context }),
     });
     const run = await root.traces.createRun();
@@ -1255,7 +1290,7 @@ export class OpensteerSessionRuntime {
                 {
                   details: {
                     description: input.description,
-                    namespace: this.name,
+                    workspace: this.workspace,
                     kind: "extraction-descriptor",
                   },
                 },
@@ -4942,6 +4977,9 @@ export class OpensteerSessionRuntime {
       await this.resetRuntimeState({
         disposeEngine: true,
       });
+      if (this.cleanupRootOnClose) {
+        await rm(this.rootPath, { recursive: true, force: true }).catch(() => undefined);
+      }
     }
 
     if (closeError !== undefined) {
@@ -4951,6 +4989,22 @@ export class OpensteerSessionRuntime {
     return {
       closed: true,
     };
+  }
+
+  async disconnect(): Promise<void> {
+    try {
+      await this.flushBackgroundNetworkPersistence();
+      if (this.sessionRef !== undefined && this.pageRef !== undefined) {
+        await this.saveNetwork({ tag: "auto" }).catch(() => undefined);
+      }
+    } finally {
+      await this.resetRuntimeState({
+        disposeEngine: true,
+      });
+      if (this.cleanupRootOnClose) {
+        await rm(this.rootPath, { recursive: true, force: true }).catch(() => undefined);
+      }
+    }
   }
 
   isOpen(): boolean {
@@ -5411,7 +5465,7 @@ export class OpensteerSessionRuntime {
   }
 
   private async materializeCapturedScript(
-    root: FilesystemOpensteerRoot,
+    root: FilesystemOpensteerWorkspace,
     pageRef: PageRef,
     data: ScriptSourceArtifactData,
     persist: boolean,
@@ -5517,10 +5571,13 @@ export class OpensteerSessionRuntime {
 
   private resolveCurrentStateSource(): OpensteerStateSourceKind {
     const browser = this.configuredBrowser;
-    if (browser === undefined || browser.kind === undefined || browser.kind === "managed") {
-      return "managed";
+    if (browser === undefined || browser === "temporary") {
+      return "temporary";
     }
-    return browser.kind;
+    if (browser === "persistent") {
+      return "persistent";
+    }
+    return "attach";
   }
 
   private async resolveReverseCaseById(caseId: string): Promise<ReverseCaseRecord> {
@@ -6502,7 +6559,7 @@ export class OpensteerSessionRuntime {
     const recordId = `record:${randomUUID()}`;
     const requestId = createNetworkRequestId(`${transportLabel}-${randomUUID()}`);
     const syntheticSessionRef =
-      binding?.sessionRef ?? createSessionRef(`${transportLabel}-${this.name}`);
+      binding?.sessionRef ?? createSessionRef(`${transportLabel}-${this.workspace}`);
     const record: NetworkQueryRecord = {
       recordId,
       source: "saved",
@@ -7706,9 +7763,11 @@ export class OpensteerSessionRuntime {
     };
   }
 
-  private async ensureRoot(): Promise<FilesystemOpensteerRoot> {
-    this.root ??= await createFilesystemOpensteerRoot({
+  private async ensureRoot(): Promise<FilesystemOpensteerWorkspace> {
+    this.root ??= await createFilesystemOpensteerWorkspace({
       rootPath: this.rootPath,
+      ...(this.publicWorkspace === undefined ? {} : { workspace: this.publicWorkspace }),
+      scope: this.publicWorkspace === undefined ? "temporary" : "workspace",
     });
     return this.root;
   }
@@ -7727,11 +7786,11 @@ export class OpensteerSessionRuntime {
     }
 
     const browser = overrides.browser ?? this.configuredBrowser;
-    const context = normalizeOpensteerBrowserContextOptions(
-      overrides.context ?? this.configuredContext,
-    );
+    const launch = overrides.launch ?? this.configuredLaunch;
+    const context = overrides.context ?? this.configuredContext;
     const factoryOptions: OpensteerEngineFactoryOptions = {
       ...(browser === undefined ? {} : { browser }),
+      ...(launch === undefined ? {} : { launch }),
       ...(context === undefined ? {} : { context }),
     };
     this.engine = (await this.engineFactory(factoryOptions)) as DisposableBrowserCoreEngine;
@@ -7745,7 +7804,7 @@ export class OpensteerSessionRuntime {
     this.dom = createDomRuntime({
       engine,
       root,
-      namespace: this.name,
+      namespace: this.workspace,
       policy: this.policy,
     });
     this.computer = createComputerUseRuntime({
@@ -7755,7 +7814,7 @@ export class OpensteerSessionRuntime {
     });
     this.extractionDescriptors = createOpensteerExtractionDescriptorStore({
       root,
-      namespace: this.name,
+      namespace: this.workspace,
     });
   }
 
@@ -7769,7 +7828,7 @@ export class OpensteerSessionRuntime {
     return this.pageRef;
   }
 
-  private requireRoot(): FilesystemOpensteerRoot {
+  private requireRoot(): FilesystemOpensteerWorkspace {
     if (!this.root) {
       throw new Error("Opensteer root is not initialized");
     }
@@ -7845,7 +7904,7 @@ export class OpensteerSessionRuntime {
     }
   }
 
-  private async readSessionState(): Promise<OpensteerSessionOpenOutput> {
+  private async readSessionState(): Promise<OpensteerOpenOutput> {
     const pageRef = await this.ensurePageRef();
     const pageInfo = await this.requireEngine().getPageInfo({ pageRef });
     const sessionRef = this.sessionRef;

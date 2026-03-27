@@ -1,9 +1,3 @@
-import type {
-  OpensteerAttachLiveBrowserLaunchOptions,
-  OpensteerManagedBrowserLaunchOptions,
-  OpensteerSnapshotAuthenticatedBrowserLaunchOptions,
-  OpensteerSnapshotSessionBrowserLaunchOptions,
-} from "@opensteer/protocol";
 import type { BrowserBrandId } from "./browser-brands.js";
 import type { StealthProfile } from "./stealth-profiles.js";
 
@@ -149,14 +143,3 @@ export interface LaunchMetadataRecord {
   readonly profileDirectory?: string;
   readonly userDataDir: string;
 }
-
-export type ResolvedLocalBrowserLaunch =
-  | ResolvedManagedBrowserLaunch
-  | ResolvedSnapshotBrowserLaunch
-  | ResolvedAttachLiveBrowserLaunch;
-
-export type LocalBrowserLaunchInput =
-  | OpensteerManagedBrowserLaunchOptions
-  | OpensteerSnapshotSessionBrowserLaunchOptions
-  | OpensteerSnapshotAuthenticatedBrowserLaunchOptions
-  | OpensteerAttachLiveBrowserLaunchOptions;

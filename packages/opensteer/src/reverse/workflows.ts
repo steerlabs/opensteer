@@ -273,14 +273,14 @@ export function deriveReversePackageUnresolvedRequirements(input: {
     });
   }
 
-  if (input.template?.requiresLiveState === true && input.stateSource !== "attach-live") {
+  if (input.template?.requiresLiveState === true && input.stateSource !== "attach") {
     requirements.push({
       id: `requirement:state:${input.candidate.id}`,
       kind: "state",
       status: "recommended",
       label: "Live browser state may still be required",
       description:
-        "Template expects live state. Consider using attach-live or patching the package to reacquire the state.",
+        "Template expects live state. Consider using attach mode or patching the package to reacquire the state.",
       blocking: false,
       recordId: input.candidate.recordId,
     });

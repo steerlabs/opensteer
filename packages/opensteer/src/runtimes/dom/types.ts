@@ -158,6 +158,7 @@ export interface DomWriteDescriptorInput {
 }
 
 export interface DomReadDescriptorInput {
+  readonly method: string;
   readonly description: string;
 }
 

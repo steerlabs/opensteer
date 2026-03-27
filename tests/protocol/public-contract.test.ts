@@ -608,6 +608,51 @@ describe("semantic protocol descriptors", () => {
       }),
     ).not.toThrow();
   });
+
+  test("uses workspace-centric session.open input and rejects v1 browser modes", () => {
+    expect(() =>
+      assertValidSemanticOperationInput("session.open", {
+        workspace: "github-sync",
+        browser: "persistent",
+        launch: {
+          headless: true,
+        },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      assertValidSemanticOperationInput("session.open", {
+        browser: {
+          mode: "attach",
+          endpoint: "http://127.0.0.1:9222",
+          freshTab: true,
+        },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      assertValidSemanticOperationInput("session.open", {
+        name: "legacy-session",
+      }),
+    ).toThrow(/invalid session\.open input/i);
+
+    expect(() =>
+      assertValidSemanticOperationInput("session.open", {
+        browser: {
+          kind: "snapshot-authenticated",
+        },
+      }),
+    ).toThrow(/invalid session\.open input/i);
+
+    const openInputSchema = opensteerSemanticOperationSpecificationMap["session.open"]?.inputSchema;
+    expect(openInputSchema?.properties).toHaveProperty("workspace");
+    expect(openInputSchema?.properties).toHaveProperty("browser");
+    expect(openInputSchema?.properties).toHaveProperty("launch");
+    expect(openInputSchema?.properties).not.toHaveProperty("name");
+    expect(opensteerMcpTools.find((tool) => tool.operation === "session.open")?.name).toBe(
+      "opensteer_session_open",
+    );
+  });
 });
 
 describe("protocol trace and artifact schemas", () => {

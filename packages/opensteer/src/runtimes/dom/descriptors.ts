@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import type { DescriptorRecord, DescriptorRegistryStore } from "../../registry.js";
-import type { FilesystemOpensteerRoot } from "../../root.js";
+import type { FilesystemOpensteerWorkspace } from "../../root.js";
 import { canonicalJsonString, toCanonicalJsonValue } from "../../json.js";
 import { sanitizeReplayElementPath } from "./path.js";
 import type {
@@ -17,7 +17,7 @@ interface DomDescriptorStore {
 }
 
 export function createDomDescriptorStore(options: {
-  readonly root?: FilesystemOpensteerRoot;
+  readonly root?: FilesystemOpensteerWorkspace;
   readonly namespace?: string;
 }): DomDescriptorStore {
   const namespace = normalizeNamespace(options.namespace);
@@ -27,8 +27,8 @@ export function createDomDescriptorStore(options: {
   return new MemoryDomDescriptorStore(namespace);
 }
 
-function descriptionKey(namespace: string, description: string): string {
-  return `dom:${namespace}:${sha256Hex(description.trim())}`;
+function descriptionKey(namespace: string, method: string, description: string): string {
+  return `dom:${namespace}:${method}:${sha256Hex(description.trim())}`;
 }
 
 function normalizeNamespace(namespace: string | undefined): string {
@@ -96,7 +96,7 @@ class FilesystemDomDescriptorStore implements DomDescriptorStore {
 
   async read(input: DomReadDescriptorInput): Promise<DomDescriptorRecord | undefined> {
     const record = await this.registry.resolve({
-      key: descriptionKey(this.namespace, input.description),
+      key: descriptionKey(this.namespace, input.method, input.description),
     });
     if (!record) {
       return undefined;
@@ -106,7 +106,7 @@ class FilesystemDomDescriptorStore implements DomDescriptorStore {
 
   async write(input: DomWriteDescriptorInput): Promise<DomDescriptorRecord> {
     const payload = buildPayload(input);
-    const key = descriptionKey(this.namespace, input.description);
+    const key = descriptionKey(this.namespace, input.method, input.description);
     const version = sha256Hex(canonicalJsonString(payload));
     const existing = await this.registry.resolve({ key, version });
     if (existing) {
@@ -147,12 +147,12 @@ class MemoryDomDescriptorStore implements DomDescriptorStore {
   constructor(private readonly namespace: string) {}
 
   async read(input: DomReadDescriptorInput): Promise<DomDescriptorRecord | undefined> {
-    return this.latestByKey.get(descriptionKey(this.namespace, input.description));
+    return this.latestByKey.get(descriptionKey(this.namespace, input.method, input.description));
   }
 
   async write(input: DomWriteDescriptorInput): Promise<DomDescriptorRecord> {
     const payload = buildPayload(input);
-    const key = descriptionKey(this.namespace, input.description);
+    const key = descriptionKey(this.namespace, input.method, input.description);
     const version = sha256Hex(canonicalJsonString(payload));
     const existing = this.recordsByKey.get(key)?.get(version);
     if (existing) {

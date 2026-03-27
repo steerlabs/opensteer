@@ -1,2 +1,5 @@
 packages:
-  - "packages/*"
+  - "packages/browser-core"
+  - "packages/engine-playwright"
+  - "packages/opensteer"
+  - "packages/protocol"
