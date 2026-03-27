@@ -941,17 +941,11 @@ class DefaultDomRuntime implements DomRuntime {
     node: DomSnapshotNode,
     attribute: string | undefined,
   ): Promise<string | null> {
-    if (node.nodeRef === undefined) {
-      return null;
-    }
-
-    const locator = createNodeLocator(snapshot.documentRef, snapshot.documentEpoch, node.nodeRef);
     let raw: string | null;
     if (attribute === undefined) {
-      raw = await this.engine.readText(locator);
+      raw = node.textContent ?? node.nodeValue ?? null;
     } else {
-      const attributes = await this.engine.readAttributes(locator);
-      raw = attributes.find((entry) => entry.name === attribute)?.value ?? null;
+      raw = node.attributes.find((entry) => entry.name === attribute)?.value ?? null;
     }
 
     const normalized = normalizeExtractedValue(raw, attribute);
