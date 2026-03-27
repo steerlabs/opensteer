@@ -2,48 +2,57 @@
 
 Use the SDK when the workflow should become reusable TypeScript code in the repository.
 
-## Session Ownership
-
-Owned session:
+## Construction
 
 ```ts
 import { Opensteer } from "opensteer";
 
 const opensteer = new Opensteer({
-  name: "demo",
+  workspace: "github-sync",
   rootDir: process.cwd(),
-  browser: { headless: true },
+  browser: "persistent",
+  launch: {
+    headless: false,
+  },
+  context: {
+    locale: "en-US",
+  },
 });
 ```
 
-Attached session:
-
-```ts
-import { Opensteer } from "opensteer";
-
-const opensteer = Opensteer.attach({
-  name: "demo",
-  rootDir: process.cwd(),
-});
-```
-
-Use `close()` for owned sessions. Use `disconnect()` for attached sessions.
+- `workspace` creates a repo-local persistent root under `.opensteer/workspaces/<id>`.
+- Omitting `workspace` creates a temporary root.
+- `browser` can be `persistent`, `temporary`, or `{ mode: "attach", endpoint?, freshTab? }`.
+- `opensteer.browser.status()`, `clone()`, `reset()`, and `delete()` manage the persistent workspace browser.
+- `close()` shuts the current session and, for persistent workspaces, closes the live browser process.
+- `disconnect()` detaches local runtime handles and leaves the workspace/browser files intact.
+- The current public SDK does not expose `Opensteer.attach()`, cloud session helpers, or the ABP engine.
 
 ## DOM Automation And Extraction
 
 ```ts
+import { Opensteer } from "opensteer";
+
+const opensteer = new Opensteer({
+  workspace: "demo",
+  rootDir: process.cwd(),
+});
+
 await opensteer.open("https://example.com");
-await opensteer.goto("https://example.com/products");
 await opensteer.snapshot("action");
-await opensteer.click({ selector: "button.primary", description: "primary button" });
+
+await opensteer.click({
+  selector: "button.primary",
+  description: "primary button",
+});
+
 await opensteer.input({
   selector: "input[type=search]",
   description: "search input",
   text: "laptop",
   pressEnter: true,
 });
-await opensteer.hover({ selector: "[data-filter=price]", description: "price filter" });
-await opensteer.scroll({ selector: "body", direction: "down", amount: 600 });
+
 const data = await opensteer.extract({
   description: "page summary",
   schema: {
@@ -51,15 +60,19 @@ const data = await opensteer.extract({
     url: { source: "current_url" },
   },
 });
+
+const replayed = await opensteer.extract({
+  description: "page summary",
+});
 ```
 
 DOM rules:
 
 - Use `snapshot("action")` before counter-based interactions.
 - Use `snapshot("extraction")` to inspect the page structure and design the output object.
-- Treat snapshots as planning artifacts. `extract()` reads the live DOM/runtime and replays persisted extraction descriptors.
-- For DOM actions, bare `description` replays a stored descriptor. On the first run, pair it with `selector` or `element` to persist that description.
-- `description` names the persisted extraction descriptor. `schema` defines the actual output shape.
+- Treat snapshots as planning artifacts. `extract()` reads current page state and replays persisted extraction descriptors from deterministic, snapshot-backed payloads.
+- `selector + description` or `element + description` persists a DOM action descriptor. Bare `description` replays it later.
+- `description + schema` writes or updates a persisted extraction descriptor. Bare `description` replays it later.
 - Keep DOM data collection in `extract()`, not `evaluate()` or raw page DOM parsing, when the result can be expressed as structured fields.
 
 Supported extraction field shapes in the current public SDK:
@@ -72,12 +85,35 @@ Supported extraction field shapes in the current public SDK:
 
 For arrays, include one or more representative objects in the schema. Add multiple examples when repeated rows have structural variants.
 
-Do not use `prompt` or semantic placeholder values such as `"string"` in the current public SDK. The current extractor expects explicit schema objects, arrays, and field descriptors.
+Do not use `prompt` or semantic placeholder values such as `"string"` in the current public SDK. The extractor expects explicit schema objects, arrays, and field descriptors.
 
-## Reverse Engineering And Replay
+## Browser Admin
 
 ```ts
-await opensteer.open("https://example.com/app");
+const status = await opensteer.browser.status();
+
+if (!status.live) {
+  await opensteer.browser.clone({
+    sourceUserDataDir: "/Users/me/Library/Application Support/Google/Chrome",
+    sourceProfileDirectory: "Default",
+  });
+}
+```
+
+- `browser.clone()` is only for persistent workspace browsers.
+- Clone before `open()` when the workflow needs local authenticated browser state.
+- `browser.reset()` clears cloned browser state but keeps the workspace.
+- `browser.delete()` removes workspace browser files.
+
+## Request Capture, Plans, And Recipes
+
+```ts
+await opensteer.open();
+await opensteer.goto({
+  url: "https://example.com/app",
+  networkTag: "page-load",
+});
+
 await opensteer.click({
   selector: "button.load-products",
   description: "load products",
@@ -90,7 +126,7 @@ const records = await opensteer.queryNetwork({
   limit: 20,
 });
 
-await opensteer.rawRequest({
+const response = await opensteer.rawRequest({
   transport: "context-http",
   url: "https://example.com/api/products",
   method: "POST",
@@ -105,20 +141,22 @@ await opensteer.inferRequestPlan({
   version: "v1",
 });
 
+await opensteer.saveNetwork({
+  tag: "products-load",
+});
+
 await opensteer.request("products.search", {
   query: { q: "laptop" },
 });
 ```
 
-Reverse rules:
+Rules:
 
-- `networkTag` is supported on `goto()`, `click()`, `scroll()`, `input()`, and `hover()`. It is NOT supported on `open()`. MUST use `open(url)` then `goto({ url, networkTag })` to tag initial navigation.
-- MUST query by tag first, then query all traffic to catch async requests that fire after page load.
-- MUST probe discovered APIs with `rawRequest()` — `direct-http` first, then `context-http`. Do NOT just log API URLs without testing them.
-- If you find an auth endpoint, acquire a token and re-probe data endpoints with it.
-- MUST call `saveNetwork()` to persist captures before the session closes.
-- `inferRequestPlan()` throws if the key+version already exists. Catch the error or bump the version.
-- Use recipes when replay needs deterministic auth refresh or setup work.
+- `networkTag` is supported on `goto()`, `click()`, `scroll()`, `input()`, and `hover()`. It is NOT supported on `open()`. Use `open()` then `goto({ url, networkTag })` to tag initial navigation.
+- Query by tag first, then query all traffic to catch async requests that fire after page load.
+- Probe discovered APIs with `rawRequest()` using `direct-http` first, then `context-http`.
+- Save important captures with `saveNetwork()` before the session closes.
+- Use recipes when replay needs deterministic setup work. Use auth recipes when the setup is specifically auth-related. They live in separate registries.
 
 `rawRequest` input shapes:
 
@@ -141,8 +179,8 @@ Common errors and fixes:
 
 Session and page control:
 
-- `Opensteer.attach({ name?, rootDir? })`
-- `open(url | { url?, name?, browser?, context? })`
+- `new Opensteer({ workspace?, rootDir?, browser?, launch?, context? })`
+- `open(url | { url?, workspace?, browser?, launch?, context? })`
 - `goto(url | { url, networkTag? })`
 - `listPages()`
 - `newPage({ url?, openerPageRef? })`
@@ -181,29 +219,28 @@ Request capture and replay:
 - `getRecipe({ key, version? })`
 - `listRecipes({ key? })`
 - `runRecipe({ key, version?, input? })`
+- `writeAuthRecipe({ key, version, payload, tags?, provenance? })`
+- `getAuthRecipe({ key, version? })`
+- `listAuthRecipes({ key? })`
+- `runAuthRecipe({ key, version?, input? })`
 
-Instrumentation:
-
-- `captureScripts({ pageRef?, includeInline?, includeExternal?, includeDynamic?, includeWorkers?, urlFilter?, persist? })`
-- `addInitScript({ script, args?, pageRef? })`
-- `route({ urlPattern, resourceTypes?, times?, handler })`
-- `interceptScript({ urlPattern, handler, times? })`
-
-Browser and profile helpers:
+Browser helpers:
 
 - `discoverLocalCdpBrowsers({ timeoutMs? })`
 - `inspectCdpEndpoint({ endpoint, headers?, timeoutMs? })`
-- `inspectLocalBrowserProfile({ userDataDir? })`
-- `unlockLocalBrowserProfile({ userDataDir })`
+- `browser.status()`
+- `browser.clone({ sourceUserDataDir, sourceProfileDirectory? })`
+- `browser.reset()`
+- `browser.delete()`
 
 Lifecycle:
 
-- `disconnect()`
 - `close()`
+- `disconnect()`
 
 ## Rules
 
-- Wrap owned sessions in `try/finally` and call `close()`.
+- Wrap long-running browser ownership in `try/finally` and call `close()`.
 - Use `networkTag` on actions that trigger requests you may inspect later.
 - Use `description` when the interaction should be replayable across sessions.
 - Use `description` plus `schema` when an extraction should be replayable across sessions.

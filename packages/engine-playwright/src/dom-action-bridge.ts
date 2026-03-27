@@ -28,10 +28,7 @@ interface PlaywrightDomActionBridgeContext {
   flushPendingPageTasks(sessionRef: SessionRef): Promise<void>;
   flushDomUpdateTask(controller: PageController): Promise<void>;
   locateBackendNode(document: DocumentState, backendNodeId: number): NodeLocator;
-  requireFrame(frameRef: FrameRef): {
-    readonly controller: PageController;
-    readonly frame: Frame;
-  };
+  requireFrame(frameRef: FrameRef): Frame;
   requireLiveNode(locator: NodeLocator): {
     readonly controller: PageController;
     readonly document: DocumentState;
@@ -356,6 +353,12 @@ const LIVE_REPLAY_PATH_DEFERRED_MATCH_ATTR_KEYS = [
   "aria-labelledby",
   "aria-describedby",
 ] as const;
+
+const LIVE_REPLAY_PATH_POLICY = {
+  matchAttributePriority: LIVE_REPLAY_PATH_MATCH_ATTRIBUTE_PRIORITY,
+  stablePrimaryAttrKeys: LIVE_REPLAY_PATH_STABLE_PRIMARY_ATTR_KEYS,
+  deferredMatchAttrKeys: LIVE_REPLAY_PATH_DEFERRED_MATCH_ATTR_KEYS,
+};
 
 const BUILD_LIVE_REPLAY_PATH_DECLARATION = String.raw`function(policy, source) {
   const buildReplayPath = (0, eval)(source);
@@ -1172,14 +1175,6 @@ function normalizePointerHitAssessment(
   };
 }
 
-function createLiveReplayPathPolicy() {
-  return {
-    matchAttributePriority: [...LIVE_REPLAY_PATH_MATCH_ATTRIBUTE_PRIORITY],
-    stablePrimaryAttrKeys: [...LIVE_REPLAY_PATH_STABLE_PRIMARY_ATTR_KEYS],
-    deferredMatchAttrKeys: [...LIVE_REPLAY_PATH_DEFERRED_MATCH_ATTR_KEYS],
-  };
-}
-
 async function buildLiveReplayPathForLocator(
   controller: PageController,
   document: DocumentState,
@@ -1188,7 +1183,7 @@ async function buildLiveReplayPathForLocator(
 ): Promise<ReplayElementPath> {
   const raw = await callNodeFunction(controller, document, locator, backendNodeId, {
     functionDeclaration: BUILD_LIVE_REPLAY_PATH_DECLARATION,
-    arguments: [{ value: createLiveReplayPathPolicy() }, { value: BUILD_LIVE_REPLAY_PATH_SOURCE }],
+    arguments: [{ value: LIVE_REPLAY_PATH_POLICY }, { value: BUILD_LIVE_REPLAY_PATH_SOURCE }],
     returnByValue: true,
   });
   return requireReplayPath(raw, locator);
@@ -1200,7 +1195,7 @@ async function prefixIframeReplayPath(
   localPath: ReplayElementPath,
 ): Promise<ReplayElementPath> {
   let currentPath = localPath;
-  let currentFrame = context.requireFrame(frameRef).frame;
+  let currentFrame = context.requireFrame(frameRef);
 
   while (currentFrame.parentFrame() !== null) {
     const frameElement = await currentFrame.frameElement();
@@ -1232,7 +1227,7 @@ async function buildLiveReplayPathForHandle(handle: ElementHandle): Promise<Repl
       return buildReplayPath(element, input.policy);
     },
     {
-      policy: createLiveReplayPathPolicy(),
+      policy: LIVE_REPLAY_PATH_POLICY,
       source: BUILD_LIVE_REPLAY_PATH_SOURCE,
     },
   );
