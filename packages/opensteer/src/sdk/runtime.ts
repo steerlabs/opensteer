@@ -1311,12 +1311,12 @@ export class OpensteerRuntime {
               }),
             );
           } else {
-            descriptor = await timeout.runStep(() =>
+            const storedDescriptor = await timeout.runStep(() =>
               descriptors.read({
                 description: input.description,
               }),
             );
-            if (!descriptor) {
+            if (!storedDescriptor) {
               throw new OpensteerProtocolError(
                 "not-found",
                 `no stored extraction descriptor found for "${input.description}"`,
@@ -1329,13 +1329,12 @@ export class OpensteerRuntime {
                 },
               );
             }
-            const replayDescriptor = descriptor;
-
+            descriptor = storedDescriptor;
             data = await timeout.runStep(() =>
               replayOpensteerExtractionPayload({
                 pageRef,
                 dom: this.requireDom(),
-                payload: replayDescriptor.payload.root,
+                payload: storedDescriptor.payload.root,
               }),
             );
           }

@@ -574,7 +574,7 @@ async function stripRedundantPositionClausesFromPersistedExtraction(options: {
   readonly dom: DomRuntime;
   readonly payload: PersistedOpensteerExtractionPayload;
 }): Promise<PersistedOpensteerExtractionPayload> {
-  const cloned = structuredClone(options.payload) as PersistedOpensteerExtractionPayload;
+  const cloned = structuredClone(options.payload);
   await processPersistedExtractionObjectNode(options.pageRef, options.dom, cloned);
   return cloned;
 }
@@ -629,9 +629,9 @@ async function pruneVariantFieldPositions(
 
   const plans = refs
     .map((ref, index) => {
-      const withPositions = buildCandidateSelectors(ref.path);
+      const withPositions = buildArrayFieldPathCandidates(ref.path);
       const strippedPath = stripPositionClauses(ref.path);
-      const withoutPositions = buildCandidateSelectors(strippedPath);
+      const withoutPositions = buildArrayFieldPathCandidates(strippedPath);
       if (sameSelectorList(withPositions, withoutPositions)) {
         return null;
       }
@@ -724,10 +724,6 @@ function stripPositionClauses(path: ElementPath): ElementPath {
       match: node.match.filter((clause) => clause.kind !== "position"),
     })),
   });
-}
-
-function buildCandidateSelectors(path: ElementPath): readonly string[] {
-  return buildArrayFieldPathCandidates(path);
 }
 
 function sameSelectorList(left: readonly string[], right: readonly string[]): boolean {

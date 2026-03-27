@@ -2890,18 +2890,12 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     return frame;
   }
 
-  private requireLiveFrame(frameRef: FrameRef): {
-    readonly controller: PageController;
-    readonly frame: Frame;
-  } {
+  private requireLiveFrame(frameRef: FrameRef): Frame {
     const state = this.requireFrame(frameRef);
     const controller = this.requirePage(state.pageRef);
     for (const frame of controller.page.frames()) {
       if (controller.frameBindings.get(frame) === frameRef) {
-        return {
-          controller,
-          frame,
-        };
+        return frame;
       }
     }
 
