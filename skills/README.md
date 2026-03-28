@@ -10,7 +10,7 @@ opensteer skills install
 
 ## Available Skills
 
-- `opensteer`: browser automation, structured extraction, and browser-backed API reverse engineering with the Opensteer CLI and SDK
+- `opensteer`: workspace-backed browser automation, structured DOM extraction, and browser-backed request replay with the Opensteer CLI and SDK
 
 ## Repository Layout
 

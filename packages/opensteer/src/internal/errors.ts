@@ -6,7 +6,6 @@ import {
   type OpensteerError,
 } from "@opensteer/protocol";
 import { OpensteerAttachAmbiguousError } from "../local-browser/cdp-discovery.js";
-import { OpensteerLocalProfileUnavailableError } from "../local-browser/profile-inspection.js";
 
 export function normalizeThrownOpensteerError(
   error: unknown,
@@ -20,15 +19,6 @@ export function normalizeThrownOpensteerError(
     return createOpensteerError(error.code, error.message, {
       retriable: error.retriable,
       ...(error.details === undefined ? {} : { details: error.details }),
-    });
-  }
-
-  if (error instanceof OpensteerLocalProfileUnavailableError) {
-    return createOpensteerError("profile-unavailable", error.message, {
-      details: {
-        inspection: error.inspection,
-        name: error.name,
-      },
     });
   }
 

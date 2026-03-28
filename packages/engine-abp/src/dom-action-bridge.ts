@@ -15,6 +15,7 @@ import type {
   DomActionBridge,
   DomActionTargetInspection,
   DomPointerHitAssessment,
+  ReplayElementPath,
 } from "@opensteer/protocol";
 
 import type { DocumentState, PageController, SessionState } from "./types.js";
@@ -255,8 +256,264 @@ const CLASSIFY_POINTER_HIT_DECLARATION =
   };
 }`;
 
+const LIVE_REPLAY_PATH_MATCH_ATTRIBUTE_PRIORITY = {
+  stablePrimaryExact: 150,
+  stablePrimaryPrefix: 130,
+  attrExact: 100,
+  attrPrefix: 80,
+  tagOnly: 10,
+} as const;
+
+const LIVE_REPLAY_PATH_STABLE_PRIMARY_ATTR_KEYS = [
+  "data-testid",
+  "data-test",
+  "data-qa",
+  "data-cy",
+  "name",
+  "role",
+  "type",
+  "aria-label",
+  "title",
+  "placeholder",
+] as const;
+
+const LIVE_REPLAY_PATH_DEFERRED_MATCH_ATTR_KEYS = [
+  "href",
+  "src",
+  "srcset",
+  "imagesrcset",
+  "ping",
+  "value",
+  "for",
+  "aria-controls",
+  "aria-labelledby",
+  "aria-describedby",
+] as const;
+
+const LIVE_REPLAY_PATH_POLICY = {
+  matchAttributePriority: LIVE_REPLAY_PATH_MATCH_ATTRIBUTE_PRIORITY,
+  stablePrimaryAttrKeys: LIVE_REPLAY_PATH_STABLE_PRIMARY_ATTR_KEYS,
+  deferredMatchAttrKeys: LIVE_REPLAY_PATH_DEFERRED_MATCH_ATTR_KEYS,
+};
+
+const BUILD_LIVE_REPLAY_PATH_DECLARATION = String.raw`function(policy, source) {
+  const buildReplayPath = (0, eval)(source);
+  return buildReplayPath(this, policy);
+}`;
+
+const BUILD_LIVE_REPLAY_PATH_SOURCE = String.raw`(target, policy) => {
+  const MAX_ATTRIBUTE_VALUE_LENGTH = 300;
+
+  function isValidAttrKey(key) {
+    const trimmed = String(key || "").trim();
+    if (!trimmed) return false;
+    if (/[\s"'<>/]/.test(trimmed)) return false;
+    return /^[A-Za-z_][A-Za-z0-9_:\-.]*$/.test(trimmed);
+  }
+
+  function isMediaTag(tag) {
+    return new Set(["img", "video", "source", "iframe"]).has(String(tag || "").toLowerCase());
+  }
+
+  function shouldKeepAttr(tag, key, value) {
+    const normalized = String(key || "").trim().toLowerCase();
+    if (!normalized || !String(value || "").trim()) return false;
+    if (!isValidAttrKey(key)) return false;
+    if (normalized === "c") return false;
+    if (/^on[a-z]/i.test(normalized)) return false;
+    if (new Set(["style", "nonce", "integrity", "crossorigin", "referrerpolicy", "autocomplete"]).has(normalized)) {
+      return false;
+    }
+    if (normalized.startsWith("data-os-") || normalized.startsWith("data-opensteer-")) {
+      return false;
+    }
+    if (
+      isMediaTag(tag) &&
+      new Set([
+        "data-src",
+        "data-lazy-src",
+        "data-original",
+        "data-lazy",
+        "data-image",
+        "data-url",
+        "data-srcset",
+        "data-lazy-srcset",
+        "data-was-processed",
+      ]).has(normalized)
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  function collectAttrs(node) {
+    const tag = node.tagName.toLowerCase();
+    const attrs = {};
+    for (const attr of Array.from(node.attributes)) {
+      if (!shouldKeepAttr(tag, attr.name, attr.value)) {
+        continue;
+      }
+      const value = String(attr.value || "");
+      if (!value.trim()) continue;
+      if (value.length > MAX_ATTRIBUTE_VALUE_LENGTH) continue;
+      attrs[attr.name] = value;
+    }
+    return attrs;
+  }
+
+  function getSiblings(node, root) {
+    if (node.parentElement) return Array.from(node.parentElement.children);
+    return Array.from(root.children || []);
+  }
+
+  function cssEscape(value) {
+    return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  }
+
+  function stablePrimaryKey(attrs) {
+    for (const key of policy.stablePrimaryAttrKeys || []) {
+      if (attrs[key]) return key;
+    }
+    return null;
+  }
+
+  function countMatches(root, tag, attrKey, attrValue, mode) {
+    const scope = root instanceof ShadowRoot ? root : root.ownerDocument;
+    if (!scope || typeof scope.querySelectorAll !== "function") return 0;
+    const escapedTag = String(tag || "*");
+    let selector = escapedTag;
+    if (attrKey && attrValue) {
+      const operator = mode === "prefix" ? "^=" : "=";
+      selector += "[" + attrKey + operator + "\\"" + cssEscape(attrValue) + "\\"]";
+    }
+    try {
+      return scope.querySelectorAll(selector).length;
+    } catch {
+      return 0;
+    }
+  }
+
+  function chooseAttribute(tag, attrs, root) {
+    const stableKey = stablePrimaryKey(attrs);
+    if (stableKey) {
+      const exactCount = countMatches(root, tag, stableKey, attrs[stableKey], "exact");
+      if (exactCount === 1) {
+        return {
+          key: stableKey,
+          value: attrs[stableKey],
+          match: "exact",
+        };
+      }
+    }
+
+    const entries = Object.entries(attrs)
+      .filter(([key]) => !policy.deferredMatchAttrKeys.includes(key))
+      .concat(Object.entries(attrs).filter(([key]) => policy.deferredMatchAttrKeys.includes(key)));
+
+    for (const [key, value] of entries) {
+      const exactCount = countMatches(root, tag, key, value, "exact");
+      if (exactCount === 1) {
+        return { key, value, match: "exact" };
+      }
+      if (value.length >= 4) {
+        const prefixLength = Math.min(Math.max(4, Math.floor(value.length / 2)), value.length);
+        const prefix = value.slice(0, prefixLength);
+        const prefixCount = countMatches(root, tag, key, prefix, "prefix");
+        if (prefixCount === 1) {
+          return { key, value: prefix, match: "prefix" };
+        }
+      }
+    }
+
+    return null;
+  }
+
+  function buildChain(node) {
+    const nodes = [];
+    let current = node;
+    while (current && current instanceof Element) {
+      nodes.unshift(current);
+      current = current.parentElement;
+    }
+    return nodes;
+  }
+
+  function finalizePath(chain, root) {
+    const result = [];
+    for (const node of chain) {
+      const tag = node.tagName.toLowerCase();
+      const attrs = collectAttrs(node);
+      const attribute = chooseAttribute(tag, attrs, root);
+      if (attribute) {
+        result.push({
+          tag,
+          attributes: [
+            {
+              name: attribute.key,
+              value: attribute.value,
+              match: attribute.match,
+            },
+          ],
+        });
+        continue;
+      }
+
+      const siblings = getSiblings(node, root).filter(
+        (candidate) => candidate.tagName.toLowerCase() === tag,
+      );
+      const index = siblings.indexOf(node);
+      result.push({
+        tag,
+        index: siblings.length <= 1 || index < 0 ? undefined : index,
+      });
+    }
+
+    return {
+      nodes: result,
+    };
+  }
+
+  if (!(target instanceof Element)) return null;
+
+  const context = [];
+  let currentRoot = target.getRootNode() instanceof ShadowRoot ? target.getRootNode() : document;
+  const targetChain = buildChain(target);
+  const finalizedTarget = finalizePath(targetChain, currentRoot);
+  if (!finalizedTarget) return null;
+
+  while (currentRoot instanceof ShadowRoot) {
+    const host = currentRoot.host;
+    const hostRoot = host.getRootNode() instanceof ShadowRoot ? host.getRootNode() : document;
+    const hostChain = buildChain(host);
+    const finalizedHost = finalizePath(hostChain, hostRoot);
+    if (!finalizedHost) return null;
+    context.unshift({
+      kind: "shadow",
+      host: finalizedHost.nodes,
+    });
+    currentRoot = hostRoot;
+  }
+
+  return {
+    resolution: "deterministic",
+    context,
+    nodes: finalizedTarget.nodes,
+  };
+}`;
+
 export function createAbpDomActionBridge(context: AbpDomActionBridgeContext): DomActionBridge {
   return {
+    async buildReplayPath(locator) {
+      const { controller, document, backendNodeId } = await prepareLiveNodeContext(context, locator);
+      return withTemporaryExecutionResume(context, controller, async () => {
+        const raw = await callNodeValueFunction(controller, document, locator, backendNodeId, {
+          functionDeclaration: BUILD_LIVE_REPLAY_PATH_DECLARATION,
+          arguments: [{ value: LIVE_REPLAY_PATH_POLICY }, { value: BUILD_LIVE_REPLAY_PATH_SOURCE }],
+        });
+        return requireReplayPath(raw, locator);
+      });
+    },
+
     async inspectActionTarget(locator) {
       const { controller, document, backendNodeId } = await prepareLiveNodeContext(
         context,
@@ -574,6 +831,39 @@ async function callNodeFunctionWithNodeArgument(
   }
 }
 
+async function callNodeValueFunction(
+  controller: PageController,
+  document: DocumentState,
+  locator: NodeLocator,
+  backendNodeId: number,
+  input: {
+    readonly functionDeclaration: string;
+    readonly arguments?: readonly { readonly value: unknown }[];
+  },
+): Promise<unknown> {
+  let objectId: string | undefined;
+
+  try {
+    objectId = await resolveNodeObjectId(controller, document, locator, backendNodeId);
+    const evaluated = await controller.cdp.send<{
+      readonly result?: {
+        readonly value?: unknown;
+      };
+    }>("Runtime.callFunctionOn", {
+      objectId,
+      functionDeclaration: input.functionDeclaration,
+      ...(input.arguments === undefined ? {} : { arguments: [...input.arguments] }),
+      returnByValue: true,
+      awaitPromise: true,
+    });
+    return evaluated.result?.value;
+  } catch (error) {
+    rethrowNodeLookupError(document, locator, error);
+  } finally {
+    await releaseObject(controller, objectId);
+  }
+}
+
 async function resolveNodeObjectId(
   controller: PageController,
   document: DocumentState,
@@ -706,6 +996,21 @@ function normalizePointerHitAssessment(
     ...(candidate.ambiguous === undefined ? {} : { ambiguous: candidate.ambiguous }),
     canonicalTarget,
   };
+}
+
+function requireReplayPath(value: unknown, locator: NodeLocator): ReplayElementPath {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    (value as { readonly resolution?: unknown }).resolution !== "deterministic"
+  ) {
+    throw new Error(
+      `live DOM replay path builder returned an invalid result for ${locator.nodeRef}`,
+    );
+  }
+
+  return value as ReplayElementPath;
 }
 
 function rethrowNodeLookupError(

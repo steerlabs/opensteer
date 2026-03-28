@@ -27,4 +27,5 @@ export * from "./reverse.js";
 export * from "./interaction.js";
 export * from "./semantic.js";
 export * from "./computer-use-bridge.js";
+export * from "./dom-path-types.js";
 export * from "./dom-action-bridge.js";

@@ -1,7 +1,18 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import { afterEach, describe, expect, test, vi } from "vitest";
 
+import {
+  createSuccessEnvelope,
+  type OpensteerRequestEnvelope,
+} from "@opensteer/protocol";
 import { OpensteerCloudClient } from "../../packages/opensteer/src/cloud/client.js";
-import { CloudSessionProxy } from "../../packages/opensteer/src/cloud/session-proxy.js";
+import {
+  CloudSessionProxy,
+  readPersistedCloudSessionRecord,
+} from "../../packages/opensteer/src/cloud/session-proxy.js";
 import { resolveOpensteerRuntimeConfig } from "../../packages/opensteer/src/sdk/runtime-resolution.js";
 
 const capturePortableBrowserProfileSnapshotMock = vi.fn();
@@ -62,7 +73,7 @@ describe("cloud browser-profile integration", () => {
       ok: true,
       json: async () => ({
         sessionId: "session_123",
-        baseUrl: "https://api.opensteer.dev/v1/sessions/session_123",
+        baseUrl: "https://cloud.example/runtime/session_123",
       }),
     }));
     vi.stubGlobal("fetch", fetchMock);
@@ -94,73 +105,6 @@ describe("cloud browser-profile integration", () => {
             reuseIfActive: true,
           },
         }),
-      }),
-    );
-  });
-
-  test("OpensteerCloudClient stages browser profile imports", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          importId: "bpi_123",
-          profileId: "bp_123",
-          status: "awaiting_upload",
-          uploadUrl: "https://storage.example/upload",
-          uploadMethod: "PUT",
-          uploadFormat: "portable-cookies-v1+json.gz",
-          maxUploadBytes: 1024,
-        }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          importId: "bpi_123",
-          profileId: "bp_123",
-          status: "ready",
-          uploadFormat: "portable-cookies-v1+json.gz",
-          storageId: "storage_123",
-          revision: 3,
-          createdAt: 1,
-          updatedAt: 2,
-        }),
-      });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const client = new OpensteerCloudClient({
-      apiKey: "osk_test",
-      baseUrl: "https://api.opensteer.dev",
-    });
-
-    const created = await client.createBrowserProfileImport({
-      profileId: "bp_123",
-    });
-    const uploaded = await client.uploadBrowserProfileImportPayload({
-      uploadUrl: created.uploadUrl,
-      payload: Buffer.from("test"),
-    });
-
-    expect(uploaded).toMatchObject({
-      importId: "bpi_123",
-      status: "ready",
-      revision: 3,
-    });
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      1,
-      "https://api.opensteer.dev/v1/browser-profiles/imports",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({
-          profileId: "bp_123",
-        }),
-      }),
-    );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      "https://storage.example/upload",
-      expect.objectContaining({
-        method: "PUT",
       }),
     );
   });
@@ -263,99 +207,155 @@ describe("cloud browser-profile integration", () => {
         }),
       }),
     );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      "https://storage.example/upload",
-      expect.objectContaining({
-        method: "PUT",
-        body: expect.any(Uint8Array),
-      }),
-    );
   });
 
-  test("OpensteerCloudClient waits for closing sessions to reach closed", async () => {
-    vi.useFakeTimers();
+  test("CloudSessionProxy reuses persisted workspace cloud sessions", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "opensteer-cloud-session-"));
+    const workspace = "cloud-workspace";
+    const workspaceRoot = path.join(rootDir, ".opensteer", "workspaces", workspace);
+    const semanticBaseUrl = "https://cloud.example/runtime/session_123";
+    let createSessionCalls = 0;
+    let getSessionCalls = 0;
+    let closeSessionCalls = 0;
+    let semanticOpenCalls = 0;
 
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          sessionId: "session_123",
-          status: "closing",
-        }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          sessionId: "session_123",
-          status: "closing",
-        }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          sessionId: "session_123",
-          status: "closed",
-        }),
-      });
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "https://api.opensteer.dev/v1/sessions" && init?.method === "POST") {
+        createSessionCalls += 1;
+        return {
+          ok: true,
+          json: async () => ({
+            sessionId: "session_123",
+            baseUrl: semanticBaseUrl,
+            status: "active",
+          }),
+        };
+      }
+
+      if (url === "https://api.opensteer.dev/v1/sessions/session_123" && init?.method === "GET") {
+        getSessionCalls += 1;
+        return {
+          ok: true,
+          json: async () => ({
+            status: "active",
+          }),
+        };
+      }
+
+      if (
+        url === "https://api.opensteer.dev/v1/sessions/session_123" &&
+        init?.method === "DELETE"
+      ) {
+        closeSessionCalls += 1;
+        return {
+          ok: true,
+          json: async () => ({
+            status: "closed",
+          }),
+        };
+      }
+
+      if (
+        url === `${semanticBaseUrl}/api/v2/semantic/operations/session/open` &&
+        init?.method === "POST"
+      ) {
+        semanticOpenCalls += 1;
+        const request = JSON.parse(String(init.body)) as OpensteerRequestEnvelope<unknown>;
+        return {
+          ok: true,
+          json: async () =>
+            createSuccessEnvelope(request, {
+              sessionRef: "session:cloud",
+              pageRef: "page:cloud",
+              url: "https://example.com",
+              title: "Cloud Workspace",
+            }),
+        };
+      }
+
+      throw new Error(`Unexpected fetch ${init?.method ?? "GET"} ${url}`);
+    });
     vi.stubGlobal("fetch", fetchMock);
 
-    const client = new OpensteerCloudClient({
-      apiKey: "osk_test",
-      baseUrl: "https://api.opensteer.dev",
-    });
+    try {
+      const client = new OpensteerCloudClient({
+        apiKey: "osk_test",
+        baseUrl: "https://api.opensteer.dev",
+      });
 
-    const closePromise = client.closeSession("session_123");
+      const first = new CloudSessionProxy(client, {
+        rootDir,
+        workspace,
+      });
+      const openedFirst = await first.open({
+        url: "https://example.com",
+        browser: "persistent",
+        launch: {
+          headless: true,
+        },
+      });
 
-    await Promise.resolve();
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      1,
-      "https://api.opensteer.dev/v1/sessions/session_123",
-      expect.objectContaining({
-        method: "DELETE",
-      }),
-    );
+      expect(openedFirst).toMatchObject({
+        url: "https://example.com",
+        title: "Cloud Workspace",
+      });
+      expect(createSessionCalls).toBe(1);
+      expect(semanticOpenCalls).toBe(1);
 
-    await vi.advanceTimersByTimeAsync(250);
-    await expect(closePromise).resolves.toBeUndefined();
+      await first.disconnect();
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      "https://api.opensteer.dev/v1/sessions/session_123",
-      expect.objectContaining({
-        method: "GET",
-      }),
-    );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
-      "https://api.opensteer.dev/v1/sessions/session_123",
-      expect.objectContaining({
-        method: "GET",
-      }),
-    );
+      expect(await readPersistedCloudSessionRecord(workspaceRoot)).toMatchObject({
+        mode: "cloud",
+        sessionId: "session_123",
+        baseUrl: semanticBaseUrl,
+      });
+
+      const second = new CloudSessionProxy(client, {
+        rootDir,
+        workspace,
+      });
+      await second.open({
+        url: "https://example.com",
+      });
+
+      expect(createSessionCalls).toBe(1);
+      expect(getSessionCalls).toBe(1);
+      expect(semanticOpenCalls).toBe(2);
+
+      await second.close();
+
+      expect(closeSessionCalls).toBe(1);
+      expect(await readPersistedCloudSessionRecord(workspaceRoot)).toBeUndefined();
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
   });
 
-  test("CloudSessionProxy close only uses the cloud control-plane close path", async () => {
-    const invoke = vi.fn();
-    const cloud = new OpensteerCloudClient({
-      apiKey: "osk_test",
-      baseUrl: "https://api.opensteer.dev",
+  test("CloudSessionProxy rejects unsupported cloud operations before creating a session", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const proxy = new CloudSessionProxy(
+      new OpensteerCloudClient({
+        apiKey: "osk_test",
+        baseUrl: "https://api.opensteer.dev",
+      }),
+    );
+
+    await expect(proxy.listPages()).rejects.toMatchObject({
+      name: "OpensteerProtocolError",
+      code: "unsupported-operation",
+      message: "Cloud mode does not currently support page.list.",
     });
-    const closeSession = vi.spyOn(cloud, "closeSession").mockResolvedValue(undefined);
-    const proxy = new CloudSessionProxy(cloud);
-
-    Reflect.set(proxy, "sessionId", "session_123");
-    Reflect.set(proxy, "client", {
-      invoke,
+    await expect(
+      proxy.discoverReverse({
+        objective: "reverse cloud",
+      }),
+    ).rejects.toMatchObject({
+      name: "OpensteerProtocolError",
+      code: "unsupported-operation",
+      message: "Cloud mode does not currently support reverse.discover.",
     });
-
-    await expect(proxy.close()).resolves.toEqual({ closed: true });
-
-    expect(closeSession).toHaveBeenCalledWith("session_123");
-    expect(invoke).not.toHaveBeenCalled();
-    expect(Reflect.get(proxy, "sessionId")).toBeUndefined();
-    expect(Reflect.get(proxy, "client")).toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
