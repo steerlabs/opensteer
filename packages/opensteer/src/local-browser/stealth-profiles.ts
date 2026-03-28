@@ -23,14 +23,14 @@ const PROFILE_PRESETS = [
   {
     platform: "macos" as const,
     browserBrand: "chrome" as const,
-    browserVersion: "133.0.6943.99",
+    browserVersion: "136.0.7103.93",
     userAgent:
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.6943.99 Safari/537.36",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
     viewport: { width: 1440, height: 900 },
     screenResolution: { width: 1512, height: 982 },
     devicePixelRatio: 2,
     maxTouchPoints: 0,
-    webglVendor: "Apple Inc.",
+    webglVendor: "Apple",
     webglRenderer: "Apple M2",
     fonts: ["SF Pro Text", "Helvetica Neue", "Arial", "Menlo", "Apple Color Emoji"],
     locale: "en-US",
@@ -39,9 +39,9 @@ const PROFILE_PRESETS = [
   {
     platform: "windows" as const,
     browserBrand: "chrome" as const,
-    browserVersion: "133.0.6943.99",
+    browserVersion: "136.0.7103.93",
     userAgent:
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.6943.99 Safari/537.36",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
     viewport: { width: 1536, height: 864 },
     screenResolution: { width: 1920, height: 1080 },
     devicePixelRatio: 1.25,
@@ -55,9 +55,9 @@ const PROFILE_PRESETS = [
   {
     platform: "windows" as const,
     browserBrand: "edge" as const,
-    browserVersion: "133.0.3065.82",
+    browserVersion: "136.0.3240.50",
     userAgent:
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 Edg/133.0.3065.82",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.3240.50",
     viewport: { width: 1536, height: 864 },
     screenResolution: { width: 1920, height: 1080 },
     devicePixelRatio: 1.25,
@@ -71,9 +71,9 @@ const PROFILE_PRESETS = [
   {
     platform: "linux" as const,
     browserBrand: "chrome" as const,
-    browserVersion: "133.0.6943.99",
+    browserVersion: "136.0.7103.93",
     userAgent:
-      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.6943.99 Safari/537.36",
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
     viewport: { width: 1366, height: 768 },
     screenResolution: { width: 1366, height: 768 },
     devicePixelRatio: 1,

@@ -69,6 +69,11 @@ export interface ConnectedCdpBrowserContext {
   readonly pages: () => readonly ConnectedCdpPage[];
   readonly newPage: () => Promise<ConnectedCdpPage>;
   readonly addInitScript?: (script: { readonly content: string }) => Promise<void>;
+  readonly setExtraHTTPHeaders?: (headers: Readonly<Record<string, string>>) => Promise<void>;
+  readonly on?: (
+    event: "page",
+    listener: (page: ConnectedCdpPage) => void | Promise<void>,
+  ) => unknown;
 }
 
 export interface ConnectedCdpBrowser {

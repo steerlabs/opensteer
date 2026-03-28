@@ -1,11 +1,23 @@
 # Opensteer Skills
 
-First-party Opensteer skills published from this repository for agents that use the upstream [`skills`](https://skills.sh) ecosystem.
+First-party Opensteer skills published from this repository. Install them through the upstream [`skills`](https://skills.sh) CLI into Claude Code, Codex, and other compatible agents.
 
 ## Install
 
 ```bash
 opensteer skills install
+```
+
+Install into Claude Code explicitly:
+
+```bash
+opensteer skills install --agent claude-code
+```
+
+List the packaged skills without installing them:
+
+```bash
+opensteer skills install --list
 ```
 
 ## Available Skills
