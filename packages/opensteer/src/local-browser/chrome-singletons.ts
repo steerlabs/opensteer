@@ -1,5 +1,4 @@
 import { readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 export const CHROME_SINGLETON_ARTIFACTS = [
@@ -38,10 +37,6 @@ export async function clearChromeSingletonEntries(userDataDir: string): Promise<
  * remove that file so Chrome regenerates it from the corrected Preferences.
  */
 export async function sanitizeChromeProfile(userDataDir: string): Promise<void> {
-  if (!existsSync(userDataDir)) {
-    return;
-  }
-
   const entries = await readdir(userDataDir).catch(() => []);
   const profileDirs = entries.filter(
     (entry) => entry === "Default" || /^Profile \d+$/i.test(entry),
@@ -50,15 +45,8 @@ export async function sanitizeChromeProfile(userDataDir: string): Promise<void> 
   await Promise.all(profileDirs.map((dir) => sanitizeProfilePreferences(userDataDir, dir)));
 }
 
-async function sanitizeProfilePreferences(
-  userDataDir: string,
-  profileDir: string,
-): Promise<void> {
+async function sanitizeProfilePreferences(userDataDir: string, profileDir: string): Promise<void> {
   const prefsPath = join(userDataDir, profileDir, "Preferences");
-  if (!existsSync(prefsPath)) {
-    return;
-  }
-
   try {
     const raw = await readFile(prefsPath, "utf8");
     const prefs = JSON.parse(raw) as Record<string, unknown>;

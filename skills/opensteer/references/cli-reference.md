@@ -2,6 +2,14 @@
 
 Use the CLI when you need a fast JSON-first loop against a repo-local workspace browser.
 
+## Sections
+
+- [Quickstart](#quickstart)
+- [Browser Lifecycle And Profile Cloning](#browser-lifecycle-and-profile-cloning)
+- [Browser Modes](#browser-modes)
+- [Advanced Semantic Operations](#advanced-semantic-operations)
+- [Extraction Schema Examples](#extraction-schema-examples)
+
 ## Quickstart
 
 ```bash

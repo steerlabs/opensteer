@@ -2,14 +2,13 @@ import type { StealthProfile } from "./stealth-profiles.js";
 
 /**
  * Generate a per-profile init script that handles fingerprint evasion defenses
- * that cannot be expressed via CDP protocol commands.
+ * for every new document in the context.
  *
- * Navigator properties (userAgent, platform, language), screen dimensions, and
- * devicePixelRatio are intentionally NOT overridden here — they are set at the
- * CDP protocol level by {@link applyCdpStealthOverrides} in stealth.ts, which
- * is invisible to page JavaScript.  This script only covers:
+ * CDP remains the preferred path for the current page because it updates
+ * Chromium's internal state natively. This init script mirrors the same
+ * navigator/screen values onto every new document so popups and later pages
+ * stay consistent before their page-scoped CDP session attaches. It also covers:
  *
- *  - `navigator.webdriver` safety net (defensive backup)
  *  - Canvas fingerprint noise
  *  - WebGL vendor/renderer spoofing
  *  - AudioBuffer fingerprint noise
@@ -17,19 +16,120 @@ import type { StealthProfile } from "./stealth-profiles.js";
  *  - CDP Runtime.enable leak defense
  */
 export function generateStealthInitScript(profile: StealthProfile): string {
-  const encodedProfile = JSON.stringify(profile);
+  const encodedProfile = JSON.stringify({
+    ...profile,
+    platformString: getPlatformString(profile.platform),
+    userAgentData: buildUserAgentData(profile),
+  });
   return `(() => {
   const profile = ${encodedProfile};
+  var define = function(target, key, value) {
+    Object.defineProperty(target, key, {
+      configurable: true,
+      get: typeof value === 'function' ? value : function() { return value; },
+    });
+  };
 
-  // --- navigator.webdriver safety net ---
-  // --disable-blink-features=AutomationControlled handles this at the flag level
-  // and CDP handles it at the protocol level, but some Chrome builds still leak
-  // webdriver=true when --remote-debugging-port is active.
+  // --- navigator / screen mirrors for future pages ---
   if (navigator.webdriver === true) {
     Object.defineProperty(Navigator.prototype, 'webdriver', {
       configurable: true,
       get: function() { return false; },
     });
+  }
+  define(Navigator.prototype, 'platform', profile.platformString);
+  define(Navigator.prototype, 'userAgent', profile.userAgent);
+  define(Navigator.prototype, 'language', profile.locale);
+  define(Navigator.prototype, 'languages', [profile.locale, 'en']);
+  define(Navigator.prototype, 'maxTouchPoints', profile.maxTouchPoints);
+  define(window, 'devicePixelRatio', profile.devicePixelRatio);
+  define(window.screen, 'width', profile.screenResolution.width);
+  define(window.screen, 'height', profile.screenResolution.height);
+  define(window.screen, 'availWidth', profile.screenResolution.width);
+  define(window.screen, 'availHeight', profile.screenResolution.height - 40);
+  define(window.screen, 'colorDepth', 24);
+  define(window.screen, 'pixelDepth', 24);
+  define(Navigator.prototype, 'userAgentData', {
+    brands: profile.userAgentData.brands,
+    mobile: false,
+    platform: profile.userAgentData.platform,
+    toJSON: function() {
+      return {
+        brands: this.brands,
+        mobile: this.mobile,
+        platform: this.platform,
+      };
+    },
+    getHighEntropyValues: async function(hints) {
+      var source = {
+        architecture: profile.userAgentData.architecture,
+        bitness: profile.userAgentData.bitness,
+        brands: profile.userAgentData.brands,
+        fullVersionList: profile.userAgentData.fullVersionList,
+        mobile: false,
+        model: '',
+        platform: profile.userAgentData.platform,
+        platformVersion: profile.userAgentData.platformVersion,
+        uaFullVersion: profile.browserVersion,
+        wow64: false,
+      };
+      var values = {};
+      for (var i = 0; i < hints.length; i++) {
+        var hint = hints[i];
+        if (Object.prototype.hasOwnProperty.call(source, hint)) {
+          values[hint] = source[hint];
+        }
+      }
+      return values;
+    },
+  });
+
+  if (typeof Intl !== 'undefined' && Intl.DateTimeFormat) {
+    var originalResolvedOptions = Intl.DateTimeFormat.prototype.resolvedOptions;
+    Intl.DateTimeFormat.prototype.resolvedOptions = function() {
+      var options = originalResolvedOptions.call(this);
+      options.timeZone = profile.timezoneId;
+      return options;
+    };
+  }
+
+  if (Date.prototype.getTimezoneOffset) {
+    var originalGetTimezoneOffset = Date.prototype.getTimezoneOffset;
+    var calculateTimezoneOffset = function(date) {
+      try {
+        var formatter = new Intl.DateTimeFormat('en-US', {
+          timeZone: profile.timezoneId,
+          hour12: false,
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        });
+        var parts = formatter.formatToParts(date);
+        var values = {};
+        for (var i = 0; i < parts.length; i++) {
+          if (parts[i].type !== 'literal') {
+            values[parts[i].type] = Number(parts[i].value);
+          }
+        }
+        var utcTime = Date.UTC(
+          values.year,
+          values.month - 1,
+          values.day,
+          values.hour,
+          values.minute,
+          values.second,
+        );
+        return Math.round((date.getTime() - utcTime) / 60000);
+      } catch {
+        return originalGetTimezoneOffset.call(date);
+      }
+    };
+    Date.prototype.getTimezoneOffset = function() {
+      return calculateTimezoneOffset(this);
+    };
   }
 
   // --- CDP Runtime.enable leak defense ---
@@ -103,4 +203,39 @@ export function generateStealthInitScript(profile: StealthProfile): string {
     };
   }
 })();`;
+}
+
+function buildUserAgentData(profile: StealthProfile) {
+  const majorVersion = profile.browserVersion.split(".")[0] ?? "136";
+  const platformData = {
+    macos: { platform: "macOS", platformVersion: "14.4.0", architecture: "arm" },
+    windows: { platform: "Windows", platformVersion: "15.0.0", architecture: "x86" },
+    linux: { platform: "Linux", platformVersion: "6.5.0", architecture: "x86" },
+  } as const;
+  const platformInfo = platformData[profile.platform];
+
+  return {
+    architecture: platformInfo.architecture,
+    bitness: "64",
+    brands: [
+      { brand: "Chromium", version: majorVersion },
+      ...(profile.browserBrand === "edge"
+        ? [{ brand: "Microsoft Edge", version: majorVersion }]
+        : [{ brand: "Google Chrome", version: majorVersion }]),
+      { brand: "Not-A.Brand", version: "99" },
+    ],
+    fullVersionList: [
+      { brand: "Chromium", version: profile.browserVersion },
+      ...(profile.browserBrand === "edge"
+        ? [{ brand: "Microsoft Edge", version: profile.browserVersion }]
+        : [{ brand: "Google Chrome", version: profile.browserVersion }]),
+      { brand: "Not-A.Brand", version: "99.0.0.0" },
+    ],
+    platform: platformInfo.platform,
+    platformVersion: platformInfo.platformVersion,
+  };
+}
+
+function getPlatformString(platform: StealthProfile["platform"]): string {
+  return platform === "macos" ? "MacIntel" : platform === "windows" ? "Win32" : "Linux x86_64";
 }
