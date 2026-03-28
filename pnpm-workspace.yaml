@@ -1,2 +1,7 @@
 packages:
-  - "packages/*"
+  - "packages/browser-core"
+  - "packages/cloud-contracts"
+  - "packages/engine-abp"
+  - "packages/engine-playwright"
+  - "packages/opensteer"
+  - "packages/protocol"

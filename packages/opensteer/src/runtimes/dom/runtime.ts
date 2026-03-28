@@ -12,14 +12,15 @@ import {
 import { OpensteerProtocolError } from "@opensteer/protocol";
 
 import { defaultPolicy, type OpensteerPolicy } from "../../policy/index.js";
-import type { FilesystemOpensteerRoot } from "../../root.js";
+import type { FilesystemOpensteerWorkspace } from "../../root.js";
+import type { DomActionBridge } from "./bridge.js";
+import { resolveDomActionBridge } from "./bridge.js";
 import { createDomDescriptorStore } from "./descriptors.js";
 import { DomActionExecutor } from "./executor.js";
 import { normalizeExtractedValue, resolveExtractedValueInContext } from "./extraction.js";
 import { ElementPathError } from "./errors.js";
 import {
   buildArrayFieldCandidates,
-  buildLocalReplayElementPath,
   buildLocalStructuralElementAnchor,
   buildPathSelectorHint,
   createExplicitSelectorScope,
@@ -40,6 +41,7 @@ import {
   hasShadowRoot,
   normalizeToElementNode,
   querySelectorAllInScope,
+  querySelectorAllWithinNode,
   type DomQueryScope,
   type DomSnapshotIndex,
 } from "./selectors.js";
@@ -128,10 +130,11 @@ class DefaultDomRuntime implements DomRuntime {
   private readonly descriptors: ReturnType<typeof createDomDescriptorStore>;
   private readonly policy: OpensteerPolicy;
   private readonly executor: DomActionExecutor;
+  private readonly bridge: DomActionBridge | undefined;
 
   constructor(options: {
     readonly engine: BrowserCoreEngine;
-    readonly root?: FilesystemOpensteerRoot;
+    readonly root?: FilesystemOpensteerWorkspace;
     readonly namespace?: string;
     readonly policy?: OpensteerPolicy;
   }) {
@@ -141,6 +144,7 @@ class DefaultDomRuntime implements DomRuntime {
       ...(options.namespace === undefined ? {} : { namespace: options.namespace }),
     });
     this.policy = options.policy ?? defaultPolicy();
+    this.bridge = resolveDomActionBridge(this.engine);
     this.executor = new DomActionExecutor({
       engine: this.engine,
       policy: this.policy,
@@ -171,22 +175,7 @@ class DefaultDomRuntime implements DomRuntime {
   }
 
   async buildPath(input: DomBuildPathInput): Promise<ReplayElementPath> {
-    return this.withSnapshotSession(async (session) => {
-      const snapshot = await session.getDocument(input.locator.documentRef);
-      if (snapshot.documentEpoch !== input.locator.documentEpoch) {
-        throw new Error(
-          `node locator ${input.locator.nodeRef} is stale for ${input.locator.documentRef}`,
-        );
-      }
-      const index = createSnapshotIndex(snapshot);
-      const node = findNodeByNodeRef(index, input.locator.nodeRef);
-      if (!node) {
-        throw new Error(
-          `node ${input.locator.nodeRef} was not found in ${input.locator.documentRef}`,
-        );
-      }
-      return this.buildPathFromSnapshotNode(session, snapshot, node);
-    });
+    return sanitizeReplayElementPath(await this.requireBridge().buildReplayPath(input.locator));
   }
 
   async resolveTarget(input: DomResolveTargetInput): Promise<ResolvedDomTarget> {
@@ -317,6 +306,60 @@ class DefaultDomRuntime implements DomRuntime {
     });
   }
 
+  async validateArrayFieldPositionStripping(input: {
+    readonly pageRef: PageRef;
+    readonly itemParentPath: ReplayElementPath;
+    readonly fields: readonly {
+      readonly key: string;
+      readonly originalPath: ReplayElementPath;
+      readonly strippedPath: ReplayElementPath;
+    }[];
+  }): Promise<Readonly<Record<string, boolean>>> {
+    return this.withSnapshotSession(async (session) => {
+      const fieldsByKey = new Map(input.fields.map((field) => [field.key, true]));
+      if (!fieldsByKey.size) {
+        return {};
+      }
+
+      const items = await this.queryAllByElementPath(session, input.pageRef, input.itemParentPath);
+      if (!items.length) {
+        return Object.fromEntries([...fieldsByKey.keys()].map((key) => [key, false]));
+      }
+
+      for (const item of items) {
+        const index = createSnapshotIndex(item.snapshot);
+        for (const field of input.fields) {
+          if (!fieldsByKey.get(field.key)) {
+            continue;
+          }
+
+          const original = this.resolveFirstArrayFieldTargetInNode(
+            index,
+            item.node,
+            field.originalPath,
+          );
+          if (!original) {
+            fieldsByKey.set(field.key, false);
+            continue;
+          }
+
+          const strippedUnique = this.resolveUniqueArrayFieldTargetInNode(
+            index,
+            item.node,
+            field.strippedPath,
+          );
+          fieldsByKey.set(field.key, sameSnapshotNode(original, strippedUnique));
+        }
+
+        if ([...fieldsByKey.values()].every((value) => !value)) {
+          break;
+        }
+      }
+
+      return Object.fromEntries(fieldsByKey);
+    });
+  }
+
   private async withSnapshotSession<T>(
     callback: (session: SnapshotSession) => Promise<T>,
   ): Promise<T> {
@@ -332,7 +375,12 @@ class DefaultDomRuntime implements DomRuntime {
     let resolved: ResolvedDomTarget;
     switch (input.target.kind) {
       case "descriptor":
-        resolved = await this.resolveDescriptorTarget(session, input.pageRef, input.target);
+        resolved = await this.resolveDescriptorTarget(
+          session,
+          input.pageRef,
+          input.method,
+          input.target,
+        );
         break;
       case "live":
         resolved = await this.resolveLiveTarget(session, input.pageRef, input.target);
@@ -373,9 +421,13 @@ class DefaultDomRuntime implements DomRuntime {
   private async resolveDescriptorTarget(
     session: SnapshotSession,
     pageRef: PageRef,
+    method: string,
     target: Extract<DomTargetRef, { readonly kind: "descriptor" }>,
   ): Promise<ResolvedDomTarget> {
-    const descriptor = await this.descriptors.read({ description: target.description });
+    const descriptor = await this.descriptors.read({
+      method,
+      description: target.description,
+    });
     if (!descriptor) {
       throw new OpensteerProtocolError(
         "not-found",
@@ -415,7 +467,7 @@ class DefaultDomRuntime implements DomRuntime {
     if (resolvedByLocator) {
       const { snapshot, node } = resolvedByLocator;
       const anchor = await this.buildAnchorFromSnapshotNode(session, snapshot, node);
-      const replayPath = await this.tryBuildPathFromSnapshotNode(session, snapshot, node);
+      const replayPath = await this.tryBuildPathFromNode(snapshot, node);
       return this.createResolvedTarget("live", snapshot, node, anchor, {
         ...(target.description === undefined ? {} : { description: target.description }),
         ...(replayPath === undefined ? {} : { replayPath }),
@@ -445,14 +497,14 @@ class DefaultDomRuntime implements DomRuntime {
     const anchor = await this.buildAnchorFromSnapshotNode(session, snapshot, node);
     const writeDescriptor =
       descriptorWriter ?? ((input: DomWriteDescriptorInput) => this.descriptors.write(input));
-    const replayPath = await this.tryBuildPathFromSnapshotNode(session, snapshot, node);
+    const replayPath = await this.tryBuildPathFromNode(snapshot, node);
     const descriptor =
       target.description === undefined
         ? undefined
         : await writeDescriptor({
             method,
             description: target.description,
-            path: replayPath ?? (await this.buildPathFromSnapshotNode(session, snapshot, node)),
+            path: replayPath ?? (await this.buildPathForNode(snapshot, node)),
             sourceUrl: snapshot.url,
           });
     return this.createResolvedTarget("selector", snapshot, node, anchor, {
@@ -613,11 +665,7 @@ class DefaultDomRuntime implements DomRuntime {
       );
     }
 
-    const replayPath = await this.tryBuildPathFromSnapshotNode(
-      session,
-      context.snapshot,
-      target.node,
-    );
+    const replayPath = await this.tryBuildPathFromNode(context.snapshot, target.node);
     return this.createResolvedTarget(source, context.snapshot, target.node, anchor, {
       ...(description === undefined ? {} : { description }),
       ...(replayPath === undefined ? {} : { replayPath }),
@@ -750,28 +798,6 @@ class DefaultDomRuntime implements DomRuntime {
     return this.prefixIframeContext(session, snapshot, localAnchor);
   }
 
-  private async buildPathFromSnapshotNode(
-    session: SnapshotSession,
-    snapshot: DomSnapshot,
-    node: DomSnapshotNode,
-  ): Promise<ReplayElementPath> {
-    const index = createSnapshotIndex(snapshot);
-    const localPath = buildLocalReplayElementPath(index, node);
-    return this.prefixIframeContext(session, snapshot, localPath);
-  }
-
-  private async tryBuildPathFromSnapshotNode(
-    session: SnapshotSession,
-    snapshot: DomSnapshot,
-    node: DomSnapshotNode,
-  ): Promise<ReplayElementPath | undefined> {
-    try {
-      return await this.buildPathFromSnapshotNode(session, snapshot, node);
-    } catch {
-      return undefined;
-    }
-  }
-
   private async prefixIframeContext(
     session: SnapshotSession,
     snapshot: DomSnapshot,
@@ -780,17 +806,10 @@ class DefaultDomRuntime implements DomRuntime {
   private async prefixIframeContext(
     session: SnapshotSession,
     snapshot: DomSnapshot,
-    localPath: ReplayElementPath,
-  ): Promise<ReplayElementPath>;
-  private async prefixIframeContext(
-    session: SnapshotSession,
-    snapshot: DomSnapshot,
-    localPath: ReplayElementPath | StructuralElementAnchor,
-  ): Promise<ReplayElementPath | StructuralElementAnchor> {
+    localPath: StructuralElementAnchor,
+  ): Promise<StructuralElementAnchor> {
     if (snapshot.parentDocumentRef === undefined) {
-      return localPath.resolution === "structural"
-        ? sanitizeStructuralElementAnchor(localPath)
-        : sanitizeReplayElementPath(localPath);
+      return sanitizeStructuralElementAnchor(localPath);
     }
 
     const parentSnapshot = await session.getDocument(snapshot.parentDocumentRef);
@@ -802,22 +821,9 @@ class DefaultDomRuntime implements DomRuntime {
       );
     }
 
-    if (localPath.resolution === "structural") {
-      const hostPath = await this.buildAnchorFromSnapshotNode(session, parentSnapshot, iframeHost);
-      return sanitizeStructuralElementAnchor({
-        resolution: "structural",
-        context: [
-          ...hostPath.context,
-          { kind: "iframe", host: hostPath.nodes },
-          ...localPath.context,
-        ],
-        nodes: localPath.nodes,
-      });
-    }
-
-    const hostPath = await this.buildPathFromSnapshotNode(session, parentSnapshot, iframeHost);
-    return sanitizeReplayElementPath({
-      resolution: "deterministic",
+    const hostPath = await this.buildAnchorFromSnapshotNode(session, parentSnapshot, iframeHost);
+    return sanitizeStructuralElementAnchor({
+      resolution: "structural",
       context: [
         ...hostPath.context,
         { kind: "iframe", host: hostPath.nodes },
@@ -909,6 +915,39 @@ class DefaultDomRuntime implements DomRuntime {
     };
   }
 
+  private requireBridge(): DomActionBridge {
+    if (!this.bridge) {
+      throw new Error("DOM live bridge is unavailable for this engine");
+    }
+    return this.bridge;
+  }
+
+  private async buildPathForNode(
+    snapshot: DomSnapshot,
+    node: DomSnapshotNode,
+  ): Promise<ReplayElementPath> {
+    if (node.nodeRef === undefined) {
+      throw new Error(
+        `snapshot node ${String(node.snapshotNodeId)} does not expose a live node reference`,
+      );
+    }
+
+    return this.buildPath({
+      locator: createNodeLocator(snapshot.documentRef, snapshot.documentEpoch, node.nodeRef),
+    });
+  }
+
+  private async tryBuildPathFromNode(
+    snapshot: DomSnapshot,
+    node: DomSnapshotNode,
+  ): Promise<ReplayElementPath | undefined> {
+    try {
+      return await this.buildPathForNode(snapshot, node);
+    } catch {
+      return undefined;
+    }
+  }
+
   private async resolveArrayFieldTarget(
     item: SnapshotTarget,
     field: DomArrayFieldSelector,
@@ -917,14 +956,43 @@ class DefaultDomRuntime implements DomRuntime {
       return item.node;
     }
 
-    const normalizedPath = sanitizeElementPath(field.path);
+    const index = createSnapshotIndex(item.snapshot);
+    return this.resolveFirstArrayFieldTargetInNode(index, item.node, field.path);
+  }
+
+  private resolveFirstArrayFieldTargetInNode(
+    index: DomSnapshotIndex,
+    rootNode: DomSnapshotNode,
+    path: ReplayElementPath,
+  ): DomSnapshotNode | null {
+    const normalizedPath = sanitizeElementPath(path);
     const selectors = buildArrayFieldCandidates(normalizedPath);
     if (!selectors.length) {
-      return item.node;
+      return rootNode;
     }
 
-    const index = createSnapshotIndex(item.snapshot);
-    return resolveFirstWithinNodeBySelectors(index, item.node, selectors);
+    return resolveFirstWithinNodeBySelectors(index, rootNode, selectors);
+  }
+
+  private resolveUniqueArrayFieldTargetInNode(
+    index: DomSnapshotIndex,
+    rootNode: DomSnapshotNode,
+    path: ReplayElementPath,
+  ): DomSnapshotNode | null {
+    const normalizedPath = sanitizeElementPath(path);
+    const selectors = buildArrayFieldCandidates(normalizedPath);
+    if (!selectors.length) {
+      return rootNode;
+    }
+
+    for (const selector of selectors) {
+      const matches = querySelectorAllWithinNode(index, rootNode, selector, createPathScope());
+      if (matches.length === 1) {
+        return matches[0]!;
+      }
+    }
+
+    return null;
   }
 
   private async readExtractedValue(
@@ -932,17 +1000,11 @@ class DefaultDomRuntime implements DomRuntime {
     node: DomSnapshotNode,
     attribute: string | undefined,
   ): Promise<string | null> {
-    if (node.nodeRef === undefined) {
-      return null;
-    }
-
-    const locator = createNodeLocator(snapshot.documentRef, snapshot.documentEpoch, node.nodeRef);
     let raw: string | null;
     if (attribute === undefined) {
-      raw = await this.engine.readText(locator);
+      raw = node.textContent ?? node.nodeValue ?? null;
     } else {
-      const attributes = await this.engine.readAttributes(locator);
-      raw = attributes.find((entry) => entry.name === attribute)?.value ?? null;
+      raw = node.attributes.find((entry) => entry.name === attribute)?.value ?? null;
     }
 
     const normalized = normalizeExtractedValue(raw, attribute);
@@ -964,11 +1026,24 @@ class DefaultDomRuntime implements DomRuntime {
 
 export function createDomRuntime(options: {
   readonly engine: BrowserCoreEngine;
-  readonly root?: FilesystemOpensteerRoot;
+  readonly root?: FilesystemOpensteerWorkspace;
   readonly namespace?: string;
   readonly policy?: OpensteerPolicy;
 }): DomRuntime {
   return new DefaultDomRuntime(options);
+}
+
+function sameSnapshotNode(
+  left: DomSnapshotNode | null | undefined,
+  right: DomSnapshotNode | null | undefined,
+): boolean {
+  if (!left || !right) {
+    return false;
+  }
+  if (left.nodeRef !== undefined && right.nodeRef !== undefined) {
+    return left.nodeRef === right.nodeRef;
+  }
+  return left.snapshotNodeId === right.snapshotNodeId;
 }
 
 function toLiveElementNode(

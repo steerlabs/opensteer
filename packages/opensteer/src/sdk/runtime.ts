@@ -1,5 +1,6 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
@@ -35,6 +36,7 @@ import {
   type OpensteerGetRecipeInput,
   type OpensteerAuthRecipeRetryOverrides,
   type OpensteerAuthRecipeStep,
+  type OpensteerBrowserOptions,
   type OpensteerBrowserContextOptions,
   type OpensteerBrowserLaunchOptions,
   type OpensteerComputerExecuteInput,
@@ -92,11 +94,11 @@ import {
   type OpensteerRunAuthRecipeInput,
   type OpensteerRunAuthRecipeOutput,
   type NetworkQueryRecord,
+  type OpensteerOpenInput,
+  type OpensteerOpenOutput,
   type OpensteerResolvedTarget,
   type OpensteerSemanticOperationName,
   type OpensteerSessionCloseOutput,
-  type OpensteerSessionOpenInput,
-  type OpensteerSessionOpenOutput,
   type OpensteerScriptBeautifyInput,
   type OpensteerScriptBeautifyOutput,
   type OpensteerScriptDeobfuscateInput,
@@ -185,7 +187,7 @@ import {
   type OpensteerPolicy,
   type TimeoutExecutionContext,
 } from "../policy/index.js";
-import { createFilesystemOpensteerRoot, type FilesystemOpensteerRoot } from "../root.js";
+import { createFilesystemOpensteerWorkspace, type FilesystemOpensteerWorkspace } from "../root.js";
 import {
   buildPathSelectorHint,
   createDomRuntime,
@@ -200,10 +202,8 @@ import {
   type ComputerUseRuntime,
   type ComputerUseRuntimeOutput,
 } from "../runtimes/computer-use/index.js";
-import {
-  defaultOpensteerEngineFactory,
-  normalizeOpensteerBrowserContextOptions,
-} from "../internal/engine-selection.js";
+import { OpensteerBrowserManager } from "../browser-manager.js";
+import { type OpensteerEngineName } from "../internal/engine-selection.js";
 import type {
   OpensteerInterceptScriptOptions,
   OpensteerRouteOptions,
@@ -260,11 +260,14 @@ import {
 } from "../reverse/workflows.js";
 import {
   assertValidOpensteerExtractionSchemaRoot,
-  compileOpensteerExtractionPayload,
+  compileOpensteerExtractionFieldTargets,
+  compilePersistedOpensteerExtractionPayloadFromFieldTargets,
   createOpensteerExtractionDescriptorStore,
+  extractOpensteerExtractionFieldTargets,
   replayOpensteerExtractionPayload,
   type OpensteerExtractionDescriptorRecord,
 } from "./extraction.js";
+import { inflateDataPathObject } from "./extraction-data-path.js";
 import { compileOpensteerSnapshot, type CompiledOpensteerSnapshot } from "./snapshot/compiler.js";
 import type {
   AuthRecipeRecord,
@@ -288,10 +291,22 @@ type DisposableBrowserCoreEngine = BrowserCoreEngine & {
   dispose?: () => Promise<void>;
 };
 
+type RecipeRegistryKind = "recipe" | "auth-recipe";
+
+interface ResolvedRecipeBinding {
+  readonly source: RecipeRegistryKind;
+  readonly recipe: {
+    readonly key: string;
+    readonly version?: string;
+  };
+  readonly cachePolicy?: "none" | "untilFailure";
+}
+
 const requireForAuthRecipeHook = createRequire(import.meta.url);
 
 export interface OpensteerEngineFactoryOptions {
-  readonly browser?: OpensteerBrowserLaunchOptions;
+  readonly browser?: OpensteerBrowserOptions;
+  readonly launch?: OpensteerBrowserLaunchOptions;
   readonly context?: OpensteerBrowserContextOptions;
 }
 
@@ -300,13 +315,17 @@ export type OpensteerEngineFactory = (
 ) => Promise<BrowserCoreEngine>;
 
 export interface OpensteerRuntimeOptions {
-  readonly name?: string;
+  readonly workspace?: string;
   readonly rootDir?: string;
-  readonly browser?: OpensteerBrowserLaunchOptions;
+  readonly rootPath?: string;
+  readonly engineName?: OpensteerEngineName;
+  readonly browser?: OpensteerBrowserOptions;
+  readonly launch?: OpensteerBrowserLaunchOptions;
   readonly context?: OpensteerBrowserContextOptions;
   readonly engine?: BrowserCoreEngine;
   readonly engineFactory?: OpensteerEngineFactory;
   readonly policy?: OpensteerPolicy;
+  readonly cleanupRootOnClose?: boolean;
 }
 
 interface OpensteerTraceArtifacts {
@@ -440,17 +459,21 @@ interface ScriptTransformSource {
   readonly scope?: ArtifactManifest["scope"];
 }
 
-export class OpensteerSessionRuntime {
-  readonly name: string;
+export class OpensteerRuntime {
+  readonly workspace: string;
   readonly rootPath: string;
 
-  private readonly configuredBrowser: OpensteerBrowserLaunchOptions | undefined;
+  private readonly publicWorkspace: string | undefined;
+  private readonly configuredBrowser: OpensteerBrowserOptions | undefined;
+  private readonly configuredLaunch: OpensteerBrowserLaunchOptions | undefined;
   private readonly configuredContext: OpensteerBrowserContextOptions | undefined;
+  private readonly configuredEngineName: OpensteerEngineName | undefined;
   private readonly injectedEngine: BrowserCoreEngine | undefined;
   private readonly engineFactory: OpensteerEngineFactory;
   private readonly policy: OpensteerPolicy;
+  private readonly cleanupRootOnClose: boolean;
 
-  private root: FilesystemOpensteerRoot | undefined;
+  private root: FilesystemOpensteerWorkspace | undefined;
   private engine: DisposableBrowserCoreEngine | undefined;
   private dom: DomRuntime | undefined;
   private computer: ComputerUseRuntime | undefined;
@@ -468,24 +491,56 @@ export class OpensteerSessionRuntime {
   private ownsEngine = false;
 
   constructor(options: OpensteerRuntimeOptions = {}) {
-    this.name = normalizeNamespace(options.name);
-    this.rootPath = path.resolve(options.rootDir ?? process.cwd(), ".opensteer");
+    this.publicWorkspace =
+      options.workspace?.trim() === undefined || options.workspace?.trim().length === 0
+        ? undefined
+        : options.workspace.trim();
+    this.workspace = normalizeNamespace(options.workspace);
+    this.rootPath =
+      options.rootPath ??
+      (this.publicWorkspace === undefined
+        ? path.resolve(options.rootDir ?? process.cwd(), ".opensteer", "temporary", randomUUID())
+        : path.resolve(
+            options.rootDir ?? process.cwd(),
+            ".opensteer",
+            "workspaces",
+            encodeURIComponent(this.publicWorkspace),
+          ));
     this.configuredBrowser = options.browser;
+    this.configuredLaunch = options.launch;
     this.configuredContext = options.context;
+    this.configuredEngineName = options.engineName;
     this.injectedEngine = options.engine;
-    this.engineFactory = options.engineFactory ?? defaultOpensteerEngineFactory;
+    this.engineFactory =
+      options.engineFactory ??
+      ((factoryOptions) => {
+        const browser = factoryOptions.browser ?? this.configuredBrowser;
+        const launch = factoryOptions.launch ?? this.configuredLaunch;
+        const context = factoryOptions.context ?? this.configuredContext;
+        return new OpensteerBrowserManager({
+          rootPath: this.rootPath,
+          ...(this.publicWorkspace === undefined ? {} : { workspace: this.publicWorkspace }),
+          ...(this.configuredEngineName === undefined
+            ? {}
+            : { engineName: this.configuredEngineName }),
+          ...(browser === undefined ? {} : { browser }),
+          ...(launch === undefined ? {} : { launch }),
+          ...(context === undefined ? {} : { context }),
+        }).createEngine();
+      });
     this.policy = options.policy ?? defaultPolicy();
+    this.cleanupRootOnClose = options.cleanupRootOnClose ?? this.publicWorkspace === undefined;
   }
 
   async open(
-    input: OpensteerSessionOpenInput = {},
+    input: OpensteerOpenInput = {},
     options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerSessionOpenOutput> {
+  ): Promise<OpensteerOpenOutput> {
     assertValidSemanticOperationInput("session.open", input);
 
-    if (input.name !== undefined && normalizeNamespace(input.name) !== this.name) {
+    if (input.workspace !== undefined && normalizeNamespace(input.workspace) !== this.workspace) {
       throw new Error(
-        `session.open requested namespace "${input.name}" but runtime is bound to "${this.name}"`,
+        `session.open requested workspace "${input.workspace}" but runtime is bound to "${this.workspace}"`,
       );
     }
 
@@ -505,6 +560,7 @@ export class OpensteerSessionRuntime {
     const root = await this.ensureRoot();
     const engine = await this.ensureEngine({
       ...(input.browser === undefined ? {} : { browser: input.browser }),
+      ...(input.launch === undefined ? {} : { launch: input.launch }),
       ...(input.context === undefined ? {} : { context: input.context }),
     });
     const run = await root.traces.createRun();
@@ -1219,16 +1275,35 @@ export class OpensteerSessionRuntime {
         "dom.extract",
         async (timeout) => {
           let descriptor: OpensteerExtractionDescriptorRecord | undefined;
+          let data: JsonValue;
           if (input.schema !== undefined) {
             assertValidOpensteerExtractionSchemaRoot(input.schema);
-            const payload = await timeout.runStep(() =>
-              compileOpensteerExtractionPayload({
+            const fieldTargets = await timeout.runStep(() =>
+              compileOpensteerExtractionFieldTargets({
                 pageRef,
                 schema: input.schema as Record<string, unknown>,
                 dom: this.requireDom(),
                 ...(this.latestSnapshot?.counterRecords === undefined
                   ? {}
                   : { latestSnapshotCounters: this.latestSnapshot.counterRecords }),
+              }),
+            );
+            data = toCanonicalJsonValue(
+              inflateDataPathObject(
+                await timeout.runStep(() =>
+                  extractOpensteerExtractionFieldTargets({
+                    pageRef,
+                    dom: this.requireDom(),
+                    fieldTargets,
+                  }),
+                ),
+              ),
+            );
+            const payload = await timeout.runStep(() =>
+              compilePersistedOpensteerExtractionPayloadFromFieldTargets({
+                pageRef,
+                dom: this.requireDom(),
+                fieldTargets,
               }),
             );
             const pageInfo = await timeout.runStep(() =>
@@ -1243,33 +1318,34 @@ export class OpensteerSessionRuntime {
               }),
             );
           } else {
-            descriptor = await timeout.runStep(() =>
+            const storedDescriptor = await timeout.runStep(() =>
               descriptors.read({
                 description: input.description,
               }),
             );
-            if (!descriptor) {
+            if (!storedDescriptor) {
               throw new OpensteerProtocolError(
                 "not-found",
                 `no stored extraction descriptor found for "${input.description}"`,
                 {
                   details: {
                     description: input.description,
-                    namespace: this.name,
+                    workspace: this.workspace,
                     kind: "extraction-descriptor",
                   },
                 },
               );
             }
+            descriptor = storedDescriptor;
+            data = await timeout.runStep(() =>
+              replayOpensteerExtractionPayload({
+                pageRef,
+                dom: this.requireDom(),
+                payload: storedDescriptor.payload.root,
+              }),
+            );
           }
 
-          const data = await timeout.runStep(() =>
-            replayOpensteerExtractionPayload({
-              pageRef,
-              dom: this.requireDom(),
-              payload: descriptor.payload.root,
-            }),
-          );
           const artifacts = await this.captureSnapshotArtifacts(
             pageRef,
             {
@@ -2356,10 +2432,25 @@ export class OpensteerSessionRuntime {
       this.networkJournal,
       input.captureWindowMs,
     );
+    const fallbackSavedNetwork =
+      persistedNetwork.length === 0
+        ? (
+            await root.registry.savedNetwork.query({
+              ...(input.network?.url === undefined ? {} : { url: input.network.url }),
+              ...(input.network?.hostname === undefined ? {} : { hostname: input.network.hostname }),
+              ...(input.network?.path === undefined ? {} : { path: input.network.path }),
+              ...(input.network?.method === undefined ? {} : { method: input.network.method }),
+              includeBodies: input.network?.includeBodies ?? true,
+              limit: 200,
+            })
+          ).filter(isReverseRelevantNetworkRecord)
+        : [];
+    const observationNetwork =
+      persistedNetwork.length > 0 ? persistedNetwork : fallbackSavedNetwork;
     const observationId = `observation:${randomUUID()}`;
     const networkTag = `reverse-case:${caseRecord.id}:${observationId}`;
-    if (persistedNetwork.length > 0) {
-      await root.registry.savedNetwork.save(persistedNetwork, networkTag);
+    if (observationNetwork.length > 0) {
+      await root.registry.savedNetwork.save(observationNetwork, networkTag);
     }
 
     const scriptArtifactIds =
@@ -2421,7 +2512,7 @@ export class OpensteerSessionRuntime {
       pageRef,
       url: pageInfo.url,
       stateSource,
-      networkRecordIds: persistedNetwork.map((record) => record.recordId),
+      networkRecordIds: observationNetwork.map((record) => record.recordId),
       scriptArtifactIds,
       interactionTraceIds: linkedInteractionTraceIds,
       stateSnapshotIds: [stateSnapshot.id],
@@ -4293,7 +4384,39 @@ export class OpensteerSessionRuntime {
     options: RuntimeOperationOptions = {},
   ): Promise<RecipeRecord> {
     assertValidSemanticOperationInput("recipe.write", input);
-    return this.writeAuthRecipe(input, options);
+
+    const root = await this.ensureRoot();
+    const startedAt = Date.now();
+    try {
+      const record = await this.runWithOperationTimeout(
+        "recipe.write",
+        async (timeout) => timeout.runStep(() => root.registry.recipes.write(input)),
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "recipe.write",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          id: record.id,
+          key: record.key,
+          version: record.version,
+        },
+      });
+
+      return record;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "recipe.write",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+      });
+      throw error;
+    }
   }
 
   async getAuthRecipe(
@@ -4356,7 +4479,54 @@ export class OpensteerSessionRuntime {
     options: RuntimeOperationOptions = {},
   ): Promise<RecipeRecord> {
     assertValidSemanticOperationInput("recipe.get", input);
-    return this.getAuthRecipe(input, options);
+
+    const root = await this.ensureRoot();
+    const startedAt = Date.now();
+    try {
+      const record = await this.runWithOperationTimeout(
+        "recipe.get",
+        async (timeout) => timeout.runStep(() => root.registry.recipes.resolve(input)),
+        options,
+      );
+      if (record === undefined) {
+        throw new OpensteerProtocolError(
+          "not-found",
+          input.version === undefined
+            ? `no recipe found for "${input.key}"`
+            : `no recipe found for "${input.key}" version "${input.version}"`,
+          {
+            details: {
+              key: input.key,
+              ...(input.version === undefined ? {} : { version: input.version }),
+              kind: "recipe",
+            },
+          },
+        );
+      }
+
+      await this.appendTrace({
+        operation: "recipe.get",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          id: record.id,
+          key: record.key,
+          version: record.version,
+        },
+      });
+
+      return record;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "recipe.get",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+      });
+      throw error;
+    }
   }
 
   async listAuthRecipes(
@@ -4405,7 +4575,40 @@ export class OpensteerSessionRuntime {
     options: RuntimeOperationOptions = {},
   ): Promise<OpensteerListRecipesOutput> {
     assertValidSemanticOperationInput("recipe.list", input);
-    return this.listAuthRecipes(input, options);
+
+    const root = await this.ensureRoot();
+    const startedAt = Date.now();
+    try {
+      const output = await this.runWithOperationTimeout(
+        "recipe.list",
+        async (timeout) => ({
+          recipes: await timeout.runStep(() => root.registry.recipes.list(input)),
+        }),
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "recipe.list",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          ...(input.key === undefined ? {} : { key: input.key }),
+          count: output.recipes.length,
+        },
+      });
+
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "recipe.list",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+      });
+      throw error;
+    }
   }
 
   async getCookies(
@@ -4535,7 +4738,7 @@ export class OpensteerSessionRuntime {
     try {
       const output = await this.runWithOperationTimeout(
         "auth-recipe.run",
-        async (timeout) => this.runResolvedAuthRecipe(input, timeout),
+        async (timeout) => this.runResolvedRecipe("auth-recipe", input, timeout),
         options,
       );
 
@@ -4577,7 +4780,47 @@ export class OpensteerSessionRuntime {
     options: RuntimeOperationOptions = {},
   ): Promise<OpensteerRunRecipeOutput> {
     assertValidSemanticOperationInput("recipe.run", input);
-    return this.runAuthRecipe(input, options);
+
+    await this.ensureRoot();
+    const startedAt = Date.now();
+    try {
+      const output = await this.runWithOperationTimeout(
+        "recipe.run",
+        async (timeout) => this.runResolvedRecipe("recipe", input, timeout),
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "recipe.run",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          recipe: output.recipe,
+          variables: Object.keys(output.variables).sort(),
+          ...(output.overrides === undefined ? {} : { overrides: output.overrides }),
+        },
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "recipe.run",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+      throw error;
+    }
   }
 
   async rawRequest(
@@ -4942,6 +5185,9 @@ export class OpensteerSessionRuntime {
       await this.resetRuntimeState({
         disposeEngine: true,
       });
+      if (this.cleanupRootOnClose) {
+        await rm(this.rootPath, { recursive: true, force: true }).catch(() => undefined);
+      }
     }
 
     if (closeError !== undefined) {
@@ -4951,6 +5197,22 @@ export class OpensteerSessionRuntime {
     return {
       closed: true,
     };
+  }
+
+  async disconnect(): Promise<void> {
+    try {
+      await this.flushBackgroundNetworkPersistence();
+      if (this.sessionRef !== undefined && this.pageRef !== undefined) {
+        await this.saveNetwork({ tag: "auto" }).catch(() => undefined);
+      }
+    } finally {
+      await this.resetRuntimeState({
+        disposeEngine: true,
+      });
+      if (this.cleanupRootOnClose) {
+        await rm(this.rootPath, { recursive: true, force: true }).catch(() => undefined);
+      }
+    }
   }
 
   isOpen(): boolean {
@@ -5411,7 +5673,7 @@ export class OpensteerSessionRuntime {
   }
 
   private async materializeCapturedScript(
-    root: FilesystemOpensteerRoot,
+    root: FilesystemOpensteerWorkspace,
     pageRef: PageRef,
     data: ScriptSourceArtifactData,
     persist: boolean,
@@ -5517,10 +5779,13 @@ export class OpensteerSessionRuntime {
 
   private resolveCurrentStateSource(): OpensteerStateSourceKind {
     const browser = this.configuredBrowser;
-    if (browser === undefined || browser.kind === undefined || browser.kind === "managed") {
-      return "managed";
+    if (browser === undefined || browser === "temporary") {
+      return "temporary";
     }
-    return browser.kind;
+    if (browser === "persistent") {
+      return "persistent";
+    }
+    return "attach";
   }
 
   private async resolveReverseCaseById(caseId: string): Promise<ReverseCaseRecord> {
@@ -6502,7 +6767,7 @@ export class OpensteerSessionRuntime {
     const recordId = `record:${randomUUID()}`;
     const requestId = createNetworkRequestId(`${transportLabel}-${randomUUID()}`);
     const syntheticSessionRef =
-      binding?.sessionRef ?? createSessionRef(`${transportLabel}-${this.name}`);
+      binding?.sessionRef ?? createSessionRef(`${transportLabel}-${this.workspace}`);
     const record: NetworkQueryRecord = {
       recordId,
       source: "saved",
@@ -6540,7 +6805,13 @@ export class OpensteerSessionRuntime {
     timeout: TimeoutExecutionContext,
     binding: RuntimeBrowserBinding | undefined,
   ): Promise<OpensteerRequestExecuteOutput> {
-    const prepareBinding = plan.payload.recipes?.prepare;
+    const prepareBinding =
+      plan.payload.recipes?.prepare === undefined
+        ? undefined
+        : {
+            source: "recipe" as const,
+            ...plan.payload.recipes.prepare,
+          };
     let resolvedInput = input;
     let executionOverrides: OpensteerAuthRecipeRetryOverrides | undefined;
     if (prepareBinding !== undefined) {
@@ -6789,16 +7060,10 @@ export class OpensteerSessionRuntime {
   }
 
   private async executeConfiguredRecipeBinding(
-    binding: {
-      readonly recipe: {
-        readonly key: string;
-        readonly version?: string;
-      };
-      readonly cachePolicy?: "none" | "untilFailure";
-    },
+    binding: ResolvedRecipeBinding,
     timeout: TimeoutExecutionContext,
   ): Promise<OpensteerRunRecipeOutput> {
-    const cacheKey = `${binding.recipe.key}@${binding.recipe.version ?? "latest"}`;
+    const cacheKey = `${binding.source}:${binding.recipe.key}@${binding.recipe.version ?? "latest"}`;
     if (binding.cachePolicy === "untilFailure") {
       const cached = this.recipeCache.get(cacheKey);
       if (cached !== undefined) {
@@ -6806,10 +7071,11 @@ export class OpensteerSessionRuntime {
       }
     }
 
-    const output = await this.executeAuthRecipeRecord(
-      await this.resolveAuthRecipe(binding.recipe.key, binding.recipe.version),
+    const output = await this.executeRecipeRecord(
+      await this.resolveRecipeRecord(binding.source, binding.recipe.key, binding.recipe.version),
       timeout,
       {},
+      binding.source,
     );
     if (binding.cachePolicy === "untilFailure") {
       this.recipeCache.set(cacheKey, output);
@@ -6817,13 +7083,8 @@ export class OpensteerSessionRuntime {
     return output;
   }
 
-  private clearRecipeBindingCache(binding: {
-    readonly recipe: {
-      readonly key: string;
-      readonly version?: string;
-    };
-  }): void {
-    const cacheKey = `${binding.recipe.key}@${binding.recipe.version ?? "latest"}`;
+  private clearRecipeBindingCache(binding: ResolvedRecipeBinding): void {
+    const cacheKey = `${binding.source}:${binding.recipe.key}@${binding.recipe.version ?? "latest"}`;
     this.recipeCache.delete(cacheKey);
   }
 
@@ -6881,25 +7142,31 @@ export class OpensteerSessionRuntime {
     return latest;
   }
 
-  private async resolveAuthRecipe(
+  private async resolveRecipeRecord(
+    kind: RecipeRegistryKind,
     key: string,
     version: string | undefined,
-  ): Promise<AuthRecipeRecord> {
-    const recipe = await this.requireRoot().registry.authRecipes.resolve({
+  ): Promise<RecipeRecord | AuthRecipeRecord> {
+    const registry =
+      kind === "auth-recipe"
+        ? this.requireRoot().registry.authRecipes
+        : this.requireRoot().registry.recipes;
+    const recipe = await registry.resolve({
       key,
       ...(version === undefined ? {} : { version }),
     });
     if (recipe === undefined) {
+      const label = kind === "auth-recipe" ? "auth recipe" : "recipe";
       throw new OpensteerProtocolError(
         "not-found",
         version === undefined
-          ? `auth recipe ${key} was not found`
-          : `auth recipe ${key}@${version} was not found`,
+          ? `${label} ${key} was not found`
+          : `${label} ${key}@${version} was not found`,
         {
           details: {
             key,
             ...(version === undefined ? {} : { version }),
-            kind: "auth-recipe",
+            kind,
           },
         },
       );
@@ -6907,29 +7174,31 @@ export class OpensteerSessionRuntime {
     return recipe;
   }
 
-  private async runResolvedAuthRecipe(
-    input: OpensteerRunAuthRecipeInput,
+  private async runResolvedRecipe(
+    kind: RecipeRegistryKind,
+    input: OpensteerRunRecipeInput | OpensteerRunAuthRecipeInput,
     timeout: TimeoutExecutionContext,
-  ): Promise<OpensteerRunAuthRecipeOutput> {
-    const recipe = await this.resolveAuthRecipe(input.key, input.version);
-    return this.executeAuthRecipeRecord(recipe, timeout, input.variables ?? {});
+  ): Promise<OpensteerRunRecipeOutput> {
+    const recipe = await this.resolveRecipeRecord(kind, input.key, input.version);
+    return this.executeRecipeRecord(recipe, timeout, input.variables ?? {}, kind);
   }
 
-  private async executeAuthRecipeRecord(
-    recipe: AuthRecipeRecord,
+  private async executeRecipeRecord(
+    recipe: RecipeRecord | AuthRecipeRecord,
     timeout: TimeoutExecutionContext,
     initialVariables: Readonly<Record<string, string>>,
-  ): Promise<OpensteerRunAuthRecipeOutput> {
+    kind: RecipeRegistryKind,
+  ): Promise<OpensteerRunRecipeOutput> {
     const variables = new Map<string, string>(Object.entries(initialVariables));
     let overrides: OpensteerAuthRecipeRetryOverrides | undefined;
 
     for (const [index, step] of recipe.payload.steps.entries()) {
-      const stepResult = await this.executeAuthRecipeStep(step, variables, timeout);
+      const stepResult = await this.executeRecipeStep(step, variables, timeout);
       mergeVariables(variables, stepResult.variables);
       overrides = mergeAuthRecipeOverrides(overrides, stepResult.overrides);
 
       await this.appendTrace({
-        operation: "auth-recipe.step",
+        operation: `${kind}.step`,
         startedAt: Date.now(),
         completedAt: Date.now(),
         outcome: "ok",
@@ -6964,7 +7233,7 @@ export class OpensteerSessionRuntime {
     };
   }
 
-  private async executeAuthRecipeStep(
+  private async executeRecipeStep(
     step: OpensteerAuthRecipeStep,
     variables: ReadonlyMap<string, string>,
     timeout: TimeoutExecutionContext,
@@ -7706,9 +7975,11 @@ export class OpensteerSessionRuntime {
     };
   }
 
-  private async ensureRoot(): Promise<FilesystemOpensteerRoot> {
-    this.root ??= await createFilesystemOpensteerRoot({
+  private async ensureRoot(): Promise<FilesystemOpensteerWorkspace> {
+    this.root ??= await createFilesystemOpensteerWorkspace({
       rootPath: this.rootPath,
+      ...(this.publicWorkspace === undefined ? {} : { workspace: this.publicWorkspace }),
+      scope: this.publicWorkspace === undefined ? "temporary" : "workspace",
     });
     return this.root;
   }
@@ -7727,11 +7998,11 @@ export class OpensteerSessionRuntime {
     }
 
     const browser = overrides.browser ?? this.configuredBrowser;
-    const context = normalizeOpensteerBrowserContextOptions(
-      overrides.context ?? this.configuredContext,
-    );
+    const launch = overrides.launch ?? this.configuredLaunch;
+    const context = overrides.context ?? this.configuredContext;
     const factoryOptions: OpensteerEngineFactoryOptions = {
       ...(browser === undefined ? {} : { browser }),
+      ...(launch === undefined ? {} : { launch }),
       ...(context === undefined ? {} : { context }),
     };
     this.engine = (await this.engineFactory(factoryOptions)) as DisposableBrowserCoreEngine;
@@ -7745,7 +8016,7 @@ export class OpensteerSessionRuntime {
     this.dom = createDomRuntime({
       engine,
       root,
-      namespace: this.name,
+      namespace: this.workspace,
       policy: this.policy,
     });
     this.computer = createComputerUseRuntime({
@@ -7755,7 +8026,7 @@ export class OpensteerSessionRuntime {
     });
     this.extractionDescriptors = createOpensteerExtractionDescriptorStore({
       root,
-      namespace: this.name,
+      namespace: this.workspace,
     });
   }
 
@@ -7769,7 +8040,7 @@ export class OpensteerSessionRuntime {
     return this.pageRef;
   }
 
-  private requireRoot(): FilesystemOpensteerRoot {
+  private requireRoot(): FilesystemOpensteerWorkspace {
     if (!this.root) {
       throw new Error("Opensteer root is not initialized");
     }
@@ -7845,7 +8116,7 @@ export class OpensteerSessionRuntime {
     }
   }
 
-  private async readSessionState(): Promise<OpensteerSessionOpenOutput> {
+  private async readSessionState(): Promise<OpensteerOpenOutput> {
     const pageRef = await this.ensurePageRef();
     const pageInfo = await this.requireEngine().getPageInfo({ pageRef });
     const sessionRef = this.sessionRef;
@@ -11500,14 +11771,20 @@ function mergeExecutionInputOverrides(
   };
 }
 
-function resolveRecoverRecipeBinding(
-  plan: RequestPlanRecord,
-): NonNullable<RequestPlanRecord["payload"]["recipes"]>["recover"] | undefined {
+function resolveRecoverRecipeBinding(plan: RequestPlanRecord):
+  | (ResolvedRecipeBinding & {
+      readonly failurePolicy: OpensteerRequestFailurePolicy;
+    })
+  | undefined {
   if (plan.payload.recipes?.recover !== undefined) {
-    return plan.payload.recipes.recover;
+    return {
+      source: "recipe",
+      ...plan.payload.recipes.recover,
+    };
   }
   if (plan.payload.auth?.recipe !== undefined && plan.payload.auth.failurePolicy !== undefined) {
     return {
+      source: "auth-recipe",
       recipe: plan.payload.auth.recipe,
       failurePolicy: plan.payload.auth.failurePolicy,
       cachePolicy: "none",

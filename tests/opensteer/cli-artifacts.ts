@@ -21,6 +21,8 @@ async function ensureCliArtifactsBuiltOnce(): Promise<void> {
     return;
   }
 
+  await mkdir(path.dirname(CLI_BUILD_LOCK), { recursive: true });
+
   while (true) {
     try {
       await mkdir(CLI_BUILD_LOCK, { recursive: false });
