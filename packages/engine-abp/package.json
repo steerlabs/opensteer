@@ -45,7 +45,7 @@
     "access": "public"
   },
   "dependencies": {
-    "agent-browser-protocol": "^0.1.7",
+    "agent-browser-protocol": "^0.1.9",
     "ws": "^8.18.3"
   },
   "devDependencies": {
