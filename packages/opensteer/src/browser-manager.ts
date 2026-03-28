@@ -371,7 +371,9 @@ export class OpensteerBrowserManager {
       userDataDir,
       cleanupUserDataDir: userDataDir,
       ...(this.launchOptions === undefined ? {} : { launch: this.launchOptions }),
-      ...(this.contextOptions?.viewport === undefined ? {} : { viewport: this.contextOptions.viewport }),
+      ...(this.contextOptions?.viewport === undefined
+        ? {}
+        : { viewport: this.contextOptions.viewport }),
     });
     try {
       return await this.createAttachedEngine({
@@ -425,7 +427,9 @@ export class OpensteerBrowserManager {
       const launched = await launchOwnedBrowser({
         userDataDir: workspace.browserUserDataDir,
         ...(this.launchOptions === undefined ? {} : { launch: this.launchOptions }),
-        ...(this.contextOptions?.viewport === undefined ? {} : { viewport: this.contextOptions.viewport }),
+        ...(this.contextOptions?.viewport === undefined
+          ? {}
+          : { viewport: this.contextOptions.viewport }),
       });
       const liveRecord: WorkspaceLiveBrowserRecord = {
         mode: "persistent",
@@ -479,7 +483,10 @@ export class OpensteerBrowserManager {
         context as Parameters<typeof injectBrowserStealthScripts>[0],
         stealthProfile === undefined
           ? {}
-          : { profile: stealthProfile, page: page as ConnectedCdpPage },
+          : {
+              profile: stealthProfile,
+              page: page as ConnectedCdpPage,
+            },
       );
 
       const engine = (await createPlaywrightBrowserCoreEngine({
@@ -790,9 +797,7 @@ function buildChromeArgs(
   // Always set --window-size to match the intended viewport so Chrome starts
   // with correct dimensions.  In headful mode add padding for Chrome UI
   // (title bar + tab strip + toolbar ≈ 150 px).
-  const hasUserWindowSize = (launch?.args ?? []).some((entry) =>
-    entry.startsWith("--window-size"),
-  );
+  const hasUserWindowSize = (launch?.args ?? []).some((entry) => entry.startsWith("--window-size"));
   if (!hasUserWindowSize) {
     const width = viewport?.width ?? 1440;
     const height = viewport?.height ?? 900;

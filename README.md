@@ -65,10 +65,16 @@ try {
 
 ## Skills
 
-Opensteer ships a first-party skill pack at [skills/opensteer/SKILL.md](./skills/opensteer/SKILL.md) for agents that support the upstream [`skills`](https://skills.sh) ecosystem.
+Opensteer ships a first-party skill pack at [skills/opensteer/SKILL.md](./skills/opensteer/SKILL.md). Install it through the upstream [`skills`](https://skills.sh) CLI for Claude Code, Codex, and other compatible agents.
 
 ```bash
 opensteer skills install
+```
+
+For Claude Code specifically:
+
+```bash
+opensteer skills install --agent claude-code
 ```
 
 List the skills available in this repository without installing them:

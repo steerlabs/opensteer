@@ -39,7 +39,8 @@ pnpm add @opensteer/engine-abp
 ```
 
 `opensteer skills install` installs the packaged first-party skill pack through the upstream
-`skills` CLI.
+`skills` CLI. Use `opensteer skills install --agent claude-code` when you want to target
+Claude Code explicitly.
 
 `opensteer` installs the Playwright-backed local engine by default. Add
 `@opensteer/engine-abp` only when you need the ABP backend.
