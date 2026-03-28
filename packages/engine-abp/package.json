@@ -52,7 +52,7 @@
     "@opensteer/browser-core": "workspace:*",
     "@opensteer/protocol": "workspace:*",
     "@types/ws": "^8.18.1",
-    "typescript": "^5.9.3"
+    "typescript": "^6.0.2"
   },
   "scripts": {
     "build": "tsup",
