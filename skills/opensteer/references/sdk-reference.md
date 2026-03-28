@@ -2,6 +2,15 @@
 
 Use the SDK when the workflow should become reusable TypeScript code in the repository.
 
+## Sections
+
+- [Construction](#construction)
+- [DOM Automation And Extraction](#dom-automation-and-extraction)
+- [Browser Admin](#browser-admin)
+- [Request Capture, Plans, And Recipes](#request-capture-plans-and-recipes)
+- [Common Methods](#common-methods)
+- [Rules](#rules)
+
 ## Construction
 
 ```ts

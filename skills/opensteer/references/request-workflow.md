@@ -2,6 +2,17 @@
 
 Use this workflow when the deliverable is a custom API, a replayable request plan, or a lower-overhead path than full browser automation.
 
+## Sections
+
+- [Standard Loop](#standard-loop)
+- [Transport Selection](#transport-selection)
+- [SDK Flow](#sdk-flow)
+- [CLI Equivalents](#cli-equivalents)
+- [Transport Probing](#transport-probing)
+- [Auth Token Acquisition](#auth-token-acquisition)
+- [Input Formats](#input-formats)
+- [Practical Guidance](#practical-guidance)
+
 ## Standard Loop
 
 1. Trigger the real browser action that causes the request inside a stable workspace.

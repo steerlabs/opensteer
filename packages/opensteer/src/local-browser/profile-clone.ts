@@ -3,7 +3,11 @@ import { existsSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
 import { expandHome } from "./chrome-discovery.js";
-import { CHROME_SINGLETON_ARTIFACTS, clearChromeSingletonEntries } from "./chrome-singletons.js";
+import {
+  CHROME_SINGLETON_ARTIFACTS,
+  clearChromeSingletonEntries,
+  sanitizeChromeProfile,
+} from "./chrome-singletons.js";
 
 const CHROME_SINGLETON_ENTRIES = new Set<string>(CHROME_SINGLETON_ARTIFACTS);
 
@@ -77,6 +81,7 @@ export async function createBrowserProfileSnapshot(input: {
     ...(profileDirectory === undefined ? {} : { selectedProfileDirectory: profileDirectory }),
   });
   await clearChromeSingletonEntries(targetUserDataDir);
+  await sanitizeChromeProfile(targetUserDataDir);
 }
 
 async function copyRootLevelEntries(input: {

@@ -18,7 +18,10 @@ import type {
 } from "@opensteer/protocol";
 
 import { isProcessRunning } from "./local-browser/process-owner.js";
-import { clearChromeSingletonEntries } from "./local-browser/chrome-singletons.js";
+import {
+  clearChromeSingletonEntries,
+  sanitizeChromeProfile,
+} from "./local-browser/chrome-singletons.js";
 import {
   readDevToolsActivePort,
   resolveChromeExecutablePath,
@@ -26,6 +29,7 @@ import {
 import { inspectCdpEndpoint, selectAttachBrowserCandidate } from "./local-browser/cdp-discovery.js";
 import { createBrowserProfileSnapshot } from "./local-browser/profile-clone.js";
 import { injectBrowserStealthScripts } from "./local-browser/stealth.js";
+import type { ConnectedCdpPage } from "./local-browser/types.js";
 import { generateStealthProfile, type StealthProfile } from "./local-browser/stealth-profiles.js";
 import {
   createFilesystemOpensteerWorkspace,
@@ -367,6 +371,9 @@ export class OpensteerBrowserManager {
       userDataDir,
       cleanupUserDataDir: userDataDir,
       ...(this.launchOptions === undefined ? {} : { launch: this.launchOptions }),
+      ...(this.contextOptions?.viewport === undefined
+        ? {}
+        : { viewport: this.contextOptions.viewport }),
     });
     try {
       return await this.createAttachedEngine({
@@ -420,6 +427,9 @@ export class OpensteerBrowserManager {
       const launched = await launchOwnedBrowser({
         userDataDir: workspace.browserUserDataDir,
         ...(this.launchOptions === undefined ? {} : { launch: this.launchOptions }),
+        ...(this.contextOptions?.viewport === undefined
+          ? {}
+          : { viewport: this.contextOptions.viewport }),
       });
       const liveRecord: WorkspaceLiveBrowserRecord = {
         mode: "persistent",
@@ -462,17 +472,22 @@ export class OpensteerBrowserManager {
         throw new Error("Connected browser did not expose a Chromium browser context.");
       }
 
-      const stealthProfile = resolveStealthProfile(this.contextOptions?.stealthProfile);
-      await injectBrowserStealthScripts(
-        context as Parameters<typeof injectBrowserStealthScripts>[0],
-        stealthProfile === undefined ? {} : { profile: stealthProfile },
-      );
-
       const page =
         input.freshTab || context.pages()[0] === undefined
           ? await context.newPage()
           : context.pages()[0]!;
       await page.bringToFront?.();
+
+      const stealthProfile = resolveStealthProfile(this.contextOptions?.stealthProfile);
+      await injectBrowserStealthScripts(
+        context as Parameters<typeof injectBrowserStealthScripts>[0],
+        stealthProfile === undefined
+          ? {}
+          : {
+              profile: stealthProfile,
+              page: page as ConnectedCdpPage,
+            },
+      );
 
       const engine = (await createPlaywrightBrowserCoreEngine({
         browser: browser as never,
@@ -700,6 +715,7 @@ async function launchOwnedBrowser(input: {
   readonly userDataDir: string;
   readonly cleanupUserDataDir?: string;
   readonly launch?: OpensteerBrowserLaunchOptions;
+  readonly viewport?: { readonly width: number; readonly height: number } | null;
 }): Promise<{
   readonly endpoint: string;
   readonly pid: number;
@@ -707,9 +723,10 @@ async function launchOwnedBrowser(input: {
 }> {
   await ensureDirectory(input.userDataDir);
   await clearChromeSingletonEntries(input.userDataDir);
+  await sanitizeChromeProfile(input.userDataDir);
 
   const executablePath = resolveChromeExecutablePath(input.launch?.executablePath);
-  const args = buildChromeArgs(input.userDataDir, input.launch);
+  const args = buildChromeArgs(input.userDataDir, input.launch, input.viewport);
   const child = spawn(executablePath, args, {
     stdio: ["ignore", "ignore", "pipe"],
     detached: process.platform !== "win32",
@@ -749,7 +766,9 @@ async function launchOwnedBrowser(input: {
 function buildChromeArgs(
   userDataDir: string,
   launch: OpensteerBrowserLaunchOptions | undefined,
+  viewport?: { readonly width: number; readonly height: number } | null,
 ): readonly string[] {
+  const isHeadless = launch?.headless ?? true;
   const args = [
     "--remote-debugging-port=0",
     "--no-first-run",
@@ -763,6 +782,7 @@ function buildChromeArgs(
     "--disable-popup-blocking",
     "--disable-prompt-on-repost",
     "--disable-sync",
+    "--disable-infobars",
     "--disable-features=Translate",
     "--enable-features=NetworkService,NetworkServiceInProcess",
     "--password-store=basic",
@@ -770,11 +790,22 @@ function buildChromeArgs(
     `--user-data-dir=${userDataDir}`,
   ];
 
-  if (launch?.headless ?? true) {
+  if (isHeadless) {
     args.push("--headless=new");
-    if (!(launch?.args ?? []).some((entry) => entry.startsWith("--window-size"))) {
-      args.push("--window-size=1280,800");
-    }
+  }
+
+  // Always set --window-size to match the intended viewport so Chrome starts
+  // with correct dimensions.  In headful mode add padding for Chrome UI
+  // (title bar + tab strip + toolbar ≈ 150 px).
+  const hasUserWindowSize = (launch?.args ?? []).some((entry) => entry.startsWith("--window-size"));
+  if (!hasUserWindowSize) {
+    const width = viewport?.width ?? 1440;
+    const height = viewport?.height ?? 900;
+    args.push(
+      isHeadless
+        ? `--window-size=${String(width)},${String(height)}`
+        : `--window-size=${String(width)},${String(height + 150)}`,
+    );
   }
 
   args.push(...(launch?.args ?? []));
