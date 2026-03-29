@@ -104,6 +104,9 @@ opensteer run network.query --workspace demo \
 opensteer run request-plan.infer --workspace demo \
   --input-json '{"recordId":"rec_123","key":"products.search","version":"v1"}'
 
+opensteer run request-plan.infer --workspace demo \
+  --input-json '{"recordId":"rec_123","key":"products.search.portable","version":"v1","transport":"direct-http"}'
+
 opensteer run request.execute --workspace demo \
   --input-json '{"key":"products.search","query":{"q":"laptop"}}'
 ```

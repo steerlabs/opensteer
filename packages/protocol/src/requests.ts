@@ -582,6 +582,7 @@ export interface OpensteerInferRequestPlanInput {
   readonly recordId: string;
   readonly key: string;
   readonly version: string;
+  readonly transport?: TransportKind;
 }
 
 export const opensteerRequestScalarSchema: JsonSchema = oneOfSchema(
@@ -1629,6 +1630,7 @@ export const opensteerInferRequestPlanInputSchema: JsonSchema = objectSchema(
     recordId: stringSchema({ minLength: 1 }),
     key: stringSchema({ minLength: 1 }),
     version: stringSchema({ minLength: 1 }),
+    transport: transportKindSchema,
   },
   {
     title: "OpensteerInferRequestPlanInput",

@@ -42,7 +42,7 @@ export function inferRequestPlanFromNetworkRecord(
 
   const payload = normalizeRequestPlanPayload({
     transport: {
-      kind: "context-http",
+      kind: input.transport ?? "context-http",
     },
     endpoint: {
       method: record.record.method,
