@@ -8,7 +8,14 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const publishOrder = ["packages/engine-playwright", "packages/engine-abp", "packages/opensteer"];
+const publishOrder = [
+  "packages/browser-core",
+  "packages/protocol",
+  "packages/runtime-core",
+  "packages/engine-playwright",
+  "packages/engine-abp",
+  "packages/opensteer",
+];
 const publishCommand = "pnpm";
 
 const summaryPath = process.env.GITHUB_STEP_SUMMARY;

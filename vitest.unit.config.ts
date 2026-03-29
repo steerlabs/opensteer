@@ -13,6 +13,7 @@ export default defineConfig({
         "packages/engine-playwright/src/index.ts",
       ),
       "@opensteer/protocol": path.resolve(__dirname, "packages/protocol/src/index.ts"),
+      "@opensteer/runtime-core": path.resolve(__dirname, "packages/runtime-core/src/index.ts"),
     },
   },
   test: {

@@ -1,0 +1,13 @@
+import { defineConfig } from "tsup";
+
+export default defineConfig({
+  clean: true,
+  dts: true,
+  entry: ["src/index.ts"],
+  external: ["webcrack"],
+  format: ["esm", "cjs"],
+  noExternal: ["@opensteer/browser-core", "@opensteer/protocol"],
+  sourcemap: true,
+  target: "node22",
+  treeshake: true,
+});

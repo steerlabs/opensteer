@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { OPENSTEER_RUNTIME_CORE_VERSION } from "@opensteer/runtime-core";
 
 import type {
   OpensteerArtifactReadInput,
@@ -107,7 +108,7 @@ import type {
   OpensteerActionResult,
   StorageSnapshot,
 } from "@opensteer/protocol";
-import { opensteerSemanticOperationNames } from "@opensteer/protocol";
+import { OPENSTEER_PROTOCOL_VERSION, opensteerSemanticOperationNames } from "@opensteer/protocol";
 import type { CloudBrowserProfilePreference } from "@opensteer/protocol";
 
 import type { AuthRecipeRecord, RecipeRecord, RequestPlanRecord } from "../registry.js";
@@ -246,6 +247,10 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
           interceptScript: true,
           networkStream: true,
         },
+      },
+      runtime: {
+        protocolVersion: OPENSTEER_PROTOCOL_VERSION,
+        runtimeCoreVersion: OPENSTEER_RUNTIME_CORE_VERSION,
       },
     };
   }

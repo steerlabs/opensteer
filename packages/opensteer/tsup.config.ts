@@ -6,7 +6,7 @@ export default defineConfig({
   entry: ["src/index.ts", "src/cli/bin.ts"],
   external: ["webcrack"],
   format: ["esm", "cjs"],
-  noExternal: ["@opensteer/browser-core", "@opensteer/protocol"],
+  noExternal: ["@opensteer/browser-core", "@opensteer/protocol", "@opensteer/runtime-core"],
   sourcemap: true,
   target: "node22",
   treeshake: true,

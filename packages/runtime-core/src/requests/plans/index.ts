@@ -1,0 +1,537 @@
+import {
+  OpensteerProtocolError,
+  opensteerRequestPlanPayloadSchema,
+  validateJsonSchema,
+  type OpensteerRequestPlanParameter,
+  type OpensteerRequestEntry,
+  type OpensteerRequestPlanPayload,
+} from "@opensteer/protocol";
+
+import { invalidRequestPlanError } from "../errors.js";
+import { isValidHttpHeaderName } from "../shared.js";
+
+const HTTP_METHOD_PATTERN = /^[A-Za-z]+$/;
+const URL_TEMPLATE_PLACEHOLDER_PATTERN = /\{([A-Za-z][A-Za-z0-9_-]*)\}/g;
+
+function assertValidRequestPlanPayload(
+  payload: unknown,
+): asserts payload is OpensteerRequestPlanPayload {
+  const issues = validateJsonSchema(opensteerRequestPlanPayloadSchema, payload);
+  if (issues.length === 0) {
+    return;
+  }
+
+  const firstIssue = issues[0]!;
+  throw new OpensteerProtocolError(
+    "invalid-request",
+    `invalid request plan payload at ${firstIssue.path}: ${firstIssue.message}`,
+    {
+      details: {
+        issues,
+      },
+    },
+  );
+}
+
+export function normalizeRequestPlanPayload(
+  payload: OpensteerRequestPlanPayload,
+): OpensteerRequestPlanPayload {
+  assertValidRequestPlanPayload(payload);
+
+  const method = payload.endpoint.method.trim().toUpperCase();
+  if (!HTTP_METHOD_PATTERN.test(method)) {
+    throw invalidRequestPlanError(
+      `request plan endpoint.method must be an HTTP method, received ${payload.endpoint.method}`,
+      {
+        field: "endpoint.method",
+        value: payload.endpoint.method,
+      },
+    );
+  }
+
+  const urlTemplate = payload.endpoint.urlTemplate.trim();
+  if (urlTemplate.length === 0) {
+    throw invalidRequestPlanError("request plan endpoint.urlTemplate must be a non-empty string", {
+      field: "endpoint.urlTemplate",
+    });
+  }
+
+  const placeholders = extractUrlTemplatePlaceholders(urlTemplate);
+  assertAbsoluteUrlTemplate(urlTemplate, placeholders);
+
+  const normalizedParameters = normalizeParameters(payload.parameters ?? []);
+  const pathParameters = normalizedParameters.filter((parameter) => parameter.in === "path");
+  const pathParameterNames = new Set(pathParameters.map((parameter) => parameter.name));
+  if (placeholders.length !== pathParameterNames.size) {
+    throw invalidRequestPlanError(
+      `request plan path parameters must exactly match urlTemplate placeholders: ${placeholders.join(", ")}`,
+      {
+        field: "parameters",
+        placeholders,
+      },
+    );
+  }
+  for (const placeholder of placeholders) {
+    if (!pathParameterNames.has(placeholder)) {
+      throw invalidRequestPlanError(
+        `request plan urlTemplate placeholder {${placeholder}} is missing a path parameter`,
+        {
+          field: "parameters",
+          placeholder,
+        },
+      );
+    }
+  }
+  for (const parameter of pathParameters) {
+    if (!placeholders.includes(parameter.name)) {
+      throw invalidRequestPlanError(
+        `request plan path parameter ${parameter.name} is not present in the urlTemplate`,
+        {
+          field: "parameters",
+          parameter: parameter.name,
+        },
+      );
+    }
+  }
+
+  const transport = normalizeTransport(payload.transport);
+  const endpoint = {
+    method,
+    urlTemplate,
+    ...(payload.endpoint.defaultQuery === undefined || payload.endpoint.defaultQuery.length === 0
+      ? {}
+      : {
+          defaultQuery: payload.endpoint.defaultQuery.map((entry, index) =>
+            normalizeRequestEntry(entry, `endpoint.defaultQuery[${index}]`, "query"),
+          ),
+        }),
+    ...(payload.endpoint.defaultHeaders === undefined ||
+    payload.endpoint.defaultHeaders.length === 0
+      ? {}
+      : {
+          defaultHeaders: payload.endpoint.defaultHeaders.map((entry, index) =>
+            normalizeRequestEntry(entry, `endpoint.defaultHeaders[${index}]`, "header"),
+          ),
+        }),
+  } satisfies OpensteerRequestPlanPayload["endpoint"];
+
+  const normalizedPayload = {
+    transport,
+    endpoint,
+    ...(normalizedParameters.length === 0 ? {} : { parameters: normalizedParameters }),
+    ...(payload.body === undefined
+      ? {}
+      : {
+          body: {
+            ...(payload.body.kind === undefined ? {} : { kind: payload.body.kind }),
+            ...(payload.body.contentType === undefined
+              ? {}
+              : {
+                  contentType: normalizeTrimmedString("body.contentType", payload.body.contentType),
+                }),
+            ...(payload.body.required === undefined ? {} : { required: payload.body.required }),
+            ...(payload.body.description === undefined
+              ? {}
+              : {
+                  description: normalizeTrimmedString("body.description", payload.body.description),
+                }),
+            ...(payload.body.template === undefined ? {} : { template: payload.body.template }),
+            ...(payload.body.fields === undefined || payload.body.fields.length === 0
+              ? {}
+              : {
+                  fields: payload.body.fields.map((entry, index) =>
+                    normalizeRequestEntry(entry, `body.fields[${index}]`, "query"),
+                  ),
+                }),
+          },
+        }),
+    ...(payload.response === undefined
+      ? {}
+      : {
+          response: {
+            status: payload.response.status,
+            ...(payload.response.contentType === undefined
+              ? {}
+              : {
+                  contentType: normalizeTrimmedString(
+                    "response.contentType",
+                    payload.response.contentType,
+                  ).toLowerCase(),
+                }),
+          },
+        }),
+    ...(payload.recipes === undefined
+      ? {}
+      : {
+          recipes: {
+            ...(payload.recipes.prepare === undefined
+              ? {}
+              : {
+                  prepare: {
+                    recipe: normalizeRecipeRef(
+                      payload.recipes.prepare.recipe,
+                      "recipes.prepare.recipe",
+                    ),
+                    ...(payload.recipes.prepare.cachePolicy === undefined
+                      ? {}
+                      : { cachePolicy: payload.recipes.prepare.cachePolicy }),
+                  },
+                }),
+            ...(payload.recipes.recover === undefined
+              ? {}
+              : {
+                  recover: {
+                    recipe: normalizeRecipeRef(
+                      payload.recipes.recover.recipe,
+                      "recipes.recover.recipe",
+                    ),
+                    ...(payload.recipes.recover.cachePolicy === undefined
+                      ? {}
+                      : { cachePolicy: payload.recipes.recover.cachePolicy }),
+                    failurePolicy: normalizeFailurePolicy(
+                      payload.recipes.recover.failurePolicy,
+                      "recipes.recover.failurePolicy",
+                    )!,
+                  },
+                }),
+          },
+        }),
+    ...(payload.retryPolicy === undefined
+      ? {}
+      : {
+          retryPolicy: {
+            maxRetries: payload.retryPolicy.maxRetries,
+            ...(payload.retryPolicy.backoff === undefined
+              ? {}
+              : {
+                  backoff: {
+                    ...(payload.retryPolicy.backoff.strategy === undefined
+                      ? {}
+                      : { strategy: payload.retryPolicy.backoff.strategy }),
+                    delayMs: payload.retryPolicy.backoff.delayMs,
+                    ...(payload.retryPolicy.backoff.maxDelayMs === undefined
+                      ? {}
+                      : { maxDelayMs: payload.retryPolicy.backoff.maxDelayMs }),
+                  },
+                }),
+            ...(payload.retryPolicy.respectRetryAfter === undefined
+              ? {}
+              : { respectRetryAfter: payload.retryPolicy.respectRetryAfter }),
+            ...(payload.retryPolicy.failurePolicy === undefined
+              ? {}
+              : {
+                  failurePolicy: normalizeFailurePolicy(
+                    payload.retryPolicy.failurePolicy,
+                    "retryPolicy.failurePolicy",
+                  )!,
+                }),
+          },
+        }),
+    ...(payload.auth === undefined
+      ? {}
+      : {
+          auth: {
+            strategy: payload.auth.strategy,
+            ...(payload.auth.recipe === undefined
+              ? {}
+              : {
+                  recipe: normalizeRecipeRef(payload.auth.recipe, "auth.recipe"),
+                }),
+            ...(payload.auth.failurePolicy === undefined
+              ? {}
+              : {
+                  failurePolicy: normalizeFailurePolicy(
+                    payload.auth.failurePolicy,
+                    "auth.failurePolicy",
+                  )!,
+                }),
+            ...(payload.auth.description === undefined
+              ? {}
+              : {
+                  description: normalizeTrimmedString("auth.description", payload.auth.description),
+                }),
+          },
+        }),
+  } satisfies OpensteerRequestPlanPayload;
+
+  if (
+    normalizedPayload.recipes === undefined &&
+    normalizedPayload.auth?.recipe !== undefined &&
+    normalizedPayload.auth.failurePolicy !== undefined
+  ) {
+    normalizedPayload.recipes = {
+      recover: {
+        recipe: normalizedPayload.auth.recipe,
+        failurePolicy: normalizedPayload.auth.failurePolicy,
+        cachePolicy: "none",
+      },
+    };
+  }
+
+  assertValidRequestPlanPayload(normalizedPayload);
+  return normalizedPayload;
+}
+
+function extractUrlTemplatePlaceholders(urlTemplate: string): readonly string[] {
+  const placeholders: string[] = [];
+  for (const match of urlTemplate.matchAll(URL_TEMPLATE_PLACEHOLDER_PATTERN)) {
+    const name = match[1];
+    if (name !== undefined && !placeholders.includes(name)) {
+      placeholders.push(name);
+    }
+  }
+  return placeholders;
+}
+
+function normalizeParameters(
+  parameters: readonly OpensteerRequestPlanParameter[],
+): OpensteerRequestPlanParameter[] {
+  const seenByLocation = new Set<string>();
+
+  return parameters.map((parameter) => {
+    const name = normalizeTrimmedString("parameter.name", parameter.name);
+    const wireName =
+      parameter.in === "header"
+        ? normalizeHttpHeaderName(
+            parameter.wireName === undefined ? "parameter.name" : "parameter.wireName",
+            parameter.wireName ?? name,
+          )
+        : parameter.wireName === undefined
+          ? undefined
+          : normalizeTrimmedString("parameter.wireName", parameter.wireName);
+
+    const seenKey = `${parameter.in}:${name}`;
+    if (seenByLocation.has(seenKey)) {
+      throw invalidRequestPlanError(`duplicate request plan parameter ${name} in ${parameter.in}`, {
+        field: "parameters",
+        parameter: name,
+        location: parameter.in,
+      });
+    }
+    seenByLocation.add(seenKey);
+
+    if (parameter.in === "path") {
+      if (parameter.wireName !== undefined) {
+        const wireName = normalizeTrimmedString("parameter.wireName", parameter.wireName);
+        if (wireName !== name) {
+          throw invalidRequestPlanError(
+            `path parameter ${name} cannot define a wireName different from its placeholder`,
+            {
+              field: "parameters",
+              parameter: name,
+              wireName,
+            },
+          );
+        }
+      }
+      if (parameter.defaultValue !== undefined) {
+        throw invalidRequestPlanError(`path parameter ${name} cannot define a defaultValue`, {
+          field: "parameters",
+          parameter: name,
+        });
+      }
+      if (parameter.required === false) {
+        throw invalidRequestPlanError(`path parameter ${name} cannot be optional`, {
+          field: "parameters",
+          parameter: name,
+        });
+      }
+      return {
+        name,
+        in: "path",
+        required: true,
+        ...(parameter.description === undefined
+          ? {}
+          : {
+              description: normalizeTrimmedString("parameter.description", parameter.description),
+            }),
+      };
+    }
+
+    return {
+      name,
+      in: parameter.in,
+      ...(parameter.wireName === undefined || wireName === undefined ? {} : { wireName }),
+      ...(parameter.required === undefined ? {} : { required: parameter.required }),
+      ...(parameter.description === undefined
+        ? {}
+        : {
+            description: normalizeTrimmedString("parameter.description", parameter.description),
+          }),
+      ...(parameter.defaultValue === undefined ? {} : { defaultValue: parameter.defaultValue }),
+    };
+  });
+}
+
+function normalizeRecipeRef(
+  recipe: { readonly key: string; readonly version?: string },
+  fieldPrefix: string,
+) {
+  return {
+    key: normalizeTrimmedString(`${fieldPrefix}.key`, recipe.key),
+    ...(recipe.version === undefined
+      ? {}
+      : { version: normalizeTrimmedString(`${fieldPrefix}.version`, recipe.version) }),
+  };
+}
+
+function normalizeFailurePolicy(
+  failurePolicy: NonNullable<OpensteerRequestPlanPayload["auth"]>["failurePolicy"],
+  fieldPrefix: string,
+) {
+  if (failurePolicy === undefined) {
+    return undefined;
+  }
+
+  return {
+    ...(failurePolicy.statusCodes === undefined
+      ? {}
+      : {
+          statusCodes: [...failurePolicy.statusCodes].sort((left, right) => left - right),
+        }),
+    ...(failurePolicy.finalUrlIncludes === undefined
+      ? {}
+      : {
+          finalUrlIncludes: failurePolicy.finalUrlIncludes.map((value, index) =>
+            normalizeTrimmedString(`${fieldPrefix}.finalUrlIncludes[${index}]`, value),
+          ),
+        }),
+    ...(failurePolicy.responseHeaders === undefined
+      ? {}
+      : {
+          responseHeaders: failurePolicy.responseHeaders.map((match, index) => ({
+            name: normalizeHttpHeaderName(
+              `${fieldPrefix}.responseHeaders[${index}].name`,
+              match.name,
+            ),
+            valueIncludes: normalizeTrimmedString(
+              `${fieldPrefix}.responseHeaders[${index}].valueIncludes`,
+              match.valueIncludes,
+            ),
+          })),
+        }),
+    ...(failurePolicy.responseBodyIncludes === undefined
+      ? {}
+      : {
+          responseBodyIncludes: failurePolicy.responseBodyIncludes.map((value, index) =>
+            normalizeTrimmedString(`${fieldPrefix}.responseBodyIncludes[${index}]`, value),
+          ),
+        }),
+  };
+}
+
+function normalizeTransport(
+  transport: OpensteerRequestPlanPayload["transport"],
+): OpensteerRequestPlanPayload["transport"] {
+  switch (transport.kind) {
+    case "context-http":
+      if (transport.requiresBrowser === false) {
+        throw invalidRequestPlanError(`${transport.kind} transport always requiresBrowser`, {
+          field: "transport.requiresBrowser",
+          transport: transport.kind,
+        });
+      }
+      return {
+        kind: "context-http",
+        requiresBrowser: true,
+        ...(transport.cookieJar === undefined ? {} : { cookieJar: transport.cookieJar }),
+      };
+    case "session-http":
+      if (transport.requiresBrowser === false) {
+        throw invalidRequestPlanError("session-http transport always requiresBrowser", {
+          field: "transport.requiresBrowser",
+          transport: transport.kind,
+        });
+      }
+      return {
+        kind: "session-http",
+        requiresBrowser: true,
+        ...(transport.cookieJar === undefined ? {} : { cookieJar: transport.cookieJar }),
+      };
+    case "page-http":
+      if (transport.requiresBrowser === false) {
+        throw invalidRequestPlanError("page-http transport always requiresBrowser", {
+          field: "transport.requiresBrowser",
+          transport: transport.kind,
+        });
+      }
+      return {
+        kind: "page-http",
+        requiresBrowser: true,
+        requireSameOrigin: transport.requireSameOrigin ?? false,
+        ...(transport.cookieJar === undefined ? {} : { cookieJar: transport.cookieJar }),
+      };
+    case "matched-tls":
+      if (transport.requiresBrowser === false) {
+        throw invalidRequestPlanError("matched-tls transport always requiresBrowser", {
+          field: "transport.requiresBrowser",
+          transport: transport.kind,
+        });
+      }
+      return {
+        kind: "matched-tls",
+        requiresBrowser: true,
+        ...(transport.cookieJar === undefined ? {} : { cookieJar: transport.cookieJar }),
+      };
+    case "direct-http":
+      return {
+        kind: "direct-http",
+        ...(transport.requiresBrowser === undefined
+          ? { requiresBrowser: false }
+          : { requiresBrowser: transport.requiresBrowser }),
+        ...(transport.cookieJar === undefined ? {} : { cookieJar: transport.cookieJar }),
+      };
+  }
+}
+
+function assertAbsoluteUrlTemplate(urlTemplate: string, placeholders: readonly string[]): void {
+  const sampleUrl = placeholders.reduce(
+    (current, placeholder) => current.replaceAll(`{${placeholder}}`, "placeholder"),
+    urlTemplate,
+  );
+
+  if (!URL.canParse(sampleUrl)) {
+    throw invalidRequestPlanError(
+      `request plan endpoint.urlTemplate must be an absolute URL, received ${urlTemplate}`,
+      {
+        field: "endpoint.urlTemplate",
+        value: urlTemplate,
+      },
+    );
+  }
+}
+
+function normalizeRequestEntry(
+  entry: OpensteerRequestEntry,
+  fieldPath: string,
+  kind: "header" | "query",
+): OpensteerRequestEntry {
+  return {
+    name:
+      kind === "header"
+        ? normalizeHttpHeaderName(`${fieldPath}.name`, entry.name)
+        : normalizeTrimmedString(`${fieldPath}.name`, entry.name),
+    value: entry.value,
+  };
+}
+
+function normalizeHttpHeaderName(field: string, value: string): string {
+  const normalized = normalizeTrimmedString(field, value);
+  if (!isValidHttpHeaderName(normalized)) {
+    throw invalidRequestPlanError(`${field} must be a valid HTTP header name`, {
+      field,
+      value,
+    });
+  }
+  return normalized;
+}
+
+function normalizeTrimmedString(field: string, value: string): string {
+  const normalized = value.trim();
+  if (normalized.length === 0) {
+    throw invalidRequestPlanError(`${field} must be a non-empty string`, {
+      field,
+    });
+  }
+  return normalized;
+}
