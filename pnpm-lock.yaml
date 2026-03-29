@@ -143,6 +143,12 @@ importers:
 
   packages/runtime-core:
     dependencies:
+      '@opensteer/browser-core':
+        specifier: workspace:*
+        version: link:../browser-core
+      '@opensteer/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       cheerio:
         specifier: ^1.1.2
         version: 1.2.0
@@ -161,13 +167,6 @@ importers:
       skills:
         specifier: ^1.4.6
         version: 1.4.6
-    devDependencies:
-      '@opensteer/browser-core':
-        specifier: workspace:*
-        version: link:../browser-core
-      '@opensteer/protocol':
-        specifier: workspace:*
-        version: link:../protocol
     optionalDependencies:
       webcrack:
         specifier: ^2.15.1

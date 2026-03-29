@@ -18,6 +18,7 @@ const publishOrder = [
 ];
 const publishCommand = "pnpm";
 const publishTag = normalizePublishTag(process.env.NPM_DIST_TAG);
+const publishWithProvenance = shouldPublishWithProvenance();
 
 const summaryPath = process.env.GITHUB_STEP_SUMMARY;
 const results = [];
@@ -37,7 +38,10 @@ for (const relativePackageDir of publishOrder) {
     continue;
   }
 
-  const publishArgs = ["publish", "--no-git-checks", "--provenance"];
+  const publishArgs = ["publish", "--no-git-checks"];
+  if (publishWithProvenance) {
+    publishArgs.push("--provenance");
+  }
   if (manifest.publishConfig?.access === "public") {
     publishArgs.push("--access", "public");
   }
@@ -129,4 +133,23 @@ function normalizePublishTag(value) {
   }
   const trimmed = value.trim();
   return trimmed.length === 0 ? undefined : trimmed;
+}
+
+function shouldPublishWithProvenance() {
+  const configured = process.env.NPM_PUBLISH_PROVENANCE;
+  if (configured !== undefined) {
+    return parseBooleanEnv(configured, "NPM_PUBLISH_PROVENANCE");
+  }
+  return process.env.GITHUB_ACTIONS === "true";
+}
+
+function parseBooleanEnv(value, name) {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true" || normalized === "1") {
+    return true;
+  }
+  if (normalized === "false" || normalized === "0") {
+    return false;
+  }
+  throw new Error(`${name} must be true/false or 1/0`);
 }
