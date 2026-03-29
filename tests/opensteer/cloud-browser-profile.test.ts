@@ -43,12 +43,14 @@ afterEach(() => {
 
 describe("cloud browser-profile integration", () => {
   test("resolves cloud runtime config with a default browser profile preference", () => {
-    vi.stubEnv("OPENSTEER_MODE", "cloud");
+    vi.stubEnv("OPENSTEER_PROVIDER", "cloud");
     vi.stubEnv("OPENSTEER_API_KEY", "osk_test");
+    vi.stubEnv("OPENSTEER_BASE_URL", "https://api.opensteer.dev");
 
     expect(
       resolveOpensteerRuntimeConfig({
-        cloud: {
+        provider: {
+          kind: "cloud",
           browserProfile: {
             profileId: "bp_123",
             reuseIfActive: true,
@@ -56,7 +58,10 @@ describe("cloud browser-profile integration", () => {
         },
       }),
     ).toEqual({
-      mode: "cloud",
+      provider: {
+        kind: "cloud",
+        source: "explicit",
+      },
       cloud: {
         apiKey: "osk_test",
         baseUrl: "https://api.opensteer.dev",
@@ -305,7 +310,7 @@ describe("cloud browser-profile integration", () => {
       await first.disconnect();
 
       expect(await readPersistedCloudSessionRecord(workspaceRoot)).toMatchObject({
-        mode: "cloud",
+        provider: "cloud",
         sessionId: "session_123",
         baseUrl: semanticBaseUrl,
       });

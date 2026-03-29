@@ -1,5 +1,9 @@
 import type { CloudBrowserProfilePreference } from "@opensteer/protocol";
-import { resolveOpensteerExecutionMode } from "../mode/config.js";
+import {
+  resolveOpensteerProvider,
+  type OpensteerCloudProviderOptions,
+  type OpensteerProviderOptions,
+} from "../provider/config.js";
 
 export interface OpensteerCloudConfig {
   readonly apiKey: string;
@@ -9,34 +13,38 @@ export interface OpensteerCloudConfig {
 
 export function resolveCloudConfig(
   input: {
-    readonly enabled?: boolean;
-    readonly apiKey?: string;
-    readonly baseUrl?: string;
-    readonly browserProfile?: CloudBrowserProfilePreference;
-    readonly mode?: "local" | "cloud";
+    readonly provider?: OpensteerProviderOptions;
+    readonly environmentProvider?: string;
   } = {},
 ): OpensteerCloudConfig | undefined {
-  const mode = resolveOpensteerExecutionMode({
-    ...(input.mode === undefined ? {} : { explicit: input.mode }),
-    ...(input.enabled === undefined ? {} : { cloud: input.enabled }),
-    ...(process.env.OPENSTEER_MODE === undefined
+  const provider = resolveOpensteerProvider({
+    ...(input.provider === undefined ? {} : { provider: input.provider }),
+    ...(input.environmentProvider === undefined
       ? {}
-      : { environment: process.env.OPENSTEER_MODE }),
+      : { environmentProvider: input.environmentProvider }),
   });
-  if (mode !== "cloud") {
+  if (provider.kind !== "cloud") {
     return undefined;
   }
 
-  const apiKey = input.apiKey ?? process.env.OPENSTEER_API_KEY;
+  const cloudProvider =
+    input.provider?.kind === "cloud"
+      ? (input.provider as OpensteerCloudProviderOptions)
+      : undefined;
+  const apiKey = cloudProvider?.apiKey ?? process.env.OPENSTEER_API_KEY;
   if (!apiKey || apiKey.trim().length === 0) {
-    throw new Error("Cloud mode requires OPENSTEER_API_KEY or cloud.apiKey.");
+    throw new Error("provider=cloud requires OPENSTEER_API_KEY or provider.apiKey.");
+  }
+  const baseUrl = cloudProvider?.baseUrl ?? process.env.OPENSTEER_BASE_URL;
+  if (!baseUrl || baseUrl.trim().length === 0) {
+    throw new Error("provider=cloud requires OPENSTEER_BASE_URL or provider.baseUrl.");
   }
 
   return {
     apiKey: apiKey.trim(),
-    baseUrl: (input.baseUrl ?? process.env.OPENSTEER_BASE_URL ?? "https://api.opensteer.dev")
-      .trim()
-      .replace(/\/+$/, ""),
-    ...(input.browserProfile === undefined ? {} : { browserProfile: input.browserProfile }),
+    baseUrl: baseUrl.trim().replace(/\/+$/, ""),
+    ...(cloudProvider?.browserProfile === undefined
+      ? {}
+      : { browserProfile: cloudProvider.browserProfile }),
   };
 }

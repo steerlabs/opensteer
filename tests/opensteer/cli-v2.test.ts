@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -30,7 +30,7 @@ describe("Opensteer v2 CLI", () => {
     expect(result.stdout).not.toContain("snapshot-authenticated");
     expect(result.stdout).not.toContain("attach-live");
     expect(result.stdout).not.toContain("--name");
-  });
+  }, 20_000);
 
   test("reports persistent browser status inside a repo-local workspace", async () => {
     await ensureCliArtifactsBuilt();
@@ -62,7 +62,51 @@ describe("Opensteer v2 CLI", () => {
     expect(parsed.rootPath).toContain(path.join(".opensteer", "workspaces", "github-sync"));
     expect(parsed.browserPath).toBe(path.join(parsed.rootPath, "browser"));
     expect(parsed.userDataDir).toBe(path.join(parsed.rootPath, "browser", "user-data"));
-  });
+  }, 20_000);
+
+  test("loads provider config from .env for top-level status", async () => {
+    await ensureCliArtifactsBuilt();
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "opensteer-cli-status-"));
+
+    try {
+      await writeFile(
+        path.join(cwd, ".env"),
+        [
+          "OPENSTEER_PROVIDER=cloud",
+          "OPENSTEER_API_KEY=osk_test",
+          "OPENSTEER_BASE_URL=http://127.0.0.1:8180",
+        ].join("\n"),
+      );
+      const {
+        OPENSTEER_PROVIDER: _opensteerProvider,
+        OPENSTEER_API_KEY: _opensteerApiKey,
+        OPENSTEER_BASE_URL: _opensteerBaseUrl,
+        ...env
+      } = process.env;
+
+      const result = await execFile("node", [CLI_SCRIPT, "status", "--json"], {
+        cwd,
+        env,
+        maxBuffer: 1024 * 1024 * 4,
+      });
+
+      const parsed = JSON.parse(result.stdout) as {
+        readonly provider: {
+          readonly current: string;
+          readonly source: string;
+          readonly cloudBaseUrl?: string;
+        };
+      };
+
+      expect(parsed.provider).toEqual({
+        current: "cloud",
+        source: "env",
+        cloudBaseUrl: "http://127.0.0.1:8180",
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  }, 20_000);
 
   test(
     "discovers reverse candidates from saved workspace network across CLI invocations",

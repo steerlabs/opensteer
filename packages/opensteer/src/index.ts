@@ -240,7 +240,19 @@ export type {
   OpensteerSessionRuntimeOptions,
 } from "./sdk/runtime.js";
 export { OpensteerRuntime, OpensteerSessionRuntime } from "./sdk/runtime.js";
-export type { OpensteerCloudOptions } from "./sdk/runtime-resolution.js";
+export type {
+  OpensteerCloudProviderOptions,
+  OpensteerLocalProviderOptions,
+  OpensteerProviderKind,
+  OpensteerProviderOptions,
+  OpensteerProviderSource,
+  OpensteerResolvedProvider,
+} from "./provider/config.js";
+export {
+  assertProviderSupportsEngine,
+  normalizeOpensteerProviderKind,
+  resolveOpensteerProvider,
+} from "./provider/config.js";
 export {
   createOpensteerSemanticRuntime,
   resolveOpensteerRuntimeConfig,
@@ -257,11 +269,6 @@ export type {
   WorkspaceLiveBrowserRecord,
 } from "./browser-manager.js";
 export { OpensteerBrowserManager } from "./browser-manager.js";
-export type { OpensteerExecutionMode } from "./mode/config.js";
-export {
-  normalizeOpensteerExecutionMode,
-  resolveOpensteerExecutionMode,
-} from "./mode/config.js";
 export type { OpensteerCloudConfig } from "./cloud/config.js";
 export { resolveCloudConfig } from "./cloud/config.js";
 export type {
@@ -303,18 +310,19 @@ export {
 } from "./cloud/client.js";
 export {
   CloudSessionProxy,
-  hasPersistedCloudSession,
   readPersistedCloudSessionRecord,
-  resolveCloudSessionRecordPath,
   type CloudSessionProxyOptions,
   type PersistedCloudSessionRecord,
 } from "./cloud/session-proxy.js";
 export type {
+  OpensteerLiveSessionProvider,
   PersistedLocalBrowserSessionRecord,
   PersistedSessionRecord,
 } from "./live-session.js";
 export {
   clearPersistedSessionRecord,
+  resolveCloudSessionRecordPath,
+  resolveLocalSessionRecordPath,
   readPersistedLocalBrowserSessionRecord,
   readPersistedSessionRecord,
   resolveLiveSessionRecordPath,
