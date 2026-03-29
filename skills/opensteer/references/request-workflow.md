@@ -19,10 +19,10 @@ Use this workflow when the deliverable is a custom API, a replayable request pla
 2. Tag the important navigation or interactions with `networkTag`.
 3. Inspect the captured traffic and isolate the relevant records.
 4. Save useful captures to the workspace if they need to survive later analysis.
-5. Prove the request with `rawRequest()`.
-6. Promote the winning record into a request plan.
+5. Probe the request with `rawRequest()` — try `direct-http` first, then `context-http`.
+6. Infer a request plan from the probed record — pass `transport` if you proved portability.
 7. Add recipes or auth recipes if replay needs deterministic setup.
-8. Replay the plan from code.
+8. Replay the plan from code — works immediately, no extra steps.
 
 This workflow should carry equal weight with DOM automation. Use it whenever the browser page is only the launcher for the real target request.
 
@@ -47,7 +47,6 @@ await opensteer.goto({
 });
 
 await opensteer.click({
-  selector: "button.load-products",
   description: "load products",
   networkTag: "products-load",
 });
@@ -63,26 +62,29 @@ const records = await opensteer.queryNetwork({
 });
 ```
 
-3. Test the request directly.
+3. Probe the request — try `direct-http` first to test portability.
 
 ```ts
 const response = await opensteer.rawRequest({
-  transport: "context-http",
+  transport: "direct-http",
   url: "https://example.com/api/products",
   method: "POST",
   body: {
     json: { page: 1 },
   },
 });
+// If direct-http returns 200, the API is portable (no browser needed).
+// If it fails, try context-http — the API needs browser session state.
 ```
 
-4. Promote a captured record into a request plan.
+4. Infer a request plan — pass `transport` if you proved portability.
 
 ```ts
 await opensteer.inferRequestPlan({
-  recordId: records.records[0]!.id,
+  recordId: response.recordId,
   key: "products.search",
   version: "v1",
+  transport: "direct-http",  // use the transport you proved works
 });
 ```
 
@@ -117,17 +119,18 @@ await opensteer.runAuthRecipe({
 ## CLI Equivalents
 
 ```bash
-opensteer open --workspace demo
+opensteer open https://example.com/app --workspace demo
 opensteer run page.goto --workspace demo \
   --input-json '{"url":"https://example.com/app","networkTag":"page-load"}'
-opensteer run dom.click --workspace demo \
-  --input-json '{"target":{"kind":"selector","selector":"button.load-products"},"persistAsDescription":"load products","networkTag":"products-load"}'
+opensteer click --workspace demo --description "load products"
+  # or with networkTag: opensteer run dom.click --workspace demo \
+  #   --input-json '{"target":{"kind":"description","description":"load products"},"networkTag":"products-load"}'
 opensteer run network.query --workspace demo \
-  --input-json '{"tag":"products-load","includeBodies":true,"limit":20}'
+  --input-json '{"source":"saved","tag":"products-load","includeBodies":true,"limit":20}'
 opensteer run request.raw --workspace demo \
-  --input-json '{"transport":"context-http","url":"https://example.com/api/products","method":"POST","body":{"json":{"page":1}}}'
+  --input-json '{"transport":"direct-http","url":"https://example.com/api/products","method":"POST","body":{"json":{"page":1}}}'
 opensteer run request-plan.infer --workspace demo \
-  --input-json '{"recordId":"rec_123","key":"products.search","version":"v1"}'
+  --input-json '{"recordId":"rec_123","key":"products.search","version":"v1","transport":"direct-http"}'
 opensteer run request.execute --workspace demo \
   --input-json '{"key":"products.search","query":{"q":"laptop"}}'
 ```
@@ -227,7 +230,8 @@ Common mistakes:
 Additional guidance:
 
 - Capture the browser action first if authentication, cookies, or minted tokens may matter.
-- Prefer `direct-http` only after proving the request no longer depends on live browser state.
+- Probe with `direct-http` first. If it works, pass `transport: "direct-http"` to `inferRequestPlan` so the plan is portable. If it fails, fall back to `context-http`.
 - `inferRequestPlan()` throws if the key+version already exists. Catch the error or bump the version.
+- Inferred plans are immediately usable — `request.execute` works right after inference.
 - Use recipes when the request plan needs deterministic setup work. Use auth recipes when the setup is specifically auth refresh or login state.
 - Stay in the DOM workflow only when the rendered page itself is the deliverable. Move here when the request is the durable artifact.
