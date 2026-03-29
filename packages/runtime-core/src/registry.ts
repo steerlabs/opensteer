@@ -9,7 +9,6 @@ import {
   type OpensteerReversePackagePayload,
   type OpensteerReverseReportPayload,
   type OpensteerRequestPlanFreshness,
-  type OpensteerRequestPlanLifecycle,
   type OpensteerRequestPlanPayload,
 } from "@opensteer/protocol";
 
@@ -57,12 +56,9 @@ export type ReverseCaseRecord = RegistryRecord<OpensteerReverseCasePayload>;
 export type ReversePackageRecord = RegistryRecord<OpensteerReversePackagePayload>;
 export type ReverseReportRecord = RegistryRecord<OpensteerReverseReportPayload>;
 
-export type RequestPlanLifecycle = OpensteerRequestPlanLifecycle;
-
 export type RequestPlanFreshness = OpensteerRequestPlanFreshness;
 
 export interface RequestPlanRecord extends RegistryRecord<OpensteerRequestPlanPayload> {
-  readonly lifecycle: RequestPlanLifecycle;
   readonly freshness?: RequestPlanFreshness;
 }
 
@@ -83,7 +79,6 @@ export interface WriteDescriptorInput<TPayload = JsonValue> {
 }
 
 export interface WriteRequestPlanInput extends WriteDescriptorInput<OpensteerRequestPlanPayload> {
-  readonly lifecycle?: RequestPlanLifecycle;
   readonly freshness?: RequestPlanFreshness;
 }
 
@@ -98,10 +93,9 @@ export interface ListRegistryRecordsInput {
   readonly key?: string;
 }
 
-export interface UpdateRequestPlanMetadataInput {
+export interface UpdateRequestPlanFreshnessInput {
   readonly id: string;
   readonly updatedAt?: number;
-  readonly lifecycle?: RequestPlanLifecycle;
   readonly freshness?: RequestPlanFreshness;
 }
 
@@ -130,7 +124,7 @@ export interface RequestPlanRegistryStore {
   getById(id: string): Promise<RequestPlanRecord | undefined>;
   list(input?: ListRegistryRecordsInput): Promise<readonly RequestPlanRecord[]>;
   resolve(input: ResolveRegistryRecordInput): Promise<RequestPlanRecord | undefined>;
-  updateMetadata(input: UpdateRequestPlanMetadataInput): Promise<RequestPlanRecord>;
+  updateFreshness(input: UpdateRequestPlanFreshnessInput): Promise<RequestPlanRecord>;
 }
 
 export interface AuthRecipeRegistryStore {
@@ -291,9 +285,7 @@ abstract class FilesystemRegistryStore<TRecord extends RegistryRecord<unknown>> 
       return this.resolveIndexedRecord(key, normalizeNonEmptyString("version", input.version));
     }
 
-    const matches = (await this.readAllRecords()).filter(
-      (record) => this.isActive(record) && record.key === key,
-    );
+    const matches = (await this.readAllRecords()).filter((record) => record.key === key);
     matches.sort(compareByCreatedAtAndId);
     return matches[0];
   }
@@ -348,8 +340,6 @@ abstract class FilesystemRegistryStore<TRecord extends RegistryRecord<unknown>> 
   protected readAllRecords(): Promise<readonly TRecord[]> {
     return this.readRecordsFromDirectory();
   }
-
-  protected abstract isActive(record: TRecord): boolean;
 
   protected async readRecordsFromDirectory(): Promise<readonly TRecord[]> {
     const files = await listJsonFiles(this.recordsDirectory);
@@ -444,10 +434,6 @@ export class FilesystemDescriptorRegistry
 
     return this.writeRecord(record);
   }
-
-  protected isActive(_record: DescriptorRecord): boolean {
-    return true;
-  }
 }
 
 export class FilesystemRequestPlanRegistry
@@ -483,7 +469,6 @@ export class FilesystemRequestPlanRegistry
       tags: normalizeTags(input.tags),
       ...(provenance === undefined ? {} : { provenance }),
       payload,
-      lifecycle: input.lifecycle ?? "active",
       ...(freshness === undefined ? {} : { freshness }),
     };
 
@@ -496,7 +481,7 @@ export class FilesystemRequestPlanRegistry
     return key === undefined ? records : records.filter((record) => record.key === key);
   }
 
-  async updateMetadata(input: UpdateRequestPlanMetadataInput): Promise<RequestPlanRecord> {
+  async updateFreshness(input: UpdateRequestPlanFreshnessInput): Promise<RequestPlanRecord> {
     const id = normalizeNonEmptyString("id", input.id);
 
     return withFilesystemLock(this.writeLockPath(), async () => {
@@ -517,17 +502,12 @@ export class FilesystemRequestPlanRegistry
       const nextRecord: RequestPlanRecord = {
         ...existing,
         updatedAt: nextUpdatedAt,
-        lifecycle: input.lifecycle ?? existing.lifecycle,
         ...(nextFreshness === undefined ? {} : { freshness: nextFreshness }),
       };
 
       await writeJsonFileAtomic(this.recordPath(id), nextRecord);
       return nextRecord;
     });
-  }
-
-  protected isActive(record: RequestPlanRecord): boolean {
-    return record.lifecycle === "active";
   }
 }
 
@@ -573,10 +553,6 @@ export class FilesystemAuthRecipeRegistry
     const records = await this.readAllRecords();
     return key === undefined ? records : records.filter((record) => record.key === key);
   }
-
-  protected isActive(_record: AuthRecipeRecord): boolean {
-    return true;
-  }
 }
 
 export class FilesystemRecipeRegistry
@@ -621,10 +597,6 @@ export class FilesystemRecipeRegistry
     const records = await this.readAllRecords();
     return key === undefined ? records : records.filter((record) => record.key === key);
   }
-
-  protected isActive(_record: RecipeRecord): boolean {
-    return true;
-  }
 }
 
 export class FilesystemInteractionTraceRegistry
@@ -668,10 +640,6 @@ export class FilesystemInteractionTraceRegistry
     const key = input.key === undefined ? undefined : normalizeNonEmptyString("key", input.key);
     const records = await this.readAllRecords();
     return key === undefined ? records : records.filter((record) => record.key === key);
-  }
-
-  protected isActive(_record: InteractionTraceRecord): boolean {
-    return true;
   }
 }
 
@@ -750,10 +718,6 @@ export class FilesystemReverseCaseRegistry
       return nextRecord;
     });
   }
-
-  protected isActive(_record: ReverseCaseRecord): boolean {
-    return true;
-  }
 }
 
 export class FilesystemReversePackageRegistry
@@ -798,10 +762,6 @@ export class FilesystemReversePackageRegistry
     const records = await this.readAllRecords();
     return key === undefined ? records : records.filter((record) => record.key === key);
   }
-
-  protected isActive(_record: ReversePackageRecord): boolean {
-    return true;
-  }
 }
 
 export class FilesystemReverseReportRegistry
@@ -845,10 +805,6 @@ export class FilesystemReverseReportRegistry
     const key = input.key === undefined ? undefined : normalizeNonEmptyString("key", input.key);
     const records = await this.readAllRecords();
     return key === undefined ? records : records.filter((record) => record.key === key);
-  }
-
-  protected isActive(_record: ReverseReportRecord): boolean {
-    return true;
   }
 }
 

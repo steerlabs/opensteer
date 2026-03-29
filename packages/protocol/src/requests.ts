@@ -150,8 +150,6 @@ export interface OpensteerRegistryProvenance {
   readonly notes?: string;
 }
 
-export type OpensteerRequestPlanLifecycle = "draft" | "active" | "deprecated" | "retired";
-
 export interface OpensteerRequestPlanFreshness {
   readonly lastValidatedAt?: number;
   readonly staleAt?: number;
@@ -167,7 +165,6 @@ export interface OpensteerRequestPlanRecord {
   readonly contentHash: string;
   readonly tags: readonly string[];
   readonly provenance?: OpensteerRegistryProvenance;
-  readonly lifecycle: OpensteerRequestPlanLifecycle;
   readonly freshness?: OpensteerRequestPlanFreshness;
   readonly payload: OpensteerRequestPlanPayload;
 }
@@ -425,7 +422,6 @@ export interface OpensteerWriteRequestPlanInput {
   readonly version: string;
   readonly tags?: readonly string[];
   readonly provenance?: OpensteerRegistryProvenance;
-  readonly lifecycle?: OpensteerRequestPlanLifecycle;
   readonly freshness?: OpensteerRequestPlanFreshness;
   readonly payload: OpensteerRequestPlanPayload;
 }
@@ -586,7 +582,6 @@ export interface OpensteerInferRequestPlanInput {
   readonly recordId: string;
   readonly key: string;
   readonly version: string;
-  readonly lifecycle?: OpensteerRequestPlanLifecycle;
 }
 
 export const opensteerRequestScalarSchema: JsonSchema = oneOfSchema(
@@ -867,13 +862,6 @@ export const opensteerRegistryProvenanceSchema: JsonSchema = objectSchema(
   },
 );
 
-export const opensteerRequestPlanLifecycleSchema: JsonSchema = enumSchema(
-  ["draft", "active", "deprecated", "retired"] as const,
-  {
-    title: "OpensteerRequestPlanLifecycle",
-  },
-);
-
 export const opensteerRequestPlanFreshnessSchema: JsonSchema = objectSchema(
   {
     lastValidatedAt: integerSchema({ minimum: 0 }),
@@ -897,7 +885,6 @@ export const opensteerRequestPlanRecordSchema: JsonSchema = objectSchema(
       uniqueItems: true,
     }),
     provenance: opensteerRegistryProvenanceSchema,
-    lifecycle: opensteerRequestPlanLifecycleSchema,
     freshness: opensteerRequestPlanFreshnessSchema,
     payload: opensteerRequestPlanPayloadSchema,
   },
@@ -911,7 +898,6 @@ export const opensteerRequestPlanRecordSchema: JsonSchema = objectSchema(
       "updatedAt",
       "contentHash",
       "tags",
-      "lifecycle",
       "payload",
     ],
   },
@@ -1381,7 +1367,6 @@ export const opensteerWriteRequestPlanInputSchema: JsonSchema = objectSchema(
       uniqueItems: true,
     }),
     provenance: opensteerRegistryProvenanceSchema,
-    lifecycle: opensteerRequestPlanLifecycleSchema,
     freshness: opensteerRequestPlanFreshnessSchema,
     payload: opensteerRequestPlanPayloadSchema,
   },
@@ -1644,7 +1629,6 @@ export const opensteerInferRequestPlanInputSchema: JsonSchema = objectSchema(
     recordId: stringSchema({ minLength: 1 }),
     key: stringSchema({ minLength: 1 }),
     version: stringSchema({ minLength: 1 }),
-    lifecycle: opensteerRequestPlanLifecycleSchema,
   },
   {
     title: "OpensteerInferRequestPlanInput",

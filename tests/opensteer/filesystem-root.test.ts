@@ -477,7 +477,7 @@ describe("Phase 3 filesystem root", () => {
       }),
     ).rejects.toThrow(/already exists/i);
 
-    const activeRequestPlan = await root.registry.requestPlans.write({
+    const initialRequestPlan = await root.registry.requestPlans.write({
       id: "request-plan:v1",
       key: "request.login",
       version: "1.0.0",
@@ -495,18 +495,16 @@ describe("Phase 3 filesystem root", () => {
       version: "2.0.0",
       createdAt: 450,
       payload: requestPlanPayload("https://example.com/login"),
-      lifecycle: "active",
     });
     await root.registry.requestPlans.write({
-      id: "request-plan:draft",
+      id: "request-plan:v3",
       key: "request.login",
       version: "3.0.0",
       createdAt: 500,
       payload: requestPlanPayload("https://example.com/login"),
-      lifecycle: "draft",
     });
 
-    expect(await root.registry.requestPlans.getById(activeRequestPlan.id)).toMatchObject({
+    expect(await root.registry.requestPlans.getById(initialRequestPlan.id)).toMatchObject({
       freshness: {
         lastValidatedAt: 405,
         staleAt: 500,
@@ -518,7 +516,7 @@ describe("Phase 3 filesystem root", () => {
         key: "request.login",
       }),
     ).toMatchObject({
-      id: "request-plan:v2",
+      id: "request-plan:v3",
     });
     expect(
       await root.registry.requestPlans.resolve({
@@ -526,8 +524,7 @@ describe("Phase 3 filesystem root", () => {
         version: "3.0.0",
       }),
     ).toMatchObject({
-      id: "request-plan:draft",
-      lifecycle: "draft",
+      id: "request-plan:v3",
     });
     await expect(
       root.registry.requestPlans.write({
@@ -628,17 +625,16 @@ describe("Phase 3 filesystem root", () => {
     );
   });
 
-  test("lists request plans and updates lifecycle and freshness without changing the content hash", async () => {
+  test("lists request plans and updates freshness without changing the content hash", async () => {
     const rootPath = await createTemporaryRoot();
     const root = await createFilesystemOpensteerRoot({ rootPath });
 
-    const active = await root.registry.requestPlans.write({
+    const plan = await root.registry.requestPlans.write({
       id: "request-plan:list-a",
       key: "request.list",
       version: "1.0.0",
       createdAt: 100,
       payload: requestPlanPayload("https://example.com/list"),
-      lifecycle: "active",
     });
     await root.registry.requestPlans.write({
       id: "request-plan:list-b",
@@ -646,15 +642,16 @@ describe("Phase 3 filesystem root", () => {
       version: "2.0.0",
       createdAt: 200,
       payload: requestPlanPayload("https://example.com/list"),
-      lifecycle: "draft",
     });
 
     expect(await root.registry.requestPlans.list()).toHaveLength(2);
     expect(await root.registry.requestPlans.list({ key: "request.list" })).toHaveLength(2);
+    expect(await root.registry.requestPlans.resolve({ key: "request.list" })).toMatchObject({
+      id: "request-plan:list-b",
+    });
 
-    const updated = await root.registry.requestPlans.updateMetadata({
-      id: active.id,
-      lifecycle: "deprecated",
+    const updated = await root.registry.requestPlans.updateFreshness({
+      id: plan.id,
       freshness: {
         lastValidatedAt: 250,
         staleAt: 500,
@@ -662,13 +659,12 @@ describe("Phase 3 filesystem root", () => {
       updatedAt: 260,
     });
 
-    expect(updated.lifecycle).toBe("deprecated");
     expect(updated.freshness).toEqual({
       lastValidatedAt: 250,
       staleAt: 500,
     });
-    expect(updated.contentHash).toBe(active.contentHash);
-    expect(updated.payload).toEqual(active.payload);
+    expect(updated.contentHash).toBe(plan.contentHash);
+    expect(updated.payload).toEqual(plan.payload);
   });
 
   test("rejects concurrent duplicate artifact ids without overwriting the winner", async () => {
@@ -743,7 +739,6 @@ describe("Phase 3 filesystem root", () => {
       version: "1.0.0",
       createdAt: 120,
       payload: requestPlanPayload("https://example.com/boundary"),
-      lifecycle: "active",
       freshness: {
         lastValidatedAt: 121,
       },
