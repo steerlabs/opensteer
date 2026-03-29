@@ -65,7 +65,6 @@ export function inferRequestPlanFromNetworkRecord(
   return {
     key: input.key,
     version: input.version,
-    lifecycle: input.lifecycle ?? "draft",
     provenance: {
       source: record.source === "saved" ? "saved-network-record" : "live-network-record",
       sourceId: record.recordId,

@@ -3404,7 +3404,6 @@ export class OpensteerSessionRuntime {
       recordId: candidate.recordId,
       key: input.key,
       version: input.version,
-      lifecycle: "draft",
     });
     const defaultHeaders =
       inferred.payload.endpoint.defaultHeaders === undefined
@@ -4186,7 +4185,6 @@ export class OpensteerSessionRuntime {
           id: record.id,
           key: record.key,
           version: record.version,
-          lifecycle: record.lifecycle,
         },
       });
       return record;
@@ -4234,7 +4232,6 @@ export class OpensteerSessionRuntime {
           id: record.id,
           key: record.key,
           version: record.version,
-          lifecycle: record.lifecycle,
         },
       });
 
@@ -4290,7 +4287,6 @@ export class OpensteerSessionRuntime {
           id: record.id,
           key: record.key,
           version: record.version,
-          lifecycle: record.lifecycle,
         },
       });
 
@@ -7058,7 +7054,7 @@ export class OpensteerSessionRuntime {
 
   private async touchRequestPlanFreshness(plan: RequestPlanRecord): Promise<void> {
     const freshness = touchFreshness(plan.freshness);
-    await this.requireRoot().registry.requestPlans.updateMetadata({
+    await this.requireRoot().registry.requestPlans.updateFreshness({
       id: plan.id,
       ...(freshness === undefined ? {} : { freshness }),
     });
@@ -8870,7 +8866,6 @@ function buildMinimizedRequestPlan(input: {
         ? { capturedAt: input.record.savedAt }
         : {}),
     },
-    lifecycle: "draft",
     payload: normalizeRequestPlanPayload({
       transport: {
         kind: input.transport,

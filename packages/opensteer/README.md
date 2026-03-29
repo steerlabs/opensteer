@@ -304,8 +304,8 @@ Important subtrees:
 - `route({ urlPattern, resourceTypes?, times?, handler })`
 - `interceptScript({ urlPattern, handler, times? })`
 - `rawRequest({ transport?, pageRef?, url, method?, headers?, body?, followRedirects? })`
-- `inferRequestPlan({ recordId, key, version, lifecycle? })`
-- `writeRequestPlan({ key, version, payload, lifecycle?, tags?, provenance?, freshness? })`
+- `inferRequestPlan({ recordId, key, version })`
+- `writeRequestPlan({ key, version, payload, tags?, provenance?, freshness? })`
 - `getRequestPlan({ key, version? })`
 - `listRequestPlans({ key? })`
 - `writeRecipe({ key, version, payload, tags?, provenance? })`

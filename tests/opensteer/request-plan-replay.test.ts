@@ -58,7 +58,6 @@ describe.sequential("request plan replay", () => {
           recordId: target.recordId,
           key: "request-plan.replayable-post",
           version: "1",
-          lifecycle: "active",
         });
 
         expect(plan.payload.body).toMatchObject({
