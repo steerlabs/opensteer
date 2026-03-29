@@ -1,14 +1,14 @@
 import type { OpensteerCloudConfig } from "./config.js";
 import type {
-  OpensteerBrowserContextOptions,
-  OpensteerBrowserLaunchOptions,
-} from "@opensteer/protocol";
-import type {
   BrowserProfileImportCreateRequest,
   BrowserProfileImportCreateResponse,
   BrowserProfileImportDescriptor,
   CloudBrowserProfilePreference,
-} from "@opensteer/cloud-contracts";
+  OpensteerSessionAccessGrantResponse,
+  OpensteerSessionGrantKind,
+  OpensteerBrowserContextOptions,
+  OpensteerBrowserLaunchOptions,
+} from "@opensteer/protocol";
 import { syncBrowserProfileCookies, type SyncBrowserProfileCookiesInput } from "./profile-sync.js";
 
 export interface OpensteerCloudSessionCreateInput {
@@ -72,6 +72,22 @@ export class OpensteerCloudClient {
       method: "GET",
     });
     return (await response.json()) as OpensteerCloudSessionState;
+  }
+
+  async issueAccess(
+    sessionId: string,
+    capabilities: readonly OpensteerSessionGrantKind[],
+  ): Promise<OpensteerSessionAccessGrantResponse> {
+    const response = await this.request(
+      `/v1/sessions/${encodeURIComponent(sessionId)}/access`,
+      {
+        method: "POST",
+        body: {
+          capabilities,
+        },
+      },
+    );
+    return (await response.json()) as OpensteerSessionAccessGrantResponse;
   }
 
   async closeSession(sessionId: string): Promise<void> {

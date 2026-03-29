@@ -331,7 +331,7 @@ describe("cloud browser-profile integration", () => {
     }
   });
 
-  test("CloudSessionProxy rejects unsupported cloud operations before creating a session", async () => {
+  test("CloudSessionProxy rejects attach browser mode before creating a session", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
@@ -342,20 +342,14 @@ describe("cloud browser-profile integration", () => {
       }),
     );
 
-    await expect(proxy.listPages()).rejects.toMatchObject({
-      name: "OpensteerProtocolError",
-      code: "unsupported-operation",
-      message: "Cloud mode does not currently support page.list.",
-    });
     await expect(
-      proxy.discoverReverse({
-        objective: "reverse cloud",
+      proxy.open({
+        browser: {
+          mode: "attach",
+          endpoint: "ws://127.0.0.1:9222/devtools/browser/root",
+        },
       }),
-    ).rejects.toMatchObject({
-      name: "OpensteerProtocolError",
-      code: "unsupported-operation",
-      message: "Cloud mode does not currently support reverse.discover.",
-    });
+    ).rejects.toThrow('Cloud mode does not support browser.mode="attach".');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

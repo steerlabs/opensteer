@@ -1,4 +1,4 @@
-import type { PortableBrowserProfileCookieRecord } from "@opensteer/cloud-contracts";
+import type { PortableBrowserProfileCookieRecord } from "@opensteer/protocol";
 
 // Keep this helper engine-agnostic so opensteer does not depend on Playwright types.
 export interface BrowserProfileSyncCookie {

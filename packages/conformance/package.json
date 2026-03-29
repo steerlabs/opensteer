@@ -1,8 +1,8 @@
 {
-  "name": "@opensteer/cloud-contracts",
+  "name": "@opensteer/conformance",
   "private": true,
-  "version": "0.7.0",
-  "description": "Cloud session and browser-profile contracts shared within the Opensteer repo.",
+  "version": "0.1.0",
+  "description": "Reusable conformance cases for Opensteer local and cloud runtimes.",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
@@ -27,17 +27,12 @@
   "files": [
     "dist"
   ],
+  "dependencies": {
+    "@opensteer/protocol": "workspace:*"
+  },
   "scripts": {
     "build": "tsup",
     "clean": "rimraf dist",
     "typecheck": "tsc --noEmit -p tsconfig.json"
-  },
-  "dependencies": {
-    "@opensteer/browser-core": "workspace:*"
-  },
-  "devDependencies": {
-    "rimraf": "^6.1.3",
-    "tsup": "^8.5.1",
-    "typescript": "^5.9.3"
   }
 }

@@ -1,4 +1,4 @@
-import type { CloudBrowserProfilePreference } from "@opensteer/cloud-contracts";
+import type { CloudBrowserProfilePreference } from "@opensteer/protocol";
 
 import {
   DEFAULT_OPENSTEER_ENGINE,
@@ -21,6 +21,20 @@ export interface OpensteerCloudOptions {
   readonly browserProfile?: CloudBrowserProfilePreference;
 }
 
+export interface OpensteerLocalProviderOptions {
+  readonly kind: "local";
+}
+
+export interface OpensteerCloudProviderOptions extends OpensteerCloudOptions {
+  readonly kind: "cloud";
+  readonly region?: string;
+  readonly sessionId?: string;
+}
+
+export type OpensteerProviderOptions =
+  | OpensteerLocalProviderOptions
+  | OpensteerCloudProviderOptions;
+
 export interface OpensteerResolvedRuntimeConfig {
   readonly mode: OpensteerExecutionMode;
   readonly cloud?: OpensteerCloudConfig;
@@ -29,10 +43,28 @@ export interface OpensteerResolvedRuntimeConfig {
 export function resolveOpensteerRuntimeConfig(
   input: {
     readonly cloud?: boolean | OpensteerCloudOptions;
+    readonly provider?: OpensteerProviderOptions;
     readonly environmentMode?: string;
     readonly mode?: OpensteerExecutionMode;
   } = {},
 ): OpensteerResolvedRuntimeConfig {
+  if (input.provider?.kind === "cloud") {
+    return {
+      mode: "cloud",
+      cloud: resolveCloudConfig({
+        enabled: true,
+        ...input.provider,
+        mode: "cloud",
+      })!,
+    };
+  }
+
+  if (input.provider?.kind === "local") {
+    return {
+      mode: "local",
+    };
+  }
+
   const mode = resolveOpensteerExecutionMode({
     ...(input.mode === undefined ? {} : { explicit: input.mode }),
     cloud: input.cloud !== undefined && input.cloud !== false,
@@ -58,6 +90,7 @@ export function createOpensteerSemanticRuntime(
     readonly runtimeOptions?: OpensteerRuntimeOptions;
     readonly engine?: OpensteerEngineName;
     readonly cloud?: boolean | OpensteerCloudOptions;
+    readonly provider?: OpensteerProviderOptions;
     readonly mode?: OpensteerExecutionMode;
   } = {},
 ): OpensteerDisconnectableRuntime {
@@ -65,6 +98,7 @@ export function createOpensteerSemanticRuntime(
   const engine = input.engine ?? runtimeOptions.engineName ?? DEFAULT_OPENSTEER_ENGINE;
   const config = resolveOpensteerRuntimeConfig({
     ...(input.cloud === undefined ? {} : { cloud: input.cloud }),
+    ...(input.provider === undefined ? {} : { provider: input.provider }),
     ...(input.mode === undefined ? {} : { mode: input.mode }),
     ...(process.env.OPENSTEER_MODE === undefined
       ? {}

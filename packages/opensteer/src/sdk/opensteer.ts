@@ -61,6 +61,7 @@ import type {
   OpensteerRunRecipeOutput,
   OpensteerRunAuthRecipeInput,
   OpensteerRunAuthRecipeOutput,
+  OpensteerSessionInfo,
   OpensteerScriptBeautifyInput,
   OpensteerScriptBeautifyOutput,
   OpensteerScriptDeobfuscateInput,
@@ -107,11 +108,13 @@ import {
 import { OpensteerRuntime, type OpensteerRuntimeOptions } from "./runtime.js";
 import {
   createOpensteerSemanticRuntime,
+  type OpensteerProviderOptions,
   resolveOpensteerRuntimeConfig,
   type OpensteerCloudOptions,
 } from "./runtime-resolution.js";
 import type {
   OpensteerInterceptScriptOptions,
+  OpensteerInstrumentableRuntime,
   OpensteerRouteOptions,
   OpensteerRouteRegistration,
 } from "./instrumentation.js";
@@ -213,6 +216,7 @@ export type OpensteerAddInitScriptOptions = OpensteerAddInitScriptInput;
 
 export interface OpensteerOptions extends OpensteerRuntimeOptions {
   readonly cloud?: boolean | OpensteerCloudOptions;
+  readonly provider?: OpensteerProviderOptions;
 }
 
 export interface OpensteerBrowserCloneOptions {
@@ -235,6 +239,7 @@ export class Opensteer {
   constructor(options: OpensteerOptions = {}) {
     const runtimeConfig = resolveOpensteerRuntimeConfig({
       ...(options.cloud === undefined ? {} : { cloud: options.cloud }),
+      ...(options.provider === undefined ? {} : { provider: options.provider }),
       ...(process.env.OPENSTEER_MODE === undefined
         ? {}
         : { environmentMode: process.env.OPENSTEER_MODE }),
@@ -245,6 +250,7 @@ export class Opensteer {
       this.runtime = createOpensteerSemanticRuntime({
         mode: runtimeConfig.mode,
         ...(options.cloud === undefined ? {} : { cloud: options.cloud }),
+        ...(options.provider === undefined ? {} : { provider: options.provider }),
         ...(options.engineName === undefined ? {} : { engine: options.engineName }),
         runtimeOptions: {
           ...options,
@@ -266,6 +272,7 @@ export class Opensteer {
     this.runtime = createOpensteerSemanticRuntime({
       mode: runtimeConfig.mode,
       ...(options.cloud === undefined ? {} : { cloud: options.cloud }),
+      ...(options.provider === undefined ? {} : { provider: options.provider }),
       ...(options.engineName === undefined ? {} : { engine: options.engineName }),
       runtimeOptions: {
         ...options,
@@ -283,6 +290,10 @@ export class Opensteer {
 
   async open(input: string | OpensteerOpenInput = {}): Promise<OpensteerOpenOutput> {
     return this.runtime.open(typeof input === "string" ? { url: input } : input);
+  }
+
+  async info(): Promise<OpensteerSessionInfo> {
+    return this.runtime.info();
   }
 
   async listPages(input: OpensteerPageListInput = {}): Promise<OpensteerPageListOutput> {
@@ -677,12 +688,21 @@ export class Opensteer {
 
   private requireOwnedInstrumentationRuntime(
     method: "route" | "interceptScript",
-  ): OpensteerRuntime {
-    if (this.runtime instanceof OpensteerRuntime) {
+  ): OpensteerInstrumentableRuntime {
+    if (isInstrumentableRuntime(this.runtime)) {
       return this.runtime;
     }
-    throw new Error(`${method}() is only available on owned local SDK sessions.`);
+    throw new Error(`${method}() is not available for this session runtime.`);
   }
+}
+
+function isInstrumentableRuntime(
+  runtime: OpensteerDisconnectableRuntime,
+): runtime is OpensteerDisconnectableRuntime & OpensteerInstrumentableRuntime {
+  return (
+    typeof (runtime as Partial<OpensteerInstrumentableRuntime>).route === "function" &&
+    typeof (runtime as Partial<OpensteerInstrumentableRuntime>).interceptScript === "function"
+  );
 }
 
 function createUnsupportedBrowserController(): OpensteerBrowserController {

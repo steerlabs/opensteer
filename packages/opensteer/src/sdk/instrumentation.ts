@@ -69,3 +69,8 @@ export interface OpensteerInterceptScriptOptions {
     readonly status: number;
   }) => string | Promise<string>;
 }
+
+export interface OpensteerInstrumentableRuntime {
+  route(input: OpensteerRouteOptions): Promise<OpensteerRouteRegistration>;
+  interceptScript(input: OpensteerInterceptScriptOptions): Promise<OpensteerRouteRegistration>;
+}

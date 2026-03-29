@@ -1,4 +1,4 @@
-import type { CloudBrowserProfilePreference } from "@opensteer/cloud-contracts";
+import type { CloudBrowserProfilePreference } from "@opensteer/protocol";
 import { resolveOpensteerExecutionMode } from "../mode/config.js";
 
 export interface OpensteerCloudConfig {

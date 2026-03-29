@@ -292,7 +292,7 @@ export type {
   CloudSessionSummary,
   CloudSessionVisibilityScope,
   CloudViewport,
-} from "@opensteer/cloud-contracts";
+} from "@opensteer/protocol";
 export {
   OpensteerCloudClient,
   type OpensteerCloudSessionCreateInput,
@@ -307,6 +307,17 @@ export {
   type CloudSessionProxyOptions,
   type PersistedCloudSessionRecord,
 } from "./cloud/session-proxy.js";
+export type {
+  PersistedLocalBrowserSessionRecord,
+  PersistedSessionRecord,
+} from "./live-session.js";
+export {
+  clearPersistedSessionRecord,
+  readPersistedLocalBrowserSessionRecord,
+  readPersistedSessionRecord,
+  resolveLiveSessionRecordPath,
+  writePersistedSessionRecord,
+} from "./live-session.js";
 export { dispatchSemanticOperation } from "./cli/dispatch.js";
 export type {
   InspectedCdpEndpoint,

@@ -6,10 +6,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@opensteer/browser-core": path.resolve(__dirname, "packages/browser-core/src/index.ts"),
-      "@opensteer/cloud-contracts": path.resolve(
-        __dirname,
-        "packages/cloud-contracts/src/index.ts",
-      ),
+      "@opensteer/conformance": path.resolve(__dirname, "packages/conformance/src/index.ts"),
       "@opensteer/engine-abp": path.resolve(__dirname, "packages/engine-abp/src/index.ts"),
       "@opensteer/engine-playwright": path.resolve(
         __dirname,

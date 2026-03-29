@@ -93,6 +93,7 @@ import type {
   OpensteerRunRecipeOutput,
   OpensteerRunAuthRecipeInput,
   OpensteerRunAuthRecipeOutput,
+  OpensteerSessionInfo,
   OpensteerSessionCloseOutput,
   OpensteerOpenInput,
   OpensteerOpenOutput,
@@ -109,6 +110,7 @@ export interface OpensteerRuntimeOperationOptions {
 }
 
 export interface OpensteerSemanticRuntime {
+  info(options?: OpensteerRuntimeOperationOptions): Promise<OpensteerSessionInfo>;
   open(
     input?: OpensteerOpenInput,
     options?: OpensteerRuntimeOperationOptions,
