@@ -114,9 +114,8 @@ import type { CloudBrowserProfilePreference } from "@opensteer/protocol";
 import type { AuthRecipeRecord, RecipeRecord, RequestPlanRecord } from "../registry.js";
 import {
   clearPersistedSessionRecord,
-  hasPersistedCloudSession,
   readPersistedCloudSessionRecord,
-  resolveLiveSessionRecordPath,
+  resolveCloudSessionRecordPath,
   writePersistedSessionRecord,
   type PersistedCloudSessionRecord,
 } from "../live-session.js";
@@ -152,9 +151,8 @@ interface CloudSessionInitInput {
 }
 
 export {
-  hasPersistedCloudSession,
   readPersistedCloudSessionRecord,
-  resolveLiveSessionRecordPath as resolveCloudSessionRecordPath,
+  resolveCloudSessionRecordPath,
 };
 export type { PersistedCloudSessionRecord };
 
@@ -594,7 +592,6 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
             layout: "opensteer-session" as const,
             version: 1 as const,
             provider: "cloud" as const,
-            mode: "cloud" as const,
             ...(this.workspace === undefined ? {} : { workspace: this.workspace }),
             sessionId: this.sessionId,
             baseUrl: this.sessionBaseUrl,
@@ -664,7 +661,6 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
       layout: "opensteer-session",
       version: 1,
       provider: "cloud",
-      mode: "cloud",
       ...(this.workspace === undefined ? {} : { workspace: this.workspace }),
       sessionId: session.sessionId,
       baseUrl: session.baseUrl,
@@ -709,7 +705,7 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
   }
 
   private async clearPersistedSession(): Promise<void> {
-    await clearPersistedSessionRecord(this.rootPath).catch(() => undefined);
+    await clearPersistedSessionRecord(this.rootPath, "cloud").catch(() => undefined);
   }
 
   private async isReusableCloudSession(sessionId: string): Promise<boolean> {

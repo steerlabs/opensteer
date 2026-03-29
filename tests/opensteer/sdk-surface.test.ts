@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 
 const state = vi.hoisted(() => {
   const runtimeConfig = {
-    mode: "local" as "local" | "cloud",
+    provider: {
+      kind: "local" as "local" | "cloud",
+      source: "default" as const,
+    },
   };
   const runtime = {
     open: vi.fn(async (input = {}) => ({
@@ -54,9 +57,7 @@ const state = vi.hoisted(() => {
 
 vi.mock("../../packages/opensteer/src/sdk/runtime-resolution.js", () => ({
   createOpensteerSemanticRuntime: state.createRuntime,
-  resolveOpensteerRuntimeConfig: vi.fn(() => ({
-    mode: state.runtimeConfig.mode,
-  })),
+  resolveOpensteerRuntimeConfig: vi.fn(() => state.runtimeConfig),
 }));
 
 vi.mock("../../packages/opensteer/src/browser-manager.js", () => ({
@@ -68,7 +69,10 @@ import { Opensteer } from "../../packages/opensteer/src/sdk/opensteer.js";
 describe("Opensteer v2 SDK surface", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    state.runtimeConfig.mode = "local";
+    state.runtimeConfig.provider = {
+      kind: "local",
+      source: "default",
+    };
   });
 
   test("constructs the browser manager and runtime around workspace-centric options", async () => {
@@ -98,7 +102,6 @@ describe("Opensteer v2 SDK surface", () => {
       rootDir: "/tmp/opensteer",
     });
     expect(state.createRuntime).toHaveBeenCalledWith({
-      mode: "local",
       runtimeOptions: {
         workspace: "github-sync",
         browser: "persistent",
@@ -155,11 +158,16 @@ describe("Opensteer v2 SDK surface", () => {
   });
 
   test("cloud mode skips browser-manager ownership and blocks browser admin helpers", async () => {
-    state.runtimeConfig.mode = "cloud";
+    state.runtimeConfig.provider = {
+      kind: "cloud",
+      source: "explicit",
+    };
 
     const opensteer = new Opensteer({
       workspace: "github-sync",
-      cloud: true,
+      provider: {
+        kind: "cloud",
+      },
       rootDir: "/tmp/opensteer",
     });
 
@@ -167,11 +175,11 @@ describe("Opensteer v2 SDK surface", () => {
 
     expect(state.browserManagerCtor).not.toHaveBeenCalled();
     expect(state.createRuntime).toHaveBeenCalledWith({
-      mode: "cloud",
-      cloud: true,
+      provider: {
+        kind: "cloud",
+      },
       runtimeOptions: {
         workspace: "github-sync",
-        cloud: true,
         rootDir: "/tmp/opensteer",
       },
     });

@@ -5,8 +5,8 @@ import process from "node:process";
 import type { OpensteerBrowserOptions, OpensteerSemanticOperationName } from "@opensteer/protocol";
 
 import { OpensteerBrowserManager } from "../browser-manager.js";
-import { hasPersistedCloudSession } from "../cloud/session-proxy.js";
 import { dispatchSemanticOperation } from "./dispatch.js";
+import { loadCliEnvironment } from "./env-loader.js";
 import { discoverLocalCdpBrowsers, inspectCdpEndpoint } from "../local-browser/cdp-discovery.js";
 import {
   resolveOpensteerEngineName,
@@ -14,15 +14,18 @@ import {
 } from "../internal/engine-selection.js";
 import { runOpensteerSkillsInstaller } from "./skills-installer.js";
 import {
-  assertExecutionModeSupportsEngine,
-  resolveOpensteerExecutionMode,
-  type OpensteerExecutionMode,
-} from "../mode/config.js";
-import { resolveFilesystemWorkspacePath } from "../root.js";
+  assertProviderSupportsEngine,
+  normalizeOpensteerProviderKind,
+  resolveOpensteerProvider,
+  type OpensteerProviderKind,
+  type OpensteerProviderOptions,
+  type OpensteerResolvedProvider,
+} from "../provider/config.js";
 import {
   createOpensteerSemanticRuntime,
-  type OpensteerCloudOptions,
+  resolveOpensteerRuntimeConfig,
 } from "../sdk/runtime-resolution.js";
+import { collectOpensteerStatus, renderOpensteerStatus } from "./status.js";
 
 const OPERATION_ALIASES = new Map<string, OpensteerSemanticOperationName>([
   ["open", "session.open"],
@@ -79,6 +82,7 @@ const OPERATION_ALIASES = new Map<string, OpensteerSemanticOperationName>([
 ]);
 
 async function main(): Promise<void> {
+  await loadCliEnvironment(process.cwd());
   const parsed = parseCommandLine(process.argv.slice(2));
   if (parsed.help || parsed.command.length === 0) {
     printHelp();
@@ -106,6 +110,11 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (parsed.command[0] === "status") {
+    await handleStatusCommand(parsed);
+    return;
+  }
+
   const operation =
     parsed.command[0] === "run"
       ? (parsed.rest[0] as OpensteerSemanticOperationName | undefined)
@@ -118,22 +127,15 @@ async function main(): Promise<void> {
     throw new Error('Stateful commands require "--workspace <id>".');
   }
 
-  const mode = await resolveCliExecutionMode(parsed);
-  assertExecutionModeSupportsEngine(mode, parsed.options.engineName);
-  const cloudOptions = buildCliCloudOptions(parsed);
-  if (
-    mode !== "cloud" &&
-    (parsed.options.cloudProfileId !== undefined ||
-      parsed.options.cloudProfileReuseIfActive === true)
-  ) {
-    throw new Error("Cloud profile options require cloud mode.");
-  }
+  const provider = resolveCliProvider(parsed);
+  assertProviderSupportsEngine(provider.kind, parsed.options.engineName);
+  assertCloudCliOptionsMatchProvider(parsed, provider.kind);
+  const runtimeProvider = buildCliRuntimeProvider(parsed, provider.kind);
 
   if (operation === "session.close") {
-    if (mode === "cloud") {
+    if (provider.kind === "cloud") {
       const runtime = createOpensteerSemanticRuntime({
-        mode,
-        ...(cloudOptions === undefined ? {} : { cloud: cloudOptions }),
+        ...(runtimeProvider === undefined ? {} : { provider: runtimeProvider }),
         engine: parsed.options.engineName,
         runtimeOptions: {
           workspace: parsed.options.workspace,
@@ -162,8 +164,7 @@ async function main(): Promise<void> {
   }
 
   const runtime = createOpensteerSemanticRuntime({
-    mode,
-    ...(cloudOptions === undefined ? {} : { cloud: cloudOptions }),
+    ...(runtimeProvider === undefined ? {} : { provider: runtimeProvider }),
     engine: parsed.options.engineName,
     runtimeOptions: {
       workspace: parsed.options.workspace,
@@ -371,10 +372,12 @@ function resolveOperation(command: readonly string[]): OpensteerSemanticOperatio
 interface ParsedCliOptions {
   readonly workspace?: string;
   readonly engineName: OpensteerEngineName;
-  readonly local?: boolean;
-  readonly cloud?: boolean;
+  readonly provider?: OpensteerProviderKind;
+  readonly cloudBaseUrl?: string;
+  readonly cloudApiKey?: string;
   readonly cloudProfileId?: string;
   readonly cloudProfileReuseIfActive?: boolean;
+  readonly json?: boolean;
   readonly agents?: readonly string[];
   readonly skills?: readonly string[];
   readonly global?: boolean;
@@ -508,10 +511,16 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
   const contextJson = readJsonObject(rawOptions, "context-json");
   const inputJson = readJsonObject(rawOptions, "input-json");
   const schemaJson = readJsonObject(rawOptions, "schema-json");
-  const local = readOptionalBoolean(rawOptions, "local");
-  const cloud = readOptionalBoolean(rawOptions, "cloud");
+  const providerValue = readSingle(rawOptions, "provider");
+  const provider =
+    providerValue === undefined
+      ? undefined
+      : normalizeOpensteerProviderKind(providerValue, "--provider");
+  const cloudBaseUrl = readSingle(rawOptions, "cloud-base-url");
+  const cloudApiKey = readSingle(rawOptions, "cloud-api-key");
   const cloudProfileId = readSingle(rawOptions, "cloud-profile-id");
   const cloudProfileReuseIfActive = readOptionalBoolean(rawOptions, "cloud-profile-reuse-if-active");
+  const json = readOptionalBoolean(rawOptions, "json");
   const agents = rawOptions.get("agent");
   const skills = rawOptions.get("skill");
   const global = readOptionalBoolean(rawOptions, "global");
@@ -523,10 +532,12 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
   const options: ParsedCliOptions = {
     ...(workspace === undefined ? {} : { workspace }),
     engineName,
-    ...(local === undefined ? {} : { local }),
-    ...(cloud === undefined ? {} : { cloud }),
+    ...(provider === undefined ? {} : { provider }),
+    ...(cloudBaseUrl === undefined ? {} : { cloudBaseUrl }),
+    ...(cloudApiKey === undefined ? {} : { cloudApiKey }),
     ...(cloudProfileId === undefined ? {} : { cloudProfileId }),
     ...(cloudProfileReuseIfActive === undefined ? {} : { cloudProfileReuseIfActive }),
+    ...(json === undefined ? {} : { json }),
     ...(agents === undefined ? {} : { agents }),
     ...(skills === undefined ? {} : { skills }),
     ...(global === undefined ? {} : { global }),
@@ -560,35 +571,9 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
   };
 }
 
-async function resolveCliExecutionMode(
+function buildCliBrowserProfile(
   parsed: ParsedCommandLine,
-): Promise<OpensteerExecutionMode> {
-  const environmentMode = process.env.OPENSTEER_MODE;
-  if (
-    parsed.options.local === undefined &&
-    parsed.options.cloud === undefined &&
-    (environmentMode === undefined || environmentMode.trim().length === 0) &&
-    parsed.options.workspace !== undefined
-  ) {
-    const rootPath = resolveFilesystemWorkspacePath({
-      rootDir: process.cwd(),
-      workspace: parsed.options.workspace,
-    });
-    if (await hasPersistedCloudSession(rootPath)) {
-      return "cloud";
-    }
-  }
-
-  return resolveOpensteerExecutionMode({
-    ...(parsed.options.local === undefined ? {} : { local: parsed.options.local }),
-    ...(parsed.options.cloud === undefined ? {} : { cloud: parsed.options.cloud }),
-    ...(environmentMode === undefined ? {} : { environment: environmentMode }),
-  });
-}
-
-function buildCliCloudOptions(
-  parsed: ParsedCommandLine,
-): boolean | OpensteerCloudOptions | undefined {
+): { readonly profileId: string; readonly reuseIfActive?: true } | undefined {
   if (
     parsed.options.cloudProfileReuseIfActive === true &&
     parsed.options.cloudProfileId === undefined
@@ -598,25 +583,100 @@ function buildCliCloudOptions(
     );
   }
 
-  const browserProfile =
-    parsed.options.cloudProfileId === undefined
-      ? undefined
-      : {
-          profileId: parsed.options.cloudProfileId,
-          ...(parsed.options.cloudProfileReuseIfActive === true
-            ? { reuseIfActive: true }
-            : {}),
-        };
+  return parsed.options.cloudProfileId === undefined
+    ? undefined
+    : {
+        profileId: parsed.options.cloudProfileId,
+        ...(parsed.options.cloudProfileReuseIfActive === true ? { reuseIfActive: true } : {}),
+      };
+}
 
-  if (browserProfile !== undefined) {
-    return { browserProfile };
+function buildCliExplicitProvider(parsed: ParsedCommandLine): OpensteerProviderOptions | undefined {
+  if (parsed.options.provider === "local") {
+    return { kind: "local" };
   }
-
-  if (parsed.options.cloud === true) {
-    return true;
+  if (parsed.options.provider === "cloud") {
+    return { kind: "cloud" };
   }
-
   return undefined;
+}
+
+function resolveCliProvider(parsed: ParsedCommandLine): OpensteerResolvedProvider {
+  const explicitProvider = buildCliExplicitProvider(parsed);
+  return resolveOpensteerProvider({
+    ...(explicitProvider === undefined ? {} : { provider: explicitProvider }),
+    ...(process.env.OPENSTEER_PROVIDER === undefined
+      ? {}
+      : { environmentProvider: process.env.OPENSTEER_PROVIDER }),
+  });
+}
+
+function buildCliRuntimeProvider(
+  parsed: ParsedCommandLine,
+  providerKind: OpensteerProviderKind,
+): OpensteerProviderOptions | undefined {
+  const explicitProvider = buildCliExplicitProvider(parsed);
+  if (providerKind === "local") {
+    return explicitProvider?.kind === "local" ? explicitProvider : undefined;
+  }
+
+  const browserProfile = buildCliBrowserProfile(parsed);
+  const hasCloudOverrides =
+    parsed.options.cloudBaseUrl !== undefined ||
+    parsed.options.cloudApiKey !== undefined ||
+    browserProfile !== undefined;
+  if (!hasCloudOverrides && explicitProvider?.kind !== "cloud") {
+    return undefined;
+  }
+
+  return {
+    kind: "cloud",
+    ...(parsed.options.cloudBaseUrl === undefined ? {} : { baseUrl: parsed.options.cloudBaseUrl }),
+    ...(parsed.options.cloudApiKey === undefined ? {} : { apiKey: parsed.options.cloudApiKey }),
+    ...(browserProfile === undefined ? {} : { browserProfile }),
+  };
+}
+
+function assertCloudCliOptionsMatchProvider(
+  parsed: ParsedCommandLine,
+  providerKind: OpensteerProviderKind,
+): void {
+  if (
+    providerKind !== "cloud" &&
+    (parsed.options.cloudBaseUrl !== undefined ||
+      parsed.options.cloudApiKey !== undefined ||
+      parsed.options.cloudProfileId !== undefined ||
+      parsed.options.cloudProfileReuseIfActive === true)
+  ) {
+    throw new Error(
+      'Cloud-specific options require provider=cloud. Set "--provider cloud" or OPENSTEER_PROVIDER=cloud.',
+    );
+  }
+}
+
+async function handleStatusCommand(parsed: ParsedCommandLine): Promise<void> {
+  const provider = resolveCliProvider(parsed);
+  assertCloudCliOptionsMatchProvider(parsed, provider.kind);
+  const runtimeProvider = buildCliRuntimeProvider(parsed, provider.kind);
+  const runtimeConfig = resolveOpensteerRuntimeConfig({
+    ...(runtimeProvider === undefined ? {} : { provider: runtimeProvider }),
+    ...(process.env.OPENSTEER_PROVIDER === undefined
+      ? {}
+      : { environmentProvider: process.env.OPENSTEER_PROVIDER }),
+  });
+  const status = await collectOpensteerStatus({
+    rootDir: process.cwd(),
+    ...(parsed.options.workspace === undefined ? {} : { workspace: parsed.options.workspace }),
+    provider,
+    ...(runtimeConfig.cloud === undefined ? {} : { cloudConfig: runtimeConfig.cloud }),
+  });
+
+  if (parsed.options.json === true) {
+    process.stdout.write(`${JSON.stringify(status, null, 2)}\n`);
+    return;
+  }
+
+  process.stdout.write(renderOpensteerStatus(status));
 }
 
 function parseKeyValueList(
@@ -698,6 +758,9 @@ function resolveCommandLength(tokens: readonly string[]): number {
   if (tokens[0] === "run") {
     return 1;
   }
+  if (tokens[0] === "status") {
+    return 1;
+  }
   for (let length = Math.min(3, tokens.length); length >= 1; length -= 1) {
     if (OPERATION_ALIASES.has(tokens.slice(0, length).join(" "))) {
       return length;
@@ -717,6 +780,7 @@ Usage:
   opensteer input --workspace <id> --text <value> (--element <n> | --selector <css> | --description <text>)
   opensteer extract --workspace <id> --description <text> [--schema-json <json>]
   opensteer close --workspace <id>
+  opensteer status [--workspace <id>] [--json]
 
   opensteer browser status --workspace <id>
   opensteer browser clone --workspace <id> --source-user-data-dir <path> [--source-profile-directory <name>]
@@ -730,10 +794,12 @@ Usage:
 
 Common options:
   --workspace <id>
-  --local
-  --cloud
+  --provider local|cloud
+  --cloud-base-url <url>
+  --cloud-api-key <key>
   --cloud-profile-id <id>
   --cloud-profile-reuse-if-active <true|false>
+  --json <true|false>
   --engine playwright|abp
   --browser temporary|persistent|attach
   --attach-endpoint <url>
