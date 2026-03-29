@@ -5347,19 +5347,15 @@ export class OpensteerSessionRuntime {
 
     if (target.kind === "element") {
       const counter = this.latestSnapshot?.counterRecords.get(target.element);
-      if (!counter) {
-        throw new Error(`no counter ${String(target.element)} is available in the latest snapshot`);
-      }
+      const elementTarget: DomTargetRef = counter
+        ? { kind: "live", locator: counter.locator, anchor: counter.anchor }
+        : { kind: "selector", selector: `[c="${String(target.element)}"]` };
 
       const resolved = await timeout.runStep(() =>
         this.requireDom().resolveTarget({
           pageRef,
           method,
-          target: {
-            kind: "live",
-            locator: counter.locator,
-            anchor: counter.anchor,
-          },
+          target: elementTarget,
         }),
       );
       const stablePath =
@@ -7973,14 +7969,17 @@ export class OpensteerSessionRuntime {
     }
 
     const counter = this.latestSnapshot?.counterRecords.get(target.element);
-    if (!counter) {
-      throw new Error(`no counter ${String(target.element)} is available in the latest snapshot`);
+    if (counter) {
+      return {
+        kind: "live",
+        locator: counter.locator,
+        anchor: counter.anchor,
+      };
     }
 
     return {
-      kind: "live",
-      locator: counter.locator,
-      anchor: counter.anchor,
+      kind: "selector",
+      selector: `[c="${String(target.element)}"]`,
     };
   }
 

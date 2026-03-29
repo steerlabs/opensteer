@@ -13,24 +13,34 @@ Use the CLI when you need a fast JSON-first loop against a repo-local workspace 
 ## Quickstart
 
 ```bash
-opensteer browser status --workspace demo
 opensteer open https://example.com --workspace demo
 opensteer snapshot action --workspace demo
-opensteer click --workspace demo --element 3
-opensteer input --workspace demo --selector "input[type=search]" --text "search term" --press-enter true
+# Identify elements from snapshot output (e.g., search input at c=5, search button at c=7)
+
+# Act on elements AND persist their paths with human-readable descriptions
+opensteer run dom.input --workspace demo \
+  --input-json '{"target":{"kind":"element","element":5},"text":"search term","persistAsDescription":"search input"}'
+opensteer run dom.click --workspace demo \
+  --input-json '{"target":{"kind":"element","element":7},"persistAsDescription":"search button"}'
+
+# Persist an extraction descriptor
 opensteer snapshot extraction --workspace demo
 opensteer extract --workspace demo \
   --description "page summary" \
   --schema-json '{"title":{"selector":"title"},"url":{"source":"current_url"}}'
+
+# Replay later with just descriptions — no snapshot needed
+opensteer click --workspace demo --description "search button"
 opensteer extract --workspace demo --description "page summary"
 opensteer close --workspace demo
 ```
 
 - Stateful CLI commands currently require `--workspace <id>`.
-- With a workspace, browser mode defaults to `persistent`.
-- Use `snapshot action` before `--element <n>` targets.
-- `extract --description --schema-json ...` writes or updates a persisted extraction descriptor.
-- `extract --description ...` replays the stored extraction payload with no schema.
+- Use `snapshot action` to discover page elements during exploration.
+- Use `opensteer run dom.*` with `persistAsDescription` to cache element paths under descriptions.
+- Replay cached actions with `--description` alone — no snapshot needed.
+- `extract --description --schema-json` writes a persisted extraction descriptor.
+- `extract --description` replays the stored extraction.
 
 ## Browser Lifecycle And Profile Cloning
 
@@ -129,5 +139,5 @@ opensteer extract --workspace demo \
 ```
 
 - Build the exact JSON object you want. The extractor does not accept semantic placeholders like `"string"` or prompt-style schemas.
-- Use `element` fields only with counters from a fresh snapshot in the same live session.
+- Use `element` fields only during CLI exploration with counters from a fresh snapshot. Deterministic scripts use `description`.
 - For arrays, include one or more representative objects. Add multiple examples when repeated rows have structural variants.
