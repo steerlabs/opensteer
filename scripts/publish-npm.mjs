@@ -17,6 +17,7 @@ const publishOrder = [
   "packages/opensteer",
 ];
 const publishCommand = "pnpm";
+const publishTag = normalizePublishTag(process.env.NPM_DIST_TAG);
 
 const summaryPath = process.env.GITHUB_STEP_SUMMARY;
 const results = [];
@@ -39,6 +40,9 @@ for (const relativePackageDir of publishOrder) {
   const publishArgs = ["publish", "--no-git-checks", "--provenance"];
   if (manifest.publishConfig?.access === "public") {
     publishArgs.push("--access", "public");
+  }
+  if (publishTag !== undefined) {
+    publishArgs.push("--tag", publishTag);
   }
 
   console.log(`publish ${manifest.name}@${manifest.version}`);
@@ -108,7 +112,7 @@ async function writeSummary(entries) {
   }
 
   const lines = [
-    `## ${publishCommand} publish`,
+    `## ${publishCommand} publish${publishTag === undefined ? "" : ` (${publishTag})`}`,
     "",
     "| Package | Version | Status |",
     "| --- | --- | --- |",
@@ -117,4 +121,12 @@ async function writeSummary(entries) {
   ];
 
   await writeFile(summaryPath, `${lines.join("\n")}`, "utf8");
+}
+
+function normalizePublishTag(value) {
+  if (value === undefined) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? undefined : trimmed;
 }

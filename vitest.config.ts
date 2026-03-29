@@ -4,17 +4,32 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   resolve: {
-    alias: {
-      "@opensteer/browser-core": path.resolve(__dirname, "packages/browser-core/src/index.ts"),
-      "@opensteer/conformance": path.resolve(__dirname, "packages/conformance/src/index.ts"),
-      "@opensteer/engine-abp": path.resolve(__dirname, "packages/engine-abp/src/index.ts"),
-      "@opensteer/engine-playwright": path.resolve(
-        __dirname,
-        "packages/engine-playwright/src/index.ts",
-      ),
-      "@opensteer/protocol": path.resolve(__dirname, "packages/protocol/src/index.ts"),
-      "@opensteer/runtime-core": path.resolve(__dirname, "packages/runtime-core/src/index.ts"),
-    },
+    alias: [
+      {
+        find: "@opensteer/browser-core",
+        replacement: path.resolve(__dirname, "packages/browser-core/src/index.ts"),
+      },
+      {
+        find: "@opensteer/conformance",
+        replacement: path.resolve(__dirname, "packages/conformance/src/index.ts"),
+      },
+      {
+        find: "@opensteer/engine-abp",
+        replacement: path.resolve(__dirname, "packages/engine-abp/src/index.ts"),
+      },
+      {
+        find: "@opensteer/engine-playwright",
+        replacement: path.resolve(__dirname, "packages/engine-playwright/src/index.ts"),
+      },
+      {
+        find: "@opensteer/protocol",
+        replacement: path.resolve(__dirname, "packages/protocol/src/index.ts"),
+      },
+      {
+        find: "@opensteer/runtime-core",
+        replacement: path.resolve(__dirname, "packages/runtime-core/src/index.ts"),
+      },
+    ],
   },
   test: {
     environment: "node",
