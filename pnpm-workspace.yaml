@@ -5,3 +5,4 @@ packages:
   - "packages/engine-playwright"
   - "packages/opensteer"
   - "packages/protocol"
+  - "packages/runtime-core"

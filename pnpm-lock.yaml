@@ -96,6 +96,9 @@ importers:
       '@opensteer/engine-playwright':
         specifier: workspace:*
         version: link:../engine-playwright
+      '@opensteer/runtime-core':
+        specifier: workspace:*
+        version: link:../runtime-core
       cheerio:
         specifier: ^1.1.2
         version: 1.2.0
@@ -137,6 +140,38 @@ importers:
       '@opensteer/browser-core':
         specifier: workspace:*
         version: link:../browser-core
+
+  packages/runtime-core:
+    dependencies:
+      cheerio:
+        specifier: ^1.1.2
+        version: 1.2.0
+      css-select:
+        specifier: ^6.0.0
+        version: 6.0.0
+      domhandler:
+        specifier: ^5.0.3
+        version: 5.0.3
+      prettier:
+        specifier: ^3.8.1
+        version: 3.8.1
+      sharp:
+        specifier: ^0.34.5
+        version: 0.34.5
+      skills:
+        specifier: ^1.4.6
+        version: 1.4.6
+    devDependencies:
+      '@opensteer/browser-core':
+        specifier: workspace:*
+        version: link:../browser-core
+      '@opensteer/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+    optionalDependencies:
+      webcrack:
+        specifier: ^2.15.1
+        version: 2.15.1
 
 packages:
 

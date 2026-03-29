@@ -1,6 +1,7 @@
 import type { PageRef } from "./identity.js";
 import type { OpensteerSemanticOperationName } from "./semantic.js";
 import type { OpensteerCapability } from "./capabilities.js";
+import type { OpensteerProtocolVersion } from "./version.js";
 
 export const opensteerSessionGrantKinds = ["automation", "view", "cdp"] as const;
 
@@ -40,6 +41,12 @@ export interface OpensteerSessionAccessGrantResponse {
   readonly grants: Partial<Record<OpensteerSessionGrantKind, OpensteerSessionGrant>>;
 }
 
+export interface OpensteerRuntimeVersionInfo {
+  readonly protocolVersion: OpensteerProtocolVersion;
+  readonly runtimeCoreVersion?: string;
+  readonly packages?: Readonly<Record<string, string>>;
+}
+
 export interface OpensteerSessionInfo {
   readonly provider: OpensteerProviderDescriptor;
   readonly workspace?: string;
@@ -48,4 +55,5 @@ export interface OpensteerSessionInfo {
   readonly reconnectable: boolean;
   readonly capabilities: OpensteerSessionCapabilities;
   readonly grants?: readonly OpensteerSessionGrant[];
+  readonly runtime?: OpensteerRuntimeVersionInfo;
 }

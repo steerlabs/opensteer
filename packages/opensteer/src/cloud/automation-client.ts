@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import WebSocket from "ws";
+import { OPENSTEER_RUNTIME_CORE_VERSION } from "@opensteer/runtime-core";
 
 import {
   OPENSTEER_PROTOCOL_NAME,
@@ -97,8 +98,11 @@ export class OpensteerCloudAutomationClient {
       readonly reconnectable: boolean;
       readonly capabilities: OpensteerSessionInfo["capabilities"];
       readonly grants?: OpensteerSessionInfo["grants"];
+      readonly runtime?: OpensteerSessionInfo["runtime"];
     };
-    return result as OpensteerSessionInfo;
+    const sessionInfo = result as OpensteerSessionInfo;
+    assertCompatibleRuntimeCoreVersion(sessionInfo);
+    return sessionInfo;
   }
 
   async route(input: OpensteerRouteOptions): Promise<OpensteerRouteRegistration> {
@@ -379,6 +383,28 @@ export class OpensteerCloudAutomationClient {
   private send(message: OpensteerAutomationClientMessage): void {
     this.requireSocket().send(JSON.stringify(message));
   }
+}
+
+function assertCompatibleRuntimeCoreVersion(sessionInfo: OpensteerSessionInfo): void {
+  const runtimeCoreVersion = sessionInfo.runtime?.runtimeCoreVersion;
+  if (runtimeCoreVersion === undefined) {
+    return;
+  }
+
+  const expectedMajor = parseMajorVersion(OPENSTEER_RUNTIME_CORE_VERSION);
+  const actualMajor = parseMajorVersion(runtimeCoreVersion);
+  if (expectedMajor === null || actualMajor === null || expectedMajor === actualMajor) {
+    return;
+  }
+
+  throw new Error(
+    `cloud runtime-core major version ${runtimeCoreVersion} is incompatible with local SDK runtime-core ${OPENSTEER_RUNTIME_CORE_VERSION}`,
+  );
+}
+
+function parseMajorVersion(version: string): number | null {
+  const major = Number.parseInt(version.split(".", 1)[0] ?? "", 10);
+  return Number.isFinite(major) ? major : null;
 }
 
 function serializeRouteDecision(

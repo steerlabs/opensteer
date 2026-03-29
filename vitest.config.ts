@@ -13,6 +13,7 @@ export default defineConfig({
         "packages/engine-playwright/src/index.ts",
       ),
       "@opensteer/protocol": path.resolve(__dirname, "packages/protocol/src/index.ts"),
+      "@opensteer/runtime-core": path.resolve(__dirname, "packages/runtime-core/src/index.ts"),
     },
   },
   test: {
@@ -28,6 +29,7 @@ export default defineConfig({
       "tests/opensteer/cli-v2.test.ts",
       "tests/opensteer/cloud-browser-profile.test.ts",
       "tests/opensteer/conformance-local.test.ts",
+      "tests/opensteer/evaluate-null.test.ts",
       "tests/opensteer/extraction-descriptor.test.ts",
       "tests/opensteer/live-session.test.ts",
       "tests/opensteer/local-browser-stealth.test.ts",

@@ -236,8 +236,10 @@ export type {
   OpensteerEngineFactory,
   OpensteerEngineFactoryOptions,
   OpensteerRuntimeOptions,
+  OpensteerRuntimeWorkspace,
+  OpensteerSessionRuntimeOptions,
 } from "./sdk/runtime.js";
-export { OpensteerRuntime } from "./sdk/runtime.js";
+export { OpensteerRuntime, OpensteerSessionRuntime } from "./sdk/runtime.js";
 export type { OpensteerCloudOptions } from "./sdk/runtime-resolution.js";
 export {
   createOpensteerSemanticRuntime,
