@@ -29,6 +29,7 @@ import {
   OPENSTEER_INTERACTIVE_ATTR,
   OPENSTEER_NODE_ID_ATTR,
   OPENSTEER_SHADOW_BOUNDARY_TAG,
+  OPENSTEER_SPARSE_COUNTER_ATTR,
   OPENSTEER_UNAVAILABLE_ATTR,
   INTERACTIVE_ROLE_SET,
   NATIVE_INTERACTIVE_TAGS,
@@ -43,6 +44,7 @@ export interface CompiledOpensteerSnapshotCounterRecord extends Omit<
   readonly nodeRef: NodeRef;
   readonly locator: NodeLocator;
   readonly anchor: StructuralElementAnchor;
+  readonly sparseCounter?: number;
 }
 
 export interface CompiledOpensteerSnapshot {
@@ -84,11 +86,114 @@ interface CompiledCounterHtml {
   readonly counterRecords: ReadonlyMap<number, CompiledOpensteerSnapshotCounterRecord>;
 }
 
+interface DenseRenumberResult {
+  readonly html: string;
+  readonly counterRecords: ReadonlyMap<number, CompiledOpensteerSnapshotCounterRecord>;
+  readonly sparseToDirectMapping: ReadonlyMap<number, number>;
+}
+
+async function assignSparseCountersToLiveDom(
+  engine: BrowserCoreEngine,
+  pageRef: PageRef,
+): Promise<boolean> {
+  try {
+    await engine.evaluatePage({
+      pageRef,
+      script: `(() => {
+        let counter = 1;
+        const walk = (root) => {
+          for (const child of root.children) {
+            child.setAttribute('data-os-c', String(counter++));
+            walk(child);
+            if (child.shadowRoot) walk(child.shadowRoot);
+          }
+        };
+        walk(document);
+      })()`,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function syncDenseCountersToLiveDom(
+  engine: BrowserCoreEngine,
+  pageRef: PageRef,
+  sparseToDirectMapping: ReadonlyMap<number, number>,
+): Promise<void> {
+  const mappingObj = Object.fromEntries(sparseToDirectMapping);
+  await engine.evaluatePage({
+    pageRef,
+    script: `((mapping) => {
+      const walk = (root) => {
+        for (const child of root.children) {
+          child.removeAttribute('c');
+          const sparse = child.getAttribute('data-os-c');
+          if (sparse !== null) {
+            const dense = mapping[sparse];
+            if (dense !== undefined) {
+              child.setAttribute('c', String(dense));
+            }
+            child.removeAttribute('data-os-c');
+          }
+          walk(child);
+          if (child.shadowRoot) walk(child.shadowRoot);
+        }
+      };
+      walk(document);
+    })`,
+    args: [mappingObj],
+  });
+}
+
+function renumberCountersDensely(
+  cleanedHtml: string,
+  counterRecords: ReadonlyMap<number, CompiledOpensteerSnapshotCounterRecord>,
+): DenseRenumberResult {
+  const $ = cheerio.load(cleanedHtml, { xmlMode: false });
+  const newRecords = new Map<number, CompiledOpensteerSnapshotCounterRecord>();
+  const sparseToDirectMapping = new Map<number, number>();
+  let nextDense = 1;
+
+  $("[c]").each(function renumberElement() {
+    const el = $(this);
+    const oldC = Number.parseInt(String(el.attr("c") || ""), 10);
+    if (!Number.isFinite(oldC)) {
+      return;
+    }
+
+    const record = counterRecords.get(oldC);
+    if (!record) {
+      return;
+    }
+
+    const denseC = nextDense++;
+    el.attr("c", String(denseC));
+    newRecords.set(denseC, { ...record, element: denseC });
+
+    if (record.sparseCounter !== undefined) {
+      sparseToDirectMapping.set(record.sparseCounter, denseC);
+    }
+  });
+
+  return {
+    html: $.html(),
+    counterRecords: newRecords,
+    sparseToDirectMapping,
+  };
+}
+
 export async function compileOpensteerSnapshot(options: {
   readonly engine: BrowserCoreEngine;
   readonly pageRef: PageRef;
   readonly mode: OpensteerSnapshotMode;
 }): Promise<CompiledOpensteerSnapshot> {
+  const liveCountersEnabled = await assignSparseCountersToLiveDom(
+    options.engine,
+    options.pageRef,
+  );
+
   const pageInfo = await options.engine.getPageInfo({ pageRef: options.pageRef });
   const mainSnapshot = await getMainDocumentSnapshot(options.engine, options.pageRef);
   const snapshotsByDocumentRef = await collectDocumentSnapshots(options.engine, mainSnapshot);
@@ -112,14 +217,27 @@ export async function compileOpensteerSnapshot(options: {
       ? cleanForExtraction(compiledHtml.html)
       : cleanForAction(compiledHtml.html);
   const filtered = retainVisibleCounterRecords(cleanedHtml, compiledHtml.counterRecords);
+  const dense = renumberCountersDensely(cleanedHtml, filtered);
+
+  if (liveCountersEnabled && dense.sparseToDirectMapping.size > 0) {
+    try {
+      await syncDenseCountersToLiveDom(
+        options.engine,
+        options.pageRef,
+        dense.sparseToDirectMapping,
+      );
+    } catch {
+      // Non-fatal: in-memory counterRecords still work for same-process use.
+    }
+  }
 
   return {
     url: pageInfo.url,
     title: pageInfo.title,
     mode: options.mode,
-    html: cleanedHtml,
-    counters: [...filtered.values()].map(toPublicCounterRecord),
-    counterRecords: filtered,
+    html: dense.html,
+    counters: [...dense.counterRecords.values()].map(toPublicCounterRecord),
+    counterRecords: dense.counterRecords,
   };
 }
 
@@ -428,6 +546,12 @@ function assignCounters(
       return;
     }
 
+    const rawSparseCounter = el.attr(OPENSTEER_SPARSE_COUNTER_ATTR);
+    el.removeAttr(OPENSTEER_SPARSE_COUNTER_ATTR);
+    const sparseCounter = rawSparseCounter
+      ? Number.parseInt(rawSparseCounter, 10)
+      : undefined;
+
     const counter = nextCounter++;
     el.attr("c", String(counter));
     counterRecords.set(counter, {
@@ -446,6 +570,9 @@ function assignCounters(
       interactive: rendered.interactive,
       locator: rendered.locator,
       anchor: rendered.anchor,
+      ...(sparseCounter !== undefined && Number.isFinite(sparseCounter)
+        ? { sparseCounter }
+        : {}),
     });
   });
 

@@ -30,6 +30,7 @@ Choose the reference that matches the job:
 - With a workspace, browser mode defaults to `persistent`. `temporary` creates an isolated browser for the current run. `attach` connects to an already-running Chromium browser.
 - `opensteer browser ...` manages the workspace browser itself. `opensteer close` stops the active session/browser without deleting the workspace. `browser reset` clears cloned browser state. `browser delete` removes workspace browser files.
 - The short CLI only has special parsing for a few common commands. For advanced semantic operations or fields like `persistAsDescription`, use `opensteer run <semantic-operation> --workspace <id> --input-json <json>`.
+- `snapshot` is a CLI exploration tool for discovering page elements. The public SDK does not expose `snapshot()`. Deterministic scripts use cached descriptors via `description`.
 - Prefer Opensteer surfaces over raw Playwright so descriptors, extraction payloads, saved network, request plans, recipes, traces, and artifacts stay in the workspace.
 
 ## Workflow Selection
@@ -38,14 +39,26 @@ Choose the reference that matches the job:
 - Choose the request workflow when the durable artifact is an HTTP path, request plan, recipe, or reverse-analysis package.
 - Many tasks use both: prove the browser flow first, then capture and promote the underlying request path.
 
+## Two-Phase Workflow
+
+**Phase 1 — CLI exploration (one-time setup):**
+1. `snapshot action` to discover page elements and their counter values.
+2. Act on elements with `opensteer run dom.<action> --input-json` using `element + persistAsDescription` to cache element paths under human-readable names.
+3. Re-snapshot after navigation before targeting new elements.
+4. Use `extract --description <name> --schema-json <schema>` to persist extraction descriptors.
+
+**Phase 2 — Deterministic script (reusable):**
+1. Use `description` alone for all interactions — resolves from cached descriptors.
+2. Use `description + schema` for extraction — caches the extraction descriptor.
+3. Use bare `description` for extraction replay.
+4. No snapshot calls needed in scripts. Just descriptions.
+
 ## Shared Rules
 
-- Use `snapshot("action")` or `snapshot action` before counter-based `element` targets.
-- Re-snapshot after navigation or DOM-changing actions before reusing element counters.
-- In the SDK, `selector + description` or `element + description` persists a DOM action descriptor. `description` alone reuses it later.
-- In the CLI, the short `click` / `hover` / `input` / `scroll` forms accept exactly one target. Use `opensteer run dom.* --input-json` when you need `persistAsDescription`.
+- The short CLI commands (`click`, `input`, etc.) accept exactly one of `--element`, `--selector`, or `--description`. Use `opensteer run dom.*` with `--input-json` when you need `persistAsDescription`.
 - For extraction, `description + schema` authors or updates a persisted extraction descriptor. `description` alone replays the stored extraction payload.
 - Extraction schemas are explicit JSON objects and arrays. Each leaf must be `{ element: N }`, `{ selector: "..." }`, optional `attribute`, or `{ source: "current_url" }`.
 - Persisted extraction replay is deterministic and snapshot-backed. Do not replace `extract()` with `evaluate()` or custom DOM parsing when the desired output fits the extraction schema.
 - Use recipes for deterministic setup work. Use auth recipes for auth refresh/setup specifically. They live in separate registries.
-- Do not reach for removed surfaces such as `--name`, `Opensteer.attach()`, cloud/profile-sync helpers, `local-profile`, legacy snapshot browser modes, or `@opensteer/engine-abp`.
+- CSS selectors exist as a low-level escape hatch but are not recommended for reusable scripts. Prefer the descriptor-based workflow.
+- Do not reach for removed surfaces such as `snapshot()` on the SDK, `--name`, `Opensteer.attach()`, cloud/profile-sync helpers, `local-profile`, legacy snapshot browser modes, or `@opensteer/engine-abp`.

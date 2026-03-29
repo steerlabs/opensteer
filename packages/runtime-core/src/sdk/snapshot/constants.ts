@@ -3,6 +3,7 @@ export const OPENSTEER_HIDDEN_ATTR = "data-opensteer-hidden";
 export const OPENSTEER_SCROLLABLE_ATTR = "data-opensteer-scrollable";
 
 export const OPENSTEER_NODE_ID_ATTR = "data-os-node-id";
+export const OPENSTEER_SPARSE_COUNTER_ATTR = "data-os-c";
 export const OPENSTEER_BOUNDARY_ATTR = "data-os-boundary";
 export const OPENSTEER_UNAVAILABLE_ATTR = "data-os-unavailable";
 export const OPENSTEER_IFRAME_BOUNDARY_TAG = "os-iframe-root";
