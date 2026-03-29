@@ -173,6 +173,13 @@ await opensteer.inferRequestPlan({
   version: "v1",
 });
 
+await opensteer.inferRequestPlan({
+  recordId: records.records[0]!.id,
+  key: "products.search.portable",
+  version: "v1",
+  transport: "direct-http",
+});
+
 await opensteer.saveNetwork({
   tag: "products-load",
 });
@@ -241,7 +248,7 @@ Inspection and evaluation:
 Request capture and replay:
 
 - `rawRequest({ transport?, pageRef?, url, method?, headers?, body?, followRedirects? })`
-- `inferRequestPlan({ recordId, key, version })`
+- `inferRequestPlan({ recordId, key, version, transport? })`
 - `writeRequestPlan({ key, version, payload, tags?, provenance?, freshness? })`
 - `getRequestPlan({ key, version? })`
 - `listRequestPlans({ key? })`

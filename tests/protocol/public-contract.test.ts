@@ -624,7 +624,23 @@ describe("semantic protocol descriptors", () => {
         recordId: "rec_123",
         key: "get-user",
         version: "1.0.0",
-        lifecycle: "active",
+        transport: "direct-http",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertValidSemanticOperationInput("request-plan.infer", {
+        recordId: "rec_123",
+        key: "get-user",
+        version: "1.0.0",
+        transport: "page-http",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertValidSemanticOperationInput("request-plan.infer", {
+        recordId: "rec_123",
+        key: "get-user",
+        version: "1.0.0",
+        transport: "unsupported",
       }),
     ).toThrow(/invalid request-plan\.infer input/i);
 

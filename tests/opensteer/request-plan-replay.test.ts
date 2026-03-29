@@ -59,6 +59,12 @@ describe.sequential("request plan replay", () => {
           key: "request-plan.replayable-post",
           version: "1",
         });
+        const directPlan = await opensteer.inferRequestPlan({
+          recordId: target.recordId,
+          key: "request-plan.replayable-post-direct",
+          version: "1",
+          transport: "direct-http",
+        });
 
         expect(plan.payload.body).toMatchObject({
           kind: "json",
@@ -68,10 +74,19 @@ describe.sequential("request plan replay", () => {
             limit: 10,
           },
         });
+        expect(plan.payload.transport.kind).toBe("context-http");
+        expect(directPlan.payload.transport.kind).toBe("direct-http");
 
         const replay = await opensteer.request("request-plan.replayable-post");
+        const directReplay = await opensteer.request("request-plan.replayable-post-direct");
         expect(replay.response.status).toBe(200);
         expect(replay.data).toMatchObject({
+          ok: true,
+          echoedQuery: "opensteer",
+          echoedLimit: 10,
+        });
+        expect(directReplay.response.status).toBe(200);
+        expect(directReplay.data).toMatchObject({
           ok: true,
           echoedQuery: "opensteer",
           echoedLimit: 10,

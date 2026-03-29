@@ -152,6 +152,22 @@ const context = await opensteer.rawRequest({
 
 If `direct-http` returns 200, the API is portable and does not need a browser for future calls. If only `context-http` works, the API depends on browser session state.
 
+After proving portability, infer the plan with an explicit transport override:
+
+```ts
+await opensteer.inferRequestPlan({
+  recordId: records.records[0]!.id,
+  key: "products.search.portable",
+  version: "v1",
+  transport: "direct-http",
+});
+```
+
+```bash
+opensteer run request-plan.infer --workspace demo \
+  --input-json '{"recordId":"rec_123","key":"products.search.portable","version":"v1","transport":"direct-http"}'
+```
+
 ## Auth Token Acquisition
 
 When you discover an auth endpoint, acquire a token and use it to probe for data APIs that may be behind auth:
