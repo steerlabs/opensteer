@@ -334,6 +334,6 @@ The reverse-engineering workflow is: perform a browser action, inspect traffic w
 `captureScripts()`, experiment with `rawRequest()`, promote a record with
 `inferRequestPlan()`, then replay with `request()`.
 
-`route()` and `interceptScript()` are only available on owned local SDK sessions.
-They are not available on attached or cloud proxy sessions because they rely on a
-live in-process route handler.
+`route()` and `interceptScript()` are available on owned local sessions and
+cloud-managed sessions. They remain unavailable on attached sessions because
+attached browsers do not provide an owned routing surface.

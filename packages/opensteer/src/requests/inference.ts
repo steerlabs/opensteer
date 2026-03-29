@@ -1,4 +1,5 @@
 import type {
+  JsonValue,
   NetworkQueryRecord,
   OpensteerInferRequestPlanInput,
   OpensteerRequestEntry,
@@ -37,6 +38,7 @@ export function inferRequestPlanFromNetworkRecord(
     record.record.responseBody?.mimeType;
   const defaultHeaders = inferDefaultHeaders(record);
   const auth = inferAuth(record.record.requestHeaders);
+  const body = inferRequestPlanBody(record.record.requestBody, requestContentType);
 
   const payload = normalizeRequestPlanPayload({
     transport: {
@@ -48,14 +50,7 @@ export function inferRequestPlanFromNetworkRecord(
       ...(defaultQuery.length === 0 ? {} : { defaultQuery }),
       ...(defaultHeaders.length === 0 ? {} : { defaultHeaders }),
     },
-    ...(requestContentType === undefined && record.record.requestBody === undefined
-      ? {}
-      : {
-          body: {
-            ...(requestContentType === undefined ? {} : { contentType: requestContentType }),
-            required: true,
-          },
-        }),
+    ...(body === undefined ? {} : { body }),
     ...(record.record.status === undefined
       ? {}
       : {
@@ -128,4 +123,62 @@ function inferAuth(
     };
   }
   return undefined;
+}
+
+function inferRequestPlanBody(
+  body: NetworkQueryRecord["record"]["requestBody"] | undefined,
+  contentType: string | undefined,
+): OpensteerWriteRequestPlanInput["payload"]["body"] | undefined {
+  if (body === undefined) {
+    return undefined;
+  }
+
+  const text = Buffer.from(body.data, "base64").toString("utf8");
+  const normalizedContentType = contentType?.toLowerCase();
+  const trimmedText = text.trim();
+  const parsedJson = parseJsonBody(trimmedText);
+
+  if (
+    normalizedContentType?.includes("application/json") === true ||
+    normalizedContentType?.includes("+json") === true ||
+    parsedJson !== undefined
+  ) {
+    return {
+      kind: "json",
+      required: true,
+      ...(contentType === undefined ? {} : { contentType }),
+      template: parsedJson ?? text,
+    };
+  }
+
+  if (normalizedContentType?.includes("application/x-www-form-urlencoded") === true) {
+    return {
+      kind: "form",
+      required: true,
+      ...(contentType === undefined ? {} : { contentType }),
+      fields: Array.from(new URLSearchParams(text).entries()).map(([name, value]) => ({
+        name,
+        value,
+      })),
+    };
+  }
+
+  return {
+    kind: "text",
+    required: true,
+    ...(contentType === undefined ? {} : { contentType }),
+    template: text,
+  };
+}
+
+function parseJsonBody(value: string): JsonValue | undefined {
+  if (value.length === 0 || (!value.startsWith("{") && !value.startsWith("["))) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(value) as JsonValue;
+  } catch {
+    return undefined;
+  }
 }

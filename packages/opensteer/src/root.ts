@@ -65,6 +65,7 @@ export interface FilesystemOpensteerWorkspace {
   readonly browserManifestPath: string;
   readonly browserUserDataDir: string;
   readonly livePath: string;
+  readonly liveSessionPath: string;
   readonly liveBrowserPath: string;
   readonly artifactsPath: string;
   readonly tracesPath: string;
@@ -112,6 +113,7 @@ export async function createFilesystemOpensteerWorkspace(
   const browserManifestPath = path.join(browserPath, "manifest.json");
   const browserUserDataDir = path.join(browserPath, "user-data");
   const livePath = path.join(options.rootPath, "live");
+  const liveSessionPath = path.join(livePath, "session.json");
   const liveBrowserPath = path.join(livePath, "browser.json");
   const artifactsPath = path.join(options.rootPath, "artifacts");
   const tracesPath = path.join(options.rootPath, "traces");
@@ -201,6 +203,7 @@ export async function createFilesystemOpensteerWorkspace(
     browserManifestPath,
     browserUserDataDir,
     livePath,
+    liveSessionPath,
     liveBrowserPath,
     artifactsPath,
     tracesPath,

@@ -55,7 +55,8 @@
     "domhandler": "^5.0.3",
     "prettier": "^3.8.1",
     "sharp": "^0.34.5",
-    "skills": "^1.4.6"
+    "skills": "^1.4.6",
+    "ws": "^8.18.0"
   },
   "optionalDependencies": {
     "webcrack": "^2.15.1"
@@ -70,7 +71,6 @@
   },
   "devDependencies": {
     "@opensteer/browser-core": "workspace:*",
-    "@opensteer/cloud-contracts": "workspace:*",
     "@opensteer/engine-abp": "workspace:*",
     "@opensteer/protocol": "workspace:*"
   },

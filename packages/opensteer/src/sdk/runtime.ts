@@ -22,6 +22,7 @@ import {
   assertValidSemanticOperationInput,
   createNetworkRequestId,
   createSessionRef,
+  opensteerSemanticOperationNames,
   opensteerSemanticOperationSpecificationMap,
   type OpensteerArtifactReadInput,
   type OpensteerArtifactReadOutput,
@@ -98,6 +99,7 @@ import {
   type OpensteerOpenOutput,
   type OpensteerResolvedTarget,
   type OpensteerSemanticOperationName,
+  type OpensteerSessionInfo,
   type OpensteerSessionCloseOutput,
   type OpensteerScriptBeautifyInput,
   type OpensteerScriptBeautifyOutput,
@@ -203,7 +205,10 @@ import {
   type ComputerUseRuntimeOutput,
 } from "../runtimes/computer-use/index.js";
 import { OpensteerBrowserManager } from "../browser-manager.js";
-import { type OpensteerEngineName } from "../internal/engine-selection.js";
+import {
+  DEFAULT_OPENSTEER_ENGINE,
+  type OpensteerEngineName,
+} from "../internal/engine-selection.js";
 import type {
   OpensteerInterceptScriptOptions,
   OpensteerRouteOptions,
@@ -530,6 +535,31 @@ export class OpensteerRuntime {
       });
     this.policy = options.policy ?? defaultPolicy();
     this.cleanupRootOnClose = options.cleanupRootOnClose ?? this.publicWorkspace === undefined;
+  }
+
+  async info(): Promise<OpensteerSessionInfo> {
+    return {
+      provider: {
+        kind: "local",
+        ownership:
+          typeof this.configuredBrowser === "object" && this.configuredBrowser.mode === "attach"
+            ? "attached"
+            : "owned",
+        engine: this.configuredEngineName ?? DEFAULT_OPENSTEER_ENGINE,
+      },
+      ...(this.publicWorkspace === undefined ? {} : { workspace: this.publicWorkspace }),
+      ...(this.sessionRef === undefined ? {} : { sessionId: this.sessionRef }),
+      ...(this.pageRef === undefined ? {} : { activePageRef: this.pageRef }),
+      reconnectable: !this.cleanupRootOnClose,
+      capabilities: {
+        semanticOperations: opensteerSemanticOperationNames,
+        instrumentation: {
+          route: true,
+          interceptScript: true,
+          networkStream: false,
+        },
+      },
+    };
   }
 
   async open(

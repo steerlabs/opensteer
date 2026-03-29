@@ -12,12 +12,12 @@ deobfuscation tooling.
 
 ## Engine Compatibility
 
-| Capability          | Playwright | ABP |
-| ------------------- | ---------- | --- |
-| `captureScripts()`  | Yes        | Yes |
-| `addInitScript()`   | Yes        | No  |
-| `route()`           | Yes        | No  |
-| `interceptScript()` | Yes        | No  |
+| Capability          | Local Playwright | Cloud-managed Playwright | ABP |
+| ------------------- | ---------------- | ------------------------ | --- |
+| `captureScripts()`  | Yes              | Yes                      | Yes |
+| `addInitScript()`   | Yes              | Yes                      | No  |
+| `route()`           | Yes              | Yes                      | No  |
+| `interceptScript()` | Yes              | Yes                      | No  |
 
 Unsupported features fail with a structured capability error. Opensteer does not
 silently downgrade stable APIs.

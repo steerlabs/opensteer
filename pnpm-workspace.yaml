@@ -1,6 +1,6 @@
 packages:
   - "packages/browser-core"
-  - "packages/cloud-contracts"
+  - "packages/conformance"
   - "packages/engine-abp"
   - "packages/engine-playwright"
   - "packages/opensteer"

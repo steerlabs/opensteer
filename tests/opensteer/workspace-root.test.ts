@@ -27,6 +27,7 @@ describe("workspace root layout", () => {
     expect(workspace.browserPath).toBe(path.join(rootPath, "browser"));
     expect(workspace.browserManifestPath).toBe(path.join(rootPath, "browser", "manifest.json"));
     expect(workspace.browserUserDataDir).toBe(path.join(rootPath, "browser", "user-data"));
+    expect(workspace.liveSessionPath).toBe(path.join(rootPath, "live", "session.json"));
     expect(workspace.liveBrowserPath).toBe(path.join(rootPath, "live", "browser.json"));
     expect(workspace.registryPath).toBe(path.join(rootPath, "registry"));
     expect(workspace.tracesPath).toBe(path.join(rootPath, "traces"));
