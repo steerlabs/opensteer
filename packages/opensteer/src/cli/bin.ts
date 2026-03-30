@@ -3,6 +3,7 @@
 import process from "node:process";
 
 import type { OpensteerBrowserOptions, OpensteerSemanticOperationName } from "@opensteer/protocol";
+import opensteerPackage from "../../package.json" with { type: "json" };
 
 import { OpensteerBrowserManager } from "../browser-manager.js";
 import { dispatchSemanticOperation } from "./dispatch.js";
@@ -82,12 +83,19 @@ const OPERATION_ALIASES = new Map<string, OpensteerSemanticOperationName>([
 ]);
 
 async function main(): Promise<void> {
-  await loadCliEnvironment(process.cwd());
-  const parsed = parseCommandLine(process.argv.slice(2));
-  if (parsed.help || parsed.command.length === 0) {
+  const argv = process.argv.slice(2);
+  const bootstrapAction = resolveCliBootstrapAction(argv);
+  if (bootstrapAction === "version") {
+    printVersion();
+    return;
+  }
+  if (bootstrapAction === "help") {
     printHelp();
     return;
   }
+
+  await loadCliEnvironment(process.cwd());
+  const parsed = parseCommandLine(argv);
 
   if (parsed.command[0] === "browser") {
     await handleBrowserCommand(parsed);
@@ -127,8 +135,9 @@ async function main(): Promise<void> {
     throw new Error('Stateful commands require "--workspace <id>".');
   }
 
+  const engineName = resolveCliEngineName(parsed);
   const provider = resolveCliProvider(parsed);
-  assertProviderSupportsEngine(provider.kind, parsed.options.engineName);
+  assertProviderSupportsEngine(provider.kind, engineName);
   assertCloudCliOptionsMatchProvider(parsed, provider.kind);
   const runtimeProvider = buildCliRuntimeProvider(parsed, provider.kind);
 
@@ -136,7 +145,7 @@ async function main(): Promise<void> {
     if (provider.kind === "cloud") {
       const runtime = createOpensteerSemanticRuntime({
         ...(runtimeProvider === undefined ? {} : { provider: runtimeProvider }),
-        engine: parsed.options.engineName,
+        engine: engineName,
         runtimeOptions: {
           workspace: parsed.options.workspace,
           rootDir: process.cwd(),
@@ -153,7 +162,7 @@ async function main(): Promise<void> {
     const manager = new OpensteerBrowserManager({
       rootDir: process.cwd(),
       workspace: parsed.options.workspace,
-      engineName: parsed.options.engineName,
+      engineName,
       browser: "persistent",
       ...(parsed.options.launch === undefined ? {} : { launch: parsed.options.launch }),
       ...(parsed.options.context === undefined ? {} : { context: parsed.options.context }),
@@ -165,7 +174,7 @@ async function main(): Promise<void> {
 
   const runtime = createOpensteerSemanticRuntime({
     ...(runtimeProvider === undefined ? {} : { provider: runtimeProvider }),
-    engine: parsed.options.engineName,
+    engine: engineName,
     runtimeOptions: {
       workspace: parsed.options.workspace,
       rootDir: process.cwd(),
@@ -228,10 +237,11 @@ async function handleBrowserCommand(parsed: ParsedCommandLine): Promise<void> {
     throw new Error('Browser workspace commands require "--workspace <id>".');
   }
 
+  const engineName = resolveCliEngineName(parsed);
   const manager = new OpensteerBrowserManager({
     rootDir: process.cwd(),
     workspace: parsed.options.workspace,
-    ...(parsed.options.engineName === undefined ? {} : { engineName: parsed.options.engineName }),
+    engineName,
     browser: "persistent",
     ...(parsed.options.launch === undefined ? {} : { launch: parsed.options.launch }),
     ...(parsed.options.context === undefined ? {} : { context: parsed.options.context }),
@@ -371,7 +381,7 @@ function resolveOperation(command: readonly string[]): OpensteerSemanticOperatio
 
 interface ParsedCliOptions {
   readonly workspace?: string;
-  readonly engineName: OpensteerEngineName;
+  readonly requestedEngineName?: string;
   readonly provider?: OpensteerProviderKind;
   readonly cloudBaseUrl?: string;
   readonly cloudApiKey?: string;
@@ -412,7 +422,6 @@ interface ParsedCommandLine {
   readonly command: readonly string[];
   readonly rest: readonly string[];
   readonly options: ParsedCliOptions;
-  readonly help: boolean;
 }
 
 function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
@@ -428,15 +437,9 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
   const rest: string[] = leadingTokens.slice(commandLength);
 
   const rawOptions = new Map<string, string[]>();
-  let help = false;
 
   while (index < argv.length) {
     const token = argv[index]!;
-    if (token === "--help" || token === "-h") {
-      help = true;
-      index += 1;
-      continue;
-    }
     if (!token.startsWith("--")) {
       rest.push(token);
       index += 1;
@@ -456,13 +459,7 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
   }
 
   const browserKind = readSingle(rawOptions, "browser");
-  const requestedEngine = readSingle(rawOptions, "engine");
-  const engineName = resolveOpensteerEngineName({
-    ...(requestedEngine === undefined ? {} : { requested: requestedEngine }),
-    ...(process.env.OPENSTEER_ENGINE === undefined
-      ? {}
-      : { environment: process.env.OPENSTEER_ENGINE }),
-  });
+  const requestedEngineName = readSingle(rawOptions, "engine");
   const attachEndpoint = readSingle(rawOptions, "attach-endpoint");
   const attachHeaders = parseKeyValueList(rawOptions.get("attach-header"));
   const freshTab = readOptionalBoolean(rawOptions, "fresh-tab");
@@ -534,7 +531,7 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
 
   const options: ParsedCliOptions = {
     ...(workspace === undefined ? {} : { workspace }),
-    engineName,
+    ...(requestedEngineName === undefined ? {} : { requestedEngineName }),
     ...(provider === undefined ? {} : { provider }),
     ...(cloudBaseUrl === undefined ? {} : { cloudBaseUrl }),
     ...(cloudApiKey === undefined ? {} : { cloudApiKey }),
@@ -570,8 +567,24 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
     command: commandTokens,
     rest,
     options,
-    help,
   };
+}
+
+function resolveCliBootstrapAction(argv: readonly string[]): "help" | "version" | undefined {
+  if (argv.length === 0) {
+    return "help";
+  }
+
+  for (const token of argv) {
+    if (token === "--version") {
+      return "version";
+    }
+    if (token === "--help" || token === "-h") {
+      return "help";
+    }
+  }
+
+  return undefined;
 }
 
 function buildCliBrowserProfile(
@@ -600,6 +613,17 @@ function buildCliExplicitProvider(parsed: ParsedCommandLine): OpensteerProviderO
     return { kind: "cloud" };
   }
   return undefined;
+}
+
+function resolveCliEngineName(parsed: ParsedCommandLine): OpensteerEngineName {
+  return resolveOpensteerEngineName({
+    ...(parsed.options.requestedEngineName === undefined
+      ? {}
+      : { requested: parsed.options.requestedEngineName }),
+    ...(process.env.OPENSTEER_ENGINE === undefined
+      ? {}
+      : { environment: process.env.OPENSTEER_ENGINE }),
+  });
 }
 
 function resolveCliProvider(parsed: ParsedCommandLine): OpensteerResolvedProvider {
@@ -794,6 +818,8 @@ Usage:
   opensteer run <semantic-operation> --workspace <id> --input-json <json>
 
 Common options:
+  --help
+  --version
   --workspace <id>
   --provider local|cloud
   --cloud-base-url <url>
@@ -814,6 +840,10 @@ Common options:
   --skill <name>      repeatable
   --agent <name>      repeatable
 `);
+}
+
+function printVersion(): void {
+  process.stdout.write(`${opensteerPackage.version}\n`);
 }
 
 main().catch((error) => {
