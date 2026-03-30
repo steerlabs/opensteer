@@ -6,15 +6,39 @@ argument-hint: "[goal]"
 
 # Opensteer
 
+## Critical Rules
+
+1. Run `snapshot action` or `snapshot extraction` first. The output is JSON with `{url, title, mode, html, counters}`. **Read the `html` field** — it is a clean filtered DOM with inline `c="N"` attributes marking every element. Do NOT parse the `counters` array for element discovery — it is verbose metadata.
+2. Use `element` + `persistAsDescription` to act on elements. Use `extract()` with `description` + `schema` to extract data. Do NOT use `page.evaluate()`, CSS selectors, or raw DOM parsing when `extract()` can express the output.
+3. Array extraction auto-generalizes: provide 1-2 representative rows as templates, and the extractor finds ALL matching rows on the page.
+4. `persistAsDescription` requires the verbose `opensteer run dom.*` syntax. The short CLI commands (`click`, `input`, etc.) do NOT support it.
+5. Phase 1 = CLI exploration (snapshot, act, extract). Phase 2 = deterministic scripts using `description` alone. No snapshots in Phase 2.
+
 If invoked directly, treat `$ARGUMENTS` as the concrete browser or replay goal. First decide whether the task is primarily DOM automation, request capture/replay, or workspace browser administration.
 
-Use this skill when a task needs a real browser workflow, persistent workspace browser state, structured DOM extraction, or browser-backed request replay.
+## Snapshot Output
 
-Choose the reference that matches the job:
+`snapshot action` and `snapshot extraction` return JSON. Read the `html` field:
 
-- CLI exploration and browser admin: [references/cli-reference.md](references/cli-reference.md)
-- SDK automation and reusable code: [references/sdk-reference.md](references/sdk-reference.md)
-- Request capture, plans, and recipes: [references/request-workflow.md](references/request-workflow.md)
+```json
+{
+  "url": "https://example.com/search?q=airpods",
+  "title": "Search Results",
+  "mode": "extraction",
+  "html": "<span c=\"12\">$549.99</span>\n<a c=\"15\" href=\"/p/airpods-max\">\n  <div c=\"16\">Apple AirPods Max</div>\n</a>\n<a c=\"18\" href=\"/b/apple\">Apple</a>\n...",
+  "counters": [{"element":12,"tagName":"SPAN",...}, ...]
+}
+```
+
+`c="N"` in the HTML = `element: N` in commands and extraction schemas. Read the HTML, find the `c` values, use those numbers.
+
+## References
+
+Most DOM tasks use the CLI reference first (exploration), then the SDK reference (final script). Load both.
+
+- [CLI Reference](references/cli-reference.md) — snapshot, act, extract from the terminal
+- [SDK Reference](references/sdk-reference.md) — reusable TypeScript code
+- [Request Workflow](references/request-workflow.md) — capture and replay HTTP requests
 
 ## Startup Checks
 
@@ -33,19 +57,27 @@ Choose the reference that matches the job:
 - `snapshot` is a CLI exploration tool for discovering page elements. The public SDK does not expose `snapshot()`. Deterministic scripts use cached descriptors via `description`.
 - Prefer Opensteer surfaces over raw Playwright so descriptors, extraction payloads, saved network, request plans, recipes, traces, and artifacts stay in the workspace.
 
-## Workflow Selection
-
-- Choose the DOM workflow when the answer must come from the rendered page or a real browser interaction.
-- Choose the request workflow when the durable artifact is an HTTP path, request plan, recipe, or reverse-analysis package.
-- Many tasks use both: prove the browser flow first, then capture and promote the underlying request path.
-
 ## Two-Phase Workflow
 
 **Phase 1 — CLI exploration (one-time setup):**
-1. `snapshot action` to discover page elements and their counter values.
-2. Act on elements with `opensteer run dom.<action> --input-json` using `element + persistAsDescription` to cache element paths under human-readable names.
-3. Re-snapshot after navigation before targeting new elements.
-4. Use `extract --description <name> --schema-json <schema>` to persist extraction descriptors.
+
+```bash
+opensteer open https://example.com --workspace demo
+opensteer snapshot action --workspace demo
+# → Read html field: <input c="5" placeholder="Search"> <button c="7">Search</button>
+
+opensteer run dom.input --workspace demo \
+  --input-json '{"target":{"kind":"element","element":5},"text":"airpods","pressEnter":true,"persistAsDescription":"search input"}'
+
+opensteer snapshot extraction --workspace demo
+# → Read html field: <div c="13">Apple AirPods</div> <span c="14">$189.99</span> ...
+
+opensteer extract --workspace demo --description "search results" \
+  --schema-json '{"items":[{"name":{"element":13},"price":{"element":14}}]}'
+# → Returns ALL matching rows on the page, not just the 1 template
+
+opensteer close --workspace demo
+```
 
 **Phase 2 — Deterministic script (reusable):**
 1. Use `description` alone for all interactions — resolves from cached descriptors.
@@ -62,3 +94,10 @@ Choose the reference that matches the job:
 - Use recipes for deterministic setup work. Use auth recipes for auth refresh/setup specifically. They live in separate registries.
 - CSS selectors exist as a low-level escape hatch but are not recommended for reusable scripts. Prefer the descriptor-based workflow.
 - Do not reach for removed surfaces such as `snapshot()` on the SDK, `--name`, `Opensteer.attach()`, cloud/profile-sync helpers, `local-profile`, legacy snapshot browser modes, or `@opensteer/engine-abp`.
+
+## Common Mistakes
+
+- Parsing the `counters` JSON array instead of reading the `html` string. Read the HTML — find `c="N"` values.
+- Using `page.evaluate()` or CSS selectors instead of `extract()`. Use extract with element-based schemas.
+- Forgetting to re-snapshot after navigation. Always re-snapshot before targeting new elements.
+- Using short CLI (`click`, `input`) when `persistAsDescription` is needed. Use `opensteer run dom.*`.
