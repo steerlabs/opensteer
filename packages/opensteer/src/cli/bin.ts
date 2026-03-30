@@ -3,6 +3,7 @@
 import process from "node:process";
 
 import type { OpensteerBrowserOptions, OpensteerSemanticOperationName } from "@opensteer/protocol";
+import opensteerPackage from "../../package.json" with { type: "json" };
 
 import { OpensteerBrowserManager } from "../browser-manager.js";
 import { dispatchSemanticOperation } from "./dispatch.js";
@@ -84,6 +85,10 @@ const OPERATION_ALIASES = new Map<string, OpensteerSemanticOperationName>([
 async function main(): Promise<void> {
   await loadCliEnvironment(process.cwd());
   const parsed = parseCommandLine(process.argv.slice(2));
+  if (parsed.version) {
+    printVersion();
+    return;
+  }
   if (parsed.help || parsed.command.length === 0) {
     printHelp();
     return;
@@ -413,6 +418,7 @@ interface ParsedCommandLine {
   readonly rest: readonly string[];
   readonly options: ParsedCliOptions;
   readonly help: boolean;
+  readonly version: boolean;
 }
 
 function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
@@ -429,11 +435,17 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
 
   const rawOptions = new Map<string, string[]>();
   let help = false;
+  let version = false;
 
   while (index < argv.length) {
     const token = argv[index]!;
     if (token === "--help" || token === "-h") {
       help = true;
+      index += 1;
+      continue;
+    }
+    if (token === "--version") {
+      version = true;
       index += 1;
       continue;
     }
@@ -571,6 +583,7 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
     rest,
     options,
     help,
+    version,
   };
 }
 
@@ -794,6 +807,8 @@ Usage:
   opensteer run <semantic-operation> --workspace <id> --input-json <json>
 
 Common options:
+  --help
+  --version
   --workspace <id>
   --provider local|cloud
   --cloud-base-url <url>
@@ -814,6 +829,10 @@ Common options:
   --skill <name>      repeatable
   --agent <name>      repeatable
 `);
+}
+
+function printVersion(): void {
+  process.stdout.write(`${opensteerPackage.version}\n`);
 }
 
 main().catch((error) => {
