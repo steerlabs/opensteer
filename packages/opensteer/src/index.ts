@@ -39,7 +39,6 @@ export type {
   ReverseReportRecord,
   ReverseReportRegistryStore,
   RequestPlanFreshness,
-  RequestPlanLifecycle,
   RequestPlanRecord,
   RequestPlanRegistryStore,
   ResolveRegistryRecordInput,
@@ -100,6 +99,7 @@ export type {
   DomClickInput,
   DomDescriptorPayload,
   DomDescriptorRecord,
+  DomDescriptorStore,
   DomExtractArrayRowsInput,
   DomExtractFieldSelector,
   DomExtractFieldsInput,
@@ -213,6 +213,8 @@ export type {
   OpensteerScriptDeobfuscateResult,
   OpensteerScriptSandboxOptions,
   OpensteerScriptSandboxResult,
+  OpensteerSnapshotOptions,
+  OpensteerSnapshotResult,
   OpensteerTargetOptions,
   OpensteerWaitForNetworkOptions,
   OpensteerWaitForPageOptions,
@@ -236,9 +238,23 @@ export type {
   OpensteerEngineFactory,
   OpensteerEngineFactoryOptions,
   OpensteerRuntimeOptions,
+  OpensteerRuntimeWorkspace,
+  OpensteerSessionRuntimeOptions,
 } from "./sdk/runtime.js";
-export { OpensteerRuntime } from "./sdk/runtime.js";
-export type { OpensteerCloudOptions } from "./sdk/runtime-resolution.js";
+export { OpensteerRuntime, OpensteerSessionRuntime } from "./sdk/runtime.js";
+export type {
+  OpensteerCloudProviderOptions,
+  OpensteerLocalProviderOptions,
+  OpensteerProviderKind,
+  OpensteerProviderOptions,
+  OpensteerProviderSource,
+  OpensteerResolvedProvider,
+} from "./provider/config.js";
+export {
+  assertProviderSupportsEngine,
+  normalizeOpensteerProviderKind,
+  resolveOpensteerProvider,
+} from "./provider/config.js";
 export {
   createOpensteerSemanticRuntime,
   resolveOpensteerRuntimeConfig,
@@ -255,11 +271,6 @@ export type {
   WorkspaceLiveBrowserRecord,
 } from "./browser-manager.js";
 export { OpensteerBrowserManager } from "./browser-manager.js";
-export type { OpensteerExecutionMode } from "./mode/config.js";
-export {
-  normalizeOpensteerExecutionMode,
-  resolveOpensteerExecutionMode,
-} from "./mode/config.js";
 export type { OpensteerCloudConfig } from "./cloud/config.js";
 export { resolveCloudConfig } from "./cloud/config.js";
 export type {
@@ -283,6 +294,11 @@ export type {
   CloudProxyMode,
   CloudProxyPreference,
   CloudProxyProtocol,
+  CloudRegistryImportEntry,
+  CloudRegistryImportRequest,
+  CloudRegistryImportResponse,
+  CloudRequestPlanImportEntry,
+  CloudRequestPlanImportRequest,
   CloudSelectorCacheImportEntry,
   CloudSelectorCacheImportRequest,
   CloudSelectorCacheImportResponse,
@@ -292,7 +308,7 @@ export type {
   CloudSessionSummary,
   CloudSessionVisibilityScope,
   CloudViewport,
-} from "@opensteer/cloud-contracts";
+} from "@opensteer/protocol";
 export {
   OpensteerCloudClient,
   type OpensteerCloudSessionCreateInput,
@@ -301,12 +317,24 @@ export {
 } from "./cloud/client.js";
 export {
   CloudSessionProxy,
-  hasPersistedCloudSession,
   readPersistedCloudSessionRecord,
-  resolveCloudSessionRecordPath,
   type CloudSessionProxyOptions,
   type PersistedCloudSessionRecord,
 } from "./cloud/session-proxy.js";
+export type {
+  OpensteerLiveSessionProvider,
+  PersistedLocalBrowserSessionRecord,
+  PersistedSessionRecord,
+} from "./live-session.js";
+export {
+  clearPersistedSessionRecord,
+  resolveCloudSessionRecordPath,
+  resolveLocalSessionRecordPath,
+  readPersistedLocalBrowserSessionRecord,
+  readPersistedSessionRecord,
+  resolveLiveSessionRecordPath,
+  writePersistedSessionRecord,
+} from "./live-session.js";
 export { dispatchSemanticOperation } from "./cli/dispatch.js";
 export type {
   InspectedCdpEndpoint,

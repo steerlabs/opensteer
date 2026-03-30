@@ -46,21 +46,11 @@ importers:
 
   packages/browser-core: {}
 
-  packages/cloud-contracts:
+  packages/conformance:
     dependencies:
-      "@opensteer/browser-core":
+      "@opensteer/protocol":
         specifier: workspace:*
-        version: link:../browser-core
-    devDependencies:
-      rimraf:
-        specifier: ^6.1.3
-        version: 6.1.3
-      tsup:
-        specifier: ^8.5.1
-        version: 8.5.1(postcss@8.5.8)(tsx@4.21.0)(typescript@5.9.3)
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
+        version: link:../protocol
 
   packages/engine-abp:
     dependencies:
@@ -105,6 +95,9 @@ importers:
       "@opensteer/engine-playwright":
         specifier: workspace:*
         version: link:../engine-playwright
+      "@opensteer/runtime-core":
+        specifier: workspace:*
+        version: link:../runtime-core
       cheerio:
         specifier: ^1.1.2
         version: 1.2.0
@@ -123,13 +116,13 @@ importers:
       skills:
         specifier: ^1.4.6
         version: 1.4.6
+      ws:
+        specifier: ^8.18.0
+        version: 8.19.0
     devDependencies:
       "@opensteer/browser-core":
         specifier: workspace:*
         version: link:../browser-core
-      "@opensteer/cloud-contracts":
-        specifier: workspace:*
-        version: link:../cloud-contracts
       "@opensteer/engine-abp":
         specifier: workspace:*
         version: link:../engine-abp
@@ -146,6 +139,37 @@ importers:
       "@opensteer/browser-core":
         specifier: workspace:*
         version: link:../browser-core
+
+  packages/runtime-core:
+    dependencies:
+      "@opensteer/browser-core":
+        specifier: workspace:*
+        version: link:../browser-core
+      "@opensteer/protocol":
+        specifier: workspace:*
+        version: link:../protocol
+      cheerio:
+        specifier: ^1.1.2
+        version: 1.2.0
+      css-select:
+        specifier: ^6.0.0
+        version: 6.0.0
+      domhandler:
+        specifier: ^5.0.3
+        version: 5.0.3
+      prettier:
+        specifier: ^3.8.1
+        version: 3.8.1
+      sharp:
+        specifier: ^0.34.5
+        version: 0.34.5
+      skills:
+        specifier: ^1.4.6
+        version: 1.4.6
+    optionalDependencies:
+      webcrack:
+        specifier: ^2.15.1
+        version: 2.15.1
 
 packages:
   "@babel/code-frame@7.29.0":

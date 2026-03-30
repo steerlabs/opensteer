@@ -304,8 +304,8 @@ Important subtrees:
 - `route({ urlPattern, resourceTypes?, times?, handler })`
 - `interceptScript({ urlPattern, handler, times? })`
 - `rawRequest({ transport?, pageRef?, url, method?, headers?, body?, followRedirects? })`
-- `inferRequestPlan({ recordId, key, version, lifecycle? })`
-- `writeRequestPlan({ key, version, payload, lifecycle?, tags?, provenance?, freshness? })`
+- `inferRequestPlan({ recordId, key, version, transport? })`
+- `writeRequestPlan({ key, version, payload, tags?, provenance?, freshness? })`
 - `getRequestPlan({ key, version? })`
 - `listRequestPlans({ key? })`
 - `writeRecipe({ key, version, payload, tags?, provenance? })`
@@ -332,8 +332,9 @@ structured status union (`available`, `unsupported_default_user_data_dir`, `open
 The reverse-engineering workflow is: perform a browser action, inspect traffic with
 `queryNetwork()`, optionally instrument with `addInitScript()`, `route()`, or
 `captureScripts()`, experiment with `rawRequest()`, promote a record with
-`inferRequestPlan()`, then replay with `request()`.
+`inferRequestPlan()`, passing `transport` when you have already proven a portable
+request path, then replay with `request()`.
 
-`route()` and `interceptScript()` are only available on owned local SDK sessions.
-They are not available on attached or cloud proxy sessions because they rely on a
-live in-process route handler.
+`route()` and `interceptScript()` are available on owned local sessions and
+cloud-managed sessions. They remain unavailable on attached sessions because
+attached browsers do not provide an owned routing surface.

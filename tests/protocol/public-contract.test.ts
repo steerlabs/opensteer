@@ -595,6 +595,54 @@ describe("semantic protocol descriptors", () => {
         },
       }),
     ).not.toThrow();
+    expect(() =>
+      assertValidSemanticOperationInput("request-plan.write", {
+        key: "get-user",
+        version: "1.0.0",
+        lifecycle: "active",
+        payload: {
+          transport: {
+            kind: "session-http",
+            requiresBrowser: true,
+          },
+          endpoint: {
+            method: "GET",
+            urlTemplate: "https://example.com/users/{userId}",
+          },
+        },
+      }),
+    ).toThrow(/invalid request-plan\.write input/i);
+    expect(() =>
+      assertValidSemanticOperationInput("request-plan.infer", {
+        recordId: "rec_123",
+        key: "get-user",
+        version: "1.0.0",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertValidSemanticOperationInput("request-plan.infer", {
+        recordId: "rec_123",
+        key: "get-user",
+        version: "1.0.0",
+        transport: "direct-http",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertValidSemanticOperationInput("request-plan.infer", {
+        recordId: "rec_123",
+        key: "get-user",
+        version: "1.0.0",
+        transport: "page-http",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertValidSemanticOperationInput("request-plan.infer", {
+        recordId: "rec_123",
+        key: "get-user",
+        version: "1.0.0",
+        transport: "unsupported",
+      }),
+    ).toThrow(/invalid request-plan\.infer input/i);
 
     expect(() =>
       assertValidSemanticOperationInput("request.execute", {
@@ -676,5 +724,6 @@ describe("protocol trace and artifact schemas", () => {
   test("exports request plan schemas for public request workflow records", () => {
     expect(opensteerRequestPlanPayloadSchema.properties?.transport).toBeDefined();
     expect(opensteerRequestPlanRecordSchema.properties?.payload).toBeDefined();
+    expect(opensteerRequestPlanRecordSchema.properties).not.toHaveProperty("lifecycle");
   });
 });

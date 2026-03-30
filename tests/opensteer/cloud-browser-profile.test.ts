@@ -4,11 +4,12 @@ import path from "node:path";
 
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import {
-  createSuccessEnvelope,
-  type OpensteerRequestEnvelope,
-} from "@opensteer/protocol";
+import { createSuccessEnvelope, type OpensteerRequestEnvelope } from "@opensteer/protocol";
 import { OpensteerCloudClient } from "../../packages/opensteer/src/cloud/client.js";
+const syncLocalRegistryToCloudMock = vi.fn();
+vi.mock("../../packages/opensteer/src/cloud/registry-sync.js", () => ({
+  syncLocalRegistryToCloud: (...args: unknown[]) => syncLocalRegistryToCloudMock(...args),
+}));
 import {
   CloudSessionProxy,
   readPersistedCloudSessionRecord,
@@ -43,12 +44,14 @@ afterEach(() => {
 
 describe("cloud browser-profile integration", () => {
   test("resolves cloud runtime config with a default browser profile preference", () => {
-    vi.stubEnv("OPENSTEER_MODE", "cloud");
+    vi.stubEnv("OPENSTEER_PROVIDER", "cloud");
     vi.stubEnv("OPENSTEER_API_KEY", "osk_test");
+    vi.stubEnv("OPENSTEER_BASE_URL", "https://api.opensteer.dev");
 
     expect(
       resolveOpensteerRuntimeConfig({
-        cloud: {
+        provider: {
+          kind: "cloud",
           browserProfile: {
             profileId: "bp_123",
             reuseIfActive: true,
@@ -56,7 +59,10 @@ describe("cloud browser-profile integration", () => {
         },
       }),
     ).toEqual({
-      mode: "cloud",
+      provider: {
+        kind: "cloud",
+        source: "explicit",
+      },
       cloud: {
         apiKey: "osk_test",
         baseUrl: "https://api.opensteer.dev",
@@ -105,6 +111,137 @@ describe("cloud browser-profile integration", () => {
             reuseIfActive: true,
           },
         }),
+      }),
+    );
+  });
+
+  test("OpensteerCloudClient imports registry batches through public endpoints", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        imported: 1,
+        inserted: 1,
+        updated: 0,
+        skipped: 0,
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new OpensteerCloudClient({
+      apiKey: "osk_test",
+      baseUrl: "https://api.opensteer.dev",
+    });
+
+    await client.importSelectorCache([
+      {
+        workspace: "work",
+        method: "dom.click",
+        descriptionHash: "a".repeat(64),
+        description: "Submit",
+        path: { resolution: "deterministic", context: [], nodes: [{ tag: "button" }] },
+        createdAt: 10,
+        updatedAt: 20,
+      },
+    ]);
+    await client.importRequestPlans([
+      {
+        workspace: "work",
+        recordId: "request-plan:1",
+        key: "request.login",
+        version: "1.0.0",
+        contentHash: "b".repeat(64),
+        tags: ["auth"],
+        payload: {
+          transport: {
+            kind: "session-http",
+            requiresBrowser: true,
+          },
+          endpoint: {
+            method: "GET",
+            urlTemplate: "https://example.com/login",
+          },
+        },
+        freshness: {
+          lastValidatedAt: 30,
+        },
+        createdAt: 10,
+        updatedAt: 20,
+      },
+    ]);
+    await client.importRecipes([
+      {
+        workspace: "work",
+        recordId: "recipe:1",
+        key: "recipe.login",
+        version: "1.0.0",
+        contentHash: "c".repeat(64),
+        tags: ["auth"],
+        payload: {
+          steps: [],
+        },
+        createdAt: 10,
+        updatedAt: 20,
+      },
+    ]);
+    await client.importAuthRecipes([
+      {
+        workspace: "work",
+        recordId: "auth-recipe:1",
+        key: "auth.refresh",
+        version: "1.0.0",
+        contentHash: "d".repeat(64),
+        tags: ["auth"],
+        payload: {
+          steps: [],
+        },
+        createdAt: 10,
+        updatedAt: 20,
+      },
+    ]);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://api.opensteer.dev/selector-cache/import",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          entries: [
+            {
+              workspace: "work",
+              method: "dom.click",
+              descriptionHash: "a".repeat(64),
+              description: "Submit",
+              path: {
+                resolution: "deterministic",
+                context: [],
+                nodes: [{ tag: "button" }],
+              },
+              createdAt: 10,
+              updatedAt: 20,
+            },
+          ],
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://api.opensteer.dev/registry/request-plans/import",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "https://api.opensteer.dev/registry/recipes/import",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "https://api.opensteer.dev/registry/auth-recipes/import",
+      expect.objectContaining({
+        method: "POST",
       }),
     );
   });
@@ -218,10 +355,16 @@ describe("cloud browser-profile integration", () => {
     let getSessionCalls = 0;
     let closeSessionCalls = 0;
     let semanticOpenCalls = 0;
+    const events: string[] = [];
+
+    syncLocalRegistryToCloudMock.mockImplementation(async () => {
+      events.push("sync");
+    });
 
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       if (url === "https://api.opensteer.dev/v1/sessions" && init?.method === "POST") {
         createSessionCalls += 1;
+        events.push("create-session");
         return {
           ok: true,
           json: async () => ({
@@ -234,6 +377,7 @@ describe("cloud browser-profile integration", () => {
 
       if (url === "https://api.opensteer.dev/v1/sessions/session_123" && init?.method === "GET") {
         getSessionCalls += 1;
+        events.push("get-session");
         return {
           ok: true,
           json: async () => ({
@@ -260,6 +404,7 @@ describe("cloud browser-profile integration", () => {
         init?.method === "POST"
       ) {
         semanticOpenCalls += 1;
+        events.push("semantic-open");
         const request = JSON.parse(String(init.body)) as OpensteerRequestEnvelope<unknown>;
         return {
           ok: true,
@@ -299,13 +444,14 @@ describe("cloud browser-profile integration", () => {
         url: "https://example.com",
         title: "Cloud Workspace",
       });
+      expect(events.slice(0, 3)).toEqual(["sync", "create-session", "semantic-open"]);
       expect(createSessionCalls).toBe(1);
       expect(semanticOpenCalls).toBe(1);
 
       await first.disconnect();
 
       expect(await readPersistedCloudSessionRecord(workspaceRoot)).toMatchObject({
-        mode: "cloud",
+        provider: "cloud",
         sessionId: "session_123",
         baseUrl: semanticBaseUrl,
       });
@@ -318,6 +464,7 @@ describe("cloud browser-profile integration", () => {
         url: "https://example.com",
       });
 
+      expect(events.slice(3)).toEqual(["get-session", "sync", "semantic-open"]);
       expect(createSessionCalls).toBe(1);
       expect(getSessionCalls).toBe(1);
       expect(semanticOpenCalls).toBe(2);
@@ -331,7 +478,151 @@ describe("cloud browser-profile integration", () => {
     }
   });
 
-  test("CloudSessionProxy rejects unsupported cloud operations before creating a session", async () => {
+  test("CloudSessionProxy continues creating a new session when sync fails", async () => {
+    syncLocalRegistryToCloudMock.mockRejectedValueOnce(new Error("sync failed"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "opensteer-cloud-session-"));
+
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "https://api.opensteer.dev/v1/sessions" && init?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({
+            sessionId: "session_123",
+            baseUrl: "https://cloud.example/runtime/session_123",
+            status: "active",
+          }),
+        };
+      }
+
+      if (
+        url ===
+          "https://cloud.example/runtime/session_123/api/v2/semantic/operations/session/open" &&
+        init?.method === "POST"
+      ) {
+        const request = JSON.parse(String(init.body)) as OpensteerRequestEnvelope<unknown>;
+        return {
+          ok: true,
+          json: async () =>
+            createSuccessEnvelope(request, {
+              sessionRef: "session:cloud",
+              pageRef: "page:cloud",
+              url: "https://example.com",
+              title: "Cloud Workspace",
+            }),
+        };
+      }
+
+      throw new Error(`Unexpected fetch ${init?.method ?? "GET"} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const proxy = new CloudSessionProxy(
+        new OpensteerCloudClient({
+          apiKey: "osk_test",
+          baseUrl: "https://api.opensteer.dev",
+        }),
+        {
+          rootDir,
+          workspace: "cloud-workspace",
+        },
+      );
+
+      await expect(
+        proxy.open({
+          url: "https://example.com",
+        }),
+      ).resolves.toMatchObject({
+        url: "https://example.com",
+        title: "Cloud Workspace",
+      });
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  test("CloudSessionProxy continues reusing a persisted session when sync fails", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "opensteer-cloud-session-"));
+    const workspace = "cloud-workspace";
+
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "https://api.opensteer.dev/v1/sessions" && init?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({
+            sessionId: "session_123",
+            baseUrl: "https://cloud.example/runtime/session_123",
+            status: "active",
+          }),
+        };
+      }
+
+      if (url === "https://api.opensteer.dev/v1/sessions/session_123" && init?.method === "GET") {
+        return {
+          ok: true,
+          json: async () => ({
+            status: "active",
+          }),
+        };
+      }
+
+      if (
+        url ===
+          "https://cloud.example/runtime/session_123/api/v2/semantic/operations/session/open" &&
+        init?.method === "POST"
+      ) {
+        const request = JSON.parse(String(init.body)) as OpensteerRequestEnvelope<unknown>;
+        return {
+          ok: true,
+          json: async () =>
+            createSuccessEnvelope(request, {
+              sessionRef: "session:cloud",
+              pageRef: "page:cloud",
+              url: "https://example.com",
+              title: "Cloud Workspace",
+            }),
+        };
+      }
+
+      throw new Error(`Unexpected fetch ${init?.method ?? "GET"} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const client = new OpensteerCloudClient({
+        apiKey: "osk_test",
+        baseUrl: "https://api.opensteer.dev",
+      });
+
+      syncLocalRegistryToCloudMock.mockResolvedValueOnce(undefined);
+      const first = new CloudSessionProxy(client, {
+        rootDir,
+        workspace,
+      });
+      await first.open({
+        url: "https://example.com",
+      });
+      await first.disconnect();
+
+      syncLocalRegistryToCloudMock.mockRejectedValueOnce(new Error("sync failed"));
+      const second = new CloudSessionProxy(client, {
+        rootDir,
+        workspace,
+      });
+      await expect(
+        second.open({
+          url: "https://example.com",
+        }),
+      ).resolves.toMatchObject({
+        url: "https://example.com",
+        title: "Cloud Workspace",
+      });
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  test("CloudSessionProxy rejects attach browser mode before creating a session", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
@@ -342,20 +633,14 @@ describe("cloud browser-profile integration", () => {
       }),
     );
 
-    await expect(proxy.listPages()).rejects.toMatchObject({
-      name: "OpensteerProtocolError",
-      code: "unsupported-operation",
-      message: "Cloud mode does not currently support page.list.",
-    });
     await expect(
-      proxy.discoverReverse({
-        objective: "reverse cloud",
+      proxy.open({
+        browser: {
+          mode: "attach",
+          endpoint: "ws://127.0.0.1:9222/devtools/browser/root",
+        },
       }),
-    ).rejects.toMatchObject({
-      name: "OpensteerProtocolError",
-      code: "unsupported-operation",
-      message: "Cloud mode does not currently support reverse.discover.",
-    });
+    ).rejects.toThrow('Cloud mode does not support browser.mode="attach".');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

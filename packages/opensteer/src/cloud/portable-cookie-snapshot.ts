@@ -1,7 +1,7 @@
 import { promisify } from "node:util";
 import { gzip as gzipCallback } from "node:zlib";
 
-import type { PortableBrowserProfileSnapshot } from "@opensteer/cloud-contracts";
+import type { PortableBrowserProfileSnapshot } from "@opensteer/protocol";
 import { connectPlaywrightChromiumBrowser } from "@opensteer/engine-playwright";
 
 import {

@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { OPENSTEER_RUNTIME_CORE_VERSION } from "@opensteer/runtime-core";
 
-import { OpensteerProtocolError } from "@opensteer/protocol";
 import type {
   OpensteerArtifactReadInput,
   OpensteerArtifactReadOutput,
@@ -74,6 +74,7 @@ import type {
   OpensteerRunRecipeOutput,
   OpensteerRunAuthRecipeInput,
   OpensteerRunAuthRecipeOutput,
+  OpensteerSessionInfo,
   OpensteerScriptBeautifyInput,
   OpensteerScriptBeautifyOutput,
   OpensteerScriptDeobfuscateInput,
@@ -106,60 +107,35 @@ import type {
   OpensteerWriteRequestPlanInput,
   OpensteerActionResult,
   StorageSnapshot,
-  OpensteerSemanticOperationName,
 } from "@opensteer/protocol";
-import type { CloudBrowserProfilePreference } from "@opensteer/cloud-contracts";
+import { OPENSTEER_PROTOCOL_VERSION, opensteerSemanticOperationNames } from "@opensteer/protocol";
+import type { CloudBrowserProfilePreference } from "@opensteer/protocol";
 
 import type { AuthRecipeRecord, RecipeRecord, RequestPlanRecord } from "../registry.js";
 import {
-  pathExists,
-  readJsonFile,
-  writeJsonFileAtomic,
-} from "../internal/filesystem.js";
+  clearPersistedSessionRecord,
+  readPersistedCloudSessionRecord,
+  resolveCloudSessionRecordPath,
+  writePersistedSessionRecord,
+  type PersistedCloudSessionRecord,
+} from "../live-session.js";
 import {
   createFilesystemOpensteerWorkspace,
   resolveFilesystemWorkspacePath,
   type FilesystemOpensteerWorkspace,
 } from "../root.js";
+import type {
+  OpensteerInterceptScriptOptions,
+  OpensteerRouteOptions,
+  OpensteerRouteRegistration,
+} from "../sdk/instrumentation.js";
 import { OpensteerSemanticRestClient } from "../sdk/semantic-rest-client.js";
 import type { OpensteerDisconnectableRuntime } from "../sdk/semantic-runtime.js";
+import { OpensteerCloudAutomationClient } from "./automation-client.js";
 import { OpensteerCloudClient } from "./client.js";
+import { syncLocalRegistryToCloud } from "./registry-sync.js";
 
-const CLOUD_SESSION_LAYOUT = "opensteer-cloud-session";
-const CLOUD_SESSION_VERSION = 1;
 const TEMPORARY_CLOUD_WORKSPACE_PREFIX = "opensteer-cloud-workspace-";
-const SUPPORTED_CLOUD_OPERATIONS = new Set<OpensteerSemanticOperationName>([
-  "session.open",
-  "page.goto",
-  "page.snapshot",
-  "dom.click",
-  "dom.hover",
-  "dom.input",
-  "dom.scroll",
-  "dom.extract",
-  "network.query",
-  "network.save",
-  "network.clear",
-  "request.raw",
-  "request-plan.infer",
-  "request-plan.write",
-  "request-plan.get",
-  "request-plan.list",
-  "request.execute",
-  "computer.execute",
-  "session.close",
-]);
-
-export interface PersistedCloudSessionRecord {
-  readonly layout: typeof CLOUD_SESSION_LAYOUT;
-  readonly version: typeof CLOUD_SESSION_VERSION;
-  readonly mode: "cloud";
-  readonly workspace?: string;
-  readonly sessionId: string;
-  readonly baseUrl: string;
-  readonly startedAt: number;
-  readonly updatedAt: number;
-}
 
 export interface CloudSessionProxyOptions {
   readonly rootDir?: string;
@@ -175,50 +151,8 @@ interface CloudSessionInitInput {
   readonly browserProfile?: CloudBrowserProfilePreference;
 }
 
-export function resolveCloudSessionRecordPath(rootPath: string): string {
-  return path.join(rootPath, "live", "cloud-session.json");
-}
-
-export async function readPersistedCloudSessionRecord(
-  rootPath: string,
-): Promise<PersistedCloudSessionRecord | undefined> {
-  const sessionPath = resolveCloudSessionRecordPath(rootPath);
-  if (!(await pathExists(sessionPath))) {
-    return undefined;
-  }
-
-  const parsed = await readJsonFile<Partial<PersistedCloudSessionRecord>>(sessionPath);
-  if (
-    parsed.layout !== CLOUD_SESSION_LAYOUT ||
-    parsed.version !== CLOUD_SESSION_VERSION ||
-    parsed.mode !== "cloud" ||
-    typeof parsed.sessionId !== "string" ||
-    parsed.sessionId.length === 0 ||
-    typeof parsed.baseUrl !== "string" ||
-    parsed.baseUrl.length === 0 ||
-    typeof parsed.startedAt !== "number" ||
-    !Number.isFinite(parsed.startedAt) ||
-    typeof parsed.updatedAt !== "number" ||
-    !Number.isFinite(parsed.updatedAt)
-  ) {
-    return undefined;
-  }
-
-  return {
-    layout: CLOUD_SESSION_LAYOUT,
-    version: CLOUD_SESSION_VERSION,
-    mode: "cloud",
-    ...(parsed.workspace === undefined ? {} : { workspace: parsed.workspace }),
-    sessionId: parsed.sessionId,
-    baseUrl: parsed.baseUrl,
-    startedAt: parsed.startedAt,
-    updatedAt: parsed.updatedAt,
-  };
-}
-
-export async function hasPersistedCloudSession(rootPath: string): Promise<boolean> {
-  return (await readPersistedCloudSessionRecord(rootPath)) !== undefined;
-}
+export { readPersistedCloudSessionRecord, resolveCloudSessionRecordPath };
+export type { PersistedCloudSessionRecord };
 
 export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
   readonly rootPath: string;
@@ -229,6 +163,7 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
   private sessionId: string | undefined;
   private sessionBaseUrl: string | undefined;
   private client: OpensteerSemanticRestClient | undefined;
+  private automation: OpensteerCloudAutomationClient | undefined;
   private workspaceStore: FilesystemOpensteerWorkspace | undefined;
 
   constructor(cloud: OpensteerCloudClient, options: CloudSessionProxyOptions = {}) {
@@ -256,20 +191,82 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     });
   }
 
+  async info(): Promise<OpensteerSessionInfo> {
+    const persisted =
+      this.client !== undefined || this.sessionId !== undefined
+        ? undefined
+        : await this.loadPersistedSession();
+
+    if (
+      this.client === undefined &&
+      this.sessionId === undefined &&
+      persisted !== undefined &&
+      (await this.isReusableCloudSession(persisted.sessionId))
+    ) {
+      this.bindClient(persisted);
+    }
+
+    if (this.automation) {
+      try {
+        const sessionInfo = await this.automation.getSessionInfo();
+        return {
+          ...sessionInfo,
+          ...(this.workspace === undefined ? {} : { workspace: this.workspace }),
+        };
+      } catch {
+        // Fall back to local proxy metadata when the automation channel is unavailable.
+      }
+    }
+
+    return {
+      provider: {
+        kind: "cloud",
+        ownership: "managed",
+        engine: "playwright",
+        baseUrl: this.cloud.getConfig().baseUrl,
+      },
+      ...(this.workspace === undefined ? {} : { workspace: this.workspace }),
+      ...(this.sessionId === undefined
+        ? persisted?.sessionId === undefined
+          ? {}
+          : { sessionId: persisted.sessionId }
+        : { sessionId: this.sessionId }),
+      reconnectable:
+        this.workspace !== undefined || this.sessionId !== undefined || persisted !== undefined,
+      capabilities: {
+        semanticOperations: opensteerSemanticOperationNames,
+        sessionGrants: ["automation", "view", "cdp"],
+        instrumentation: {
+          route: true,
+          interceptScript: true,
+          networkStream: true,
+        },
+      },
+      runtime: {
+        protocolVersion: OPENSTEER_PROTOCOL_VERSION,
+        runtimeCoreVersion: OPENSTEER_RUNTIME_CORE_VERSION,
+      },
+    };
+  }
+
   async listPages(input: OpensteerPageListInput = {}): Promise<OpensteerPageListOutput> {
-    throw unsupportedCloudOperation("page.list");
+    await this.ensureSession();
+    return this.requireClient().invoke("page.list", input);
   }
 
   async newPage(input: OpensteerPageNewInput = {}): Promise<OpensteerPageNewOutput> {
-    throw unsupportedCloudOperation("page.new");
+    await this.ensureSession();
+    return this.requireAutomation().invoke("page.new", input);
   }
 
   async activatePage(input: OpensteerPageActivateInput): Promise<OpensteerPageActivateOutput> {
-    throw unsupportedCloudOperation("page.activate");
+    await this.ensureSession();
+    return this.requireClient().invoke("page.activate", input);
   }
 
   async closePage(input: OpensteerPageCloseInput = {}): Promise<OpensteerPageCloseOutput> {
-    throw unsupportedCloudOperation("page.close");
+    await this.ensureSession();
+    return this.requireClient().invoke("page.close", input);
   }
 
   async goto(input: OpensteerPageGotoInput): Promise<OpensteerPageGotoOutput> {
@@ -278,11 +275,13 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
   }
 
   async evaluate(input: OpensteerPageEvaluateInput): Promise<OpensteerPageEvaluateOutput> {
-    throw unsupportedCloudOperation("page.evaluate");
+    await this.ensureSession();
+    return this.requireAutomation().invoke("page.evaluate", input);
   }
 
   async addInitScript(input: OpensteerAddInitScriptInput): Promise<OpensteerAddInitScriptOutput> {
-    throw unsupportedCloudOperation("page.add-init-script");
+    await this.ensureSession();
+    return this.requireClient().invoke("page.add-init-script", input);
   }
 
   async snapshot(input: OpensteerPageSnapshotInput = {}): Promise<OpensteerPageSnapshotOutput> {
@@ -328,89 +327,105 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
   async minimizeNetwork(
     input: OpensteerNetworkMinimizeInput,
   ): Promise<OpensteerNetworkMinimizeOutput> {
-    throw unsupportedCloudOperation("network.minimize");
+    await this.ensureSession();
+    return this.requireClient().invoke("network.minimize", input);
   }
 
   async diffNetwork(input: OpensteerNetworkDiffInput): Promise<OpensteerNetworkDiffOutput> {
-    throw unsupportedCloudOperation("network.diff");
+    await this.ensureSession();
+    return this.requireClient().invoke("network.diff", input);
   }
 
   async probeNetwork(input: OpensteerTransportProbeInput): Promise<OpensteerTransportProbeOutput> {
-    throw unsupportedCloudOperation("network.probe");
+    await this.ensureSession();
+    return this.requireClient().invoke("network.probe", input);
   }
 
   async discoverReverse(
     input: OpensteerReverseDiscoverInput,
   ): Promise<OpensteerReverseDiscoverOutput> {
-    throw unsupportedCloudOperation("reverse.discover");
+    await this.ensureSession();
+    return this.requireClient().invoke("reverse.discover", input);
   }
 
   async queryReverse(input: OpensteerReverseQueryInput): Promise<OpensteerReverseQueryOutput> {
-    throw unsupportedCloudOperation("reverse.query");
+    await this.ensureSession();
+    return this.requireClient().invoke("reverse.query", input);
   }
 
   async createReversePackage(
     input: OpensteerReversePackageCreateInput,
   ): Promise<OpensteerReversePackageCreateOutput> {
-    throw unsupportedCloudOperation("reverse.package.create");
+    await this.ensureSession();
+    return this.requireClient().invoke("reverse.package.create", input);
   }
 
   async runReversePackage(
     input: OpensteerReversePackageRunInput,
   ): Promise<OpensteerReversePackageRunOutput> {
-    throw unsupportedCloudOperation("reverse.package.run");
+    await this.ensureSession();
+    return this.requireClient().invoke("reverse.package.run", input);
   }
 
   async exportReverse(input: OpensteerReverseExportInput): Promise<OpensteerReverseExportOutput> {
-    throw unsupportedCloudOperation("reverse.export");
+    await this.ensureSession();
+    return this.requireClient().invoke("reverse.export", input);
   }
 
   async getReverseReport(
     input: OpensteerReverseReportInput,
   ): Promise<OpensteerReverseReportOutput> {
-    throw unsupportedCloudOperation("reverse.report");
+    await this.ensureSession();
+    return this.requireClient().invoke("reverse.report", input);
   }
 
   async getReversePackage(
     input: OpensteerReversePackageGetInput,
   ): Promise<OpensteerReversePackageGetOutput> {
-    throw unsupportedCloudOperation("reverse.package.get");
+    await this.ensureSession();
+    return this.requireClient().invoke("reverse.package.get", input);
   }
 
   async listReversePackages(
     input: OpensteerReversePackageListInput = {},
   ): Promise<OpensteerReversePackageListOutput> {
-    throw unsupportedCloudOperation("reverse.package.list");
+    await this.ensureSession();
+    return this.requireClient().invoke("reverse.package.list", input);
   }
 
   async patchReversePackage(
     input: OpensteerReversePackagePatchInput,
   ): Promise<OpensteerReversePackagePatchOutput> {
-    throw unsupportedCloudOperation("reverse.package.patch");
+    await this.ensureSession();
+    return this.requireClient().invoke("reverse.package.patch", input);
   }
 
   async captureInteraction(
     input: OpensteerInteractionCaptureInput,
   ): Promise<OpensteerInteractionCaptureOutput> {
-    throw unsupportedCloudOperation("interaction.capture");
+    await this.ensureSession();
+    return this.requireClient().invoke("interaction.capture", input);
   }
 
   async getInteraction(
     input: OpensteerInteractionGetInput,
   ): Promise<OpensteerInteractionGetOutput> {
-    throw unsupportedCloudOperation("interaction.get");
+    await this.ensureSession();
+    return this.requireClient().invoke("interaction.get", input);
   }
 
   async diffInteraction(
     input: OpensteerInteractionDiffInput,
   ): Promise<OpensteerInteractionDiffOutput> {
-    throw unsupportedCloudOperation("interaction.diff");
+    await this.ensureSession();
+    return this.requireClient().invoke("interaction.diff", input);
   }
 
   async replayInteraction(
     input: OpensteerInteractionReplayInput,
   ): Promise<OpensteerInteractionReplayOutput> {
-    throw unsupportedCloudOperation("interaction.replay");
+    await this.ensureSession();
+    return this.requireClient().invoke("interaction.replay", input);
   }
 
   async clearNetwork(input: OpensteerNetworkClearInput = {}): Promise<OpensteerNetworkClearOutput> {
@@ -421,37 +436,56 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
   async captureScripts(
     input: OpensteerCaptureScriptsInput = {},
   ): Promise<OpensteerCaptureScriptsOutput> {
-    throw unsupportedCloudOperation("scripts.capture");
+    await this.ensureSession();
+    return this.requireClient().invoke("scripts.capture", input);
   }
 
   async readArtifact(input: OpensteerArtifactReadInput): Promise<OpensteerArtifactReadOutput> {
-    throw unsupportedCloudOperation("artifact.read");
+    await this.ensureSession();
+    return this.requireClient().invoke("artifact.read", input);
   }
 
   async beautifyScript(
     input: OpensteerScriptBeautifyInput,
   ): Promise<OpensteerScriptBeautifyOutput> {
-    throw unsupportedCloudOperation("scripts.beautify");
+    await this.ensureSession();
+    return this.requireClient().invoke("scripts.beautify", input);
   }
 
   async deobfuscateScript(
     input: OpensteerScriptDeobfuscateInput,
   ): Promise<OpensteerScriptDeobfuscateOutput> {
-    throw unsupportedCloudOperation("scripts.deobfuscate");
+    await this.ensureSession();
+    return this.requireClient().invoke("scripts.deobfuscate", input);
   }
 
   async sandboxScript(input: OpensteerScriptSandboxInput): Promise<OpensteerScriptSandboxOutput> {
-    throw unsupportedCloudOperation("scripts.sandbox");
+    await this.ensureSession();
+    return this.requireClient().invoke("scripts.sandbox", input);
   }
 
   async solveCaptcha(input: OpensteerCaptchaSolveInput): Promise<OpensteerCaptchaSolveOutput> {
-    throw unsupportedCloudOperation("captcha.solve");
+    await this.ensureSession();
+    return this.requireClient().invoke("captcha.solve", input);
   }
 
   async getCookies(
     input: { readonly urls?: readonly string[] } = {},
   ): Promise<readonly CookieRecord[]> {
-    throw unsupportedCloudOperation("inspect.cookies");
+    await this.ensureSession();
+    return this.requireAutomation().invoke("inspect.cookies", input);
+  }
+
+  async route(input: OpensteerRouteOptions): Promise<OpensteerRouteRegistration> {
+    await this.ensureSession();
+    return this.requireAutomation().route(input);
+  }
+
+  async interceptScript(
+    input: OpensteerInterceptScriptOptions,
+  ): Promise<OpensteerRouteRegistration> {
+    await this.ensureSession();
+    return this.requireAutomation().interceptScript(input);
   }
 
   async getStorageSnapshot(
@@ -460,7 +494,8 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
       readonly includeIndexedDb?: boolean;
     } = {},
   ): Promise<StorageSnapshot> {
-    throw unsupportedCloudOperation("inspect.storage");
+    await this.ensureSession();
+    return this.requireClient().invoke("inspect.storage", input);
   }
 
   async rawRequest(input: OpensteerRawRequestInput): Promise<OpensteerRawRequestOutput> {
@@ -491,37 +526,45 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
   }
 
   async writeAuthRecipe(input: OpensteerWriteAuthRecipeInput): Promise<AuthRecipeRecord> {
-    throw unsupportedCloudOperation("auth-recipe.write");
+    await this.ensureSession();
+    return this.requireClient().invoke("auth-recipe.write", input);
   }
 
   async writeRecipe(input: OpensteerWriteRecipeInput): Promise<RecipeRecord> {
-    throw unsupportedCloudOperation("recipe.write");
+    await this.ensureSession();
+    return this.requireClient().invoke("recipe.write", input);
   }
 
   async getAuthRecipe(input: OpensteerGetAuthRecipeInput): Promise<AuthRecipeRecord> {
-    throw unsupportedCloudOperation("auth-recipe.get");
+    await this.ensureSession();
+    return this.requireClient().invoke("auth-recipe.get", input);
   }
 
   async getRecipe(input: OpensteerGetRecipeInput): Promise<RecipeRecord> {
-    throw unsupportedCloudOperation("recipe.get");
+    await this.ensureSession();
+    return this.requireClient().invoke("recipe.get", input);
   }
 
   async listAuthRecipes(
     input: OpensteerListAuthRecipesInput = {},
   ): Promise<OpensteerListAuthRecipesOutput> {
-    throw unsupportedCloudOperation("auth-recipe.list");
+    await this.ensureSession();
+    return this.requireClient().invoke("auth-recipe.list", input);
   }
 
   async listRecipes(input: OpensteerListRecipesInput = {}): Promise<OpensteerListRecipesOutput> {
-    throw unsupportedCloudOperation("recipe.list");
+    await this.ensureSession();
+    return this.requireClient().invoke("recipe.list", input);
   }
 
   async runAuthRecipe(input: OpensteerRunAuthRecipeInput): Promise<OpensteerRunAuthRecipeOutput> {
-    throw unsupportedCloudOperation("auth-recipe.run");
+    await this.ensureSession();
+    return this.requireClient().invoke("auth-recipe.run", input);
   }
 
   async runRecipe(input: OpensteerRunRecipeInput): Promise<OpensteerRunRecipeOutput> {
-    throw unsupportedCloudOperation("recipe.run");
+    await this.ensureSession();
+    return this.requireClient().invoke("recipe.run", input);
   }
 
   async request(input: OpensteerRequestExecuteInput): Promise<OpensteerRequestExecuteOutput> {
@@ -542,9 +585,9 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
       (this.sessionId === undefined || this.sessionBaseUrl === undefined
         ? undefined
         : {
-            layout: CLOUD_SESSION_LAYOUT,
-            version: CLOUD_SESSION_VERSION,
-            mode: "cloud" as const,
+            layout: "opensteer-session" as const,
+            version: 1 as const,
+            provider: "cloud" as const,
             ...(this.workspace === undefined ? {} : { workspace: this.workspace }),
             sessionId: this.sessionId,
             baseUrl: this.sessionBaseUrl,
@@ -562,7 +605,9 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
         });
       }
     } finally {
+      await this.automation?.close().catch(() => undefined);
       await this.clearPersistedSession();
+      this.automation = undefined;
       this.client = undefined;
       this.sessionId = undefined;
       this.sessionBaseUrl = undefined;
@@ -581,6 +626,8 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     }
 
     this.client = undefined;
+    await this.automation?.close().catch(() => undefined);
+    this.automation = undefined;
     this.sessionId = undefined;
     this.sessionBaseUrl = undefined;
   }
@@ -594,9 +641,12 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
 
     const persisted = await this.loadPersistedSession();
     if (persisted !== undefined && (await this.isReusableCloudSession(persisted.sessionId))) {
+      await this.syncRegistryToCloud();
       this.bindClient(persisted);
       return;
     }
+
+    await this.syncRegistryToCloud();
 
     const session = await this.cloud.createSession({
       ...(this.workspace === undefined ? {} : { name: this.workspace }),
@@ -607,9 +657,9 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
         : { browserProfile: resolveCloudBrowserProfile(this.cloud, input)! }),
     });
     const record: PersistedCloudSessionRecord = {
-      layout: CLOUD_SESSION_LAYOUT,
-      version: CLOUD_SESSION_VERSION,
-      mode: "cloud",
+      layout: "opensteer-session",
+      version: 1,
+      provider: "cloud",
       ...(this.workspace === undefined ? {} : { workspace: this.workspace }),
       sessionId: session.sessionId,
       baseUrl: session.baseUrl,
@@ -620,6 +670,19 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     this.bindClient(record);
   }
 
+  private async syncRegistryToCloud(): Promise<void> {
+    if (this.workspace === undefined) {
+      return;
+    }
+
+    try {
+      const workspaceStore = await this.ensureWorkspaceStore();
+      await syncLocalRegistryToCloud(this.cloud, this.workspace, workspaceStore);
+    } catch {
+      // Session startup must not fail if the registry sync fails.
+    }
+  }
+
   private bindClient(record: Pick<PersistedCloudSessionRecord, "sessionId" | "baseUrl">): void {
     this.sessionId = record.sessionId;
     this.sessionBaseUrl = record.baseUrl;
@@ -627,6 +690,7 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
       baseUrl: record.baseUrl,
       getAuthorizationHeader: async () => this.cloud.buildAuthorizationHeader(),
     });
+    this.automation = new OpensteerCloudAutomationClient(this.cloud, record.sessionId);
   }
 
   private async ensureWorkspaceStore(): Promise<FilesystemOpensteerWorkspace> {
@@ -649,11 +713,11 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
 
   private async writePersistedSession(record: PersistedCloudSessionRecord): Promise<void> {
     const workspace = await this.ensureWorkspaceStore();
-    await writeJsonFileAtomic(resolveCloudSessionRecordPath(workspace.rootPath), record);
+    await writePersistedSessionRecord(workspace.rootPath, record);
   }
 
   private async clearPersistedSession(): Promise<void> {
-    await rm(resolveCloudSessionRecordPath(this.rootPath), { force: true }).catch(() => undefined);
+    await clearPersistedSessionRecord(this.rootPath, "cloud").catch(() => undefined);
   }
 
   private async isReusableCloudSession(sessionId: string): Promise<boolean> {
@@ -673,6 +737,13 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
       throw new Error("Cloud session has not been initialized.");
     }
     return this.client;
+  }
+
+  private requireAutomation(): OpensteerCloudAutomationClient {
+    if (!this.automation) {
+      throw new Error("Cloud automation session has not been initialized.");
+    }
+    return this.automation;
   }
 }
 
@@ -694,22 +765,5 @@ function assertSupportedCloudBrowserMode(browser: OpensteerOpenInput["browser"] 
 }
 
 function isMissingCloudSessionError(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    /\b404\b/.test(error.message)
-  );
-}
-
-function unsupportedCloudOperation(operation: OpensteerSemanticOperationName): OpensteerProtocolError {
-  return new OpensteerProtocolError(
-    "unsupported-operation",
-    `Cloud mode does not currently support ${operation}.`,
-    {
-      details: {
-        mode: "cloud",
-        operation,
-        supportedOperations: [...SUPPORTED_CLOUD_OPERATIONS],
-      },
-    },
-  );
+  return error instanceof Error && /\b404\b/.test(error.message);
 }

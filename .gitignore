@@ -8,6 +8,7 @@ bun.lock
 # Build artifacts
 dist/
 coverage/
+.turbo/
 *.tsbuildinfo
 *.tgz
 *.log

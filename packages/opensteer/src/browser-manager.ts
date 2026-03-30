@@ -37,6 +37,12 @@ import {
   type FilesystemOpensteerWorkspace,
 } from "./root.js";
 import {
+  clearPersistedSessionRecord,
+  readPersistedLocalBrowserSessionRecord,
+  writePersistedSessionRecord,
+  type PersistedLocalBrowserSessionRecord,
+} from "./live-session.js";
+import {
   ensureDirectory,
   pathExists,
   readJsonFile,
@@ -236,7 +242,7 @@ export class OpensteerBrowserManager {
       await this.closePersistentBrowser(workspace);
       await rm(resolveAbpSessionDir(workspace), { recursive: true, force: true });
       await rm(workspace.browserPath, { recursive: true, force: true });
-      await rm(workspace.liveBrowserPath, { force: true });
+      await clearPersistedSessionRecord(workspace.rootPath, "local");
       await ensureDirectory(workspace.browserUserDataDir);
     });
   }
@@ -248,7 +254,7 @@ export class OpensteerBrowserManager {
       await this.closePersistentBrowser(workspace);
       await rm(resolveAbpSessionDir(workspace), { recursive: true, force: true });
       await rm(workspace.browserPath, { recursive: true, force: true });
-      await rm(workspace.liveBrowserPath, { force: true });
+      await clearPersistedSessionRecord(workspace.rootPath, "local");
     });
   }
 
@@ -336,13 +342,13 @@ export class OpensteerBrowserManager {
           ? {}
           : { executablePath: launch.browserExecutablePath }),
       };
-      await writeJsonFileAtomic(workspace.liveBrowserPath, liveRecord);
+      await this.writeLivePersistentBrowser(workspace, liveRecord);
 
       try {
         return await this.createAdoptedAbpEngine(liveRecord);
       } catch (error) {
         await terminateProcess(launched.process.pid ?? 0).catch(() => undefined);
-        await rm(workspace.liveBrowserPath, { force: true }).catch(() => undefined);
+        await clearPersistedSessionRecord(workspace.rootPath, "local").catch(() => undefined);
         throw error;
       }
     });
@@ -440,7 +446,7 @@ export class OpensteerBrowserManager {
         executablePath: launched.executablePath,
         userDataDir: workspace.browserUserDataDir,
       };
-      await writeJsonFileAtomic(workspace.liveBrowserPath, liveRecord);
+      await this.writeLivePersistentBrowser(workspace, liveRecord);
 
       try {
         return await this.createAttachedEngine({
@@ -450,7 +456,7 @@ export class OpensteerBrowserManager {
         });
       } catch (error) {
         await terminateProcess(launched.pid).catch(() => undefined);
-        await rm(workspace.liveBrowserPath, { force: true }).catch(() => undefined);
+        await clearPersistedSessionRecord(workspace.rootPath, "local").catch(() => undefined);
         throw error;
       }
     });
@@ -585,7 +591,7 @@ export class OpensteerBrowserManager {
       return undefined;
     }
     if (!isProcessRunning(live.pid)) {
-      await rm(workspace.liveBrowserPath, { force: true }).catch(() => undefined);
+      await clearPersistedSessionRecord(workspace.rootPath, "local").catch(() => undefined);
       return undefined;
     }
     if (live.engine === "playwright") {
@@ -608,19 +614,8 @@ export class OpensteerBrowserManager {
   private async readStoredLiveBrowser(
     workspace: FilesystemOpensteerWorkspace,
   ): Promise<WorkspaceLiveBrowserRecord | undefined> {
-    if (!(await pathExists(workspace.liveBrowserPath))) {
-      return undefined;
-    }
-    const live = await readJsonFile<WorkspaceLiveBrowserRecord & { readonly engine?: string }>(
-      workspace.liveBrowserPath,
-    );
-    if (live.engine === "abp") {
-      return live;
-    }
-    return {
-      ...live,
-      engine: "playwright",
-    };
+    const live = await readPersistedLocalBrowserSessionRecord(workspace.rootPath);
+    return live === undefined ? undefined : toWorkspaceLiveBrowserRecord(live);
   }
 
   private async resolveLivePersistentEngineName(): Promise<OpensteerEngineName | undefined> {
@@ -646,7 +641,7 @@ export class OpensteerBrowserManager {
   private async closePersistentBrowser(workspace: FilesystemOpensteerWorkspace): Promise<void> {
     const live = await this.readStoredLiveBrowser(workspace);
     if (!live) {
-      await rm(workspace.liveBrowserPath, { force: true }).catch(() => undefined);
+      await clearPersistedSessionRecord(workspace.rootPath, "local").catch(() => undefined);
       return;
     }
 
@@ -655,16 +650,26 @@ export class OpensteerBrowserManager {
         await requestBrowserClose(live.endpoint).catch(() => undefined);
       }
       if (await waitForProcessExit(live.pid, BROWSER_CLOSE_TIMEOUT_MS)) {
-        await rm(workspace.liveBrowserPath, { force: true }).catch(() => undefined);
+        await clearPersistedSessionRecord(workspace.rootPath, "local").catch(() => undefined);
         return;
       }
       await terminateProcess(live.pid).catch(() => undefined);
-      await rm(workspace.liveBrowserPath, { force: true }).catch(() => undefined);
+      await clearPersistedSessionRecord(workspace.rootPath, "local").catch(() => undefined);
       return;
     }
 
     await terminateProcess(live.pid).catch(() => undefined);
-    await rm(workspace.liveBrowserPath, { force: true }).catch(() => undefined);
+    await clearPersistedSessionRecord(workspace.rootPath, "local").catch(() => undefined);
+  }
+
+  private async writeLivePersistentBrowser(
+    workspace: FilesystemOpensteerWorkspace,
+    live: WorkspaceLiveBrowserRecord,
+  ): Promise<void> {
+    await writePersistedSessionRecord(
+      workspace.rootPath,
+      toPersistedLocalBrowserSessionRecord(this.workspace, live),
+    );
   }
 
   private requirePersistentMode(method: "clone" | "reset" | "delete"): void {
@@ -677,6 +682,49 @@ export class OpensteerBrowserManager {
 function normalizeWorkspace(workspace: string | undefined): string | undefined {
   const normalized = workspace?.trim();
   return normalized === undefined || normalized.length === 0 ? undefined : normalized;
+}
+
+function toPersistedLocalBrowserSessionRecord(
+  workspace: string | undefined,
+  live: WorkspaceLiveBrowserRecord,
+): PersistedLocalBrowserSessionRecord {
+  return {
+    layout: "opensteer-session",
+    version: 1,
+    provider: "local",
+    ...(workspace === undefined ? {} : { workspace }),
+    engine: live.engine,
+    ...(live.endpoint === undefined ? {} : { endpoint: live.endpoint }),
+    ...(live.baseUrl === undefined ? {} : { baseUrl: live.baseUrl }),
+    ...(live.remoteDebuggingUrl === undefined
+      ? {}
+      : { remoteDebuggingUrl: live.remoteDebuggingUrl }),
+    ...(live.sessionDir === undefined ? {} : { sessionDir: live.sessionDir }),
+    pid: live.pid,
+    startedAt: live.startedAt,
+    updatedAt: Date.now(),
+    ...(live.executablePath === undefined ? {} : { executablePath: live.executablePath }),
+    userDataDir: live.userDataDir,
+  };
+}
+
+function toWorkspaceLiveBrowserRecord(
+  record: PersistedLocalBrowserSessionRecord,
+): WorkspaceLiveBrowserRecord {
+  return {
+    mode: "persistent",
+    engine: record.engine,
+    ...(record.endpoint === undefined ? {} : { endpoint: record.endpoint }),
+    ...(record.baseUrl === undefined ? {} : { baseUrl: record.baseUrl }),
+    ...(record.remoteDebuggingUrl === undefined
+      ? {}
+      : { remoteDebuggingUrl: record.remoteDebuggingUrl }),
+    ...(record.sessionDir === undefined ? {} : { sessionDir: record.sessionDir }),
+    pid: record.pid,
+    startedAt: record.startedAt,
+    ...(record.executablePath === undefined ? {} : { executablePath: record.executablePath }),
+    userDataDir: record.userDataDir,
+  };
 }
 
 function resolveBrowserMode(

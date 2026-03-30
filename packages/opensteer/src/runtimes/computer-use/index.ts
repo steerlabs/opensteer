@@ -1,10 +1,1 @@
-export type {
-  ComputerUseBridge,
-  ComputerUseBridgeInput,
-  ComputerUseBridgeOutput,
-  ComputerUseBridgeProvider,
-  NormalizedComputerScreenshotOptions,
-} from "./bridge.js";
-export { OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL, resolveComputerUseBridge } from "./bridge.js";
-export type { ComputerUseRuntime, ComputerUseRuntimeOutput } from "./runtime.js";
-export { createComputerUseRuntime } from "./runtime.js";
+export * from "../../../../runtime-core/src/runtimes/computer-use/index.js";

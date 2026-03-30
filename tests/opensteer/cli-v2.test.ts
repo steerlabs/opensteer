@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -30,7 +30,7 @@ describe("Opensteer v2 CLI", () => {
     expect(result.stdout).not.toContain("snapshot-authenticated");
     expect(result.stdout).not.toContain("attach-live");
     expect(result.stdout).not.toContain("--name");
-  });
+  }, 20_000);
 
   test("reports persistent browser status inside a repo-local workspace", async () => {
     await ensureCliArtifactsBuilt();
@@ -62,129 +62,167 @@ describe("Opensteer v2 CLI", () => {
     expect(parsed.rootPath).toContain(path.join(".opensteer", "workspaces", "github-sync"));
     expect(parsed.browserPath).toBe(path.join(parsed.rootPath, "browser"));
     expect(parsed.userDataDir).toBe(path.join(parsed.rootPath, "browser", "user-data"));
-  });
+  }, 20_000);
 
-  test(
-    "discovers reverse candidates from saved workspace network across CLI invocations",
-    async () => {
-      await ensureCliArtifactsBuilt();
-      const cwd = await mkdtemp(path.join(os.tmpdir(), "opensteer-cli-reverse-"));
-      const workspace = `reverse-${Date.now()}`;
-      const server = createServer((request, response) => {
-        const url = new URL(request.url ?? "/", "http://127.0.0.1");
-        if (url.pathname === "/page") {
-          response.writeHead(200, { "content-type": "text/html" });
-          response.end("<!doctype html><html><body>ready</body></html>");
-          return;
-        }
-        if (url.pathname === "/api/portable") {
-          response.writeHead(200, { "content-type": "application/json" });
-          response.end(
-            JSON.stringify({
-              ok: true,
-              item: url.searchParams.get("item") ?? "unknown",
-            }),
-          );
-          return;
-        }
-        response.writeHead(404);
-        response.end();
+  test("loads provider config from .env for top-level status", async () => {
+    await ensureCliArtifactsBuilt();
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "opensteer-cli-status-"));
+
+    try {
+      await writeFile(
+        path.join(cwd, ".env"),
+        [
+          "OPENSTEER_PROVIDER=cloud",
+          "OPENSTEER_API_KEY=osk_test",
+          "OPENSTEER_BASE_URL=http://127.0.0.1:8180",
+        ].join("\n"),
+      );
+      const {
+        OPENSTEER_PROVIDER: _opensteerProvider,
+        OPENSTEER_API_KEY: _opensteerApiKey,
+        OPENSTEER_BASE_URL: _opensteerBaseUrl,
+        ...env
+      } = process.env;
+
+      const result = await execFile("node", [CLI_SCRIPT, "status", "--json"], {
+        cwd,
+        env,
+        maxBuffer: 1024 * 1024 * 4,
       });
-      server.listen(0, "127.0.0.1");
-      await once(server, "listening");
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        throw new Error("failed to start CLI reverse fixture server");
+
+      const parsed = JSON.parse(result.stdout) as {
+        readonly provider: {
+          readonly current: string;
+          readonly source: string;
+          readonly cloudBaseUrl?: string;
+        };
+      };
+
+      expect(parsed.provider).toEqual({
+        current: "cloud",
+        source: "env",
+        cloudBaseUrl: "http://127.0.0.1:8180",
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test("discovers reverse candidates from saved workspace network across CLI invocations", async () => {
+    await ensureCliArtifactsBuilt();
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "opensteer-cli-reverse-"));
+    const workspace = `reverse-${Date.now()}`;
+    const server = createServer((request, response) => {
+      const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/page") {
+        response.writeHead(200, { "content-type": "text/html" });
+        response.end("<!doctype html><html><body>ready</body></html>");
+        return;
       }
-      const baseUrl = `http://127.0.0.1:${String(address.port)}`;
-
-      const runCli = async (args: readonly string[]) =>
-        JSON.parse(
-          (
-            await execFile(process.execPath, [CLI_SCRIPT, ...args], {
-              cwd,
-              maxBuffer: 1024 * 1024 * 8,
-            })
-          ).stdout,
-        ) as Record<string, unknown>;
-
-      try {
-        await runCli(["open", `${baseUrl}/page`, "--workspace", workspace, "--headless", "true"]);
-        await runCli([
-          "run",
-          "page.evaluate",
-          "--workspace",
-          workspace,
-          "--input-json",
+      if (url.pathname === "/api/portable") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
           JSON.stringify({
-            script:
-              'async () => { const response = await fetch("/api/portable?item=cli"); return await response.json(); }',
+            ok: true,
+            item: url.searchParams.get("item") ?? "unknown",
           }),
-        ]);
+        );
+        return;
+      }
+      response.writeHead(404);
+      response.end();
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to start CLI reverse fixture server");
+    }
+    const baseUrl = `http://127.0.0.1:${String(address.port)}`;
 
-        const saved = (await runCli([
-          "run",
-          "network.query",
-          "--workspace",
-          workspace,
-          "--input-json",
-          JSON.stringify({
-            source: "saved",
+    const runCli = async (args: readonly string[]) =>
+      JSON.parse(
+        (
+          await execFile(process.execPath, [CLI_SCRIPT, ...args], {
+            cwd,
+            maxBuffer: 1024 * 1024 * 8,
+          })
+        ).stdout,
+      ) as Record<string, unknown>;
+
+    try {
+      await runCli(["open", `${baseUrl}/page`, "--workspace", workspace, "--headless", "true"]);
+      await runCli([
+        "run",
+        "page.evaluate",
+        "--workspace",
+        workspace,
+        "--input-json",
+        JSON.stringify({
+          script:
+            'async () => { const response = await fetch("/api/portable?item=cli"); return await response.json(); }',
+        }),
+      ]);
+
+      const saved = (await runCli([
+        "run",
+        "network.query",
+        "--workspace",
+        workspace,
+        "--input-json",
+        JSON.stringify({
+          source: "saved",
+          path: "/api/portable",
+          includeBodies: true,
+        }),
+      ])) as {
+        readonly records: readonly unknown[];
+      };
+      expect(saved.records.length).toBeGreaterThan(0);
+
+      const discovered = (await runCli([
+        "run",
+        "reverse.discover",
+        "--workspace",
+        workspace,
+        "--input-json",
+        JSON.stringify({
+          objective: "CLI reverse discover from saved workspace capture",
+          targetHints: { paths: ["/api/portable"] },
+          network: {
             path: "/api/portable",
             includeBodies: true,
-          }),
-        ])) as {
-          readonly records: readonly unknown[];
+          },
+        }),
+      ])) as {
+        readonly summary: {
+          readonly recordCount: number;
+          readonly candidateCount: number;
         };
-        expect(saved.records.length).toBeGreaterThan(0);
+      };
 
-        const discovered = (await runCli([
-          "run",
-          "reverse.discover",
-          "--workspace",
-          workspace,
-          "--input-json",
-          JSON.stringify({
-            objective: "CLI reverse discover from saved workspace capture",
-            targetHints: { paths: ["/api/portable"] },
-            network: {
-              path: "/api/portable",
-              includeBodies: true,
-            },
-          }),
-        ])) as {
-          readonly summary: {
-            readonly recordCount: number;
-            readonly candidateCount: number;
-          };
-        };
+      expect(discovered.summary.recordCount).toBeGreaterThan(0);
+      expect(discovered.summary.candidateCount).toBeGreaterThan(0);
+    } finally {
+      await execFile(process.execPath, [CLI_SCRIPT, "close", "--workspace", workspace], {
+        cwd,
+        maxBuffer: 1024 * 1024 * 4,
+      }).catch(() => undefined);
+      server.close();
+      await once(server, "close").catch(() => undefined);
+      await rm(cwd, { recursive: true, force: true });
+    }
+  }, 60_000);
 
-        expect(discovered.summary.recordCount).toBeGreaterThan(0);
-        expect(discovered.summary.candidateCount).toBeGreaterThan(0);
-      } finally {
-        await execFile(process.execPath, [CLI_SCRIPT, "close", "--workspace", workspace], {
-          cwd,
-          maxBuffer: 1024 * 1024 * 4,
-        }).catch(() => undefined);
-        server.close();
-        await once(server, "close").catch(() => undefined);
-        await rm(cwd, { recursive: true, force: true });
-      }
-    },
-    60_000,
-  );
-
-  test(
-    "creates and runs a portable reverse package across workspace-scoped CLI invocations",
-    async () => {
-      await ensureCliArtifactsBuilt();
-      const cwd = await mkdtemp(path.join(os.tmpdir(), "opensteer-cli-reverse-package-"));
-      const workspace = `reverse-package-${Date.now()}`;
-      const server = createServer((request, response) => {
-        const url = new URL(request.url ?? "/", "http://127.0.0.1");
-        if (url.pathname === "/page") {
-          response.writeHead(200, { "content-type": "text/html" });
-          response.end(`<!doctype html>
+  test("creates and runs a portable reverse package across workspace-scoped CLI invocations", async () => {
+    await ensureCliArtifactsBuilt();
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "opensteer-cli-reverse-package-"));
+    const workspace = `reverse-package-${Date.now()}`;
+    const server = createServer((request, response) => {
+      const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/page") {
+        response.writeHead(200, { "content-type": "text/html" });
+        response.end(`<!doctype html>
 <html>
   <body>
     <script>
@@ -196,184 +234,182 @@ describe("Opensteer v2 CLI", () => {
     ready
   </body>
 </html>`);
-          return;
-        }
-        if (url.pathname === "/api/portable") {
-          response.writeHead(200, { "content-type": "application/json" });
-          response.end(
-            JSON.stringify({
-              ok: true,
-              item: url.searchParams.get("item") ?? "unknown",
-            }),
-          );
-          return;
-        }
-        response.writeHead(404);
-        response.end();
-      });
-      server.listen(0, "127.0.0.1");
-      await once(server, "listening");
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        throw new Error("failed to start CLI reverse package fixture server");
+        return;
       }
-      const baseUrl = `http://127.0.0.1:${String(address.port)}`;
-
-      const runCli = async (args: readonly string[]) =>
-        JSON.parse(
-          (
-            await execFile(process.execPath, [CLI_SCRIPT, ...args], {
-              cwd,
-              maxBuffer: 1024 * 1024 * 8,
-            })
-          ).stdout,
-        ) as Record<string, unknown>;
-
-      try {
-        await runCli(["open", `${baseUrl}/page`, "--workspace", workspace, "--headless", "true"]);
-        await runCli([
-          "run",
-          "page.evaluate",
-          "--workspace",
-          workspace,
-          "--input-json",
+      if (url.pathname === "/api/portable") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
           JSON.stringify({
-            script: "async () => await window.runPortable()",
+            ok: true,
+            item: url.searchParams.get("item") ?? "unknown",
           }),
-        ]);
-
-        const discovered = (await runCli([
-          "run",
-          "reverse.discover",
-          "--workspace",
-          workspace,
-          "--input-json",
-          JSON.stringify({
-            objective: "CLI reverse package flow from workspace capture",
-            targetHints: { paths: ["/api/portable"] },
-            network: {
-              path: "/api/portable",
-              includeBodies: true,
-            },
-          }),
-        ])) as {
-          readonly caseId: string;
-        };
-
-        const queried = (await runCli([
-          "run",
-          "reverse.query",
-          "--workspace",
-          workspace,
-          "--input-json",
-          JSON.stringify({
-            caseId: discovered.caseId,
-            view: "candidates",
-            filters: {
-              path: "/api/portable",
-            },
-          }),
-        ])) as {
-          readonly candidates?: Array<{
-            readonly candidate: {
-              readonly id: string;
-              readonly advisoryTemplates: Array<{
-                readonly id: string;
-                readonly transport?: string;
-                readonly viability: string;
-              }>;
-            };
-          }>;
-        };
-
-        const candidate = queried.candidates?.[0]?.candidate;
-        expect(candidate).toBeDefined();
-        if (candidate === undefined) {
-          throw new Error("expected reverse query to return a candidate");
-        }
-
-        const template = candidate.advisoryTemplates.find(
-          (entry) => entry.transport === "direct-http" && entry.viability === "ready",
         );
-        expect(template).toBeDefined();
-        if (template === undefined) {
-          throw new Error("expected reverse query to return a ready direct-http template");
-        }
-
-        const built = (await runCli([
-          "run",
-          "reverse.package.create",
-          "--workspace",
-          workspace,
-          "--input-json",
-          JSON.stringify({
-            caseId: discovered.caseId,
-            source: {
-              kind: "candidate",
-              id: candidate.id,
-            },
-            templateId: template.id,
-          }),
-        ])) as {
-          readonly package: {
-            readonly id: string;
-            readonly payload: {
-              readonly kind: string;
-              readonly readiness: string;
-            };
-          };
-        };
-
-        expect(built.package.payload.kind).toBe("portable-http");
-        expect(built.package.payload.readiness).toBe("runnable");
-
-        const replayed = (await runCli([
-          "run",
-          "reverse.package.run",
-          "--workspace",
-          workspace,
-          "--input-json",
-          JSON.stringify({
-            packageId: built.package.id,
-          }),
-        ])) as {
-          readonly success: boolean;
-          readonly status?: number;
-        };
-
-        expect(replayed.success).toBe(true);
-        expect(replayed.status).toBe(200);
-
-        const exported = (await runCli([
-          "run",
-          "reverse.export",
-          "--workspace",
-          workspace,
-          "--input-json",
-          JSON.stringify({
-            packageId: built.package.id,
-          }),
-        ])) as {
-          readonly package: {
-            readonly id: string;
-          };
-          readonly requestPlan?: {
-            readonly id: string;
-          };
-        };
-
-        expect(exported.package.id).not.toBe(built.package.id);
-        expect(exported.requestPlan?.id).toBeDefined();
-      } finally {
-        await execFile(process.execPath, [CLI_SCRIPT, "close", "--workspace", workspace], {
-          cwd,
-          maxBuffer: 1024 * 1024 * 4,
-        }).catch(() => undefined);
-        server.close();
-        await once(server, "close").catch(() => undefined);
-        await rm(cwd, { recursive: true, force: true });
+        return;
       }
-    },
-    60_000,
-  );
+      response.writeHead(404);
+      response.end();
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to start CLI reverse package fixture server");
+    }
+    const baseUrl = `http://127.0.0.1:${String(address.port)}`;
+
+    const runCli = async (args: readonly string[]) =>
+      JSON.parse(
+        (
+          await execFile(process.execPath, [CLI_SCRIPT, ...args], {
+            cwd,
+            maxBuffer: 1024 * 1024 * 8,
+          })
+        ).stdout,
+      ) as Record<string, unknown>;
+
+    try {
+      await runCli(["open", `${baseUrl}/page`, "--workspace", workspace, "--headless", "true"]);
+      await runCli([
+        "run",
+        "page.evaluate",
+        "--workspace",
+        workspace,
+        "--input-json",
+        JSON.stringify({
+          script: "async () => await window.runPortable()",
+        }),
+      ]);
+
+      const discovered = (await runCli([
+        "run",
+        "reverse.discover",
+        "--workspace",
+        workspace,
+        "--input-json",
+        JSON.stringify({
+          objective: "CLI reverse package flow from workspace capture",
+          targetHints: { paths: ["/api/portable"] },
+          network: {
+            path: "/api/portable",
+            includeBodies: true,
+          },
+        }),
+      ])) as {
+        readonly caseId: string;
+      };
+
+      const queried = (await runCli([
+        "run",
+        "reverse.query",
+        "--workspace",
+        workspace,
+        "--input-json",
+        JSON.stringify({
+          caseId: discovered.caseId,
+          view: "candidates",
+          filters: {
+            path: "/api/portable",
+          },
+        }),
+      ])) as {
+        readonly candidates?: Array<{
+          readonly candidate: {
+            readonly id: string;
+            readonly advisoryTemplates: Array<{
+              readonly id: string;
+              readonly transport?: string;
+              readonly viability: string;
+            }>;
+          };
+        }>;
+      };
+
+      const candidate = queried.candidates?.[0]?.candidate;
+      expect(candidate).toBeDefined();
+      if (candidate === undefined) {
+        throw new Error("expected reverse query to return a candidate");
+      }
+
+      const template = candidate.advisoryTemplates.find(
+        (entry) => entry.transport === "direct-http" && entry.viability === "ready",
+      );
+      expect(template).toBeDefined();
+      if (template === undefined) {
+        throw new Error("expected reverse query to return a ready direct-http template");
+      }
+
+      const built = (await runCli([
+        "run",
+        "reverse.package.create",
+        "--workspace",
+        workspace,
+        "--input-json",
+        JSON.stringify({
+          caseId: discovered.caseId,
+          source: {
+            kind: "candidate",
+            id: candidate.id,
+          },
+          templateId: template.id,
+        }),
+      ])) as {
+        readonly package: {
+          readonly id: string;
+          readonly payload: {
+            readonly kind: string;
+            readonly readiness: string;
+          };
+        };
+      };
+
+      expect(built.package.payload.kind).toBe("portable-http");
+      expect(built.package.payload.readiness).toBe("runnable");
+
+      const replayed = (await runCli([
+        "run",
+        "reverse.package.run",
+        "--workspace",
+        workspace,
+        "--input-json",
+        JSON.stringify({
+          packageId: built.package.id,
+        }),
+      ])) as {
+        readonly success: boolean;
+        readonly status?: number;
+      };
+
+      expect(replayed.success).toBe(true);
+      expect(replayed.status).toBe(200);
+
+      const exported = (await runCli([
+        "run",
+        "reverse.export",
+        "--workspace",
+        workspace,
+        "--input-json",
+        JSON.stringify({
+          packageId: built.package.id,
+        }),
+      ])) as {
+        readonly package: {
+          readonly id: string;
+        };
+        readonly requestPlan?: {
+          readonly id: string;
+        };
+      };
+
+      expect(exported.package.id).not.toBe(built.package.id);
+      expect(exported.requestPlan?.id).toBeDefined();
+    } finally {
+      await execFile(process.execPath, [CLI_SCRIPT, "close", "--workspace", workspace], {
+        cwd,
+        maxBuffer: 1024 * 1024 * 4,
+      }).catch(() => undefined);
+      server.close();
+      await once(server, "close").catch(() => undefined);
+      await rm(cwd, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

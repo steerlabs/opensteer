@@ -1,6 +1,6 @@
 {
   "name": "@opensteer/protocol",
-  "private": true,
+  "private": false,
   "version": "0.7.0",
   "description": "Public wire schemas and versioned envelopes for Opensteer APIs.",
   "license": "MIT",
@@ -27,6 +27,9 @@
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@opensteer/browser-core": "workspace:*"
   },

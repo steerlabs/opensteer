@@ -50,6 +50,7 @@ import type {
   OpensteerPageListOutput,
   OpensteerPageNewInput,
   OpensteerPageNewOutput,
+  OpensteerPageSnapshotInput,
   OpensteerPageSnapshotOutput,
   OpensteerListRequestPlansInput,
   OpensteerListRequestPlansOutput,
@@ -61,6 +62,7 @@ import type {
   OpensteerRunRecipeOutput,
   OpensteerRunAuthRecipeInput,
   OpensteerRunAuthRecipeOutput,
+  OpensteerSessionInfo,
   OpensteerScriptBeautifyInput,
   OpensteerScriptBeautifyOutput,
   OpensteerScriptDeobfuscateInput,
@@ -108,10 +110,11 @@ import { OpensteerRuntime, type OpensteerRuntimeOptions } from "./runtime.js";
 import {
   createOpensteerSemanticRuntime,
   resolveOpensteerRuntimeConfig,
-  type OpensteerCloudOptions,
 } from "./runtime-resolution.js";
+import type { OpensteerProviderOptions } from "../provider/config.js";
 import type {
   OpensteerInterceptScriptOptions,
+  OpensteerInstrumentableRuntime,
   OpensteerRouteOptions,
   OpensteerRouteRegistration,
 } from "./instrumentation.js";
@@ -152,6 +155,8 @@ export interface OpensteerWaitForPageOptions {
 }
 
 export type OpensteerGotoOptions = OpensteerPageGotoInput;
+export type OpensteerSnapshotOptions = OpensteerSnapshotMode | OpensteerPageSnapshotInput;
+export type OpensteerSnapshotResult = OpensteerPageSnapshotOutput;
 
 export type OpensteerComputerExecuteOptions = OpensteerComputerExecuteInput;
 export type OpensteerComputerExecuteResult = OpensteerComputerExecuteOutput;
@@ -212,7 +217,7 @@ export type OpensteerCaptchaSolveResult = OpensteerCaptchaSolveOutput;
 export type OpensteerAddInitScriptOptions = OpensteerAddInitScriptInput;
 
 export interface OpensteerOptions extends OpensteerRuntimeOptions {
-  readonly cloud?: boolean | OpensteerCloudOptions;
+  readonly provider?: OpensteerProviderOptions;
 }
 
 export interface OpensteerBrowserCloneOptions {
@@ -233,21 +238,21 @@ export class Opensteer {
   readonly browser: OpensteerBrowserController;
 
   constructor(options: OpensteerOptions = {}) {
+    const { provider, engineName, ...runtimeOptions } = options;
     const runtimeConfig = resolveOpensteerRuntimeConfig({
-      ...(options.cloud === undefined ? {} : { cloud: options.cloud }),
-      ...(process.env.OPENSTEER_MODE === undefined
+      ...(provider === undefined ? {} : { provider }),
+      ...(process.env.OPENSTEER_PROVIDER === undefined
         ? {}
-        : { environmentMode: process.env.OPENSTEER_MODE }),
+        : { environmentProvider: process.env.OPENSTEER_PROVIDER }),
     });
 
-    if (runtimeConfig.mode === "cloud") {
+    if (runtimeConfig.provider.kind === "cloud") {
       this.browserManager = undefined;
       this.runtime = createOpensteerSemanticRuntime({
-        mode: runtimeConfig.mode,
-        ...(options.cloud === undefined ? {} : { cloud: options.cloud }),
-        ...(options.engineName === undefined ? {} : { engine: options.engineName }),
+        ...(provider === undefined ? {} : { provider }),
+        ...(engineName === undefined ? {} : { engine: engineName }),
         runtimeOptions: {
-          ...options,
+          ...runtimeOptions,
         },
       });
       this.browser = createUnsupportedBrowserController();
@@ -255,20 +260,19 @@ export class Opensteer {
     }
 
     this.browserManager = new OpensteerBrowserManager({
-      ...(options.rootDir === undefined ? {} : { rootDir: options.rootDir }),
-      ...(options.rootPath === undefined ? {} : { rootPath: options.rootPath }),
-      ...(options.workspace === undefined ? {} : { workspace: options.workspace }),
-      ...(options.engineName === undefined ? {} : { engineName: options.engineName }),
-      ...(options.browser === undefined ? {} : { browser: options.browser }),
-      ...(options.launch === undefined ? {} : { launch: options.launch }),
-      ...(options.context === undefined ? {} : { context: options.context }),
+      ...(runtimeOptions.rootDir === undefined ? {} : { rootDir: runtimeOptions.rootDir }),
+      ...(runtimeOptions.rootPath === undefined ? {} : { rootPath: runtimeOptions.rootPath }),
+      ...(runtimeOptions.workspace === undefined ? {} : { workspace: runtimeOptions.workspace }),
+      ...(engineName === undefined ? {} : { engineName }),
+      ...(runtimeOptions.browser === undefined ? {} : { browser: runtimeOptions.browser }),
+      ...(runtimeOptions.launch === undefined ? {} : { launch: runtimeOptions.launch }),
+      ...(runtimeOptions.context === undefined ? {} : { context: runtimeOptions.context }),
     });
     this.runtime = createOpensteerSemanticRuntime({
-      mode: runtimeConfig.mode,
-      ...(options.cloud === undefined ? {} : { cloud: options.cloud }),
-      ...(options.engineName === undefined ? {} : { engine: options.engineName }),
+      ...(provider === undefined ? {} : { provider }),
+      ...(engineName === undefined ? {} : { engine: engineName }),
       runtimeOptions: {
-        ...options,
+        ...runtimeOptions,
         rootPath: this.browserManager.rootPath,
         cleanupRootOnClose: this.browserManager.cleanupRootOnDisconnect,
       },
@@ -283,6 +287,10 @@ export class Opensteer {
 
   async open(input: string | OpensteerOpenInput = {}): Promise<OpensteerOpenOutput> {
     return this.runtime.open(typeof input === "string" ? { url: input } : input);
+  }
+
+  async info(): Promise<OpensteerSessionInfo> {
+    return this.runtime.info();
   }
 
   async listPages(input: OpensteerPageListInput = {}): Promise<OpensteerPageListOutput> {
@@ -334,13 +342,6 @@ export class Opensteer {
           }
         : input;
     return this.runtime.addInitScript(normalized);
-  }
-
-  async snapshot(
-    input: OpensteerSnapshotMode | { readonly mode?: OpensteerSnapshotMode } = {},
-  ): Promise<OpensteerPageSnapshotOutput> {
-    const mode = typeof input === "string" ? input : input.mode;
-    return this.runtime.snapshot(mode === undefined ? {} : { mode });
   }
 
   async click(input: OpensteerTargetOptions): Promise<OpensteerActionResult> {
@@ -439,6 +440,10 @@ export class Opensteer {
       }
       await delay(pollIntervalMs);
     }
+  }
+
+  async snapshot(input: OpensteerSnapshotOptions = {}): Promise<OpensteerSnapshotResult> {
+    return this.runtime.snapshot(typeof input === "string" ? { mode: input } : input);
   }
 
   async saveNetwork(input: OpensteerNetworkSaveOptions): Promise<OpensteerNetworkSaveResult> {
@@ -677,12 +682,21 @@ export class Opensteer {
 
   private requireOwnedInstrumentationRuntime(
     method: "route" | "interceptScript",
-  ): OpensteerRuntime {
-    if (this.runtime instanceof OpensteerRuntime) {
+  ): OpensteerInstrumentableRuntime {
+    if (isInstrumentableRuntime(this.runtime)) {
       return this.runtime;
     }
-    throw new Error(`${method}() is only available on owned local SDK sessions.`);
+    throw new Error(`${method}() is not available for this session runtime.`);
   }
+}
+
+function isInstrumentableRuntime(
+  runtime: OpensteerDisconnectableRuntime,
+): runtime is OpensteerDisconnectableRuntime & OpensteerInstrumentableRuntime {
+  return (
+    typeof (runtime as Partial<OpensteerInstrumentableRuntime>).route === "function" &&
+    typeof (runtime as Partial<OpensteerInstrumentableRuntime>).interceptScript === "function"
+  );
 }
 
 function createUnsupportedBrowserController(): OpensteerBrowserController {
