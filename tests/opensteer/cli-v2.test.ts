@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -16,20 +16,27 @@ const CLI_SCRIPT = path.resolve(process.cwd(), "packages/opensteer/dist/cli/bin.
 describe("Opensteer v2 CLI", () => {
   test("prints the package version", async () => {
     await ensureCliArtifactsBuilt();
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "opensteer-cli-version-"));
 
-    const packageJson = JSON.parse(
-      await readFile(path.resolve(process.cwd(), "packages/opensteer/package.json"), "utf8"),
-    ) as {
-      readonly version: string;
-    };
+    try {
+      await mkdir(path.join(cwd, ".env"));
 
-    const result = await execFile("node", [CLI_SCRIPT, "--version"], {
-      cwd: process.cwd(),
-      maxBuffer: 1024 * 1024 * 4,
-    });
+      const packageJson = JSON.parse(
+        await readFile(path.resolve(process.cwd(), "packages/opensteer/package.json"), "utf8"),
+      ) as {
+        readonly version: string;
+      };
 
-    expect(result.stdout).toBe(`${packageJson.version}\n`);
-    expect(result.stderr).toBe("");
+      const result = await execFile("node", [CLI_SCRIPT, "--version"], {
+        cwd,
+        maxBuffer: 1024 * 1024 * 4,
+      });
+
+      expect(result.stdout).toBe(`${packageJson.version}\n`);
+      expect(result.stderr).toBe("");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   }, 20_000);
 
   test("prints workspace-centric help", async () => {
@@ -80,6 +87,32 @@ describe("Opensteer v2 CLI", () => {
     expect(parsed.rootPath).toContain(path.join(".opensteer", "workspaces", "github-sync"));
     expect(parsed.browserPath).toBe(path.join(parsed.rootPath, "browser"));
     expect(parsed.userDataDir).toBe(path.join(parsed.rootPath, "browser", "user-data"));
+  }, 20_000);
+
+  test("loads engine selection from .env for browser workspace commands", async () => {
+    await ensureCliArtifactsBuilt();
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "opensteer-cli-engine-env-"));
+
+    try {
+      await writeFile(path.join(cwd, ".env"), "OPENSTEER_ENGINE=abp\n");
+
+      const result = await execFile(
+        "node",
+        [CLI_SCRIPT, "browser", "status", "--workspace", "engine-from-env"],
+        {
+          cwd,
+          maxBuffer: 1024 * 1024 * 4,
+        },
+      );
+
+      const parsed = JSON.parse(result.stdout) as {
+        readonly engine: string;
+      };
+
+      expect(parsed.engine).toBe("abp");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   }, 20_000);
 
   test("loads provider config from .env for top-level status", async () => {
