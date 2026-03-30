@@ -18,6 +18,8 @@ export {
   buildDomDescriptorKey,
   buildDomDescriptorPayload,
   buildDomDescriptorVersion,
+  hashDomDescriptorDescription,
+  parseDomDescriptorRecord,
   sanitizeReplayElementPath,
 } from "./runtimes/dom/index.js";
 export type {

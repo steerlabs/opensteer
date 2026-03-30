@@ -113,6 +113,7 @@ export interface DescriptorRegistryStore {
 
   write(input: WriteDescriptorInput): Promise<DescriptorRecord>;
   getById(id: string): Promise<DescriptorRecord | undefined>;
+  list(input?: ListRegistryRecordsInput): Promise<readonly DescriptorRecord[]>;
   resolve(input: ResolveRegistryRecordInput): Promise<DescriptorRecord | undefined>;
 }
 
@@ -433,6 +434,12 @@ export class FilesystemDescriptorRegistry
     };
 
     return this.writeRecord(record);
+  }
+
+  async list(input: ListRegistryRecordsInput = {}): Promise<readonly DescriptorRecord[]> {
+    const key = input.key === undefined ? undefined : normalizeNonEmptyString("key", input.key);
+    const records = await this.readAllRecords();
+    return key === undefined ? records : records.filter((record) => record.key === key);
   }
 }
 

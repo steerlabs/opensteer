@@ -46,6 +46,7 @@ export {
   createDomDescriptorStore,
   hashDomDescriptorDescription,
   normalizeDomDescriptorNamespace,
+  parseDomDescriptorRecord,
 } from "./descriptors.js";
 export {
   buildArrayFieldPathCandidates,
