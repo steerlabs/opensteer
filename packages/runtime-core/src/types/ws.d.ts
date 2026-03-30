@@ -9,20 +9,11 @@ declare module "ws" {
 
     constructor(url: string | URL);
 
-    on(
-      event: "open" | "close",
-      listener: () => void,
-    ): this;
-    on(
-      event: "message",
-      listener: (data: WebSocket.RawData, isBinary: boolean) => void,
-    ): this;
+    on(event: "open" | "close", listener: () => void): this;
+    on(event: "message", listener: (data: WebSocket.RawData, isBinary: boolean) => void): this;
     on(event: "error", listener: (error: Error) => void): this;
 
-    once(
-      event: "open" | "close",
-      listener: () => void,
-    ): this;
+    once(event: "open" | "close", listener: () => void): this;
     once(event: "error", listener: (error: Error) => void): this;
 
     send(data: string): void;

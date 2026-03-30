@@ -2460,7 +2460,9 @@ export class OpensteerSessionRuntime {
         ? (
             await root.registry.savedNetwork.query({
               ...(input.network?.url === undefined ? {} : { url: input.network.url }),
-              ...(input.network?.hostname === undefined ? {} : { hostname: input.network.hostname }),
+              ...(input.network?.hostname === undefined
+                ? {}
+                : { hostname: input.network.hostname }),
               ...(input.network?.path === undefined ? {} : { path: input.network.path }),
               ...(input.network?.method === undefined ? {} : { method: input.network.method }),
               includeBodies: input.network?.includeBodies ?? true,
@@ -8010,9 +8012,7 @@ export class OpensteerSessionRuntime {
             ...(overrides.requestPlans === undefined
               ? {}
               : { requestPlans: overrides.requestPlans }),
-            ...(overrides.authRecipes === undefined
-              ? {}
-              : { authRecipes: overrides.authRecipes }),
+            ...(overrides.authRecipes === undefined ? {} : { authRecipes: overrides.authRecipes }),
             ...(overrides.recipes === undefined ? {} : { recipes: overrides.recipes }),
           },
         };

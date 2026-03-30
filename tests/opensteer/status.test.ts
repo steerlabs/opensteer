@@ -4,7 +4,10 @@ import path from "node:path";
 
 import { describe, expect, test } from "vitest";
 
-import { collectOpensteerStatus, renderOpensteerStatus } from "../../packages/opensteer/src/cli/status.js";
+import {
+  collectOpensteerStatus,
+  renderOpensteerStatus,
+} from "../../packages/opensteer/src/cli/status.js";
 import { resolveFilesystemWorkspacePath } from "../../packages/opensteer/src/root.js";
 import { writePersistedSessionRecord } from "../../packages/opensteer/src/live-session.js";
 

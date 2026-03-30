@@ -14,6 +14,13 @@ const state = vi.hoisted(() => {
       url: (input as { readonly url?: string }).url ?? "about:blank",
       title: "Workspace Runtime",
     })),
+    snapshot: vi.fn(async (input = {}) => ({
+      url: "https://example.com",
+      title: "Workspace Runtime",
+      mode: (input as { readonly mode?: string }).mode ?? "action",
+      html: "<html></html>",
+      counters: [],
+    })),
     close: vi.fn(async () => ({ closed: true })),
     disconnect: vi.fn(async () => undefined),
   };
@@ -155,6 +162,21 @@ describe("Opensteer v2 SDK surface", () => {
     });
     expect(state.browserManager.reset).toHaveBeenCalledTimes(1);
     expect(state.browserManager.delete).toHaveBeenCalledTimes(1);
+  });
+
+  test("snapshot forwards string shorthand modes to the runtime", async () => {
+    const opensteer = new Opensteer({
+      workspace: "github-sync",
+    });
+
+    const snapshot = await opensteer.snapshot("action");
+
+    expect(state.runtime.snapshot).toHaveBeenCalledWith({
+      mode: "action",
+    });
+    expect(snapshot).toMatchObject({
+      mode: "action",
+    });
   });
 
   test("cloud mode skips browser-manager ownership and blocks browser admin helpers", async () => {

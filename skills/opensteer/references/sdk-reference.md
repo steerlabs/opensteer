@@ -43,7 +43,7 @@ Opensteer uses a two-phase workflow: **explore** with the CLI, then **replay** w
 
 ### Phase 1 — Exploration (one-time, via CLI or setup script)
 
-Run `opensteer snapshot action --workspace demo` from the CLI first. Read the `html` field in the JSON output — it is a clean filtered DOM with `c="N"` attributes. Use those counter numbers as the `element` parameter below. The SDK does NOT expose `snapshot()`.
+Run `opensteer snapshot action --workspace demo` from the CLI first. Read the `html` field in the JSON output — it is a clean filtered DOM with `c="N"` attributes. Use those counter numbers as the `element` parameter below. The SDK also exposes `snapshot()`, but this guide keeps discovery in the CLI so the DOM HTML is easy to inspect from the terminal.
 
 ```ts
 import { Opensteer } from "opensteer";
@@ -58,12 +58,12 @@ await opensteer.open("https://example.com");
 // element numbers come from c="N" values in the snapshot html field
 await opensteer.click({
   element: 3,
-  description: "primary button",  // caches the element path
+  description: "primary button", // caches the element path
 });
 
 await opensteer.input({
   element: 7,
-  description: "search input",  // caches the element path
+  description: "search input", // caches the element path
   text: "laptop",
   pressEnter: true,
 });
@@ -317,5 +317,5 @@ Lifecycle:
 - Use `description` for all interactions and extractions in deterministic scripts.
 - Use `description` plus `schema` to persist an extraction descriptor. Bare `description` replays it.
 - Use `element` targets only during CLI exploration with a fresh snapshot. Deterministic scripts use `description`.
-- The public SDK does not expose `snapshot()`. Use the CLI `snapshot action` for element discovery.
+- The SDK does expose `snapshot()`, but this workflow keeps element discovery in the CLI with `snapshot action`.
 - Prefer Opensteer methods over raw Playwright so browser, extraction, and replay semantics stay consistent.

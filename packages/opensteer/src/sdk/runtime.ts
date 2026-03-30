@@ -77,22 +77,24 @@ export class OpensteerRuntime extends SharedOpensteerSessionRuntime {
       ...(options.context === undefined ? {} : { context: options.context }),
     });
 
-    super(buildSharedRuntimeOptions({
-      name: publicWorkspace ?? "default",
-      rootPath,
-      ...(publicWorkspace === undefined ? {} : { workspaceName: publicWorkspace }),
-      ...(options.browser === undefined ? {} : { browser: options.browser }),
-      ...(options.launch === undefined ? {} : { launch: options.launch }),
-      ...(options.context === undefined ? {} : { context: options.context }),
-      engineName,
-      ...(options.engine === undefined ? {} : { engine: options.engine }),
-      ...(options.engineFactory === undefined ? {} : { engineFactory: options.engineFactory }),
-      ...(options.policy === undefined ? {} : { policy: options.policy }),
-      ...(options.descriptorStore === undefined
-        ? {}
-        : { descriptorStore: options.descriptorStore }),
-      cleanupRootOnClose,
-    }));
+    super(
+      buildSharedRuntimeOptions({
+        name: publicWorkspace ?? "default",
+        rootPath,
+        ...(publicWorkspace === undefined ? {} : { workspaceName: publicWorkspace }),
+        ...(options.browser === undefined ? {} : { browser: options.browser }),
+        ...(options.launch === undefined ? {} : { launch: options.launch }),
+        ...(options.context === undefined ? {} : { context: options.context }),
+        engineName,
+        ...(options.engine === undefined ? {} : { engine: options.engine }),
+        ...(options.engineFactory === undefined ? {} : { engineFactory: options.engineFactory }),
+        ...(options.policy === undefined ? {} : { policy: options.policy }),
+        ...(options.descriptorStore === undefined
+          ? {}
+          : { descriptorStore: options.descriptorStore }),
+        cleanupRootOnClose,
+      }),
+    );
   }
 }
 
@@ -108,21 +110,23 @@ export class OpensteerSessionRuntime extends SharedOpensteerSessionRuntime {
       ...(options.context === undefined ? {} : { context: options.context }),
     });
 
-    super(buildSharedRuntimeOptions({
-      name: options.name,
-      rootPath,
-      ...(options.browser === undefined ? {} : { browser: options.browser }),
-      ...(options.launch === undefined ? {} : { launch: options.launch }),
-      ...(options.context === undefined ? {} : { context: options.context }),
-      engineName,
-      ...(options.engine === undefined ? {} : { engine: options.engine }),
-      ...(options.engineFactory === undefined ? {} : { engineFactory: options.engineFactory }),
-      ...(options.policy === undefined ? {} : { policy: options.policy }),
-      ...(options.descriptorStore === undefined
-        ? {}
-        : { descriptorStore: options.descriptorStore }),
-      cleanupRootOnClose,
-    }));
+    super(
+      buildSharedRuntimeOptions({
+        name: options.name,
+        rootPath,
+        ...(options.browser === undefined ? {} : { browser: options.browser }),
+        ...(options.launch === undefined ? {} : { launch: options.launch }),
+        ...(options.context === undefined ? {} : { context: options.context }),
+        engineName,
+        ...(options.engine === undefined ? {} : { engine: options.engine }),
+        ...(options.engineFactory === undefined ? {} : { engineFactory: options.engineFactory }),
+        ...(options.policy === undefined ? {} : { policy: options.policy }),
+        ...(options.descriptorStore === undefined
+          ? {}
+          : { descriptorStore: options.descriptorStore }),
+        cleanupRootOnClose,
+      }),
+    );
   }
 }
 
@@ -148,15 +152,15 @@ function buildSharedRuntimeOptions(input: {
         rootPath: input.rootPath,
         ...(input.workspaceName === undefined ? {} : { workspace: input.workspaceName }),
         engineName: input.engineName,
-        ...(factoryOptions.browser ?? input.browser) === undefined
+        ...((factoryOptions.browser ?? input.browser) === undefined
           ? {}
-          : { browser: factoryOptions.browser ?? input.browser },
-        ...(factoryOptions.launch ?? input.launch) === undefined
+          : { browser: factoryOptions.browser ?? input.browser }),
+        ...((factoryOptions.launch ?? input.launch) === undefined
           ? {}
-          : { launch: factoryOptions.launch ?? input.launch },
-        ...(factoryOptions.context ?? input.context) === undefined
+          : { launch: factoryOptions.launch ?? input.launch }),
+        ...((factoryOptions.context ?? input.context) === undefined
           ? {}
-          : { context: factoryOptions.context ?? input.context },
+          : { context: factoryOptions.context ?? input.context }),
       }).createEngine());
 
   return {
@@ -166,9 +170,7 @@ function buildSharedRuntimeOptions(input: {
     ...(input.engine === undefined ? {} : { engine: input.engine }),
     ...(input.engine === undefined ? { engineFactory } : {}),
     ...(input.policy === undefined ? {} : { policy: input.policy }),
-    ...(input.descriptorStore === undefined
-      ? {}
-      : { descriptorStore: input.descriptorStore }),
+    ...(input.descriptorStore === undefined ? {} : { descriptorStore: input.descriptorStore }),
     cleanupRootOnClose: input.cleanupRootOnClose,
     sessionInfo: {
       provider: {
@@ -190,8 +192,6 @@ function normalizeWorkspace(workspace: string | undefined): string | undefined {
   return trimmed.length === 0 ? undefined : trimmed;
 }
 
-function resolveOwnership(
-  browser: OpensteerBrowserOptions | undefined,
-): "owned" | "attached" {
+function resolveOwnership(browser: OpensteerBrowserOptions | undefined): "owned" | "attached" {
   return typeof browser === "object" && browser.mode === "attach" ? "attached" : "owned";
 }

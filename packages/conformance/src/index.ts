@@ -22,7 +22,9 @@ import type {
   OpensteerPageListOutput,
   OpensteerPageNewInput,
   OpensteerPageNewOutput,
+  OpensteerPageSnapshotInput,
   OpensteerPageSnapshotOutput,
+  OpensteerSnapshotMode,
   StorageSnapshot,
 } from "@opensteer/protocol";
 
@@ -42,13 +44,9 @@ export const opensteerConformanceFamilies = [
   "computer-execute",
 ] as const;
 
-export type OpensteerConformanceFamily =
-  (typeof opensteerConformanceFamilies)[number];
+export type OpensteerConformanceFamily = (typeof opensteerConformanceFamilies)[number];
 
-export type OpensteerConformanceStatus =
-  | "pass"
-  | "fail"
-  | "unsupported-by-capability";
+export type OpensteerConformanceStatus = "pass" | "fail" | "unsupported-by-capability";
 
 export interface OpensteerConformanceUrls {
   readonly baseUrl: string;
@@ -69,13 +67,16 @@ export interface OpensteerConformanceTarget {
   closePage(input?: OpensteerPageCloseInput): Promise<OpensteerPageCloseOutput>;
   goto(input: string | { readonly url: string; readonly networkTag?: string }): Promise<unknown>;
   evaluate(input: string | OpensteerPageEvaluateInput): Promise<unknown>;
-  addInitScript(
-    input: string | OpensteerAddInitScriptInput,
-  ): Promise<OpensteerAddInitScriptOutput>;
+  addInitScript(input: string | OpensteerAddInitScriptInput): Promise<OpensteerAddInitScriptOutput>;
   snapshot(
-    input?: "action" | "full" | { readonly mode?: "action" | "full" },
+    input?: OpensteerSnapshotMode | OpensteerPageSnapshotInput,
   ): Promise<OpensteerPageSnapshotOutput>;
-  click(input: { readonly selector?: string; readonly element?: number; readonly description?: string; readonly networkTag?: string }): Promise<OpensteerActionResult>;
+  click(input: {
+    readonly selector?: string;
+    readonly element?: number;
+    readonly description?: string;
+    readonly networkTag?: string;
+  }): Promise<OpensteerActionResult>;
   hover?(input: {
     readonly selector?: string;
     readonly element?: number;
@@ -140,7 +141,7 @@ export interface OpensteerConformanceTarget {
           readonly body?: string | Uint8Array;
           readonly contentType?: string;
         };
-    }): Promise<OpensteerRouteRegistration>;
+  }): Promise<OpensteerRouteRegistration>;
   interceptScript?(input: {
     readonly pageRef?: string;
     readonly urlPattern: string;
@@ -345,9 +346,7 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
       const cookies = await target.getCookies({ urls: [urls.main] });
       assert(
         cookies.some(
-          (cookie) =>
-            cookie.name === "conformance-cookie" &&
-            cookie.value === "available",
+          (cookie) => cookie.name === "conformance-cookie" && cookie.value === "available",
         ),
         "expected inspect.cookies to include the cookie written in-page",
       );
@@ -355,9 +354,7 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
       const snapshot = await target.getStorageSnapshot({
         includeSessionStorage: true,
       });
-      const origin = snapshot.origins.find(
-        (entry) => entry.origin === new URL(urls.main).origin,
-      );
+      const origin = snapshot.origins.find((entry) => entry.origin === new URL(urls.main).origin);
       assert(origin, "expected a storage origin snapshot for the fixture origin");
       assert(
         origin.localStorage.some(
@@ -370,9 +367,7 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
           (entry) =>
             entry.origin === new URL(urls.main).origin &&
             entry.entries.some(
-              (item) =>
-                item.key === "conformance-session-key" &&
-                item.value === "sessioned",
+              (item) => item.key === "conformance-session-key" && item.value === "sessioned",
             ),
         ),
         "expected inspect.storage to include sessionStorage entries when requested",
@@ -391,31 +386,29 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
         args: [networkUrl],
       });
 
-      await poll(async () => {
-        const live = await target.queryNetwork({
-          url: networkUrl,
-          limit: 10,
-        });
-        return live.records.length > 0;
-      }, 5_000, "expected network.query to observe the live request");
+      await poll(
+        async () => {
+          const live = await target.queryNetwork({
+            url: networkUrl,
+            limit: 10,
+          });
+          return live.records.length > 0;
+        },
+        5_000,
+        "expected network.query to observe the live request",
+      );
 
       const saved = await target.saveNetwork({
         tag: "conformance-network",
         url: networkUrl,
       });
-      assert(
-        saved.savedCount > 0,
-        "expected network.save to persist at least one record",
-      );
+      assert(saved.savedCount > 0, "expected network.save to persist at least one record");
 
       const persisted = await target.queryNetwork({
         source: "saved",
         tag: "conformance-network",
       });
-      assert(
-        persisted.records.length > 0,
-        "expected saved network records to be queryable",
-      );
+      assert(persisted.records.length > 0, "expected saved network records to be queryable");
 
       await target.clearNetwork({ tag: "conformance-network" });
       const afterClear = await target.queryNetwork({
@@ -461,8 +454,7 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
       await target.interceptScript({
         urlPattern: "**/assets/intercept.js",
         times: 1,
-        handler: ({ content }) =>
-          content.replace("__INTERCEPT_VALUE__", "patched-by-intercept"),
+        handler: ({ content }) => content.replace("__INTERCEPT_VALUE__", "patched-by-intercept"),
       });
 
       const scripted = await target.newPage({ url: urls.scripted });
@@ -479,9 +471,7 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
     description: "drives the viewport through coordinate-based computer actions",
     async run({ target, urls }) {
       if (!target.computerExecute) {
-        throw new UnsupportedCapabilityError(
-          "expected computerExecute() to be available",
-        );
+        throw new UnsupportedCapabilityError("expected computerExecute() to be available");
       }
 
       await target.open(urls.main);
@@ -513,9 +503,7 @@ export class UnsupportedCapabilityError extends Error {
   }
 }
 
-export function isUnsupportedCapabilityError(
-  error: unknown,
-): error is UnsupportedCapabilityError {
+export function isUnsupportedCapabilityError(error: unknown): error is UnsupportedCapabilityError {
   return error instanceof UnsupportedCapabilityError;
 }
 
@@ -550,10 +538,7 @@ function assertEqual(
   }
 }
 
-function asRecord(
-  value: unknown,
-  message: string,
-): Record<string, unknown> {
+function asRecord(value: unknown, message: string): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(message);
   }

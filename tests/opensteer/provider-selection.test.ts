@@ -5,9 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { CloudSessionProxy } from "../../packages/opensteer/src/cloud/session-proxy.js";
-import {
-  resolveFilesystemWorkspacePath,
-} from "../../packages/opensteer/src/root.js";
+import { resolveFilesystemWorkspacePath } from "../../packages/opensteer/src/root.js";
 import {
   createOpensteerSemanticRuntime,
   resolveOpensteerRuntimeConfig,

@@ -213,6 +213,8 @@ export type {
   OpensteerScriptDeobfuscateResult,
   OpensteerScriptSandboxOptions,
   OpensteerScriptSandboxResult,
+  OpensteerSnapshotOptions,
+  OpensteerSnapshotResult,
   OpensteerTargetOptions,
   OpensteerWaitForNetworkOptions,
   OpensteerWaitForPageOptions,

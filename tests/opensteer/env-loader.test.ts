@@ -27,10 +27,7 @@ describe("CLI env loading", () => {
       );
       await writeFile(
         path.join(childDir, ".env"),
-        [
-          "OPENSTEER_PROVIDER=cloud",
-          "OPENSTEER_BASE_URL=https://child.example",
-        ].join("\n"),
+        ["OPENSTEER_PROVIDER=cloud", "OPENSTEER_BASE_URL=https://child.example"].join("\n"),
       );
       await writeFile(
         path.join(childDir, ".env.local"),

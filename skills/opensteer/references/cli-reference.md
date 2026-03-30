@@ -212,6 +212,7 @@ The extractor uses the 1-2 representative rows as **templates**, then automatica
 ```
 
 Rules:
+
 - Build the exact JSON shape you want. The extractor does not accept `"string"` or prompt-style schemas.
 - Each leaf must be `{ element: N }`, `{ selector: "..." }`, optional `attribute`, or `{ source: "current_url" }`.
 - Use `element` fields during CLI exploration with a fresh snapshot. Deterministic scripts use `description`.

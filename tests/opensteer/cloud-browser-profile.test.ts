@@ -4,10 +4,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import {
-  createSuccessEnvelope,
-  type OpensteerRequestEnvelope,
-} from "@opensteer/protocol";
+import { createSuccessEnvelope, type OpensteerRequestEnvelope } from "@opensteer/protocol";
 import { OpensteerCloudClient } from "../../packages/opensteer/src/cloud/client.js";
 const syncLocalRegistryToCloudMock = vi.fn();
 vi.mock("../../packages/opensteer/src/cloud/registry-sync.js", () => ({
@@ -498,7 +495,8 @@ describe("cloud browser-profile integration", () => {
       }
 
       if (
-        url === "https://cloud.example/runtime/session_123/api/v2/semantic/operations/session/open" &&
+        url ===
+          "https://cloud.example/runtime/session_123/api/v2/semantic/operations/session/open" &&
         init?.method === "POST"
       ) {
         const request = JSON.parse(String(init.body)) as OpensteerRequestEnvelope<unknown>;
@@ -569,7 +567,8 @@ describe("cloud browser-profile integration", () => {
       }
 
       if (
-        url === "https://cloud.example/runtime/session_123/api/v2/semantic/operations/session/open" &&
+        url ===
+          "https://cloud.example/runtime/session_123/api/v2/semantic/operations/session/open" &&
         init?.method === "POST"
       ) {
         const request = JSON.parse(String(init.body)) as OpensteerRequestEnvelope<unknown>;

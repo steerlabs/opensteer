@@ -151,10 +151,7 @@ interface CloudSessionInitInput {
   readonly browserProfile?: CloudBrowserProfilePreference;
 }
 
-export {
-  readPersistedCloudSessionRecord,
-  resolveCloudSessionRecordPath,
-};
+export { readPersistedCloudSessionRecord, resolveCloudSessionRecordPath };
 export type { PersistedCloudSessionRecord };
 
 export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
@@ -235,9 +232,7 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
           : { sessionId: persisted.sessionId }
         : { sessionId: this.sessionId }),
       reconnectable:
-        this.workspace !== undefined ||
-        this.sessionId !== undefined ||
-        persisted !== undefined,
+        this.workspace !== undefined || this.sessionId !== undefined || persisted !== undefined,
       capabilities: {
         semanticOperations: opensteerSemanticOperationNames,
         sessionGrants: ["automation", "view", "cdp"],
@@ -770,8 +765,5 @@ function assertSupportedCloudBrowserMode(browser: OpensteerOpenInput["browser"] 
 }
 
 function isMissingCloudSessionError(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    /\b404\b/.test(error.message)
-  );
+  return error instanceof Error && /\b404\b/.test(error.message);
 }

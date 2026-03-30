@@ -22,11 +22,13 @@ import { defineBrowserCoreConformanceSuite } from "../browser-core/conformance-s
 
 const configuredAbpExecutablePath = process.env.OPENSTEER_ABP_EXECUTABLE;
 const configuredBrowserExecutablePath = process.env.OPENSTEER_ABP_BROWSER_EXECUTABLE;
+const configuredBundledBrowserPath = process.env.ABP_BROWSER_PATH;
 const defaultAbpExecutablePath = resolveDefaultAbpExecutablePath();
 const runAbp =
-  process.env.OPENSTEER_ABP_E2E !== "0" &&
+  process.env.OPENSTEER_ABP_E2E === "1" &&
   (configuredAbpExecutablePath !== undefined ||
     configuredBrowserExecutablePath !== undefined ||
+    configuredBundledBrowserPath !== undefined ||
     defaultAbpExecutablePath !== undefined);
 
 let baseUrl = "";
