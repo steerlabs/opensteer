@@ -96,6 +96,8 @@ await opensteer.saveNetwork({
 });
 ```
 
+Saved-network persistence is SQLite-backed and initializes on first use. Generic workspace and browser flows do not require SQLite capability unless they touch saved-network persistence.
+
 6. Replay the plan from code.
 
 ```ts

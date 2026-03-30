@@ -35,6 +35,8 @@ const opensteer = new Opensteer({
 - `opensteer.browser.status()`, `clone()`, `reset()`, and `delete()` manage the persistent workspace browser.
 - `close()` shuts the current session and, for persistent workspaces, closes the live browser process.
 - `disconnect()` detaches local runtime handles and leaves the workspace/browser files intact.
+- Saved-network persistence is SQLite-backed and initializes on first `saveNetwork()`, saved-source `queryNetwork()`, or `clearNetwork()` use.
+- Generic workspace and browser helpers do not require SQLite capability unless they touch saved-network persistence.
 - The current public SDK does not expose `Opensteer.attach()`, cloud session helpers, or the ABP engine.
 
 ## DOM Automation And Extraction

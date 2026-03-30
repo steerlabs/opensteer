@@ -89,6 +89,37 @@ describe("Opensteer v2 CLI", () => {
     expect(parsed.userDataDir).toBe(path.join(parsed.rootPath, "browser", "user-data"));
   }, 20_000);
 
+  test("reports browser status without requiring SQLite support", async () => {
+    await ensureCliArtifactsBuilt();
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "opensteer-cli-no-sqlite-status-"));
+
+    try {
+      const result = await execFile(
+        process.execPath,
+        ["--no-experimental-sqlite", CLI_SCRIPT, "browser", "status", "--workspace", "sqlite-free"],
+        {
+          cwd,
+          maxBuffer: 1024 * 1024 * 4,
+        },
+      );
+
+      const parsed = JSON.parse(result.stdout) as {
+        readonly mode: string;
+        readonly workspace?: string;
+        readonly live: boolean;
+      };
+
+      expect(parsed).toMatchObject({
+        mode: "persistent",
+        workspace: "sqlite-free",
+        live: false,
+      });
+      expect(result.stderr).toBe("");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   test("loads engine selection from .env for browser workspace commands", async () => {
     await ensureCliArtifactsBuilt();
     const cwd = await mkdtemp(path.join(os.tmpdir(), "opensteer-cli-engine-env-"));
@@ -110,6 +141,41 @@ describe("Opensteer v2 CLI", () => {
       };
 
       expect(parsed.engine).toBe("abp");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test("fails saved-network CLI commands with a targeted SQLite support error", async () => {
+    await ensureCliArtifactsBuilt();
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "opensteer-cli-no-sqlite-saved-network-"));
+
+    try {
+      const execution = execFile(
+        process.execPath,
+        [
+          "--no-experimental-sqlite",
+          CLI_SCRIPT,
+          "run",
+          "network.query",
+          "--workspace",
+          "sqlite-required",
+          "--input-json",
+          JSON.stringify({
+            source: "saved",
+          }),
+        ],
+        {
+          cwd,
+          maxBuffer: 1024 * 1024 * 4,
+        },
+      );
+
+      await expect(execution).rejects.toMatchObject({
+        stderr: expect.stringMatching(
+          /Saved-network operations require Node's built-in SQLite support\..*node:sqlite/s,
+        ),
+      });
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

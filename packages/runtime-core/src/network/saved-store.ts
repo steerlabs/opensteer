@@ -7,6 +7,8 @@ import { ensureDirectory } from "../internal/filesystem.js";
 
 const TAG_DELIMITER = "\u001f";
 const NODE_SQLITE_SPECIFIER = `node:${"sqlite"}`;
+const SAVED_NETWORK_SQLITE_SUPPORT_ERROR =
+  "Saved-network operations require Node's built-in SQLite support. Use a Node runtime with node:sqlite enabled.";
 
 export interface SavedNetworkQueryInput {
   readonly recordId?: string;
@@ -77,101 +79,19 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
   readonly databasePath: string;
 
   private database: NodeSqliteDatabaseSync | undefined;
+  private directoryInitialization: Promise<void> | undefined;
+  private databaseInitialization: Promise<NodeSqliteDatabaseSync> | undefined;
 
   constructor(rootPath: string) {
     this.databasePath = path.join(rootPath, "registry", "saved-network.sqlite");
   }
 
   async initialize(): Promise<void> {
-    await ensureDirectory(path.dirname(this.databasePath));
-    const { DatabaseSync } = await import(NODE_SQLITE_SPECIFIER);
-    const database = new DatabaseSync(this.databasePath);
-    database.exec("PRAGMA journal_mode = WAL");
-    database.exec("PRAGMA foreign_keys = ON");
-    database.exec(`
-      CREATE TABLE IF NOT EXISTS saved_network_records (
-        record_id TEXT PRIMARY KEY,
-        request_id TEXT NOT NULL,
-        session_ref TEXT NOT NULL,
-        page_ref TEXT,
-        page_ref_key TEXT NOT NULL,
-        frame_ref TEXT,
-        document_ref TEXT,
-        action_id TEXT,
-        method TEXT NOT NULL,
-        method_lc TEXT NOT NULL,
-        url TEXT NOT NULL,
-        url_lc TEXT NOT NULL,
-        hostname TEXT NOT NULL,
-        hostname_lc TEXT NOT NULL,
-        path TEXT NOT NULL,
-        path_lc TEXT NOT NULL,
-        status INTEGER,
-        status_text TEXT,
-        resource_type TEXT NOT NULL,
-        navigation_request INTEGER NOT NULL,
-        request_headers_json TEXT NOT NULL,
-        response_headers_json TEXT NOT NULL,
-        request_body_json TEXT,
-        response_body_json TEXT,
-        initiator_json TEXT,
-        timing_json TEXT,
-        transfer_json TEXT,
-        source_json TEXT,
-        capture_state TEXT NOT NULL,
-        request_body_state TEXT NOT NULL,
-        response_body_state TEXT NOT NULL,
-        request_body_skip_reason TEXT,
-        response_body_skip_reason TEXT,
-        request_body_error TEXT,
-        response_body_error TEXT,
-        redirect_from_request_id TEXT,
-        redirect_to_request_id TEXT,
-        saved_at INTEGER NOT NULL
-      );
-
-      CREATE UNIQUE INDEX IF NOT EXISTS saved_network_records_scope_request
-        ON saved_network_records (session_ref, page_ref_key, request_id);
-
-      CREATE INDEX IF NOT EXISTS saved_network_records_saved_at
-        ON saved_network_records (saved_at DESC);
-
-      CREATE TABLE IF NOT EXISTS saved_network_tags (
-        record_id TEXT NOT NULL REFERENCES saved_network_records(record_id) ON DELETE CASCADE,
-        tag TEXT NOT NULL,
-        PRIMARY KEY (record_id, tag)
-      );
-
-      CREATE INDEX IF NOT EXISTS saved_network_tags_tag
-        ON saved_network_tags (tag);
-    `);
-    this.ensureColumn(
-      database,
-      "saved_network_records",
-      "capture_state",
-      "TEXT NOT NULL DEFAULT 'complete'",
-    );
-    this.ensureColumn(
-      database,
-      "saved_network_records",
-      "request_body_state",
-      "TEXT NOT NULL DEFAULT 'skipped'",
-    );
-    this.ensureColumn(
-      database,
-      "saved_network_records",
-      "response_body_state",
-      "TEXT NOT NULL DEFAULT 'skipped'",
-    );
-    this.ensureColumn(database, "saved_network_records", "request_body_skip_reason", "TEXT");
-    this.ensureColumn(database, "saved_network_records", "response_body_skip_reason", "TEXT");
-    this.ensureColumn(database, "saved_network_records", "request_body_error", "TEXT");
-    this.ensureColumn(database, "saved_network_records", "response_body_error", "TEXT");
-    this.database = database;
+    await this.ensureDatabaseDirectory();
   }
 
   async save(records: readonly NetworkQueryRecord[], tag?: string): Promise<number> {
-    const database = this.requireDatabase();
+    const database = await this.requireDatabase();
     const readExisting = database.prepare(`
         SELECT record_id
         FROM saved_network_records
@@ -372,7 +292,7 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
   }
 
   async query(input: SavedNetworkQueryInput = {}): Promise<readonly NetworkQueryRecord[]> {
-    const database = this.requireDatabase();
+    const database = await this.requireDatabase();
     const limit = Math.max(1, Math.min(input.limit ?? 50, 200));
     const { whereSql, parameters } = buildSavedNetworkWhere(input);
     const rows = database
@@ -411,7 +331,7 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
   }
 
   async clear(input: { readonly tag?: string } = {}): Promise<number> {
-    const database = this.requireDatabase();
+    const database = await this.requireDatabase();
     const countAll = database.prepare(`
       SELECT COUNT(*) AS cleared
       FROM saved_network_records
@@ -454,11 +374,132 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
     });
   }
 
-  private requireDatabase(): NodeSqliteDatabaseSync {
-    if (!this.database) {
-      throw new Error("saved network store is not initialized");
+  private async requireDatabase(): Promise<NodeSqliteDatabaseSync> {
+    if (this.database) {
+      return this.database;
     }
-    return this.database;
+    this.databaseInitialization ??= this.openDatabase();
+    try {
+      return await this.databaseInitialization;
+    } catch (error) {
+      this.databaseInitialization = undefined;
+      throw error;
+    }
+  }
+
+  private async openDatabase(): Promise<NodeSqliteDatabaseSync> {
+    await this.ensureDatabaseDirectory();
+
+    let DatabaseSync: typeof import("node:sqlite").DatabaseSync;
+    try {
+      ({ DatabaseSync } = await import(NODE_SQLITE_SPECIFIER));
+    } catch (error) {
+      throw normalizeSqliteImportError(error);
+    }
+
+    const database = new DatabaseSync(this.databasePath);
+    try {
+      this.configureDatabase(database);
+      this.database = database;
+      return database;
+    } catch (error) {
+      closeSqliteDatabase(database);
+      throw error;
+    }
+  }
+
+  private async ensureDatabaseDirectory(): Promise<void> {
+    this.directoryInitialization ??= ensureDirectory(path.dirname(this.databasePath)).catch(
+      (error) => {
+        this.directoryInitialization = undefined;
+        throw error;
+      },
+    );
+    await this.directoryInitialization;
+  }
+
+  private configureDatabase(database: NodeSqliteDatabaseSync): void {
+    database.exec("PRAGMA journal_mode = WAL");
+    database.exec("PRAGMA foreign_keys = ON");
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS saved_network_records (
+        record_id TEXT PRIMARY KEY,
+        request_id TEXT NOT NULL,
+        session_ref TEXT NOT NULL,
+        page_ref TEXT,
+        page_ref_key TEXT NOT NULL,
+        frame_ref TEXT,
+        document_ref TEXT,
+        action_id TEXT,
+        method TEXT NOT NULL,
+        method_lc TEXT NOT NULL,
+        url TEXT NOT NULL,
+        url_lc TEXT NOT NULL,
+        hostname TEXT NOT NULL,
+        hostname_lc TEXT NOT NULL,
+        path TEXT NOT NULL,
+        path_lc TEXT NOT NULL,
+        status INTEGER,
+        status_text TEXT,
+        resource_type TEXT NOT NULL,
+        navigation_request INTEGER NOT NULL,
+        request_headers_json TEXT NOT NULL,
+        response_headers_json TEXT NOT NULL,
+        request_body_json TEXT,
+        response_body_json TEXT,
+        initiator_json TEXT,
+        timing_json TEXT,
+        transfer_json TEXT,
+        source_json TEXT,
+        capture_state TEXT NOT NULL,
+        request_body_state TEXT NOT NULL,
+        response_body_state TEXT NOT NULL,
+        request_body_skip_reason TEXT,
+        response_body_skip_reason TEXT,
+        request_body_error TEXT,
+        response_body_error TEXT,
+        redirect_from_request_id TEXT,
+        redirect_to_request_id TEXT,
+        saved_at INTEGER NOT NULL
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS saved_network_records_scope_request
+        ON saved_network_records (session_ref, page_ref_key, request_id);
+
+      CREATE INDEX IF NOT EXISTS saved_network_records_saved_at
+        ON saved_network_records (saved_at DESC);
+
+      CREATE TABLE IF NOT EXISTS saved_network_tags (
+        record_id TEXT NOT NULL REFERENCES saved_network_records(record_id) ON DELETE CASCADE,
+        tag TEXT NOT NULL,
+        PRIMARY KEY (record_id, tag)
+      );
+
+      CREATE INDEX IF NOT EXISTS saved_network_tags_tag
+        ON saved_network_tags (tag);
+    `);
+    this.ensureColumn(
+      database,
+      "saved_network_records",
+      "capture_state",
+      "TEXT NOT NULL DEFAULT 'complete'",
+    );
+    this.ensureColumn(
+      database,
+      "saved_network_records",
+      "request_body_state",
+      "TEXT NOT NULL DEFAULT 'skipped'",
+    );
+    this.ensureColumn(
+      database,
+      "saved_network_records",
+      "response_body_state",
+      "TEXT NOT NULL DEFAULT 'skipped'",
+    );
+    this.ensureColumn(database, "saved_network_records", "request_body_skip_reason", "TEXT");
+    this.ensureColumn(database, "saved_network_records", "response_body_skip_reason", "TEXT");
+    this.ensureColumn(database, "saved_network_records", "request_body_error", "TEXT");
+    this.ensureColumn(database, "saved_network_records", "response_body_error", "TEXT");
   }
 
   private ensureColumn(
@@ -630,6 +671,26 @@ function inflateSavedNetworkRow(row: SavedNetworkRow, includeBodies: boolean): N
 
 function stringifyOptional(value: unknown): string | null {
   return value === undefined ? null : JSON.stringify(value);
+}
+
+function normalizeSqliteImportError(error: unknown): Error {
+  if (
+    error instanceof Error &&
+    (error as NodeJS.ErrnoException).code === "ERR_UNKNOWN_BUILTIN_MODULE" &&
+    error.message.includes(NODE_SQLITE_SPECIFIER)
+  ) {
+    return new Error(SAVED_NETWORK_SQLITE_SUPPORT_ERROR, {
+      cause: error,
+    });
+  }
+
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function closeSqliteDatabase(database: NodeSqliteDatabaseSync): void {
+  try {
+    database.close();
+  } catch {}
 }
 
 type Mutable<T> = {

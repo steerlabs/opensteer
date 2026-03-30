@@ -45,6 +45,8 @@ opensteer close --workspace demo
 - Replay cached actions with `--description` alone — no snapshot needed.
 - `extract --description --schema-json` writes a persisted extraction descriptor.
 - `extract --description` replays the stored extraction.
+- Saved-network persistence (`network.save`, `network.query` with `source: "saved"`, and `network.clear`) is SQLite-backed and initializes on first use.
+- Generic workspace and browser commands do not require SQLite capability unless they touch saved-network persistence.
 
 ## Snapshot Output — What To Read
 
