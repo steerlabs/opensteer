@@ -133,6 +133,7 @@ import { OpensteerSemanticRestClient } from "../sdk/semantic-rest-client.js";
 import type { OpensteerDisconnectableRuntime } from "../sdk/semantic-runtime.js";
 import { OpensteerCloudAutomationClient } from "./automation-client.js";
 import { OpensteerCloudClient } from "./client.js";
+import { syncLocalRegistryToCloud } from "./registry-sync.js";
 
 const TEMPORARY_CLOUD_WORKSPACE_PREFIX = "opensteer-cloud-workspace-";
 
@@ -645,9 +646,12 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
 
     const persisted = await this.loadPersistedSession();
     if (persisted !== undefined && (await this.isReusableCloudSession(persisted.sessionId))) {
+      await this.syncRegistryToCloud();
       this.bindClient(persisted);
       return;
     }
+
+    await this.syncRegistryToCloud();
 
     const session = await this.cloud.createSession({
       ...(this.workspace === undefined ? {} : { name: this.workspace }),
@@ -669,6 +673,19 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     };
     await this.writePersistedSession(record);
     this.bindClient(record);
+  }
+
+  private async syncRegistryToCloud(): Promise<void> {
+    if (this.workspace === undefined) {
+      return;
+    }
+
+    try {
+      const workspaceStore = await this.ensureWorkspaceStore();
+      await syncLocalRegistryToCloud(this.cloud, this.workspace, workspaceStore);
+    } catch {
+      // Session startup must not fail if the registry sync fails.
+    }
   }
 
   private bindClient(record: Pick<PersistedCloudSessionRecord, "sessionId" | "baseUrl">): void {

@@ -465,6 +465,14 @@ describe("Phase 3 filesystem root", () => {
     ).toMatchObject({
       id: "descriptor:b",
     });
+    expect(await root.registry.descriptors.list()).toMatchObject([
+      { id: "descriptor:a" },
+      { id: "descriptor:b" },
+    ]);
+    expect(await root.registry.descriptors.list({ key: "dom.extract" })).toMatchObject([
+      { id: "descriptor:a" },
+      { id: "descriptor:b" },
+    ]);
     await expect(
       root.registry.descriptors.write({
         id: "descriptor:a",

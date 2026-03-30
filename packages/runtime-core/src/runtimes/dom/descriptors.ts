@@ -64,7 +64,9 @@ export function buildDomDescriptorVersion(payload: DomDescriptorPayload): string
   return sha256Hex(canonicalJsonString(payload));
 }
 
-function parseDomDescriptorRecord(record: DescriptorRecord): DomDescriptorRecord | undefined {
+export function parseDomDescriptorRecord(
+  record: DescriptorRecord,
+): DomDescriptorRecord | undefined {
   const payload = record.payload;
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return undefined;
