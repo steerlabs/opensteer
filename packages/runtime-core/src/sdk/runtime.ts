@@ -274,9 +274,12 @@ import { inflateDataPathObject } from "./extraction-data-path.js";
 import { compileOpensteerSnapshot, type CompiledOpensteerSnapshot } from "./snapshot/compiler.js";
 import type {
   AuthRecipeRecord,
+  AuthRecipeRegistryStore,
   InteractionTraceRecord,
   RecipeRecord,
+  RecipeRegistryStore,
   RequestPlanRecord,
+  RequestPlanRegistryStore,
   ReverseCaseRecord,
   ReversePackageRecord,
   ReverseReportRecord,
@@ -328,6 +331,11 @@ export interface OpensteerSessionRuntimeOptions {
   readonly engineFactory?: OpensteerEngineFactory;
   readonly policy?: OpensteerPolicy;
   readonly descriptorStore?: DomDescriptorStore;
+  readonly registryOverrides?: {
+    readonly requestPlans?: RequestPlanRegistryStore;
+    readonly authRecipes?: AuthRecipeRegistryStore;
+    readonly recipes?: RecipeRegistryStore;
+  };
   readonly cleanupRootOnClose?: boolean;
   readonly sessionInfo?: Partial<Omit<OpensteerSessionInfo, "sessionId" | "activePageRef">>;
 }
@@ -472,6 +480,7 @@ export class OpensteerSessionRuntime {
   private readonly engineFactory: OpensteerEngineFactory | undefined;
   private readonly policy: OpensteerPolicy;
   private readonly injectedDescriptorStore: DomDescriptorStore | undefined;
+  private readonly registryOverrides: OpensteerSessionRuntimeOptions["registryOverrides"];
   private readonly cleanupRootOnClose: boolean;
   private readonly sessionInfoBase: Partial<
     Omit<OpensteerSessionInfo, "sessionId" | "activePageRef">
@@ -509,6 +518,7 @@ export class OpensteerSessionRuntime {
     this.engineFactory = options.engineFactory;
     this.policy = options.policy ?? defaultPolicy();
     this.injectedDescriptorStore = options.descriptorStore;
+    this.registryOverrides = options.registryOverrides;
     this.cleanupRootOnClose = options.cleanupRootOnClose ?? options.workspace === undefined;
     this.sessionInfoBase = options.sessionInfo ?? {};
 
@@ -7984,11 +7994,33 @@ export class OpensteerSessionRuntime {
   }
 
   private async ensureRoot(): Promise<OpensteerRuntimeWorkspace> {
-    this.root ??= await createFilesystemOpensteerWorkspace({
-      rootPath: this.rootPath,
-      ...(this.workspaceName === undefined ? {} : { workspace: this.workspaceName }),
-      scope: this.workspaceName === undefined ? "temporary" : "workspace",
-    });
+    if (!this.root) {
+      const workspace = await createFilesystemOpensteerWorkspace({
+        rootPath: this.rootPath,
+        ...(this.workspaceName === undefined ? {} : { workspace: this.workspaceName }),
+        scope: this.workspaceName === undefined ? "temporary" : "workspace",
+      });
+
+      if (this.registryOverrides) {
+        const overrides = this.registryOverrides;
+        this.root = {
+          ...workspace,
+          registry: {
+            ...workspace.registry,
+            ...(overrides.requestPlans === undefined
+              ? {}
+              : { requestPlans: overrides.requestPlans }),
+            ...(overrides.authRecipes === undefined
+              ? {}
+              : { authRecipes: overrides.authRecipes }),
+            ...(overrides.recipes === undefined ? {} : { recipes: overrides.recipes }),
+          },
+        };
+      } else {
+        this.root = workspace;
+      }
+    }
+
     return this.root;
   }
 
