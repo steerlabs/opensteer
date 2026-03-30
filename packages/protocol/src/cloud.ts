@@ -204,10 +204,10 @@ export interface CloudSessionSummary {
 }
 
 export interface CloudSelectorCacheImportEntry {
-  readonly namespace: string;
-  readonly siteOrigin: string;
+  readonly workspace: string;
   readonly method: string;
   readonly descriptionHash: string;
+  readonly description?: string;
   readonly path: unknown;
   readonly schemaHash?: string;
   readonly createdAt: number;

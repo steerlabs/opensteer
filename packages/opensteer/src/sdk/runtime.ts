@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { BrowserCoreEngine } from "@opensteer/browser-core";
 import {
   OpensteerSessionRuntime as SharedOpensteerSessionRuntime,
+  type DomDescriptorStore,
   type OpensteerEngineFactory,
   type OpensteerEngineFactoryOptions,
   type OpensteerSessionRuntimeOptions as SharedOpensteerSessionRuntimeOptions,
@@ -37,6 +38,7 @@ export interface OpensteerRuntimeOptions {
   readonly engine?: BrowserCoreEngine;
   readonly engineFactory?: OpensteerEngineFactory;
   readonly policy?: OpensteerPolicy;
+  readonly descriptorStore?: DomDescriptorStore;
   readonly cleanupRootOnClose?: boolean;
 }
 
@@ -51,6 +53,7 @@ export interface OpensteerSessionRuntimeOptions {
   readonly engine?: BrowserCoreEngine;
   readonly engineFactory?: OpensteerEngineFactory;
   readonly policy?: OpensteerPolicy;
+  readonly descriptorStore?: DomDescriptorStore;
   readonly cleanupRootOnClose?: boolean;
 }
 
@@ -85,6 +88,9 @@ export class OpensteerRuntime extends SharedOpensteerSessionRuntime {
       ...(options.engine === undefined ? {} : { engine: options.engine }),
       ...(options.engineFactory === undefined ? {} : { engineFactory: options.engineFactory }),
       ...(options.policy === undefined ? {} : { policy: options.policy }),
+      ...(options.descriptorStore === undefined
+        ? {}
+        : { descriptorStore: options.descriptorStore }),
       cleanupRootOnClose,
     }));
   }
@@ -112,6 +118,9 @@ export class OpensteerSessionRuntime extends SharedOpensteerSessionRuntime {
       ...(options.engine === undefined ? {} : { engine: options.engine }),
       ...(options.engineFactory === undefined ? {} : { engineFactory: options.engineFactory }),
       ...(options.policy === undefined ? {} : { policy: options.policy }),
+      ...(options.descriptorStore === undefined
+        ? {}
+        : { descriptorStore: options.descriptorStore }),
       cleanupRootOnClose,
     }));
   }
@@ -128,6 +137,7 @@ function buildSharedRuntimeOptions(input: {
   readonly engine?: BrowserCoreEngine;
   readonly engineFactory?: OpensteerEngineFactory;
   readonly policy?: OpensteerPolicy;
+  readonly descriptorStore?: DomDescriptorStore;
   readonly cleanupRootOnClose: boolean;
 }): SharedOpensteerSessionRuntimeOptions {
   const ownership = resolveOwnership(input.browser);
@@ -156,6 +166,9 @@ function buildSharedRuntimeOptions(input: {
     ...(input.engine === undefined ? {} : { engine: input.engine }),
     ...(input.engine === undefined ? { engineFactory } : {}),
     ...(input.policy === undefined ? {} : { policy: input.policy }),
+    ...(input.descriptorStore === undefined
+      ? {}
+      : { descriptorStore: input.descriptorStore }),
     cleanupRootOnClose: input.cleanupRootOnClose,
     sessionInfo: {
       provider: {

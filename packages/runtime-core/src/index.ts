@@ -7,6 +7,20 @@ export type {
 } from "./sdk/runtime.js";
 export { OpensteerSessionRuntime } from "./sdk/runtime.js";
 export type {
+  DomDescriptorPayload,
+  DomDescriptorRecord,
+  DomDescriptorStore,
+  DomReadDescriptorInput,
+  DomWriteDescriptorInput,
+  ReplayElementPath,
+} from "./runtimes/dom/index.js";
+export {
+  buildDomDescriptorKey,
+  buildDomDescriptorPayload,
+  buildDomDescriptorVersion,
+  sanitizeReplayElementPath,
+} from "./runtimes/dom/index.js";
+export type {
   OpensteerRuntimeOperationOptions,
   OpensteerSemanticRuntime,
 } from "./sdk/semantic-runtime.js";

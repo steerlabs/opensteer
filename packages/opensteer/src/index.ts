@@ -99,6 +99,7 @@ export type {
   DomClickInput,
   DomDescriptorPayload,
   DomDescriptorRecord,
+  DomDescriptorStore,
   DomExtractArrayRowsInput,
   DomExtractFieldSelector,
   DomExtractFieldsInput,
