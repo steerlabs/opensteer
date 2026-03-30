@@ -38,6 +38,15 @@ export type {
   DomActionSettleOptions,
   DomActionTargetInspection,
 } from "./bridge.js";
+export type { DomDescriptorStore } from "./descriptors.js";
+export {
+  buildDomDescriptorKey,
+  buildDomDescriptorPayload,
+  buildDomDescriptorVersion,
+  createDomDescriptorStore,
+  hashDomDescriptorDescription,
+  normalizeDomDescriptorNamespace,
+} from "./descriptors.js";
 export {
   buildArrayFieldPathCandidates,
   isCurrentUrlField,

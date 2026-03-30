@@ -197,6 +197,7 @@ import {
   createDomRuntime,
   sanitizeElementPath,
   type DomActionOutcome,
+  type DomDescriptorStore,
   type DomRuntime,
   type DomTargetRef,
   type ResolvedDomTarget,
@@ -326,6 +327,7 @@ export interface OpensteerSessionRuntimeOptions {
   readonly engine?: BrowserCoreEngine;
   readonly engineFactory?: OpensteerEngineFactory;
   readonly policy?: OpensteerPolicy;
+  readonly descriptorStore?: DomDescriptorStore;
   readonly cleanupRootOnClose?: boolean;
   readonly sessionInfo?: Partial<Omit<OpensteerSessionInfo, "sessionId" | "activePageRef">>;
 }
@@ -469,6 +471,7 @@ export class OpensteerSessionRuntime {
   private readonly injectedEngine: BrowserCoreEngine | undefined;
   private readonly engineFactory: OpensteerEngineFactory | undefined;
   private readonly policy: OpensteerPolicy;
+  private readonly injectedDescriptorStore: DomDescriptorStore | undefined;
   private readonly cleanupRootOnClose: boolean;
   private readonly sessionInfoBase: Partial<
     Omit<OpensteerSessionInfo, "sessionId" | "activePageRef">
@@ -505,6 +508,7 @@ export class OpensteerSessionRuntime {
     this.injectedEngine = options.engine;
     this.engineFactory = options.engineFactory;
     this.policy = options.policy ?? defaultPolicy();
+    this.injectedDescriptorStore = options.descriptorStore;
     this.cleanupRootOnClose = options.cleanupRootOnClose ?? options.workspace === undefined;
     this.sessionInfoBase = options.sessionInfo ?? {};
 
@@ -8017,6 +8021,9 @@ export class OpensteerSessionRuntime {
       engine,
       root,
       namespace: this.workspace,
+      ...(this.injectedDescriptorStore === undefined
+        ? {}
+        : { descriptorStore: this.injectedDescriptorStore }),
       policy: this.policy,
     });
     this.computer = createComputerUseRuntime({

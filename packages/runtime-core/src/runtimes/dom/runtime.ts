@@ -15,7 +15,7 @@ import { defaultPolicy, type OpensteerPolicy } from "../../policy/index.js";
 import type { FilesystemOpensteerWorkspace } from "../../root.js";
 import type { DomActionBridge } from "./bridge.js";
 import { resolveDomActionBridge } from "./bridge.js";
-import { createDomDescriptorStore } from "./descriptors.js";
+import { createDomDescriptorStore, type DomDescriptorStore } from "./descriptors.js";
 import { DomActionExecutor } from "./executor.js";
 import { normalizeExtractedValue, resolveExtractedValueInContext } from "./extraction.js";
 import { ElementPathError } from "./errors.js";
@@ -127,7 +127,7 @@ class SnapshotSession {
 
 class DefaultDomRuntime implements DomRuntime {
   readonly engine: BrowserCoreEngine;
-  private readonly descriptors: ReturnType<typeof createDomDescriptorStore>;
+  private readonly descriptors: DomDescriptorStore;
   private readonly policy: OpensteerPolicy;
   private readonly executor: DomActionExecutor;
   private readonly bridge: DomActionBridge | undefined;
@@ -136,13 +136,16 @@ class DefaultDomRuntime implements DomRuntime {
     readonly engine: BrowserCoreEngine;
     readonly root?: FilesystemOpensteerWorkspace;
     readonly namespace?: string;
+    readonly descriptorStore?: DomDescriptorStore;
     readonly policy?: OpensteerPolicy;
   }) {
     this.engine = options.engine;
-    this.descriptors = createDomDescriptorStore({
-      ...(options.root === undefined ? {} : { root: options.root }),
-      ...(options.namespace === undefined ? {} : { namespace: options.namespace }),
-    });
+    this.descriptors =
+      options.descriptorStore ??
+      createDomDescriptorStore({
+        ...(options.root === undefined ? {} : { root: options.root }),
+        ...(options.namespace === undefined ? {} : { namespace: options.namespace }),
+      });
     this.policy = options.policy ?? defaultPolicy();
     this.bridge = resolveDomActionBridge(this.engine);
     this.executor = new DomActionExecutor({
@@ -1028,6 +1031,7 @@ export function createDomRuntime(options: {
   readonly engine: BrowserCoreEngine;
   readonly root?: FilesystemOpensteerWorkspace;
   readonly namespace?: string;
+  readonly descriptorStore?: DomDescriptorStore;
   readonly policy?: OpensteerPolicy;
 }): DomRuntime {
   return new DefaultDomRuntime(options);
