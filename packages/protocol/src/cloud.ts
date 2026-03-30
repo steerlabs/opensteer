@@ -225,6 +225,38 @@ export interface CloudSelectorCacheImportResponse {
   readonly skipped: number;
 }
 
+export interface CloudRegistryImportEntry {
+  readonly workspace: string;
+  readonly recordId: string;
+  readonly key: string;
+  readonly version: string;
+  readonly contentHash: string;
+  readonly tags: readonly string[];
+  readonly provenance?: unknown;
+  readonly payload: unknown;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+export interface CloudRequestPlanImportEntry extends CloudRegistryImportEntry {
+  readonly freshness?: unknown;
+}
+
+export interface CloudRegistryImportRequest {
+  readonly entries: readonly CloudRegistryImportEntry[];
+}
+
+export interface CloudRequestPlanImportRequest {
+  readonly entries: readonly CloudRequestPlanImportEntry[];
+}
+
+export interface CloudRegistryImportResponse {
+  readonly imported: number;
+  readonly inserted: number;
+  readonly updated: number;
+  readonly skipped: number;
+}
+
 export type ActionFailureCode =
   | "TARGET_NOT_FOUND"
   | "TARGET_UNAVAILABLE"

@@ -37,3 +37,23 @@ export {
   OPENSTEER_FILESYSTEM_WORKSPACE_VERSION,
   resolveFilesystemWorkspacePath,
 } from "./root.js";
+export type {
+  AuthRecipeRecord,
+  AuthRecipeRegistryStore,
+  DescriptorRecord,
+  DescriptorRegistryStore,
+  InteractionTraceRecord,
+  InteractionTraceRegistryStore,
+  ListRegistryRecordsInput,
+  RecipeRecord,
+  RecipeRegistryStore,
+  RegistryProvenance,
+  RequestPlanFreshness,
+  RequestPlanRecord,
+  RequestPlanRegistryStore,
+  ResolveRegistryRecordInput,
+  UpdateRequestPlanFreshnessInput,
+  WriteAuthRecipeInput,
+  WriteRecipeInput,
+  WriteRequestPlanInput,
+} from "./registry.js";
