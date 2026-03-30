@@ -43,7 +43,7 @@ Opensteer uses a two-phase workflow: **explore** with the CLI, then **replay** w
 
 ### Phase 1 — Exploration (one-time, via CLI or setup script)
 
-Discover elements and cache their paths under human-readable descriptions:
+Run `opensteer snapshot action --workspace demo` from the CLI first. Read the `html` field in the JSON output — it is a clean filtered DOM with `c="N"` attributes. Use those counter numbers as the `element` parameter below. The SDK does NOT expose `snapshot()`.
 
 ```ts
 import { Opensteer } from "opensteer";
@@ -55,7 +55,7 @@ const opensteer = new Opensteer({
 
 await opensteer.open("https://example.com");
 
-// element numbers come from CLI `snapshot action` output
+// element numbers come from c="N" values in the snapshot html field
 await opensteer.click({
   element: 3,
   description: "primary button",  // caches the element path
@@ -115,9 +115,43 @@ Supported extraction field shapes:
 - `{ selector: "img.hero", attribute: "src" }`
 - `{ source: "current_url" }`
 
-For arrays, include one or more representative objects in the schema. Add multiple examples when repeated rows have structural variants.
+For arrays, provide 1-2 representative objects. The extractor auto-generalizes from these templates to find ALL matching rows on the page:
+
+```ts
+const results = await opensteer.extract({
+  description: "search results",
+  schema: {
+    items: [
+      { name: { element: 13 }, price: { element: 14 } },
+      { name: { element: 22 }, price: { element: 23 } },
+    ],
+  },
+});
+// results.items contains ALL matching rows on the page, not just the 2 templates
+```
 
 Do not use `prompt` or semantic placeholder values such as `"string"` in the current public SDK. The extractor expects explicit schema objects, arrays, and field descriptors.
+
+### What extract() Returns
+
+`extract()` returns a plain JSON object matching your schema shape:
+
+```ts
+// Flat schema:
+{ title: "Search Results", url: "https://..." }
+
+// Array schema (auto-generalized from 1-2 templates):
+{
+  items: [
+    { name: "Apple AirPods Max", price: "$549.99" },
+    { name: "Apple AirPods Pro", price: "$249.99" },
+    { name: "Apple AirPods 4", price: "$129.99" },
+    // ... ALL matching rows
+  ]
+}
+```
+
+Use `extract()` for structured data. Do NOT use `evaluate()` or raw DOM parsing when `extract()` can express the result.
 
 ## Browser Admin
 
