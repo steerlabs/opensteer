@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +14,24 @@ const execFile = promisify(execFileCallback);
 const CLI_SCRIPT = path.resolve(process.cwd(), "packages/opensteer/dist/cli/bin.js");
 
 describe("Opensteer v2 CLI", () => {
+  test("prints the package version", async () => {
+    await ensureCliArtifactsBuilt();
+
+    const packageJson = JSON.parse(
+      await readFile(path.resolve(process.cwd(), "packages/opensteer/package.json"), "utf8"),
+    ) as {
+      readonly version: string;
+    };
+
+    const result = await execFile("node", [CLI_SCRIPT, "--version"], {
+      cwd: process.cwd(),
+      maxBuffer: 1024 * 1024 * 4,
+    });
+
+    expect(result.stdout).toBe(`${packageJson.version}\n`);
+    expect(result.stderr).toBe("");
+  }, 20_000);
+
   test("prints workspace-centric help", async () => {
     await ensureCliArtifactsBuilt();
 
