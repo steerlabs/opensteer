@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -35,6 +35,15 @@ async function listTree(rootPath: string): Promise<readonly string[]> {
 
   await visit(rootPath, "");
   return entries.sort((left, right) => left.localeCompare(right));
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 afterEach(async () => {
@@ -104,12 +113,95 @@ describe("Phase 3 filesystem root", () => {
       "registry/reverse-reports/indexes/",
       "registry/reverse-reports/indexes/by-key/",
       "registry/reverse-reports/records/",
-      "registry/saved-network.sqlite",
-      "registry/saved-network.sqlite-shm",
-      "registry/saved-network.sqlite-wal",
       "traces/",
       "traces/runs/",
     ]);
+  });
+
+  test("lazily creates saved-network sqlite files on first saved-network use", async () => {
+    const rootPath = await createTemporaryRoot();
+    const root = await createFilesystemOpensteerRoot({ rootPath });
+    const databasePath = path.join(root.registryPath, "saved-network.sqlite");
+    const shmPath = `${databasePath}-shm`;
+    const walPath = `${databasePath}-wal`;
+
+    await root.registry.savedNetwork.initialize();
+
+    expect(
+      await Promise.all([pathExists(databasePath), pathExists(shmPath), pathExists(walPath)]),
+    ).toEqual([false, false, false]);
+
+    const savedCount = await root.registry.savedNetwork.save(
+      [
+        {
+          recordId: "record:saved-network-lazy",
+          actionId: "action:saved-network-lazy",
+          savedAt: 200,
+          record: {
+            kind: "http",
+            requestId: "request:saved-network-lazy",
+            sessionRef: "session:saved-network-lazy",
+            pageRef: "page:saved-network-lazy",
+            method: "GET",
+            url: "https://example.com/api/lazy?step=1",
+            requestHeaders: [
+              {
+                name: "accept",
+                value: "application/json",
+              },
+            ],
+            responseHeaders: [
+              {
+                name: "content-type",
+                value: "application/json",
+              },
+            ],
+            status: 200,
+            statusText: "OK",
+            resourceType: "fetch",
+            navigationRequest: false,
+            captureState: "complete",
+            requestBodyState: "skipped",
+            responseBodyState: "skipped",
+          },
+        },
+      ],
+      "lazy-network-tag",
+    );
+
+    expect(savedCount).toBe(1);
+    expect(await pathExists(databasePath)).toBe(true);
+
+    expect(
+      await root.registry.savedNetwork.query({
+        tag: "lazy-network-tag",
+        path: "/api/lazy",
+        limit: 10,
+      }),
+    ).toMatchObject([
+      {
+        recordId: "record:saved-network-lazy",
+        actionId: "action:saved-network-lazy",
+        tags: ["lazy-network-tag"],
+        savedAt: 200,
+        record: {
+          requestId: "request:saved-network-lazy",
+          sessionRef: "session:saved-network-lazy",
+          pageRef: "page:saved-network-lazy",
+          method: "GET",
+          url: "https://example.com/api/lazy?step=1",
+          status: 200,
+          statusText: "OK",
+          resourceType: "fetch",
+          navigationRequest: false,
+          captureState: "complete",
+          requestBodyState: "skipped",
+          responseBodyState: "skipped",
+        },
+      },
+    ]);
+    expect(await root.registry.savedNetwork.clear({ tag: "lazy-network-tag" })).toBe(1);
+    expect(await root.registry.savedNetwork.query({ tag: "lazy-network-tag" })).toEqual([]);
   });
 
   test("stores structured and binary artifacts with stable hashes and protocol adapters", async () => {
