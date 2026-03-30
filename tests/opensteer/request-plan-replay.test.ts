@@ -30,73 +30,69 @@ describe.sequential("request plan replay", () => {
     await closeServer?.();
   });
 
-  test(
-    "replays inferred POST plans with captured bodies even when the content-type is misleading",
-    async () => {
-      const opensteer = new Opensteer({
-        name: "request-plan-replay-local",
-        browser: "temporary",
-        launch: {
-          headless: true,
-        },
+  test("replays inferred POST plans with captured bodies even when the content-type is misleading", async () => {
+    const opensteer = new Opensteer({
+      name: "request-plan-replay-local",
+      browser: "temporary",
+      launch: {
+        headless: true,
+      },
+    });
+
+    try {
+      await opensteer.open(`${baseUrl}/request-plan`);
+      await opensteer.evaluate("async () => window.runReplayablePost()");
+
+      const { records } = await opensteer.queryNetwork({
+        limit: 20,
+        includeBodies: true,
+      });
+      const target = records.find((entry) => entry.record.url.includes("/api/replayable"));
+      if (target === undefined) {
+        throw new Error("expected to capture the replayable POST request");
+      }
+
+      const plan = await opensteer.inferRequestPlan({
+        recordId: target.recordId,
+        key: "request-plan.replayable-post",
+        version: "1",
+      });
+      const directPlan = await opensteer.inferRequestPlan({
+        recordId: target.recordId,
+        key: "request-plan.replayable-post-direct",
+        version: "1",
+        transport: "direct-http",
       });
 
-      try {
-        await opensteer.open(`${baseUrl}/request-plan`);
-        await opensteer.evaluate("async () => window.runReplayablePost()");
+      expect(plan.payload.body).toMatchObject({
+        kind: "json",
+        contentType: "application/x-www-form-urlencoded",
+        template: {
+          query: "opensteer",
+          limit: 10,
+        },
+      });
+      expect(plan.payload.transport.kind).toBe("context-http");
+      expect(directPlan.payload.transport.kind).toBe("direct-http");
 
-        const { records } = await opensteer.queryNetwork({
-          limit: 20,
-          includeBodies: true,
-        });
-        const target = records.find((entry) => entry.record.url.includes("/api/replayable"));
-        if (target === undefined) {
-          throw new Error("expected to capture the replayable POST request");
-        }
-
-        const plan = await opensteer.inferRequestPlan({
-          recordId: target.recordId,
-          key: "request-plan.replayable-post",
-          version: "1",
-        });
-        const directPlan = await opensteer.inferRequestPlan({
-          recordId: target.recordId,
-          key: "request-plan.replayable-post-direct",
-          version: "1",
-          transport: "direct-http",
-        });
-
-        expect(plan.payload.body).toMatchObject({
-          kind: "json",
-          contentType: "application/x-www-form-urlencoded",
-          template: {
-            query: "opensteer",
-            limit: 10,
-          },
-        });
-        expect(plan.payload.transport.kind).toBe("context-http");
-        expect(directPlan.payload.transport.kind).toBe("direct-http");
-
-        const replay = await opensteer.request("request-plan.replayable-post");
-        const directReplay = await opensteer.request("request-plan.replayable-post-direct");
-        expect(replay.response.status).toBe(200);
-        expect(replay.data).toMatchObject({
-          ok: true,
-          echoedQuery: "opensteer",
-          echoedLimit: 10,
-        });
-        expect(directReplay.response.status).toBe(200);
-        expect(directReplay.data).toMatchObject({
-          ok: true,
-          echoedQuery: "opensteer",
-          echoedLimit: 10,
-        });
-      } finally {
-        await opensteer.close().catch(() => undefined);
-      }
-    },
-    60_000,
-  );
+      const replay = await opensteer.request("request-plan.replayable-post");
+      const directReplay = await opensteer.request("request-plan.replayable-post-direct");
+      expect(replay.response.status).toBe(200);
+      expect(replay.data).toMatchObject({
+        ok: true,
+        echoedQuery: "opensteer",
+        echoedLimit: 10,
+      });
+      expect(directReplay.response.status).toBe(200);
+      expect(directReplay.data).toMatchObject({
+        ok: true,
+        echoedQuery: "opensteer",
+        echoedLimit: 10,
+      });
+    } finally {
+      await opensteer.close().catch(() => undefined);
+    }
+  }, 60_000);
 });
 
 async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {

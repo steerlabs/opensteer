@@ -519,7 +519,10 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
   const cloudBaseUrl = readSingle(rawOptions, "cloud-base-url");
   const cloudApiKey = readSingle(rawOptions, "cloud-api-key");
   const cloudProfileId = readSingle(rawOptions, "cloud-profile-id");
-  const cloudProfileReuseIfActive = readOptionalBoolean(rawOptions, "cloud-profile-reuse-if-active");
+  const cloudProfileReuseIfActive = readOptionalBoolean(
+    rawOptions,
+    "cloud-profile-reuse-if-active",
+  );
   const json = readOptionalBoolean(rawOptions, "json");
   const agents = rawOptions.get("agent");
   const skills = rawOptions.get("skill");
@@ -578,9 +581,7 @@ function buildCliBrowserProfile(
     parsed.options.cloudProfileReuseIfActive === true &&
     parsed.options.cloudProfileId === undefined
   ) {
-    throw new Error(
-      '"--cloud-profile-reuse-if-active" requires "--cloud-profile-id <id>".',
-    );
+    throw new Error('"--cloud-profile-reuse-if-active" requires "--cloud-profile-id <id>".');
   }
 
   return parsed.options.cloudProfileId === undefined

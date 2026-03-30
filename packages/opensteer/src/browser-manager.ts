@@ -647,7 +647,7 @@ export class OpensteerBrowserManager {
 
     if (live.engine === "playwright") {
       if (live.endpoint !== undefined) {
-      await requestBrowserClose(live.endpoint).catch(() => undefined);
+        await requestBrowserClose(live.endpoint).catch(() => undefined);
       }
       if (await waitForProcessExit(live.pid, BROWSER_CLOSE_TIMEOUT_MS)) {
         await clearPersistedSessionRecord(workspace.rootPath, "local").catch(() => undefined);
@@ -722,9 +722,7 @@ function toWorkspaceLiveBrowserRecord(
     ...(record.sessionDir === undefined ? {} : { sessionDir: record.sessionDir }),
     pid: record.pid,
     startedAt: record.startedAt,
-    ...(record.executablePath === undefined
-      ? {}
-      : { executablePath: record.executablePath }),
+    ...(record.executablePath === undefined ? {} : { executablePath: record.executablePath }),
     userDataDir: record.userDataDir,
   };
 }

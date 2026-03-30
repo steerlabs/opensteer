@@ -111,9 +111,7 @@ export class OpensteerCloudAutomationClient {
       routeId,
       ...(input.pageRef === undefined ? {} : { pageRef: input.pageRef }),
       urlPattern: input.urlPattern,
-      ...(input.resourceTypes === undefined
-        ? {}
-        : { resourceTypes: input.resourceTypes }),
+      ...(input.resourceTypes === undefined ? {} : { resourceTypes: input.resourceTypes }),
       ...(input.times === undefined ? {} : { times: input.times }),
       includeOriginal: true,
     })) as OpensteerRouteRegistration;
@@ -230,9 +228,7 @@ export class OpensteerCloudAutomationClient {
       if (registration.kind === "route") {
         await this.route(registration.input as OpensteerRouteOptions);
       } else {
-        await this.interceptScript(
-          registration.input as OpensteerInterceptScriptOptions,
-        );
+        await this.interceptScript(registration.input as OpensteerInterceptScriptOptions);
       }
     }
   }
@@ -281,10 +277,8 @@ export class OpensteerCloudAutomationClient {
     const data = asRecord(payload);
     const request = asRecord(data.request);
     const original = asRecord(data.original);
-    const routeId =
-      typeof data.routeId === "string" ? data.routeId : "";
-    const routeRequestId =
-      typeof data.routeRequestId === "string" ? data.routeRequestId : "";
+    const routeId = typeof data.routeId === "string" ? data.routeId : "";
+    const routeRequestId = typeof data.routeRequestId === "string" ? data.routeRequestId : "";
     if (!routeId || !routeRequestId) {
       return;
     }
@@ -307,31 +301,21 @@ export class OpensteerCloudAutomationClient {
             })
           : {
               kind: "fulfill" as const,
-              body: await (
-                registration.input as OpensteerInterceptScriptOptions
-              ).handler({
+              body: await (registration.input as OpensteerInterceptScriptOptions).handler({
                 url: typeof request.url === "string" ? request.url : "",
                 content: typeof original.body === "string" ? original.body : "",
                 headers: Array.isArray(original.headers)
                   ? original.headers.filter(isHeaderEntry)
                   : [],
-                status:
-                  typeof original.status === "number"
-                    ? original.status
-                    : 200,
+                status: typeof original.status === "number" ? original.status : 200,
               }),
               headers: Array.isArray(original.headers)
                 ? original.headers.filter(isHeaderEntry)
                 : [],
-              status:
-                typeof original.status === "number"
-                  ? original.status
-                  : 200,
+              status: typeof original.status === "number" ? original.status : 200,
               contentType:
                 findHeaderValue(
-                  Array.isArray(original.headers)
-                    ? original.headers.filter(isHeaderEntry)
-                    : [],
+                  Array.isArray(original.headers) ? original.headers.filter(isHeaderEntry) : [],
                   "content-type",
                 ) ?? "application/javascript; charset=utf-8",
             };
@@ -348,14 +332,8 @@ export class OpensteerCloudAutomationClient {
     }
   }
 
-  private async issueGrant(
-    kind: OpensteerSessionGrantKind,
-  ): Promise<OpensteerSessionGrant> {
-    if (
-      this.grant &&
-      this.grant.kind === kind &&
-      this.grant.expiresAt > Date.now() + 10_000
-    ) {
+  private async issueGrant(kind: OpensteerSessionGrantKind): Promise<OpensteerSessionGrant> {
+    if (this.grant && this.grant.kind === kind && this.grant.expiresAt > Date.now() + 10_000) {
       return this.grant;
     }
 
@@ -439,9 +417,7 @@ function serializeRouteDecision(
       : typeof decision.body === "string"
         ? { body: decision.body }
         : { bodyBase64: Buffer.from(decision.body).toString("base64") }),
-    ...(decision.contentType === undefined
-      ? {}
-      : { contentType: decision.contentType }),
+    ...(decision.contentType === undefined ? {} : { contentType: decision.contentType }),
   };
 }
 
@@ -472,14 +448,11 @@ function toRouteRequest(record: Record<string, unknown>): OpensteerRouteRequest 
   };
 }
 
-function toFetchedRouteResponse(
-  record: Record<string, unknown>,
-): OpensteerFetchedRouteResponse {
+function toFetchedRouteResponse(record: Record<string, unknown>): OpensteerFetchedRouteResponse {
   return {
     url: typeof record.url === "string" ? record.url : "",
     status: typeof record.status === "number" ? record.status : 200,
-    statusText:
-      typeof record.statusText === "string" ? record.statusText : "OK",
+    statusText: typeof record.statusText === "string" ? record.statusText : "OK",
     headers: Array.isArray(record.headers) ? record.headers.filter(isHeaderEntry) : [],
     ...(typeof record.body === "string"
       ? {
@@ -502,9 +475,7 @@ function findHeaderValue(
   return headers.find((header) => header.name.toLowerCase() === name)?.value;
 }
 
-function isHeaderEntry(
-  value: unknown,
-): value is { readonly name: string; readonly value: string } {
+function isHeaderEntry(value: unknown): value is { readonly name: string; readonly value: string } {
   return (
     value !== null &&
     typeof value === "object" &&

@@ -103,10 +103,10 @@ describe("live session records", () => {
       baseUrl: "https://cloud.example/runtime/session_456",
     });
     await expect(readFile(resolveCloudSessionRecordPath(rootPath), "utf8")).resolves.toContain(
-      "\"provider\": \"cloud\"",
+      '"provider": "cloud"',
     );
     await expect(readFile(resolveLocalSessionRecordPath(rootPath), "utf8")).resolves.toContain(
-      "\"provider\": \"local\"",
+      '"provider": "local"',
     );
   });
 

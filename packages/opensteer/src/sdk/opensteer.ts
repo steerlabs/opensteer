@@ -50,6 +50,8 @@ import type {
   OpensteerPageListOutput,
   OpensteerPageNewInput,
   OpensteerPageNewOutput,
+  OpensteerPageSnapshotInput,
+  OpensteerPageSnapshotOutput,
   OpensteerListRequestPlansInput,
   OpensteerListRequestPlansOutput,
   OpensteerRawRequestInput,
@@ -88,6 +90,7 @@ import type {
   OpensteerSessionCloseOutput,
   OpensteerOpenInput,
   OpensteerOpenOutput,
+  OpensteerSnapshotMode,
   OpensteerTargetInput,
   OpensteerTransportProbeInput,
   OpensteerTransportProbeOutput,
@@ -152,6 +155,8 @@ export interface OpensteerWaitForPageOptions {
 }
 
 export type OpensteerGotoOptions = OpensteerPageGotoInput;
+export type OpensteerSnapshotOptions = OpensteerSnapshotMode | OpensteerPageSnapshotInput;
+export type OpensteerSnapshotResult = OpensteerPageSnapshotOutput;
 
 export type OpensteerComputerExecuteOptions = OpensteerComputerExecuteInput;
 export type OpensteerComputerExecuteResult = OpensteerComputerExecuteOutput;
@@ -435,6 +440,10 @@ export class Opensteer {
       }
       await delay(pollIntervalMs);
     }
+  }
+
+  async snapshot(input: OpensteerSnapshotOptions = {}): Promise<OpensteerSnapshotResult> {
+    return this.runtime.snapshot(typeof input === "string" ? { mode: input } : input);
   }
 
   async saveNetwork(input: OpensteerNetworkSaveOptions): Promise<OpensteerNetworkSaveResult> {

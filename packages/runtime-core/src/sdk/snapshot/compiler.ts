@@ -189,10 +189,7 @@ export async function compileOpensteerSnapshot(options: {
   readonly pageRef: PageRef;
   readonly mode: OpensteerSnapshotMode;
 }): Promise<CompiledOpensteerSnapshot> {
-  const liveCountersEnabled = await assignSparseCountersToLiveDom(
-    options.engine,
-    options.pageRef,
-  );
+  const liveCountersEnabled = await assignSparseCountersToLiveDom(options.engine, options.pageRef);
 
   const pageInfo = await options.engine.getPageInfo({ pageRef: options.pageRef });
   const mainSnapshot = await getMainDocumentSnapshot(options.engine, options.pageRef);
@@ -548,9 +545,7 @@ function assignCounters(
 
     const rawSparseCounter = el.attr(OPENSTEER_SPARSE_COUNTER_ATTR);
     el.removeAttr(OPENSTEER_SPARSE_COUNTER_ATTR);
-    const sparseCounter = rawSparseCounter
-      ? Number.parseInt(rawSparseCounter, 10)
-      : undefined;
+    const sparseCounter = rawSparseCounter ? Number.parseInt(rawSparseCounter, 10) : undefined;
 
     const counter = nextCounter++;
     el.attr("c", String(counter));
@@ -570,9 +565,7 @@ function assignCounters(
       interactive: rendered.interactive,
       locator: rendered.locator,
       anchor: rendered.anchor,
-      ...(sparseCounter !== undefined && Number.isFinite(sparseCounter)
-        ? { sparseCounter }
-        : {}),
+      ...(sparseCounter !== undefined && Number.isFinite(sparseCounter) ? { sparseCounter } : {}),
     });
   });
 

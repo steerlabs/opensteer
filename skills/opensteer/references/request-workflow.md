@@ -84,7 +84,7 @@ await opensteer.inferRequestPlan({
   recordId: response.recordId,
   key: "products.search",
   version: "v1",
-  transport: "direct-http",  // use the transport you proved works
+  transport: "direct-http", // use the transport you proved works
 });
 ```
 

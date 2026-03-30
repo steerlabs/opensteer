@@ -54,7 +54,7 @@ Most DOM tasks use the CLI reference first (exploration), then the SDK reference
 - With a workspace, browser mode defaults to `persistent`. `temporary` creates an isolated browser for the current run. `attach` connects to an already-running Chromium browser.
 - `opensteer browser ...` manages the workspace browser itself. `opensteer close` stops the active session/browser without deleting the workspace. `browser reset` clears cloned browser state. `browser delete` removes workspace browser files.
 - The short CLI only has special parsing for a few common commands. For advanced semantic operations or fields like `persistAsDescription`, use `opensteer run <semantic-operation> --workspace <id> --input-json <json>`.
-- `snapshot` is a CLI exploration tool for discovering page elements. The public SDK does not expose `snapshot()`. Deterministic scripts use cached descriptors via `description`.
+- Prefer CLI `snapshot` during exploration so you can inspect the filtered HTML and `c="N"` counters directly. The SDK also exposes `snapshot()`, but this skill uses the CLI-first workflow and expects deterministic scripts to replay cached descriptors via `description`.
 - Prefer Opensteer surfaces over raw Playwright so descriptors, extraction payloads, saved network, request plans, recipes, traces, and artifacts stay in the workspace.
 
 ## Two-Phase Workflow
@@ -80,6 +80,7 @@ opensteer close --workspace demo
 ```
 
 **Phase 2 — Deterministic script (reusable):**
+
 1. Use `description` alone for all interactions — resolves from cached descriptors.
 2. Use `description + schema` for extraction — caches the extraction descriptor.
 3. Use bare `description` for extraction replay.
@@ -93,7 +94,7 @@ opensteer close --workspace demo
 - Persisted extraction replay is deterministic and snapshot-backed. Do not replace `extract()` with `evaluate()` or custom DOM parsing when the desired output fits the extraction schema.
 - Use recipes for deterministic setup work. Use auth recipes for auth refresh/setup specifically. They live in separate registries.
 - CSS selectors exist as a low-level escape hatch but are not recommended for reusable scripts. Prefer the descriptor-based workflow.
-- Do not reach for removed surfaces such as `snapshot()` on the SDK, `--name`, `Opensteer.attach()`, cloud/profile-sync helpers, `local-profile`, legacy snapshot browser modes, or `@opensteer/engine-abp`.
+- Do not reach for removed surfaces such as `--name`, `Opensteer.attach()`, cloud/profile-sync helpers, `local-profile`, legacy snapshot browser modes, or `@opensteer/engine-abp`.
 
 ## Common Mistakes
 

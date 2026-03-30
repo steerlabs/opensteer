@@ -200,7 +200,7 @@ async function describeCloudLane(input: {
       return {
         ...base,
         status: "closed",
-        ...(session.region ?? session.runtimeRegion
+        ...((session.region ?? session.runtimeRegion)
           ? { region: session.region ?? session.runtimeRegion }
           : {}),
       };
@@ -213,7 +213,7 @@ async function describeCloudLane(input: {
     }
     return {
       ...base,
-      ...(session.region ?? session.runtimeRegion
+      ...((session.region ?? session.runtimeRegion)
         ? { region: session.region ?? session.runtimeRegion }
         : {}),
     };
@@ -225,7 +225,9 @@ async function describeCloudLane(input: {
   }
 }
 
-function mapProviderSource(source: OpensteerResolvedProvider["source"]): "flag" | "env" | "default" {
+function mapProviderSource(
+  source: OpensteerResolvedProvider["source"],
+): "flag" | "env" | "default" {
   if (source === "explicit") {
     return "flag";
   }

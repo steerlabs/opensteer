@@ -57,7 +57,11 @@ export function assertSupportedEngineOptions(input: {
     return;
   }
 
-  if (typeof input.browser === "object" && input.browser !== null && input.browser.mode === "attach") {
+  if (
+    typeof input.browser === "object" &&
+    input.browser !== null &&
+    input.browser.mode === "attach"
+  ) {
     throw new Error(
       'ABP engine does not support browser.mode="attach". Use the Playwright engine for attach flows.',
     );

@@ -67,11 +67,7 @@ function parseEnvFile(contents: string): Record<string, string> {
 }
 
 function parseEnvValue(rawValue: string): string {
-  if (
-    rawValue.length >= 2 &&
-    rawValue.startsWith('"') &&
-    rawValue.endsWith('"')
-  ) {
+  if (rawValue.length >= 2 && rawValue.startsWith('"') && rawValue.endsWith('"')) {
     return rawValue
       .slice(1, -1)
       .replace(/\\n/g, "\n")
@@ -80,11 +76,7 @@ function parseEnvValue(rawValue: string): string {
       .replace(/\\"/g, '"');
   }
 
-  if (
-    rawValue.length >= 2 &&
-    rawValue.startsWith("'") &&
-    rawValue.endsWith("'")
-  ) {
+  if (rawValue.length >= 2 && rawValue.startsWith("'") && rawValue.endsWith("'")) {
     return rawValue.slice(1, -1);
   }
 

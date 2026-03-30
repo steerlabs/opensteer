@@ -3,11 +3,7 @@ import path from "node:path";
 
 import type { OpensteerSessionCapabilities } from "@opensteer/protocol";
 
-import {
-  pathExists,
-  readJsonFile,
-  writeJsonFileAtomic,
-} from "./internal/filesystem.js";
+import { pathExists, readJsonFile, writeJsonFileAtomic } from "./internal/filesystem.js";
 
 export const OPENSTEER_LIVE_SESSION_LAYOUT = "opensteer-session";
 export const OPENSTEER_LIVE_SESSION_VERSION = 1;
@@ -25,8 +21,7 @@ interface PersistedSessionRecordBase {
   readonly capabilities?: OpensteerSessionCapabilities;
 }
 
-export interface PersistedLocalBrowserSessionRecord
-  extends PersistedSessionRecordBase {
+export interface PersistedLocalBrowserSessionRecord extends PersistedSessionRecordBase {
   readonly provider: "local";
   readonly engine: "playwright" | "abp";
   readonly endpoint?: string;

@@ -39,22 +39,18 @@ describe.sequential("Opensteer local conformance", () => {
   });
 
   for (const testCase of opensteerCoreConformanceCases) {
-    test(
-      `${testCase.family}: ${testCase.description}`,
-      async () => {
-        const harness = await createHarness();
-        try {
-          const result = await runOpensteerConformanceCase(testCase, harness);
-          if (result.status !== "pass") {
-            throw result.error ?? new Error(`${testCase.id} returned ${result.status}`);
-          }
-          expect(result.status).toBe("pass");
-        } finally {
-          await harness.target.close().catch(() => undefined);
+    test(`${testCase.family}: ${testCase.description}`, async () => {
+      const harness = await createHarness();
+      try {
+        const result = await runOpensteerConformanceCase(testCase, harness);
+        if (result.status !== "pass") {
+          throw result.error ?? new Error(`${testCase.id} returned ${result.status}`);
         }
-      },
-      60_000,
-    );
+        expect(result.status).toBe("pass");
+      } finally {
+        await harness.target.close().catch(() => undefined);
+      }
+    }, 60_000);
   }
 });
 

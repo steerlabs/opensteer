@@ -83,15 +83,12 @@ export class OpensteerCloudClient {
     sessionId: string,
     capabilities: readonly OpensteerSessionGrantKind[],
   ): Promise<OpensteerSessionAccessGrantResponse> {
-    const response = await this.request(
-      `/v1/sessions/${encodeURIComponent(sessionId)}/access`,
-      {
-        method: "POST",
-        body: {
-          capabilities,
-        },
+    const response = await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/access`, {
+      method: "POST",
+      body: {
+        capabilities,
       },
-    );
+    });
     return (await response.json()) as OpensteerSessionAccessGrantResponse;
   }
 
