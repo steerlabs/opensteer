@@ -504,7 +504,10 @@ const BUILD_LIVE_REPLAY_PATH_SOURCE = String.raw`(target, policy) => {
 export function createAbpDomActionBridge(context: AbpDomActionBridgeContext): DomActionBridge {
   return {
     async buildReplayPath(locator) {
-      const { controller, document, backendNodeId } = await prepareLiveNodeContext(context, locator);
+      const { controller, document, backendNodeId } = await prepareLiveNodeContext(
+        context,
+        locator,
+      );
       return withTemporaryExecutionResume(context, controller, async () => {
         const raw = await callNodeValueFunction(controller, document, locator, backendNodeId, {
           functionDeclaration: BUILD_LIVE_REPLAY_PATH_DECLARATION,

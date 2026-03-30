@@ -8,8 +8,17 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const publishOrder = ["packages/engine-playwright", "packages/engine-abp", "packages/opensteer"];
+const publishOrder = [
+  "packages/browser-core",
+  "packages/protocol",
+  "packages/runtime-core",
+  "packages/engine-playwright",
+  "packages/engine-abp",
+  "packages/opensteer",
+];
 const publishCommand = "pnpm";
+const publishTag = normalizePublishTag(process.env.NPM_DIST_TAG);
+const publishWithProvenance = shouldPublishWithProvenance();
 
 const summaryPath = process.env.GITHUB_STEP_SUMMARY;
 const results = [];
@@ -29,9 +38,15 @@ for (const relativePackageDir of publishOrder) {
     continue;
   }
 
-  const publishArgs = ["publish", "--no-git-checks", "--provenance"];
+  const publishArgs = ["publish", "--no-git-checks"];
+  if (publishWithProvenance) {
+    publishArgs.push("--provenance");
+  }
   if (manifest.publishConfig?.access === "public") {
     publishArgs.push("--access", "public");
+  }
+  if (publishTag !== undefined) {
+    publishArgs.push("--tag", publishTag);
   }
 
   console.log(`publish ${manifest.name}@${manifest.version}`);
@@ -101,7 +116,7 @@ async function writeSummary(entries) {
   }
 
   const lines = [
-    `## ${publishCommand} publish`,
+    `## ${publishCommand} publish${publishTag === undefined ? "" : ` (${publishTag})`}`,
     "",
     "| Package | Version | Status |",
     "| --- | --- | --- |",
@@ -110,4 +125,31 @@ async function writeSummary(entries) {
   ];
 
   await writeFile(summaryPath, `${lines.join("\n")}`, "utf8");
+}
+
+function normalizePublishTag(value) {
+  if (value === undefined) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? undefined : trimmed;
+}
+
+function shouldPublishWithProvenance() {
+  const configured = process.env.NPM_PUBLISH_PROVENANCE;
+  if (configured !== undefined) {
+    return parseBooleanEnv(configured, "NPM_PUBLISH_PROVENANCE");
+  }
+  return process.env.GITHUB_ACTIONS === "true";
+}
+
+function parseBooleanEnv(value, name) {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true" || normalized === "1") {
+    return true;
+  }
+  if (normalized === "false" || normalized === "0") {
+    return false;
+  }
+  throw new Error(`${name} must be true/false or 1/0`);
 }

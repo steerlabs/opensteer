@@ -7,10 +7,11 @@
     "lib": ["ES2022"],
     "paths": {
       "@opensteer/browser-core": ["packages/browser-core/src/index.ts"],
-      "@opensteer/cloud-contracts": ["packages/cloud-contracts/src/index.ts"],
+      "@opensteer/conformance": ["packages/conformance/src/index.ts"],
       "@opensteer/engine-abp": ["packages/engine-abp/src/index.ts"],
       "@opensteer/engine-playwright": ["packages/engine-playwright/src/index.ts"],
-      "@opensteer/protocol": ["packages/protocol/src/index.ts"]
+      "@opensteer/protocol": ["packages/protocol/src/index.ts"],
+      "@opensteer/runtime-core": ["packages/runtime-core/src/index.ts"]
     },
     "strict": true,
     "noImplicitOverride": true,

@@ -2,7 +2,7 @@
 
 Open-source browser automation SDK and CLI that lets AI agents build complex scrapers and custom APIs directly in your codebase.
 
-This repository contains the open-source SDK, CLI, engine packages, shared protocol and cloud contracts, documentation, and first-party agent skills.
+This repository contains the open-source SDK, CLI, engines, shared protocol types, conformance harnesses, documentation, and first-party agent skills.
 
 ## Get Started
 
@@ -88,20 +88,21 @@ opensteer skills install --list
 ```text
 packages/
   opensteer/
+  conformance/
   engine-playwright/
   engine-abp/
   browser-core/
   protocol/
-  cloud-contracts/
 skills/
   opensteer/
 docs/
 ```
 
 - `packages/opensteer`: published SDK and CLI
+- `packages/conformance`: reusable local/cloud parity harnesses and shared conformance cases
 - `packages/engine-playwright`: default Playwright-backed engine
 - `packages/engine-abp`: optional Agent Browser Protocol engine
-- `packages/browser-core`, `packages/protocol`, `packages/cloud-contracts`: shared contracts and core primitives
+- `packages/browser-core`, `packages/protocol`: shared contracts and core primitives
 - `skills/opensteer`: first-party Opensteer skill pack for `skills.sh`-compatible agents
 
 This repository includes cloud client code and shared cloud contracts. The managed Opensteer Cloud service is operated separately.

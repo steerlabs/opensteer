@@ -1,14 +1,19 @@
 import type { OpensteerCloudConfig } from "./config.js";
 import type {
-  OpensteerBrowserContextOptions,
-  OpensteerBrowserLaunchOptions,
-} from "@opensteer/protocol";
-import type {
   BrowserProfileImportCreateRequest,
   BrowserProfileImportCreateResponse,
   BrowserProfileImportDescriptor,
   CloudBrowserProfilePreference,
-} from "@opensteer/cloud-contracts";
+  CloudRegistryImportEntry,
+  CloudRegistryImportResponse,
+  CloudRequestPlanImportEntry,
+  CloudSelectorCacheImportEntry,
+  CloudSelectorCacheImportResponse,
+  OpensteerSessionAccessGrantResponse,
+  OpensteerSessionGrantKind,
+  OpensteerBrowserContextOptions,
+  OpensteerBrowserLaunchOptions,
+} from "@opensteer/protocol";
 import { syncBrowserProfileCookies, type SyncBrowserProfileCookiesInput } from "./profile-sync.js";
 
 export interface OpensteerCloudSessionCreateInput {
@@ -72,6 +77,19 @@ export class OpensteerCloudClient {
       method: "GET",
     });
     return (await response.json()) as OpensteerCloudSessionState;
+  }
+
+  async issueAccess(
+    sessionId: string,
+    capabilities: readonly OpensteerSessionGrantKind[],
+  ): Promise<OpensteerSessionAccessGrantResponse> {
+    const response = await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/access`, {
+      method: "POST",
+      body: {
+        capabilities,
+      },
+    });
+    return (await response.json()) as OpensteerSessionAccessGrantResponse;
   }
 
   async closeSession(sessionId: string): Promise<void> {
@@ -142,6 +160,46 @@ export class OpensteerCloudClient {
     input: SyncBrowserProfileCookiesInput,
   ): Promise<BrowserProfileImportDescriptor> {
     return syncBrowserProfileCookies(this, input);
+  }
+
+  async importSelectorCache(
+    entries: readonly CloudSelectorCacheImportEntry[],
+  ): Promise<CloudSelectorCacheImportResponse> {
+    const response = await this.request("/selector-cache/import", {
+      method: "POST",
+      body: { entries },
+    });
+    return (await response.json()) as CloudSelectorCacheImportResponse;
+  }
+
+  async importRequestPlans(
+    entries: readonly CloudRequestPlanImportEntry[],
+  ): Promise<CloudRegistryImportResponse> {
+    const response = await this.request("/registry/request-plans/import", {
+      method: "POST",
+      body: { entries },
+    });
+    return (await response.json()) as CloudRegistryImportResponse;
+  }
+
+  async importRecipes(
+    entries: readonly CloudRegistryImportEntry[],
+  ): Promise<CloudRegistryImportResponse> {
+    const response = await this.request("/registry/recipes/import", {
+      method: "POST",
+      body: { entries },
+    });
+    return (await response.json()) as CloudRegistryImportResponse;
+  }
+
+  async importAuthRecipes(
+    entries: readonly CloudRegistryImportEntry[],
+  ): Promise<CloudRegistryImportResponse> {
+    const response = await this.request("/registry/auth-recipes/import", {
+      method: "POST",
+      body: { entries },
+    });
+    return (await response.json()) as CloudRegistryImportResponse;
   }
 
   buildAuthorizationHeader(): string {

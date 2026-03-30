@@ -39,6 +39,12 @@ const opensteer = new Opensteer({
 
 ## DOM Automation And Extraction
 
+Opensteer uses a two-phase workflow: **explore** with the CLI, then **replay** with the SDK.
+
+### Phase 1 — Exploration (one-time, via CLI or setup script)
+
+Run `opensteer snapshot action --workspace demo` from the CLI first. Read the `html` field in the JSON output — it is a clean filtered DOM with `c="N"` attributes. Use those counter numbers as the `element` parameter below. The SDK also exposes `snapshot()`, but this guide keeps discovery in the CLI so the DOM HTML is easy to inspect from the terminal.
+
 ```ts
 import { Opensteer } from "opensteer";
 
@@ -48,21 +54,21 @@ const opensteer = new Opensteer({
 });
 
 await opensteer.open("https://example.com");
-await opensteer.snapshot("action");
 
+// element numbers come from c="N" values in the snapshot html field
 await opensteer.click({
-  selector: "button.primary",
-  description: "primary button",
+  element: 3,
+  description: "primary button", // caches the element path
 });
 
 await opensteer.input({
-  selector: "input[type=search]",
-  description: "search input",
+  element: 7,
+  description: "search input", // caches the element path
   text: "laptop",
   pressEnter: true,
 });
 
-const data = await opensteer.extract({
+await opensteer.extract({
   description: "page summary",
   schema: {
     title: { selector: "title" },
@@ -70,31 +76,82 @@ const data = await opensteer.extract({
   },
 });
 
-const replayed = await opensteer.extract({
-  description: "page summary",
+await opensteer.close();
+```
+
+### Phase 2 — Deterministic replay (the actual reusable script)
+
+Use `description` alone for everything — resolves from cached descriptors:
+
+```ts
+const opensteer = new Opensteer({
+  workspace: "demo",
+  rootDir: process.cwd(),
 });
+
+await opensteer.open("https://example.com");
+
+await opensteer.click({ description: "primary button" });
+await opensteer.input({ description: "search input", text: "laptop", pressEnter: true });
+const data = await opensteer.extract({ description: "page summary" });
+
+await opensteer.close();
 ```
 
 DOM rules:
 
-- Use `snapshot("action")` before counter-based interactions.
-- Use `snapshot("extraction")` to inspect the page structure and design the output object.
-- Treat snapshots as planning artifacts. `extract()` reads current page state and replays persisted extraction descriptors from deterministic, snapshot-backed payloads.
-- `selector + description` or `element + description` persists a DOM action descriptor. Bare `description` replays it later.
+- Deterministic scripts use `description` for all interactions and extractions — no snapshots, no selectors.
+- `element + description` persists a DOM action descriptor. Bare `description` replays it later.
 - `description + schema` writes or updates a persisted extraction descriptor. Bare `description` replays it later.
+- Use `element` targets only during the exploration phase with a fresh snapshot from the CLI.
 - Keep DOM data collection in `extract()`, not `evaluate()` or raw page DOM parsing, when the result can be expressed as structured fields.
+- CSS selectors exist as a low-level escape hatch but are not recommended for reusable scripts.
 
-Supported extraction field shapes in the current public SDK:
+Supported extraction field shapes:
 
-- `{ element: N }`
+- `{ element: N }` — requires a prior CLI snapshot; use during exploration only
 - `{ element: N, attribute: "href" }`
 - `{ selector: ".price" }`
 - `{ selector: "img.hero", attribute: "src" }`
 - `{ source: "current_url" }`
 
-For arrays, include one or more representative objects in the schema. Add multiple examples when repeated rows have structural variants.
+For arrays, provide 1-2 representative objects. The extractor auto-generalizes from these templates to find ALL matching rows on the page:
+
+```ts
+const results = await opensteer.extract({
+  description: "search results",
+  schema: {
+    items: [
+      { name: { element: 13 }, price: { element: 14 } },
+      { name: { element: 22 }, price: { element: 23 } },
+    ],
+  },
+});
+// results.items contains ALL matching rows on the page, not just the 2 templates
+```
 
 Do not use `prompt` or semantic placeholder values such as `"string"` in the current public SDK. The extractor expects explicit schema objects, arrays, and field descriptors.
+
+### What extract() Returns
+
+`extract()` returns a plain JSON object matching your schema shape:
+
+```ts
+// Flat schema:
+{ title: "Search Results", url: "https://..." }
+
+// Array schema (auto-generalized from 1-2 templates):
+{
+  items: [
+    { name: "Apple AirPods Max", price: "$549.99" },
+    { name: "Apple AirPods Pro", price: "$249.99" },
+    { name: "Apple AirPods 4", price: "$129.99" },
+    // ... ALL matching rows
+  ]
+}
+```
+
+Use `extract()` for structured data. Do NOT use `evaluate()` or raw DOM parsing when `extract()` can express the result.
 
 ## Browser Admin
 
@@ -150,6 +207,13 @@ await opensteer.inferRequestPlan({
   version: "v1",
 });
 
+await opensteer.inferRequestPlan({
+  recordId: records.records[0]!.id,
+  key: "products.search.portable",
+  version: "v1",
+  transport: "direct-http",
+});
+
 await opensteer.saveNetwork({
   tag: "products-load",
 });
@@ -199,7 +263,6 @@ Session and page control:
 
 Interaction and extraction:
 
-- `snapshot("action" | "extraction")`
 - `click({ element | selector | description, networkTag? })`
 - `hover({ element | selector | description, networkTag? })`
 - `input({ element | selector | description, text, pressEnter?, networkTag? })`
@@ -219,8 +282,8 @@ Inspection and evaluation:
 Request capture and replay:
 
 - `rawRequest({ transport?, pageRef?, url, method?, headers?, body?, followRedirects? })`
-- `inferRequestPlan({ recordId, key, version, lifecycle? })`
-- `writeRequestPlan({ key, version, payload, lifecycle?, tags?, provenance?, freshness? })`
+- `inferRequestPlan({ recordId, key, version, transport? })`
+- `writeRequestPlan({ key, version, payload, tags?, provenance?, freshness? })`
 - `getRequestPlan({ key, version? })`
 - `listRequestPlans({ key? })`
 - `request(key, { path?, query?, headers?, body? })`
@@ -251,7 +314,8 @@ Lifecycle:
 
 - Wrap long-running browser ownership in `try/finally` and call `close()`.
 - Use `networkTag` on actions that trigger requests you may inspect later.
-- Use `description` when the interaction should be replayable across sessions.
-- Use `description` plus `schema` when an extraction should be replayable across sessions.
-- Use `element` targets only with a fresh snapshot from the same live session.
+- Use `description` for all interactions and extractions in deterministic scripts.
+- Use `description` plus `schema` to persist an extraction descriptor. Bare `description` replays it.
+- Use `element` targets only during CLI exploration with a fresh snapshot. Deterministic scripts use `description`.
+- The SDK does expose `snapshot()`, but this workflow keeps element discovery in the CLI with `snapshot action`.
 - Prefer Opensteer methods over raw Playwright so browser, extraction, and replay semantics stay consistent.

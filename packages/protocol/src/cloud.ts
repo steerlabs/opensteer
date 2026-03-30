@@ -55,6 +55,7 @@ export const cloudErrorCodes = [
   "CLOUD_PROXY_UNAVAILABLE",
   "CLOUD_PROXY_REQUIRED",
   "CLOUD_BILLING_LIMIT_REACHED",
+  "CLOUD_PLAN_RESTRICTED",
   "CLOUD_RATE_LIMITED",
   "CLOUD_BROWSER_PROFILE_NOT_FOUND",
   "CLOUD_BROWSER_PROFILE_BUSY",
@@ -203,10 +204,10 @@ export interface CloudSessionSummary {
 }
 
 export interface CloudSelectorCacheImportEntry {
-  readonly namespace: string;
-  readonly siteOrigin: string;
+  readonly workspace: string;
   readonly method: string;
   readonly descriptionHash: string;
+  readonly description?: string;
   readonly path: unknown;
   readonly schemaHash?: string;
   readonly createdAt: number;
@@ -218,6 +219,38 @@ export interface CloudSelectorCacheImportRequest {
 }
 
 export interface CloudSelectorCacheImportResponse {
+  readonly imported: number;
+  readonly inserted: number;
+  readonly updated: number;
+  readonly skipped: number;
+}
+
+export interface CloudRegistryImportEntry {
+  readonly workspace: string;
+  readonly recordId: string;
+  readonly key: string;
+  readonly version: string;
+  readonly contentHash: string;
+  readonly tags: readonly string[];
+  readonly provenance?: unknown;
+  readonly payload: unknown;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+export interface CloudRequestPlanImportEntry extends CloudRegistryImportEntry {
+  readonly freshness?: unknown;
+}
+
+export interface CloudRegistryImportRequest {
+  readonly entries: readonly CloudRegistryImportEntry[];
+}
+
+export interface CloudRequestPlanImportRequest {
+  readonly entries: readonly CloudRequestPlanImportEntry[];
+}
+
+export interface CloudRegistryImportResponse {
   readonly imported: number;
   readonly inserted: number;
   readonly updated: number;
