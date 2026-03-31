@@ -49,13 +49,13 @@ Most DOM tasks use the CLI reference first (exploration), then the SDK reference
 ## Mental Model
 
 - `workspace` / `--workspace` is the durable unit of state. Persistent workspaces live under `.opensteer/workspaces/<id>`.
-- A workspace stores the browser profile, live browser metadata, artifacts, traces, saved network, DOM descriptors, extraction descriptors, request plans, recipes, auth recipes, and reverse-analysis records.
+- A workspace stores the browser profile, live browser metadata, artifacts, traces, network history (SQLite-backed, auto-persisted), DOM descriptors, extraction descriptors, request plans, recipes, auth recipes, and reverse-analysis records.
 - In the SDK, omitting `workspace` creates a temporary root. In the CLI, stateful commands currently require `--workspace <id>`.
 - With a workspace, browser mode defaults to `persistent`. `temporary` creates an isolated browser for the current run. `attach` connects to an already-running Chromium browser.
 - `opensteer browser ...` manages the workspace browser itself. `opensteer close` stops the active session/browser without deleting the workspace. `browser reset` clears cloned browser state. `browser delete` removes workspace browser files.
 - The short CLI only has special parsing for a few common commands. For advanced semantic operations or fields like `persistAsDescription`, use `opensteer run <semantic-operation> --workspace <id> --input-json <json>`.
 - Prefer CLI `snapshot` during exploration so you can inspect the filtered HTML and `c="N"` counters directly. The SDK also exposes `snapshot()`, but this skill uses the CLI-first workflow and expects deterministic scripts to replay cached descriptors via `description`.
-- Prefer Opensteer surfaces over raw Playwright so descriptors, extraction payloads, saved network, request plans, recipes, traces, and artifacts stay in the workspace.
+- Prefer Opensteer surfaces over raw Playwright so descriptors, extraction payloads, network history, request plans, recipes, traces, and artifacts stay in the workspace.
 
 ## Two-Phase Workflow
 
