@@ -4,7 +4,12 @@ import path from "node:path";
 
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { createSuccessEnvelope, type OpensteerRequestEnvelope } from "@opensteer/protocol";
+import {
+  createSuccessEnvelope,
+  type OpensteerRequestEnvelope,
+  type OpensteerReverseCasePayload,
+  type OpensteerReversePackagePayload,
+} from "@opensteer/protocol";
 import { OpensteerCloudClient } from "../../packages/opensteer/src/cloud/client.js";
 const syncLocalRegistryToCloudMock = vi.fn();
 vi.mock("../../packages/opensteer/src/cloud/registry-sync.js", () => ({
@@ -21,6 +26,50 @@ const encodePortableBrowserProfileSnapshotMock = vi.fn();
 const resolveCookieCaptureStrategyMock = vi.fn();
 const acquireCdpEndpointMock = vi.fn();
 const relaunchBrowserNormallyMock = vi.fn();
+
+const reverseCasePayload: OpensteerReverseCasePayload = {
+  objective: "List users",
+  status: "ready",
+  stateSource: "temporary",
+  observations: [],
+  observationClusters: [],
+  observedRecords: [],
+  candidates: [],
+  guards: [],
+  stateSnapshots: [],
+  stateDeltas: [],
+  experiments: [],
+  replayRuns: [],
+  exports: [],
+};
+
+const reversePackagePayload: OpensteerReversePackagePayload = {
+  kind: "portable-http",
+  readiness: "runnable",
+  caseId: "reverse-case:1",
+  objective: "List users",
+  source: {
+    kind: "record",
+    id: "record:1",
+  },
+  sourceRecordId: "record:1",
+  guardIds: [],
+  workflow: [],
+  resolvers: [],
+  validators: [],
+  stateSnapshots: [],
+  requirements: {
+    requiresBrowser: false,
+    requiresLiveState: false,
+    manualCalibration: "not-needed",
+    stateSources: ["temporary"],
+  },
+  unresolvedRequirements: [],
+  suggestedEdits: [],
+  attachedTraceIds: [],
+  attachedArtifactIds: [],
+  attachedRecordIds: [],
+};
 
 vi.mock("../../packages/opensteer/src/cloud/portable-cookie-snapshot.js", () => ({
   capturePortableBrowserProfileSnapshot: (...args: unknown[]) =>
@@ -198,6 +247,32 @@ describe("cloud browser-profile integration", () => {
         updatedAt: 20,
       },
     ]);
+    await client.importReverseCases([
+      {
+        workspace: "work",
+        recordId: "reverse-case:1",
+        key: "reverse.case",
+        version: "1.0.0",
+        contentHash: "e".repeat(64),
+        tags: ["reverse"],
+        payload: reverseCasePayload,
+        createdAt: 10,
+        updatedAt: 20,
+      },
+    ]);
+    await client.importReversePackages([
+      {
+        workspace: "work",
+        recordId: "reverse-package:1",
+        key: "reverse.package",
+        version: "1.0.0",
+        contentHash: "f".repeat(64),
+        tags: ["reverse"],
+        payload: reversePackagePayload,
+        createdAt: 10,
+        updatedAt: 20,
+      },
+    ]);
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
@@ -240,6 +315,20 @@ describe("cloud browser-profile integration", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(
       4,
       "https://api.opensteer.dev/registry/auth-recipes/import",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      5,
+      "https://api.opensteer.dev/registry/reverse-cases/import",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      6,
+      "https://api.opensteer.dev/registry/reverse-packages/import",
       expect.objectContaining({
         method: "POST",
       }),

@@ -1,4 +1,6 @@
 import type {
+  ActionBoundarySettleTrigger,
+  ActionBoundarySnapshot,
   BrowserCoreEngine,
   PageRef,
   ScreenshotArtifact as BrowserCoreScreenshotArtifact,
@@ -23,11 +25,12 @@ export interface NormalizedComputerScreenshotOptions {
 
 export interface ComputerUseBridgeInput {
   readonly pageRef: PageRef;
+  readonly snapshot?: ActionBoundarySnapshot;
   readonly action: OpensteerComputerAction;
   readonly screenshot: NormalizedComputerScreenshotOptions;
   readonly signal: AbortSignal;
   remainingMs(): number | undefined;
-  policySettle(pageRef: PageRef): Promise<void>;
+  policySettle(pageRef: PageRef, trigger: ActionBoundarySettleTrigger): Promise<void>;
 }
 
 export interface ComputerUseBridgeOutput {

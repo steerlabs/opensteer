@@ -1,7 +1,7 @@
 {
   "name": "@opensteer/conformance",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Reusable conformance cases for Opensteer local and cloud runtimes.",
   "license": "MIT",
   "type": "module",

@@ -54,6 +54,7 @@ export interface PageController {
   readonly backgroundTasks: Set<Promise<void>>;
   domUpdateTask: Promise<void> | undefined;
   backgroundError: Error | undefined;
+  settleTrackerRegistered: boolean;
   openerPageRef: PageRef | undefined;
   mainFrameRef: FrameRef | undefined;
   lifecycleState: PageLifecycleState;

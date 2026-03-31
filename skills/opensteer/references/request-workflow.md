@@ -4,6 +4,7 @@ Use this workflow when the deliverable is a custom API, a replayable request pla
 
 ## Sections
 
+- [Critical Rules](#critical-rules)
 - [Standard Loop](#standard-loop)
 - [Transport Selection](#transport-selection)
 - [SDK Flow](#sdk-flow)
@@ -12,13 +13,23 @@ Use this workflow when the deliverable is a custom API, a replayable request pla
 - [Auth Token Acquisition](#auth-token-acquisition)
 - [Input Formats](#input-formats)
 - [Practical Guidance](#practical-guidance)
+- [When To Use Request Capture vs DOM Extraction](#when-to-use-request-capture-vs-dom-extraction)
+- [Error Recovery](#error-recovery)
+
+## Critical Rules
+
+1. Persistence is automatic. Every `goto()`, `click()`, `input()`, `scroll()`, and `hover()` call persists captured network records to SQLite. You never need to manually save.
+2. `queryNetwork()` always reads from the persisted store. There is no `source` parameter. Do NOT pass `source: "saved"` or `source: "live"`.
+3. `tagNetwork()` labels already-persisted records. It does NOT save anything — records are already saved. Use it to organize captures for later lookup by tag.
+4. `clearNetwork()` permanently removes records with tombstoning. Cleared records cannot be resurrected by late-arriving browser events.
+5. `waitForNetwork()` watches for NEW records only. It snapshots existing records and polls for ones that were not present at the start. It does NOT return historical matches.
 
 ## Standard Loop
 
-1. Trigger the real browser action that causes the request inside a stable workspace.
-2. Tag the important navigation or interactions with `networkTag`.
-3. Inspect the captured traffic and isolate the relevant records.
-4. Save useful captures to the workspace if they need to survive later analysis.
+1. Trigger the real browser action that causes the request inside a stable workspace. Records are auto-persisted to SQLite.
+2. Tag the important navigation or interactions with `networkTag` on the action itself.
+3. Inspect the captured traffic with `queryNetwork()` and isolate the relevant records.
+4. Use `tagNetwork()` to label interesting records for later lookup (optional — `networkTag` on the action already tags at capture time).
 5. Probe the request with `rawRequest()` — try `direct-http` first, then `context-http`.
 6. Infer a request plan from the probed record — pass `transport` if you proved portability.
 7. Add recipes or auth recipes if replay needs deterministic setup.
@@ -88,15 +99,15 @@ await opensteer.inferRequestPlan({
 });
 ```
 
-5. Save the captured traffic if you want it in the workspace registry.
+5. Tag additional records if you want to label captures that were not already tagged via `networkTag` on the action.
 
 ```ts
-await opensteer.saveNetwork({
+await opensteer.tagNetwork({
   tag: "products-load",
 });
 ```
 
-Saved-network persistence is SQLite-backed and initializes on first use. Generic workspace and browser flows do not require SQLite capability unless they touch saved-network persistence.
+Network history is SQLite-backed and auto-persisted. Records are written to SQLite as actions capture them. The database initializes on first use.
 
 6. Replay the plan from code.
 
@@ -128,7 +139,7 @@ opensteer click --workspace demo --description "load products"
   # or with networkTag: opensteer run dom.click --workspace demo \
   #   --input-json '{"target":{"kind":"description","description":"load products"},"networkTag":"products-load"}'
 opensteer run network.query --workspace demo \
-  --input-json '{"source":"saved","tag":"products-load","includeBodies":true,"limit":20}'
+  --input-json '{"tag":"products-load","includeBodies":true,"limit":20}'
 opensteer run request.raw --workspace demo \
   --input-json '{"transport":"direct-http","url":"https://example.com/api/products","method":"POST","body":{"json":{"page":1}}}'
 opensteer run request-plan.infer --workspace demo \
@@ -218,8 +229,8 @@ Mandatory steps:
 - MUST use `goto({ url, networkTag })` to tag navigation. `networkTag` is NOT supported on `open()`. In the CLI, this means `opensteer run page.goto --input-json ...`.
 - MUST query by tag first (`queryNetwork({ tag })`), then query all traffic to catch async requests.
 - MUST probe every discovered first-party API with transport tests. Do NOT just log URLs.
-- MUST call `saveNetwork({ tag })` before closing the session.
-- Use `queryNetwork({ source: "saved" })` when you want to read previously persisted captures after the live session is gone.
+- Persistence is automatic. All captured records are written to SQLite as actions execute. Use `tagNetwork({ tag })` when you want to label already-persisted records for later lookup.
+- `queryNetwork({ ...filters })` always reads from the persisted store. It works the same whether the browser session is active or closed.
 
 Common mistakes:
 
@@ -237,3 +248,47 @@ Additional guidance:
 - Inferred plans are immediately usable — `request.execute` works right after inference.
 - Use recipes when the request plan needs deterministic setup work. Use auth recipes when the setup is specifically auth refresh or login state.
 - Stay in the DOM workflow only when the rendered page itself is the deliverable. Move here when the request is the durable artifact.
+
+## When To Use Request Capture vs DOM Extraction
+
+**Start here: Does the data come from a network request?**
+
+1. Open the page with `networkTag` and check `queryNetwork()`. If you see a JSON/REST API returning the data you need:
+   - Probe it with `rawRequest({ transport: "direct-http" })`.
+   - If it returns 200: **use request capture**. The API is portable.
+   - If it fails: probe with `context-http`. If that works: **use request capture** with browser session.
+   - If both fail: **fall back to DOM extraction**.
+
+2. If `queryNetwork()` shows no relevant API (data is server-rendered HTML):
+   - **Use DOM extraction** (`snapshot` + `extract`).
+
+3. If the API returns partial data and the page enriches it client-side:
+   - **Use request capture** for the raw API data.
+   - Supplement with DOM extraction only if the client-side enrichment is critical.
+
+**Key signal:** If the page makes a clean `fetch()` or `XMLHttpRequest` to a JSON endpoint, that is almost always the better capture target than the rendered DOM.
+
+## Error Recovery
+
+**`queryNetwork()` returns empty records:**
+- Verify `networkTag` was set on the action that triggered the request (not on `open()`).
+- Re-trigger the action. Records are auto-persisted, so re-triggering will capture new records.
+- Broaden filters: try removing `tag` and querying by `hostname` or `path` instead.
+- Check that the request actually fired — some SPAs lazy-load data or use WebSocket instead of HTTP.
+
+**`rawRequest()` returns non-200 or errors:**
+- If `direct-http` fails with 403/401: the API requires session state. Try `context-http`.
+- If `context-http` fails: the API may require specific cookies or tokens. Check for auth endpoints in the captured traffic.
+- If the response body is empty: decode `response.body.data` with `Buffer.from(data, "base64").toString("utf8")` — the parsed `data` field may not be populated.
+- If the request times out: increase `timeoutMs` or check that the target server is reachable.
+
+**`waitForNetwork()` times out:**
+- `waitForNetwork()` only matches records that appear AFTER the call starts. If the request already fired, it will not be found.
+- Ensure the triggering action (click, scroll, etc.) happens AFTER calling `waitForNetwork()`, or use `queryNetwork()` instead for already-captured records.
+- Increase `timeoutMs` if the request is slow.
+
+**`inferRequestPlan()` throws "registry record already exists":**
+- The key+version combination is already registered. Either use a new version string or catch the error.
+
+**`tagNetwork()` returns `taggedCount: 0`:**
+- No records matched the filters. Verify the records exist with `queryNetwork()` using the same filters first.

@@ -69,8 +69,8 @@ import {
   opensteerNetworkClearOutputSchema,
   opensteerNetworkQueryInputSchema,
   opensteerNetworkQueryOutputSchema,
-  opensteerNetworkSaveInputSchema,
-  opensteerNetworkSaveOutputSchema,
+  opensteerNetworkTagInputSchema,
+  opensteerNetworkTagOutputSchema,
   opensteerInferRequestPlanInputSchema,
   opensteerRawRequestInputSchema,
   opensteerRawRequestOutputSchema,
@@ -91,8 +91,8 @@ import {
   type OpensteerNetworkClearOutput,
   type OpensteerNetworkQueryInput,
   type OpensteerNetworkQueryOutput,
-  type OpensteerNetworkSaveInput,
-  type OpensteerNetworkSaveOutput,
+  type OpensteerNetworkTagInput,
+  type OpensteerNetworkTagOutput,
   type OpensteerRawRequestInput,
   type OpensteerRawRequestOutput,
   type OpensteerRequestExecuteInput,
@@ -618,7 +618,7 @@ export const opensteerSemanticOperationNames = [
   "dom.scroll",
   "dom.extract",
   "network.query",
-  "network.save",
+  "network.tag",
   "network.clear",
   "network.minimize",
   "network.diff",
@@ -704,7 +704,7 @@ const opensteerPackageRunnableSemanticOperationNames = new Set<OpensteerSemantic
   "dom.scroll",
   "dom.extract",
   "network.query",
-  "network.save",
+  "network.tag",
   "network.clear",
   "network.minimize",
   "network.diff",
@@ -1702,24 +1702,17 @@ const opensteerSemanticOperationSpecificationsBase = [
   }),
   defineSemanticOperationSpec<OpensteerNetworkQueryInput, OpensteerNetworkQueryOutput>({
     name: "network.query",
-    description: "Query live or saved network records for reverse engineering workflows.",
+    description: "Query persisted network records for reverse engineering workflows.",
     inputSchema: opensteerNetworkQueryInputSchema,
     outputSchema: opensteerNetworkQueryOutputSchema,
     requiredCapabilities: [],
-    resolveRequiredCapabilities: (input) =>
-      input.source === "saved"
-        ? []
-        : input.includeBodies === true
-          ? ["inspect.network", "inspect.networkBodies"]
-          : ["inspect.network"],
   }),
-  defineSemanticOperationSpec<OpensteerNetworkSaveInput, OpensteerNetworkSaveOutput>({
-    name: "network.save",
-    description:
-      "Persist filtered live network records into the saved network registry under a tag.",
-    inputSchema: opensteerNetworkSaveInputSchema,
-    outputSchema: opensteerNetworkSaveOutputSchema,
-    requiredCapabilities: ["inspect.network"],
+  defineSemanticOperationSpec<OpensteerNetworkTagInput, OpensteerNetworkTagOutput>({
+    name: "network.tag",
+    description: "Apply a tag to persisted network records matching the provided filters.",
+    inputSchema: opensteerNetworkTagInputSchema,
+    outputSchema: opensteerNetworkTagOutputSchema,
+    requiredCapabilities: [],
   }),
   defineSemanticOperationSpec<OpensteerNetworkClearInput, OpensteerNetworkClearOutput>({
     name: "network.clear",
