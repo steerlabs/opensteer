@@ -664,6 +664,7 @@ export function createAbpDomActionBridge(context: AbpDomActionBridgeContext): Do
       const controller = context.resolveController(pageRef);
       await context.settleActionBoundary(controller, {
         timeoutMs: clampAbpActionSettleTimeout(options.remainingMs()),
+        ...(options.snapshot === undefined ? {} : { snapshot: options.snapshot }),
         signal: options.signal,
         policySettle: options.policySettle,
       });

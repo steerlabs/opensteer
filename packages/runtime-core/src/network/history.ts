@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { NetworkRecord as BrowserNetworkRecord, PageRef } from "@opensteer/browser-core";
 import type { NetworkQueryRecord } from "@opensteer/protocol";
 
-import type { SavedNetworkStore } from "./saved-store.js";
+import type { SavedNetworkBodyWriteMode, SavedNetworkStore } from "./saved-store.js";
 import { toProtocolNetworkRecord } from "../requests/shared.js";
 
 interface NetworkRecordMetadata {
@@ -43,9 +43,10 @@ export class NetworkHistory {
     records: readonly BrowserNetworkRecord[],
     store: SavedNetworkStore,
     options: {
+      readonly bodyWriteMode: SavedNetworkBodyWriteMode;
       readonly observedAt?: number;
       readonly redactSecretHeaders?: boolean;
-    } = {},
+    },
   ): Promise<readonly NetworkQueryRecord[]> {
     const observedAt = options.observedAt ?? Date.now();
     const metadataToSave = new Set<NetworkRecordMetadata>();
@@ -74,7 +75,9 @@ export class NetworkHistory {
     }
 
     if (persisted.length > 0) {
-      await store.save(persisted);
+      await store.save(persisted, {
+        bodyWriteMode: options.bodyWriteMode,
+      });
       for (const metadata of metadataToSave) {
         metadata.savedAt ??= observedAt;
       }

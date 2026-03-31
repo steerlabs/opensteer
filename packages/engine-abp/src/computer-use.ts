@@ -211,6 +211,9 @@ export function createAbpComputerUseBridge(context: {
       if (action.type !== "screenshot") {
         await context.settleActionBoundary(resultController, {
           timeoutMs: clampAbpActionSettleTimeout(remainingMs),
+          ...(resultController.pageRef === controller.pageRef && input.snapshot !== undefined
+            ? { snapshot: input.snapshot }
+            : {}),
           signal: input.signal,
           policySettle: input.policySettle,
         });

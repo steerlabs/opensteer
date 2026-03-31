@@ -398,6 +398,35 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
         "expected network.query to observe the live request",
       );
 
+      const withBodies = await target.queryNetwork({
+        url: networkUrl,
+        includeBodies: true,
+        limit: 10,
+      });
+      const hasPersistedResponseBody = (record: OpensteerNetworkQueryOutput["records"][number]) =>
+        record.record.responseBody !== undefined &&
+        Buffer.from(record.record.responseBody.data, "base64").toString("utf8") ===
+          "network:live";
+      assert(
+        withBodies.records.some(hasPersistedResponseBody),
+        "expected network.query({ includeBodies: true }) to persist the response body",
+      );
+
+      await target.queryNetwork({
+        url: networkUrl,
+        limit: 10,
+      });
+
+      const afterMetadataRefresh = await target.queryNetwork({
+        url: networkUrl,
+        includeBodies: true,
+        limit: 10,
+      });
+      assert(
+        afterMetadataRefresh.records.some(hasPersistedResponseBody),
+        "expected metadata-only refreshes to preserve previously persisted response bodies",
+      );
+
       const tagged = await target.tagNetwork({
         tag: "conformance-network",
         url: networkUrl,
