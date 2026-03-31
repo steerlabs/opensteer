@@ -51,7 +51,7 @@ describe("cloud browser-profile integration", () => {
     expect(
       resolveOpensteerRuntimeConfig({
         provider: {
-          kind: "cloud",
+          mode: "cloud",
           browserProfile: {
             profileId: "bp_123",
             reuseIfActive: true,
@@ -60,7 +60,7 @@ describe("cloud browser-profile integration", () => {
       }),
     ).toEqual({
       provider: {
-        kind: "cloud",
+        mode: "cloud",
         source: "explicit",
       },
       cloud: {

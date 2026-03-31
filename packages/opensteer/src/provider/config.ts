@@ -1,16 +1,16 @@
 import type { CloudBrowserProfilePreference } from "@opensteer/protocol";
 
-export const OPENSTEER_PROVIDER_KINDS = ["local", "cloud"] as const;
+export const OPENSTEER_PROVIDER_MODES = ["local", "cloud"] as const;
 
-export type OpensteerProviderKind = (typeof OPENSTEER_PROVIDER_KINDS)[number];
+export type OpensteerProviderMode = (typeof OPENSTEER_PROVIDER_MODES)[number];
 export type OpensteerProviderSource = "explicit" | "env" | "default";
 
 export interface OpensteerLocalProviderOptions {
-  readonly kind: "local";
+  readonly mode: "local";
 }
 
 export interface OpensteerCloudProviderOptions {
-  readonly kind: "cloud";
+  readonly mode: "cloud";
   readonly apiKey?: string;
   readonly baseUrl?: string;
   readonly browserProfile?: CloudBrowserProfilePreference;
@@ -23,12 +23,12 @@ export type OpensteerProviderOptions =
   | OpensteerCloudProviderOptions;
 
 export interface OpensteerResolvedProvider {
-  readonly kind: OpensteerProviderKind;
+  readonly mode: OpensteerProviderMode;
   readonly source: OpensteerProviderSource;
 }
 
 export function assertProviderSupportsEngine(
-  provider: OpensteerProviderKind,
+  provider: OpensteerProviderMode,
   engine: string,
 ): void {
   if (engine !== "abp") {
@@ -42,17 +42,17 @@ export function assertProviderSupportsEngine(
   }
 }
 
-export function normalizeOpensteerProviderKind(
+export function normalizeOpensteerProviderMode(
   value: string,
   source = "OPENSTEER_PROVIDER",
-): OpensteerProviderKind {
+): OpensteerProviderMode {
   const normalized = value.trim().toLowerCase();
-  if (normalized === OPENSTEER_PROVIDER_KINDS[0] || normalized === OPENSTEER_PROVIDER_KINDS[1]) {
+  if (normalized === OPENSTEER_PROVIDER_MODES[0] || normalized === OPENSTEER_PROVIDER_MODES[1]) {
     return normalized;
   }
 
   throw new Error(
-    `${source} must be one of ${OPENSTEER_PROVIDER_KINDS.join(", ")}; received "${value}".`,
+    `${source} must be one of ${OPENSTEER_PROVIDER_MODES.join(", ")}; received "${value}".`,
   );
 }
 
@@ -64,20 +64,20 @@ export function resolveOpensteerProvider(
 ): OpensteerResolvedProvider {
   if (input.provider) {
     return {
-      kind: input.provider.kind,
+      mode: input.provider.mode,
       source: "explicit",
     };
   }
 
   if (input.environmentProvider !== undefined && input.environmentProvider.trim().length > 0) {
     return {
-      kind: normalizeOpensteerProviderKind(input.environmentProvider),
+      mode: normalizeOpensteerProviderMode(input.environmentProvider),
       source: "env",
     };
   }
 
   return {
-    kind: "local",
+    mode: "local",
     source: "default",
   };
 }

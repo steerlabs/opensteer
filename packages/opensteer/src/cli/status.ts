@@ -29,7 +29,7 @@ export interface OpensteerStatusLaneSummary {
 
 export interface OpensteerStatusOutput {
   readonly provider: {
-    readonly current: OpensteerResolvedProvider["kind"];
+    readonly current: OpensteerResolvedProvider["mode"];
     readonly source: "flag" | "env" | "default";
     readonly cloudBaseUrl?: string;
   };
@@ -49,7 +49,7 @@ export async function collectOpensteerStatus(input: {
 }): Promise<OpensteerStatusOutput> {
   const output: OpensteerStatusOutput = {
     provider: {
-      current: input.provider.kind,
+      current: input.provider.mode,
       source: mapProviderSource(input.provider.source),
       ...(input.cloudConfig === undefined ? {} : { cloudBaseUrl: input.cloudConfig.baseUrl }),
     },
@@ -71,10 +71,10 @@ export async function collectOpensteerStatus(input: {
     ...output,
     rootPath,
     lanes: {
-      local: describeLocalLane(localRecord, input.provider.kind === "local"),
+      local: describeLocalLane(localRecord, input.provider.mode === "local"),
       cloud: await describeCloudLane({
         record: cloudRecord,
-        current: input.provider.kind === "cloud",
+        current: input.provider.mode === "cloud",
         cloudConfig: input.cloudConfig,
       }),
     },

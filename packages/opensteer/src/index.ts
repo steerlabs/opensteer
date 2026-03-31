@@ -245,14 +245,14 @@ export { OpensteerRuntime, OpensteerSessionRuntime } from "./sdk/runtime.js";
 export type {
   OpensteerCloudProviderOptions,
   OpensteerLocalProviderOptions,
-  OpensteerProviderKind,
+  OpensteerProviderMode,
   OpensteerProviderOptions,
   OpensteerProviderSource,
   OpensteerResolvedProvider,
 } from "./provider/config.js";
 export {
   assertProviderSupportsEngine,
-  normalizeOpensteerProviderKind,
+  normalizeOpensteerProviderMode,
   resolveOpensteerProvider,
 } from "./provider/config.js";
 export {

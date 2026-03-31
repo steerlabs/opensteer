@@ -246,7 +246,7 @@ export class Opensteer {
         : { environmentProvider: process.env.OPENSTEER_PROVIDER }),
     });
 
-    if (runtimeConfig.provider.kind === "cloud") {
+    if (runtimeConfig.provider.mode === "cloud") {
       this.browserManager = undefined;
       this.runtime = createOpensteerSemanticRuntime({
         ...(provider === undefined ? {} : { provider }),
