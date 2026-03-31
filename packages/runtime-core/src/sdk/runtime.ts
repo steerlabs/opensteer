@@ -268,10 +268,11 @@ import {
   createOpensteerExtractionDescriptorStore,
   extractOpensteerExtractionFieldTargets,
   replayOpensteerExtractionPayload,
+  type OpensteerExtractionDescriptorStore,
   type OpensteerExtractionDescriptorRecord,
 } from "./extraction.js";
 import { inflateDataPathObject } from "./extraction-data-path.js";
-import { compileOpensteerSnapshot, type CompiledOpensteerSnapshot } from "./snapshot/compiler.js";
+import { compileOpensteerSnapshot } from "./snapshot/compiler.js";
 import type {
   AuthRecipeRecord,
   AuthRecipeRegistryStore,
@@ -331,6 +332,7 @@ export interface OpensteerSessionRuntimeOptions {
   readonly engineFactory?: OpensteerEngineFactory;
   readonly policy?: OpensteerPolicy;
   readonly descriptorStore?: DomDescriptorStore;
+  readonly extractionDescriptorStore?: OpensteerExtractionDescriptorStore;
   readonly registryOverrides?: {
     readonly requestPlans?: RequestPlanRegistryStore;
     readonly authRecipes?: AuthRecipeRegistryStore;
@@ -480,6 +482,9 @@ export class OpensteerSessionRuntime {
   private readonly engineFactory: OpensteerEngineFactory | undefined;
   private readonly policy: OpensteerPolicy;
   private readonly injectedDescriptorStore: DomDescriptorStore | undefined;
+  private readonly injectedExtractionDescriptorStore:
+    | OpensteerExtractionDescriptorStore
+    | undefined;
   private readonly registryOverrides: OpensteerSessionRuntimeOptions["registryOverrides"];
   private readonly cleanupRootOnClose: boolean;
   private readonly sessionInfoBase: Partial<
@@ -492,12 +497,11 @@ export class OpensteerSessionRuntime {
   private computer: ComputerUseRuntime | undefined;
   private readonly networkJournal = new NetworkJournal();
   private extractionDescriptors:
-    | ReturnType<typeof createOpensteerExtractionDescriptorStore>
+    | OpensteerExtractionDescriptorStore
     | undefined;
   private sessionRef: SessionRef | undefined;
   private pageRef: PageRef | undefined;
   private runId: string | undefined;
-  private latestSnapshot: CompiledOpensteerSnapshot | undefined;
   private readonly backgroundNetworkPersistence = new Set<Promise<void>>();
   private readonly cookieJars = new Map<string, CookieJarEntry[]>();
   private readonly recipeCache = new Map<string, OpensteerRunRecipeOutput>();
@@ -518,6 +522,7 @@ export class OpensteerSessionRuntime {
     this.engineFactory = options.engineFactory;
     this.policy = options.policy ?? defaultPolicy();
     this.injectedDescriptorStore = options.descriptorStore;
+    this.injectedExtractionDescriptorStore = options.extractionDescriptorStore;
     this.registryOverrides = options.registryOverrides;
     this.cleanupRootOnClose = options.cleanupRootOnClose ?? options.workspace === undefined;
     this.sessionInfoBase = options.sessionInfo ?? {};
@@ -531,7 +536,7 @@ export class OpensteerSessionRuntime {
     const base = this.sessionInfoBase;
     return {
       provider: base.provider ?? {
-        kind: "local",
+        mode: "local",
         ownership: "owned",
         engine: "playwright",
       },
@@ -607,7 +612,6 @@ export class OpensteerSessionRuntime {
           timeout.throwIfAborted();
           this.sessionRef = sessionRef;
           this.pageRef = createdPage.data.pageRef;
-          this.latestSnapshot = undefined;
           await timeout.runStep(() => this.ensureSemantics());
 
           let frameRef = createdPage.frameRef;
@@ -745,7 +749,6 @@ export class OpensteerSessionRuntime {
             }),
           );
           this.pageRef = created.data.pageRef;
-          this.latestSnapshot = undefined;
           return this.readSessionState();
         },
         options,
@@ -794,7 +797,6 @@ export class OpensteerSessionRuntime {
             this.requireEngine().activatePage({ pageRef: input.pageRef }),
           );
           this.pageRef = input.pageRef;
-          this.latestSnapshot = undefined;
           return this.readSessionState();
         },
         options,
@@ -868,7 +870,6 @@ export class OpensteerSessionRuntime {
           }
 
           this.pageRef = activePageRef;
-          this.latestSnapshot = undefined;
 
           return {
             closedPageRef: targetPageRef,
@@ -935,7 +936,6 @@ export class OpensteerSessionRuntime {
               timeout,
             );
             timeout.throwIfAborted();
-            this.latestSnapshot = undefined;
             await this.completeMutationCapture(timeout, baselineRequestIds, input.networkTag);
             return {
               navigation,
@@ -1125,7 +1125,6 @@ export class OpensteerSessionRuntime {
             }),
           );
           timeout.throwIfAborted();
-          this.latestSnapshot = compiled;
           const artifacts = await this.captureSnapshotArtifacts(
             pageRef,
             {
@@ -1306,9 +1305,6 @@ export class OpensteerSessionRuntime {
                 pageRef,
                 schema: input.schema as Record<string, unknown>,
                 dom: this.requireDom(),
-                ...(this.latestSnapshot?.counterRecords === undefined
-                  ? {}
-                  : { latestSnapshotCounters: this.latestSnapshot.counterRecords }),
               }),
             );
             data = toCanonicalJsonValue(
@@ -5079,7 +5075,6 @@ export class OpensteerSessionRuntime {
             });
             timeout.throwIfAborted();
             this.pageRef = output.pageRef;
-            this.latestSnapshot = undefined;
             await this.completeMutationCapture(timeout, baselineRequestIds, input.networkTag);
             const artifacts = await this.persistComputerArtifacts(output, timeout);
             return {
@@ -5358,10 +5353,7 @@ export class OpensteerSessionRuntime {
     }
 
     if (target.kind === "element") {
-      const counter = this.latestSnapshot?.counterRecords.get(target.element);
-      const elementTarget: DomTargetRef = counter
-        ? { kind: "live", locator: counter.locator, anchor: counter.anchor }
-        : { kind: "selector", selector: `[c="${String(target.element)}"]` };
+      const elementTarget: DomTargetRef = { kind: "selector", selector: `[c="${String(target.element)}"]` };
 
       const resolved = await timeout.runStep(() =>
         this.requireDom().resolveTarget({
@@ -7980,15 +7972,6 @@ export class OpensteerSessionRuntime {
       };
     }
 
-    const counter = this.latestSnapshot?.counterRecords.get(target.element);
-    if (counter) {
-      return {
-        kind: "live",
-        locator: counter.locator,
-        anchor: counter.anchor,
-      };
-    }
-
     return {
       kind: "selector",
       selector: `[c="${String(target.element)}"]`,
@@ -8063,10 +8046,12 @@ export class OpensteerSessionRuntime {
       dom: this.dom,
       policy: this.policy,
     });
-    this.extractionDescriptors = createOpensteerExtractionDescriptorStore({
-      root,
-      namespace: this.workspace,
-    });
+    this.extractionDescriptors =
+      this.injectedExtractionDescriptorStore ??
+      createOpensteerExtractionDescriptorStore({
+        root,
+        namespace: this.workspace,
+      });
   }
 
   private async ensurePageRef(): Promise<PageRef> {
@@ -8327,7 +8312,6 @@ export class OpensteerSessionRuntime {
     this.backgroundNetworkPersistence.clear();
     this.sessionRef = undefined;
     this.pageRef = undefined;
-    this.latestSnapshot = undefined;
     this.runId = undefined;
     this.dom = undefined;
     this.computer = undefined;

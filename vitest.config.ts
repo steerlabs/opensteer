@@ -47,6 +47,7 @@ export default defineConfig({
       "tests/opensteer/evaluate-null.test.ts",
       "tests/opensteer/extraction-descriptor.test.ts",
       "tests/opensteer/live-session.test.ts",
+      "tests/opensteer/policy.test.ts",
       "tests/opensteer/local-browser-stealth.test.ts",
       "tests/opensteer/request-plan-replay.test.ts",
       "tests/opensteer/runtime-recipes.test.ts",

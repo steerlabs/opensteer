@@ -176,9 +176,11 @@ opensteer run request.execute --workspace demo \
 - Use `run page.goto` when you need `networkTag` on navigation. The short `goto` form only parses the URL positional.
 - Use `run dom.click` / `run dom.input` / `run dom.hover` / `run dom.scroll` when you need `persistAsDescription`.
 
-## Extraction Schema And Array Auto-Generalization
+## Extraction Schema
 
 Always run `snapshot extraction` before building a schema — you need the `c="N"` counter values from the HTML.
+
+Schemas are **literal**: each `element` reference points to one specific DOM element, and you get back exactly the values you asked for. The schema is not a prompt or pattern — it is a precise specification.
 
 Flat field bindings:
 
@@ -192,7 +194,13 @@ opensteer extract --workspace demo \
   --schema-json '{"url":{"selector":"a.primary","attribute":"href"},"pageUrl":{"source":"current_url"}}'
 ```
 
-Array extraction with auto-generalization:
+## Array Extraction (Two-Step Process)
+
+Extracting lists of items (product rows, search results, etc.) is a two-step process:
+
+**Step 1 — Teach the pattern (schema + description):**
+
+Provide 2 structurally similar rows as templates. The extractor returns exactly those rows (literal), but behind the scenes consolidates the templates into a generalized selector and saves it as a descriptor.
 
 ```bash
 opensteer extract --workspace demo \
@@ -200,31 +208,52 @@ opensteer extract --workspace demo \
   --schema-json '{"items":[{"name":{"element":13},"price":{"element":14}},{"name":{"element":22},"price":{"element":23}}]}'
 ```
 
-The extractor uses the 1-2 representative rows as **templates**, then automatically finds **ALL matching rows** on the page:
+Returns exactly 2 rows (the literal template values):
+```json
+{
+  "items": [
+    {"name": "Apple AirPods Max", "price": "$549.99"},
+    {"name": "Apple AirPods Pro", "price": "$249.99"}
+  ]
+}
+```
 
+**Step 2 — Replay to get all rows (description only, no schema):**
+
+Replay the saved descriptor. The generalized selector finds ALL matching rows on the page:
+
+```bash
+opensteer extract --workspace demo --description "product list"
+```
+
+Returns all matching rows:
 ```json
 {
   "items": [
     {"name": "Apple AirPods Max", "price": "$549.99"},
     {"name": "Apple AirPods Pro", "price": "$249.99"},
     {"name": "Apple AirPods 4", "price": "$129.99"},
-    ...
+    {"name": "Apple AirPods 4 (ANC)", "price": "$179.99"}
   ]
 }
 ```
+
+This replay is deterministic and works across page updates, pagination, and different page states.
 
 Rules:
 
 - Build the exact JSON shape you want. The extractor does not accept `"string"` or prompt-style schemas.
 - Each leaf must be `{ element: N }`, `{ selector: "..." }`, optional `attribute`, or `{ source: "current_url" }`.
 - Use `element` fields during CLI exploration with a fresh snapshot. Deterministic scripts use `description`.
-- For arrays, provide 1-2 representative objects. Add 2 when repeated rows have structural variants.
+- For arrays, provide 2 representative objects from different positions in the list. This gives the consolidator enough structural signal to generalize. Add more when rows have structural variants.
 - Nested arrays are not supported.
+- Do NOT expect the initial `extract --schema-json` call to return all rows. It returns exactly the template rows. Use description-only replay for the full list.
 
 ## What NOT To Do
 
 - Do NOT use `page.evaluate()` to scrape DOM data. Use `extract()` with element-based schemas.
 - Do NOT parse the `counters` array to find elements. Read the `html` string and find `c="N"` values.
 - Do NOT use CSS selectors in reusable scripts. Use `description` from cached descriptors.
-- Do NOT write loops to enumerate list items. Use array extraction with 1-2 template rows.
+- Do NOT write loops to enumerate list items. Use array extraction: provide 2 template rows in the schema, then replay with description only to get all rows.
+- Do NOT expect `extract --schema-json` with array templates to return all rows. It returns exactly the templates. Replay with `--description` alone for the full list.
 - Do NOT skip re-snapshot after navigation. Always re-snapshot before targeting new elements.

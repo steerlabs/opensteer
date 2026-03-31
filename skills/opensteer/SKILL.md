@@ -10,9 +10,9 @@ argument-hint: "[goal]"
 
 1. Run `snapshot action` or `snapshot extraction` first. The output is JSON with `{url, title, mode, html, counters}`. **Read the `html` field** — it is a clean filtered DOM with inline `c="N"` attributes marking every element. Do NOT parse the `counters` array for element discovery — it is verbose metadata.
 2. Use `element` + `persistAsDescription` to act on elements. Use `extract()` with `description` + `schema` to extract data. Do NOT use `page.evaluate()`, CSS selectors, or raw DOM parsing when `extract()` can express the output.
-3. Array extraction auto-generalizes: provide 1-2 representative rows as templates, and the extractor finds ALL matching rows on the page.
+3. Extraction schemas are **literal**. If you provide 2 template rows, you get exactly 2 rows back. The framework consolidates those templates into a generalized selector behind the scenes and saves it as a descriptor. Replaying with `description` alone (no schema) uses that generalized selector to return **ALL** matching rows.
 4. `persistAsDescription` requires the verbose `opensteer run dom.*` syntax. The short CLI commands (`click`, `input`, etc.) do NOT support it.
-5. Phase 1 = CLI exploration (snapshot, act, extract). Phase 2 = deterministic scripts using `description` alone. No snapshots in Phase 2.
+5. Phase 1 = CLI exploration (snapshot, act, extract with schema). Phase 2 = deterministic replay using `description` alone returns all matching data. No snapshots in Phase 2.
 
 If invoked directly, treat `$ARGUMENTS` as the concrete browser or replay goal. First decide whether the task is primarily DOM automation, request capture/replay, or workspace browser administration.
 
@@ -73,23 +73,23 @@ opensteer snapshot extraction --workspace demo
 # → Read html field: <div c="13">Apple AirPods</div> <span c="14">$189.99</span> ...
 
 opensteer extract --workspace demo --description "search results" \
-  --schema-json '{"items":[{"name":{"element":13},"price":{"element":14}}]}'
-# → Returns ALL matching rows on the page, not just the 1 template
+  --schema-json '{"items":[{"name":{"element":13},"price":{"element":14}},{"name":{"element":22},"price":{"element":23}}]}'
+# → Returns exactly 2 rows (the literal template values)
+# → Behind the scenes: consolidates templates into a generalized selector and saves it as a descriptor
 
 opensteer close --workspace demo
 ```
 
-**Phase 2 — Deterministic script (reusable):**
+**Phase 2 — Deterministic replay (reusable):**
 
 1. Use `description` alone for all interactions — resolves from cached descriptors.
-2. Use `description + schema` for extraction — caches the extraction descriptor.
-3. Use bare `description` for extraction replay.
-4. No snapshot calls needed in scripts. Just descriptions.
+2. Use `description` alone for extraction replay — uses the generalized selector to return **ALL** matching rows.
+3. No snapshot calls needed. Just descriptions.
 
 ## Shared Rules
 
 - The short CLI commands (`click`, `input`, etc.) accept exactly one of `--element`, `--selector`, or `--description`. Use `opensteer run dom.*` with `--input-json` when you need `persistAsDescription`.
-- For extraction, `description + schema` authors or updates a persisted extraction descriptor. `description` alone replays the stored extraction payload.
+- For extraction, `description + schema` returns literal template values and saves a generalized extraction descriptor. `description` alone replays the descriptor and returns ALL matching rows.
 - Extraction schemas are explicit JSON objects and arrays. Each leaf must be `{ element: N }`, `{ selector: "..." }`, optional `attribute`, or `{ source: "current_url" }`.
 - Persisted extraction replay is deterministic and snapshot-backed. Do not replace `extract()` with `evaluate()` or custom DOM parsing when the desired output fits the extraction schema.
 - Use recipes for deterministic setup work. Use auth recipes for auth refresh/setup specifically. They live in separate registries.
@@ -102,3 +102,4 @@ opensteer close --workspace demo
 - Using `page.evaluate()` or CSS selectors instead of `extract()`. Use extract with element-based schemas.
 - Forgetting to re-snapshot after navigation. Always re-snapshot before targeting new elements.
 - Using short CLI (`click`, `input`) when `persistAsDescription` is needed. Use `opensteer run dom.*`.
+- Expecting `extract --schema-json` with array templates to return all rows. The schema is literal — you get back exactly the rows you specified. Use description-only replay (`extract --description`) to get all matching rows.

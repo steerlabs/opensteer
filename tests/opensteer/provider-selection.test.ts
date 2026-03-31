@@ -26,13 +26,13 @@ describe("provider selection", () => {
     expect(
       resolveOpensteerRuntimeConfig({
         provider: {
-          kind: "local",
+          mode: "local",
         },
         environmentProvider: process.env.OPENSTEER_PROVIDER,
       }),
     ).toEqual({
       provider: {
-        kind: "local",
+        mode: "local",
         source: "explicit",
       },
     });
@@ -42,7 +42,7 @@ describe("provider selection", () => {
     expect(() =>
       resolveOpensteerRuntimeConfig({
         provider: {
-          kind: "cloud",
+          mode: "cloud",
         },
       }),
     ).toThrow("provider=cloud requires OPENSTEER_API_KEY or provider.apiKey.");
@@ -52,7 +52,7 @@ describe("provider selection", () => {
     expect(() =>
       resolveOpensteerRuntimeConfig({
         provider: {
-          kind: "cloud",
+          mode: "cloud",
         },
       }),
     ).toThrow("provider=cloud requires OPENSTEER_BASE_URL or provider.baseUrl.");
@@ -123,7 +123,7 @@ describe("provider selection", () => {
 
       const runtime = createOpensteerSemanticRuntime({
         provider: {
-          kind: "local",
+          mode: "local",
         },
         runtimeOptions: {
           rootDir,

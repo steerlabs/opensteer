@@ -8,8 +8,8 @@ import {
   buildDomDescriptorKey,
   buildDomDescriptorPayload,
   buildDomDescriptorVersion,
+  createOpensteerExtractionDescriptorStore,
   createFilesystemOpensteerWorkspace,
-  hashDomDescriptorDescription,
 } from "../../packages/runtime-core/src/index.js";
 import {
   REGISTRY_SYNC_MAX_PAYLOAD_BYTES,
@@ -65,7 +65,7 @@ async function createWorkspace(workspace = "cloud-workspace") {
 
 function createMockClient() {
   const client = {
-    importSelectorCache: vi.fn(async () => ({
+    importDescriptors: vi.fn(async () => ({
       imported: 0,
       inserted: 0,
       updated: 0,
@@ -93,7 +93,7 @@ function createMockClient() {
 
   return {
     client,
-    importSelectorCache: client.importSelectorCache,
+    importDescriptors: client.importDescriptors,
     importRequestPlans: client.importRequestPlans,
     importRecipes: client.importRecipes,
     importAuthRecipes: client.importAuthRecipes,
@@ -104,6 +104,10 @@ describe("local-to-cloud registry sync", () => {
   test("syncs DOM descriptors, request plans, recipes, and auth recipes", async () => {
     const workspaceName = "cloud-workspace";
     const workspace = await createWorkspace(workspaceName);
+    const extractionStore = createOpensteerExtractionDescriptorStore({
+      root: workspace,
+      namespace: workspaceName,
+    });
     const pathPayload = {
       resolution: "deterministic",
       context: [],
@@ -138,6 +142,21 @@ describe("local-to-cloud registry sync", () => {
         kind: "other",
       },
     });
+    await extractionStore.write({
+      description: "Product title",
+      root: {
+        title: {
+          $path: {
+            resolution: "deterministic",
+            context: [],
+            nodes: [{ tag: "h1" }],
+          },
+        },
+      },
+      sourceUrl: "https://example.com/products/1",
+      createdAt: 12,
+      updatedAt: 22,
+    });
     await workspace.registry.requestPlans.write({
       id: "request-plan:1",
       key: "request.login",
@@ -171,19 +190,45 @@ describe("local-to-cloud registry sync", () => {
 
     await syncLocalRegistryToCloud(client.client, workspaceName, workspace);
 
-    expect(client.importSelectorCache).toHaveBeenCalledTimes(1);
-    expect(client.importSelectorCache).toHaveBeenCalledWith([
-      {
-        workspace: workspaceName,
-        method: "dom.click",
-        descriptionHash: hashDomDescriptorDescription("Submit"),
-        description: "Submit",
-        path: pathPayload,
-        createdAt: 10,
-        updatedAt: 20,
-      },
-    ]);
-    expect(client.importSelectorCache.mock.calls[0]?.[0]?.[0]).not.toHaveProperty("schemaHash");
+    expect(client.importDescriptors).toHaveBeenCalledTimes(1);
+    const [descriptorEntries] = client.importDescriptors.mock.calls[0] ?? [];
+    expect(descriptorEntries).toHaveLength(3);
+    expect(descriptorEntries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          workspace: workspaceName,
+          recordId: "descriptor:dom",
+          key: buildDomDescriptorKey({
+            namespace: workspaceName,
+            method: "dom.click",
+            description: "Submit",
+          }),
+          version: buildDomDescriptorVersion(domPayload),
+          payload: domPayload,
+          createdAt: 10,
+          updatedAt: 20,
+        }),
+        expect.objectContaining({
+          workspace: workspaceName,
+          recordId: "descriptor:other",
+          key: "descriptor:other",
+          version: "1.0.0",
+          payload: { kind: "other" },
+          createdAt: 11,
+          updatedAt: 21,
+        }),
+        expect.objectContaining({
+          workspace: workspaceName,
+          key: expect.stringMatching(/^extract:cloud-workspace:[a-f0-9]{64}$/),
+          payload: expect.objectContaining({
+            kind: "dom-extraction",
+            description: "Product title",
+          }),
+          createdAt: 12,
+          updatedAt: 22,
+        }),
+      ]),
+    );
 
     expect(client.importRequestPlans).toHaveBeenCalledWith([
       expect.objectContaining({
@@ -218,7 +263,7 @@ describe("local-to-cloud registry sync", () => {
 
     await syncLocalRegistryToCloud(client.client, "cloud-workspace", workspace);
 
-    expect(client.importSelectorCache).not.toHaveBeenCalled();
+    expect(client.importDescriptors).not.toHaveBeenCalled();
     expect(client.importRequestPlans).not.toHaveBeenCalled();
     expect(client.importRecipes).not.toHaveBeenCalled();
     expect(client.importAuthRecipes).not.toHaveBeenCalled();

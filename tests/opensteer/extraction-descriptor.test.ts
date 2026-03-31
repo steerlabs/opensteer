@@ -62,7 +62,6 @@ describe("Extraction descriptor replay paths", () => {
       const payload = await compileOpensteerExtractionPayload({
         dom,
         pageRef: created.data.pageRef,
-        latestSnapshotCounters: snapshot.counterRecords,
         schema: {
           counterValue: { element: counter.element },
           selectorValue: { selector: "#selector-target" },
@@ -430,7 +429,6 @@ describe("Extraction descriptor replay paths", () => {
       const payload = await compileOpensteerExtractionPayload({
         dom,
         pageRef: created.data.pageRef,
-        latestSnapshotCounters: snapshot.counterRecords,
         schema: {
           items: [
             {

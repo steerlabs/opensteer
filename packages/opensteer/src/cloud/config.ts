@@ -23,12 +23,12 @@ export function resolveCloudConfig(
       ? {}
       : { environmentProvider: input.environmentProvider }),
   });
-  if (provider.kind !== "cloud") {
+  if (provider.mode !== "cloud") {
     return undefined;
   }
 
   const cloudProvider =
-    input.provider?.kind === "cloud"
+    input.provider?.mode === "cloud"
       ? (input.provider as OpensteerCloudProviderOptions)
       : undefined;
   const apiKey = cloudProvider?.apiKey ?? process.env.OPENSTEER_API_KEY;

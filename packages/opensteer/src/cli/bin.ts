@@ -16,9 +16,9 @@ import {
 import { runOpensteerSkillsInstaller } from "./skills-installer.js";
 import {
   assertProviderSupportsEngine,
-  normalizeOpensteerProviderKind,
+  normalizeOpensteerProviderMode,
   resolveOpensteerProvider,
-  type OpensteerProviderKind,
+  type OpensteerProviderMode,
   type OpensteerProviderOptions,
   type OpensteerResolvedProvider,
 } from "../provider/config.js";
@@ -137,12 +137,12 @@ async function main(): Promise<void> {
 
   const engineName = resolveCliEngineName(parsed);
   const provider = resolveCliProvider(parsed);
-  assertProviderSupportsEngine(provider.kind, engineName);
-  assertCloudCliOptionsMatchProvider(parsed, provider.kind);
-  const runtimeProvider = buildCliRuntimeProvider(parsed, provider.kind);
+  assertProviderSupportsEngine(provider.mode, engineName);
+  assertCloudCliOptionsMatchProvider(parsed, provider.mode);
+  const runtimeProvider = buildCliRuntimeProvider(parsed, provider.mode);
 
   if (operation === "session.close") {
-    if (provider.kind === "cloud") {
+    if (provider.mode === "cloud") {
       const runtime = createOpensteerSemanticRuntime({
         ...(runtimeProvider === undefined ? {} : { provider: runtimeProvider }),
         engine: engineName,
@@ -382,7 +382,7 @@ function resolveOperation(command: readonly string[]): OpensteerSemanticOperatio
 interface ParsedCliOptions {
   readonly workspace?: string;
   readonly requestedEngineName?: string;
-  readonly provider?: OpensteerProviderKind;
+  readonly provider?: OpensteerProviderMode;
   readonly cloudBaseUrl?: string;
   readonly cloudApiKey?: string;
   readonly cloudProfileId?: string;
@@ -512,7 +512,7 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
   const provider =
     providerValue === undefined
       ? undefined
-      : normalizeOpensteerProviderKind(providerValue, "--provider");
+      : normalizeOpensteerProviderMode(providerValue, "--provider");
   const cloudBaseUrl = readSingle(rawOptions, "cloud-base-url");
   const cloudApiKey = readSingle(rawOptions, "cloud-api-key");
   const cloudProfileId = readSingle(rawOptions, "cloud-profile-id");
@@ -607,10 +607,10 @@ function buildCliBrowserProfile(
 
 function buildCliExplicitProvider(parsed: ParsedCommandLine): OpensteerProviderOptions | undefined {
   if (parsed.options.provider === "local") {
-    return { kind: "local" };
+    return { mode: "local" };
   }
   if (parsed.options.provider === "cloud") {
-    return { kind: "cloud" };
+    return { mode: "cloud" };
   }
   return undefined;
 }
@@ -638,11 +638,11 @@ function resolveCliProvider(parsed: ParsedCommandLine): OpensteerResolvedProvide
 
 function buildCliRuntimeProvider(
   parsed: ParsedCommandLine,
-  providerKind: OpensteerProviderKind,
+  providerMode: OpensteerProviderMode,
 ): OpensteerProviderOptions | undefined {
   const explicitProvider = buildCliExplicitProvider(parsed);
-  if (providerKind === "local") {
-    return explicitProvider?.kind === "local" ? explicitProvider : undefined;
+  if (providerMode === "local") {
+    return explicitProvider?.mode === "local" ? explicitProvider : undefined;
   }
 
   const browserProfile = buildCliBrowserProfile(parsed);
@@ -650,12 +650,12 @@ function buildCliRuntimeProvider(
     parsed.options.cloudBaseUrl !== undefined ||
     parsed.options.cloudApiKey !== undefined ||
     browserProfile !== undefined;
-  if (!hasCloudOverrides && explicitProvider?.kind !== "cloud") {
+  if (!hasCloudOverrides && explicitProvider?.mode !== "cloud") {
     return undefined;
   }
 
   return {
-    kind: "cloud",
+    mode: "cloud",
     ...(parsed.options.cloudBaseUrl === undefined ? {} : { baseUrl: parsed.options.cloudBaseUrl }),
     ...(parsed.options.cloudApiKey === undefined ? {} : { apiKey: parsed.options.cloudApiKey }),
     ...(browserProfile === undefined ? {} : { browserProfile }),
@@ -664,10 +664,10 @@ function buildCliRuntimeProvider(
 
 function assertCloudCliOptionsMatchProvider(
   parsed: ParsedCommandLine,
-  providerKind: OpensteerProviderKind,
+  providerMode: OpensteerProviderMode,
 ): void {
   if (
-    providerKind !== "cloud" &&
+    providerMode !== "cloud" &&
     (parsed.options.cloudBaseUrl !== undefined ||
       parsed.options.cloudApiKey !== undefined ||
       parsed.options.cloudProfileId !== undefined ||
@@ -681,8 +681,8 @@ function assertCloudCliOptionsMatchProvider(
 
 async function handleStatusCommand(parsed: ParsedCommandLine): Promise<void> {
   const provider = resolveCliProvider(parsed);
-  assertCloudCliOptionsMatchProvider(parsed, provider.kind);
-  const runtimeProvider = buildCliRuntimeProvider(parsed, provider.kind);
+  assertCloudCliOptionsMatchProvider(parsed, provider.mode);
+  const runtimeProvider = buildCliRuntimeProvider(parsed, provider.mode);
   const runtimeConfig = resolveOpensteerRuntimeConfig({
     ...(runtimeProvider === undefined ? {} : { provider: runtimeProvider }),
     ...(process.env.OPENSTEER_PROVIDER === undefined
