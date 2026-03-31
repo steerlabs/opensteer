@@ -65,7 +65,7 @@ export interface OpensteerConformanceTarget {
   newPage(input?: OpensteerPageNewInput): Promise<OpensteerPageNewOutput>;
   activatePage(input: OpensteerPageActivateInput): Promise<OpensteerPageActivateOutput>;
   closePage(input?: OpensteerPageCloseInput): Promise<OpensteerPageCloseOutput>;
-  goto(input: string | { readonly url: string; readonly networkTag?: string }): Promise<unknown>;
+  goto(input: string | { readonly url: string; readonly captureNetwork?: string }): Promise<unknown>;
   evaluate(input: string | OpensteerPageEvaluateInput): Promise<unknown>;
   addInitScript(input: string | OpensteerAddInitScriptInput): Promise<OpensteerAddInitScriptOutput>;
   snapshot(
@@ -75,19 +75,19 @@ export interface OpensteerConformanceTarget {
     readonly selector?: string;
     readonly element?: number;
     readonly description?: string;
-    readonly networkTag?: string;
+    readonly captureNetwork?: string;
   }): Promise<OpensteerActionResult>;
   hover?(input: {
     readonly selector?: string;
     readonly element?: number;
     readonly description?: string;
-    readonly networkTag?: string;
+    readonly captureNetwork?: string;
   }): Promise<OpensteerActionResult>;
   input(input: {
     readonly selector?: string;
     readonly element?: number;
     readonly description?: string;
-    readonly networkTag?: string;
+    readonly captureNetwork?: string;
     readonly text: string;
     readonly pressEnter?: boolean;
   }): Promise<OpensteerActionResult>;
@@ -95,7 +95,7 @@ export interface OpensteerConformanceTarget {
     readonly selector?: string;
     readonly element?: number;
     readonly description?: string;
-    readonly networkTag?: string;
+    readonly captureNetwork?: string;
     readonly direction: "up" | "down" | "left" | "right";
     readonly amount: number;
   }): Promise<OpensteerActionResult>;

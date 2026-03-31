@@ -204,12 +204,10 @@ export interface OpensteerRecipeRequestStepInput {
 export interface OpensteerRecipeGotoStep {
   readonly kind: "goto";
   readonly url: string;
-  readonly networkTag?: string;
 }
 
 export interface OpensteerRecipeReloadStep {
   readonly kind: "reload";
-  readonly networkTag?: string;
 }
 
 export interface OpensteerRecipeWaitForUrlStep {
@@ -373,7 +371,7 @@ export interface OpensteerNetworkQueryInput {
   readonly pageRef?: PageRef;
   readonly recordId?: string;
   readonly requestId?: string;
-  readonly actionId?: string;
+  readonly capture?: string;
   readonly tag?: string;
   readonly url?: string;
   readonly hostname?: string;
@@ -393,7 +391,7 @@ export interface OpensteerNetworkTagInput {
   readonly pageRef?: PageRef;
   readonly recordId?: string;
   readonly requestId?: string;
-  readonly actionId?: string;
+  readonly capture?: string;
   readonly tag: string;
   readonly url?: string;
   readonly hostname?: string;
@@ -408,6 +406,7 @@ export interface OpensteerNetworkTagOutput {
 }
 
 export interface OpensteerNetworkClearInput {
+  readonly capture?: string;
   readonly tag?: string;
 }
 
@@ -1036,7 +1035,6 @@ export const opensteerRecipeStepSchema: JsonSchema = oneOfSchema(
       {
         kind: enumSchema(["goto"] as const),
         url: stringSchema({ minLength: 1 }),
-        networkTag: stringSchema({ minLength: 1 }),
       },
       {
         title: "OpensteerAuthRecipeGotoStep",
@@ -1046,7 +1044,6 @@ export const opensteerRecipeStepSchema: JsonSchema = oneOfSchema(
     objectSchema(
       {
         kind: enumSchema(["reload"] as const),
-        networkTag: stringSchema({ minLength: 1 }),
       },
       {
         title: "OpensteerAuthRecipeReloadStep",
@@ -1271,7 +1268,7 @@ export const opensteerNetworkQueryInputSchema: JsonSchema = objectSchema(
     pageRef: pageRefSchema,
     recordId: stringSchema({ minLength: 1 }),
     requestId: stringSchema({ minLength: 1 }),
-    actionId: stringSchema({ minLength: 1 }),
+    capture: stringSchema({ minLength: 1 }),
     tag: stringSchema({ minLength: 1 }),
     url: stringSchema({ minLength: 1 }),
     hostname: stringSchema({ minLength: 1 }),
@@ -1302,7 +1299,7 @@ export const opensteerNetworkTagInputSchema: JsonSchema = objectSchema(
     pageRef: pageRefSchema,
     recordId: stringSchema({ minLength: 1 }),
     requestId: stringSchema({ minLength: 1 }),
-    actionId: stringSchema({ minLength: 1 }),
+    capture: stringSchema({ minLength: 1 }),
     tag: stringSchema({ minLength: 1 }),
     url: stringSchema({ minLength: 1 }),
     hostname: stringSchema({ minLength: 1 }),
@@ -1329,6 +1326,7 @@ export const opensteerNetworkTagOutputSchema: JsonSchema = objectSchema(
 
 export const opensteerNetworkClearInputSchema: JsonSchema = objectSchema(
   {
+    capture: stringSchema({ minLength: 1 }),
     tag: stringSchema({ minLength: 1 }),
   },
   {

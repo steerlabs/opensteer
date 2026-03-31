@@ -154,13 +154,13 @@ Examples:
 
 ```bash
 opensteer run dom.click --workspace demo \
-  --input-json '{"target":{"kind":"selector","selector":"button.primary"},"persistAsDescription":"primary button","networkTag":"load-products"}'
+  --input-json '{"target":{"kind":"selector","selector":"button.primary"},"persistAsDescription":"primary button","captureNetwork":"load-products"}'
 
 opensteer run page.goto --workspace demo \
-  --input-json '{"url":"https://example.com/products","networkTag":"page-load"}'
+  --input-json '{"url":"https://example.com/products","captureNetwork":"page-load"}'
 
 opensteer run network.query --workspace demo \
-  --input-json '{"tag":"load-products","includeBodies":true,"limit":20}'
+  --input-json '{"capture":"load-products","includeBodies":true,"limit":20}'
 
 opensteer run request-plan.infer --workspace demo \
   --input-json '{"recordId":"rec_123","key":"products.search","version":"v1"}'
@@ -173,7 +173,7 @@ opensteer run request.execute --workspace demo \
 ```
 
 - Command aliases such as `network query` and `request-plan infer` still exist, but they usually depend on `--input-json` for nontrivial inputs.
-- Use `run page.goto` when you need `networkTag` on navigation. The short `goto` form only parses the URL positional.
+- Use `run page.goto` when you need `captureNetwork` on navigation. The short `goto` form only parses the URL positional.
 - Use `run dom.click` / `run dom.input` / `run dom.hover` / `run dom.scroll` when you need `persistAsDescription`.
 
 ## Extraction Schema

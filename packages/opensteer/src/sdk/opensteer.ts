@@ -124,7 +124,7 @@ export interface OpensteerTargetOptions {
   readonly element?: number;
   readonly selector?: string;
   readonly description?: string;
-  readonly networkTag?: string;
+  readonly captureNetwork?: string;
 }
 
 export interface OpensteerInputOptions extends OpensteerTargetOptions {
@@ -724,7 +724,7 @@ function createUnsupportedBrowserController(): OpensteerBrowserController {
 function normalizeTargetOptions(input: OpensteerTargetOptions): {
   readonly target: OpensteerTargetInput;
   readonly persistAsDescription?: string;
-  readonly networkTag?: string;
+  readonly captureNetwork?: string;
 } {
   const hasElement = input.element !== undefined;
   const hasSelector = input.selector !== undefined;
@@ -739,7 +739,7 @@ function normalizeTargetOptions(input: OpensteerTargetOptions): {
         element: input.element!,
       },
       ...(input.description === undefined ? {} : { persistAsDescription: input.description }),
-      ...(input.networkTag === undefined ? {} : { networkTag: input.networkTag }),
+      ...(input.captureNetwork === undefined ? {} : { captureNetwork: input.captureNetwork }),
     };
   }
 
@@ -750,7 +750,7 @@ function normalizeTargetOptions(input: OpensteerTargetOptions): {
         selector: input.selector!,
       },
       ...(input.description === undefined ? {} : { persistAsDescription: input.description }),
-      ...(input.networkTag === undefined ? {} : { networkTag: input.networkTag }),
+      ...(input.captureNetwork === undefined ? {} : { captureNetwork: input.captureNetwork }),
     };
   }
 
@@ -763,7 +763,7 @@ function normalizeTargetOptions(input: OpensteerTargetOptions): {
       kind: "description",
       description: input.description,
     },
-    ...(input.networkTag === undefined ? {} : { networkTag: input.networkTag }),
+    ...(input.captureNetwork === undefined ? {} : { captureNetwork: input.captureNetwork }),
   };
 }
 

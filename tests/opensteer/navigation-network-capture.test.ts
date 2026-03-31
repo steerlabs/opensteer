@@ -1,5 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { once } from "node:events";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
@@ -13,8 +16,18 @@ import {
   type PageRef,
 } from "../../packages/browser-core/src/index.js";
 import { createPlaywrightBrowserCoreEngine } from "../../packages/engine-playwright/src/index.js";
-import { resolveDomActionBridge } from "../../packages/protocol/src/index.js";
-import { createDomRuntime, Opensteer } from "../../packages/opensteer/src/index.js";
+import {
+  OpensteerProtocolError,
+  resolveDomActionBridge,
+} from "../../packages/protocol/src/index.js";
+import {
+  createDomRuntime,
+  createFilesystemOpensteerWorkspace,
+  defaultPolicy,
+  Opensteer,
+  type OpensteerPolicy,
+  type SettleObserver,
+} from "../../packages/opensteer/src/index.js";
 
 let baseUrl = "";
 let closeServer: (() => Promise<void>) | undefined;
@@ -213,7 +226,7 @@ describe.sequential("cross-document action boundary", () => {
     }
   }, 60_000);
 
-  test("captures tagged hydration requests after pressEnter navigation", async () => {
+  test("captures named hydration requests after pressEnter navigation", async () => {
     const opensteer = new Opensteer({
       name: "navigation-network-capture",
       browser: "temporary",
@@ -228,7 +241,7 @@ describe.sequential("cross-document action boundary", () => {
         selector: "#search-input",
         text: "airpods",
         pressEnter: true,
-        networkTag: "hydration-enter",
+        captureNetwork: "hydration-enter",
       });
 
       await expect(
@@ -245,7 +258,7 @@ describe.sequential("cross-document action boundary", () => {
       });
 
       const { records } = await opensteer.queryNetwork({
-        tag: "hydration-enter",
+        capture: "hydration-enter",
         limit: 20,
       });
       expect(
@@ -253,6 +266,101 @@ describe.sequential("cross-document action boundary", () => {
       ).toBe(200);
     } finally {
       await opensteer.close().catch(() => undefined);
+    }
+  }, 60_000);
+
+  test("pressEnter submits even when typing keeps bootstrap trackers noisy", async () => {
+    const opensteer = new Opensteer({
+      name: "navigation-network-noisy-enter",
+      browser: "temporary",
+      launch: {
+        headless: true,
+      },
+      policy: createPolicyWithOverrides({
+        timeoutOverrides: {
+          "dom.input": 5_000,
+        },
+      }),
+    });
+
+    try {
+      await opensteer.open(`${baseUrl}/sdk/noisy-enter`);
+      await opensteer.input({
+        selector: "#search-input",
+        text: "airpods",
+        pressEnter: true,
+        captureNetwork: "noisy-enter",
+      });
+
+      await expect(
+        opensteer.extract({
+          description: "noisy hydration status",
+          schema: {
+            status: {
+              selector: "#hydration-status",
+            },
+          },
+        }),
+      ).resolves.toEqual({
+        status: "hydrated",
+      });
+
+      const { records } = await opensteer.queryNetwork({
+        capture: "noisy-enter",
+        limit: 20,
+      });
+      expect(
+        records.find((entry) => entry.record.url.includes("/sdk/api/hydration"))?.record.status,
+      ).toBe(200);
+    } finally {
+      await opensteer.close().catch(() => undefined);
+    }
+  }, 60_000);
+
+  test("does not persist action-triggered network without captureNetwork", async () => {
+    const rootPath = await mkdtemp(path.join(os.tmpdir(), "opensteer-no-capture-"));
+    const opensteer = new Opensteer({
+      name: "navigation-network-no-capture",
+      rootPath,
+      cleanupRootOnClose: false,
+      browser: "temporary",
+      launch: {
+        headless: true,
+      },
+    });
+
+    try {
+      await opensteer.open(`${baseUrl}/sdk/hydration-enter`);
+      await opensteer.input({
+        selector: "#search-input",
+        text: "airpods",
+        pressEnter: true,
+      });
+
+      await expect(
+        opensteer.extract({
+          description: "hydration status without capture",
+          schema: {
+            status: {
+              selector: "#hydration-status",
+            },
+          },
+        }),
+      ).resolves.toEqual({
+        status: "hydrated",
+      });
+
+      const root = await createFilesystemOpensteerWorkspace({
+        rootPath,
+      });
+      expect(
+        await root.registry.savedNetwork.query({
+          url: `${baseUrl}/sdk/api/hydration`,
+        }),
+      ).toEqual([]);
+    } finally {
+      await opensteer.close().catch(() => undefined);
+      await rm(rootPath, { recursive: true, force: true });
     }
   }, 60_000);
 
@@ -308,6 +416,135 @@ describe.sequential("cross-document action boundary", () => {
       await opensteer.close().catch(() => undefined);
     }
   }, 60_000);
+
+  test("returns success and records degraded visual settle traces", async () => {
+    const rootPath = await mkdtemp(path.join(os.tmpdir(), "opensteer-soft-settle-"));
+    const opensteer = new Opensteer({
+      name: "soft-settle-boundary",
+      rootPath,
+      cleanupRootOnClose: false,
+      browser: "temporary",
+      launch: {
+        headless: true,
+      },
+      policy: createPolicyWithOverrides({
+        settleObserver: {
+          async settle(input) {
+            if (input.operation === "dom.click" && input.trigger === "navigation") {
+              throw new OpensteerProtocolError(
+                "timeout",
+                "forced visual settle timeout for test coverage",
+              );
+            }
+            return false;
+          },
+        },
+      }),
+    });
+
+    try {
+      await opensteer.open(`${baseUrl}/sdk/hydration-click`);
+      await opensteer.click({
+        selector: "#continue",
+        captureNetwork: "soft-settle",
+      });
+
+      const { records } = await opensteer.queryNetwork({
+        capture: "soft-settle",
+        limit: 20,
+      });
+      expect(
+        records.find((entry) => entry.record.url.includes("/sdk/api/hydration"))?.record.status,
+      ).toBe(200);
+
+      const traces = await readTraceEntries(rootPath);
+      const clickTrace = [...traces]
+        .reverse()
+        .find((entry) => entry.operation === "dom.click" && entry.outcome === "ok") as
+        | {
+            readonly data?: {
+              readonly settle?: unknown;
+            };
+          }
+        | undefined;
+      expect(clickTrace?.data?.settle).toMatchObject({
+        trigger: "navigation",
+        crossDocument: true,
+        bootstrapSettled: true,
+        visualSettled: false,
+        timedOutPhase: "visual",
+      });
+    } finally {
+      await opensteer.close().catch(() => undefined);
+      await rm(rootPath, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test("throws when DOMContentLoaded is missed before the hard interaction deadline", async () => {
+    const opensteer = new Opensteer({
+      name: "hard-boundary-timeout",
+      browser: "temporary",
+      launch: {
+        headless: true,
+      },
+      policy: createPolicyWithOverrides({
+        timeoutOverrides: {
+          "dom.click": 500,
+        },
+      }),
+    });
+
+    try {
+      await opensteer.open(`${baseUrl}/sdk/hard-timeout-click`);
+      await expect(
+        opensteer.click({
+          selector: "#continue",
+        }),
+      ).rejects.toThrow(/timeout/i);
+    } finally {
+      await opensteer.close().catch(() => undefined);
+    }
+  }, 60_000);
+
+  test("persists observed network deltas when a captureNetwork operation times out", async () => {
+    const rootPath = await mkdtemp(path.join(os.tmpdir(), "opensteer-timeout-persist-"));
+    const opensteer = new Opensteer({
+      name: "timeout-persist",
+      rootPath,
+      cleanupRootOnClose: false,
+      browser: "temporary",
+      launch: {
+        headless: true,
+      },
+      policy: createPolicyWithOverrides({
+        timeoutOverrides: {
+          "dom.click": 500,
+        },
+      }),
+    });
+
+    try {
+      await opensteer.open(`${baseUrl}/sdk/hard-timeout-click`);
+      await expect(
+        opensteer.click({
+          selector: "#continue",
+          captureNetwork: "timeout-persist",
+        }),
+      ).rejects.toThrow(/timed out|timeout/i);
+
+      const root = await createFilesystemOpensteerWorkspace({
+        rootPath,
+      });
+      const records = await root.registry.savedNetwork.query({
+        capture: "timeout-persist",
+      });
+      expect(records.length).toBeGreaterThan(0);
+      expect(records.some((record) => record.record.url.includes("/sdk/slow-results"))).toBe(true);
+    } finally {
+      await opensteer.close().catch(() => undefined);
+      await rm(rootPath, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
 
 async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -326,9 +563,21 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
+  if (route === "noisy-enter") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(noisyEnterDocument(scope));
+    return;
+  }
+
   if (route === "hydration-click") {
     response.setHeader("content-type", "text/html; charset=utf-8");
     response.end(hydrationClickDocument(scope));
+    return;
+  }
+
+  if (route === "hard-timeout-click") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(hardTimeoutClickDocument(scope));
     return;
   }
 
@@ -338,10 +587,32 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
+  if (route === "slow-results") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(slowResultsDocument(scope));
+    return;
+  }
+
   if (route === "api" && url.pathname.endsWith("/api/hydration")) {
     await wait(150);
     response.setHeader("content-type", "application/json; charset=utf-8");
     response.end(JSON.stringify({ status: "hydrated", mode: url.searchParams.get("mode") }));
+    return;
+  }
+
+  if (route === "slow-script.js") {
+    await wait(1_500);
+    response.setHeader("content-type", "application/javascript; charset=utf-8");
+    response.end(
+      `
+        document.addEventListener("DOMContentLoaded", () => {
+          const status = document.getElementById("hydration-status");
+          if (status) {
+            status.textContent = "slow-script-loaded";
+          }
+        });
+      `,
+    );
     return;
   }
 
@@ -381,12 +652,57 @@ function hydrationEnterDocument(scope: string): string {
   );
 }
 
+function noisyEnterDocument(scope: string): string {
+  return html(
+    `
+      <form id="search-form" action="/${scope}/hydration-results?mode=noisy-enter" method="GET">
+        <input id="search-input" name="q" type="text" value="" />
+        <button id="search-submit" type="submit">Search</button>
+      </form>
+      <script>
+        const input = document.getElementById("search-input");
+        let keepScheduling = false;
+
+        input.addEventListener("input", () => {
+          if (keepScheduling) {
+            return;
+          }
+          keepScheduling = true;
+
+          const schedule = () => {
+            if (!keepScheduling) {
+              return;
+            }
+            setTimeout(schedule, 0);
+          };
+
+          schedule();
+        });
+
+        document.getElementById("search-form").addEventListener("submit", () => {
+          keepScheduling = false;
+        });
+      </script>
+    `,
+    `${scope} noisy enter`,
+  );
+}
+
 function hydrationClickDocument(scope: string): string {
   return html(
     `
       <a id="continue" href="/${scope}/hydration-results?mode=click">Open results</a>
     `,
     `${scope} click`,
+  );
+}
+
+function hardTimeoutClickDocument(scope: string): string {
+  return html(
+    `
+      <a id="continue" href="/${scope}/slow-results">Open slow results</a>
+    `,
+    `${scope} hard timeout click`,
   );
 }
 
@@ -408,6 +724,17 @@ function hydrationResultsDocument(scope: string, mode: string): string {
       </script>
     `,
     `${scope} results`,
+  );
+}
+
+function slowResultsDocument(scope: string): string {
+  return html(
+    `
+      <div id="products">Slow results ${scope}</div>
+      <div id="hydration-status">ssr</div>
+      <script src="/${scope}/slow-script.js"></script>
+    `,
+    `${scope} slow results`,
   );
 }
 
@@ -451,4 +778,52 @@ function createLocator(snapshot: DomSnapshot, node: DomSnapshotNode) {
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function createPolicyWithOverrides(input: {
+  readonly timeoutOverrides?: Partial<Record<string, number>>;
+  readonly settleObserver?: SettleObserver;
+}): OpensteerPolicy {
+  const base = defaultPolicy();
+  const observers =
+    input.settleObserver === undefined
+      ? base.settle.observers
+      : [input.settleObserver, ...(base.settle.observers ?? [])];
+
+  return {
+    ...base,
+    timeout: {
+      resolveTimeoutMs(timeoutInput) {
+        return (
+          input.timeoutOverrides?.[timeoutInput.operation] ??
+          base.timeout.resolveTimeoutMs(timeoutInput)
+        );
+      },
+    },
+    settle: {
+      observers,
+      resolveDelayMs(settleInput) {
+        return base.settle.resolveDelayMs(settleInput);
+      },
+    },
+  };
+}
+
+async function readTraceEntries(rootPath: string): Promise<readonly Record<string, unknown>[]> {
+  const runsDir = path.join(rootPath, "traces", "runs");
+  const runIds = await readdir(runsDir);
+  const entries: Record<string, unknown>[] = [];
+  for (const runId of runIds) {
+    const entriesDir = path.join(runsDir, runId, "entries");
+    const fileNames = (await readdir(entriesDir)).filter((fileName) => fileName.endsWith(".json"));
+    for (const fileName of fileNames) {
+      entries.push(
+        JSON.parse(await readFile(path.join(entriesDir, fileName), "utf8")) as Record<
+          string,
+          unknown
+        >,
+      );
+    }
+  }
+  return entries;
 }

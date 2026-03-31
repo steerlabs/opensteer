@@ -1,8 +1,10 @@
 import {
+  CROSS_DOCUMENT_INTERACTION_TIMEOUT_MS,
   buildPostLoadTrackerInstallScript,
   buildPostLoadTrackerReadExpression,
   normalizePostLoadTrackerState,
   waitForActionBoundary,
+  type ActionBoundaryOutcome,
   type ActionBoundarySettleTrigger,
   type ActionBoundarySnapshot,
   type DocumentRef,
@@ -11,7 +13,7 @@ import {
 
 import type { PageController } from "./types.js";
 
-export const DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS = 5_000;
+export const DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS = CROSS_DOCUMENT_INTERACTION_TIMEOUT_MS;
 
 interface AbpActionSettlerContext {
   syncExecutionPaused(controller: PageController): Promise<boolean>;
@@ -88,44 +90,58 @@ export function createAbpActionSettler(context: AbpActionSettlerContext) {
     }
   }
 
-  async function settle(options: AbpActionSettleOptions): Promise<void> {
+  async function settle(options: AbpActionSettleOptions): Promise<ActionBoundaryOutcome> {
     const { controller, timeoutMs, signal, snapshot, policySettle } = options;
     if (timeoutMs <= 0) {
-      return;
+      return {
+        trigger: "dom-action",
+        crossDocument: false,
+        bootstrapSettled: false,
+        timedOutPhase: "bootstrap",
+      };
     }
 
     const wasPaused = await context.syncExecutionPaused(controller);
+    let boundary: ActionBoundaryOutcome = {
+      trigger: "dom-action",
+      crossDocument: false,
+      bootstrapSettled: false,
+      timedOutPhase: "bootstrap",
+    };
     if (wasPaused) {
       await context.setExecutionPaused(controller, false);
     }
 
     try {
-      await installTracker(controller);
-
-      if (policySettle && snapshot === undefined) {
-        if (signal?.aborted) {
-          throw abortError(signal);
+      if (snapshot === undefined) {
+        if (policySettle) {
+          if (signal?.aborted) {
+            throw abortError(signal);
+          }
+          await policySettle(controller.pageRef, "dom-action");
         }
-        await policySettle(controller.pageRef, "dom-action");
-      }
+        boundary = {
+          trigger: "dom-action",
+          crossDocument: false,
+          bootstrapSettled: true,
+        };
+      } else {
+        await installTracker(controller);
+        boundary = await waitForActionBoundary({
+          timeoutMs,
+          ...(signal === undefined ? {} : { signal }),
+          snapshot,
+          getCurrentMainFrameDocumentRef: () => context.getMainFrameDocumentRef(controller),
+          waitForNavigationContentLoaded: (remainingMs) =>
+            context.waitForNavigationContentLoaded(controller, remainingMs),
+          readTrackerState: () => readTrackerState(controller),
+          throwBackgroundError: () => context.throwBackgroundError(controller),
+          isPageClosed: () => controller.lifecycleState === "closed",
+        });
 
-      const trigger = await waitForActionBoundary({
-        timeoutMs,
-        ...(signal === undefined ? {} : { signal }),
-        ...(snapshot === undefined ? {} : { snapshot }),
-        getCurrentMainFrameDocumentRef: () => context.getMainFrameDocumentRef(controller),
-        waitForNavigationContentLoaded: (remainingMs) =>
-          context.waitForNavigationContentLoaded(controller, remainingMs),
-        readTrackerState: () => readTrackerState(controller),
-        throwBackgroundError: () => context.throwBackgroundError(controller),
-        isPageClosed: () => controller.lifecycleState === "closed",
-      });
-
-      if (policySettle && snapshot !== undefined) {
-        if (signal?.aborted) {
-          throw abortError(signal);
+        if (policySettle) {
+          await policySettle(controller.pageRef, boundary.trigger);
         }
-        await policySettle(controller.pageRef, trigger);
       }
     } finally {
       if (wasPaused && controller.lifecycleState !== "closed") {
@@ -135,7 +151,6 @@ export function createAbpActionSettler(context: AbpActionSettlerContext) {
           if (!context.isPageClosedError(error)) {
             throw error;
           }
-          return;
         }
       }
 
@@ -149,6 +164,8 @@ export function createAbpActionSettler(context: AbpActionSettlerContext) {
         }
       }
     }
+
+    return boundary;
   }
 
   return {

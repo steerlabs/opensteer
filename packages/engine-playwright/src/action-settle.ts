@@ -1,8 +1,10 @@
 import {
+  CROSS_DOCUMENT_INTERACTION_TIMEOUT_MS,
   buildPostLoadTrackerInstallScript,
   buildPostLoadTrackerReadExpression,
   normalizePostLoadTrackerState,
   waitForActionBoundary,
+  type ActionBoundaryOutcome,
   type ActionBoundarySettleTrigger,
   type ActionBoundarySnapshot,
   type DocumentRef,
@@ -12,7 +14,7 @@ import {
 import { isContextClosedError, normalizePlaywrightError } from "./errors.js";
 import type { PageController } from "./types.js";
 
-export const DEFAULT_PLAYWRIGHT_ACTION_SETTLE_TIMEOUT_MS = 5_000;
+export const DEFAULT_PLAYWRIGHT_ACTION_SETTLE_TIMEOUT_MS = CROSS_DOCUMENT_INTERACTION_TIMEOUT_MS;
 
 interface PlaywrightActionSettlerContext {
   flushPendingPageTasks(sessionRef: PageController["sessionRef"]): Promise<void>;
@@ -90,55 +92,67 @@ export function createPlaywrightActionSettler(context: PlaywrightActionSettlerCo
     }
   }
 
-  async function settle(options: PlaywrightActionSettleOptions): Promise<void> {
+  async function settle(options: PlaywrightActionSettleOptions): Promise<ActionBoundaryOutcome> {
     const { controller, timeoutMs, signal, snapshot, policySettle } = options;
     if (timeoutMs <= 0) {
-      return;
+      return {
+        trigger: "dom-action",
+        crossDocument: false,
+        bootstrapSettled: false,
+        timedOutPhase: "bootstrap",
+      };
     }
 
-    await installTracker(controller);
     await context.flushPendingPageTasks(controller.sessionRef);
 
-    if (policySettle && snapshot === undefined) {
-      if (signal?.aborted) {
-        throw signal.reason ?? abortError();
-      }
-      await policySettle(controller.pageRef, "dom-action");
-    }
-
-    const trigger = await waitForActionBoundary({
-      timeoutMs,
-      ...(signal === undefined ? {} : { signal }),
-      ...(snapshot === undefined ? {} : { snapshot }),
-      getCurrentMainFrameDocumentRef: () => context.getMainFrameDocumentRef(controller),
-      waitForNavigationContentLoaded: async (remainingMs) => {
-        try {
-          await controller.page.waitForLoadState("domcontentloaded", {
-            timeout: remainingMs,
-          });
-        } catch (error) {
-          if (controller.lifecycleState === "closed" || isContextClosedError(error)) {
-            return;
-          }
-          throw normalizePlaywrightError(error, controller.pageRef);
+    let boundary: ActionBoundaryOutcome;
+    if (snapshot === undefined) {
+      if (policySettle) {
+        if (signal?.aborted) {
+          throw signal.reason ?? abortError();
         }
-      },
-      readTrackerState: () => readTrackerState(controller),
-      throwBackgroundError: () => context.throwBackgroundError(controller),
-      isPageClosed: () => controller.lifecycleState === "closed",
-    });
-
-    if (policySettle && snapshot !== undefined) {
-      if (signal?.aborted) {
-        throw signal.reason ?? abortError();
+        await policySettle(controller.pageRef, "dom-action");
       }
-      await policySettle(controller.pageRef, trigger);
+      boundary = {
+        trigger: "dom-action",
+        crossDocument: false,
+        bootstrapSettled: true,
+      };
+    } else {
+      await installTracker(controller);
+      boundary = await waitForActionBoundary({
+        timeoutMs,
+        ...(signal === undefined ? {} : { signal }),
+        snapshot,
+        getCurrentMainFrameDocumentRef: () => context.getMainFrameDocumentRef(controller),
+        waitForNavigationContentLoaded: async (remainingMs) => {
+          try {
+            await controller.page.waitForLoadState("domcontentloaded", {
+              timeout: remainingMs,
+            });
+          } catch (error) {
+            if (controller.lifecycleState === "closed" || isContextClosedError(error)) {
+              return;
+            }
+            throw normalizePlaywrightError(error, controller.pageRef);
+          }
+        },
+        readTrackerState: () => readTrackerState(controller),
+        throwBackgroundError: () => context.throwBackgroundError(controller),
+        isPageClosed: () => controller.lifecycleState === "closed",
+      });
+
+      if (policySettle) {
+        await policySettle(controller.pageRef, boundary.trigger);
+      }
     }
 
     await context.flushPendingPageTasks(controller.sessionRef);
     if (controller.lifecycleState !== "closed") {
       await context.flushDomUpdateTask(controller);
     }
+
+    return boundary;
   }
 
   return {
