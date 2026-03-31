@@ -1,4 +1,4 @@
-import { DEFAULT_VISUAL_STABILITY_SETTLE_MS } from "@opensteer/browser-core";
+import { DEFAULT_VISUAL_STABILITY_SETTLE_MS, type VisualStabilityScope } from "@opensteer/browser-core";
 
 import type {
   FallbackDecision,
@@ -58,8 +58,101 @@ const defaultSnapshotSettleObserver: SettleObserver = {
 };
 Object.freeze(defaultSnapshotSettleObserver);
 
+interface VisualStabilityProfile {
+  readonly settleMs: number;
+  readonly scope: VisualStabilityScope;
+  readonly timeoutMs: number;
+}
+
+const DOM_ACTION_VISUAL_STABILITY_PROFILES: Readonly<Record<string, VisualStabilityProfile>> = {
+  "dom.click": { settleMs: 750, scope: "visible-frames", timeoutMs: 7_000 },
+  "dom.input": { settleMs: 750, scope: "visible-frames", timeoutMs: 7_000 },
+  "dom.scroll": { settleMs: 600, scope: "visible-frames", timeoutMs: 7_000 },
+  "dom.hover": { settleMs: 200, scope: "main-frame", timeoutMs: 2_500 },
+};
+
+const DEFAULT_DOM_ACTION_VISUAL_STABILITY_PROFILE: VisualStabilityProfile = {
+  settleMs: 750,
+  scope: "visible-frames",
+  timeoutMs: 7_000,
+};
+
+const NAVIGATION_VISUAL_STABILITY_PROFILE: VisualStabilityProfile = {
+  settleMs: 750,
+  scope: "visible-frames",
+  timeoutMs: 7_000,
+};
+
+const defaultDomActionSettleObserver: SettleObserver = {
+  async settle(input) {
+    if (input.trigger !== "dom-action") {
+      return false;
+    }
+
+    const profile =
+      DOM_ACTION_VISUAL_STABILITY_PROFILES[input.operation] ??
+      DEFAULT_DOM_ACTION_VISUAL_STABILITY_PROFILE;
+
+    const effectiveTimeout =
+      input.remainingMs === undefined
+        ? profile.timeoutMs
+        : Math.min(profile.timeoutMs, input.remainingMs);
+
+    if (effectiveTimeout <= 0) {
+      return false;
+    }
+
+    try {
+      await input.engine.waitForVisualStability({
+        pageRef: input.pageRef,
+        timeoutMs: effectiveTimeout,
+        settleMs: profile.settleMs,
+        scope: profile.scope,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  },
+};
+Object.freeze(defaultDomActionSettleObserver);
+
+const defaultNavigationSettleObserver: SettleObserver = {
+  async settle(input) {
+    if (input.trigger !== "navigation") {
+      return false;
+    }
+
+    const profile = NAVIGATION_VISUAL_STABILITY_PROFILE;
+
+    const effectiveTimeout =
+      input.remainingMs === undefined
+        ? profile.timeoutMs
+        : Math.min(profile.timeoutMs, input.remainingMs);
+
+    if (effectiveTimeout <= 0) {
+      return false;
+    }
+
+    try {
+      await input.engine.waitForVisualStability({
+        pageRef: input.pageRef,
+        timeoutMs: effectiveTimeout,
+        settleMs: profile.settleMs,
+        scope: profile.scope,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  },
+};
+Object.freeze(defaultNavigationSettleObserver);
+
 const DEFAULT_SETTLE_OBSERVERS: NonNullable<SettlePolicy["observers"]> = Object.freeze([
   defaultSnapshotSettleObserver,
+  defaultDomActionSettleObserver,
+  defaultNavigationSettleObserver,
 ]);
 
 export const defaultTimeoutPolicy: TimeoutPolicy = {

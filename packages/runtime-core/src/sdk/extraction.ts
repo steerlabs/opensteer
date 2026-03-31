@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import type { NodeLocator, PageRef } from "@opensteer/browser-core";
+import type { PageRef } from "@opensteer/browser-core";
 
 import type { JsonValue } from "../json.js";
 import { canonicalJsonString, toCanonicalJsonValue } from "../json.js";
@@ -13,7 +13,6 @@ import {
   type DomArraySelector,
   type DomRuntime,
   type ElementPath,
-  type StructuralElementAnchor,
 } from "../runtimes/dom/index.js";
 import {
   buildPersistedOpensteerExtractionPayload,
@@ -24,7 +23,7 @@ import {
   inflateDataPathObject,
   joinDataPath,
 } from "./extraction-data-path.js";
-import type { CompiledOpensteerSnapshotCounterRecord } from "./snapshot/compiler.js";
+
 
 interface OpensteerSchemaFieldByElement {
   readonly element: number;
@@ -56,13 +55,6 @@ interface OpensteerExtractionPathFieldTarget {
   readonly attribute?: string;
 }
 
-interface OpensteerExtractionLiveFieldTarget {
-  readonly key: string;
-  readonly locator: NodeLocator;
-  readonly anchor: StructuralElementAnchor;
-  readonly attribute?: string;
-}
-
 interface OpensteerExtractionSourceFieldTarget {
   readonly key: string;
   readonly source: "current_url";
@@ -70,7 +62,6 @@ interface OpensteerExtractionSourceFieldTarget {
 
 type OpensteerExtractionFieldTarget =
   | OpensteerExtractionPathFieldTarget
-  | OpensteerExtractionLiveFieldTarget
   | OpensteerExtractionSourceFieldTarget;
 
 export interface PersistedOpensteerExtractionValueNode {
@@ -202,16 +193,12 @@ export async function compileOpensteerExtractionPayload(options: {
   readonly pageRef: PageRef;
   readonly schema: Record<string, unknown>;
   readonly dom: DomRuntime;
-  readonly latestSnapshotCounters?: ReadonlyMap<number, CompiledOpensteerSnapshotCounterRecord>;
 }): Promise<PersistedOpensteerExtractionPayload> {
   assertValidOpensteerExtractionSchemaRoot(options.schema);
   const fieldTargets = await compileOpensteerExtractionFieldTargets({
     dom: options.dom,
     pageRef: options.pageRef,
     schema: options.schema,
-    ...(options.latestSnapshotCounters
-      ? { latestSnapshotCounters: options.latestSnapshotCounters }
-      : {}),
   });
   return compilePersistedOpensteerExtractionPayloadFromFieldTargets({
     pageRef: options.pageRef,
@@ -224,14 +211,12 @@ export async function compileOpensteerExtractionFieldTargets(options: {
   readonly pageRef: PageRef;
   readonly schema: Record<string, unknown>;
   readonly dom: DomRuntime;
-  readonly latestSnapshotCounters?: ReadonlyMap<number, CompiledOpensteerSnapshotCounterRecord>;
 }): Promise<readonly OpensteerExtractionFieldTarget[]> {
   assertValidOpensteerExtractionSchemaRoot(options.schema);
   const fields: OpensteerExtractionFieldTarget[] = [];
   await collectFieldTargetsFromSchemaObject({
     dom: options.dom,
     pageRef: options.pageRef,
-    latestSnapshotCounters: options.latestSnapshotCounters,
     value: options.schema,
     path: "",
     fields,
@@ -255,23 +240,11 @@ export async function extractOpensteerExtractionFieldTargets(options: {
         };
       }
 
-      if ("path" in field) {
-        return {
-          key: field.key,
-          target: {
-            kind: "path" as const,
-            path: field.path,
-          },
-          ...(field.attribute === undefined ? {} : { attribute: field.attribute }),
-        };
-      }
-
       return {
         key: field.key,
         target: {
-          kind: "live" as const,
-          locator: field.locator,
-          anchor: field.anchor,
+          kind: "path" as const,
+          path: field.path,
         },
         ...(field.attribute === undefined ? {} : { attribute: field.attribute }),
       };
@@ -323,9 +296,6 @@ export function createOpensteerExtractionDescriptorStore(options: {
 async function collectFieldTargetsFromSchemaObject(options: {
   readonly dom: DomRuntime;
   readonly pageRef: PageRef;
-  readonly latestSnapshotCounters:
-    | ReadonlyMap<number, CompiledOpensteerSnapshotCounterRecord>
-    | undefined;
   readonly value: Record<string, unknown>;
   readonly path: string;
   readonly fields: OpensteerExtractionFieldTarget[];
@@ -340,7 +310,6 @@ async function collectFieldTargetsFromSchemaObject(options: {
     await collectFieldTargetsFromSchemaValue({
       dom: options.dom,
       pageRef: options.pageRef,
-      latestSnapshotCounters: options.latestSnapshotCounters,
       value: childValue,
       path: joinDataPath(options.path, normalizedKey),
       fields: options.fields,
@@ -352,9 +321,6 @@ async function collectFieldTargetsFromSchemaObject(options: {
 async function collectFieldTargetsFromSchemaValue(options: {
   readonly dom: DomRuntime;
   readonly pageRef: PageRef;
-  readonly latestSnapshotCounters:
-    | ReadonlyMap<number, CompiledOpensteerSnapshotCounterRecord>
-    | undefined;
   readonly value: unknown;
   readonly path: string;
   readonly fields: OpensteerExtractionFieldTarget[];
@@ -366,7 +332,6 @@ async function collectFieldTargetsFromSchemaValue(options: {
       await compileFieldTarget({
         dom: options.dom,
         pageRef: options.pageRef,
-        latestSnapshotCounters: options.latestSnapshotCounters,
         field: normalizedField,
         path: options.path,
       }),
@@ -398,7 +363,6 @@ async function collectFieldTargetsFromSchemaValue(options: {
       await collectFieldTargetsFromSchemaObject({
         dom: options.dom,
         pageRef: options.pageRef,
-        latestSnapshotCounters: options.latestSnapshotCounters,
         value: itemValue as Record<string, unknown>,
         path: appendDataPathIndex(options.path, index),
         fields: options.fields,
@@ -424,7 +388,6 @@ async function collectFieldTargetsFromSchemaValue(options: {
   await collectFieldTargetsFromSchemaObject({
     dom: options.dom,
     pageRef: options.pageRef,
-    latestSnapshotCounters: options.latestSnapshotCounters,
     value: options.value as Record<string, unknown>,
     path: options.path,
     fields: options.fields,
@@ -435,9 +398,6 @@ async function collectFieldTargetsFromSchemaValue(options: {
 async function compileFieldTarget(options: {
   readonly dom: DomRuntime;
   readonly pageRef: PageRef;
-  readonly latestSnapshotCounters:
-    | ReadonlyMap<number, CompiledOpensteerSnapshotCounterRecord>
-    | undefined;
   readonly field: OpensteerSchemaField;
   readonly path: string;
 }): Promise<OpensteerExtractionFieldTarget> {
@@ -462,11 +422,11 @@ async function compileFieldTarget(options: {
 
   return {
     key: options.path,
-    ...(await resolveLiveFieldTarget({
-      latestSnapshotCounters: options.latestSnapshotCounters,
-      field: options.field,
-      path: options.path,
-    })),
+    path: await resolveSelectorFieldPath({
+      dom: options.dom,
+      pageRef: options.pageRef,
+      selector: `[c="${String(options.field.element)}"]`,
+    }),
     ...(options.field.attribute === undefined ? {} : { attribute: options.field.attribute }),
   };
 }
@@ -492,33 +452,6 @@ async function resolveSelectorFieldPath(options: {
   );
 }
 
-async function resolveLiveFieldTarget(options: {
-  readonly latestSnapshotCounters:
-    | ReadonlyMap<number, CompiledOpensteerSnapshotCounterRecord>
-    | undefined;
-  readonly field: OpensteerSchemaFieldByElement;
-  readonly path: string;
-}): Promise<Pick<OpensteerExtractionLiveFieldTarget, "locator" | "anchor">> {
-  const counters = options.latestSnapshotCounters;
-  if (counters === undefined) {
-    throw new Error(
-      `Extraction schema field "${labelForPath(options.path)}" uses element ${String(options.field.element)} but no snapshot is available.`,
-    );
-  }
-
-  const counter = counters.get(options.field.element);
-  if (!counter) {
-    throw new Error(
-      `Extraction schema field "${labelForPath(options.path)}" references missing counter ${String(options.field.element)}.`,
-    );
-  }
-
-  return {
-    locator: counter.locator,
-    anchor: counter.anchor,
-  };
-}
-
 async function resolvePersistableFieldTargets(options: {
   readonly pageRef: PageRef;
   readonly dom: DomRuntime;
@@ -535,33 +468,9 @@ async function resolvePersistableFieldTargets(options: {
       continue;
     }
 
-    if ("path" in field) {
-      fields.push({
-        key: field.key,
-        path: sanitizeElementPath(field.path),
-        ...(field.attribute === undefined ? {} : { attribute: field.attribute }),
-      });
-      continue;
-    }
-
-    const resolved = await options.dom.resolveTarget({
-      pageRef: options.pageRef,
-      method: "extract",
-      target: {
-        kind: "live",
-        locator: field.locator,
-        anchor: field.anchor,
-      },
-    });
-    const path =
-      resolved.replayPath ??
-      (await options.dom.buildPath({
-        locator: resolved.locator,
-      }));
-
     fields.push({
       key: field.key,
-      path: sanitizeElementPath(path),
+      path: sanitizeElementPath(field.path),
       ...(field.attribute === undefined ? {} : { attribute: field.attribute }),
     });
   }
