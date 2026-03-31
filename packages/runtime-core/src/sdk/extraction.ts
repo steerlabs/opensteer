@@ -113,7 +113,7 @@ export interface OpensteerExtractionDescriptorRecord {
   readonly payload: OpensteerExtractionDescriptorPayload;
 }
 
-interface OpensteerExtractionDescriptorStore {
+export interface OpensteerExtractionDescriptorStore {
   read(input: {
     readonly description: string;
   }): Promise<OpensteerExtractionDescriptorRecord | undefined>;
@@ -919,7 +919,7 @@ function descriptionKey(namespace: string, description: string): string {
   return `extract:${namespace}:${sha256Hex(description.trim())}`;
 }
 
-function parseExtractionDescriptorRecord(
+export function parseExtractionDescriptorRecord(
   record: DescriptorRecord,
 ): OpensteerExtractionDescriptorRecord | undefined {
   const payload = record.payload;

@@ -677,12 +677,10 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
 
     try {
       const workspaceStore = await this.ensureWorkspaceStore();
-      console.warn("[opensteer:sync] Starting registry sync to cloud for workspace:", this.workspace);
       await syncLocalRegistryToCloud(this.cloud, this.workspace, workspaceStore);
-      console.warn("[opensteer:sync] Registry sync to cloud completed successfully.");
     } catch (error) {
       // Session startup must not fail if the registry sync fails.
-      console.warn("[opensteer:sync] Registry sync to cloud FAILED:", error);
+      void error;
     }
   }
 

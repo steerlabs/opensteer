@@ -1,6 +1,4 @@
 import {
-  hashDomDescriptorDescription,
-  parseDomDescriptorRecord,
   type AuthRecipeRecord,
   type DescriptorRecord,
   type FilesystemOpensteerWorkspace,
@@ -10,7 +8,6 @@ import {
 import type {
   CloudRegistryImportEntry,
   CloudRequestPlanImportEntry,
-  CloudSelectorCacheImportEntry,
 } from "@opensteer/protocol";
 
 import type { OpensteerCloudClient } from "./client.js";
@@ -20,7 +17,7 @@ export const REGISTRY_SYNC_MAX_ENTRIES_PER_BATCH = 100;
 
 type RegistryImportClient = Pick<
   OpensteerCloudClient,
-  "importSelectorCache" | "importRequestPlans" | "importRecipes" | "importAuthRecipes"
+  "importDescriptors" | "importRequestPlans" | "importRecipes" | "importAuthRecipes"
 >;
 
 export async function syncLocalRegistryToCloud(
@@ -35,74 +32,40 @@ export async function syncLocalRegistryToCloud(
     store.registry.authRecipes.list(),
   ]);
 
-  console.warn("[opensteer:sync] Local registry counts:", {
-    descriptors: descriptors.length,
-    requestPlans: requestPlans.length,
-    recipes: recipes.length,
-    authRecipes: authRecipes.length,
-  });
-
-  const selectorEntries = descriptors.flatMap((record) => {
-    const entry = toSelectorCacheImportEntry(workspace, record);
-    if (entry === undefined) {
-      console.warn("[opensteer:sync] Descriptor skipped (could not convert):", record.id);
-    }
-    return entry === undefined ? [] : [entry];
-  });
-
-  console.warn("[opensteer:sync] Selector entries to import:", selectorEntries.length);
-  if (selectorEntries.length > 0) {
-    console.warn("[opensteer:sync] First selector entry sample:", JSON.stringify(selectorEntries[0], null, 2));
-  }
+  const descriptorEntries = descriptors.map((record) => toDescriptorImportEntry(workspace, record));
 
   await Promise.all([
-    importInBatches(selectorEntries, async (entries) => {
-      console.warn("[opensteer:sync] Importing selector cache batch, count:", entries.length);
-      const result = await client.importSelectorCache(entries);
-      console.warn("[opensteer:sync] Selector cache import response:", JSON.stringify(result));
-      return result;
-    }),
+    importInBatches(descriptorEntries, (entries) => client.importDescriptors(entries)),
     importInBatches(
       requestPlans.map((record) => toRequestPlanImportEntry(workspace, record)),
-      (entries) => {
-        console.warn("[opensteer:sync] Importing request plans batch, count:", entries.length);
-        return client.importRequestPlans(entries);
-      },
+      (entries) => client.importRequestPlans(entries),
     ),
     importInBatches(
       recipes.map((record) => toRegistryImportEntry(workspace, record)),
-      (entries) => {
-        console.warn("[opensteer:sync] Importing recipes batch, count:", entries.length);
-        return client.importRecipes(entries);
-      },
+      (entries) => client.importRecipes(entries),
     ),
     importInBatches(
       authRecipes.map((record) => toRegistryImportEntry(workspace, record)),
-      (entries) => {
-        console.warn("[opensteer:sync] Importing auth recipes batch, count:", entries.length);
-        return client.importAuthRecipes(entries);
-      },
+      (entries) => client.importAuthRecipes(entries),
     ),
   ]);
 }
 
-function toSelectorCacheImportEntry(
+function toDescriptorImportEntry(
   workspace: string,
   record: DescriptorRecord,
-): CloudSelectorCacheImportEntry | undefined {
-  const descriptor = parseDomDescriptorRecord(record);
-  if (descriptor === undefined) {
-    return undefined;
-  }
-
+): CloudRegistryImportEntry {
   return {
     workspace,
-    method: descriptor.payload.method,
-    descriptionHash: hashDomDescriptorDescription(descriptor.payload.description),
-    description: descriptor.payload.description,
-    path: descriptor.payload.path,
-    createdAt: descriptor.createdAt,
-    updatedAt: descriptor.updatedAt,
+    recordId: record.id,
+    key: record.key,
+    version: record.version,
+    contentHash: record.contentHash,
+    tags: [...record.tags],
+    ...(record.provenance === undefined ? {} : { provenance: record.provenance }),
+    payload: record.payload,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
   };
 }
 

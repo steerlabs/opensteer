@@ -121,6 +121,11 @@ export type {
   StructuralElementAnchor,
 } from "./runtimes/dom/index.js";
 export {
+  buildDomDescriptorKey,
+  buildDomDescriptorPayload,
+  buildDomDescriptorVersion,
+  hashDomDescriptorDescription,
+  parseDomDescriptorRecord,
   OPENSTEER_DOM_ACTION_BRIDGE_SYMBOL,
   buildArrayFieldPathCandidates,
   buildPathCandidates,
@@ -144,6 +149,15 @@ export {
   shouldKeepAttributeForPath,
   STABLE_PRIMARY_ATTR_KEYS,
 } from "./runtimes/dom/index.js";
+export type {
+  OpensteerExtractionDescriptorPayload,
+  OpensteerExtractionDescriptorRecord,
+  OpensteerExtractionDescriptorStore,
+} from "./sdk/extraction.js";
+export {
+  createOpensteerExtractionDescriptorStore,
+  parseExtractionDescriptorRecord,
+} from "./sdk/extraction.js";
 export type {
   AppendTraceEntryInput,
   CreateTraceRunInput,

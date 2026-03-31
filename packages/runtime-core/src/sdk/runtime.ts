@@ -268,6 +268,7 @@ import {
   createOpensteerExtractionDescriptorStore,
   extractOpensteerExtractionFieldTargets,
   replayOpensteerExtractionPayload,
+  type OpensteerExtractionDescriptorStore,
   type OpensteerExtractionDescriptorRecord,
 } from "./extraction.js";
 import { inflateDataPathObject } from "./extraction-data-path.js";
@@ -331,6 +332,7 @@ export interface OpensteerSessionRuntimeOptions {
   readonly engineFactory?: OpensteerEngineFactory;
   readonly policy?: OpensteerPolicy;
   readonly descriptorStore?: DomDescriptorStore;
+  readonly extractionDescriptorStore?: OpensteerExtractionDescriptorStore;
   readonly registryOverrides?: {
     readonly requestPlans?: RequestPlanRegistryStore;
     readonly authRecipes?: AuthRecipeRegistryStore;
@@ -480,6 +482,9 @@ export class OpensteerSessionRuntime {
   private readonly engineFactory: OpensteerEngineFactory | undefined;
   private readonly policy: OpensteerPolicy;
   private readonly injectedDescriptorStore: DomDescriptorStore | undefined;
+  private readonly injectedExtractionDescriptorStore:
+    | OpensteerExtractionDescriptorStore
+    | undefined;
   private readonly registryOverrides: OpensteerSessionRuntimeOptions["registryOverrides"];
   private readonly cleanupRootOnClose: boolean;
   private readonly sessionInfoBase: Partial<
@@ -492,7 +497,7 @@ export class OpensteerSessionRuntime {
   private computer: ComputerUseRuntime | undefined;
   private readonly networkJournal = new NetworkJournal();
   private extractionDescriptors:
-    | ReturnType<typeof createOpensteerExtractionDescriptorStore>
+    | OpensteerExtractionDescriptorStore
     | undefined;
   private sessionRef: SessionRef | undefined;
   private pageRef: PageRef | undefined;
@@ -517,6 +522,7 @@ export class OpensteerSessionRuntime {
     this.engineFactory = options.engineFactory;
     this.policy = options.policy ?? defaultPolicy();
     this.injectedDescriptorStore = options.descriptorStore;
+    this.injectedExtractionDescriptorStore = options.extractionDescriptorStore;
     this.registryOverrides = options.registryOverrides;
     this.cleanupRootOnClose = options.cleanupRootOnClose ?? options.workspace === undefined;
     this.sessionInfoBase = options.sessionInfo ?? {};
@@ -8040,10 +8046,12 @@ export class OpensteerSessionRuntime {
       dom: this.dom,
       policy: this.policy,
     });
-    this.extractionDescriptors = createOpensteerExtractionDescriptorStore({
-      root,
-      namespace: this.workspace,
-    });
+    this.extractionDescriptors =
+      this.injectedExtractionDescriptorStore ??
+      createOpensteerExtractionDescriptorStore({
+        root,
+        namespace: this.workspace,
+      });
   }
 
   private async ensurePageRef(): Promise<PageRef> {
