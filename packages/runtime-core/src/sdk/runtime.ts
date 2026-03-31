@@ -282,7 +282,9 @@ import type {
   RequestPlanRecord,
   RequestPlanRegistryStore,
   ReverseCaseRecord,
+  ReverseCaseRegistryStore,
   ReversePackageRecord,
+  ReversePackageRegistryStore,
   ReverseReportRecord,
 } from "../registry.js";
 import { beautifyScriptContent } from "../scripts/beautify.js";
@@ -337,6 +339,8 @@ export interface OpensteerSessionRuntimeOptions {
     readonly requestPlans?: RequestPlanRegistryStore;
     readonly authRecipes?: AuthRecipeRegistryStore;
     readonly recipes?: RecipeRegistryStore;
+    readonly reverseCases?: ReverseCaseRegistryStore;
+    readonly reversePackages?: ReversePackageRegistryStore;
   };
   readonly cleanupRootOnClose?: boolean;
   readonly sessionInfo?: Partial<Omit<OpensteerSessionInfo, "sessionId" | "activePageRef">>;
@@ -496,9 +500,7 @@ export class OpensteerSessionRuntime {
   private dom: DomRuntime | undefined;
   private computer: ComputerUseRuntime | undefined;
   private readonly networkJournal = new NetworkJournal();
-  private extractionDescriptors:
-    | OpensteerExtractionDescriptorStore
-    | undefined;
+  private extractionDescriptors: OpensteerExtractionDescriptorStore | undefined;
   private sessionRef: SessionRef | undefined;
   private pageRef: PageRef | undefined;
   private runId: string | undefined;
@@ -5353,7 +5355,10 @@ export class OpensteerSessionRuntime {
     }
 
     if (target.kind === "element") {
-      const elementTarget: DomTargetRef = { kind: "selector", selector: `[c="${String(target.element)}"]` };
+      const elementTarget: DomTargetRef = {
+        kind: "selector",
+        selector: `[c="${String(target.element)}"]`,
+      };
 
       const resolved = await timeout.runStep(() =>
         this.requireDom().resolveTarget({
@@ -7997,6 +8002,12 @@ export class OpensteerSessionRuntime {
               : { requestPlans: overrides.requestPlans }),
             ...(overrides.authRecipes === undefined ? {} : { authRecipes: overrides.authRecipes }),
             ...(overrides.recipes === undefined ? {} : { recipes: overrides.recipes }),
+            ...(overrides.reverseCases === undefined
+              ? {}
+              : { reverseCases: overrides.reverseCases }),
+            ...(overrides.reversePackages === undefined
+              ? {}
+              : { reversePackages: overrides.reversePackages }),
           },
         };
       } else {

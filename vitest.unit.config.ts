@@ -44,6 +44,7 @@ export default defineConfig({
       "tests/opensteer/cloud-browser-profile.test.ts",
       "tests/opensteer/extraction-descriptor.test.ts",
       "tests/opensteer/local-browser-stealth.test.ts",
+      "tests/opensteer/registry-sync.test.ts",
       "tests/opensteer/runtime-recipes.test.ts",
       "tests/opensteer/sdk-surface.test.ts",
       "tests/opensteer/skills-installer.test.ts",

@@ -212,6 +212,26 @@ export class OpensteerCloudClient {
     return (await response.json()) as CloudRegistryImportResponse;
   }
 
+  async importReverseCases(
+    entries: readonly CloudRegistryImportEntry[],
+  ): Promise<CloudRegistryImportResponse> {
+    const response = await this.request("/registry/reverse-cases/import", {
+      method: "POST",
+      body: { entries },
+    });
+    return (await response.json()) as CloudRegistryImportResponse;
+  }
+
+  async importReversePackages(
+    entries: readonly CloudRegistryImportEntry[],
+  ): Promise<CloudRegistryImportResponse> {
+    const response = await this.request("/registry/reverse-packages/import", {
+      method: "POST",
+      body: { entries },
+    });
+    return (await response.json()) as CloudRegistryImportResponse;
+  }
+
   buildAuthorizationHeader(): string {
     return `Bearer ${this.config.apiKey}`;
   }
