@@ -10,7 +10,7 @@ interface NetworkRecordMetadata {
   readonly recordId: string;
   readonly observedAt: number;
   savedAt?: number;
-  actionId?: string;
+  capture?: string;
   pageRef?: PageRef;
   readonly tags: Set<string>;
 }
@@ -18,7 +18,7 @@ interface NetworkRecordMetadata {
 export class NetworkHistory {
   private readonly metadataByRequestId = new Map<string, NetworkRecordMetadata>();
   private readonly requestIdByRecordId = new Map<string, string>();
-  private readonly requestIdsByActionId = new Map<string, Set<string>>();
+  private readonly requestIdsByCapture = new Map<string, Set<string>>();
   private readonly requestIdsByTag = new Map<string, Set<string>>();
   private readonly tombstonedRequestIds = new Set<string>();
 
@@ -85,18 +85,18 @@ export class NetworkHistory {
     return persisted;
   }
 
-  assignActionId(records: readonly NetworkQueryRecord[], actionId: string): void {
+  assignCapture(records: readonly NetworkQueryRecord[], capture: string): void {
     for (const record of records) {
       const metadata = this.metadataByRequestId.get(record.record.requestId);
-      if (!metadata || metadata.actionId === actionId) {
+      if (!metadata || metadata.capture === capture) {
         continue;
       }
 
-      if (metadata.actionId !== undefined) {
-        this.requestIdsByActionId.get(metadata.actionId)?.delete(record.record.requestId);
+      if (metadata.capture !== undefined) {
+        this.requestIdsByCapture.get(metadata.capture)?.delete(record.record.requestId);
       }
-      metadata.actionId = actionId;
-      this.addIndexedRequestId(this.requestIdsByActionId, actionId, record.record.requestId);
+      metadata.capture = capture;
+      this.addIndexedRequestId(this.requestIdsByCapture, capture, record.record.requestId);
     }
   }
 
@@ -123,8 +123,8 @@ export class NetworkHistory {
     return this.requestIdByRecordId.get(recordId);
   }
 
-  getRequestIdsForActionId(actionId: string): ReadonlySet<string> {
-    return new Set(this.requestIdsByActionId.get(actionId) ?? []);
+  getRequestIdsForCapture(capture: string): ReadonlySet<string> {
+    return new Set(this.requestIdsByCapture.get(capture) ?? []);
   }
 
   getRequestIdsForTag(tag: string): ReadonlySet<string> {
@@ -139,22 +139,6 @@ export class NetworkHistory {
     return new Set(this.metadataByRequestId.keys());
   }
 
-  clearTag(tag: string): void {
-    const requestIds = [...(this.requestIdsByTag.get(tag) ?? [])];
-    this.requestIdsByTag.delete(tag);
-    for (const requestId of requestIds) {
-      const metadata = this.metadataByRequestId.get(requestId);
-      if (!metadata) {
-        continue;
-      }
-
-      metadata.tags.delete(tag);
-      if (metadata.tags.size === 0) {
-        this.tombstoneRequestIds([requestId]);
-      }
-    }
-  }
-
   tombstoneRequestIds(requestIds: Iterable<string>): void {
     for (const requestId of requestIds) {
       this.tombstonedRequestIds.add(requestId);
@@ -165,8 +149,8 @@ export class NetworkHistory {
 
       this.metadataByRequestId.delete(requestId);
       this.requestIdByRecordId.delete(metadata.recordId);
-      if (metadata.actionId !== undefined) {
-        this.requestIdsByActionId.get(metadata.actionId)?.delete(requestId);
+      if (metadata.capture !== undefined) {
+        this.requestIdsByCapture.get(metadata.capture)?.delete(requestId);
       }
       for (const tag of metadata.tags) {
         this.requestIdsByTag.get(tag)?.delete(requestId);
@@ -177,7 +161,7 @@ export class NetworkHistory {
   clear(): void {
     this.metadataByRequestId.clear();
     this.requestIdByRecordId.clear();
-    this.requestIdsByActionId.clear();
+    this.requestIdsByCapture.clear();
     this.requestIdsByTag.clear();
     this.tombstonedRequestIds.clear();
   }
@@ -209,7 +193,7 @@ export class NetworkHistory {
 
     return {
       recordId: metadata.recordId,
-      ...(metadata.actionId === undefined ? {} : { actionId: metadata.actionId }),
+      ...(metadata.capture === undefined ? {} : { capture: metadata.capture }),
       ...(metadata.tags.size === 0 ? {} : { tags: [...metadata.tags].sort() }),
       ...(metadata.savedAt === undefined ? {} : { savedAt: metadata.savedAt }),
       record: toProtocolNetworkRecord(record, {

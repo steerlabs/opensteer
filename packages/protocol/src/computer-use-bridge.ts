@@ -1,4 +1,5 @@
 import type {
+  ActionBoundaryOutcome,
   ActionBoundarySettleTrigger,
   ActionBoundarySnapshot,
   BrowserCoreEngine,
@@ -39,6 +40,7 @@ export interface ComputerUseBridgeOutput {
   readonly viewport: ViewportMetrics;
   readonly events: readonly OpensteerEvent[];
   readonly timing: OpensteerComputerExecuteTiming;
+  readonly boundary?: ActionBoundaryOutcome;
 }
 
 export interface ComputerUseBridge {

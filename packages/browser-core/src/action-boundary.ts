@@ -5,12 +5,22 @@ import {
   type PostLoadTrackerState,
 } from "./post-load-tracker.js";
 
+export const CROSS_DOCUMENT_INTERACTION_TIMEOUT_MS = 30_000;
+
 export interface ActionBoundarySnapshot {
   readonly pageRef: PageRef;
   readonly documentRef: DocumentRef;
 }
 
 export type ActionBoundarySettleTrigger = "dom-action" | "navigation";
+export type ActionBoundaryTimedOutPhase = "bootstrap";
+
+export interface ActionBoundaryOutcome {
+  readonly trigger: ActionBoundarySettleTrigger;
+  readonly crossDocument: boolean;
+  readonly bootstrapSettled: boolean;
+  readonly timedOutPhase?: ActionBoundaryTimedOutPhase;
+}
 
 export interface WaitForActionBoundaryInput {
   readonly timeoutMs: number;
@@ -26,22 +36,40 @@ export interface WaitForActionBoundaryInput {
 
 export async function waitForActionBoundary(
   input: WaitForActionBoundaryInput,
-): Promise<ActionBoundarySettleTrigger> {
+): Promise<ActionBoundaryOutcome> {
   if (input.timeoutMs <= 0) {
-    return "dom-action";
+    return {
+      trigger: "dom-action",
+      crossDocument: false,
+      bootstrapSettled: false,
+      timedOutPhase: "bootstrap",
+    };
   }
 
   const deadline = Date.now() + input.timeoutMs;
   const pollIntervalMs = input.pollIntervalMs ?? DEFAULT_ACTION_BOUNDARY_POLL_INTERVAL_MS;
   let trigger: ActionBoundarySettleTrigger = "dom-action";
+  let crossDocument = false;
   let waitedForNavigationContentLoaded = false;
 
   while (Date.now() < deadline) {
     input.throwBackgroundError();
     if (input.isPageClosed()) {
-      return trigger;
+      return {
+        trigger,
+        crossDocument,
+        bootstrapSettled: true,
+      };
     }
     if (input.signal?.aborted) {
+      if (isTimeoutAbort(input.signal.reason) && Date.now() >= deadline) {
+        return {
+          trigger,
+          crossDocument,
+          bootstrapSettled: false,
+          timedOutPhase: "bootstrap",
+        };
+      }
       throw abortError(input.signal);
     }
 
@@ -52,6 +80,7 @@ export async function waitForActionBoundary(
       currentDocumentRef !== input.snapshot.documentRef
     ) {
       trigger = "navigation";
+      crossDocument = true;
       if (!waitedForNavigationContentLoaded) {
         waitedForNavigationContentLoaded = true;
         const remaining = Math.max(0, deadline - Date.now());
@@ -62,38 +91,39 @@ export async function waitForActionBoundary(
     }
 
     if (postLoadTrackerIsSettled(await input.readTrackerState())) {
-      return trigger;
+      return {
+        trigger,
+        crossDocument,
+        bootstrapSettled: true,
+      };
     }
 
-    await delay(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())), input.signal);
+    await delay(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
   }
 
-  return trigger;
+  return {
+    trigger,
+    crossDocument,
+    bootstrapSettled: false,
+    timedOutPhase: "bootstrap",
+  };
 }
 
 function abortError(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException("The operation was aborted", "AbortError");
 }
 
-async function delay(ms: number, signal?: AbortSignal): Promise<void> {
+async function delay(ms: number): Promise<void> {
   if (ms <= 0) {
     return;
   }
-  if (signal?.aborted) {
-    throw abortError(signal);
-  }
-
-  await new Promise<void>((resolve, reject) => {
-    const timeoutId = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timeoutId);
-      signal?.removeEventListener("abort", onAbort);
-      reject(abortError(signal!));
-    };
-
-    signal?.addEventListener("abort", onAbort, { once: true });
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
   });
+}
+
+function isTimeoutAbort(reason: unknown): reason is { readonly code: string } {
+  return (
+    typeof reason === "object" && reason !== null && "code" in reason && reason.code === "timeout"
+  );
 }

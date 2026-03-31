@@ -136,7 +136,7 @@ describe("Phase 3 filesystem root", () => {
       [
         {
           recordId: "record:saved-network-lazy",
-          actionId: "action:saved-network-lazy",
+          capture: "saved-network-lazy",
           savedAt: 200,
           record: {
             kind: "http",
@@ -168,6 +168,7 @@ describe("Phase 3 filesystem root", () => {
         },
       ],
       {
+        capture: "saved-network-lazy",
         tag: "lazy-network-tag",
         bodyWriteMode: "authoritative",
       },
@@ -178,6 +179,7 @@ describe("Phase 3 filesystem root", () => {
 
     expect(
       await root.registry.savedNetwork.query({
+        capture: "saved-network-lazy",
         tag: "lazy-network-tag",
         path: "/api/lazy",
         limit: 10,
@@ -185,7 +187,7 @@ describe("Phase 3 filesystem root", () => {
     ).toMatchObject([
       {
         recordId: "record:saved-network-lazy",
-        actionId: "action:saved-network-lazy",
+        capture: "saved-network-lazy",
         tags: ["lazy-network-tag"],
         savedAt: 200,
         record: {
@@ -205,7 +207,12 @@ describe("Phase 3 filesystem root", () => {
       },
     ]);
     expect(await root.registry.savedNetwork.clear({ tag: "lazy-network-tag" })).toBe(1);
-    expect(await root.registry.savedNetwork.query({ tag: "lazy-network-tag" })).toEqual([]);
+    expect(
+      await root.registry.savedNetwork.query({
+        capture: "saved-network-lazy",
+        tag: "lazy-network-tag",
+      }),
+    ).toEqual([]);
   });
 
   test("preserves persisted bodies during metadata-only upserts", async () => {

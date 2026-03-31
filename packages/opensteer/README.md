@@ -280,7 +280,7 @@ Important subtrees:
 - `inspectLocalBrowserProfile({ userDataDir? })`
 - `unlockLocalBrowserProfile({ userDataDir })`
 - `open(url | { url?, name?, browser?, context? })`
-- `goto(url | { url, networkTag? })`
+- `goto(url | { url, captureNetwork? })`
 - `evaluate(script | { script, pageRef?, args? })`
 - `evaluateJson({ script, pageRef?, args? })`
 - `waitForNetwork({ ...filters, pageRef?, includeBodies?, timeoutMs? })`
@@ -291,12 +291,12 @@ Important subtrees:
 - `closePage({ pageRef })`
 - `waitForPage({ openerPageRef?, urlIncludes?, timeoutMs? })`
 - `snapshot("action" | "extraction")`
-- `click({ element | selector | description, networkTag? })`
-- `hover({ element | selector | description, networkTag? })`
-- `input({ element | selector | description, text, networkTag? })`
-- `scroll({ element | selector | description, direction, amount, networkTag? })`
+- `click({ element | selector | description, captureNetwork? })`
+- `hover({ element | selector | description, captureNetwork? })`
+- `input({ element | selector | description, text, captureNetwork? })`
+- `scroll({ element | selector | description, direction, amount, captureNetwork? })`
 - `extract({ description, schema? })`
-- `queryNetwork({ recordId?, requestId?, actionId?, tag?, url?, hostname?, path?, method?, status?, resourceType?, pageRef?, includeBodies?, limit? })`
+- `queryNetwork({ recordId?, requestId?, capture?, tag?, url?, hostname?, path?, method?, status?, resourceType?, pageRef?, includeBodies?, limit? })`
 - `tagNetwork({ tag, ...filters })`
 - `clearNetwork({ tag? })`
 - `captureScripts({ pageRef?, includeInline?, includeExternal?, includeDynamic?, includeWorkers?, urlFilter?, persist? })`
@@ -313,7 +313,7 @@ Important subtrees:
 - `listRecipes({ key? })`
 - `runRecipe({ key, version?, input? })`
 - `request(key, { path?, query?, headers?, body? })`
-- `computerExecute({ action, screenshot?, networkTag? })`
+- `computerExecute({ action, screenshot?, captureNetwork? })`
 - `disconnect()`
 - `close()`
 

@@ -429,7 +429,7 @@ describe("engine-abp internals", () => {
     expect(outputTestState.settleActionBoundary).toHaveBeenCalledWith(
       expect.objectContaining({ pageRef: createPageRef("main") }),
       expect.objectContaining({
-        timeoutMs: 5_000,
+        timeoutMs: 10_000,
         signal,
       }),
     );
@@ -491,7 +491,7 @@ describe("engine-abp internals", () => {
     expect(outputTestState.settleActionBoundary).toHaveBeenCalledWith(
       expect.objectContaining({ pageRef: popupPageRef }),
       expect.objectContaining({
-        timeoutMs: 5_000,
+        timeoutMs: 10_000,
       }),
     );
     expect(outputTestState.flushDomUpdateTask).toHaveBeenCalledWith(
@@ -587,7 +587,7 @@ describe("engine-abp internals", () => {
     expect(outputTestState.settleActionBoundary).toHaveBeenCalledWith(
       expect.objectContaining({ pageRef: createPageRef("main") }),
       expect.objectContaining({
-        timeoutMs: 5_000,
+        timeoutMs: 10_000,
         signal,
       }),
     );
@@ -637,7 +637,7 @@ describe("engine-abp internals", () => {
     expect(outputTestState.settleActionBoundary).toHaveBeenCalledWith(
       expect.objectContaining({ pageRef: createPageRef("main") }),
       expect.objectContaining({
-        timeoutMs: 5_000,
+        timeoutMs: 10_000,
         signal,
       }),
     );

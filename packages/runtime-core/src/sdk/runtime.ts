@@ -52,6 +52,7 @@ import {
   type OpensteerDomHoverInput,
   type OpensteerDomInputInput,
   type OpensteerDomScrollInput,
+  type OpensteerError,
   type OpensteerGetAuthRecipeInput,
   type OpensteerGetRequestPlanInput,
   type OpensteerInferRequestPlanInput,
@@ -180,6 +181,10 @@ import {
 } from "@opensteer/protocol";
 
 import { manifestToExternalBinaryLocation, type ArtifactManifest } from "../artifacts.js";
+import {
+  takeActionBoundaryDiagnostics,
+  type ActionBoundaryDiagnostics,
+} from "../action-boundary.js";
 import { normalizeThrownOpensteerError } from "../internal/errors.js";
 import { sha256Hex } from "../internal/filesystem.js";
 import { canonicalJsonString, toCanonicalJsonValue } from "../json.js";
@@ -462,6 +467,17 @@ interface RuntimeBrowserBinding {
   readonly sessionRef: SessionRef;
   readonly pageRef: PageRef;
 }
+
+interface MutationCapturePlan {
+  readonly baselineRequestIds: ReadonlySet<string>;
+  readonly capture: string;
+}
+
+interface MutationCaptureFinalizeDiagnostics {
+  readonly finalizeError?: OpensteerError;
+}
+
+const MUTATION_CAPTURE_FINALIZE_TIMEOUT_MS = 5_000;
 
 interface CookieJarEntry {
   readonly name: string;
@@ -923,35 +939,35 @@ export class OpensteerSessionRuntime {
 
     const pageRef = await this.ensurePageRef();
     const startedAt = Date.now();
+    let mutationCaptureDiagnostics: MutationCaptureFinalizeDiagnostics | undefined;
 
     try {
-      const { navigation, state } = await this.runWithOperationTimeout(
+      const { navigation, state } = await this.runMutationCapturedOperation(
         "page.goto",
-        async (timeout) => {
-          const baselineRequestIds = await this.beginMutationCapture(timeout);
-          try {
-            const navigation = await this.navigatePage(
-              {
-                operation: "page.goto",
-                pageRef,
-                url: input.url,
-              },
-              timeout,
-            );
-            timeout.throwIfAborted();
-            await this.completeMutationCapture(timeout, baselineRequestIds, input.networkTag);
-            return {
-              navigation,
-              state: await timeout.runStep(() => this.readSessionState()),
-            };
-          } catch (error) {
-            await this.completeMutationCapture(timeout, baselineRequestIds, input.networkTag).catch(
-              () => undefined,
-            );
-            throw error;
-          }
+        {
+          ...(input.captureNetwork === undefined
+            ? {}
+            : { captureNetwork: input.captureNetwork }),
+          options,
         },
-        options,
+        async (timeout) => {
+          const navigation = await this.navigatePage(
+            {
+              operation: "page.goto",
+              pageRef,
+              url: input.url,
+            },
+            timeout,
+          );
+          timeout.throwIfAborted();
+          return {
+            navigation,
+            state: await timeout.runStep(() => this.readSessionState()),
+          };
+        },
+        (diagnostics) => {
+          mutationCaptureDiagnostics = diagnostics;
+        },
       );
       await this.appendTrace({
         operation: "page.goto",
@@ -961,6 +977,7 @@ export class OpensteerSessionRuntime {
         data: {
           url: input.url,
           state,
+          ...buildMutationCaptureTraceData(mutationCaptureDiagnostics),
         },
         context: buildRuntimeTraceContext({
           sessionRef: this.sessionRef,
@@ -976,6 +993,7 @@ export class OpensteerSessionRuntime {
         completedAt: Date.now(),
         outcome: "error",
         error,
+        data: buildMutationCaptureTraceData(mutationCaptureDiagnostics),
         context: buildRuntimeTraceContext({
           sessionRef: this.sessionRef,
           pageRef,
@@ -992,36 +1010,31 @@ export class OpensteerSessionRuntime {
     assertValidSemanticOperationInput("page.evaluate", input);
     const pageRef = input.pageRef ?? (await this.ensurePageRef());
     const startedAt = Date.now();
+    let mutationCaptureDiagnostics: MutationCaptureFinalizeDiagnostics | undefined;
 
     try {
-      const output = await this.runWithOperationTimeout(
+      const output = await this.runMutationCapturedOperation(
         "page.evaluate",
+        { options },
         async (timeout) => {
-          const baselineRequestIds = await this.beginMutationCapture(timeout);
-          try {
-            const remainingMs = timeout.remainingMs();
-            const evaluated = await timeout.runStep(() =>
-              this.requireEngine().evaluatePage({
-                pageRef,
-                script: input.script,
-                ...(input.args === undefined ? {} : { args: input.args }),
-                ...(remainingMs === undefined ? {} : { timeoutMs: remainingMs }),
-              }),
-            );
-            await this.completeMutationCapture(timeout, baselineRequestIds, undefined);
-
-            return {
+          const remainingMs = timeout.remainingMs();
+          const evaluated = await timeout.runStep(() =>
+            this.requireEngine().evaluatePage({
               pageRef,
-              value: toJsonValueOrNull(evaluated.data),
-            } satisfies OpensteerPageEvaluateOutput;
-          } catch (error) {
-            await this.completeMutationCapture(timeout, baselineRequestIds, undefined).catch(
-              () => undefined,
-            );
-            throw error;
-          }
+              script: input.script,
+              ...(input.args === undefined ? {} : { args: input.args }),
+              ...(remainingMs === undefined ? {} : { timeoutMs: remainingMs }),
+            }),
+          );
+
+          return {
+            pageRef,
+            value: toJsonValueOrNull(evaluated.data),
+          } satisfies OpensteerPageEvaluateOutput;
         },
-        options,
+        (diagnostics) => {
+          mutationCaptureDiagnostics = diagnostics;
+        },
       );
 
       await this.appendTrace({
@@ -1032,6 +1045,7 @@ export class OpensteerSessionRuntime {
         data: {
           pageRef: output.pageRef,
           value: output.value,
+          ...buildMutationCaptureTraceData(mutationCaptureDiagnostics),
         },
         context: buildRuntimeTraceContext({
           sessionRef: this.sessionRef,
@@ -1046,6 +1060,7 @@ export class OpensteerSessionRuntime {
         completedAt: Date.now(),
         outcome: "error",
         error,
+        data: buildMutationCaptureTraceData(mutationCaptureDiagnostics),
         context: buildRuntimeTraceContext({
           sessionRef: this.sessionRef,
           pageRef,
@@ -1550,17 +1565,29 @@ export class OpensteerSessionRuntime {
         "network.clear",
         async (timeout) => {
           if (this.sessionRef !== undefined) {
-            const liveRequestIds = await this.readLiveRequestIds(timeout, {
-              includeCurrentPageOnly: false,
-            });
-            if (input.tag === undefined) {
+            if (input.capture !== undefined || input.tag !== undefined) {
+              const records = await this.queryLiveNetwork(
+                {
+                  ...(input.capture === undefined ? {} : { capture: input.capture }),
+                  ...(input.tag === undefined ? {} : { tag: input.tag }),
+                },
+                timeout,
+                {
+                  ignoreLimit: true,
+                },
+              );
+              this.networkHistory.tombstoneRequestIds(
+                records.map((record) => record.record.requestId),
+              );
+            } else {
+              const liveRequestIds = await this.readLiveRequestIds(timeout, {
+                includeCurrentPageOnly: false,
+              });
               this.networkHistory.tombstoneRequestIds(liveRequestIds);
             }
           }
-          if (input.tag === undefined) {
+          if (input.capture === undefined && input.tag === undefined) {
             this.networkHistory.tombstoneRequestIds(this.networkHistory.getKnownRequestIds());
-          } else {
-            this.networkHistory.clearTag(input.tag);
           }
           return {
             clearedCount: await timeout.runStep(() => root.registry.savedNetwork.clear(input)),
@@ -1575,6 +1602,7 @@ export class OpensteerSessionRuntime {
         completedAt: Date.now(),
         outcome: "ok",
         data: {
+          ...(input.capture === undefined ? {} : { capture: input.capture }),
           ...(input.tag === undefined ? {} : { tag: input.tag }),
           clearedCount: output.clearedCount,
         },
@@ -3000,7 +3028,9 @@ export class OpensteerSessionRuntime {
       };
     }
     const bindings = new Map<string, unknown>();
-    const baselineRequestIds = await this.beginMutationCapture(timeout);
+    const baselineRequestIds = await this.readLiveRequestIds(timeout, {
+      includeCurrentPageOnly: true,
+    });
     const pageRef = explicitPageRef ?? (await this.ensurePageRef());
     const validatorMap = new Map(
       packageRecord.payload.validators.map((validator) => [validator.id, validator]),
@@ -5053,34 +5083,41 @@ export class OpensteerSessionRuntime {
 
     const pageRef = await this.ensurePageRef();
     const startedAt = Date.now();
+    let mutationCaptureDiagnostics: MutationCaptureFinalizeDiagnostics | undefined;
+    let boundaryDiagnostics: ActionBoundaryDiagnostics | undefined;
 
     try {
-      const { artifacts, output } = await this.runWithOperationTimeout(
+      const { artifacts, output } = await this.runMutationCapturedOperation(
         "computer.execute",
+        {
+          ...(input.captureNetwork === undefined
+            ? {}
+            : { captureNetwork: input.captureNetwork }),
+          options,
+        },
         async (timeout) => {
-          const baselineRequestIds = await this.beginMutationCapture(timeout);
           try {
             const output = await this.requireComputer().execute({
               pageRef,
               input,
               timeout,
             });
+            boundaryDiagnostics = takeActionBoundaryDiagnostics(timeout.signal);
             timeout.throwIfAborted();
             this.pageRef = output.pageRef;
-            await this.completeMutationCapture(timeout, baselineRequestIds, input.networkTag);
             const artifacts = await this.persistComputerArtifacts(output, timeout);
             return {
               artifacts: { manifests: artifacts.manifests },
               output: artifacts.output,
             };
           } catch (error) {
-            await this.completeMutationCapture(timeout, baselineRequestIds, input.networkTag).catch(
-              () => undefined,
-            );
+            boundaryDiagnostics ??= takeActionBoundaryDiagnostics(timeout.signal);
             throw error;
           }
         },
-        options,
+        (diagnostics) => {
+          mutationCaptureDiagnostics = diagnostics;
+        },
       );
 
       await this.appendTrace({
@@ -5097,6 +5134,8 @@ export class OpensteerSessionRuntime {
           nativeViewport: output.nativeViewport,
           displayScale: output.displayScale,
           timing: output.timing,
+          ...(boundaryDiagnostics === undefined ? {} : { settle: boundaryDiagnostics }),
+          ...buildMutationCaptureTraceData(mutationCaptureDiagnostics),
           ...(output.trace === undefined ? {} : { trace: output.trace }),
         },
         context: buildRuntimeTraceContext({
@@ -5116,6 +5155,10 @@ export class OpensteerSessionRuntime {
         completedAt: Date.now(),
         outcome: "error",
         error,
+        data: {
+          ...(boundaryDiagnostics === undefined ? {} : { settle: boundaryDiagnostics }),
+          ...buildMutationCaptureTraceData(mutationCaptureDiagnostics),
+        },
         context: buildRuntimeTraceContext({
           sessionRef: this.sessionRef,
           pageRef: this.pageRef,
@@ -5228,7 +5271,7 @@ export class OpensteerSessionRuntime {
     TInput extends {
       readonly target: OpensteerTargetInput;
       readonly persistAsDescription?: string;
-      readonly networkTag?: string;
+      readonly captureNetwork?: string;
     },
   >(
     operation: "dom.click" | "dom.hover" | "dom.input" | "dom.scroll",
@@ -5249,34 +5292,41 @@ export class OpensteerSessionRuntime {
   ): Promise<OpensteerActionResult> {
     const pageRef = await this.ensurePageRef();
     const startedAt = Date.now();
+    let mutationCaptureDiagnostics: MutationCaptureFinalizeDiagnostics | undefined;
+    let boundaryDiagnostics: ActionBoundaryDiagnostics | undefined;
 
     try {
-      const { executed, preparedTarget } = await this.runWithOperationTimeout(
+      const { executed, preparedTarget } = await this.runMutationCapturedOperation(
         operation,
+        {
+          ...(input.captureNetwork === undefined
+            ? {}
+            : { captureNetwork: input.captureNetwork }),
+          options,
+        },
         async (timeout) => {
-          const baselineRequestIds = await this.beginMutationCapture(timeout);
+          const preparedTarget = await this.prepareDomTarget(
+            pageRef,
+            operation,
+            input.target,
+            input.persistAsDescription,
+            timeout,
+          );
           try {
-            const preparedTarget = await this.prepareDomTarget(
-              pageRef,
-              operation,
-              input.target,
-              input.persistAsDescription,
-              timeout,
-            );
             const executed = await executor(pageRef, preparedTarget.target, timeout);
-            await this.completeMutationCapture(timeout, baselineRequestIds, input.networkTag);
+            boundaryDiagnostics = takeActionBoundaryDiagnostics(timeout.signal);
             return {
               executed,
               preparedTarget,
             };
           } catch (error) {
-            await this.completeMutationCapture(timeout, baselineRequestIds, input.networkTag).catch(
-              () => undefined,
-            );
+            boundaryDiagnostics ??= takeActionBoundaryDiagnostics(timeout.signal);
             throw error;
           }
         },
-        options,
+        (diagnostics) => {
+          mutationCaptureDiagnostics = diagnostics;
+        },
       );
       const output = toOpensteerActionResult(executed.result, preparedTarget.persistedDescription);
 
@@ -5291,6 +5341,8 @@ export class OpensteerSessionRuntime {
           ...(output.persistedDescription === undefined
             ? {}
             : { persistedDescription: output.persistedDescription }),
+          ...(boundaryDiagnostics === undefined ? {} : { settle: boundaryDiagnostics }),
+          ...buildMutationCaptureTraceData(mutationCaptureDiagnostics),
         },
         context: buildRuntimeTraceContext({
           sessionRef: this.sessionRef,
@@ -5309,6 +5361,10 @@ export class OpensteerSessionRuntime {
         completedAt: Date.now(),
         outcome: "error",
         error,
+        data: {
+          ...(boundaryDiagnostics === undefined ? {} : { settle: boundaryDiagnostics }),
+          ...buildMutationCaptureTraceData(mutationCaptureDiagnostics),
+        },
         context: buildRuntimeTraceContext({
           sessionRef: this.sessionRef,
           pageRef,
@@ -5450,7 +5506,7 @@ export class OpensteerSessionRuntime {
     const filtered = filterNetworkQueryRecords(metadataRecords, {
       ...(input.recordId === undefined ? {} : { recordId: input.recordId }),
       ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
-      ...(input.actionId === undefined ? {} : { actionId: input.actionId }),
+      ...(input.capture === undefined ? {} : { capture: input.capture }),
       ...(input.tag === undefined ? {} : { tag: input.tag }),
       ...(input.url === undefined ? {} : { url: input.url }),
       ...(input.hostname === undefined ? {} : { hostname: input.hostname }),
@@ -5696,38 +5752,90 @@ export class OpensteerSessionRuntime {
     };
   }
 
-  private beginMutationCapture(timeout: TimeoutExecutionContext): Promise<ReadonlySet<string>> {
-    return this.readLiveRequestIds(timeout, {
-      includeCurrentPageOnly: true,
-    });
+  private async runMutationCapturedOperation<T>(
+    operation: OpensteerSemanticOperationName,
+    input: {
+      readonly captureNetwork?: string;
+      readonly options?: RuntimeOperationOptions;
+    },
+    execute: (timeout: TimeoutExecutionContext) => Promise<T>,
+    onFinalized?: (diagnostics: MutationCaptureFinalizeDiagnostics) => void,
+  ): Promise<T> {
+    let plan: MutationCapturePlan | undefined;
+
+    try {
+      const result = await this.runWithOperationTimeout(
+        operation,
+        async (timeout) => {
+          plan = await this.beginMutationCapture(timeout, input.captureNetwork);
+          return execute(timeout);
+        },
+        input.options,
+      );
+      const diagnostics = await this.finalizeMutationCaptureBestEffort(plan);
+      onFinalized?.(diagnostics);
+      return result;
+    } catch (error) {
+      const diagnostics = await this.finalizeMutationCaptureBestEffort(plan);
+      onFinalized?.(diagnostics);
+      throw error;
+    }
   }
 
-  private async completeMutationCapture(
+  private async beginMutationCapture(
     timeout: TimeoutExecutionContext,
-    baselineRequestIds: ReadonlySet<string>,
-    networkTag: string | undefined,
+    capture: string | undefined,
+  ): Promise<MutationCapturePlan | undefined> {
+    if (capture === undefined) {
+      return undefined;
+    }
+
+    return {
+      baselineRequestIds: await this.readLiveRequestIds(timeout, {
+        includeCurrentPageOnly: true,
+      }),
+      capture,
+    };
+  }
+
+  private async finalizeMutationCaptureBestEffort(
+    plan: MutationCapturePlan | undefined,
+  ): Promise<MutationCaptureFinalizeDiagnostics> {
+    if (plan === undefined) {
+      return {};
+    }
+
+    try {
+      await withDetachedTimeoutSignal(MUTATION_CAPTURE_FINALIZE_TIMEOUT_MS, async (signal) => {
+        await this.completeMutationCaptureWithSignal(signal, plan);
+      });
+      return {};
+    } catch (error) {
+      return {
+        finalizeError: normalizeOpensteerError(error),
+      };
+    }
+  }
+
+  private async completeMutationCaptureWithSignal(
+    signal: AbortSignal,
+    plan: MutationCapturePlan,
   ): Promise<void> {
-    const records = await timeout.runStep(() =>
-      this.readLiveNetworkRecords(
-        {
-          includeBodies: false,
-          includeCurrentPageOnly: true,
-        },
-        timeout.signal,
-      ),
+    const records = await this.readLiveNetworkRecords(
+      {
+        includeBodies: false,
+        includeCurrentPageOnly: true,
+      },
+      signal,
     );
-    const delta = records.filter((record) => !baselineRequestIds.has(record.record.requestId));
+    const delta = records.filter((record) => !plan.baselineRequestIds.has(record.record.requestId));
     if (delta.length === 0) {
       return;
     }
-
-    this.networkHistory.assignActionId(delta, `action:${randomUUID()}`);
-    if (networkTag !== undefined) {
-      this.networkHistory.addTag(delta, networkTag);
-    }
-    await this.persistLiveRequestIds(
+    this.networkHistory.assignCapture(delta, plan.capture);
+    await this.persistLiveRequestIdsWithSignal(
       delta.map((record) => record.record.requestId),
-      timeout,
+      signal,
       {
         includeCurrentPageOnly: true,
       },
@@ -6290,27 +6398,36 @@ export class OpensteerSessionRuntime {
       readonly pageRef?: PageRef;
     },
   ): Promise<readonly NetworkQueryRecord[]> {
+    return timeout.runStep(() =>
+      this.persistLiveRequestIdsWithSignal(requestIds, timeout.signal, options),
+    );
+  }
+
+  private async persistLiveRequestIdsWithSignal(
+    requestIds: readonly string[],
+    signal: AbortSignal,
+    options: {
+      readonly includeCurrentPageOnly: boolean;
+      readonly pageRef?: PageRef;
+    },
+  ): Promise<readonly NetworkQueryRecord[]> {
     if (requestIds.length === 0) {
       return [];
     }
     const root = await this.ensureRoot();
-    const browserRecords = await timeout.runStep(() =>
-      this.readBrowserNetworkRecords(
-        {
-          includeBodies: true,
-          includeCurrentPageOnly: options.includeCurrentPageOnly,
-          ...(options.pageRef === undefined ? {} : { pageRef: options.pageRef }),
-          requestIds,
-        },
-        timeout.signal,
-      ),
+    const browserRecords = await this.readBrowserNetworkRecords(
+      {
+        includeBodies: true,
+        includeCurrentPageOnly: options.includeCurrentPageOnly,
+        ...(options.pageRef === undefined ? {} : { pageRef: options.pageRef }),
+        requestIds,
+      },
+      signal,
     );
-    return timeout.runStep(() =>
-      this.networkHistory.persist(browserRecords, root.registry.savedNetwork, {
-        bodyWriteMode: "authoritative",
-        redactSecretHeaders: false,
-      }),
-    );
+    return this.networkHistory.persist(browserRecords, root.registry.savedNetwork, {
+      bodyWriteMode: "authoritative",
+      redactSecretHeaders: false,
+    });
   }
 
   private async syncPersistedNetworkSelection(
@@ -6320,7 +6437,7 @@ export class OpensteerSessionRuntime {
       | "pageRef"
       | "recordId"
       | "requestId"
-      | "actionId"
+      | "capture"
       | "tag"
       | "url"
       | "hostname"
@@ -6375,7 +6492,7 @@ export class OpensteerSessionRuntime {
       ...(input.pageRef === undefined ? {} : { pageRef: input.pageRef }),
       ...(input.recordId === undefined ? {} : { recordId: input.recordId }),
       ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
-      ...(input.actionId === undefined ? {} : { actionId: input.actionId }),
+      ...(input.capture === undefined ? {} : { capture: input.capture }),
       ...(input.tag === undefined ? {} : { tag: input.tag }),
       ...(input.url === undefined ? {} : { url: input.url }),
       ...(input.hostname === undefined ? {} : { hostname: input.hostname }),
@@ -6393,7 +6510,7 @@ export class OpensteerSessionRuntime {
       ...(input.pageRef === undefined ? {} : { pageRef: input.pageRef }),
       ...(input.recordId === undefined ? {} : { recordId: input.recordId }),
       ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
-      ...(input.actionId === undefined ? {} : { actionId: input.actionId }),
+      ...(input.capture === undefined ? {} : { capture: input.capture }),
       ...(input.url === undefined ? {} : { url: input.url }),
       ...(input.hostname === undefined ? {} : { hostname: input.hostname }),
       ...(input.path === undefined ? {} : { path: input.path }),
@@ -8069,8 +8186,7 @@ export class OpensteerSessionRuntime {
       ?.entries.find((entry) => entry.key === key)?.value;
   }
 
-  private async flushPersistedNetworkHistory(): Promise<void> {
-  }
+  private async flushPersistedNetworkHistory(): Promise<void> {}
 
   private toDomTargetRef(target: OpensteerTargetInput): DomTargetRef {
     if (target.kind === "description") {
@@ -8552,7 +8668,7 @@ function buildEngineNetworkRecordFilters(
 }
 
 function resolveLiveQueryRequestIds(
-  input: Pick<OpensteerNetworkQueryInput, "recordId" | "requestId" | "actionId" | "tag">,
+  input: Pick<OpensteerNetworkQueryInput, "recordId" | "requestId" | "capture" | "tag">,
   history: NetworkHistory,
 ): readonly string[] | undefined {
   const requestIdCandidates: ReadonlySet<string>[] = [];
@@ -8569,8 +8685,8 @@ function resolveLiveQueryRequestIds(
     requestIdCandidates.push(new Set([input.requestId]));
   }
 
-  if (input.actionId !== undefined) {
-    requestIdCandidates.push(history.getRequestIdsForActionId(input.actionId));
+  if (input.capture !== undefined) {
+    requestIdCandidates.push(history.getRequestIdsForCapture(input.capture));
   }
 
   if (input.tag !== undefined) {
@@ -8626,7 +8742,7 @@ function filterNetworkQueryRecords(
   input: {
     readonly recordId?: string;
     readonly requestId?: string;
-    readonly actionId?: string;
+    readonly capture?: string;
     readonly tag?: string;
     readonly url?: string;
     readonly hostname?: string;
@@ -8644,7 +8760,7 @@ function filterNetworkQueryRecords(
     if (input.requestId !== undefined && record.record.requestId !== input.requestId) {
       return false;
     }
-    if (input.actionId !== undefined && record.actionId !== input.actionId) {
+    if (input.capture !== undefined && record.capture !== input.capture) {
       return false;
     }
     if (input.tag !== undefined && !(record.tags ?? []).includes(input.tag)) {
@@ -12079,11 +12195,51 @@ function normalizeOpensteerError(error: unknown) {
   return normalizeThrownOpensteerError(error, "Unknown Opensteer runtime failure");
 }
 
+function buildMutationCaptureTraceData(
+  diagnostics: MutationCaptureFinalizeDiagnostics | undefined,
+): Record<string, unknown> {
+  if (diagnostics?.finalizeError === undefined) {
+    return {};
+  }
+
+  return {
+    networkCapture: {
+      finalizeError: diagnostics.finalizeError,
+    },
+  };
+}
+
 function isIgnorableRuntimeBindingError(error: unknown): boolean {
   return (
     isBrowserCoreError(error) &&
     (error.code === "not-found" || error.code === "page-closed" || error.code === "session-closed")
   );
+}
+
+async function withDetachedTimeoutSignal<T>(
+  timeoutMs: number,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  const timeoutError = new OpensteerProtocolError(
+    "timeout",
+    `mutation capture finalization exceeded ${String(timeoutMs)}ms timeout`,
+    {
+      details: {
+        policy: "mutation-capture-finalize",
+        budgetMs: timeoutMs,
+      },
+    },
+  );
+  const timer = setTimeout(() => {
+    controller.abort(timeoutError);
+  }, timeoutMs);
+
+  try {
+    return await operation(controller.signal);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function screenshotMediaType(format: "png" | "jpeg" | "webp"): string {

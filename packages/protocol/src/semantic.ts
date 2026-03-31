@@ -372,7 +372,7 @@ export interface OpensteerPageCloseOutput {
 
 export interface OpensteerPageGotoInput {
   readonly url: string;
-  readonly networkTag?: string;
+  readonly captureNetwork?: string;
 }
 
 export interface OpensteerPageGotoOutput extends OpensteerSessionState {}
@@ -443,13 +443,13 @@ export interface OpensteerInspectStorageInput {
 export interface OpensteerDomClickInput {
   readonly target: OpensteerTargetInput;
   readonly persistAsDescription?: string;
-  readonly networkTag?: string;
+  readonly captureNetwork?: string;
 }
 
 export interface OpensteerDomHoverInput {
   readonly target: OpensteerTargetInput;
   readonly persistAsDescription?: string;
-  readonly networkTag?: string;
+  readonly captureNetwork?: string;
 }
 
 export interface OpensteerDomInputInput {
@@ -457,7 +457,7 @@ export interface OpensteerDomInputInput {
   readonly text: string;
   readonly pressEnter?: boolean;
   readonly persistAsDescription?: string;
-  readonly networkTag?: string;
+  readonly captureNetwork?: string;
 }
 
 export interface OpensteerDomScrollInput {
@@ -465,7 +465,7 @@ export interface OpensteerDomScrollInput {
   readonly direction: "up" | "down" | "left" | "right";
   readonly amount: number;
   readonly persistAsDescription?: string;
-  readonly networkTag?: string;
+  readonly captureNetwork?: string;
 }
 
 export interface OpensteerDomExtractInput {
@@ -565,7 +565,7 @@ export interface OpensteerComputerScreenshotOptions {
 export interface OpensteerComputerExecuteInput {
   readonly action: OpensteerComputerAction;
   readonly screenshot?: OpensteerComputerScreenshotOptions;
-  readonly networkTag?: string;
+  readonly captureNetwork?: string;
 }
 
 export interface OpensteerComputerDisplayScale {
@@ -1050,7 +1050,7 @@ const opensteerPageCloseOutputSchema: JsonSchema = objectSchema(
 const opensteerPageGotoInputSchema: JsonSchema = objectSchema(
   {
     url: stringSchema(),
-    networkTag: stringSchema({ minLength: 1 }),
+    captureNetwork: stringSchema({ minLength: 1 }),
   },
   {
     title: "OpensteerPageGotoInput",
@@ -1214,7 +1214,7 @@ const opensteerDomClickInputSchema: JsonSchema = objectSchema(
   {
     target: opensteerTargetInputSchema,
     persistAsDescription: stringSchema(),
-    networkTag: stringSchema({ minLength: 1 }),
+    captureNetwork: stringSchema({ minLength: 1 }),
   },
   {
     title: "OpensteerDomClickInput",
@@ -1226,7 +1226,7 @@ const opensteerDomHoverInputSchema = objectSchema(
   {
     target: opensteerTargetInputSchema,
     persistAsDescription: stringSchema(),
-    networkTag: stringSchema({ minLength: 1 }),
+    captureNetwork: stringSchema({ minLength: 1 }),
   },
   {
     title: "OpensteerDomHoverInput",
@@ -1240,7 +1240,7 @@ const opensteerDomInputInputSchema: JsonSchema = objectSchema(
     text: stringSchema(),
     pressEnter: { type: "boolean" },
     persistAsDescription: stringSchema(),
-    networkTag: stringSchema({ minLength: 1 }),
+    captureNetwork: stringSchema({ minLength: 1 }),
   },
   {
     title: "OpensteerDomInputInput",
@@ -1254,7 +1254,7 @@ const opensteerDomScrollInputSchema: JsonSchema = objectSchema(
     direction: enumSchema(["up", "down", "left", "right"] as const),
     amount: integerSchema({ minimum: 1 }),
     persistAsDescription: stringSchema(),
-    networkTag: stringSchema({ minLength: 1 }),
+    captureNetwork: stringSchema({ minLength: 1 }),
   },
   {
     title: "OpensteerDomScrollInput",
@@ -1475,7 +1475,7 @@ const opensteerComputerExecuteInputSchema: JsonSchema = objectSchema(
   {
     action: opensteerComputerActionSchema,
     screenshot: opensteerComputerScreenshotOptionsSchema,
-    networkTag: stringSchema({ minLength: 1 }),
+    captureNetwork: stringSchema({ minLength: 1 }),
   },
   {
     title: "OpensteerComputerExecuteInput",
