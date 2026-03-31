@@ -26,11 +26,18 @@ export interface SavedNetworkQueryInput {
   readonly limit?: number;
 }
 
+export type SavedNetworkBodyWriteMode = "authoritative" | "metadata-only";
+
+export interface SavedNetworkSaveOptions {
+  readonly bodyWriteMode: SavedNetworkBodyWriteMode;
+  readonly tag?: string;
+}
+
 export interface SavedNetworkStore {
   readonly databasePath: string;
 
   initialize(): Promise<void>;
-  save(records: readonly NetworkQueryRecord[], tag?: string): Promise<number>;
+  save(records: readonly NetworkQueryRecord[], options: SavedNetworkSaveOptions): Promise<number>;
   tagByFilter(filter: SavedNetworkQueryInput, tag: string): Promise<number>;
   query(input?: SavedNetworkQueryInput): Promise<readonly NetworkQueryRecord[]>;
   getByRecordId(
@@ -92,7 +99,10 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
     await this.ensureDatabaseDirectory();
   }
 
-  async save(records: readonly NetworkQueryRecord[], tag?: string): Promise<number> {
+  async save(
+    records: readonly NetworkQueryRecord[],
+    options: SavedNetworkSaveOptions,
+  ): Promise<number> {
     const database = await this.requireDatabase();
     const readExisting = database.prepare(`
         SELECT record_id
@@ -101,123 +111,7 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
           AND page_ref_key = @page_ref_key
           AND request_id = @request_id
       `);
-    const upsertRecord = database.prepare(`
-      INSERT INTO saved_network_records (
-        record_id,
-        request_id,
-        session_ref,
-        page_ref,
-        page_ref_key,
-        frame_ref,
-        document_ref,
-        action_id,
-        method,
-        method_lc,
-        url,
-        url_lc,
-        hostname,
-        hostname_lc,
-        path,
-        path_lc,
-        status,
-        status_text,
-        resource_type,
-        navigation_request,
-        request_headers_json,
-        response_headers_json,
-        request_body_json,
-        response_body_json,
-        initiator_json,
-        timing_json,
-        transfer_json,
-        source_json,
-        capture_state,
-        request_body_state,
-        response_body_state,
-        request_body_skip_reason,
-        response_body_skip_reason,
-        request_body_error,
-        response_body_error,
-        redirect_from_request_id,
-        redirect_to_request_id,
-        saved_at
-      ) VALUES (
-        @record_id,
-        @request_id,
-        @session_ref,
-        @page_ref,
-        @page_ref_key,
-        @frame_ref,
-        @document_ref,
-        @action_id,
-        @method,
-        @method_lc,
-        @url,
-        @url_lc,
-        @hostname,
-        @hostname_lc,
-        @path,
-        @path_lc,
-        @status,
-        @status_text,
-        @resource_type,
-        @navigation_request,
-        @request_headers_json,
-        @response_headers_json,
-        @request_body_json,
-        @response_body_json,
-        @initiator_json,
-        @timing_json,
-        @transfer_json,
-        @source_json,
-        @capture_state,
-        @request_body_state,
-        @response_body_state,
-        @request_body_skip_reason,
-        @response_body_skip_reason,
-        @request_body_error,
-        @response_body_error,
-        @redirect_from_request_id,
-        @redirect_to_request_id,
-        @saved_at
-      )
-      ON CONFLICT(record_id) DO UPDATE SET
-        page_ref = excluded.page_ref,
-        page_ref_key = excluded.page_ref_key,
-        frame_ref = excluded.frame_ref,
-        document_ref = excluded.document_ref,
-        action_id = excluded.action_id,
-        method = excluded.method,
-        method_lc = excluded.method_lc,
-        url = excluded.url,
-        url_lc = excluded.url_lc,
-        hostname = excluded.hostname,
-        hostname_lc = excluded.hostname_lc,
-        path = excluded.path,
-        path_lc = excluded.path_lc,
-        status = excluded.status,
-        status_text = excluded.status_text,
-        resource_type = excluded.resource_type,
-        navigation_request = excluded.navigation_request,
-        request_headers_json = excluded.request_headers_json,
-        response_headers_json = excluded.response_headers_json,
-        request_body_json = excluded.request_body_json,
-        response_body_json = excluded.response_body_json,
-        initiator_json = excluded.initiator_json,
-        timing_json = excluded.timing_json,
-        transfer_json = excluded.transfer_json,
-        source_json = excluded.source_json,
-        capture_state = excluded.capture_state,
-        request_body_state = excluded.request_body_state,
-        response_body_state = excluded.response_body_state,
-        request_body_skip_reason = excluded.request_body_skip_reason,
-        response_body_skip_reason = excluded.response_body_skip_reason,
-        request_body_error = excluded.request_body_error,
-        response_body_error = excluded.response_body_error,
-        redirect_from_request_id = excluded.redirect_from_request_id,
-        redirect_to_request_id = excluded.redirect_to_request_id,
-        saved_at = MIN(saved_network_records.saved_at, excluded.saved_at)
-    `);
+    const upsertRecord = database.prepare(buildSavedNetworkUpsertSql(options.bodyWriteMode));
     const insertTag = database.prepare(`
       INSERT OR IGNORE INTO saved_network_tags (record_id, tag)
       VALUES (@record_id, @tag)
@@ -282,8 +176,8 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
         });
 
         const tags = new Set<string>(entry.tags ?? []);
-        if (tag !== undefined) {
-          tags.add(tag);
+        if (options.tag !== undefined) {
+          tags.add(options.tag);
         }
         for (const currentTag of tags) {
           const result = insertTag.run({
@@ -622,6 +516,132 @@ function buildSavedNetworkWhere(input: SavedNetworkQueryInput): {
     whereSql: clauses.length === 0 ? "" : `WHERE ${clauses.join(" AND ")}`,
     parameters,
   };
+}
+
+function buildSavedNetworkUpsertSql(bodyWriteMode: SavedNetworkBodyWriteMode): string {
+  const bodyUpdateSql =
+    bodyWriteMode === "authoritative"
+      ? `
+        request_body_json = excluded.request_body_json,
+        response_body_json = excluded.response_body_json,
+        request_body_state = excluded.request_body_state,
+        response_body_state = excluded.response_body_state,
+        request_body_skip_reason = excluded.request_body_skip_reason,
+        response_body_skip_reason = excluded.response_body_skip_reason,
+        request_body_error = excluded.request_body_error,
+        response_body_error = excluded.response_body_error,
+`
+      : "";
+
+  return `
+      INSERT INTO saved_network_records (
+        record_id,
+        request_id,
+        session_ref,
+        page_ref,
+        page_ref_key,
+        frame_ref,
+        document_ref,
+        action_id,
+        method,
+        method_lc,
+        url,
+        url_lc,
+        hostname,
+        hostname_lc,
+        path,
+        path_lc,
+        status,
+        status_text,
+        resource_type,
+        navigation_request,
+        request_headers_json,
+        response_headers_json,
+        request_body_json,
+        response_body_json,
+        initiator_json,
+        timing_json,
+        transfer_json,
+        source_json,
+        capture_state,
+        request_body_state,
+        response_body_state,
+        request_body_skip_reason,
+        response_body_skip_reason,
+        request_body_error,
+        response_body_error,
+        redirect_from_request_id,
+        redirect_to_request_id,
+        saved_at
+      ) VALUES (
+        @record_id,
+        @request_id,
+        @session_ref,
+        @page_ref,
+        @page_ref_key,
+        @frame_ref,
+        @document_ref,
+        @action_id,
+        @method,
+        @method_lc,
+        @url,
+        @url_lc,
+        @hostname,
+        @hostname_lc,
+        @path,
+        @path_lc,
+        @status,
+        @status_text,
+        @resource_type,
+        @navigation_request,
+        @request_headers_json,
+        @response_headers_json,
+        @request_body_json,
+        @response_body_json,
+        @initiator_json,
+        @timing_json,
+        @transfer_json,
+        @source_json,
+        @capture_state,
+        @request_body_state,
+        @response_body_state,
+        @request_body_skip_reason,
+        @response_body_skip_reason,
+        @request_body_error,
+        @response_body_error,
+        @redirect_from_request_id,
+        @redirect_to_request_id,
+        @saved_at
+      )
+      ON CONFLICT(record_id) DO UPDATE SET
+        page_ref = excluded.page_ref,
+        page_ref_key = excluded.page_ref_key,
+        frame_ref = excluded.frame_ref,
+        document_ref = excluded.document_ref,
+        action_id = excluded.action_id,
+        method = excluded.method,
+        method_lc = excluded.method_lc,
+        url = excluded.url,
+        url_lc = excluded.url_lc,
+        hostname = excluded.hostname,
+        hostname_lc = excluded.hostname_lc,
+        path = excluded.path,
+        path_lc = excluded.path_lc,
+        status = excluded.status,
+        status_text = excluded.status_text,
+        resource_type = excluded.resource_type,
+        navigation_request = excluded.navigation_request,
+        request_headers_json = excluded.request_headers_json,
+        response_headers_json = excluded.response_headers_json,
+${bodyUpdateSql}        initiator_json = excluded.initiator_json,
+        timing_json = excluded.timing_json,
+        transfer_json = excluded.transfer_json,
+        source_json = excluded.source_json,
+        capture_state = excluded.capture_state,
+        redirect_from_request_id = excluded.redirect_from_request_id,
+        redirect_to_request_id = excluded.redirect_to_request_id,
+        saved_at = MIN(saved_network_records.saved_at, excluded.saved_at)
+    `;
 }
 
 function inflateSavedNetworkRow(row: SavedNetworkRow, includeBodies: boolean): NetworkQueryRecord {

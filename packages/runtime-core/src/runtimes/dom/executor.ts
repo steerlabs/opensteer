@@ -1,4 +1,5 @@
 import {
+  type ActionBoundarySnapshot,
   createNodeLocator,
   createPoint,
   quadBounds,
@@ -14,6 +15,7 @@ import {
 } from "@opensteer/browser-core";
 import { OpensteerProtocolError } from "@opensteer/protocol";
 
+import { captureActionBoundarySnapshot } from "../../action-boundary.js";
 import {
   runWithPolicyTimeout,
   settleWithPolicy,
@@ -200,6 +202,7 @@ export class DomActionExecutor {
             }),
           );
           let finalResolved = resolved;
+          let finalSnapshot: ActionBoundarySnapshot | undefined;
           if (input.pressEnter) {
             await this.settle(resolved.pageRef, "dom.input", timeout);
 
@@ -217,6 +220,9 @@ export class DomActionExecutor {
               bridge.inspectActionTarget(enterResolved.locator),
             );
             this.assertKeyboardActionable("dom.input", enterResolved, inspectionBeforeEnter);
+            finalSnapshot = await timeout.runStep(() =>
+              captureActionBoundarySnapshot(this.options.engine, enterResolved.pageRef),
+            );
 
             await timeout.runStep(() =>
               bridge.pressKey(enterResolved.locator, {
@@ -226,7 +232,7 @@ export class DomActionExecutor {
             finalResolved = enterResolved;
           }
 
-          await this.settle(finalResolved.pageRef, "dom.input", timeout);
+          await this.settle(finalResolved.pageRef, "dom.input", timeout, finalSnapshot);
           return finalResolved;
         } catch (error) {
           lastError = error;
@@ -325,8 +331,16 @@ export class DomActionExecutor {
             }
           }
 
+          const actionBoundarySnapshot = await timeout.runStep(() =>
+            captureActionBoundarySnapshot(this.options.engine, pointerTarget.resolved.pageRef),
+          );
           const outcome = await dispatch(pointerTarget, point, timeout);
-          await this.settle(pointerTarget.resolved.pageRef, input.operation, timeout);
+          await this.settle(
+            pointerTarget.resolved.pageRef,
+            input.operation,
+            timeout,
+            actionBoundarySnapshot,
+          );
           return outcome;
         } catch (error) {
           lastError = error;
@@ -356,17 +370,19 @@ export class DomActionExecutor {
     pageRef: PageRef,
     operation: DomActionPolicyOperation,
     timeout: TimeoutExecutionContext,
+    snapshot?: ActionBoundarySnapshot,
   ): Promise<void> {
     const bridge = this.requireBridge();
     await timeout.runStep(() =>
       bridge.finalizeDomAction(pageRef, {
         operation,
+        ...(snapshot === undefined ? {} : { snapshot }),
         signal: timeout.signal,
         remainingMs: () => timeout.remainingMs(),
-        policySettle: (targetPageRef) =>
+        policySettle: (targetPageRef, trigger) =>
           settleWithPolicy(this.options.policy.settle, {
             operation,
-            trigger: "dom-action",
+            trigger,
             engine: this.options.engine,
             pageRef: targetPageRef,
             signal: timeout.signal,

@@ -20,6 +20,7 @@ import type {
 import type { ElementHandle, Frame } from "playwright";
 
 import { rethrowNodeLookupError } from "./errors.js";
+import type { PlaywrightActionBoundaryOptions } from "./action-settle.js";
 import type { DocumentState, PageController } from "./types.js";
 import { getViewportMetricsFromCdp } from "./viewport-screenshot.js";
 
@@ -27,6 +28,10 @@ interface PlaywrightDomActionBridgeContext {
   resolveController(pageRef: PageRef): PageController;
   flushPendingPageTasks(sessionRef: SessionRef): Promise<void>;
   flushDomUpdateTask(controller: PageController): Promise<void>;
+  settleActionBoundary(
+    controller: PageController,
+    options: PlaywrightActionBoundaryOptions,
+  ): Promise<void>;
   locateBackendNode(document: DocumentState, backendNodeId: number): NodeLocator;
   requireFrame(frameRef: FrameRef): Frame;
   requireLiveNode(locator: NodeLocator): {
@@ -828,10 +833,12 @@ export function createPlaywrightDomActionBridge(
 
     async finalizeDomAction(pageRef, options) {
       const controller = context.resolveController(pageRef);
-      await context.flushPendingPageTasks(controller.sessionRef);
-      await options.policySettle(pageRef);
-      await context.flushPendingPageTasks(controller.sessionRef);
-      await context.flushDomUpdateTask(controller);
+      await context.settleActionBoundary(controller, {
+        signal: options.signal,
+        ...(options.snapshot === undefined ? {} : { snapshot: options.snapshot }),
+        remainingMs: options.remainingMs,
+        policySettle: options.policySettle,
+      });
     },
   };
 }

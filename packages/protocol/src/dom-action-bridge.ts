@@ -1,4 +1,6 @@
 import type {
+  ActionBoundarySettleTrigger,
+  ActionBoundarySnapshot,
   BrowserCoreEngine,
   KeyModifier,
   NodeLocator,
@@ -35,9 +37,10 @@ export interface DomActionKeyPressInput {
 
 export interface DomActionSettleOptions {
   readonly operation: "dom.click" | "dom.hover" | "dom.input" | "dom.scroll";
+  readonly snapshot?: ActionBoundarySnapshot;
   readonly signal: AbortSignal;
   remainingMs(): number | undefined;
-  policySettle(pageRef: PageRef): Promise<void>;
+  policySettle(pageRef: PageRef, trigger: ActionBoundarySettleTrigger): Promise<void>;
 }
 
 export type DomPointerHitRelation =

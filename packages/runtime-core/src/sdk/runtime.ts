@@ -2457,7 +2457,10 @@ export class OpensteerSessionRuntime {
     const observationId = `observation:${randomUUID()}`;
     const networkTag = `reverse-case:${caseRecord.id}:${observationId}`;
     if (observationNetwork.length > 0) {
-      await root.registry.savedNetwork.save(observationNetwork, networkTag);
+      await root.registry.savedNetwork.save(observationNetwork, {
+        tag: networkTag,
+        bodyWriteMode: input.network?.includeBodies === false ? "metadata-only" : "authoritative",
+      });
     }
 
     const scriptArtifactIds =
@@ -3756,7 +3759,10 @@ export class OpensteerSessionRuntime {
           )
         ).filter((record) => !baselineRequestIds.has(record.record.requestId));
         if (deltaRecords.length > 0) {
-          await root.registry.savedNetwork.save(deltaRecords, `interaction:${pageRef}`);
+          await root.registry.savedNetwork.save(deltaRecords, {
+            tag: `interaction:${pageRef}`,
+            bodyWriteMode: "authoritative",
+          });
         }
 
         const trace = await root.registry.interactionTraces.write({
@@ -6301,6 +6307,7 @@ export class OpensteerSessionRuntime {
     );
     return timeout.runStep(() =>
       this.networkHistory.persist(browserRecords, root.registry.savedNetwork, {
+        bodyWriteMode: "authoritative",
         redactSecretHeaders: false,
       }),
     );
@@ -6357,6 +6364,7 @@ export class OpensteerSessionRuntime {
     const root = await this.ensureRoot();
     return timeout.runStep(() =>
       this.networkHistory.persist(browserRecords, root.registry.savedNetwork, {
+        bodyWriteMode: options.includeBodies ? "authoritative" : "metadata-only",
         redactSecretHeaders: false,
       }),
     );
@@ -6943,7 +6951,10 @@ export class OpensteerSessionRuntime {
       },
     };
 
-    await root.registry.savedNetwork.save([record], tag);
+    await root.registry.savedNetwork.save([record], {
+      bodyWriteMode: "authoritative",
+      ...(tag === undefined ? {} : { tag }),
+    });
     return recordId;
   }
 
