@@ -11,6 +11,7 @@ const SAVED_NETWORK_SQLITE_SUPPORT_ERROR =
   "Saved-network operations require Node's built-in SQLite support. Use a Node runtime with node:sqlite enabled.";
 
 export interface SavedNetworkQueryInput {
+  readonly pageRef?: NetworkQueryRecord["record"]["pageRef"];
   readonly recordId?: string;
   readonly requestId?: string;
   readonly actionId?: string;
@@ -30,6 +31,7 @@ export interface SavedNetworkStore {
 
   initialize(): Promise<void>;
   save(records: readonly NetworkQueryRecord[], tag?: string): Promise<number>;
+  tagByFilter(filter: SavedNetworkQueryInput, tag: string): Promise<number>;
   query(input?: SavedNetworkQueryInput): Promise<readonly NetworkQueryRecord[]>;
   getByRecordId(
     recordId: string,
@@ -214,7 +216,7 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
         response_body_error = excluded.response_body_error,
         redirect_from_request_id = excluded.redirect_from_request_id,
         redirect_to_request_id = excluded.redirect_to_request_id,
-        saved_at = excluded.saved_at
+        saved_at = MIN(saved_network_records.saved_at, excluded.saved_at)
     `);
     const insertTag = database.prepare(`
       INSERT OR IGNORE INTO saved_network_tags (record_id, tag)
@@ -279,15 +281,54 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
           saved_at: entry.savedAt ?? Date.now(),
         });
 
+        const tags = new Set<string>(entry.tags ?? []);
         if (tag !== undefined) {
+          tags.add(tag);
+        }
+        for (const currentTag of tags) {
           const result = insertTag.run({
             record_id: recordId,
-            tag,
+            tag: currentTag,
           }) as { readonly changes?: number };
           savedCount += result.changes ?? 0;
         }
       }
       return savedCount;
+    });
+  }
+
+  async tagByFilter(filter: SavedNetworkQueryInput, tag: string): Promise<number> {
+    const database = await this.requireDatabase();
+    const { whereSql, parameters } = buildSavedNetworkWhere(filter);
+    const selectRecords = database.prepare(
+      `
+        SELECT r.record_id
+        FROM saved_network_records r
+        ${whereSql}
+      `,
+    );
+    const insertTag = database.prepare(`
+      INSERT OR IGNORE INTO saved_network_tags (record_id, tag)
+      VALUES (@record_id, @tag)
+    `);
+
+    return withSqliteTransaction(database, () => {
+      let taggedCount = 0;
+      const rows = selectRecords.all(
+        ...(parameters as readonly (string | number | null | Uint8Array)[]),
+      );
+      for (const row of rows) {
+        const recordId = row.record_id;
+        if (typeof recordId !== "string") {
+          continue;
+        }
+        const result = insertTag.run({
+          record_id: recordId,
+          tag,
+        }) as { readonly changes?: number };
+        taggedCount += result.changes ?? 0;
+      }
+      return taggedCount;
     });
   }
 
@@ -525,6 +566,10 @@ function buildSavedNetworkWhere(input: SavedNetworkQueryInput): {
   const clauses: string[] = [];
   const parameters: unknown[] = [];
 
+  if (input.pageRef !== undefined) {
+    clauses.push("r.page_ref_key = ?");
+    parameters.push(input.pageRef);
+  }
   if (input.recordId !== undefined) {
     clauses.push("r.record_id = ?");
     parameters.push(input.recordId);
@@ -659,7 +704,6 @@ function inflateSavedNetworkRow(row: SavedNetworkRow, includeBodies: boolean): N
 
   return {
     recordId: row.record_id,
-    source: "saved",
     ...(row.action_id === null ? {} : { actionId: row.action_id }),
     ...(row.tags === null || row.tags.length === 0
       ? {}

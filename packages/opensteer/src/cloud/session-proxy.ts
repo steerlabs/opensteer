@@ -40,8 +40,8 @@ import type {
   OpensteerNetworkMinimizeOutput,
   OpensteerNetworkQueryInput,
   OpensteerNetworkQueryOutput,
-  OpensteerNetworkSaveInput,
-  OpensteerNetworkSaveOutput,
+  OpensteerNetworkTagInput,
+  OpensteerNetworkTagOutput,
   OpensteerInteractionCaptureInput,
   OpensteerInteractionCaptureOutput,
   OpensteerInteractionDiffInput,
@@ -319,9 +319,9 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     return this.requireClient().invoke("network.query", input);
   }
 
-  async saveNetwork(input: OpensteerNetworkSaveInput): Promise<OpensteerNetworkSaveOutput> {
+  async tagNetwork(input: OpensteerNetworkTagInput): Promise<OpensteerNetworkTagOutput> {
     await this.ensureSession();
-    return this.requireClient().invoke("network.save", input);
+    return this.requireClient().invoke("network.tag", input);
   }
 
   async minimizeNetwork(

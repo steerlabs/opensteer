@@ -38,7 +38,7 @@ const OPERATION_ALIASES = new Map<string, OpensteerSemanticOperationName>([
   ["scroll", "dom.scroll"],
   ["extract", "dom.extract"],
   ["network query", "network.query"],
-  ["network save", "network.save"],
+  ["network tag", "network.tag"],
   ["network clear", "network.clear"],
   ["network minimize", "network.minimize"],
   ["network diff", "network.diff"],

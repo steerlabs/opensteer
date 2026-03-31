@@ -62,9 +62,9 @@ export async function dispatchSemanticOperation(
         input as Parameters<OpensteerSemanticRuntime["queryNetwork"]>[0],
         options,
       );
-    case "network.save":
-      return runtime.saveNetwork(
-        input as Parameters<OpensteerSemanticRuntime["saveNetwork"]>[0],
+    case "network.tag":
+      return runtime.tagNetwork(
+        input as Parameters<OpensteerSemanticRuntime["tagNetwork"]>[0],
         options,
       );
     case "network.clear":
