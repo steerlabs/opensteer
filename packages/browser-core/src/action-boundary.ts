@@ -6,6 +6,7 @@ import {
 } from "./post-load-tracker.js";
 
 export const CROSS_DOCUMENT_INTERACTION_TIMEOUT_MS = 30_000;
+export const CROSS_DOCUMENT_DETECTION_WINDOW_MS = 500;
 
 export interface ActionBoundarySnapshot {
   readonly pageRef: PageRef;
@@ -47,6 +48,10 @@ export async function waitForActionBoundary(
   }
 
   const deadline = Date.now() + input.timeoutMs;
+  const crossDocumentDetectionDeadline =
+    input.snapshot === undefined
+      ? undefined
+      : Math.min(deadline, Date.now() + CROSS_DOCUMENT_DETECTION_WINDOW_MS);
   const pollIntervalMs = input.pollIntervalMs ?? DEFAULT_ACTION_BOUNDARY_POLL_INTERVAL_MS;
   let trigger: ActionBoundarySettleTrigger = "dom-action";
   let crossDocument = false;
@@ -90,7 +95,19 @@ export async function waitForActionBoundary(
       }
     }
 
-    if (postLoadTrackerIsSettled(await input.readTrackerState())) {
+    if (
+      !crossDocument &&
+      crossDocumentDetectionDeadline !== undefined &&
+      Date.now() >= crossDocumentDetectionDeadline
+    ) {
+      return {
+        trigger,
+        crossDocument,
+        bootstrapSettled: true,
+      };
+    }
+
+    if (crossDocument && postLoadTrackerIsSettled(await input.readTrackerState())) {
       return {
         trigger,
         crossDocument,

@@ -22,6 +22,7 @@ import {
   recordActionBoundaryDiagnostics,
 } from "../../action-boundary.js";
 import {
+  delayWithSignal,
   runWithPolicyTimeout,
   settleWithPolicy,
   type DomActionPolicyOperation,
@@ -209,7 +210,7 @@ export class DomActionExecutor {
           let finalResolved = resolved;
           let finalSnapshot: ActionBoundarySnapshot | undefined;
           if (input.pressEnter) {
-            await this.settle(resolved.pageRef, "dom.input", timeout);
+            await this.waitForPressEnterReaction(timeout);
 
             const enterSession = this.options.createResolutionSession();
             const enterResolved = await timeout.runStep(() =>
@@ -418,6 +419,17 @@ export class DomActionExecutor {
       boundary,
       visualSettled,
     });
+  }
+
+  private async waitForPressEnterReaction(timeout: TimeoutExecutionContext): Promise<void> {
+    const delayMs = this.options.policy.settle.resolveDelayMs({
+      operation: "dom.input",
+      trigger: "dom-action",
+    });
+    if (delayMs <= 0) {
+      return;
+    }
+    await delayWithSignal(delayMs, timeout.signal);
   }
 
   private requireBridge(): DomActionBridge {

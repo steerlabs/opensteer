@@ -269,6 +269,54 @@ describe.sequential("cross-document action boundary", () => {
     }
   }, 60_000);
 
+  test("pressEnter submits even when typing keeps bootstrap trackers noisy", async () => {
+    const opensteer = new Opensteer({
+      name: "navigation-network-noisy-enter",
+      browser: "temporary",
+      launch: {
+        headless: true,
+      },
+      policy: createPolicyWithOverrides({
+        timeoutOverrides: {
+          "dom.input": 5_000,
+        },
+      }),
+    });
+
+    try {
+      await opensteer.open(`${baseUrl}/sdk/noisy-enter`);
+      await opensteer.input({
+        selector: "#search-input",
+        text: "airpods",
+        pressEnter: true,
+        captureNetwork: "noisy-enter",
+      });
+
+      await expect(
+        opensteer.extract({
+          description: "noisy hydration status",
+          schema: {
+            status: {
+              selector: "#hydration-status",
+            },
+          },
+        }),
+      ).resolves.toEqual({
+        status: "hydrated",
+      });
+
+      const { records } = await opensteer.queryNetwork({
+        capture: "noisy-enter",
+        limit: 20,
+      });
+      expect(
+        records.find((entry) => entry.record.url.includes("/sdk/api/hydration"))?.record.status,
+      ).toBe(200);
+    } finally {
+      await opensteer.close().catch(() => undefined);
+    }
+  }, 60_000);
+
   test("does not persist action-triggered network without captureNetwork", async () => {
     const rootPath = await mkdtemp(path.join(os.tmpdir(), "opensteer-no-capture-"));
     const opensteer = new Opensteer({
@@ -515,6 +563,12 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
+  if (route === "noisy-enter") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(noisyEnterDocument(scope));
+    return;
+  }
+
   if (route === "hydration-click") {
     response.setHeader("content-type", "text/html; charset=utf-8");
     response.end(hydrationClickDocument(scope));
@@ -595,6 +649,42 @@ function hydrationEnterDocument(scope: string): string {
       </form>
     `,
     `${scope} enter`,
+  );
+}
+
+function noisyEnterDocument(scope: string): string {
+  return html(
+    `
+      <form id="search-form" action="/${scope}/hydration-results?mode=noisy-enter" method="GET">
+        <input id="search-input" name="q" type="text" value="" />
+        <button id="search-submit" type="submit">Search</button>
+      </form>
+      <script>
+        const input = document.getElementById("search-input");
+        let keepScheduling = false;
+
+        input.addEventListener("input", () => {
+          if (keepScheduling) {
+            return;
+          }
+          keepScheduling = true;
+
+          const schedule = () => {
+            if (!keepScheduling) {
+              return;
+            }
+            setTimeout(schedule, 0);
+          };
+
+          schedule();
+        });
+
+        document.getElementById("search-form").addEventListener("submit", () => {
+          keepScheduling = false;
+        });
+      </script>
+    `,
+    `${scope} noisy enter`,
   );
 }
 

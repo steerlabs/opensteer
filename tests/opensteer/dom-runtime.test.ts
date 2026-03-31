@@ -1869,7 +1869,7 @@ describe("Phase 5 DOM runtime integration", () => {
   );
 
   test(
-    "settles typing before pressEnter submits reactive form state",
+    "lets reactive input state commit before pressEnter submits",
     { timeout: 60_000 },
     async () => {
       const engine = await createPlaywrightBrowserCoreEngine({
@@ -1911,6 +1911,91 @@ describe("Phase 5 DOM runtime integration", () => {
                 </script>
               `,
               "DOM input pressEnter settle",
+            ),
+          ),
+        });
+
+        await wait(300);
+
+        await runtime.input({
+          pageRef: created.data.pageRef,
+          target: { kind: "selector", selector: "#search-input" },
+          text: "MSCU5715955",
+          pressEnter: true,
+        });
+
+        const snapshot = await engine.getDomSnapshot({
+          frameRef: created.frameRef!,
+        });
+        const resultNode = requireValue(findNodeById(snapshot.nodes, "result"), "result missing");
+        expect(await engine.readText(createLocator(snapshot, resultNode))).toBe(
+          "submitted:MSCU5715955",
+        );
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "pressEnter does not wait for same-document bootstrap quiet before submitting",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+
+      try {
+        const base = defaultPolicy();
+        const runtime = createDomRuntime({
+          engine,
+          policy: {
+            ...base,
+            timeout: {
+              resolveTimeoutMs(input) {
+                if (input.operation === "dom.input") {
+                  return 2_000;
+                }
+                return base.timeout.resolveTimeoutMs(input);
+              },
+            },
+          },
+        });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: dataUrl(
+            html(
+              `
+                <form id="search-form" style="position:absolute;left:20px;top:20px">
+                  <input id="search-input" type="text" style="width:220px;height:36px" />
+                </form>
+                <div id="result" style="position:absolute;left:20px;top:80px">idle</div>
+                <script>
+                  const input = document.getElementById("search-input");
+                  const form = document.getElementById("search-form");
+                  const result = document.getElementById("result");
+                  let keepScheduling = false;
+
+                  input.addEventListener("input", () => {
+                    keepScheduling = true;
+                    const schedule = () => {
+                      if (!keepScheduling) {
+                        return;
+                      }
+                      setTimeout(schedule, 0);
+                    };
+                    schedule();
+                  });
+
+                  form.addEventListener("submit", (event) => {
+                    event.preventDefault();
+                    keepScheduling = false;
+                    result.textContent = "submitted:" + input.value;
+                  });
+                </script>
+              `,
+              "DOM input pressEnter noisy bootstrap",
             ),
           ),
         });
