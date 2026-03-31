@@ -6,11 +6,11 @@ import type { OpensteerProtocolVersion } from "./version.js";
 export const opensteerSessionGrantKinds = ["automation", "view", "cdp"] as const;
 
 export type OpensteerSessionGrantKind = (typeof opensteerSessionGrantKinds)[number];
-export type OpensteerProviderKind = "local" | "cloud";
+export type OpensteerProviderMode = "local" | "cloud";
 export type OpensteerSessionOwnership = "owned" | "attached" | "managed";
 
 export interface OpensteerProviderDescriptor {
-  readonly kind: OpensteerProviderKind;
+  readonly mode: OpensteerProviderMode;
   readonly ownership: OpensteerSessionOwnership;
   readonly engine?: string;
   readonly baseUrl?: string;

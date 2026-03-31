@@ -174,7 +174,7 @@ function buildSharedRuntimeOptions(input: {
     cleanupRootOnClose: input.cleanupRootOnClose,
     sessionInfo: {
       provider: {
-        kind: "local",
+        mode: "local",
         ownership,
         engine: input.engineName,
       },

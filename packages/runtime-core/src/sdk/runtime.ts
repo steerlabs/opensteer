@@ -530,7 +530,7 @@ export class OpensteerSessionRuntime {
     const base = this.sessionInfoBase;
     return {
       provider: base.provider ?? {
-        kind: "local",
+        mode: "local",
         ownership: "owned",
         engine: "playwright",
       },

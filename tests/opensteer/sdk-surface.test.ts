@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 const state = vi.hoisted(() => {
   const runtimeConfig = {
     provider: {
-      kind: "local" as "local" | "cloud",
+      mode: "local" as "local" | "cloud",
       source: "default" as const,
     },
   };
@@ -77,7 +77,7 @@ describe("Opensteer v2 SDK surface", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     state.runtimeConfig.provider = {
-      kind: "local",
+      mode: "local",
       source: "default",
     };
   });
@@ -181,14 +181,14 @@ describe("Opensteer v2 SDK surface", () => {
 
   test("cloud mode skips browser-manager ownership and blocks browser admin helpers", async () => {
     state.runtimeConfig.provider = {
-      kind: "cloud",
+      mode: "cloud",
       source: "explicit",
     };
 
     const opensteer = new Opensteer({
       workspace: "github-sync",
       provider: {
-        kind: "cloud",
+        mode: "cloud",
       },
       rootDir: "/tmp/opensteer",
     });
@@ -198,7 +198,7 @@ describe("Opensteer v2 SDK surface", () => {
     expect(state.browserManagerCtor).not.toHaveBeenCalled();
     expect(state.createRuntime).toHaveBeenCalledWith({
       provider: {
-        kind: "cloud",
+        mode: "cloud",
       },
       runtimeOptions: {
         workspace: "github-sync",

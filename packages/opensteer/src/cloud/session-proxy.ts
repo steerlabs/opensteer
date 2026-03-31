@@ -220,7 +220,7 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
 
     return {
       provider: {
-        kind: "cloud",
+        mode: "cloud",
         ownership: "managed",
         engine: "playwright",
         baseUrl: this.cloud.getConfig().baseUrl,
