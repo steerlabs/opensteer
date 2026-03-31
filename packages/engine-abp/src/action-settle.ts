@@ -113,29 +113,35 @@ export function createAbpActionSettler(context: AbpActionSettlerContext) {
     }
 
     try {
-      await installTracker(controller);
-
-      if (policySettle && snapshot === undefined) {
-        if (signal?.aborted) {
-          throw abortError(signal);
+      if (snapshot === undefined) {
+        if (policySettle) {
+          if (signal?.aborted) {
+            throw abortError(signal);
+          }
+          await policySettle(controller.pageRef, "dom-action");
         }
-        await policySettle(controller.pageRef, "dom-action");
-      }
+        boundary = {
+          trigger: "dom-action",
+          crossDocument: false,
+          bootstrapSettled: true,
+        };
+      } else {
+        await installTracker(controller);
+        boundary = await waitForActionBoundary({
+          timeoutMs,
+          ...(signal === undefined ? {} : { signal }),
+          snapshot,
+          getCurrentMainFrameDocumentRef: () => context.getMainFrameDocumentRef(controller),
+          waitForNavigationContentLoaded: (remainingMs) =>
+            context.waitForNavigationContentLoaded(controller, remainingMs),
+          readTrackerState: () => readTrackerState(controller),
+          throwBackgroundError: () => context.throwBackgroundError(controller),
+          isPageClosed: () => controller.lifecycleState === "closed",
+        });
 
-      boundary = await waitForActionBoundary({
-        timeoutMs,
-        ...(signal === undefined ? {} : { signal }),
-        ...(snapshot === undefined ? {} : { snapshot }),
-        getCurrentMainFrameDocumentRef: () => context.getMainFrameDocumentRef(controller),
-        waitForNavigationContentLoaded: (remainingMs) =>
-          context.waitForNavigationContentLoaded(controller, remainingMs),
-        readTrackerState: () => readTrackerState(controller),
-        throwBackgroundError: () => context.throwBackgroundError(controller),
-        isPageClosed: () => controller.lifecycleState === "closed",
-      });
-
-      if (policySettle && snapshot !== undefined) {
-        await policySettle(controller.pageRef, boundary.trigger);
+        if (policySettle) {
+          await policySettle(controller.pageRef, boundary.trigger);
+        }
       }
     } finally {
       if (wasPaused && controller.lifecycleState !== "closed") {
