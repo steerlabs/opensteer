@@ -14,6 +14,7 @@ import {
   type DocumentEpoch,
   type DocumentRef,
   type FrameRef,
+  type NetworkRecord as BrowserNetworkRecord,
   type PageRef,
   type SessionRef,
 } from "@opensteer/browser-core";
@@ -66,8 +67,8 @@ import {
   type OpensteerNetworkMinimizeOutput,
   type OpensteerNetworkQueryInput,
   type OpensteerNetworkQueryOutput,
-  type OpensteerNetworkSaveInput,
-  type OpensteerNetworkSaveOutput,
+  type OpensteerNetworkTagInput,
+  type OpensteerNetworkTagOutput,
   type OpensteerPageActivateInput,
   type OpensteerPageActivateOutput,
   type OpensteerPageCloseInput,
@@ -228,7 +229,8 @@ import {
   stripManagedRequestHeaders,
 } from "../reverse/materialization.js";
 import { diffNetworkRecords } from "../network/diff.js";
-import { NetworkJournal } from "../network/journal.js";
+import { NetworkHistory } from "../network/history.js";
+import type { SavedNetworkQueryInput } from "../network/saved-store.js";
 import {
   materializePreparedMinimizationRequest,
   minimizePreparedRequest,
@@ -499,12 +501,11 @@ export class OpensteerSessionRuntime {
   private engine: DisposableBrowserCoreEngine | undefined;
   private dom: DomRuntime | undefined;
   private computer: ComputerUseRuntime | undefined;
-  private readonly networkJournal = new NetworkJournal();
+  private readonly networkHistory = new NetworkHistory();
   private extractionDescriptors: OpensteerExtractionDescriptorStore | undefined;
   private sessionRef: SessionRef | undefined;
   private pageRef: PageRef | undefined;
   private runId: string | undefined;
-  private readonly backgroundNetworkPersistence = new Set<Promise<void>>();
   private readonly cookieJars = new Map<string, CookieJarEntry[]>();
   private readonly recipeCache = new Map<string, OpensteerRunRecipeOutput>();
   private ownsEngine = false;
@@ -996,20 +997,29 @@ export class OpensteerSessionRuntime {
       const output = await this.runWithOperationTimeout(
         "page.evaluate",
         async (timeout) => {
-          const remainingMs = timeout.remainingMs();
-          const evaluated = await timeout.runStep(() =>
-            this.requireEngine().evaluatePage({
-              pageRef,
-              script: input.script,
-              ...(input.args === undefined ? {} : { args: input.args }),
-              ...(remainingMs === undefined ? {} : { timeoutMs: remainingMs }),
-            }),
-          );
+          const baselineRequestIds = await this.beginMutationCapture(timeout);
+          try {
+            const remainingMs = timeout.remainingMs();
+            const evaluated = await timeout.runStep(() =>
+              this.requireEngine().evaluatePage({
+                pageRef,
+                script: input.script,
+                ...(input.args === undefined ? {} : { args: input.args }),
+                ...(remainingMs === undefined ? {} : { timeoutMs: remainingMs }),
+              }),
+            );
+            await this.completeMutationCapture(timeout, baselineRequestIds, undefined);
 
-          return {
-            pageRef,
-            value: toJsonValueOrNull(evaluated.data),
-          } satisfies OpensteerPageEvaluateOutput;
+            return {
+              pageRef,
+              value: toJsonValueOrNull(evaluated.data),
+            } satisfies OpensteerPageEvaluateOutput;
+          } catch (error) {
+            await this.completeMutationCapture(timeout, baselineRequestIds, undefined).catch(
+              () => undefined,
+            );
+            throw error;
+          }
         },
         options,
       );
@@ -1427,41 +1437,19 @@ export class OpensteerSessionRuntime {
   ): Promise<OpensteerNetworkQueryOutput> {
     assertValidSemanticOperationInput("network.query", input);
 
-    if (input.source !== "saved") {
-      await this.ensurePageRef();
-    }
     const root = await this.ensureRoot();
     const startedAt = Date.now();
     try {
       const output = await this.runWithOperationTimeout(
         "network.query",
         async (timeout) => {
-          if (input.source === "saved") {
-            await timeout.runStep(() => this.flushBackgroundNetworkPersistence());
-            return {
-              records: await timeout.runStep(() =>
-                root.registry.savedNetwork.query({
-                  ...(input.recordId === undefined ? {} : { recordId: input.recordId }),
-                  ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
-                  ...(input.actionId === undefined ? {} : { actionId: input.actionId }),
-                  ...(input.tag === undefined ? {} : { tag: input.tag }),
-                  ...(input.url === undefined ? {} : { url: input.url }),
-                  ...(input.hostname === undefined ? {} : { hostname: input.hostname }),
-                  ...(input.path === undefined ? {} : { path: input.path }),
-                  ...(input.method === undefined ? {} : { method: input.method }),
-                  ...(input.status === undefined ? {} : { status: input.status }),
-                  ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
-                  ...(input.includeBodies === undefined
-                    ? {}
-                    : { includeBodies: input.includeBodies }),
-                  ...(input.limit === undefined ? {} : { limit: input.limit }),
-                }),
-              ),
-            } satisfies OpensteerNetworkQueryOutput;
-          }
-
+          await this.syncPersistedNetworkSelection(timeout, input, {
+            includeBodies: input.includeBodies ?? false,
+          });
           return {
-            records: await this.queryLiveNetwork(input, timeout),
+            records: await timeout.runStep(() =>
+              root.registry.savedNetwork.query(this.toSavedNetworkQueryInput(input)),
+            ),
           } satisfies OpensteerNetworkQueryOutput;
         },
         options,
@@ -1473,7 +1461,6 @@ export class OpensteerSessionRuntime {
         completedAt: Date.now(),
         outcome: "ok",
         data: {
-          source: input.source ?? "live",
           includeBodies: input.includeBodies ?? false,
           limit: input.limit ?? 50,
           count: output.records.length,
@@ -1500,61 +1487,47 @@ export class OpensteerSessionRuntime {
     }
   }
 
-  async saveNetwork(
-    input: OpensteerNetworkSaveInput,
+  async tagNetwork(
+    input: OpensteerNetworkTagInput,
     options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerNetworkSaveOutput> {
-    assertValidSemanticOperationInput("network.save", input);
+  ): Promise<OpensteerNetworkTagOutput> {
+    assertValidSemanticOperationInput("network.tag", input);
 
-    await this.ensurePageRef();
     const root = await this.ensureRoot();
+    const filter = this.toQueryInputFromTagInput(input);
+    const savedFilter = this.toSavedNetworkQueryInput(filter);
     const startedAt = Date.now();
     try {
       const output = await this.runWithOperationTimeout(
-        "network.save",
+        "network.tag",
         async (timeout) => {
-          const records = await this.queryLiveNetwork(
-            {
-              includeBodies: true,
-              source: "live",
-              ...(input.pageRef === undefined ? {} : { pageRef: input.pageRef }),
-              ...(input.recordId === undefined ? {} : { recordId: input.recordId }),
-              ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
-              ...(input.actionId === undefined ? {} : { actionId: input.actionId }),
-              ...(input.url === undefined ? {} : { url: input.url }),
-              ...(input.hostname === undefined ? {} : { hostname: input.hostname }),
-              ...(input.path === undefined ? {} : { path: input.path }),
-              ...(input.method === undefined ? {} : { method: input.method }),
-              ...(input.status === undefined ? {} : { status: input.status }),
-              ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
-            },
-            timeout,
-            { ignoreLimit: true, redactSecretHeaders: false },
-          );
-          this.networkJournal.addTag(records, input.tag);
+          const records = await this.syncPersistedNetworkSelection(timeout, filter, {
+            includeBodies: false,
+          });
+          this.networkHistory.addTag(records, input.tag);
           return {
-            savedCount: await timeout.runStep(() =>
-              root.registry.savedNetwork.save(records, input.tag),
+            taggedCount: await timeout.runStep(() =>
+              root.registry.savedNetwork.tagByFilter(savedFilter, input.tag),
             ),
-          } satisfies OpensteerNetworkSaveOutput;
+          } satisfies OpensteerNetworkTagOutput;
         },
         options,
       );
 
       await this.appendTrace({
-        operation: "network.save",
+        operation: "network.tag",
         startedAt,
         completedAt: Date.now(),
         outcome: "ok",
         data: {
           tag: input.tag,
-          savedCount: output.savedCount,
+          taggedCount: output.taggedCount,
         },
       });
       return output;
     } catch (error) {
       await this.appendTrace({
-        operation: "network.save",
+        operation: "network.tag",
         startedAt,
         completedAt: Date.now(),
         outcome: "error",
@@ -1576,7 +1549,19 @@ export class OpensteerSessionRuntime {
       const output = await this.runWithOperationTimeout(
         "network.clear",
         async (timeout) => {
-          await timeout.runStep(() => this.flushBackgroundNetworkPersistence());
+          if (this.sessionRef !== undefined) {
+            const liveRequestIds = await this.readLiveRequestIds(timeout, {
+              includeCurrentPageOnly: false,
+            });
+            if (input.tag === undefined) {
+              this.networkHistory.tombstoneRequestIds(liveRequestIds);
+            }
+          }
+          if (input.tag === undefined) {
+            this.networkHistory.tombstoneRequestIds(this.networkHistory.getKnownRequestIds());
+          } else {
+            this.networkHistory.clearTag(input.tag);
+          }
           return {
             clearedCount: await timeout.runStep(() => root.registry.savedNetwork.clear(input)),
           } satisfies OpensteerNetworkClearOutput;
@@ -2434,7 +2419,6 @@ export class OpensteerSessionRuntime {
 
     const networkRecords = await this.queryLiveNetwork(
       {
-        source: "live",
         pageRef,
         ...(input.network?.url === undefined ? {} : { url: input.network.url }),
         ...(input.network?.hostname === undefined ? {} : { hostname: input.network.hostname }),
@@ -2450,7 +2434,7 @@ export class OpensteerSessionRuntime {
     );
     const persistedNetwork = filterReverseObservationWindow(
       networkRecords.filter(isReverseRelevantNetworkRecord),
-      this.networkJournal,
+      this.networkHistory,
       input.captureWindowMs,
     );
     const fallbackSavedNetwork =
@@ -2592,7 +2576,7 @@ export class OpensteerSessionRuntime {
             includeBodies: true,
             redactSecretHeaders: false,
           }),
-          observedAt: this.networkJournal.getObservedAt(recordId),
+          observedAt: this.networkHistory.getObservedAt(recordId),
         })),
       );
       const clusteredRecords = observationRecords.map((entry) => {
@@ -4175,9 +4159,9 @@ export class OpensteerSessionRuntime {
             includeBodies: true,
           });
           const inferred = inferRequestPlanFromNetworkRecord(source, input, {
-            ...(this.networkJournal.getObservedAt(source.recordId) === undefined
+            ...(this.networkHistory.getObservedAt(source.recordId) === undefined
               ? {}
-              : { observedAt: this.networkJournal.getObservedAt(source.recordId)! }),
+              : { observedAt: this.networkHistory.getObservedAt(source.recordId)! }),
           });
           return timeout.runStep(() =>
             root.registry.requestPlans.write({
@@ -5146,7 +5130,7 @@ export class OpensteerSessionRuntime {
       await this.runWithOperationTimeout(
         "session.close",
         async (timeout) => {
-          await timeout.runStep(() => this.flushBackgroundNetworkPersistence());
+          await timeout.runStep(() => this.flushPersistedNetworkHistory());
           if (engine === undefined) {
             return;
           }
@@ -5219,10 +5203,7 @@ export class OpensteerSessionRuntime {
 
   async disconnect(): Promise<void> {
     try {
-      await this.flushBackgroundNetworkPersistence();
-      if (this.sessionRef !== undefined && this.pageRef !== undefined) {
-        await this.saveNetwork({ tag: "auto" }).catch(() => undefined);
-      }
+      await this.flushPersistedNetworkHistory();
     } finally {
       await this.resetRuntimeState({
         disposeEngine: true,
@@ -5438,12 +5419,12 @@ export class OpensteerSessionRuntime {
       readonly redactSecretHeaders?: boolean;
     } = {},
   ): Promise<readonly NetworkQueryRecord[]> {
-    const requestIds = resolveLiveQueryRequestIds(input, this.networkJournal);
+    const requestIds = resolveLiveQueryRequestIds(input, this.networkHistory);
     if (requestIds !== undefined && requestIds.length === 0) {
       return [];
     }
 
-    const pageRef = resolveLiveQueryPageRef(input, this.pageRef, requestIds, this.networkJournal);
+    const pageRef = resolveLiveQueryPageRef(input, this.pageRef, requestIds, this.networkHistory);
     const includeCurrentPageOnly = pageRef === undefined && input.recordId === undefined;
     const metadataRecords = await timeout.runStep(() =>
       this.readLiveNetworkRecords(
@@ -5472,7 +5453,7 @@ export class OpensteerSessionRuntime {
       ...(input.status === undefined ? {} : { status: input.status }),
       ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
     });
-    const sorted = sortLiveNetworkRecords(filtered, this.networkJournal);
+    const sorted = sortLiveNetworkRecords(filtered, this.networkHistory);
     const limit = options.ignoreLimit
       ? sorted.length
       : Math.max(1, Math.min(input.limit ?? 50, 200));
@@ -5734,15 +5715,16 @@ export class OpensteerSessionRuntime {
       return;
     }
 
-    this.networkJournal.assignActionId(delta, `action:${randomUUID()}`);
-    if (networkTag === undefined) {
-      return;
+    this.networkHistory.assignActionId(delta, `action:${randomUUID()}`);
+    if (networkTag !== undefined) {
+      this.networkHistory.addTag(delta, networkTag);
     }
-
-    this.networkJournal.addTag(delta, networkTag);
-    this.scheduleBackgroundNetworkSaveByRequestIds(
+    await this.persistLiveRequestIds(
       delta.map((record) => record.record.requestId),
-      networkTag,
+      timeout,
+      {
+        includeCurrentPageOnly: true,
+      },
     );
   }
 
@@ -5755,9 +5737,27 @@ export class OpensteerSessionRuntime {
     },
   ): Promise<NetworkQueryRecord> {
     const root = await this.ensureRoot();
+    await this.syncPersistedNetworkSelection(
+      timeout,
+      {
+        recordId,
+        includeBodies: options.includeBodies,
+      },
+      {
+        includeBodies: options.includeBodies,
+      },
+    );
+    const saved = await timeout.runStep(() =>
+      root.registry.savedNetwork.getByRecordId(recordId, {
+        includeBodies: options.includeBodies,
+      }),
+    );
+    if (saved) {
+      return saved;
+    }
+
     const live = await this.queryLiveNetwork(
       {
-        source: "live",
         recordId,
         includeBodies: options.includeBodies,
         limit: 1,
@@ -5770,25 +5770,15 @@ export class OpensteerSessionRuntime {
           : { redactSecretHeaders: options.redactSecretHeaders }),
       },
     );
-    if (live.length > 0) {
-      return live[0]!;
+    if (live[0] !== undefined) {
+      return live[0];
     }
-
-    await timeout.runStep(() => this.flushBackgroundNetworkPersistence());
-    const saved = await timeout.runStep(() =>
-      root.registry.savedNetwork.getByRecordId(recordId, {
-        includeBodies: options.includeBodies,
-      }),
-    );
-    if (!saved) {
-      throw new OpensteerProtocolError("not-found", `network record ${recordId} was not found`, {
-        details: {
-          recordId,
-          kind: "network-record",
-        },
-      });
-    }
-    return saved;
+    throw new OpensteerProtocolError("not-found", `network record ${recordId} was not found`, {
+      details: {
+        recordId,
+        kind: "network-record",
+      },
+    });
   }
 
   private resolveCurrentStateSource(): OpensteerStateSourceKind {
@@ -6090,7 +6080,6 @@ export class OpensteerSessionRuntime {
       timeout.throwIfAborted();
       const records = await this.queryLiveNetwork(
         {
-          source: "live",
           pageRef,
           url,
           method,
@@ -6139,7 +6128,6 @@ export class OpensteerSessionRuntime {
       timeout.throwIfAborted();
       const records = await this.queryLiveNetwork(
         {
-          source: "live",
           pageRef,
           ...(filter.url === undefined ? {} : { url: filter.url }),
           ...(filter.host === undefined ? {} : { hostname: filter.host }),
@@ -6225,7 +6213,7 @@ export class OpensteerSessionRuntime {
     }
   }
 
-  private async readLiveNetworkRecords(
+  private async readBrowserNetworkRecords(
     input: {
       readonly pageRef?: PageRef;
       readonly requestIds?: readonly string[];
@@ -6237,16 +6225,15 @@ export class OpensteerSessionRuntime {
       readonly resourceType?: NetworkQueryRecord["record"]["resourceType"];
       readonly includeBodies: boolean;
       readonly includeCurrentPageOnly?: boolean;
-      readonly redactSecretHeaders?: boolean;
     },
     signal: AbortSignal,
-  ): Promise<readonly NetworkQueryRecord[]> {
+  ): Promise<readonly BrowserNetworkRecord[]> {
     const sessionRef = this.sessionRef;
     if (!sessionRef) {
       throw new Error("Opensteer session is not initialized");
     }
 
-    const records = await this.requireEngine().getNetworkRecords({
+    return this.requireEngine().getNetworkRecords({
       sessionRef,
       ...(input.includeCurrentPageOnly === false || input.pageRef !== undefined
         ? input.pageRef === undefined
@@ -6265,9 +6252,147 @@ export class OpensteerSessionRuntime {
       includeBodies: input.includeBodies,
       signal,
     });
-    return this.networkJournal.sync(records, {
+  }
+
+  private async readLiveNetworkRecords(
+    input: {
+      readonly pageRef?: PageRef;
+      readonly requestIds?: readonly string[];
+      readonly url?: string;
+      readonly hostname?: string;
+      readonly path?: string;
+      readonly method?: string;
+      readonly status?: string;
+      readonly resourceType?: NetworkQueryRecord["record"]["resourceType"];
+      readonly includeBodies: boolean;
+      readonly includeCurrentPageOnly?: boolean;
+      readonly redactSecretHeaders?: boolean;
+    },
+    signal: AbortSignal,
+  ): Promise<readonly NetworkQueryRecord[]> {
+    const records = await this.readBrowserNetworkRecords(input, signal);
+    return this.networkHistory.materialize(records, {
       redactSecretHeaders: input.redactSecretHeaders ?? true,
     });
+  }
+
+  private async persistLiveRequestIds(
+    requestIds: readonly string[],
+    timeout: TimeoutExecutionContext,
+    options: {
+      readonly includeCurrentPageOnly: boolean;
+      readonly pageRef?: PageRef;
+    },
+  ): Promise<readonly NetworkQueryRecord[]> {
+    if (requestIds.length === 0) {
+      return [];
+    }
+    const root = await this.ensureRoot();
+    const browserRecords = await timeout.runStep(() =>
+      this.readBrowserNetworkRecords(
+        {
+          includeBodies: true,
+          includeCurrentPageOnly: options.includeCurrentPageOnly,
+          ...(options.pageRef === undefined ? {} : { pageRef: options.pageRef }),
+          requestIds,
+        },
+        timeout.signal,
+      ),
+    );
+    return timeout.runStep(() =>
+      this.networkHistory.persist(browserRecords, root.registry.savedNetwork, {
+        redactSecretHeaders: false,
+      }),
+    );
+  }
+
+  private async syncPersistedNetworkSelection(
+    timeout: TimeoutExecutionContext,
+    input: Pick<
+      OpensteerNetworkQueryInput,
+      | "pageRef"
+      | "recordId"
+      | "requestId"
+      | "actionId"
+      | "tag"
+      | "url"
+      | "hostname"
+      | "path"
+      | "method"
+      | "status"
+      | "resourceType"
+      | "includeBodies"
+    >,
+    options: {
+      readonly includeBodies: boolean;
+    },
+  ): Promise<readonly NetworkQueryRecord[]> {
+    if (this.sessionRef === undefined) {
+      return [];
+    }
+
+    const requestIds = resolveLiveQueryRequestIds(input, this.networkHistory);
+    if (requestIds !== undefined && requestIds.length === 0) {
+      return [];
+    }
+    const pageRef = resolveLiveQueryPageRef(input, this.pageRef, requestIds, this.networkHistory);
+    const includeCurrentPageOnly = pageRef === undefined && input.recordId === undefined;
+    const browserRecords = await timeout.runStep(() =>
+      this.readBrowserNetworkRecords(
+        {
+          ...(pageRef === undefined ? {} : { pageRef }),
+          ...(requestIds === undefined ? {} : { requestIds }),
+          ...(input.url === undefined ? {} : { url: input.url }),
+          ...(input.hostname === undefined ? {} : { hostname: input.hostname }),
+          ...(input.path === undefined ? {} : { path: input.path }),
+          ...(input.method === undefined ? {} : { method: input.method }),
+          ...(input.status === undefined ? {} : { status: input.status }),
+          ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
+          includeBodies: options.includeBodies,
+          includeCurrentPageOnly,
+        },
+        timeout.signal,
+      ),
+    );
+    const root = await this.ensureRoot();
+    return timeout.runStep(() =>
+      this.networkHistory.persist(browserRecords, root.registry.savedNetwork, {
+        redactSecretHeaders: false,
+      }),
+    );
+  }
+
+  private toSavedNetworkQueryInput(input: OpensteerNetworkQueryInput): SavedNetworkQueryInput {
+    return {
+      ...(input.pageRef === undefined ? {} : { pageRef: input.pageRef }),
+      ...(input.recordId === undefined ? {} : { recordId: input.recordId }),
+      ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
+      ...(input.actionId === undefined ? {} : { actionId: input.actionId }),
+      ...(input.tag === undefined ? {} : { tag: input.tag }),
+      ...(input.url === undefined ? {} : { url: input.url }),
+      ...(input.hostname === undefined ? {} : { hostname: input.hostname }),
+      ...(input.path === undefined ? {} : { path: input.path }),
+      ...(input.method === undefined ? {} : { method: input.method }),
+      ...(input.status === undefined ? {} : { status: input.status }),
+      ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
+      ...(input.includeBodies === undefined ? {} : { includeBodies: input.includeBodies }),
+      ...(input.limit === undefined ? {} : { limit: input.limit }),
+    };
+  }
+
+  private toQueryInputFromTagInput(input: OpensteerNetworkTagInput): OpensteerNetworkQueryInput {
+    return {
+      ...(input.pageRef === undefined ? {} : { pageRef: input.pageRef }),
+      ...(input.recordId === undefined ? {} : { recordId: input.recordId }),
+      ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
+      ...(input.actionId === undefined ? {} : { actionId: input.actionId }),
+      ...(input.url === undefined ? {} : { url: input.url }),
+      ...(input.hostname === undefined ? {} : { hostname: input.hostname }),
+      ...(input.path === undefined ? {} : { path: input.path }),
+      ...(input.method === undefined ? {} : { method: input.method }),
+      ...(input.status === undefined ? {} : { status: input.status }),
+      ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
+    };
   }
 
   private async readLiveRequestIds(
@@ -6305,7 +6430,17 @@ export class OpensteerSessionRuntime {
       ),
     );
     const delta = records.filter((record) => !baselineRequestIds.has(record.record.requestId));
-    return sortLiveNetworkRecords(delta, this.networkJournal)[0]?.recordId;
+    if (delta.length === 0) {
+      return undefined;
+    }
+    await this.persistLiveRequestIds(
+      delta.map((record) => record.record.requestId),
+      timeout,
+      {
+        includeCurrentPageOnly: options.includeCurrentPageOnly,
+      },
+    );
+    return sortLiveNetworkRecords(delta, this.networkHistory)[0]?.recordId;
   }
 
   private async executeTransportRequestWithJournal(
@@ -6313,7 +6448,7 @@ export class OpensteerSessionRuntime {
       readonly method: string;
       readonly url: string;
       readonly headers?: readonly HeaderEntry[];
-      readonly body?: import("@opensteer/browser-core").BodyPayload;
+      readonly body?: BrowserBodyPayload;
       readonly followRedirects?: boolean;
     },
     timeout: TimeoutExecutionContext,
@@ -6784,7 +6919,6 @@ export class OpensteerSessionRuntime {
       binding?.sessionRef ?? createSessionRef(`${transportLabel}-${this.workspace}`);
     const record: NetworkQueryRecord = {
       recordId,
-      source: "saved",
       savedAt: now,
       record: {
         kind: "http",
@@ -7302,7 +7436,6 @@ export class OpensteerSessionRuntime {
         const record = await pollUntilResult(timeout, async () => {
           const matches = await this.queryLiveNetwork(
             {
-              source: "live",
               ...(step.url === undefined ? {} : { url: interpolateTemplate(step.url, variables) }),
               ...(step.hostname === undefined
                 ? {}
@@ -7925,41 +8058,7 @@ export class OpensteerSessionRuntime {
       ?.entries.find((entry) => entry.key === key)?.value;
   }
 
-  private scheduleBackgroundNetworkSaveByRequestIds(
-    requestIds: readonly string[],
-    tag: string,
-  ): void {
-    const task = (async () => {
-      const root = await this.ensureRoot();
-      const requestIdSet = new Set(requestIds);
-      const records = await this.readLiveNetworkRecords(
-        {
-          includeBodies: true,
-          includeCurrentPageOnly: false,
-          ...(this.pageRef === undefined ? {} : { pageRef: this.pageRef }),
-          requestIds,
-          redactSecretHeaders: false,
-        },
-        new AbortController().signal,
-      );
-      const filtered = records.filter((record) => requestIdSet.has(record.record.requestId));
-      if (filtered.length === 0) {
-        return;
-      }
-      await root.registry.savedNetwork.save(filtered, tag);
-    })();
-    this.backgroundNetworkPersistence.add(task);
-    task.finally(() => {
-      this.backgroundNetworkPersistence.delete(task);
-    });
-    void task.catch(() => undefined);
-  }
-
-  private async flushBackgroundNetworkPersistence(): Promise<void> {
-    if (this.backgroundNetworkPersistence.size === 0) {
-      return;
-    }
-    await Promise.all([...this.backgroundNetworkPersistence]);
+  private async flushPersistedNetworkHistory(): Promise<void> {
   }
 
   private toDomTargetRef(target: OpensteerTargetInput): DomTargetRef {
@@ -8319,8 +8418,7 @@ export class OpensteerSessionRuntime {
   private async resetRuntimeState(options: { readonly disposeEngine: boolean }): Promise<void> {
     const engine = this.engine;
 
-    this.networkJournal.clear();
-    this.backgroundNetworkPersistence.clear();
+    this.networkHistory.clear();
     this.sessionRef = undefined;
     this.pageRef = undefined;
     this.runId = undefined;
@@ -8444,12 +8542,12 @@ function buildEngineNetworkRecordFilters(
 
 function resolveLiveQueryRequestIds(
   input: Pick<OpensteerNetworkQueryInput, "recordId" | "requestId" | "actionId" | "tag">,
-  journal: NetworkJournal,
+  history: NetworkHistory,
 ): readonly string[] | undefined {
   const requestIdCandidates: ReadonlySet<string>[] = [];
 
   if (input.recordId !== undefined) {
-    const requestId = journal.getRequestId(input.recordId);
+    const requestId = history.getRequestId(input.recordId);
     if (requestId === undefined) {
       return [];
     }
@@ -8461,11 +8559,11 @@ function resolveLiveQueryRequestIds(
   }
 
   if (input.actionId !== undefined) {
-    requestIdCandidates.push(journal.getRequestIdsForActionId(input.actionId));
+    requestIdCandidates.push(history.getRequestIdsForActionId(input.actionId));
   }
 
   if (input.tag !== undefined) {
-    requestIdCandidates.push(journal.getRequestIdsForTag(input.tag));
+    requestIdCandidates.push(history.getRequestIdsForTag(input.tag));
   }
 
   if (requestIdCandidates.length === 0) {
@@ -8479,7 +8577,7 @@ function resolveLiveQueryPageRef(
   input: Pick<OpensteerNetworkQueryInput, "pageRef" | "recordId">,
   currentPageRef: PageRef | undefined,
   requestIds: readonly string[] | undefined,
-  journal: NetworkJournal,
+  history: NetworkHistory,
 ): PageRef | undefined {
   const requestedPageRef = selectLiveQueryPageRef(input, currentPageRef);
   if (requestedPageRef !== undefined || requestIds === undefined) {
@@ -8488,7 +8586,7 @@ function resolveLiveQueryPageRef(
 
   const pageRefs = new Set<PageRef>();
   for (const requestId of requestIds) {
-    const pageRef = journal.getPageRefForRequestId(requestId);
+    const pageRef = history.getPageRefForRequestId(requestId);
     if (pageRef === undefined) {
       continue;
     }
@@ -8550,11 +8648,11 @@ function filterNetworkQueryRecords(
 
 function sortLiveNetworkRecords(
   records: readonly NetworkQueryRecord[],
-  journal: NetworkJournal,
+  history: NetworkHistory,
 ): NetworkQueryRecord[] {
   return [...records].sort((left, right) => {
-    const leftObservedAt = journal.getObservedAt(left.recordId) ?? 0;
-    const rightObservedAt = journal.getObservedAt(right.recordId) ?? 0;
+    const leftObservedAt = history.getObservedAt(left.recordId) ?? 0;
+    const rightObservedAt = history.getObservedAt(right.recordId) ?? 0;
     if (leftObservedAt !== rightObservedAt) {
       return rightObservedAt - leftObservedAt;
     }
@@ -8896,9 +8994,7 @@ function buildMinimizedRequestPlan(input: {
     provenance: {
       source: "network-minimize",
       sourceId: input.record.recordId,
-      ...(input.record.source === "saved" && input.record.savedAt !== undefined
-        ? { capturedAt: input.record.savedAt }
-        : {}),
+      ...(input.record.savedAt === undefined ? {} : { capturedAt: input.record.savedAt }),
     },
     payload: normalizeRequestPlanPayload({
       transport: {
@@ -9192,14 +9288,14 @@ function originFromUrl(url: string | undefined): string | undefined {
 
 function filterReverseObservationWindow(
   records: readonly NetworkQueryRecord[],
-  journal: NetworkJournal,
+  history: NetworkHistory,
   captureWindowMs: number | undefined,
 ): readonly NetworkQueryRecord[] {
   if (captureWindowMs === undefined) {
     return records;
   }
   const observedAfter = Date.now() - captureWindowMs;
-  return records.filter((record) => (journal.getObservedAt(record.recordId) ?? 0) >= observedAfter);
+  return records.filter((record) => (history.getObservedAt(record.recordId) ?? 0) >= observedAfter);
 }
 
 function isReverseRelevantNetworkRecord(record: NetworkQueryRecord): boolean {

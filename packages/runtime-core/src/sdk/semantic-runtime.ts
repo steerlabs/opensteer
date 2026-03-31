@@ -31,8 +31,8 @@ import type {
   OpensteerNetworkMinimizeOutput,
   OpensteerNetworkQueryInput,
   OpensteerNetworkQueryOutput,
-  OpensteerNetworkSaveInput,
-  OpensteerNetworkSaveOutput,
+  OpensteerNetworkTagInput,
+  OpensteerNetworkTagOutput,
   OpensteerInteractionCaptureInput,
   OpensteerInteractionCaptureOutput,
   OpensteerInteractionDiffInput,
@@ -171,10 +171,10 @@ export interface OpensteerSemanticRuntime {
     input?: OpensteerNetworkQueryInput,
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerNetworkQueryOutput>;
-  saveNetwork(
-    input: OpensteerNetworkSaveInput,
+  tagNetwork(
+    input: OpensteerNetworkTagInput,
     options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerNetworkSaveOutput>;
+  ): Promise<OpensteerNetworkTagOutput>;
   minimizeNetwork(
     input: OpensteerNetworkMinimizeInput,
     options?: OpensteerRuntimeOperationOptions,

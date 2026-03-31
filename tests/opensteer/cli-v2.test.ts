@@ -146,7 +146,7 @@ describe("Opensteer v2 CLI", () => {
     }
   }, 20_000);
 
-  test("fails saved-network CLI commands with a targeted SQLite support error", async () => {
+  test("fails persisted-network CLI commands with a targeted SQLite support error", async () => {
     await ensureCliArtifactsBuilt();
     const cwd = await mkdtemp(path.join(os.tmpdir(), "opensteer-cli-no-sqlite-saved-network-"));
 
@@ -161,9 +161,7 @@ describe("Opensteer v2 CLI", () => {
           "--workspace",
           "sqlite-required",
           "--input-json",
-          JSON.stringify({
-            source: "saved",
-          }),
+          JSON.stringify({}),
         ],
         {
           cwd,
@@ -288,7 +286,6 @@ describe("Opensteer v2 CLI", () => {
         workspace,
         "--input-json",
         JSON.stringify({
-          source: "saved",
           path: "/api/portable",
           includeBodies: true,
         }),

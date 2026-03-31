@@ -370,7 +370,6 @@ export interface OpensteerRecipeRecord {
 export type OpensteerAuthRecipeRecord = OpensteerRecipeRecord;
 
 export interface OpensteerNetworkQueryInput {
-  readonly source?: "live" | "saved";
   readonly pageRef?: PageRef;
   readonly recordId?: string;
   readonly requestId?: string;
@@ -390,7 +389,7 @@ export interface OpensteerNetworkQueryOutput {
   readonly records: readonly NetworkQueryRecord[];
 }
 
-export interface OpensteerNetworkSaveInput {
+export interface OpensteerNetworkTagInput {
   readonly pageRef?: PageRef;
   readonly recordId?: string;
   readonly requestId?: string;
@@ -404,8 +403,8 @@ export interface OpensteerNetworkSaveInput {
   readonly resourceType?: NetworkResourceType;
 }
 
-export interface OpensteerNetworkSaveOutput {
-  readonly savedCount: number;
+export interface OpensteerNetworkTagOutput {
+  readonly taggedCount: number;
 }
 
 export interface OpensteerNetworkClearInput {
@@ -1269,9 +1268,6 @@ export const opensteerAuthRecipeRecordSchema: JsonSchema = opensteerRecipeRecord
 
 export const opensteerNetworkQueryInputSchema: JsonSchema = objectSchema(
   {
-    source: enumSchema(["live", "saved"] as const, {
-      title: "OpensteerNetworkQuerySource",
-    }),
     pageRef: pageRefSchema,
     recordId: stringSchema({ minLength: 1 }),
     requestId: stringSchema({ minLength: 1 }),
@@ -1301,7 +1297,7 @@ export const opensteerNetworkQueryOutputSchema: JsonSchema = objectSchema(
   },
 );
 
-export const opensteerNetworkSaveInputSchema: JsonSchema = objectSchema(
+export const opensteerNetworkTagInputSchema: JsonSchema = objectSchema(
   {
     pageRef: pageRefSchema,
     recordId: stringSchema({ minLength: 1 }),
@@ -1316,18 +1312,18 @@ export const opensteerNetworkSaveInputSchema: JsonSchema = objectSchema(
     resourceType: networkResourceTypeSchema,
   },
   {
-    title: "OpensteerNetworkSaveInput",
+    title: "OpensteerNetworkTagInput",
     required: ["tag"],
   },
 );
 
-export const opensteerNetworkSaveOutputSchema: JsonSchema = objectSchema(
+export const opensteerNetworkTagOutputSchema: JsonSchema = objectSchema(
   {
-    savedCount: integerSchema({ minimum: 0 }),
+    taggedCount: integerSchema({ minimum: 0 }),
   },
   {
-    title: "OpensteerNetworkSaveOutput",
-    required: ["savedCount"],
+    title: "OpensteerNetworkTagOutput",
+    required: ["taggedCount"],
   },
 );
 

@@ -9,7 +9,7 @@ Use this when you do not yet know the replay shape.
 1. Open a real page.
 2. Perform the action that triggers the request.
 3. Inspect traffic with `queryNetwork()` or `waitForNetwork()`.
-4. Save useful evidence with `saveNetwork()`.
+4. Tag useful evidence with `tagNetwork()` when you want to organize persisted captures.
 5. Promote a captured record into a request plan with `inferRequestPlan()`.
 
 This is the default reverse-engineering workflow.

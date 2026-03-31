@@ -296,8 +296,8 @@ Important subtrees:
 - `input({ element | selector | description, text, networkTag? })`
 - `scroll({ element | selector | description, direction, amount, networkTag? })`
 - `extract({ description, schema? })`
-- `queryNetwork({ source?, recordId?, requestId?, actionId?, tag?, url?, hostname?, path?, method?, status?, resourceType?, pageRef?, includeBodies?, limit? })`
-- `saveNetwork({ tag, ...filters })`
+- `queryNetwork({ recordId?, requestId?, actionId?, tag?, url?, hostname?, path?, method?, status?, resourceType?, pageRef?, includeBodies?, limit? })`
+- `tagNetwork({ tag, ...filters })`
 - `clearNetwork({ tag? })`
 - `captureScripts({ pageRef?, includeInline?, includeExternal?, includeDynamic?, includeWorkers?, urlFilter?, persist? })`
 - `addInitScript({ script, args?, pageRef? })`

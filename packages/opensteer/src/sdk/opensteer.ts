@@ -28,8 +28,8 @@ import type {
   OpensteerNetworkMinimizeOutput,
   OpensteerNetworkQueryInput,
   OpensteerNetworkQueryOutput,
-  OpensteerNetworkSaveInput,
-  OpensteerNetworkSaveOutput,
+  OpensteerNetworkTagInput,
+  OpensteerNetworkTagOutput,
   OpensteerInteractionCaptureInput,
   OpensteerInteractionCaptureOutput,
   OpensteerInteractionDiffInput,
@@ -162,8 +162,8 @@ export type OpensteerComputerExecuteOptions = OpensteerComputerExecuteInput;
 export type OpensteerComputerExecuteResult = OpensteerComputerExecuteOutput;
 export type OpensteerNetworkQueryOptions = OpensteerNetworkQueryInput;
 export type OpensteerNetworkQueryResult = OpensteerNetworkQueryOutput;
-export type OpensteerNetworkSaveOptions = OpensteerNetworkSaveInput;
-export type OpensteerNetworkSaveResult = OpensteerNetworkSaveOutput;
+export type OpensteerNetworkTagOptions = OpensteerNetworkTagInput;
+export type OpensteerNetworkTagResult = OpensteerNetworkTagOutput;
 export type OpensteerNetworkMinimizeOptions = OpensteerNetworkMinimizeInput;
 export type OpensteerNetworkMinimizeResult = OpensteerNetworkMinimizeOutput;
 export type OpensteerNetworkDiffOptions = OpensteerNetworkDiffInput;
@@ -389,14 +389,23 @@ export class Opensteer {
     const { timeoutMs, pollIntervalMs, ...query } = input;
     const timeoutAt = Date.now() + (timeoutMs ?? 30_000);
     const pollInterval = pollIntervalMs ?? 100;
+    const baseline = new Set(
+      (
+        await this.runtime.queryNetwork({
+          ...query,
+          limit: 200,
+        })
+      ).records.map((record) => record.recordId),
+    );
 
     while (true) {
       const { records } = await this.runtime.queryNetwork({
         ...query,
-        limit: 1,
+        limit: 200,
       });
-      if (records[0] !== undefined) {
-        return records[0];
+      const next = records.find((record) => !baseline.has(record.recordId));
+      if (next !== undefined) {
+        return next;
       }
       if (Date.now() >= timeoutAt) {
         throw new Error("waitForNetwork timed out");
@@ -446,8 +455,8 @@ export class Opensteer {
     return this.runtime.snapshot(typeof input === "string" ? { mode: input } : input);
   }
 
-  async saveNetwork(input: OpensteerNetworkSaveOptions): Promise<OpensteerNetworkSaveResult> {
-    return this.runtime.saveNetwork(input);
+  async tagNetwork(input: OpensteerNetworkTagOptions): Promise<OpensteerNetworkTagResult> {
+    return this.runtime.tagNetwork(input);
   }
 
   async minimizeNetwork(

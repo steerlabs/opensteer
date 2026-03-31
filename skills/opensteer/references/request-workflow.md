@@ -88,10 +88,10 @@ await opensteer.inferRequestPlan({
 });
 ```
 
-5. Save the captured traffic if you want it in the workspace registry.
+5. Tag the captured traffic if you want to label it in the workspace history.
 
 ```ts
-await opensteer.saveNetwork({
+await opensteer.tagNetwork({
   tag: "products-load",
 });
 ```
@@ -218,8 +218,8 @@ Mandatory steps:
 - MUST use `goto({ url, networkTag })` to tag navigation. `networkTag` is NOT supported on `open()`. In the CLI, this means `opensteer run page.goto --input-json ...`.
 - MUST query by tag first (`queryNetwork({ tag })`), then query all traffic to catch async requests.
 - MUST probe every discovered first-party API with transport tests. Do NOT just log URLs.
-- MUST call `saveNetwork({ tag })` before closing the session.
-- Use `queryNetwork({ source: "saved" })` when you want to read previously persisted captures after the live session is gone.
+- Persistence is automatic. Use `tagNetwork({ tag })` when you want to label a persisted slice for later lookup.
+- Use `queryNetwork({ ...filters })` to read persisted captures after the live session is gone.
 
 Common mistakes:
 
