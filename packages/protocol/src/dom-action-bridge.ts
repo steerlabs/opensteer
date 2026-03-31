@@ -1,4 +1,5 @@
 import type {
+  ActionBoundaryOutcome,
   ActionBoundarySettleTrigger,
   ActionBoundarySnapshot,
   BrowserCoreEngine,
@@ -71,7 +72,10 @@ export interface DomActionBridge {
   scrollNodeIntoView(locator: NodeLocator, options?: DomActionScrollOptions): Promise<void>;
   focusNode(locator: NodeLocator): Promise<void>;
   pressKey(locator: NodeLocator, input: DomActionKeyPressInput): Promise<void>;
-  finalizeDomAction(pageRef: PageRef, options: DomActionSettleOptions): Promise<void>;
+  finalizeDomAction(
+    pageRef: PageRef,
+    options: DomActionSettleOptions,
+  ): Promise<ActionBoundaryOutcome>;
 }
 
 export interface DomActionBridgeProvider {

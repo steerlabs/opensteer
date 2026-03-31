@@ -14,7 +14,12 @@ import {
   type OpensteerPolicy,
   type TimeoutExecutionContext,
 } from "../../policy/index.js";
-import { captureActionBoundarySnapshot } from "../../action-boundary.js";
+import {
+  captureActionBoundarySnapshot,
+  createActionBoundaryDiagnostics,
+  isSoftSettleTimeoutError,
+  recordActionBoundaryDiagnostics,
+} from "../../action-boundary.js";
 import type { DomRuntime } from "../dom/index.js";
 import {
   resolveComputerUseBridge,
@@ -85,6 +90,7 @@ class DefaultComputerUseRuntime implements ComputerUseRuntime {
     const snapshot = await input.timeout.runStep(() =>
       captureActionBoundarySnapshot(this.options.engine, input.pageRef),
     );
+    let visualSettled = true;
 
     const executed = await input.timeout.runStep(() =>
       bridge.execute({
@@ -94,17 +100,38 @@ class DefaultComputerUseRuntime implements ComputerUseRuntime {
         screenshot,
         signal: input.timeout.signal,
         remainingMs: () => input.timeout.remainingMs(),
-        policySettle: async (pageRef, trigger) =>
-          settleWithPolicy(this.options.policy.settle, {
-            operation: "computer.execute",
-            trigger,
-            engine: this.options.engine,
-            pageRef,
-            signal: input.timeout.signal,
-            remainingMs: input.timeout.remainingMs(),
-          }),
+        policySettle: async (pageRef, trigger) => {
+          try {
+            await settleWithPolicy(this.options.policy.settle, {
+              operation: "computer.execute",
+              trigger,
+              engine: this.options.engine,
+              pageRef,
+              signal: input.timeout.signal,
+              remainingMs: input.timeout.remainingMs(),
+            });
+          } catch (error) {
+            if (
+              pageRef === input.pageRef &&
+              isSoftSettleTimeoutError(error, input.timeout.signal)
+            ) {
+              visualSettled = false;
+              return;
+            }
+            throw error;
+          }
+        },
       }),
     );
+    if (executed.boundary !== undefined && executed.pageRef === input.pageRef) {
+      recordActionBoundaryDiagnostics(
+        input.timeout.signal,
+        createActionBoundaryDiagnostics({
+          boundary: executed.boundary,
+          visualSettled,
+        }),
+      );
+    }
 
     let trace = undefined;
     if (!input.timeout.signal.aborted) {

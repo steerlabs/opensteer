@@ -93,7 +93,7 @@ export interface NetworkRecord {
 
 export interface NetworkQueryRecord {
   readonly recordId: string;
-  readonly actionId?: string;
+  readonly capture?: string;
   readonly tags?: readonly string[];
   readonly savedAt?: number;
   readonly record: NetworkRecord;
@@ -359,7 +359,7 @@ export const networkRecordSchema: JsonSchema = objectSchema(
 export const networkQueryRecordSchema: JsonSchema = objectSchema(
   {
     recordId: stringSchema({ minLength: 1 }),
-    actionId: stringSchema({ minLength: 1 }),
+    capture: stringSchema({ minLength: 1 }),
     tags: arraySchema(stringSchema({ minLength: 1 }), {
       uniqueItems: true,
     }),

@@ -1,4 +1,5 @@
 import {
+  type ActionBoundaryOutcome,
   createPoint,
   createRect,
   quadBounds,
@@ -31,7 +32,7 @@ interface PlaywrightDomActionBridgeContext {
   settleActionBoundary(
     controller: PageController,
     options: PlaywrightActionBoundaryOptions,
-  ): Promise<void>;
+  ): Promise<ActionBoundaryOutcome>;
   locateBackendNode(document: DocumentState, backendNodeId: number): NodeLocator;
   requireFrame(frameRef: FrameRef): Frame;
   requireLiveNode(locator: NodeLocator): {
@@ -833,7 +834,7 @@ export function createPlaywrightDomActionBridge(
 
     async finalizeDomAction(pageRef, options) {
       const controller = context.resolveController(pageRef);
-      await context.settleActionBoundary(controller, {
+      return context.settleActionBoundary(controller, {
         signal: options.signal,
         ...(options.snapshot === undefined ? {} : { snapshot: options.snapshot }),
         remainingMs: options.remainingMs,

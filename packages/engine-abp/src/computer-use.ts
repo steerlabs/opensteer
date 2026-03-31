@@ -1,4 +1,5 @@
 import {
+  type ActionBoundaryOutcome,
   createBodyPayload,
   createSize,
   createDevicePixelRatio,
@@ -51,7 +52,7 @@ export function createAbpComputerUseBridge(context: {
   settleActionBoundary(
     controller: PageController,
     options: AbpActionBoundaryOptions,
-  ): Promise<void>;
+  ): Promise<ActionBoundaryOutcome>;
   requireMainFrame(controller: PageController): {
     readonly frameRef: FrameRef;
     readonly currentDocument: {
@@ -81,6 +82,7 @@ export function createAbpComputerUseBridge(context: {
 
       let response: AbpActionResponse;
       let dialogEvents: readonly StepEvent[] = [];
+      let boundary: ActionBoundaryOutcome | undefined;
 
       switch (action.type) {
         case "click": {
@@ -209,7 +211,7 @@ export function createAbpComputerUseBridge(context: {
       const resultController = context.resolveController(resultPageRef);
       let displayResponse = response;
       if (action.type !== "screenshot") {
-        await context.settleActionBoundary(resultController, {
+        boundary = await context.settleActionBoundary(resultController, {
           timeoutMs: clampAbpActionSettleTimeout(remainingMs),
           ...(resultController.pageRef === controller.pageRef && input.snapshot !== undefined
             ? { snapshot: input.snapshot }
@@ -248,6 +250,7 @@ export function createAbpComputerUseBridge(context: {
           ...popupQueuedEvents,
         ],
         timing: timingFromResponse(response, Date.now() - startedAt),
+        ...(boundary === undefined ? {} : { boundary }),
       };
     },
   };
