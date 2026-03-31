@@ -46,7 +46,7 @@ opensteer close --workspace demo
 - `extract --description --schema-json` writes a persisted extraction descriptor.
 - `extract --description` replays the stored extraction.
 - Persisted network history (`network.query`, `network.tag`, and `network.clear`) is SQLite-backed and initializes on first use.
-- Generic workspace and browser commands do not require SQLite capability unless they touch saved-network persistence.
+- Generic workspace and browser commands do not require SQLite capability unless they touch network history persistence.
 
 ## Snapshot Output — What To Read
 

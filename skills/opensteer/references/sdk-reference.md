@@ -35,8 +35,8 @@ const opensteer = new Opensteer({
 - `opensteer.browser.status()`, `clone()`, `reset()`, and `delete()` manage the persistent workspace browser.
 - `close()` shuts the current session and, for persistent workspaces, closes the live browser process.
 - `disconnect()` detaches local runtime handles and leaves the workspace/browser files intact.
-- Persisted network history is SQLite-backed and initializes on first `queryNetwork()`, `tagNetwork()`, or `clearNetwork()` use.
-- Generic workspace and browser helpers do not require SQLite capability unless they touch saved-network persistence.
+- Network history is SQLite-backed and auto-persisted. Records are written to SQLite as they are captured during `goto()`, `click()`, and other actions. The database initializes on first use.
+- Generic workspace and browser helpers do not require SQLite capability unless they touch network history persistence.
 - The current public SDK does not expose `Opensteer.attach()`, cloud session helpers, or the ABP engine.
 
 ## DOM Automation And Extraction
@@ -230,7 +230,7 @@ Rules:
 - `networkTag` is supported on `goto()`, `click()`, `scroll()`, `input()`, and `hover()`. It is NOT supported on `open()`. Use `open()` then `goto({ url, networkTag })` to tag initial navigation.
 - Query by tag first, then query all traffic to catch async requests that fire after page load.
 - Probe discovered APIs with `rawRequest()` using `direct-http` first, then `context-http`.
-- Persistence is automatic; use `tagNetwork()` when you want to label a saved slice of history.
+- Persistence is automatic; use `tagNetwork()` when you want to label a slice of already-persisted history for later lookup.
 - Use recipes when replay needs deterministic setup work. Use auth recipes when the setup is specifically auth-related. They live in separate registries.
 
 `rawRequest` input shapes:
