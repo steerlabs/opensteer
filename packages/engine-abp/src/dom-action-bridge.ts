@@ -1,4 +1,5 @@
 import {
+  type ActionBoundaryOutcome,
   createPoint,
   createBrowserCoreError,
   quadBounds,
@@ -29,7 +30,7 @@ interface AbpDomActionBridgeContext {
   settleActionBoundary(
     controller: PageController,
     options: AbpActionBoundaryOptions,
-  ): Promise<void>;
+  ): Promise<ActionBoundaryOutcome>;
   syncExecutionPaused(controller: PageController): Promise<boolean>;
   setExecutionPaused(controller: PageController, paused: boolean): Promise<void>;
   isPageClosedError(error: unknown): boolean;
@@ -662,7 +663,7 @@ export function createAbpDomActionBridge(context: AbpDomActionBridgeContext): Do
 
     async finalizeDomAction(pageRef, options) {
       const controller = context.resolveController(pageRef);
-      await context.settleActionBoundary(controller, {
+      const boundary = await context.settleActionBoundary(controller, {
         timeoutMs: clampAbpActionSettleTimeout(options.remainingMs()),
         ...(options.snapshot === undefined ? {} : { snapshot: options.snapshot }),
         signal: options.signal,
@@ -674,6 +675,7 @@ export function createAbpDomActionBridge(context: AbpDomActionBridgeContext): Do
           details: { pageRef },
         });
       }
+      return boundary;
     },
   };
 }

@@ -15,7 +15,12 @@ import {
 } from "@opensteer/browser-core";
 import { OpensteerProtocolError } from "@opensteer/protocol";
 
-import { captureActionBoundarySnapshot } from "../../action-boundary.js";
+import {
+  captureActionBoundarySnapshot,
+  createActionBoundaryDiagnostics,
+  isSoftSettleTimeoutError,
+  recordActionBoundaryDiagnostics,
+} from "../../action-boundary.js";
 import {
   runWithPolicyTimeout,
   settleWithPolicy,
@@ -232,7 +237,15 @@ export class DomActionExecutor {
             finalResolved = enterResolved;
           }
 
-          await this.settle(finalResolved.pageRef, "dom.input", timeout, finalSnapshot);
+          const settleDiagnostics = await this.settle(
+            finalResolved.pageRef,
+            "dom.input",
+            timeout,
+            finalSnapshot,
+          );
+          if (finalSnapshot !== undefined) {
+            recordActionBoundaryDiagnostics(timeout.signal, settleDiagnostics);
+          }
           return finalResolved;
         } catch (error) {
           lastError = error;
@@ -335,12 +348,13 @@ export class DomActionExecutor {
             captureActionBoundarySnapshot(this.options.engine, pointerTarget.resolved.pageRef),
           );
           const outcome = await dispatch(pointerTarget, point, timeout);
-          await this.settle(
+          const settleDiagnostics = await this.settle(
             pointerTarget.resolved.pageRef,
             input.operation,
             timeout,
             actionBoundarySnapshot,
           );
+          recordActionBoundaryDiagnostics(timeout.signal, settleDiagnostics);
           return outcome;
         } catch (error) {
           lastError = error;
@@ -371,25 +385,39 @@ export class DomActionExecutor {
     operation: DomActionPolicyOperation,
     timeout: TimeoutExecutionContext,
     snapshot?: ActionBoundarySnapshot,
-  ): Promise<void> {
+  ): Promise<ReturnType<typeof createActionBoundaryDiagnostics>> {
     const bridge = this.requireBridge();
-    await timeout.runStep(() =>
+    let visualSettled = true;
+    const boundary = await timeout.runStep(() =>
       bridge.finalizeDomAction(pageRef, {
         operation,
         ...(snapshot === undefined ? {} : { snapshot }),
         signal: timeout.signal,
         remainingMs: () => timeout.remainingMs(),
-        policySettle: (targetPageRef, trigger) =>
-          settleWithPolicy(this.options.policy.settle, {
-            operation,
-            trigger,
-            engine: this.options.engine,
-            pageRef: targetPageRef,
-            signal: timeout.signal,
-            remainingMs: timeout.remainingMs(),
-          }),
+        policySettle: async (targetPageRef, trigger) => {
+          try {
+            await settleWithPolicy(this.options.policy.settle, {
+              operation,
+              trigger,
+              engine: this.options.engine,
+              pageRef: targetPageRef,
+              signal: timeout.signal,
+              remainingMs: timeout.remainingMs(),
+            });
+          } catch (error) {
+            if (snapshot !== undefined && isSoftSettleTimeoutError(error, timeout.signal)) {
+              visualSettled = false;
+              return;
+            }
+            throw error;
+          }
+        },
       }),
     );
+    return createActionBoundaryDiagnostics({
+      boundary,
+      visualSettled,
+    });
   }
 
   private requireBridge(): DomActionBridge {

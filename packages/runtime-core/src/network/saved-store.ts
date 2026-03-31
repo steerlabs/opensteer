@@ -14,7 +14,7 @@ export interface SavedNetworkQueryInput {
   readonly pageRef?: NetworkQueryRecord["record"]["pageRef"];
   readonly recordId?: string;
   readonly requestId?: string;
-  readonly actionId?: string;
+  readonly capture?: string;
   readonly tag?: string;
   readonly url?: string;
   readonly hostname?: string;
@@ -44,7 +44,7 @@ export interface SavedNetworkStore {
     recordId: string,
     options?: { readonly includeBodies?: boolean },
   ): Promise<NetworkQueryRecord | undefined>;
-  clear(input?: { readonly tag?: string }): Promise<number>;
+  clear(input?: { readonly capture?: string; readonly tag?: string }): Promise<number>;
 }
 
 type SavedNetworkRow = {
@@ -54,7 +54,7 @@ type SavedNetworkRow = {
   readonly page_ref: string | null;
   readonly frame_ref: string | null;
   readonly document_ref: string | null;
-  readonly action_id: string | null;
+  readonly capture: string | null;
   readonly method: string;
   readonly url: string;
   readonly hostname: string;
@@ -138,7 +138,7 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
           page_ref_key: pageRefKey,
           frame_ref: entry.record.frameRef ?? null,
           document_ref: entry.record.documentRef ?? null,
-          action_id: entry.actionId ?? null,
+          capture: entry.capture ?? null,
           method: entry.record.method,
           method_lc: entry.record.method.toLowerCase(),
           url: entry.record.url,
@@ -265,46 +265,34 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
     return record;
   }
 
-  async clear(input: { readonly tag?: string } = {}): Promise<number> {
+  async clear(input: { readonly capture?: string; readonly tag?: string } = {}): Promise<number> {
     const database = await this.requireDatabase();
-    const countAll = database.prepare(`
-      SELECT COUNT(*) AS cleared
-      FROM saved_network_records
-    `);
-    const countByTag = database.prepare(`
-      SELECT COUNT(DISTINCT record_id) AS cleared
-      FROM saved_network_tags
-      WHERE tag = @tag
-    `);
-    const deleteAllTags = database.prepare(`DELETE FROM saved_network_tags`);
+    const countAll = database.prepare(`SELECT COUNT(*) AS cleared FROM saved_network_records`);
     const deleteAllRecords = database.prepare(`DELETE FROM saved_network_records`);
-    const deleteTag = database.prepare(`
-      DELETE FROM saved_network_tags
-      WHERE tag = @tag
+    const { whereSql, parameters } = buildSavedNetworkWhere(input);
+    const countFiltered = database.prepare(`
+      SELECT COUNT(*) AS cleared
+      FROM saved_network_records r
+      ${whereSql}
     `);
-    const deleteOrphans = database.prepare(`
+    const deleteFiltered = database.prepare(`
       DELETE FROM saved_network_records
-      WHERE NOT EXISTS (
-        SELECT 1
-        FROM saved_network_tags t
-        WHERE t.record_id = saved_network_records.record_id
+      WHERE record_id IN (
+        SELECT r.record_id
+        FROM saved_network_records r
+        ${whereSql}
       )
     `);
 
     return withSqliteTransaction(database, () => {
-      const tag = input.tag;
-      const cleared =
-        tag === undefined
-          ? (countAll.get() as { readonly cleared: number }).cleared
-          : (countByTag.get({ tag }) as { readonly cleared: number }).cleared;
-      if (tag === undefined) {
-        deleteAllTags.run();
+      if (input.capture === undefined && input.tag === undefined) {
+        const cleared = (countAll.get() as { readonly cleared: number }).cleared;
         deleteAllRecords.run();
         return cleared;
       }
-
-      deleteTag.run({ tag });
-      deleteOrphans.run();
+      const args = parameters as readonly (string | number | null | Uint8Array)[];
+      const cleared = (countFiltered.get(...args) as { readonly cleared: number }).cleared;
+      deleteFiltered.run(...args);
       return cleared;
     });
   }
@@ -365,7 +353,7 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
         page_ref_key TEXT NOT NULL,
         frame_ref TEXT,
         document_ref TEXT,
-        action_id TEXT,
+        capture TEXT,
         method TEXT NOT NULL,
         method_lc TEXT NOT NULL,
         url TEXT NOT NULL,
@@ -404,6 +392,9 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
       CREATE INDEX IF NOT EXISTS saved_network_records_saved_at
         ON saved_network_records (saved_at DESC);
 
+      CREATE INDEX IF NOT EXISTS saved_network_records_capture
+        ON saved_network_records (capture);
+
       CREATE TABLE IF NOT EXISTS saved_network_tags (
         record_id TEXT NOT NULL REFERENCES saved_network_records(record_id) ON DELETE CASCADE,
         tag TEXT NOT NULL,
@@ -419,6 +410,7 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
       "capture_state",
       "TEXT NOT NULL DEFAULT 'complete'",
     );
+    this.ensureColumn(database, "saved_network_records", "capture", "TEXT");
     this.ensureColumn(
       database,
       "saved_network_records",
@@ -472,9 +464,9 @@ function buildSavedNetworkWhere(input: SavedNetworkQueryInput): {
     clauses.push("r.request_id = ?");
     parameters.push(input.requestId);
   }
-  if (input.actionId !== undefined) {
-    clauses.push("r.action_id = ?");
-    parameters.push(input.actionId);
+  if (input.capture !== undefined) {
+    clauses.push("r.capture = ?");
+    parameters.push(input.capture);
   }
   if (input.tag !== undefined) {
     clauses.push(`
@@ -542,7 +534,7 @@ function buildSavedNetworkUpsertSql(bodyWriteMode: SavedNetworkBodyWriteMode): s
         page_ref_key,
         frame_ref,
         document_ref,
-        action_id,
+        capture,
         method,
         method_lc,
         url,
@@ -581,7 +573,7 @@ function buildSavedNetworkUpsertSql(bodyWriteMode: SavedNetworkBodyWriteMode): s
         @page_ref_key,
         @frame_ref,
         @document_ref,
-        @action_id,
+        @capture,
         @method,
         @method_lc,
         @url,
@@ -618,7 +610,7 @@ function buildSavedNetworkUpsertSql(bodyWriteMode: SavedNetworkBodyWriteMode): s
         page_ref_key = excluded.page_ref_key,
         frame_ref = excluded.frame_ref,
         document_ref = excluded.document_ref,
-        action_id = excluded.action_id,
+        capture = excluded.capture,
         method = excluded.method,
         method_lc = excluded.method_lc,
         url = excluded.url,
@@ -724,7 +716,7 @@ function inflateSavedNetworkRow(row: SavedNetworkRow, includeBodies: boolean): N
 
   return {
     recordId: row.record_id,
-    ...(row.action_id === null ? {} : { actionId: row.action_id }),
+    ...(row.capture === null ? {} : { capture: row.capture }),
     ...(row.tags === null || row.tags.length === 0
       ? {}
       : { tags: row.tags.split(TAG_DELIMITER).filter((tag) => tag.length > 0) }),

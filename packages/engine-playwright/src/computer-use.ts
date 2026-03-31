@@ -1,4 +1,5 @@
 import {
+  type ActionBoundaryOutcome,
   type PageRef,
   type Point,
   type ScreenshotArtifact,
@@ -26,7 +27,7 @@ export function createPlaywrightComputerUseBridge(context: {
   settleActionBoundary(
     controller: PageController,
     options: PlaywrightActionBoundaryOptions,
-  ): Promise<void>;
+  ): Promise<ActionBoundaryOutcome>;
   requireMainFrame(controller: PageController): FrameState;
   drainQueuedEvents(pageRef: PageRef): readonly StepEvent[];
   withModifiers(
@@ -42,6 +43,7 @@ export function createPlaywrightComputerUseBridge(context: {
       const startedAt = Date.now();
       const actionController = context.resolveController(input.pageRef);
       const action = input.action;
+      let boundary: ActionBoundaryOutcome | undefined;
       let actionMs = 0;
       let waitMs = 0;
 
@@ -111,7 +113,7 @@ export function createPlaywrightComputerUseBridge(context: {
 
       if (action.type !== "screenshot" && action.type !== "wait") {
         const waitStartedAt = Date.now();
-        await context.settleActionBoundary(actionController, {
+        boundary = await context.settleActionBoundary(actionController, {
           signal: input.signal,
           ...(input.snapshot === undefined ? {} : { snapshot: input.snapshot }),
           remainingMs: input.remainingMs,
@@ -170,6 +172,7 @@ export function createPlaywrightComputerUseBridge(context: {
           waitMs,
           totalMs: Date.now() - startedAt,
         },
+        ...(boundary === undefined ? {} : { boundary }),
       };
     },
   };

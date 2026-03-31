@@ -179,17 +179,17 @@ if (!status.live) {
 await opensteer.open();
 await opensteer.goto({
   url: "https://example.com/app",
-  networkTag: "page-load",
+  captureNetwork: "page-load",
 });
 
 await opensteer.click({
   selector: "button.load-products",
   description: "load products",
-  networkTag: "products-load",
+  captureNetwork: "products-load",
 });
 
 const records = await opensteer.queryNetwork({
-  tag: "products-load",
+  capture: "products-load",
   includeBodies: true,
   limit: 20,
 });
@@ -204,13 +204,13 @@ const response = await opensteer.rawRequest({
 });
 
 await opensteer.inferRequestPlan({
-  recordId: records.records[0]!.id,
+  recordId: records.records[0]!.recordId,
   key: "products.search",
   version: "v1",
 });
 
 await opensteer.inferRequestPlan({
-  recordId: records.records[0]!.id,
+  recordId: records.records[0]!.recordId,
   key: "products.search.portable",
   version: "v1",
   transport: "direct-http",
@@ -227,8 +227,8 @@ await opensteer.request("products.search", {
 
 Rules:
 
-- `networkTag` is supported on `goto()`, `click()`, `scroll()`, `input()`, and `hover()`. It is NOT supported on `open()`. Use `open()` then `goto({ url, networkTag })` to tag initial navigation.
-- Query by tag first, then query all traffic to catch async requests that fire after page load.
+- `captureNetwork` is supported on `goto()`, `click()`, `scroll()`, `input()`, and `hover()`. It is NOT supported on `open()`. Use `open()` then `goto({ url, captureNetwork })` to name initial navigation capture.
+- Query by capture first, then query all traffic to catch async requests that fire after page load.
 - Probe discovered APIs with `rawRequest()` using `direct-http` first, then `context-http`.
 - Persistence is automatic; use `tagNetwork()` when you want to label a slice of already-persisted history for later lookup.
 - Use recipes when replay needs deterministic setup work. Use auth recipes when the setup is specifically auth-related. They live in separate registries.
@@ -243,7 +243,7 @@ Common errors and fixes:
 
 | Error                                                        | Cause                                                 | Fix                                                               |
 | ------------------------------------------------------------ | ----------------------------------------------------- | ----------------------------------------------------------------- |
-| `"networkTag is not allowed"`                                | Used `networkTag` on `open()`                         | Move to `goto({ url, networkTag })`                               |
+| `"captureNetwork is not allowed"`                            | Used `captureNetwork` on `open()`                    | Move to `goto({ url, captureNetwork })`                           |
 | `"must be array"` on `rawRequest`                            | Headers passed as `{key: value}`                      | Use `[{name, value}]` array                                       |
 | `"must match exactly one supported shape"`                   | Body passed as raw string                             | Wrap in `{json: {...}}` or `{text: "..."}`                        |
 | `"Specify exactly one of element, selector, or description"` | `scroll()` called without a target                    | Add `selector: "body"` or a `description`                         |
@@ -256,7 +256,7 @@ Session and page control:
 
 - `new Opensteer({ workspace?, rootDir?, browser?, launch?, context? })`
 - `open(url | { url?, workspace?, browser?, launch?, context? })`
-- `goto(url | { url, networkTag? })`
+- `goto(url | { url, captureNetwork? })`
 - `listPages()`
 - `newPage({ url?, openerPageRef? })`
 - `activatePage({ pageRef })`
@@ -265,10 +265,10 @@ Session and page control:
 
 Interaction and extraction:
 
-- `click({ element | selector | description, networkTag? })`
-- `hover({ element | selector | description, networkTag? })`
-- `input({ element | selector | description, text, pressEnter?, networkTag? })`
-- `scroll({ element | selector | description, direction, amount, networkTag? })`
+- `click({ element | selector | description, captureNetwork? })`
+- `hover({ element | selector | description, captureNetwork? })`
+- `input({ element | selector | description, text, pressEnter?, captureNetwork? })`
+- `scroll({ element | selector | description, direction, amount, captureNetwork? })`
 - `extract({ description, schema? })`
 
 Inspection and evaluation:
@@ -315,7 +315,7 @@ Lifecycle:
 ## Rules
 
 - Wrap long-running browser ownership in `try/finally` and call `close()`.
-- Use `networkTag` on actions that trigger requests you may inspect later.
+- Use `captureNetwork` on actions that trigger requests you may inspect later.
 - Use `description` for all interactions and extractions in deterministic scripts.
 - Use `description` plus `schema` to persist an extraction descriptor. Bare `description` replays it.
 - Use `element` targets only during CLI exploration with a fresh snapshot. Deterministic scripts use `description`.

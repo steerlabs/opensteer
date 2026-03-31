@@ -1,4 +1,7 @@
-import { DEFAULT_VISUAL_STABILITY_SETTLE_MS, type VisualStabilityScope } from "@opensteer/browser-core";
+import {
+  DEFAULT_VISUAL_STABILITY_SETTLE_MS,
+  type VisualStabilityScope,
+} from "@opensteer/browser-core";
 
 import type {
   FallbackDecision,
@@ -17,9 +20,9 @@ const DEFAULT_TIMEOUTS: Readonly<Record<string, number>> = {
   "page.add-init-script": 10_000,
   "page.snapshot": 15_000,
   "computer.execute": 30_000,
-  "dom.click": 10_000,
+  "dom.click": 30_000,
   "dom.hover": 10_000,
-  "dom.input": 10_000,
+  "dom.input": 30_000,
   "dom.scroll": 10_000,
   "dom.extract": 15_000,
   "network.query": 15_000,
