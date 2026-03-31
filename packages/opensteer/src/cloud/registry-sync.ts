@@ -35,24 +35,53 @@ export async function syncLocalRegistryToCloud(
     store.registry.authRecipes.list(),
   ]);
 
+  console.warn("[opensteer:sync] Local registry counts:", {
+    descriptors: descriptors.length,
+    requestPlans: requestPlans.length,
+    recipes: recipes.length,
+    authRecipes: authRecipes.length,
+  });
+
   const selectorEntries = descriptors.flatMap((record) => {
     const entry = toSelectorCacheImportEntry(workspace, record);
+    if (entry === undefined) {
+      console.warn("[opensteer:sync] Descriptor skipped (could not convert):", record.id);
+    }
     return entry === undefined ? [] : [entry];
   });
 
+  console.warn("[opensteer:sync] Selector entries to import:", selectorEntries.length);
+  if (selectorEntries.length > 0) {
+    console.warn("[opensteer:sync] First selector entry sample:", JSON.stringify(selectorEntries[0], null, 2));
+  }
+
   await Promise.all([
-    importInBatches(selectorEntries, (entries) => client.importSelectorCache(entries)),
+    importInBatches(selectorEntries, async (entries) => {
+      console.warn("[opensteer:sync] Importing selector cache batch, count:", entries.length);
+      const result = await client.importSelectorCache(entries);
+      console.warn("[opensteer:sync] Selector cache import response:", JSON.stringify(result));
+      return result;
+    }),
     importInBatches(
       requestPlans.map((record) => toRequestPlanImportEntry(workspace, record)),
-      (entries) => client.importRequestPlans(entries),
+      (entries) => {
+        console.warn("[opensteer:sync] Importing request plans batch, count:", entries.length);
+        return client.importRequestPlans(entries);
+      },
     ),
     importInBatches(
       recipes.map((record) => toRegistryImportEntry(workspace, record)),
-      (entries) => client.importRecipes(entries),
+      (entries) => {
+        console.warn("[opensteer:sync] Importing recipes batch, count:", entries.length);
+        return client.importRecipes(entries);
+      },
     ),
     importInBatches(
       authRecipes.map((record) => toRegistryImportEntry(workspace, record)),
-      (entries) => client.importAuthRecipes(entries),
+      (entries) => {
+        console.warn("[opensteer:sync] Importing auth recipes batch, count:", entries.length);
+        return client.importAuthRecipes(entries);
+      },
     ),
   ]);
 }
