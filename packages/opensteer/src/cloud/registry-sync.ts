@@ -3,12 +3,11 @@ import {
   type DescriptorRecord,
   type FilesystemOpensteerWorkspace,
   type RecipeRecord,
+  type ReverseCaseRecord,
+  type ReversePackageRecord,
   type RequestPlanRecord,
 } from "@opensteer/runtime-core";
-import type {
-  CloudRegistryImportEntry,
-  CloudRequestPlanImportEntry,
-} from "@opensteer/protocol";
+import type { CloudRegistryImportEntry, CloudRequestPlanImportEntry } from "@opensteer/protocol";
 
 import type { OpensteerCloudClient } from "./client.js";
 
@@ -17,7 +16,12 @@ export const REGISTRY_SYNC_MAX_ENTRIES_PER_BATCH = 100;
 
 type RegistryImportClient = Pick<
   OpensteerCloudClient,
-  "importDescriptors" | "importRequestPlans" | "importRecipes" | "importAuthRecipes"
+  | "importDescriptors"
+  | "importRequestPlans"
+  | "importRecipes"
+  | "importAuthRecipes"
+  | "importReverseCases"
+  | "importReversePackages"
 >;
 
 export async function syncLocalRegistryToCloud(
@@ -25,12 +29,15 @@ export async function syncLocalRegistryToCloud(
   workspace: string,
   store: FilesystemOpensteerWorkspace,
 ): Promise<void> {
-  const [descriptors, requestPlans, recipes, authRecipes] = await Promise.all([
-    store.registry.descriptors.list(),
-    store.registry.requestPlans.list(),
-    store.registry.recipes.list(),
-    store.registry.authRecipes.list(),
-  ]);
+  const [descriptors, requestPlans, recipes, authRecipes, reverseCases, reversePackages] =
+    await Promise.all([
+      store.registry.descriptors.list(),
+      store.registry.requestPlans.list(),
+      store.registry.recipes.list(),
+      store.registry.authRecipes.list(),
+      store.registry.reverseCases.list(),
+      store.registry.reversePackages.list(),
+    ]);
 
   const descriptorEntries = descriptors.map((record) => toDescriptorImportEntry(workspace, record));
 
@@ -47,6 +54,14 @@ export async function syncLocalRegistryToCloud(
     importInBatches(
       authRecipes.map((record) => toRegistryImportEntry(workspace, record)),
       (entries) => client.importAuthRecipes(entries),
+    ),
+    importInBatches(
+      reverseCases.map((record) => toRegistryImportEntry(workspace, record)),
+      (entries) => client.importReverseCases(entries),
+    ),
+    importInBatches(
+      reversePackages.map((record) => toRegistryImportEntry(workspace, record)),
+      (entries) => client.importReversePackages(entries),
     ),
   ]);
 }
@@ -71,7 +86,7 @@ function toDescriptorImportEntry(
 
 function toRegistryImportEntry(
   workspace: string,
-  record: RecipeRecord | AuthRecipeRecord,
+  record: RecipeRecord | AuthRecipeRecord | ReverseCaseRecord | ReversePackageRecord,
 ): CloudRegistryImportEntry {
   return {
     workspace,

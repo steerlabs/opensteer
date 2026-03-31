@@ -132,6 +132,10 @@ import {
 import { createPlaywrightComputerUseBridge } from "./computer-use.js";
 import { createPlaywrightDomActionBridge } from "./dom-action-bridge.js";
 import {
+  clampPlaywrightActionSettleTimeout,
+  createPlaywrightActionSettler,
+} from "./action-settle.js";
+import {
   captureLayoutViewportScreenshotArtifact,
   getViewportMetricsFromCdp,
 } from "./viewport-screenshot.js";
@@ -160,6 +164,15 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   private readonly pageByPlaywrightPage = new WeakMap<Page, PageController>();
   private readonly pendingPopupOpeners = new WeakMap<Page, PageRef>();
   private readonly preassignedPopupPageRefs = new WeakMap<Page, PageRef>();
+  private readonly actionSettler = createPlaywrightActionSettler({
+    flushPendingPageTasks: (sessionRef) => this.flushPendingPageTasks(sessionRef),
+    flushDomUpdateTask: (controller) => this.flushDomUpdateTask(controller),
+    getMainFrameDocumentRef: (controller) =>
+      controller.mainFrameRef === undefined
+        ? undefined
+        : this.frames.get(controller.mainFrameRef)?.currentDocument.documentRef,
+    throwBackgroundError: (controller) => this.throwBackgroundError(controller),
+  });
   private pageCounter = 0;
   private frameCounter = 0;
   private documentCounter = 0;
@@ -229,6 +242,14 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       resolveController: (pageRef) => this.requirePage(pageRef),
       flushPendingPageTasks: (sessionRef) => this.flushPendingPageTasks(sessionRef),
       flushDomUpdateTask: (controller) => this.flushDomUpdateTask(controller),
+      settleActionBoundary: (controller, options) =>
+        this.actionSettler.settle({
+          controller,
+          timeoutMs: clampPlaywrightActionSettleTimeout(options.remainingMs()),
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+          ...(options.snapshot === undefined ? {} : { snapshot: options.snapshot }),
+          ...(options.policySettle === undefined ? {} : { policySettle: options.policySettle }),
+        }),
       requireMainFrame: (controller) => this.requireMainFrame(controller),
       drainQueuedEvents: (pageRef) => this.drainQueuedEvents(pageRef),
       withModifiers: (page, modifiers, action) => this.withModifiers(page, modifiers, action),
@@ -241,6 +262,14 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       resolveController: (pageRef: PageRef) => this.requirePage(pageRef),
       flushPendingPageTasks: (sessionRef: SessionRef) => this.flushPendingPageTasks(sessionRef),
       flushDomUpdateTask: (controller) => this.flushDomUpdateTask(controller),
+      settleActionBoundary: (controller, options) =>
+        this.actionSettler.settle({
+          controller,
+          timeoutMs: clampPlaywrightActionSettleTimeout(options.remainingMs()),
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+          ...(options.snapshot === undefined ? {} : { snapshot: options.snapshot }),
+          ...(options.policySettle === undefined ? {} : { policySettle: options.policySettle }),
+        }),
       locateBackendNode: (document, backendNodeId) =>
         createNodeLocator(
           document.documentRef,
@@ -1591,6 +1620,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       backgroundTasks: new Set(),
       domUpdateTask: undefined,
       backgroundError: undefined,
+      settleTrackerRegistered: false,
       openerPageRef: undefined,
       mainFrameRef: undefined,
       lifecycleState: "open",
@@ -1609,6 +1639,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     await cdp.send("DOM.enable", { includeWhitespace: "none" });
     await cdp.send("DOMStorage.enable");
     await cdp.send("DOM.getDocument", { depth: 0 });
+    await this.actionSettler.installTracker(controller);
 
     cdp.on("Page.frameAttached", (payload) =>
       this.runControllerEvent(controller, () =>

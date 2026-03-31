@@ -10,6 +10,8 @@ import {
   buildDomDescriptorVersion,
   createOpensteerExtractionDescriptorStore,
   createFilesystemOpensteerWorkspace,
+  type WriteReverseCaseInput,
+  type WriteReversePackageInput,
 } from "../../packages/runtime-core/src/index.js";
 import {
   REGISTRY_SYNC_MAX_PAYLOAD_BYTES,
@@ -54,6 +56,57 @@ function recipePayload(description = "Run step") {
   } as const;
 }
 
+function reverseCasePayload(notes?: string): WriteReverseCaseInput["payload"] {
+  return {
+    objective: "List users",
+    ...(notes === undefined ? {} : { notes }),
+    status: "ready",
+    stateSource: "temporary",
+    observations: [],
+    observationClusters: [],
+    observedRecords: [],
+    candidates: [],
+    guards: [],
+    stateSnapshots: [],
+    stateDeltas: [],
+    experiments: [],
+    replayRuns: [],
+    exports: [],
+  };
+}
+
+function reversePackagePayload(
+  caseId = "reverse-case:1",
+): WriteReversePackageInput["payload"] {
+  return {
+    kind: "portable-http",
+    readiness: "runnable",
+    caseId,
+    objective: "List users",
+    source: {
+      kind: "record",
+      id: "record:1",
+    },
+    sourceRecordId: "record:1",
+    guardIds: [],
+    workflow: [],
+    resolvers: [],
+    validators: [],
+    stateSnapshots: [],
+    requirements: {
+      requiresBrowser: false,
+      requiresLiveState: false,
+      manualCalibration: "not-needed",
+      stateSources: ["temporary"],
+    },
+    unresolvedRequirements: [],
+    suggestedEdits: [],
+    attachedTraceIds: [],
+    attachedArtifactIds: [],
+    attachedRecordIds: [],
+  };
+}
+
 async function createWorkspace(workspace = "cloud-workspace") {
   const rootPath = await mkdtemp(path.join(os.tmpdir(), "opensteer-registry-sync-"));
   temporaryRoots.push(rootPath);
@@ -89,6 +142,18 @@ function createMockClient() {
       updated: 0,
       skipped: 0,
     })),
+    importReverseCases: vi.fn(async () => ({
+      imported: 0,
+      inserted: 0,
+      updated: 0,
+      skipped: 0,
+    })),
+    importReversePackages: vi.fn(async () => ({
+      imported: 0,
+      inserted: 0,
+      updated: 0,
+      skipped: 0,
+    })),
   } satisfies RegistryImportClient;
 
   return {
@@ -97,11 +162,13 @@ function createMockClient() {
     importRequestPlans: client.importRequestPlans,
     importRecipes: client.importRecipes,
     importAuthRecipes: client.importAuthRecipes,
+    importReverseCases: client.importReverseCases,
+    importReversePackages: client.importReversePackages,
   };
 }
 
 describe("local-to-cloud registry sync", () => {
-  test("syncs DOM descriptors, request plans, recipes, and auth recipes", async () => {
+  test("syncs DOM descriptors, request plans, recipes, auth recipes, and reverse records", async () => {
     const workspaceName = "cloud-workspace";
     const workspace = await createWorkspace(workspaceName);
     const extractionStore = createOpensteerExtractionDescriptorStore({
@@ -185,6 +252,22 @@ describe("local-to-cloud registry sync", () => {
       updatedAt: 80,
       payload: recipePayload("Refresh auth"),
     });
+    await workspace.registry.reverseCases.write({
+      id: "reverse-case:1",
+      key: "reverse.case",
+      version: "1.0.0",
+      createdAt: 81,
+      updatedAt: 82,
+      payload: reverseCasePayload(),
+    });
+    await workspace.registry.reversePackages.write({
+      id: "reverse-package:1",
+      key: "reverse.package",
+      version: "1.0.0",
+      createdAt: 83,
+      updatedAt: 84,
+      payload: reversePackagePayload(),
+    });
 
     const client = createMockClient();
 
@@ -255,6 +338,20 @@ describe("local-to-cloud registry sync", () => {
         key: "auth.refresh",
       }),
     ]);
+    expect(client.importReverseCases).toHaveBeenCalledWith([
+      expect.objectContaining({
+        workspace: workspaceName,
+        recordId: "reverse-case:1",
+        key: "reverse.case",
+      }),
+    ]);
+    expect(client.importReversePackages).toHaveBeenCalledWith([
+      expect.objectContaining({
+        workspace: workspaceName,
+        recordId: "reverse-package:1",
+        key: "reverse.package",
+      }),
+    ]);
   });
 
   test("skips import calls when all registries are empty", async () => {
@@ -267,6 +364,8 @@ describe("local-to-cloud registry sync", () => {
     expect(client.importRequestPlans).not.toHaveBeenCalled();
     expect(client.importRecipes).not.toHaveBeenCalled();
     expect(client.importAuthRecipes).not.toHaveBeenCalled();
+    expect(client.importReverseCases).not.toHaveBeenCalled();
+    expect(client.importReversePackages).not.toHaveBeenCalled();
   });
 
   test("splits request plan imports at the max entries per batch", async () => {

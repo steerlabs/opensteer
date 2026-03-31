@@ -66,15 +66,13 @@ export function inferRequestPlanFromNetworkRecord(
     key: input.key,
     version: input.version,
     provenance: {
-      source: record.source === "saved" ? "saved-network-record" : "live-network-record",
+      source: record.savedAt === undefined ? "network-record" : "saved-network-record",
       sourceId: record.recordId,
-      ...(record.source === "saved"
-        ? record.savedAt === undefined
+      ...(record.savedAt === undefined
+        ? options.observedAt === undefined
           ? {}
-          : { capturedAt: record.savedAt }
-        : options.observedAt === undefined
-          ? {}
-          : { capturedAt: options.observedAt }),
+          : { capturedAt: options.observedAt }
+        : { capturedAt: record.savedAt }),
     },
     payload,
     ...(record.tags === undefined || record.tags.length === 0 ? {} : { tags: record.tags }),

@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 
 import { createFilesystemOpensteerRoot } from "../../packages/opensteer/src/index.js";
+import { bodyPayloadFromUtf8 } from "../../packages/protocol/src/network.js";
 
 const temporaryRoots: string[] = [];
 
@@ -166,7 +167,10 @@ describe("Phase 3 filesystem root", () => {
           },
         },
       ],
-      "lazy-network-tag",
+      {
+        tag: "lazy-network-tag",
+        bodyWriteMode: "authoritative",
+      },
     );
 
     expect(savedCount).toBe(1);
@@ -202,6 +206,103 @@ describe("Phase 3 filesystem root", () => {
     ]);
     expect(await root.registry.savedNetwork.clear({ tag: "lazy-network-tag" })).toBe(1);
     expect(await root.registry.savedNetwork.query({ tag: "lazy-network-tag" })).toEqual([]);
+  });
+
+  test("preserves persisted bodies during metadata-only upserts", async () => {
+    const rootPath = await createTemporaryRoot();
+    const root = await createFilesystemOpensteerRoot({ rootPath });
+    const responseBody = bodyPayloadFromUtf8("network:live", {
+      mimeType: "text/plain",
+    });
+
+    await root.registry.savedNetwork.save(
+      [
+        {
+          recordId: "record:body-preserve",
+          savedAt: 100,
+          record: {
+            kind: "http",
+            requestId: "request:body-preserve",
+            sessionRef: "session:body-preserve",
+            pageRef: "page:body-preserve",
+            method: "GET",
+            url: "https://example.com/api/body-preserve",
+            requestHeaders: [],
+            responseHeaders: [
+              {
+                name: "content-type",
+                value: "text/plain; charset=utf-8",
+              },
+            ],
+            status: 200,
+            statusText: "OK",
+            resourceType: "fetch",
+            navigationRequest: false,
+            captureState: "complete",
+            requestBodyState: "skipped",
+            responseBodyState: "complete",
+            requestBodySkipReason: "not-present",
+            responseBody,
+          },
+        },
+      ],
+      {
+        bodyWriteMode: "authoritative",
+      },
+    );
+
+    await root.registry.savedNetwork.save(
+      [
+        {
+          recordId: "record:body-preserve-refresh",
+          savedAt: 200,
+          record: {
+            kind: "http",
+            requestId: "request:body-preserve",
+            sessionRef: "session:body-preserve",
+            pageRef: "page:body-preserve",
+            method: "GET",
+            url: "https://example.com/api/body-preserve",
+            requestHeaders: [],
+            responseHeaders: [
+              {
+                name: "content-type",
+                value: "text/plain; charset=utf-8",
+              },
+            ],
+            status: 200,
+            statusText: "OK",
+            resourceType: "fetch",
+            navigationRequest: false,
+            captureState: "complete",
+            requestBodyState: "skipped",
+            responseBodyState: "pending",
+            requestBodySkipReason: "not-present",
+          },
+        },
+      ],
+      {
+        bodyWriteMode: "metadata-only",
+      },
+    );
+
+    await expect(
+      root.registry.savedNetwork.query({
+        requestId: "request:body-preserve",
+        includeBodies: true,
+        limit: 1,
+      }),
+    ).resolves.toMatchObject([
+      {
+        recordId: "record:body-preserve",
+        savedAt: 100,
+        record: {
+          requestId: "request:body-preserve",
+          responseBodyState: "complete",
+          responseBody,
+        },
+      },
+    ]);
   });
 
   test("stores structured and binary artifacts with stable hashes and protocol adapters", async () => {

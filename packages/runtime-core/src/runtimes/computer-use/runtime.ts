@@ -14,6 +14,7 @@ import {
   type OpensteerPolicy,
   type TimeoutExecutionContext,
 } from "../../policy/index.js";
+import { captureActionBoundarySnapshot } from "../../action-boundary.js";
 import type { DomRuntime } from "../dom/index.js";
 import {
   resolveComputerUseBridge,
@@ -81,18 +82,22 @@ class DefaultComputerUseRuntime implements ComputerUseRuntime {
     const preActionDisplay = createComputerDisplayTransform(preActionNativeViewport);
     const nativeAction = toNativeComputerAction(input.input.action, preActionDisplay);
     const screenshot = normalizeScreenshotOptions(input.input.screenshot);
+    const snapshot = await input.timeout.runStep(() =>
+      captureActionBoundarySnapshot(this.options.engine, input.pageRef),
+    );
 
     const executed = await input.timeout.runStep(() =>
       bridge.execute({
         pageRef: input.pageRef,
+        snapshot,
         action: nativeAction,
         screenshot,
         signal: input.timeout.signal,
         remainingMs: () => input.timeout.remainingMs(),
-        policySettle: async (pageRef) =>
+        policySettle: async (pageRef, trigger) =>
           settleWithPolicy(this.options.policy.settle, {
             operation: "computer.execute",
-            trigger: "dom-action",
+            trigger,
             engine: this.options.engine,
             pageRef,
             signal: input.timeout.signal,

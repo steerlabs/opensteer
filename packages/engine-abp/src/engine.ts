@@ -623,6 +623,11 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     setExecutionPaused: (controller, paused) =>
       this.setControllerExecutionPaused(controller, paused),
     flushDomUpdateTask: (controller) => this.flushDomUpdateTask(controller),
+    getMainFrameDocumentRef: (controller) =>
+      controller.mainFrameRef === undefined
+        ? undefined
+        : this.frames.get(controller.mainFrameRef)?.currentDocument.documentRef,
+    waitForNavigationContentLoaded: async () => undefined,
     throwBackgroundError: (controller) => this.throwBackgroundError(controller),
     isPageClosedError: isAbpPageClosedError,
   });

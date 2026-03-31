@@ -13,6 +13,7 @@ import type {
 import type { Frame } from "playwright";
 
 import { mapScreenshotFormat } from "./normalize.js";
+import type { PlaywrightActionBoundaryOptions } from "./action-settle.js";
 import type { FrameState, PageController } from "./types.js";
 import { captureLayoutViewportScreenshotArtifact } from "./viewport-screenshot.js";
 
@@ -22,6 +23,10 @@ export function createPlaywrightComputerUseBridge(context: {
   resolveController(pageRef: PageRef): PageController;
   flushPendingPageTasks(sessionRef: PageController["sessionRef"]): Promise<void>;
   flushDomUpdateTask(controller: PageController): Promise<void>;
+  settleActionBoundary(
+    controller: PageController,
+    options: PlaywrightActionBoundaryOptions,
+  ): Promise<void>;
   requireMainFrame(controller: PageController): FrameState;
   drainQueuedEvents(pageRef: PageRef): readonly StepEvent[];
   withModifiers(
@@ -106,7 +111,12 @@ export function createPlaywrightComputerUseBridge(context: {
 
       if (action.type !== "screenshot" && action.type !== "wait") {
         const waitStartedAt = Date.now();
-        await input.policySettle(actionController.pageRef);
+        await context.settleActionBoundary(actionController, {
+          signal: input.signal,
+          ...(input.snapshot === undefined ? {} : { snapshot: input.snapshot }),
+          remainingMs: input.remainingMs,
+          policySettle: input.policySettle,
+        });
         waitMs = Date.now() - waitStartedAt;
       } else if (action.type === "wait") {
         waitMs = actionMs;
@@ -123,7 +133,11 @@ export function createPlaywrightComputerUseBridge(context: {
         resultController.pageRef !== actionController.pageRef
       ) {
         const popupWaitStartedAt = Date.now();
-        await input.policySettle(resultController.pageRef);
+        await context.settleActionBoundary(resultController, {
+          signal: input.signal,
+          remainingMs: input.remainingMs,
+          policySettle: input.policySettle,
+        });
         waitMs += Date.now() - popupWaitStartedAt;
         await context.flushPendingPageTasks(actionController.sessionRef);
         resultController = context.resolveController(resultController.pageRef);

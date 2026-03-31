@@ -9,8 +9,8 @@ import type {
   OpensteerNetworkClearOutput,
   OpensteerNetworkQueryInput,
   OpensteerNetworkQueryOutput,
-  OpensteerNetworkSaveInput,
-  OpensteerNetworkSaveOutput,
+  OpensteerNetworkTagInput,
+  OpensteerNetworkTagOutput,
   OpensteerOpenInput,
   OpensteerOpenOutput,
   OpensteerPageActivateInput,
@@ -109,7 +109,7 @@ export interface OpensteerConformanceTarget {
     readonly includeIndexedDb?: boolean;
   }): Promise<StorageSnapshot>;
   queryNetwork(input?: OpensteerNetworkQueryInput): Promise<OpensteerNetworkQueryOutput>;
-  saveNetwork(input: OpensteerNetworkSaveInput): Promise<OpensteerNetworkSaveOutput>;
+  tagNetwork(input: OpensteerNetworkTagInput): Promise<OpensteerNetworkTagOutput>;
   clearNetwork(input?: OpensteerNetworkClearInput): Promise<OpensteerNetworkClearOutput>;
   route?(input: {
     readonly pageRef?: string;
@@ -377,7 +377,7 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
   {
     id: "network-capture",
     family: "network-capture",
-    description: "queries, persists, and clears captured network records",
+    description: "queries, tags, and clears persisted network records",
     async run({ target, urls }) {
       await target.open(urls.main);
       const networkUrl = new URL("/api/network?kind=live", urls.baseUrl).href;
@@ -398,21 +398,48 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
         "expected network.query to observe the live request",
       );
 
-      const saved = await target.saveNetwork({
+      const withBodies = await target.queryNetwork({
+        url: networkUrl,
+        includeBodies: true,
+        limit: 10,
+      });
+      const hasPersistedResponseBody = (record: OpensteerNetworkQueryOutput["records"][number]) =>
+        record.record.responseBody !== undefined &&
+        Buffer.from(record.record.responseBody.data, "base64").toString("utf8") ===
+          "network:live";
+      assert(
+        withBodies.records.some(hasPersistedResponseBody),
+        "expected network.query({ includeBodies: true }) to persist the response body",
+      );
+
+      await target.queryNetwork({
+        url: networkUrl,
+        limit: 10,
+      });
+
+      const afterMetadataRefresh = await target.queryNetwork({
+        url: networkUrl,
+        includeBodies: true,
+        limit: 10,
+      });
+      assert(
+        afterMetadataRefresh.records.some(hasPersistedResponseBody),
+        "expected metadata-only refreshes to preserve previously persisted response bodies",
+      );
+
+      const tagged = await target.tagNetwork({
         tag: "conformance-network",
         url: networkUrl,
       });
-      assert(saved.savedCount > 0, "expected network.save to persist at least one record");
+      assert(tagged.taggedCount > 0, "expected network.tag to tag at least one record");
 
       const persisted = await target.queryNetwork({
-        source: "saved",
         tag: "conformance-network",
       });
-      assert(persisted.records.length > 0, "expected saved network records to be queryable");
+      assert(persisted.records.length > 0, "expected persisted network records to be queryable");
 
       await target.clearNetwork({ tag: "conformance-network" });
       const afterClear = await target.queryNetwork({
-        source: "saved",
         tag: "conformance-network",
       });
       assertEqual(
