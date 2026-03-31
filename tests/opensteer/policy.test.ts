@@ -6,6 +6,7 @@ import {
   delayWithSignal,
   runWithPolicyTimeout,
   settleWithPolicy,
+  type SettleContext,
   type SettlePolicy,
   type TimeoutPolicy,
 } from "../../packages/opensteer/src/index.js";
@@ -102,7 +103,7 @@ describe("Phase 7 policy settle", () => {
         settle: async () => true,
       }),
     ).toThrow(TypeError);
-    expect(defaultPolicy().settle.observers).toHaveLength(1);
+    expect(defaultPolicy().settle.observers).toHaveLength(3);
   });
 
   test("skips fixed delays when configured as zero", async () => {
@@ -191,6 +192,194 @@ describe("Phase 7 policy settle", () => {
     setTimeout(() => controller.abort(), 10);
     await vi.advanceTimersByTimeAsync(10);
     await assertion;
+  });
+});
+
+describe("Phase 7 visual stability settle observers", () => {
+  function createMockEngine(waitImpl?: () => Promise<void>) {
+    return {
+      waitForVisualStability: vi.fn(waitImpl ?? (() => Promise.resolve())),
+    } as unknown as BrowserCoreEngine;
+  }
+
+  function createContextWithEngine(
+    trigger: "navigation" | "dom-action",
+    engine: BrowserCoreEngine,
+    options?: { operation?: SettleContext["operation"]; remainingMs?: number },
+  ): SettleContext {
+    return {
+      operation: options?.operation ?? (trigger === "navigation" ? "page.goto" : "dom.click"),
+      trigger,
+      engine,
+      pageRef: createPageRef(`page-${trigger}`),
+      signal: new AbortController().signal,
+      remainingMs: options?.remainingMs,
+    };
+  }
+
+  test("dom-action observer calls waitForVisualStability for click", async () => {
+    const engine = createMockEngine();
+    const policy = defaultPolicy().settle;
+    const context = createContextWithEngine("dom-action", engine, { operation: "dom.click" });
+
+    await settleWithPolicy(policy, context);
+
+    expect(engine.waitForVisualStability).toHaveBeenCalledTimes(1);
+    expect(engine.waitForVisualStability).toHaveBeenCalledWith({
+      pageRef: context.pageRef,
+      timeoutMs: 7_000,
+      settleMs: 750,
+      scope: "visible-frames",
+    });
+  });
+
+  test("dom-action observer uses hover-specific profile", async () => {
+    const engine = createMockEngine();
+    const policy = defaultPolicy().settle;
+    const context = createContextWithEngine("dom-action", engine, { operation: "dom.hover" });
+
+    await settleWithPolicy(policy, context);
+
+    expect(engine.waitForVisualStability).toHaveBeenCalledWith({
+      pageRef: context.pageRef,
+      timeoutMs: 2_500,
+      settleMs: 200,
+      scope: "main-frame",
+    });
+  });
+
+  test("dom-action observer uses scroll-specific profile", async () => {
+    const engine = createMockEngine();
+    const policy = defaultPolicy().settle;
+    const context = createContextWithEngine("dom-action", engine, { operation: "dom.scroll" });
+
+    await settleWithPolicy(policy, context);
+
+    expect(engine.waitForVisualStability).toHaveBeenCalledWith({
+      pageRef: context.pageRef,
+      timeoutMs: 7_000,
+      settleMs: 600,
+      scope: "visible-frames",
+    });
+  });
+
+  test("dom-action observer caps timeout to remainingMs", async () => {
+    const engine = createMockEngine();
+    const policy = defaultPolicy().settle;
+    const context = createContextWithEngine("dom-action", engine, {
+      operation: "dom.click",
+      remainingMs: 1_500,
+    });
+
+    await settleWithPolicy(policy, context);
+
+    expect(engine.waitForVisualStability).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: 1_500 }),
+    );
+  });
+
+  test("hover timeout cap applies even when remainingMs is larger", async () => {
+    const engine = createMockEngine();
+    const policy = defaultPolicy().settle;
+    const context = createContextWithEngine("dom-action", engine, {
+      operation: "dom.hover",
+      remainingMs: 9_000,
+    });
+
+    await settleWithPolicy(policy, context);
+
+    expect(engine.waitForVisualStability).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: 2_500 }),
+    );
+  });
+
+  test("dom-action observer returns false on error, falls back to delay", async () => {
+    vi.useFakeTimers();
+    const engine = createMockEngine(() => Promise.reject(new Error("CDP unavailable")));
+    const policy = defaultPolicy().settle;
+    const context = createContextWithEngine("dom-action", engine);
+
+    const promise = settleWithPolicy(policy, context);
+    await vi.advanceTimersByTimeAsync(99);
+    let settled = false;
+    void promise.then(() => {
+      settled = true;
+    });
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await promise;
+  });
+
+  test("dom-action observer returns false when remainingMs is zero", async () => {
+    vi.useFakeTimers();
+    const engine = createMockEngine();
+    const policy = defaultPolicy().settle;
+    const context = createContextWithEngine("dom-action", engine, { remainingMs: 0 });
+
+    const promise = settleWithPolicy(policy, context);
+    await vi.advanceTimersByTimeAsync(99);
+    let settled = false;
+    void promise.then(() => {
+      settled = true;
+    });
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await promise;
+
+    expect(engine.waitForVisualStability).not.toHaveBeenCalled();
+  });
+
+  test("navigation observer calls waitForVisualStability", async () => {
+    const engine = createMockEngine();
+    const policy = defaultPolicy().settle;
+    const context = createContextWithEngine("navigation", engine);
+
+    await settleWithPolicy(policy, context);
+
+    expect(engine.waitForVisualStability).toHaveBeenCalledWith({
+      pageRef: context.pageRef,
+      timeoutMs: 7_000,
+      settleMs: 750,
+      scope: "visible-frames",
+    });
+  });
+
+  test("navigation observer returns false on error, falls back to delay", async () => {
+    vi.useFakeTimers();
+    const engine = createMockEngine(() => Promise.reject(new Error("page closed")));
+    const policy = defaultPolicy().settle;
+    const context = createContextWithEngine("navigation", engine);
+
+    const promise = settleWithPolicy(policy, context);
+    await vi.advanceTimersByTimeAsync(499);
+    let settled = false;
+    void promise.then(() => {
+      settled = true;
+    });
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await promise;
+  });
+
+  test("snapshot observer is unaffected by new observers", async () => {
+    const engine = createMockEngine();
+    const policy = defaultPolicy().settle;
+    const context = {
+      operation: "page.snapshot" as const,
+      trigger: "snapshot" as const,
+      engine,
+      pageRef: createPageRef("page-snapshot"),
+      signal: new AbortController().signal,
+      remainingMs: undefined,
+    };
+
+    await settleWithPolicy(policy, context);
+
+    expect(engine.waitForVisualStability).toHaveBeenCalledWith({
+      pageRef: context.pageRef,
+      settleMs: 750,
+      scope: "visible-frames",
+    });
   });
 });
 

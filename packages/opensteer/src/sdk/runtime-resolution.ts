@@ -32,7 +32,7 @@ export function resolveOpensteerRuntimeConfig(
       : { environmentProvider: input.environmentProvider }),
   });
 
-  if (provider.kind === "cloud") {
+  if (provider.mode === "cloud") {
     return {
       provider,
       cloud: resolveCloudConfig({
@@ -62,9 +62,9 @@ export function createOpensteerSemanticRuntime(
       ? {}
       : { environmentProvider: process.env.OPENSTEER_PROVIDER }),
   });
-  assertProviderSupportsEngine(config.provider.kind, engine);
+  assertProviderSupportsEngine(config.provider.mode, engine);
 
-  if (config.provider.kind === "cloud") {
+  if (config.provider.mode === "cloud") {
     return new CloudSessionProxy(new OpensteerCloudClient(config.cloud!), {
       ...(runtimeOptions.rootDir === undefined ? {} : { rootDir: runtimeOptions.rootDir }),
       ...(runtimeOptions.rootPath === undefined ? {} : { rootPath: runtimeOptions.rootPath }),

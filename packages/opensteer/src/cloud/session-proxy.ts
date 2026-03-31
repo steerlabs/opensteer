@@ -220,7 +220,7 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
 
     return {
       provider: {
-        kind: "cloud",
+        mode: "cloud",
         ownership: "managed",
         engine: "playwright",
         baseUrl: this.cloud.getConfig().baseUrl,
@@ -678,8 +678,9 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     try {
       const workspaceStore = await this.ensureWorkspaceStore();
       await syncLocalRegistryToCloud(this.cloud, this.workspace, workspaceStore);
-    } catch {
+    } catch (error) {
       // Session startup must not fail if the registry sync fails.
+      void error;
     }
   }
 

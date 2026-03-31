@@ -1,6 +1,4 @@
 import {
-  hashDomDescriptorDescription,
-  parseDomDescriptorRecord,
   type AuthRecipeRecord,
   type DescriptorRecord,
   type FilesystemOpensteerWorkspace,
@@ -10,7 +8,6 @@ import {
 import type {
   CloudRegistryImportEntry,
   CloudRequestPlanImportEntry,
-  CloudSelectorCacheImportEntry,
 } from "@opensteer/protocol";
 
 import type { OpensteerCloudClient } from "./client.js";
@@ -20,7 +17,7 @@ export const REGISTRY_SYNC_MAX_ENTRIES_PER_BATCH = 100;
 
 type RegistryImportClient = Pick<
   OpensteerCloudClient,
-  "importSelectorCache" | "importRequestPlans" | "importRecipes" | "importAuthRecipes"
+  "importDescriptors" | "importRequestPlans" | "importRecipes" | "importAuthRecipes"
 >;
 
 export async function syncLocalRegistryToCloud(
@@ -35,13 +32,10 @@ export async function syncLocalRegistryToCloud(
     store.registry.authRecipes.list(),
   ]);
 
-  const selectorEntries = descriptors.flatMap((record) => {
-    const entry = toSelectorCacheImportEntry(workspace, record);
-    return entry === undefined ? [] : [entry];
-  });
+  const descriptorEntries = descriptors.map((record) => toDescriptorImportEntry(workspace, record));
 
   await Promise.all([
-    importInBatches(selectorEntries, (entries) => client.importSelectorCache(entries)),
+    importInBatches(descriptorEntries, (entries) => client.importDescriptors(entries)),
     importInBatches(
       requestPlans.map((record) => toRequestPlanImportEntry(workspace, record)),
       (entries) => client.importRequestPlans(entries),
@@ -57,23 +51,21 @@ export async function syncLocalRegistryToCloud(
   ]);
 }
 
-function toSelectorCacheImportEntry(
+function toDescriptorImportEntry(
   workspace: string,
   record: DescriptorRecord,
-): CloudSelectorCacheImportEntry | undefined {
-  const descriptor = parseDomDescriptorRecord(record);
-  if (descriptor === undefined) {
-    return undefined;
-  }
-
+): CloudRegistryImportEntry {
   return {
     workspace,
-    method: descriptor.payload.method,
-    descriptionHash: hashDomDescriptorDescription(descriptor.payload.description),
-    description: descriptor.payload.description,
-    path: descriptor.payload.path,
-    createdAt: descriptor.createdAt,
-    updatedAt: descriptor.updatedAt,
+    recordId: record.id,
+    key: record.key,
+    version: record.version,
+    contentHash: record.contentHash,
+    tags: [...record.tags],
+    ...(record.provenance === undefined ? {} : { provenance: record.provenance }),
+    payload: record.payload,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
   };
 }
 

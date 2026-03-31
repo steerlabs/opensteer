@@ -172,6 +172,16 @@ export class OpensteerCloudClient {
     return (await response.json()) as CloudSelectorCacheImportResponse;
   }
 
+  async importDescriptors(
+    entries: readonly CloudRegistryImportEntry[],
+  ): Promise<CloudRegistryImportResponse> {
+    const response = await this.request("/registry/descriptors/import", {
+      method: "POST",
+      body: { entries },
+    });
+    return (await response.json()) as CloudRegistryImportResponse;
+  }
+
   async importRequestPlans(
     entries: readonly CloudRequestPlanImportEntry[],
   ): Promise<CloudRegistryImportResponse> {

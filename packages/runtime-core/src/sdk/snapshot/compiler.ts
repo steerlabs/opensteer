@@ -37,7 +37,7 @@ import {
   isVoidHtmlTag,
 } from "./constants.js";
 
-export interface CompiledOpensteerSnapshotCounterRecord extends Omit<
+interface CompiledOpensteerSnapshotCounterRecord extends Omit<
   OpensteerSnapshotCounter,
   "nodeRef"
 > {
@@ -53,7 +53,6 @@ export interface CompiledOpensteerSnapshot {
   readonly mode: OpensteerSnapshotMode;
   readonly html: string;
   readonly counters: readonly OpensteerSnapshotCounter[];
-  readonly counterRecords: ReadonlyMap<number, CompiledOpensteerSnapshotCounterRecord>;
 }
 
 interface RenderDepth {
@@ -224,7 +223,7 @@ export async function compileOpensteerSnapshot(options: {
         dense.sparseToDirectMapping,
       );
     } catch {
-      // Non-fatal: in-memory counterRecords still work for same-process use.
+      // Non-fatal: live DOM c attributes are the primary resolution mechanism.
     }
   }
 
@@ -234,7 +233,6 @@ export async function compileOpensteerSnapshot(options: {
     mode: options.mode,
     html: dense.html,
     counters: [...dense.counterRecords.values()].map(toPublicCounterRecord),
-    counterRecords: dense.counterRecords,
   };
 }
 

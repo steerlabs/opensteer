@@ -18,10 +18,20 @@ export {
   buildDomDescriptorKey,
   buildDomDescriptorPayload,
   buildDomDescriptorVersion,
+  createDomDescriptorStore,
   hashDomDescriptorDescription,
   parseDomDescriptorRecord,
   sanitizeReplayElementPath,
 } from "./runtimes/dom/index.js";
+export type {
+  OpensteerExtractionDescriptorPayload,
+  OpensteerExtractionDescriptorRecord,
+  OpensteerExtractionDescriptorStore,
+} from "./sdk/extraction.js";
+export {
+  createOpensteerExtractionDescriptorStore,
+  parseExtractionDescriptorRecord,
+} from "./sdk/extraction.js";
 export type {
   OpensteerRuntimeOperationOptions,
   OpensteerSemanticRuntime,

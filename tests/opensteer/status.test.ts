@@ -48,7 +48,7 @@ describe("opensteer status", () => {
         rootDir,
         workspace,
         provider: {
-          kind: "cloud",
+          mode: "cloud",
           source: "env",
         },
       });
