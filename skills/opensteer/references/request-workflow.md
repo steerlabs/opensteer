@@ -1,5 +1,7 @@
 # Opensteer Request Workflow
 
+If you haven't decided whether this workflow applies, see the task triage in SKILL.md.
+
 Use this workflow when the deliverable is a custom API, a replayable request plan, or a lower-overhead path than full browser automation.
 
 ## Sections
@@ -251,22 +253,7 @@ Additional guidance:
 
 ## When To Use Request Capture vs DOM Extraction
 
-**Start here: Does the data come from a network request?**
-
-1. Open the page with `captureNetwork` and check `queryNetwork()`. If you see a JSON/REST API returning the data you need:
-   - Probe it with `rawRequest({ transport: "direct-http" })`.
-   - If it returns 200: **use request capture**. The API is portable.
-   - If it fails: probe with `context-http`. If that works: **use request capture** with browser session.
-   - If both fail: **fall back to DOM extraction**.
-
-2. If `queryNetwork()` shows no relevant API (data is server-rendered HTML):
-   - **Use DOM extraction** (`snapshot` + `extract`).
-
-3. If the API returns partial data and the page enriches it client-side:
-   - **Use request capture** for the raw API data.
-   - Supplement with DOM extraction only if the client-side enrichment is critical.
-
-**Key signal:** If the page makes a clean `fetch()` or `XMLHttpRequest` to a JSON endpoint, that is almost always the better capture target than the rendered DOM.
+See the task triage decision tree in SKILL.md for when to choose this workflow vs DOM extraction.
 
 ## Error Recovery
 
