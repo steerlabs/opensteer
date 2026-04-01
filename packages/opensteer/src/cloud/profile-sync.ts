@@ -1,84 +1,77 @@
+import { promisify } from "node:util";
+import { gzip as gzipCallback } from "node:zlib";
+
+import type { PortableBrowserProfileSnapshot } from "@opensteer/protocol";
+
 import type { BrowserBrandId } from "../local-browser/browser-brands.js";
-import {
-  acquireCdpEndpoint,
-  relaunchBrowserNormally,
-  resolveCookieCaptureStrategy,
-  type CookieCaptureStrategy,
-} from "../local-browser/cookie-capture.js";
+import { readBrowserCookies } from "../local-browser/cookie-reader.js";
+import { prepareBrowserProfileSyncCookies } from "./cookie-sync.js";
 import type { OpensteerCloudClient } from "./client.js";
-import {
-  capturePortableBrowserProfileSnapshot,
-  encodePortableBrowserProfileSnapshot,
-} from "./portable-cookie-snapshot.js";
+
+const gzip = promisify(gzipCallback);
 
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_POLL_TIMEOUT_MS = 5 * 60_000;
 
 export interface SyncBrowserProfileCookiesInput {
   readonly profileId: string;
-  readonly attachEndpoint?: string;
   readonly brandId?: BrowserBrandId;
   readonly userDataDir?: string;
   readonly profileDirectory?: string;
-  readonly executablePath?: string;
-  readonly strategy?: CookieCaptureStrategy;
-  readonly restoreBrowser?: boolean;
   readonly domains?: readonly string[];
-  readonly timeoutMs?: number;
 }
 
 export async function syncBrowserProfileCookies(
   client: OpensteerCloudClient,
   input: SyncBrowserProfileCookiesInput,
 ): Promise<Awaited<ReturnType<OpensteerCloudClient["getBrowserProfileImport"]>>> {
-  const resolved = await resolveCookieCaptureStrategy({
-    ...(input.attachEndpoint === undefined ? {} : { attachEndpoint: input.attachEndpoint }),
+  const result = await readBrowserCookies({
     ...(input.brandId === undefined ? {} : { brandId: input.brandId }),
     ...(input.userDataDir === undefined ? {} : { userDataDir: input.userDataDir }),
     ...(input.profileDirectory === undefined ? {} : { profileDirectory: input.profileDirectory }),
-    ...(input.executablePath === undefined ? {} : { executablePath: input.executablePath }),
-    ...(input.strategy === undefined ? {} : { strategy: input.strategy }),
-    ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
   });
-  const shouldRestoreBrowser =
-    (input.restoreBrowser ?? true) && resolved.strategy === "managed-relaunch";
 
-  let captureSource: Awaited<ReturnType<typeof acquireCdpEndpoint>> | undefined;
+  const prepared = prepareBrowserProfileSyncCookies({
+    cookies: result.cookies,
+    ...(input.domains === undefined ? {} : { domains: input.domains }),
+  });
 
-  try {
-    captureSource = await acquireCdpEndpoint(resolved);
-
-    const snapshot = await capturePortableBrowserProfileSnapshot({
-      attachEndpoint: captureSource.cdpEndpoint,
-      ...(captureSource.brandId === undefined ? {} : { browserBrand: captureSource.brandId }),
-      captureMethod: captureSource.strategy,
-      ...(input.domains === undefined ? {} : { domains: input.domains }),
-      ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
-    });
-    const payload = await encodePortableBrowserProfileSnapshot(snapshot);
-
-    const created = await client.createBrowserProfileImport({
-      profileId: input.profileId,
-    });
-    if (payload.length > created.maxUploadBytes) {
-      throw new Error(
-        `Compressed cookie snapshot is ${String(payload.length)} bytes, exceeding the ${String(created.maxUploadBytes)} byte upload limit.`,
-      );
-    }
-
-    const uploaded = await client.uploadBrowserProfileImportPayload({
-      uploadUrl: created.uploadUrl,
-      payload,
-    });
-    return uploaded.status === "ready"
-      ? uploaded
-      : waitForBrowserProfileImport(client, created.importId);
-  } finally {
-    await captureSource?.cleanup().catch(() => undefined);
-    if (shouldRestoreBrowser && resolved.executablePath !== undefined) {
-      relaunchBrowserNormally(resolved.executablePath);
-    }
+  if (prepared.cookies.length === 0) {
+    throw new Error("No syncable cookies found for the selected browser and scope.");
   }
+
+  const snapshot: PortableBrowserProfileSnapshot = {
+    version: "portable-cookies-v1",
+    source: {
+      browserFamily: "chromium",
+      browserBrand: result.brandId,
+      captureMethod: "sqlite",
+      platform: normalizePlatform(process.platform),
+      capturedAt: Date.now(),
+    },
+    cookies: prepared.cookies,
+  };
+
+  const payload = await gzip(Buffer.from(JSON.stringify(snapshot), "utf8"));
+
+  const created = await client.createBrowserProfileImport({
+    profileId: input.profileId,
+  });
+
+  if (payload.length > created.maxUploadBytes) {
+    throw new Error(
+      `Compressed cookie snapshot is ${String(payload.length)} bytes, exceeding the ${String(created.maxUploadBytes)} byte upload limit.`,
+    );
+  }
+
+  const uploaded = await client.uploadBrowserProfileImportPayload({
+    uploadUrl: created.uploadUrl,
+    payload,
+  });
+
+  return uploaded.status === "ready"
+    ? uploaded
+    : waitForBrowserProfileImport(client, created.importId);
 }
 
 async function waitForBrowserProfileImport(
@@ -98,6 +91,12 @@ async function waitForBrowserProfileImport(
   }
 
   throw new Error(`Timed out waiting for browser profile sync "${importId}" to finish.`);
+}
+
+function normalizePlatform(platform: NodeJS.Platform): string {
+  if (platform === "darwin") return "macos";
+  if (platform === "win32") return "windows";
+  return platform;
 }
 
 async function sleep(ms: number): Promise<void> {
