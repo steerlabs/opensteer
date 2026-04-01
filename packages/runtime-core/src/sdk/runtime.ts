@@ -170,6 +170,11 @@ import {
   type OpensteerValueTemplate,
   type OpensteerValidationRule,
   type OpensteerEvent,
+  type AppendObservationEventInput,
+  type ObservationSink,
+  type ObservationContext,
+  type ObservabilityConfig,
+  type SessionObservationSink,
   type OpensteerWriteRecipeInput,
   type StorageSnapshot,
   type TraceContext,
@@ -188,6 +193,7 @@ import {
 import { normalizeThrownOpensteerError } from "../internal/errors.js";
 import { sha256Hex } from "../internal/filesystem.js";
 import { canonicalJsonString, toCanonicalJsonValue } from "../json.js";
+import { normalizeObservabilityConfig } from "../observations.js";
 import {
   delayWithSignal,
   defaultPolicy,
@@ -351,6 +357,8 @@ export interface OpensteerSessionRuntimeOptions {
   };
   readonly cleanupRootOnClose?: boolean;
   readonly sessionInfo?: Partial<Omit<OpensteerSessionInfo, "sessionId" | "activePageRef">>;
+  readonly observability?: Partial<ObservabilityConfig>;
+  readonly observationSink?: ObservationSink;
 }
 
 interface OpensteerTraceArtifacts {
@@ -512,6 +520,8 @@ export class OpensteerSessionRuntime {
   private readonly sessionInfoBase: Partial<
     Omit<OpensteerSessionInfo, "sessionId" | "activePageRef">
   >;
+  private readonly observationConfig: ObservabilityConfig;
+  private readonly injectedObservationSink: ObservationSink | undefined;
 
   private root: OpensteerRuntimeWorkspace | undefined;
   private engine: DisposableBrowserCoreEngine | undefined;
@@ -522,6 +532,7 @@ export class OpensteerSessionRuntime {
   private sessionRef: SessionRef | undefined;
   private pageRef: PageRef | undefined;
   private runId: string | undefined;
+  private observations: SessionObservationSink | undefined;
   private readonly cookieJars = new Map<string, CookieJarEntry[]>();
   private readonly recipeCache = new Map<string, OpensteerRunRecipeOutput>();
   private ownsEngine = false;
@@ -545,6 +556,8 @@ export class OpensteerSessionRuntime {
     this.registryOverrides = options.registryOverrides;
     this.cleanupRootOnClose = options.cleanupRootOnClose ?? options.workspace === undefined;
     this.sessionInfoBase = options.sessionInfo ?? {};
+    this.observationConfig = normalizeObservabilityConfig(options.observability);
+    this.injectedObservationSink = options.observationSink;
 
     if (this.injectedEngine === undefined && this.engineFactory === undefined) {
       throw new Error("OpensteerSessionRuntime requires an engine or engineFactory.");
@@ -945,9 +958,7 @@ export class OpensteerSessionRuntime {
       const { navigation, state } = await this.runMutationCapturedOperation(
         "page.goto",
         {
-          ...(input.captureNetwork === undefined
-            ? {}
-            : { captureNetwork: input.captureNetwork }),
+          ...(input.captureNetwork === undefined ? {} : { captureNetwork: input.captureNetwork }),
           options,
         },
         async (timeout) => {
@@ -5090,9 +5101,7 @@ export class OpensteerSessionRuntime {
       const { artifacts, output } = await this.runMutationCapturedOperation(
         "computer.execute",
         {
-          ...(input.captureNetwork === undefined
-            ? {}
-            : { captureNetwork: input.captureNetwork }),
+          ...(input.captureNetwork === undefined ? {} : { captureNetwork: input.captureNetwork }),
           options,
         },
         async (timeout) => {
@@ -5299,9 +5308,7 @@ export class OpensteerSessionRuntime {
       const { executed, preparedTarget } = await this.runMutationCapturedOperation(
         operation,
         {
-          ...(input.captureNetwork === undefined
-            ? {}
-            : { captureNetwork: input.captureNetwork }),
+          ...(input.captureNetwork === undefined ? {} : { captureNetwork: input.captureNetwork }),
           options,
         },
         async (timeout) => {
@@ -8496,6 +8503,9 @@ export class OpensteerSessionRuntime {
     }
 
     const root = await this.ensureRoot();
+    const normalizedData = input.data === undefined ? undefined : toCanonicalJsonValue(input.data);
+    const normalizedError =
+      input.error === undefined ? undefined : normalizeOpensteerError(input.error);
     const artifacts =
       input.artifacts === undefined
         ? undefined
@@ -8512,7 +8522,7 @@ export class OpensteerSessionRuntime {
             }),
           );
 
-    await root.traces.append(runId, {
+    const traceEntry = await root.traces.append(runId, {
       operation: input.operation,
       outcome: input.outcome,
       startedAt: input.startedAt,
@@ -8520,13 +8530,56 @@ export class OpensteerSessionRuntime {
       ...(input.context === undefined ? {} : { context: input.context }),
       ...(input.events === undefined ? {} : { events: input.events }),
       ...(artifacts === undefined ? {} : { artifacts }),
-      ...(input.data === undefined ? {} : { data: toCanonicalJsonValue(input.data) }),
-      ...(input.error === undefined
+      ...(normalizedData === undefined ? {} : { data: normalizedData }),
+      ...(normalizedError === undefined
         ? {}
         : {
-            error: normalizeOpensteerError(input.error),
+            error: normalizedError,
           }),
     });
+
+    const observationSession = await this.ensureObservationSession();
+    if (observationSession === undefined || this.observationConfig.profile === "off") {
+      return;
+    }
+
+    const observationArtifactIds =
+      input.artifacts === undefined
+        ? undefined
+        : await Promise.all(
+            input.artifacts.manifests.map(async (manifest) => {
+              const artifact = await observationSession.writeArtifact({
+                artifactId: manifest.artifactId,
+                kind: observationArtifactKindFromManifest(manifest.kind),
+                createdAt: manifest.createdAt,
+                context: manifest.scope,
+                mediaType: manifest.mediaType,
+                byteLength: manifest.byteLength,
+                sha256: manifest.sha256,
+                opensteerArtifactId: manifest.artifactId,
+                storageKey: manifestToExternalBinaryLocation(root.rootPath, manifest).uri,
+              });
+              return artifact.artifactId;
+            }),
+          );
+
+    const observationEvents = buildObservationEventsFromTrace({
+      traceId: traceEntry.traceId,
+      stepId: traceEntry.stepId,
+      operation: input.operation,
+      outcome: input.outcome,
+      startedAt: input.startedAt,
+      completedAt: input.completedAt,
+      ...(input.context === undefined ? {} : { context: input.context }),
+      ...(input.events === undefined ? {} : { events: input.events }),
+      ...(normalizedData === undefined ? {} : { data: normalizedData }),
+      ...(normalizedError === undefined ? {} : { error: normalizedError }),
+      ...(observationArtifactIds === undefined ? {} : { artifactIds: observationArtifactIds }),
+      profile: this.observationConfig.profile,
+    });
+    if (observationEvents.length > 0) {
+      await observationSession.appendBatch(observationEvents);
+    }
   }
 
   private async cleanupSessionResources(
@@ -8544,6 +8597,7 @@ export class OpensteerSessionRuntime {
 
   private async resetRuntimeState(options: { readonly disposeEngine: boolean }): Promise<void> {
     const engine = this.engine;
+    const observations = this.observations;
 
     this.networkHistory.clear();
     this.sessionRef = undefined;
@@ -8553,11 +8607,33 @@ export class OpensteerSessionRuntime {
     this.computer = undefined;
     this.extractionDescriptors = undefined;
     this.engine = undefined;
+    this.observations = undefined;
 
+    await observations?.close("runtime_reset").catch(() => undefined);
     if (options.disposeEngine && this.ownsEngine && engine?.dispose) {
       await engine.dispose();
     }
     this.ownsEngine = false;
+  }
+
+  private async ensureObservationSession(): Promise<SessionObservationSink | undefined> {
+    if (this.observationConfig.profile === "off") {
+      return undefined;
+    }
+    if (this.observations !== undefined) {
+      return this.observations;
+    }
+    if (this.sessionRef === undefined) {
+      return undefined;
+    }
+
+    const sink = this.injectedObservationSink ?? (await this.ensureRoot()).observations;
+    this.observations = await sink.openSession({
+      sessionId: this.sessionRef,
+      openedAt: Date.now(),
+      config: this.observationConfig,
+    });
+    return this.observations;
   }
 
   private runWithOperationTimeout<T>(
@@ -12193,6 +12269,195 @@ function toOpensteerResolvedTarget(target: ResolvedDomTarget): OpensteerResolved
 
 function normalizeOpensteerError(error: unknown) {
   return normalizeThrownOpensteerError(error, "Unknown Opensteer runtime failure");
+}
+
+function observationArtifactKindFromManifest(
+  kind: ArtifactManifest["kind"],
+): "screenshot" | "dom-snapshot" | "html-snapshot" | "other" {
+  switch (kind) {
+    case "screenshot":
+      return "screenshot";
+    case "dom-snapshot":
+      return "dom-snapshot";
+    case "html-snapshot":
+      return "html-snapshot";
+    default:
+      return "other";
+  }
+}
+
+function buildObservationEventsFromTrace(input: {
+  readonly traceId: string;
+  readonly stepId: string;
+  readonly operation: string;
+  readonly outcome: "ok" | "error";
+  readonly startedAt: number;
+  readonly completedAt: number;
+  readonly context?: TraceContext;
+  readonly events?: readonly OpensteerEvent[];
+  readonly data?: JsonValue;
+  readonly error?: OpensteerError;
+  readonly artifactIds?: readonly string[];
+  readonly profile: ObservabilityConfig["profile"];
+}): readonly AppendObservationEventInput[] {
+  const context = buildObservationContextFromTraceContext(input.context);
+  const baseCorrelationId = input.traceId;
+  const startedEvent: AppendObservationEventInput = {
+    kind:
+      input.operation === "session.open" || input.operation === "session.close"
+        ? "session"
+        : "operation",
+    phase: "started",
+    createdAt: input.startedAt,
+    correlationId: baseCorrelationId,
+    spanId: input.stepId,
+    ...(context === undefined ? {} : { context }),
+    data: {
+      operation: input.operation,
+    },
+  };
+  const stepEvents: AppendObservationEventInput[] = (input.events ?? [])
+    .filter((event) => shouldCaptureObservationStepEvent(event, input.profile))
+    .map((event) => {
+      const eventContext = buildObservationContextFromEvent(event);
+      return {
+        kind: observationKindForStepEvent(event),
+        phase: "occurred",
+        createdAt: event.timestamp,
+        correlationId: baseCorrelationId,
+        parentSpanId: input.stepId,
+        ...(eventContext === undefined ? {} : { context: eventContext }),
+        data: stripObservationStepEvent(event),
+        ...(event.kind === "page-error"
+          ? {
+              error: {
+                message: event.message,
+                ...(event.stack === undefined ? {} : { details: { stack: event.stack } }),
+              },
+            }
+          : {}),
+      };
+    });
+  const completedEvent: AppendObservationEventInput = {
+    kind:
+      input.operation === "session.open" || input.operation === "session.close"
+        ? "session"
+        : "operation",
+    phase: input.outcome === "ok" ? "completed" : "failed",
+    createdAt: input.completedAt,
+    correlationId: baseCorrelationId,
+    spanId: input.stepId,
+    ...(context === undefined ? {} : { context }),
+    data: {
+      operation: input.operation,
+      startedAt: input.startedAt,
+      completedAt: input.completedAt,
+      durationMs: input.completedAt - input.startedAt,
+      ...(input.data === undefined ? {} : { output: input.data }),
+    },
+    ...(input.error === undefined
+      ? {}
+      : {
+          error: {
+            ...(input.error.code === undefined ? {} : { code: input.error.code }),
+            message: input.error.message,
+            ...(input.error.retriable === undefined ? {} : { retriable: input.error.retriable }),
+            ...(input.error.details === undefined
+              ? {}
+              : { details: toCanonicalJsonValue(input.error.details) }),
+          },
+        }),
+    ...(input.artifactIds === undefined || input.artifactIds.length === 0
+      ? {}
+      : { artifactIds: input.artifactIds }),
+  };
+
+  return [startedEvent, ...stepEvents, completedEvent];
+}
+
+function buildObservationContextFromEvent(event: OpensteerEvent): ObservationContext | undefined {
+  return buildObservationContextFromTraceContext({
+    sessionRef: event.sessionRef,
+    ...(event.pageRef === undefined ? {} : { pageRef: event.pageRef }),
+    ...(event.frameRef === undefined ? {} : { frameRef: event.frameRef }),
+    ...(event.documentRef === undefined ? {} : { documentRef: event.documentRef }),
+    ...(event.documentEpoch === undefined ? {} : { documentEpoch: event.documentEpoch }),
+  });
+}
+
+function buildObservationContextFromTraceContext(
+  context: TraceContext | undefined,
+): ObservationContext | undefined {
+  if (context === undefined) {
+    return undefined;
+  }
+
+  const normalized = {
+    ...(context.sessionRef === undefined ? {} : { sessionRef: context.sessionRef }),
+    ...(context.pageRef === undefined ? {} : { pageRef: context.pageRef }),
+    ...(context.frameRef === undefined ? {} : { frameRef: context.frameRef }),
+    ...(context.documentRef === undefined ? {} : { documentRef: context.documentRef }),
+    ...(context.documentEpoch === undefined ? {} : { documentEpoch: context.documentEpoch }),
+  } satisfies ObservationContext;
+  return Object.keys(normalized).length === 0 ? undefined : normalized;
+}
+
+function shouldCaptureObservationStepEvent(
+  event: OpensteerEvent,
+  profile: ObservabilityConfig["profile"],
+): boolean {
+  if (profile === "diagnostic") {
+    return true;
+  }
+
+  switch (event.kind) {
+    case "page-created":
+    case "popup-opened":
+    case "page-closed":
+    case "page-error":
+      return true;
+    case "console":
+      return event.level === "warn" || event.level === "error";
+    default:
+      return false;
+  }
+}
+
+function observationKindForStepEvent(
+  event: OpensteerEvent,
+): "page" | "console" | "error" | "runtime" {
+  switch (event.kind) {
+    case "console":
+      return "console";
+    case "page-error":
+      return "error";
+    case "paused":
+    case "resumed":
+    case "frozen":
+      return "runtime";
+    default:
+      return "page";
+  }
+}
+
+function stripObservationStepEvent(event: OpensteerEvent): JsonValue {
+  const {
+    eventId: _eventId,
+    kind,
+    timestamp,
+    sessionRef: _sessionRef,
+    pageRef: _pageRef,
+    frameRef: _frameRef,
+    documentRef: _documentRef,
+    documentEpoch: _documentEpoch,
+    ...rest
+  } = event;
+
+  return toCanonicalJsonValue({
+    eventKind: kind,
+    timestamp,
+    ...rest,
+  });
 }
 
 function buildMutationCaptureTraceData(

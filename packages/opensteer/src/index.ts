@@ -22,6 +22,12 @@ export {
   resolveFilesystemWorkspacePath,
 } from "./root.js";
 export type {
+  FilesystemObservationStore,
+  ListObservationArtifactsInput,
+  ListObservationEventsInput,
+} from "./observations.js";
+export { createObservationStore, normalizeObservabilityConfig } from "./observations.js";
+export type {
   AuthRecipeRecord,
   AuthRecipeRegistryStore,
   InteractionTraceRecord,
