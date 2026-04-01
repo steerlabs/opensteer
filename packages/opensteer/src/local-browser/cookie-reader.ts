@@ -20,6 +20,7 @@ const execFile = promisify(execFileCallback);
 
 const NODE_SQLITE_SPECIFIER = `node:${"sqlite"}`;
 const CHROME_EPOCH_OFFSET = 11644473600000000n;
+const CHROME_HMAC_PREFIX_LENGTH = 32;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -236,10 +237,8 @@ async function resolveWindowsMasterKey(userDataDir: string): Promise<Buffer> {
     throw new Error(`No encrypted key found in "${localStatePath}".`);
   }
 
-  // Base64 decode and strip the "DPAPI" prefix (5 bytes)
   const rawKey = Buffer.from(encodedKey, "base64").subarray(5);
 
-  // Decrypt via PowerShell DPAPI
   const psScript = `
     Add-Type -AssemblyName System.Security
     $bytes = [byte[]]@(${Array.from(rawKey).join(",")})
@@ -264,7 +263,7 @@ async function resolveWindowsMasterKey(userDataDir: string): Promise<Buffer> {
 }
 
 // ---------------------------------------------------------------------------
-// Cookie value decryption
+// Cookie row decryption and mapping
 // ---------------------------------------------------------------------------
 
 function decryptCookieRows(
@@ -289,7 +288,6 @@ function decryptCookieRows(
     const expiresSeconds = chromeDateToUnixSeconds(row.expires_utc);
     const isSession = expiresSeconds <= 0;
 
-    // Skip expired non-session cookies
     if (!isSession && expiresSeconds < nowSeconds) {
       continue;
     }
@@ -297,7 +295,7 @@ function decryptCookieRows(
     const sameSite = chromeSameSiteToString(row.samesite);
     let secure = Number(row.is_secure) === 1;
 
-    // CDP requires Secure=true when SameSite=None
+    // CDP requires Secure=true when SameSite=None.
     if (sameSite === "None") {
       secure = true;
     }
@@ -318,7 +316,6 @@ function decryptCookieRows(
 }
 
 function decryptCookieValue(row: RawCookieRow, decryptionKey: DecryptionKey): string | null {
-  // Prefer the unencrypted value column when present
   if (row.value && row.value.length > 0) {
     return row.value;
   }
@@ -331,10 +328,8 @@ function decryptCookieValue(row: RawCookieRow, decryptionKey: DecryptionKey): st
     return "";
   }
 
-  // Check for version prefix (v10 or v11)
   const prefix = encrypted.subarray(0, 3).toString("ascii");
   if (prefix !== "v10" && prefix !== "v11") {
-    // Not encrypted — return raw value
     return encrypted.toString("utf8");
   }
 
@@ -351,40 +346,61 @@ function decryptCookieValue(row: RawCookieRow, decryptionKey: DecryptionKey): st
   return null;
 }
 
-const CHROME_COOKIE_HMAC_PREFIX_LENGTH = 32;
+// ---------------------------------------------------------------------------
+// AES decryption
+// ---------------------------------------------------------------------------
 
 function decryptAes128Cbc(ciphertext: Buffer, key: Buffer): string | null {
   try {
-    const iv = Buffer.alloc(16, 0x20); // 16 bytes of space character
+    const iv = Buffer.alloc(16, 0x20);
     const decipher = createDecipheriv("aes-128-cbc", key, iv);
-    const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    let decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
 
-    // Modern Chrome (130+) prepends a 32-byte HMAC to the cookie value before
-    // encrypting. Detect this by checking whether the first 32 bytes contain any
-    // non-printable ASCII — real cookie values are printable strings.
-    let value: string;
+    // Chrome 130+ prepends a 32-byte HMAC to the plaintext before encrypting.
+    // Detect by checking whether the first 32 bytes contain non-printable bytes.
     if (
-      decrypted.length > CHROME_COOKIE_HMAC_PREFIX_LENGTH &&
-      hasNonPrintableBytes(decrypted, CHROME_COOKIE_HMAC_PREFIX_LENGTH)
+      decrypted.length > CHROME_HMAC_PREFIX_LENGTH &&
+      containsNonPrintableAscii(decrypted, CHROME_HMAC_PREFIX_LENGTH)
     ) {
-      value = decrypted.subarray(CHROME_COOKIE_HMAC_PREFIX_LENGTH).toString("utf8");
-    } else {
-      value = decrypted.toString("utf8");
+      decrypted = decrypted.subarray(CHROME_HMAC_PREFIX_LENGTH);
     }
 
-    // Cookies encrypted with a rotated or app-bound key may decrypt to garbage.
-    // Discard any value that still contains non-printable characters.
-    if (hasNonPrintableBytes(Buffer.from(value, "utf8"), value.length)) {
+    // Cookies encrypted with a rotated or app-bound key produce undecryptable output.
+    if (containsNonPrintableAscii(decrypted, decrypted.length)) {
       return null;
     }
 
-    return value;
+    return decrypted.toString("utf8");
   } catch {
     return null;
   }
 }
 
-function hasNonPrintableBytes(buffer: Buffer, length: number): boolean {
+function decryptAes256Gcm(ciphertext: Buffer, key: Buffer): string | null {
+  try {
+    const nonce = ciphertext.subarray(0, 12);
+    const authTag = ciphertext.subarray(ciphertext.length - 16);
+    const encrypted = ciphertext.subarray(12, ciphertext.length - 16);
+
+    const decipher = createDecipheriv("aes-256-gcm", key, nonce);
+    decipher.setAuthTag(authTag);
+    const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
+
+    if (containsNonPrintableAscii(decrypted, decrypted.length)) {
+      return null;
+    }
+
+    return decrypted.toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+
+function containsNonPrintableAscii(buffer: Buffer, length: number): boolean {
   const end = Math.min(length, buffer.length);
   for (let i = 0; i < end; i++) {
     const byte = buffer[i]!;
@@ -394,25 +410,6 @@ function hasNonPrintableBytes(buffer: Buffer, length: number): boolean {
   }
   return false;
 }
-
-function decryptAes256Gcm(ciphertext: Buffer, key: Buffer): string | null {
-  try {
-    // Layout: 12-byte nonce | encrypted data | 16-byte auth tag
-    const nonce = ciphertext.subarray(0, 12);
-    const authTag = ciphertext.subarray(ciphertext.length - 16);
-    const encrypted = ciphertext.subarray(12, ciphertext.length - 16);
-
-    const decipher = createDecipheriv("aes-256-gcm", key, nonce);
-    decipher.setAuthTag(authTag);
-    return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8");
-  } catch {
-    return null;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Chrome date conversion
-// ---------------------------------------------------------------------------
 
 function chromeDateToUnixSeconds(chromeTimestamp: number | bigint): number {
   const ts = BigInt(chromeTimestamp);
