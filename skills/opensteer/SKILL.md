@@ -6,40 +6,27 @@ argument-hint: "[goal]"
 
 # Opensteer
 
-## Critical Rules
+Opensteer controls a real Chromium browser through persistent workspaces. It has three capabilities: (1) DOM automation and structured data extraction from rendered pages, (2) network request capture and replay for reverse-engineering APIs, and (3) browser and workspace administration. Workspaces persist browser state, DOM/extraction descriptors, network history, request plans, recipes, and artifacts under `.opensteer/workspaces/<id>`.
 
-1. Run `snapshot action` or `snapshot extraction` first. The output is JSON with `{url, title, mode, html, counters}`. **Read the `html` field** — it is a clean filtered DOM with inline `c="N"` attributes marking every element. Do NOT parse the `counters` array for element discovery — it is verbose metadata.
-2. Use `element` + `persistAsDescription` to act on elements. Use `extract()` with `description` + `schema` to extract data. Do NOT use `page.evaluate()`, CSS selectors, or raw DOM parsing when `extract()` can express the output.
-3. Extraction schemas are **literal**. If you provide 2 template rows, you get exactly 2 rows back. The framework consolidates those templates into a generalized selector behind the scenes and saves it as a descriptor. Replaying with `description` alone (no schema) uses that generalized selector to return **ALL** matching rows.
-4. `persistAsDescription` requires the verbose `opensteer run dom.*` syntax. The short CLI commands (`click`, `input`, etc.) do NOT support it.
-5. Always start with Phase 1: use the CLI to explore the site, take snapshots, and understand the page before writing any automation code. Only move to Phase 2 (creating a rerunnable script using `description`-based replay) if the user explicitly asks for it.
-6. Always close the browser when done with exploration or task completion (`opensteer close --workspace <id>`). Do not leave browsers running.
+## Task Triage
 
-If invoked directly, treat `$ARGUMENTS` as the concrete browser or replay goal. First decide whether the task is primarily DOM automation, request capture/replay, or workspace browser administration.
+If invoked directly, treat `$ARGUMENTS` as the goal. **Before taking any action, classify the task:**
 
-## Snapshot Output
+**Request capture / API reverse-engineering.** Signals: the user mentions API, endpoint, request, network traffic, reverse-engineer, replay, or the deliverable is a replayable request rather than page content. Load the [Request Workflow](references/request-workflow.md) reference. Start by opening the page with `captureNetwork` on navigation, then query captured traffic with `queryNetwork()`. Do NOT start with a DOM snapshot.
 
-`snapshot action` and `snapshot extraction` return JSON. Read the `html` field:
+**DOM automation / data extraction.** Signals: the user mentions scraping page content, filling forms, clicking through a flow, extracting visible data, or the deliverable is structured data from the rendered page. Load the [CLI Reference](references/cli-reference.md). Start with `snapshot action` or `snapshot extraction` to understand the page structure before acting.
 
-```json
-{
-  "url": "https://example.com/search?q=airpods",
-  "title": "Search Results",
-  "mode": "extraction",
-  "html": "<span c=\"12\">$549.99</span>\n<a c=\"15\" href=\"/p/airpods-max\">\n  <div c=\"16\">Apple AirPods Max</div>\n</a>\n<a c=\"18\" href=\"/b/apple\">Apple</a>\n...",
-  "counters": [{"element":12,"tagName":"SPAN",...}, ...]
-}
-```
+**Browser / workspace administration.** Signals: the user mentions cloning a profile, managing browser state, attaching to a running browser, checking workspace status. Load the [CLI Reference](references/cli-reference.md) (Browser Lifecycle section) or the [SDK Reference](references/sdk-reference.md) (Browser Admin section).
 
-`c="N"` in the HTML = `element: N` in commands and extraction schemas. Read the HTML, find the `c` values, use those numbers.
+**When unsure:** Open the page with `captureNetwork` on the `goto` action. Check `queryNetwork()`. If relevant JSON APIs appear, follow the request capture path. If the data is server-rendered HTML with no backing API, follow the DOM extraction path.
 
 ## References
 
-Most DOM tasks use the CLI reference first (exploration), then the SDK reference (final script). Load both.
+**Load the relevant reference(s) for your task before taking action.**
 
-- [CLI Reference](references/cli-reference.md) — snapshot, act, extract from the terminal
-- [SDK Reference](references/sdk-reference.md) — reusable TypeScript code
-- [Request Workflow](references/request-workflow.md) — capture and replay HTTP requests
+- [CLI Reference](references/cli-reference.md) — DOM exploration, snapshots, extraction, browser lifecycle, profile cloning
+- [SDK Reference](references/sdk-reference.md) — TypeScript code for DOM automation, request capture, and browser admin. Use when the task requires a reusable script.
+- [Request Workflow](references/request-workflow.md) — `captureNetwork`, `queryNetwork`, transport probing, request plans, auth tokens, recipes
 
 ## Startup Checks
 
@@ -47,67 +34,29 @@ Most DOM tasks use the CLI reference first (exploration), then the SDK reference
 - If Chromium binaries are missing, install them through Playwright before debugging page behavior.
 - Reuse an existing workspace id for the same site or feature when one already exists.
 
-## Mental Model
+## Exploration First
 
-- `workspace` / `--workspace` is the durable unit of state. Persistent workspaces live under `.opensteer/workspaces/<id>`.
-- A workspace stores the browser profile, live browser metadata, artifacts, traces, network history (SQLite-backed, auto-persisted), DOM descriptors, extraction descriptors, request plans, recipes, auth recipes, and reverse-analysis records.
-- In the SDK, omitting `workspace` creates a temporary root. In the CLI, stateful commands currently require `--workspace <id>`.
-- With a workspace, browser mode defaults to `persistent`. `temporary` creates an isolated browser for the current run. `attach` connects to an already-running Chromium browser.
-- `opensteer browser ...` manages the workspace browser itself. `opensteer close` stops the active session/browser without deleting the workspace. `browser reset` clears cloned browser state. `browser delete` removes workspace browser files.
-- The short CLI only has special parsing for a few common commands. For advanced semantic operations or fields like `persistAsDescription`, use `opensteer run <semantic-operation> --workspace <id> --input-json <json>`.
-- Prefer CLI `snapshot` during exploration so you can inspect the filtered HTML and `c="N"` counters directly. The SDK also exposes `snapshot()`, but this skill uses the CLI-first workflow and expects deterministic scripts to replay cached descriptors via `description`.
-- Prefer Opensteer surfaces over raw Playwright so descriptors, extraction payloads, network history, request plans, recipes, traces, and artifacts stay in the workspace.
+Always explore with the CLI before writing automation scripts. Exploration looks different depending on the task:
 
-## Two-Phase Workflow
+- **DOM tasks:** use `snapshot action` / `snapshot extraction` to understand the page structure. Read the `html` field — it contains a filtered DOM with inline `c="N"` attributes marking every element. Use those `c` values as `element` numbers in commands and schemas.
+- **Request tasks:** use `captureNetwork` on navigation/actions, then `queryNetwork()` to inspect the captured traffic. Probe discovered APIs with `rawRequest()`.
+- Only write a reusable SDK script if the user asks for one. CLI exploration is often the entire task.
+- Always close the browser when done: `opensteer close --workspace <id>`.
 
-**Phase 1 — CLI exploration (always do this first):**
+## Key Constraints
 
-Use the CLI interactively to open the site, take snapshots, and understand the page structure before writing any automation. This is how you learn what elements exist, what `c="N"` values to target, and how the page behaves.
-
-```bash
-opensteer open https://example.com --workspace demo
-opensteer snapshot action --workspace demo
-# → Read html field: <input c="5" placeholder="Search"> <button c="7">Search</button>
-
-opensteer run dom.input --workspace demo \
-  --input-json '{"target":{"kind":"element","element":5},"text":"airpods","pressEnter":true,"persistAsDescription":"search input"}'
-
-opensteer snapshot extraction --workspace demo
-# → Read html field: <div c="13">Apple AirPods</div> <span c="14">$189.99</span> ...
-
-opensteer extract --workspace demo --description "search results" \
-  --schema-json '{"items":[{"name":{"element":13},"price":{"element":14}},{"name":{"element":22},"price":{"element":23}}]}'
-# → Returns exactly 2 rows (the literal template values)
-# → Behind the scenes: consolidates templates into a generalized selector and saves it as a descriptor
-
-# Always close the browser when you're done exploring
-opensteer close --workspace demo
-```
-
-**Phase 2 — Deterministic replay script (only if the user asks for a rerunnable script):**
-
-Once you understand the page from Phase 1 exploration, create a reusable script if the user requests it. The script uses `description` alone — no snapshots needed.
-
-1. Use `description` alone for all interactions — resolves from cached descriptors.
-2. Use `description` alone for extraction replay — uses the generalized selector to return **ALL** matching rows.
-3. No snapshot calls needed. Just descriptions.
-
-## Shared Rules
-
-- The short CLI commands (`click`, `input`, etc.) accept exactly one of `--element`, `--selector`, or `--description`. Use `opensteer run dom.*` with `--input-json` when you need `persistAsDescription`.
-- For extraction, `description + schema` returns literal template values and saves a generalized extraction descriptor. `description` alone replays the descriptor and returns ALL matching rows.
-- Extraction schemas are explicit JSON objects and arrays. Each leaf must be `{ element: N }`, `{ selector: "..." }`, optional `attribute`, or `{ source: "current_url" }`.
-- Persisted extraction replay is deterministic and snapshot-backed. Do not replace `extract()` with `evaluate()` or custom DOM parsing when the desired output fits the extraction schema.
-- Use recipes for deterministic setup work. Use auth recipes for auth refresh/setup specifically. They live in separate registries.
-- CSS selectors exist as a low-level escape hatch but are not recommended for reusable scripts. Prefer the descriptor-based workflow.
-- Do not reach for removed surfaces such as `--name`, `Opensteer.attach()`, cloud/profile-sync helpers, `local-profile`, legacy snapshot browser modes, or `@opensteer/engine-abp`.
+- `persistAsDescription` requires the verbose `opensteer run dom.*` syntax. The short CLI commands (`click`, `input`, etc.) do NOT support it.
+- Extraction schemas are **literal**: N template rows in → exactly N rows back. Replay with `description` alone (no schema) to get ALL matching rows via the saved generalized selector.
+- `captureNetwork` is opt-in and is NOT supported on `open()`. Use `open()` to launch the browser, then `goto({ url, captureNetwork })` to navigate with capture.
+- Prefer Opensteer surfaces (`extract()`, descriptors, `captureNetwork`) over raw Playwright / `page.evaluate()` so data stays in the workspace.
+- Do not use removed surfaces: `--name`, `Opensteer.attach()`, cloud/profile-sync helpers, `local-profile`, legacy snapshot browser modes, `@opensteer/engine-abp`.
 
 ## Common Mistakes
 
-- Parsing the `counters` JSON array instead of reading the `html` string. Read the HTML — find `c="N"` values.
-- Using `page.evaluate()` or CSS selectors instead of `extract()`. Use extract with element-based schemas.
+- Parsing the `counters` array instead of reading the `html` string from snapshots. Read the HTML — find `c="N"` values.
+- Using `page.evaluate()` or CSS selectors when `extract()` can express the output.
 - Forgetting to re-snapshot after navigation. Always re-snapshot before targeting new elements.
-- Using short CLI (`click`, `input`) when `persistAsDescription` is needed. Use `opensteer run dom.*`.
-- Expecting `extract --schema-json` with array templates to return all rows. The schema is literal — you get back exactly the rows you specified. Use description-only replay (`extract --description`) to get all matching rows.
-- Skipping CLI exploration and jumping straight to writing a script. Always explore the page with the CLI first to understand its structure.
-- Leaving the browser running after the task is complete. Always run `opensteer close` when done.
+- Skipping transport probing — always test `direct-http` before assuming browser session is needed.
+- `rawRequest` headers must be `[{name, value}]` arrays, not `{key: value}` objects.
+- `rawRequest` body must be `{json: {...}}`, `{text: "..."}`, or `{base64: "..."}` — not raw strings.
+- Leaving the browser running after task completion. Always run `opensteer close` when done.
