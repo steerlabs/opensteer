@@ -351,21 +351,48 @@ function decryptCookieValue(row: RawCookieRow, decryptionKey: DecryptionKey): st
   return null;
 }
 
+const CHROME_COOKIE_HMAC_PREFIX_LENGTH = 32;
+
 function decryptAes128Cbc(ciphertext: Buffer, key: Buffer): string | null {
   try {
     const iv = Buffer.alloc(16, 0x20); // 16 bytes of space character
     const decipher = createDecipheriv("aes-128-cbc", key, iv);
     const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
 
-    // Strip PKCS7 padding
-    const padLen = decrypted[decrypted.length - 1];
-    if (padLen !== undefined && padLen > 0 && padLen <= 16) {
-      return decrypted.subarray(0, decrypted.length - padLen).toString("utf8");
+    // Modern Chrome (130+) prepends a 32-byte HMAC to the cookie value before
+    // encrypting. Detect this by checking whether the first 32 bytes contain any
+    // non-printable ASCII — real cookie values are printable strings.
+    let value: string;
+    if (
+      decrypted.length > CHROME_COOKIE_HMAC_PREFIX_LENGTH &&
+      hasNonPrintableBytes(decrypted, CHROME_COOKIE_HMAC_PREFIX_LENGTH)
+    ) {
+      value = decrypted.subarray(CHROME_COOKIE_HMAC_PREFIX_LENGTH).toString("utf8");
+    } else {
+      value = decrypted.toString("utf8");
     }
-    return decrypted.toString("utf8");
+
+    // Cookies encrypted with a rotated or app-bound key may decrypt to garbage.
+    // Discard any value that still contains non-printable characters.
+    if (hasNonPrintableBytes(Buffer.from(value, "utf8"), value.length)) {
+      return null;
+    }
+
+    return value;
   } catch {
     return null;
   }
+}
+
+function hasNonPrintableBytes(buffer: Buffer, length: number): boolean {
+  const end = Math.min(length, buffer.length);
+  for (let i = 0; i < end; i++) {
+    const byte = buffer[i]!;
+    if (byte < 0x20 || byte > 0x7e) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function decryptAes256Gcm(ciphertext: Buffer, key: Buffer): string | null {
