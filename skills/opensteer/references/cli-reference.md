@@ -1,5 +1,7 @@
 # Opensteer CLI Reference
 
+This covers DOM exploration and browser administration. For request capture workflows, see the [Request Workflow](request-workflow.md) reference.
+
 Use the CLI when you need a fast JSON-first loop against a repo-local workspace browser.
 
 ## Sections
