@@ -12,7 +12,8 @@ argument-hint: "[goal]"
 2. Use `element` + `persistAsDescription` to act on elements. Use `extract()` with `description` + `schema` to extract data. Do NOT use `page.evaluate()`, CSS selectors, or raw DOM parsing when `extract()` can express the output.
 3. Extraction schemas are **literal**. If you provide 2 template rows, you get exactly 2 rows back. The framework consolidates those templates into a generalized selector behind the scenes and saves it as a descriptor. Replaying with `description` alone (no schema) uses that generalized selector to return **ALL** matching rows.
 4. `persistAsDescription` requires the verbose `opensteer run dom.*` syntax. The short CLI commands (`click`, `input`, etc.) do NOT support it.
-5. Phase 1 = CLI exploration (snapshot, act, extract with schema). Phase 2 = deterministic replay using `description` alone returns all matching data. No snapshots in Phase 2.
+5. Always start with Phase 1: use the CLI to explore the site, take snapshots, and understand the page before writing any automation code. Only move to Phase 2 (creating a rerunnable script using `description`-based replay) if the user explicitly asks for it.
+6. Always close the browser when done with exploration or task completion (`opensteer close --workspace <id>`). Do not leave browsers running.
 
 If invoked directly, treat `$ARGUMENTS` as the concrete browser or replay goal. First decide whether the task is primarily DOM automation, request capture/replay, or workspace browser administration.
 
@@ -59,7 +60,9 @@ Most DOM tasks use the CLI reference first (exploration), then the SDK reference
 
 ## Two-Phase Workflow
 
-**Phase 1 — CLI exploration (one-time setup):**
+**Phase 1 — CLI exploration (always do this first):**
+
+Use the CLI interactively to open the site, take snapshots, and understand the page structure before writing any automation. This is how you learn what elements exist, what `c="N"` values to target, and how the page behaves.
 
 ```bash
 opensteer open https://example.com --workspace demo
@@ -77,10 +80,13 @@ opensteer extract --workspace demo --description "search results" \
 # → Returns exactly 2 rows (the literal template values)
 # → Behind the scenes: consolidates templates into a generalized selector and saves it as a descriptor
 
+# Always close the browser when you're done exploring
 opensteer close --workspace demo
 ```
 
-**Phase 2 — Deterministic replay (reusable):**
+**Phase 2 — Deterministic replay script (only if the user asks for a rerunnable script):**
+
+Once you understand the page from Phase 1 exploration, create a reusable script if the user requests it. The script uses `description` alone — no snapshots needed.
 
 1. Use `description` alone for all interactions — resolves from cached descriptors.
 2. Use `description` alone for extraction replay — uses the generalized selector to return **ALL** matching rows.
@@ -103,3 +109,5 @@ opensteer close --workspace demo
 - Forgetting to re-snapshot after navigation. Always re-snapshot before targeting new elements.
 - Using short CLI (`click`, `input`) when `persistAsDescription` is needed. Use `opensteer run dom.*`.
 - Expecting `extract --schema-json` with array templates to return all rows. The schema is literal — you get back exactly the rows you specified. Use description-only replay (`extract --description`) to get all matching rows.
+- Skipping CLI exploration and jumping straight to writing a script. Always explore the page with the CLI first to understand its structure.
+- Leaving the browser running after the task is complete. Always run `opensteer close` when done.
