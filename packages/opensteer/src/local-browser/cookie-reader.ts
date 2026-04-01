@@ -119,10 +119,10 @@ interface RawCookieRow {
   readonly encrypted_value: Buffer;
   readonly path: string;
   readonly expires_utc: number | bigint;
-  readonly is_secure: number;
-  readonly is_httponly: number;
-  readonly samesite: number;
-  readonly is_persistent: number;
+  readonly is_secure: number | bigint;
+  readonly is_httponly: number | bigint;
+  readonly samesite: number | bigint;
+  readonly is_persistent: number | bigint;
 }
 
 function queryAllCookies(dbPath: string): readonly RawCookieRow[] {
@@ -139,13 +139,13 @@ function queryAllCookies(dbPath: string): readonly RawCookieRow[] {
 
   const database: NodeSqliteDatabaseSync = new DatabaseSync(dbPath, { readOnly: true });
   try {
-    return database
-      .prepare(
-        `SELECT host_key, name, value, encrypted_value, path,
-                expires_utc, is_secure, is_httponly, samesite, is_persistent
-         FROM cookies`,
-      )
-      .all() as RawCookieRow[];
+    const stmt = database.prepare(
+      `SELECT host_key, name, value, encrypted_value, path,
+              expires_utc, is_secure, is_httponly, samesite, is_persistent
+       FROM cookies`,
+    );
+    stmt.setReadBigInts(true);
+    return stmt.all() as RawCookieRow[];
   } finally {
     database.close();
   }
@@ -272,24 +272,44 @@ function decryptCookieRows(
   decryptionKey: DecryptionKey,
 ): BrowserProfileSyncCookie[] {
   const cookies: BrowserProfileSyncCookie[] = [];
+  const nowSeconds = Math.floor(Date.now() / 1000);
 
   for (const row of rows) {
+    const name = row.name.trim();
+    const domain = row.host_key.trim();
+    if (!name || !domain) {
+      continue;
+    }
+
     const value = decryptCookieValue(row, decryptionKey);
     if (value === null) {
       continue;
     }
 
     const expiresSeconds = chromeDateToUnixSeconds(row.expires_utc);
+    const isSession = expiresSeconds <= 0;
+
+    // Skip expired non-session cookies
+    if (!isSession && expiresSeconds < nowSeconds) {
+      continue;
+    }
+
     const sameSite = chromeSameSiteToString(row.samesite);
+    let secure = Number(row.is_secure) === 1;
+
+    // CDP requires Secure=true when SameSite=None
+    if (sameSite === "None") {
+      secure = true;
+    }
 
     cookies.push({
-      name: row.name,
+      name,
       value,
-      domain: row.host_key,
-      path: row.path,
-      secure: row.is_secure === 1,
-      httpOnly: row.is_httponly === 1,
-      ...(expiresSeconds > 0 ? { expires: expiresSeconds } : {}),
+      domain,
+      path: row.path || "/",
+      secure,
+      httpOnly: Number(row.is_httponly) === 1,
+      ...(isSession ? {} : { expires: expiresSeconds }),
       ...(sameSite !== undefined ? { sameSite } : {}),
     });
   }
@@ -376,10 +396,11 @@ function chromeDateToUnixSeconds(chromeTimestamp: number | bigint): number {
 }
 
 function chromeSameSiteToString(
-  value: number,
+  value: number | bigint,
 ): BrowserProfileSyncCookie["sameSite"] | undefined {
-  if (value === 0) return "None";
-  if (value === 1) return "Lax";
-  if (value === 2) return "Strict";
+  const v = Number(value);
+  if (v === 0) return "None";
+  if (v === 1) return "Lax";
+  if (v === 2) return "Strict";
   return undefined;
 }
