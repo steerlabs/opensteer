@@ -1,5 +1,7 @@
 # Opensteer SDK Reference
 
+This covers all task paths (DOM, request capture, browser admin). For task triage, see SKILL.md.
+
 Use the SDK when the workflow should become reusable TypeScript code in the repository.
 
 ## Sections
