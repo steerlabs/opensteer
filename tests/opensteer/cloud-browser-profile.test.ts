@@ -21,11 +21,7 @@ import {
 } from "../../packages/opensteer/src/cloud/session-proxy.js";
 import { resolveOpensteerRuntimeConfig } from "../../packages/opensteer/src/sdk/runtime-resolution.js";
 
-const capturePortableBrowserProfileSnapshotMock = vi.fn();
-const encodePortableBrowserProfileSnapshotMock = vi.fn();
-const resolveCookieCaptureStrategyMock = vi.fn();
-const acquireCdpEndpointMock = vi.fn();
-const relaunchBrowserNormallyMock = vi.fn();
+const readBrowserCookiesMock = vi.fn();
 
 const reverseCasePayload: OpensteerReverseCasePayload = {
   objective: "List users",
@@ -71,17 +67,8 @@ const reversePackagePayload: OpensteerReversePackagePayload = {
   attachedRecordIds: [],
 };
 
-vi.mock("../../packages/opensteer/src/cloud/portable-cookie-snapshot.js", () => ({
-  capturePortableBrowserProfileSnapshot: (...args: unknown[]) =>
-    capturePortableBrowserProfileSnapshotMock(...args),
-  encodePortableBrowserProfileSnapshot: (...args: unknown[]) =>
-    encodePortableBrowserProfileSnapshotMock(...args),
-}));
-
-vi.mock("../../packages/opensteer/src/local-browser/cookie-capture.js", () => ({
-  resolveCookieCaptureStrategy: (...args: unknown[]) => resolveCookieCaptureStrategyMock(...args),
-  acquireCdpEndpoint: (...args: unknown[]) => acquireCdpEndpointMock(...args),
-  relaunchBrowserNormally: (...args: unknown[]) => relaunchBrowserNormallyMock(...args),
+vi.mock("../../packages/opensteer/src/local-browser/cookie-reader.js", () => ({
+  readBrowserCookies: (...args: unknown[]) => readBrowserCookiesMock(...args),
 }));
 
 afterEach(() => {
@@ -336,25 +323,7 @@ describe("cloud browser-profile integration", () => {
   });
 
   test("OpensteerCloudClient syncs cookies into a cloud browser profile", async () => {
-    resolveCookieCaptureStrategyMock.mockResolvedValueOnce({
-      strategy: "attach",
-      attachEndpoint: "9222",
-      timeoutMs: 30_000,
-    });
-    acquireCdpEndpointMock.mockResolvedValueOnce({
-      strategy: "attach",
-      cdpEndpoint: "ws://127.0.0.1:9222/devtools/browser/root",
-      cleanup: vi.fn(async () => undefined),
-    });
-    capturePortableBrowserProfileSnapshotMock.mockResolvedValueOnce({
-      version: "portable-cookies-v1",
-      source: {
-        browserFamily: "chromium",
-        browserName: "Chromium",
-        browserMajor: "136",
-        platform: "macos",
-        capturedAt: 123,
-      },
+    readBrowserCookiesMock.mockResolvedValueOnce({
       cookies: [
         {
           name: "session",
@@ -363,12 +332,13 @@ describe("cloud browser-profile integration", () => {
           path: "/",
           secure: true,
           httpOnly: true,
-          session: true,
-          expiresAt: null,
         },
       ],
+      brandId: "chrome",
+      brandDisplayName: "Google Chrome",
+      userDataDir: "/mock/chrome",
+      profileDirectory: "Default",
     });
-    encodePortableBrowserProfileSnapshotMock.mockResolvedValueOnce(Buffer.from("compressed-state"));
 
     const fetchMock = vi
       .fn()
@@ -405,7 +375,6 @@ describe("cloud browser-profile integration", () => {
     });
 
     const result = await client.syncBrowserProfileCookies({
-      attachEndpoint: "9222",
       domains: ["example.com"],
       profileId: "bp_456",
     });
@@ -415,14 +384,7 @@ describe("cloud browser-profile integration", () => {
       status: "ready",
       revision: 7,
     });
-    expect(resolveCookieCaptureStrategyMock).toHaveBeenCalledWith({
-      attachEndpoint: "9222",
-    });
-    expect(capturePortableBrowserProfileSnapshotMock).toHaveBeenCalledWith({
-      attachEndpoint: "ws://127.0.0.1:9222/devtools/browser/root",
-      captureMethod: "attach",
-      domains: ["example.com"],
-    });
+    expect(readBrowserCookiesMock).toHaveBeenCalledWith({});
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
       "https://api.opensteer.dev/v1/browser-profiles/imports",
