@@ -124,7 +124,7 @@ describe("Playwright-backed observations", () => {
             events.some(
               (event) =>
                 event.kind === "console" &&
-                event.phase === "emitted" &&
+                event.phase === "occurred" &&
                 event.data?.message === "clicked secret-token",
             ),
           ).toBe(true);
@@ -132,7 +132,7 @@ describe("Playwright-backed observations", () => {
             events.some(
               (event) =>
                 event.kind === "error" &&
-                event.phase === "emitted" &&
+                event.phase === "occurred" &&
                 event.error?.message === "page boom",
             ),
           ).toBe(true);
