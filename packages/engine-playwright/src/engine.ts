@@ -141,6 +141,125 @@ import {
 } from "./viewport-screenshot.js";
 import { capturePlaywrightStorageOrigins } from "./storage-capture.js";
 
+interface RuntimeCallFrame {
+  readonly url?: string;
+  readonly lineNumber?: number;
+  readonly columnNumber?: number;
+}
+
+interface RuntimeStackTrace {
+  readonly callFrames?: readonly RuntimeCallFrame[];
+}
+
+interface RuntimeRemoteObjectPreviewProperty {
+  readonly name?: string;
+  readonly value?: string;
+}
+
+interface RuntimeRemoteObjectPreview {
+  readonly properties?: readonly RuntimeRemoteObjectPreviewProperty[];
+}
+
+interface RuntimeRemoteObject {
+  readonly value?: unknown;
+  readonly unserializableValue?: string;
+  readonly description?: string;
+  readonly preview?: RuntimeRemoteObjectPreview;
+}
+
+interface RuntimeConsoleApiCalledPayload {
+  readonly type?: string;
+  readonly args?: readonly RuntimeRemoteObject[];
+  readonly stackTrace?: RuntimeStackTrace;
+}
+
+interface RuntimeExceptionDetails {
+  readonly text?: string;
+  readonly stackTrace?: RuntimeStackTrace;
+  readonly exception?: RuntimeRemoteObject;
+}
+
+interface RuntimeExceptionThrownPayload {
+  readonly exceptionDetails?: RuntimeExceptionDetails;
+}
+
+interface RecordedPageEvent {
+  readonly kind: "page-error";
+  readonly message?: string;
+  readonly stack?: string;
+  readonly lineNumber?: number;
+  readonly columnNumber?: number;
+  readonly timestamp: number;
+}
+
+const PLAYWRIGHT_RUNTIME_EVENT_RECORDER_SOURCE = String.raw`(() => {
+  const key = "__opensteerRuntimeEventRecorder";
+  const globalScope = globalThis;
+  if (globalScope[key]?.installed === true) {
+    return;
+  }
+
+  const queue = [];
+  const limit = 500;
+  const asString = (value) => {
+    if (typeof value === "string") {
+      return value;
+    }
+    if (typeof value === "number" || typeof value === "boolean" || value === null) {
+      return String(value);
+    }
+    if (value === undefined) {
+      return "undefined";
+    }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  };
+  const enqueue = (entry) => {
+    queue.push({
+      ...entry,
+      timestamp: Date.now(),
+    });
+    if (queue.length > limit) {
+      queue.splice(0, queue.length - limit);
+    }
+  };
+
+  globalScope.addEventListener("error", (event) => {
+    enqueue({
+      kind: "page-error",
+      message:
+        typeof event.message === "string" && event.message.length > 0
+          ? event.message
+          : event.error?.message || "Uncaught exception",
+      stack: typeof event.error?.stack === "string" ? event.error.stack : undefined,
+      lineNumber: typeof event.lineno === "number" ? event.lineno : undefined,
+      columnNumber: typeof event.colno === "number" ? event.colno : undefined,
+    });
+  });
+
+  globalScope.addEventListener("unhandledrejection", (event) => {
+    const reason = event.reason;
+    enqueue({
+      kind: "page-error",
+      message:
+        typeof reason?.message === "string" && reason.message.length > 0
+          ? reason.message
+          : asString(reason),
+      stack: typeof reason?.stack === "string" ? reason.stack : undefined,
+    });
+  });
+
+  globalScope[key] = {
+    installed: true,
+    drain() {
+      return queue.splice(0, queue.length);
+    },
+  };
+})();`;
+
 export type {
   PlaywrightChromiumLaunchOptions,
   PlaywrightBrowserContextOptions,
@@ -665,12 +784,16 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     });
     await this.flushPendingPageTasks(controller.sessionRef);
     const mainFrame = this.requireMainFrame(controller);
+    const events = mergeDistinctStepEvents([
+      ...this.drainQueuedEvents(controller.pageRef),
+      ...(await this.drainInstrumentedRuntimeEvents(controller)),
+    ]);
 
     return this.createStepResult(controller.sessionRef, controller.pageRef, startedAt, {
       frameRef: mainFrame.frameRef,
       documentRef: mainFrame.currentDocument.documentRef,
       documentEpoch: mainFrame.currentDocument.documentEpoch,
-      events: this.drainQueuedEvents(controller.pageRef),
+      events,
       data: hit,
     });
   }
@@ -701,12 +824,16 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     await this.flushPendingPageTasks(controller.sessionRef);
     await this.flushDomUpdateTask(controller);
     const mainFrame = this.requireMainFrame(controller);
+    const events = mergeDistinctStepEvents([
+      ...this.drainQueuedEvents(controller.pageRef),
+      ...(await this.drainInstrumentedRuntimeEvents(controller)),
+    ]);
 
     return this.createStepResult(controller.sessionRef, controller.pageRef, startedAt, {
       frameRef: mainFrame.frameRef,
       documentRef: mainFrame.currentDocument.documentRef,
       documentEpoch: mainFrame.currentDocument.documentEpoch,
-      events: this.drainQueuedEvents(controller.pageRef),
+      events,
       data: undefined,
     });
   }
@@ -723,12 +850,16 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     });
     await this.flushPendingPageTasks(controller.sessionRef);
     const mainFrame = this.requireMainFrame(controller);
+    const events = mergeDistinctStepEvents([
+      ...this.drainQueuedEvents(controller.pageRef),
+      ...(await this.drainInstrumentedRuntimeEvents(controller)),
+    ]);
 
     return this.createStepResult(controller.sessionRef, controller.pageRef, startedAt, {
       frameRef: mainFrame.frameRef,
       documentRef: mainFrame.currentDocument.documentRef,
       documentEpoch: mainFrame.currentDocument.documentEpoch,
-      events: this.drainQueuedEvents(controller.pageRef),
+      events,
       data: undefined,
     });
   }
@@ -742,12 +873,16 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     await controller.page.keyboard.type(input.text);
     await this.flushPendingPageTasks(controller.sessionRef);
     const mainFrame = this.requireMainFrame(controller);
+    const events = mergeDistinctStepEvents([
+      ...this.drainQueuedEvents(controller.pageRef),
+      ...(await this.drainInstrumentedRuntimeEvents(controller)),
+    ]);
 
     return this.createStepResult(controller.sessionRef, controller.pageRef, startedAt, {
       frameRef: mainFrame.frameRef,
       documentRef: mainFrame.currentDocument.documentRef,
       documentEpoch: mainFrame.currentDocument.documentEpoch,
-      events: this.drainQueuedEvents(controller.pageRef),
+      events,
       data: undefined,
     });
   }
@@ -923,6 +1058,14 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       }
     }
     return infos;
+  }
+
+  async drainEvents(input: { readonly pageRef: PageRef }): Promise<readonly StepEvent[]> {
+    const controller = this.requirePage(input.pageRef);
+    return mergeDistinctStepEvents([
+      ...this.drainQueuedEvents(input.pageRef),
+      ...(await this.drainInstrumentedRuntimeEvents(controller)),
+    ]);
   }
 
   async listFrames(input: { readonly pageRef: PageRef }): Promise<readonly FrameInfo[]> {
@@ -1636,9 +1779,11 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
 
     await cdp.send("Page.enable", { enableFileChooserOpenedEvent: true });
     await cdp.send("Network.enable");
+    await cdp.send("Runtime.enable");
     await cdp.send("DOM.enable", { includeWhitespace: "none" });
     await cdp.send("DOMStorage.enable");
     await cdp.send("DOM.getDocument", { depth: 0 });
+    await this.installRuntimeEventRecorder(page);
     await this.actionSettler.installTracker(controller);
 
     cdp.on("Page.frameAttached", (payload) =>
@@ -1694,9 +1839,15 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     cdp.on("DOM.documentUpdated", () =>
       this.runControllerEvent(controller, () => this.handleDocumentUpdated(controller)),
     );
-
-    page.on("console", (message) =>
-      this.runControllerEvent(controller, () => this.handleConsole(controller, message)),
+    cdp.on("Runtime.consoleAPICalled", (payload) =>
+      this.runControllerEvent(controller, () =>
+        this.handleRuntimeConsole(controller, payload as RuntimeConsoleApiCalledPayload),
+      ),
+    );
+    cdp.on("Runtime.exceptionThrown", (payload) =>
+      this.runControllerEvent(controller, () =>
+        this.handleRuntimeException(controller, payload as RuntimeExceptionThrownPayload),
+      ),
     );
     page.on("popup", (popupPage) =>
       this.runControllerEvent(controller, () => {
@@ -1719,9 +1870,6 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     );
     page.on("download", (download) =>
       this.runControllerEvent(controller, () => this.handleDownload(controller, download)),
-    );
-    page.on("pageerror", (error) =>
-      this.runControllerEvent(controller, () => this.handlePageError(controller, error)),
     );
     page.on("request", (request) =>
       this.runControllerEvent(controller, () => this.handlePlaywrightRequest(controller, request)),
@@ -1976,19 +2124,23 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     }
   }
 
-  private handleConsole(controller: PageController, message: ConsoleMessage): void {
+  private handleRuntimeConsole(
+    controller: PageController,
+    payload: RuntimeConsoleApiCalledPayload,
+  ): void {
+    const callFrame = payload.stackTrace?.callFrames?.[0];
     this.queueEvent(
       controller.pageRef,
       this.createEvent<"console">({
         kind: "console",
         sessionRef: controller.sessionRef,
         pageRef: controller.pageRef,
-        level: normalizeConsoleLevel(message.type()),
-        text: message.text(),
+        level: normalizeRuntimeConsoleLevel(payload.type),
+        text: formatRuntimeConsoleText(payload),
         location: {
-          url: message.location().url,
-          lineNumber: message.location().lineNumber,
-          columnNumber: message.location().columnNumber,
+          url: callFrame?.url ?? "",
+          lineNumber: callFrame?.lineNumber ?? 0,
+          columnNumber: callFrame?.columnNumber ?? 0,
         },
       }),
     );
@@ -2076,15 +2228,21 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     );
   }
 
-  private handlePageError(controller: PageController, error: Error): void {
+  private handleRuntimeException(
+    controller: PageController,
+    payload: RuntimeExceptionThrownPayload,
+  ): void {
+    const details = payload.exceptionDetails;
+    const message = formatRuntimeExceptionMessage(details);
+    const stack = formatRuntimeExceptionStack(details);
     this.queueEvent(
       controller.pageRef,
       this.createEvent<"page-error">({
         kind: "page-error",
         sessionRef: controller.sessionRef,
         pageRef: controller.pageRef,
-        message: error.message,
-        ...(error.stack === undefined ? {} : { stack: error.stack }),
+        message,
+        ...(stack === undefined ? {} : { stack }),
       }),
     );
   }
@@ -3064,6 +3222,50 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     controller.queuedEvents.push(event);
   }
 
+  private async installRuntimeEventRecorder(page: Page): Promise<void> {
+    await page.addInitScript({
+      content: PLAYWRIGHT_RUNTIME_EVENT_RECORDER_SOURCE,
+    });
+    await page.evaluate(PLAYWRIGHT_RUNTIME_EVENT_RECORDER_SOURCE).catch(() => undefined);
+  }
+
+  private async drainInstrumentedRuntimeEvents(
+    controller: PageController,
+  ): Promise<readonly StepEvent[]> {
+    const recorded = await Promise.all(
+      controller.page.frames().map(async (frame) => {
+        const events = await frame
+          .evaluate<RecordedPageEvent[]>(() => {
+            const recorder = (
+              globalThis as typeof globalThis & {
+                __opensteerRuntimeEventRecorder?: {
+                  readonly drain?: () => RecordedPageEvent[];
+                };
+              }
+            ).__opensteerRuntimeEventRecorder;
+            return recorder?.drain?.() ?? [];
+          })
+          .catch(() => []);
+        return events;
+      }),
+    );
+
+    return mergeDistinctStepEvents(
+      recorded.flatMap((events) =>
+        events.map((event) =>
+          this.createEvent<"page-error">({
+            kind: "page-error",
+            sessionRef: controller.sessionRef,
+            pageRef: controller.pageRef,
+            message: event.message ?? "Uncaught exception",
+            ...(event.stack === undefined ? {} : { stack: event.stack }),
+            ...(event.timestamp === undefined ? {} : { timestamp: event.timestamp }),
+          }),
+        ),
+      ),
+    );
+  }
+
   private drainQueuedEvents(pageRef: PageRef): StepEvent[] {
     const controller = this.requirePage(pageRef);
     const events = controller.queuedEvents.splice(0, controller.queuedEvents.length);
@@ -3434,4 +3636,133 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number | undefined): Pro
       }, timeoutMs);
     }),
   ]);
+}
+
+function formatRuntimeConsoleText(payload: RuntimeConsoleApiCalledPayload): string {
+  const parts = (payload.args ?? [])
+    .map((arg) => formatRuntimeRemoteObject(arg))
+    .filter((value) => value.length > 0);
+  if (parts.length > 0) {
+    return parts.join(" ");
+  }
+  return payload.type?.trim() || "console";
+}
+
+function normalizeRuntimeConsoleLevel(
+  value: string | undefined,
+): Extract<StepEvent, { readonly kind: "console" }>["level"] {
+  switch (value) {
+    case "warning":
+    case "debug":
+    case "info":
+    case "error":
+    case "trace":
+      return normalizeConsoleLevel(value);
+    default:
+      return "log";
+  }
+}
+
+function formatRuntimeExceptionMessage(
+  details: RuntimeExceptionDetails | undefined,
+): string {
+  const description = details?.exception?.description?.trim();
+  if (description) {
+    const firstLine = description.split("\n")[0]?.trim() ?? "";
+    if (firstLine.startsWith("Error: ")) {
+      return firstLine.slice("Error: ".length);
+    }
+    return firstLine || description;
+  }
+
+  const value = details?.exception?.value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim();
+  }
+
+  return details?.text?.trim() || "Uncaught exception";
+}
+
+function formatRuntimeExceptionStack(
+  details: RuntimeExceptionDetails | undefined,
+): string | undefined {
+  const description = details?.exception?.description?.trim();
+  if (description && description.includes("\n")) {
+    return description;
+  }
+
+  const frames = details?.stackTrace?.callFrames;
+  if (!frames || frames.length === 0) {
+    return undefined;
+  }
+
+  return frames
+    .map((frame) => {
+      const url = frame.url ?? "<anonymous>";
+      const lineNumber = frame.lineNumber ?? 0;
+      const columnNumber = frame.columnNumber ?? 0;
+      return `    at ${url}:${lineNumber}:${columnNumber}`;
+    })
+    .join("\n");
+}
+
+function formatRuntimeRemoteObject(object: RuntimeRemoteObject): string {
+  if (object.unserializableValue !== undefined) {
+    return object.unserializableValue;
+  }
+  if (object.value !== undefined) {
+    return typeof object.value === "string"
+      ? object.value
+      : JSON.stringify(object.value);
+  }
+  if (object.description !== undefined && object.description.length > 0) {
+    return object.description;
+  }
+
+  const previewParts =
+    object.preview?.properties
+      ?.map((property) => {
+        if (!property.name) {
+          return "";
+        }
+        return property.value === undefined
+          ? property.name
+          : `${property.name}: ${property.value}`;
+      })
+      .filter((value) => value.length > 0) ?? [];
+  return previewParts.join(", ");
+}
+
+function mergeDistinctStepEvents(events: readonly StepEvent[]): StepEvent[] {
+  const seen = new Set<string>();
+  const merged: StepEvent[] = [];
+
+  for (const event of events) {
+    const fingerprint = stepEventFingerprint(event);
+    if (seen.has(fingerprint)) {
+      continue;
+    }
+    seen.add(fingerprint);
+    merged.push(event);
+  }
+
+  return merged;
+}
+
+function stepEventFingerprint(event: StepEvent): string {
+  switch (event.kind) {
+    case "console":
+      return [
+        event.kind,
+        event.level,
+        event.text,
+        event.location?.url ?? "",
+        event.location?.lineNumber ?? "",
+        event.location?.columnNumber ?? "",
+      ].join("|");
+    case "page-error":
+      return [event.kind, event.message, event.stack ?? ""].join("|");
+    default:
+      return event.eventId;
+  }
 }

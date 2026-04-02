@@ -9,6 +9,7 @@ import type {
   NodeRef,
   PageRef,
   Point,
+  StepEvent,
   DomSnapshot,
   DomSnapshotNode,
 } from "@opensteer/browser-core";
@@ -140,6 +141,7 @@ export interface DomReadDescriptorInput {
 export interface DomActionOutcome {
   readonly resolved: ResolvedDomTarget;
   readonly point: Point;
+  readonly events?: readonly StepEvent[];
 }
 
 export interface DomClickInput {

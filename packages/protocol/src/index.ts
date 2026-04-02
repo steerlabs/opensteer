@@ -16,6 +16,7 @@ export * from "./events.js";
 export * from "./artifacts.js";
 export * from "./captcha.js";
 export * from "./traces.js";
+export * from "./observability.js";
 export * from "./envelopes.js";
 export * from "./session-info.js";
 export * from "./automation.js";
