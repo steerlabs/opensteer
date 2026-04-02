@@ -8921,7 +8921,9 @@ function mergeObservedStepEvents(
   for (const event of secondary) {
     merged.set(event.eventId, event);
   }
-  return [...merged.values()].sort((left, right) => left.timestamp - right.timestamp);
+  return [...merged.values()].sort(
+    (left, right) => (left.timestamp ?? 0) - (right.timestamp ?? 0),
+  );
 }
 
 function selectLiveQueryPageRef(

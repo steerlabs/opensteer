@@ -184,12 +184,9 @@ interface RuntimeExceptionThrownPayload {
 }
 
 interface RecordedPageEvent {
-  readonly kind: "console" | "page-error";
-  readonly level?: Extract<StepEvent, { readonly kind: "console" }>["level"];
-  readonly text?: string;
+  readonly kind: "page-error";
   readonly message?: string;
   readonly stack?: string;
-  readonly url?: string;
   readonly lineNumber?: number;
   readonly columnNumber?: number;
   readonly timestamp: number;
@@ -224,35 +221,11 @@ const PLAYWRIGHT_RUNTIME_EVENT_RECORDER_SOURCE = String.raw`(() => {
     queue.push({
       ...entry,
       timestamp: Date.now(),
-      url: globalScope.location?.href,
     });
     if (queue.length > limit) {
       queue.splice(0, queue.length - limit);
     }
   };
-  const installConsole = (level) => {
-    const original = globalScope.console?.[level];
-    if (typeof original !== "function") {
-      return;
-    }
-    globalScope.console[level] = function (...args) {
-      try {
-        enqueue({
-          kind: "console",
-          level,
-          text: args.map((value) => asString(value)).join(" "),
-        });
-      } catch {}
-      return original.apply(this, args);
-    };
-  };
-
-  installConsole("debug");
-  installConsole("error");
-  installConsole("info");
-  installConsole("log");
-  installConsole("trace");
-  installConsole("warn");
 
   globalScope.addEventListener("error", (event) => {
     enqueue({
@@ -3279,34 +3252,16 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
 
     return mergeDistinctStepEvents(
       recorded.flatMap((events) =>
-        events.map((event) => {
-          switch (event.kind) {
-            case "page-error":
-              return this.createEvent<"page-error">({
-                kind: "page-error",
-                sessionRef: controller.sessionRef,
-                pageRef: controller.pageRef,
-                message: event.message ?? "Uncaught exception",
-                ...(event.stack === undefined ? {} : { stack: event.stack }),
-                ...(event.timestamp === undefined ? {} : { timestamp: event.timestamp }),
-              });
-            case "console":
-            default:
-              return this.createEvent<"console">({
-                kind: "console",
-                sessionRef: controller.sessionRef,
-                pageRef: controller.pageRef,
-                level: event.level ?? "log",
-                text: event.text ?? "",
-                location: {
-                  url: event.url ?? "",
-                  lineNumber: event.lineNumber ?? 0,
-                  columnNumber: event.columnNumber ?? 0,
-                },
-                ...(event.timestamp === undefined ? {} : { timestamp: event.timestamp }),
-              });
-          }
-        }),
+        events.map((event) =>
+          this.createEvent<"page-error">({
+            kind: "page-error",
+            sessionRef: controller.sessionRef,
+            pageRef: controller.pageRef,
+            message: event.message ?? "Uncaught exception",
+            ...(event.stack === undefined ? {} : { stack: event.stack }),
+            ...(event.timestamp === undefined ? {} : { timestamp: event.timestamp }),
+          }),
+        ),
       ),
     );
   }
