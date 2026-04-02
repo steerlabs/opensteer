@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
@@ -193,6 +194,7 @@ import {
 import { normalizeThrownOpensteerError } from "../internal/errors.js";
 import { sha256Hex } from "../internal/filesystem.js";
 import { canonicalJsonString, toCanonicalJsonValue } from "../json.js";
+import { normalizeObservationContext } from "../observation-utils.js";
 import { normalizeObservabilityConfig } from "../observations.js";
 import {
   delayWithSignal,
@@ -358,6 +360,7 @@ export interface OpensteerSessionRuntimeOptions {
   readonly cleanupRootOnClose?: boolean;
   readonly sessionInfo?: Partial<Omit<OpensteerSessionInfo, "sessionId" | "activePageRef">>;
   readonly observability?: Partial<ObservabilityConfig>;
+  readonly observationSessionId?: string;
   readonly observationSink?: ObservationSink;
 }
 
@@ -467,6 +470,13 @@ interface OpensteerSessionTraceInput {
   readonly context?: TraceContext;
 }
 
+interface PendingOperationEventCapture {
+  readonly operation: OpensteerSemanticOperationName;
+  readonly startedAt: number;
+  readonly completedAt: number;
+  readonly events: readonly OpensteerEvent[];
+}
+
 interface RuntimeOperationOptions {
   readonly signal?: AbortSignal;
 }
@@ -486,6 +496,8 @@ interface MutationCaptureFinalizeDiagnostics {
 }
 
 const MUTATION_CAPTURE_FINALIZE_TIMEOUT_MS = 5_000;
+const PENDING_OPERATION_EVENT_CAPTURE_LIMIT = 64;
+const PENDING_OPERATION_EVENT_CAPTURE_SKEW_MS = 1_000;
 
 interface CookieJarEntry {
   readonly name: string;
@@ -520,7 +532,8 @@ export class OpensteerSessionRuntime {
   private readonly sessionInfoBase: Partial<
     Omit<OpensteerSessionInfo, "sessionId" | "activePageRef">
   >;
-  private readonly observationConfig: ObservabilityConfig;
+  private observationConfig: ObservabilityConfig;
+  private readonly observationSessionId: string | undefined;
   private readonly injectedObservationSink: ObservationSink | undefined;
 
   private root: OpensteerRuntimeWorkspace | undefined;
@@ -533,6 +546,8 @@ export class OpensteerSessionRuntime {
   private pageRef: PageRef | undefined;
   private runId: string | undefined;
   private observations: SessionObservationSink | undefined;
+  private readonly operationEventStorage = new AsyncLocalStorage<OpensteerEvent[]>();
+  private readonly pendingOperationEventCaptures: PendingOperationEventCapture[] = [];
   private readonly cookieJars = new Map<string, CookieJarEntry[]>();
   private readonly recipeCache = new Map<string, OpensteerRunRecipeOutput>();
   private ownsEngine = false;
@@ -557,6 +572,7 @@ export class OpensteerSessionRuntime {
     this.cleanupRootOnClose = options.cleanupRootOnClose ?? options.workspace === undefined;
     this.sessionInfoBase = options.sessionInfo ?? {};
     this.observationConfig = normalizeObservabilityConfig(options.observability);
+    this.observationSessionId = options.observationSessionId;
     this.injectedObservationSink = options.observationSink;
 
     if (this.injectedEngine === undefined && this.engineFactory === undefined) {
@@ -590,6 +606,24 @@ export class OpensteerSessionRuntime {
         runtimeCoreVersion: OPENSTEER_RUNTIME_CORE_VERSION,
       },
     };
+  }
+
+  async setObservabilityConfig(
+    input: Partial<ObservabilityConfig> | undefined,
+  ): Promise<ObservabilityConfig> {
+    this.observationConfig = normalizeObservabilityConfig(input);
+    const observationSessionId = this.resolveObservationSessionId();
+    if (observationSessionId === undefined) {
+      return this.observationConfig;
+    }
+
+    const sink = this.injectedObservationSink ?? (await this.ensureRoot()).observations;
+    this.observations = await sink.openSession({
+      sessionId: observationSessionId,
+      openedAt: Date.now(),
+      config: this.observationConfig,
+    });
+    return this.observationConfig;
   }
 
   async open(
@@ -706,6 +740,10 @@ export class OpensteerSessionRuntime {
     }
 
     const startedAt = Date.now();
+    const context = buildRuntimeTraceContext({
+      sessionRef: this.sessionRef,
+      pageRef: this.pageRef,
+    });
     try {
       const output = await this.runWithOperationTimeout(
         "page.list",
@@ -720,20 +758,19 @@ export class OpensteerSessionRuntime {
         },
         options,
       );
+      const events = await this.drainPendingEngineEvents(context);
 
       await this.appendTrace({
         operation: "page.list",
         startedAt,
         completedAt: Date.now(),
         outcome: "ok",
+        ...(events === undefined ? {} : { events }),
         data: {
           count: output.pages.length,
           ...(output.activePageRef === undefined ? {} : { activePageRef: output.activePageRef }),
         },
-        context: buildRuntimeTraceContext({
-          sessionRef: this.sessionRef,
-          pageRef: this.pageRef,
-        }),
+        context,
       });
       return output;
     } catch (error) {
@@ -743,10 +780,7 @@ export class OpensteerSessionRuntime {
         completedAt: Date.now(),
         outcome: "error",
         error,
-        context: buildRuntimeTraceContext({
-          sessionRef: this.sessionRef,
-          pageRef: this.pageRef,
-        }),
+        context,
       });
       throw error;
     }
@@ -1186,6 +1220,11 @@ export class OpensteerSessionRuntime {
         },
         options,
       );
+      const context = buildRuntimeTraceContext({
+        sessionRef: this.sessionRef,
+        pageRef,
+      });
+      const events = await this.drainPendingEngineEvents(context);
 
       await this.appendTrace({
         operation: "page.snapshot",
@@ -1193,16 +1232,14 @@ export class OpensteerSessionRuntime {
         completedAt: Date.now(),
         outcome: "ok",
         artifacts,
+        ...(events === undefined ? {} : { events }),
         data: {
           mode,
           url: output.url,
           title: output.title,
           counterCount: output.counters.length,
         },
-        context: buildRuntimeTraceContext({
-          sessionRef: this.sessionRef,
-          pageRef,
-        }),
+        context,
       });
 
       return output;
@@ -5336,12 +5373,15 @@ export class OpensteerSessionRuntime {
         },
       );
       const output = toOpensteerActionResult(executed.result, preparedTarget.persistedDescription);
+      const actionEvents =
+        "events" in executed.result ? executed.result.events : undefined;
 
       await this.appendTrace({
         operation,
         startedAt,
         completedAt: Date.now(),
         outcome: "ok",
+        ...(actionEvents === undefined ? {} : { events: actionEvents }),
         data: {
           target: output.target,
           ...(output.point === undefined ? {} : { point: output.point }),
@@ -8259,7 +8299,9 @@ export class OpensteerSessionRuntime {
     }
 
     if (this.injectedEngine) {
-      this.engine = this.injectedEngine as DisposableBrowserCoreEngine;
+      this.engine = this.wrapEngineWithObservationCapture(
+        this.injectedEngine as DisposableBrowserCoreEngine,
+      );
       this.ownsEngine = false;
       return this.engine;
     }
@@ -8268,7 +8310,9 @@ export class OpensteerSessionRuntime {
       throw new Error("Opensteer engine factory is not initialized");
     }
 
-    this.engine = (await this.engineFactory(overrides)) as DisposableBrowserCoreEngine;
+    this.engine = this.wrapEngineWithObservationCapture(
+      (await this.engineFactory(overrides)) as DisposableBrowserCoreEngine,
+    );
     this.ownsEngine = true;
     return this.engine;
   }
@@ -8503,6 +8547,16 @@ export class OpensteerSessionRuntime {
     }
 
     const root = await this.ensureRoot();
+    const capturedStepEvents =
+      input.events ??
+      this.consumePendingOperationEventCapture(
+        input.operation,
+        input.startedAt,
+        input.completedAt,
+      );
+    const drainedStepEvents =
+      input.events === undefined ? await this.drainPendingEngineEvents(input.context) : undefined;
+    const stepEvents = mergeObservedStepEvents(capturedStepEvents, drainedStepEvents);
     const normalizedData = input.data === undefined ? undefined : toCanonicalJsonValue(input.data);
     const normalizedError =
       input.error === undefined ? undefined : normalizeOpensteerError(input.error);
@@ -8528,7 +8582,7 @@ export class OpensteerSessionRuntime {
       startedAt: input.startedAt,
       completedAt: input.completedAt,
       ...(input.context === undefined ? {} : { context: input.context }),
-      ...(input.events === undefined ? {} : { events: input.events }),
+      ...(stepEvents === undefined ? {} : { events: stepEvents }),
       ...(artifacts === undefined ? {} : { artifacts }),
       ...(normalizedData === undefined ? {} : { data: normalizedData }),
       ...(normalizedError === undefined
@@ -8538,7 +8592,7 @@ export class OpensteerSessionRuntime {
           }),
     });
 
-    const observationSession = await this.ensureObservationSession();
+    const observationSession = await this.ensureObservationSession().catch(() => undefined);
     if (observationSession === undefined || this.observationConfig.profile === "off") {
       return;
     }
@@ -8546,22 +8600,25 @@ export class OpensteerSessionRuntime {
     const observationArtifactIds =
       input.artifacts === undefined
         ? undefined
-        : await Promise.all(
-            input.artifacts.manifests.map(async (manifest) => {
-              const artifact = await observationSession.writeArtifact({
-                artifactId: manifest.artifactId,
-                kind: observationArtifactKindFromManifest(manifest.kind),
-                createdAt: manifest.createdAt,
-                context: manifest.scope,
-                mediaType: manifest.mediaType,
-                byteLength: manifest.byteLength,
-                sha256: manifest.sha256,
-                opensteerArtifactId: manifest.artifactId,
-                storageKey: manifestToExternalBinaryLocation(root.rootPath, manifest).uri,
-              });
-              return artifact.artifactId;
-            }),
-          );
+        : (
+            await Promise.allSettled(
+              input.artifacts.manifests.map(async (manifest) => {
+                const artifact = await observationSession.writeArtifact({
+                  artifactId: manifest.artifactId,
+                  kind: observationArtifactKindFromManifest(manifest.kind),
+                  createdAt: manifest.createdAt,
+                  context: manifest.scope,
+                  mediaType: manifest.mediaType,
+                  byteLength: manifest.byteLength,
+                  sha256: manifest.sha256,
+                  opensteerArtifactId: manifest.artifactId,
+                  storageKey: manifestToExternalBinaryLocation(root.rootPath, manifest).uri,
+                });
+                return artifact.artifactId;
+              }),
+            )
+          )
+            .flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
 
     const observationEvents = buildObservationEventsFromTrace({
       traceId: traceEntry.traceId,
@@ -8571,14 +8628,14 @@ export class OpensteerSessionRuntime {
       startedAt: input.startedAt,
       completedAt: input.completedAt,
       ...(input.context === undefined ? {} : { context: input.context }),
-      ...(input.events === undefined ? {} : { events: input.events }),
+      ...(stepEvents === undefined ? {} : { events: stepEvents }),
       ...(normalizedData === undefined ? {} : { data: normalizedData }),
       ...(normalizedError === undefined ? {} : { error: normalizedError }),
       ...(observationArtifactIds === undefined ? {} : { artifactIds: observationArtifactIds }),
       profile: this.observationConfig.profile,
     });
     if (observationEvents.length > 0) {
-      await observationSession.appendBatch(observationEvents);
+      await observationSession.appendBatch(observationEvents).catch(() => undefined);
     }
   }
 
@@ -8608,6 +8665,7 @@ export class OpensteerSessionRuntime {
     this.extractionDescriptors = undefined;
     this.engine = undefined;
     this.observations = undefined;
+    this.pendingOperationEventCaptures.length = 0;
 
     await observations?.close("runtime_reset").catch(() => undefined);
     if (options.disposeEngine && this.ownsEngine && engine?.dispose) {
@@ -8623,17 +8681,22 @@ export class OpensteerSessionRuntime {
     if (this.observations !== undefined) {
       return this.observations;
     }
-    if (this.sessionRef === undefined) {
+    const observationSessionId = this.resolveObservationSessionId();
+    if (observationSessionId === undefined) {
       return undefined;
     }
 
     const sink = this.injectedObservationSink ?? (await this.ensureRoot()).observations;
     this.observations = await sink.openSession({
-      sessionId: this.sessionRef,
+      sessionId: observationSessionId,
       openedAt: Date.now(),
       config: this.observationConfig,
     });
     return this.observations;
+  }
+
+  private resolveObservationSessionId(): string | undefined {
+    return this.observationSessionId ?? this.sessionRef;
   }
 
   private runWithOperationTimeout<T>(
@@ -8641,14 +8704,134 @@ export class OpensteerSessionRuntime {
     callback: (context: TimeoutExecutionContext) => Promise<T>,
     options: RuntimeOperationOptions = {},
   ): Promise<T> {
-    return runWithPolicyTimeout(
-      this.policy.timeout,
-      {
-        operation,
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
+    const existingCollector = this.operationEventStorage.getStore();
+    if (existingCollector !== undefined) {
+      return runWithPolicyTimeout(
+        this.policy.timeout,
+        {
+          operation,
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+        },
+        callback,
+      );
+    }
+
+    const collector: OpensteerEvent[] = [];
+    const startedAt = Date.now();
+    return this.operationEventStorage.run(collector, async () => {
+      try {
+        return await runWithPolicyTimeout(
+          this.policy.timeout,
+          {
+            operation,
+            ...(options.signal === undefined ? {} : { signal: options.signal }),
+          },
+          callback,
+        );
+      } finally {
+        this.recordPendingOperationEventCapture({
+          operation,
+          startedAt,
+          completedAt: Date.now(),
+          events: collector,
+        });
+      }
+    });
+  }
+
+  private wrapEngineWithObservationCapture(
+    engine: DisposableBrowserCoreEngine,
+  ): DisposableBrowserCoreEngine {
+    return new Proxy(engine, {
+      get: (target, property, receiver) => {
+        const value = Reflect.get(target, property, receiver);
+        if (typeof value !== "function") {
+          return value;
+        }
+
+        return (...args: unknown[]) => {
+          const result = Reflect.apply(value, target, args);
+          if (!(result instanceof Promise)) {
+            return result;
+          }
+
+          return result.then((resolved) => {
+            this.captureObservedStepEvents(resolved);
+            return resolved;
+          });
+        };
       },
-      callback,
-    );
+    }) as DisposableBrowserCoreEngine;
+  }
+
+  private captureObservedStepEvents(value: unknown): void {
+    const collector = this.operationEventStorage.getStore();
+    if (collector === undefined) {
+      return;
+    }
+
+    const events = readStepResultEvents(value);
+    if (events === undefined || events.length === 0) {
+      return;
+    }
+
+    collector.push(...events);
+  }
+
+  private recordPendingOperationEventCapture(capture: PendingOperationEventCapture): void {
+    if (capture.events.length === 0) {
+      return;
+    }
+
+    this.pendingOperationEventCaptures.push({
+      ...capture,
+      events: [...capture.events],
+    });
+    if (this.pendingOperationEventCaptures.length > PENDING_OPERATION_EVENT_CAPTURE_LIMIT) {
+      this.pendingOperationEventCaptures.splice(
+        0,
+        this.pendingOperationEventCaptures.length - PENDING_OPERATION_EVENT_CAPTURE_LIMIT,
+      );
+    }
+  }
+
+  private consumePendingOperationEventCapture(
+    operation: string,
+    startedAt: number,
+    completedAt: number,
+  ): readonly OpensteerEvent[] | undefined {
+    for (let index = this.pendingOperationEventCaptures.length - 1; index >= 0; index -= 1) {
+      const capture = this.pendingOperationEventCaptures[index];
+      if (capture === undefined) {
+        continue;
+      }
+      if (capture.operation !== operation) {
+        continue;
+      }
+      if (
+        capture.startedAt < startedAt - PENDING_OPERATION_EVENT_CAPTURE_SKEW_MS ||
+        capture.completedAt > completedAt + PENDING_OPERATION_EVENT_CAPTURE_SKEW_MS
+      ) {
+        continue;
+      }
+
+      this.pendingOperationEventCaptures.splice(index, 1);
+      return capture.events;
+    }
+
+    return undefined;
+  }
+
+  private async drainPendingEngineEvents(
+    context: TraceContext | undefined,
+  ): Promise<readonly OpensteerEvent[] | undefined> {
+    const pageRef = context?.pageRef ?? this.pageRef;
+    if (pageRef === undefined || this.engine === undefined) {
+      return undefined;
+    }
+
+    const events = await this.engine.drainEvents({ pageRef }).catch(() => []);
+    return events.length > 0 ? events : undefined;
   }
 
   private async navigatePage(
@@ -8705,6 +8888,40 @@ function buildArtifactScope(input: {
   readonly documentEpoch?: DocumentEpoch | undefined;
 }): TraceContext {
   return buildRuntimeTraceContext(input);
+}
+
+function readStepResultEvents(value: unknown): readonly OpensteerEvent[] | undefined {
+  if (value === null || typeof value !== "object") {
+    return undefined;
+  }
+
+  if (!("events" in value)) {
+    return undefined;
+  }
+
+  const events = (value as { readonly events?: unknown }).events;
+  return Array.isArray(events) ? (events as readonly OpensteerEvent[]) : undefined;
+}
+
+function mergeObservedStepEvents(
+  primary: readonly OpensteerEvent[] | undefined,
+  secondary: readonly OpensteerEvent[] | undefined,
+): readonly OpensteerEvent[] | undefined {
+  if (primary === undefined || primary.length === 0) {
+    return secondary === undefined || secondary.length === 0 ? undefined : secondary;
+  }
+  if (secondary === undefined || secondary.length === 0) {
+    return primary;
+  }
+
+  const merged = new Map<string, OpensteerEvent>();
+  for (const event of primary) {
+    merged.set(event.eventId, event);
+  }
+  for (const event of secondary) {
+    merged.set(event.eventId, event);
+  }
+  return [...merged.values()].sort((left, right) => left.timestamp - right.timestamp);
 }
 
 function selectLiveQueryPageRef(
@@ -12300,7 +12517,7 @@ function buildObservationEventsFromTrace(input: {
   readonly artifactIds?: readonly string[];
   readonly profile: ObservabilityConfig["profile"];
 }): readonly AppendObservationEventInput[] {
-  const context = buildObservationContextFromTraceContext(input.context);
+  const context = normalizeObservationContext(input.context);
   const baseCorrelationId = input.traceId;
   const startedEvent: AppendObservationEventInput = {
     kind:
@@ -12376,30 +12593,13 @@ function buildObservationEventsFromTrace(input: {
 }
 
 function buildObservationContextFromEvent(event: OpensteerEvent): ObservationContext | undefined {
-  return buildObservationContextFromTraceContext({
+  return normalizeObservationContext({
     sessionRef: event.sessionRef,
     ...(event.pageRef === undefined ? {} : { pageRef: event.pageRef }),
     ...(event.frameRef === undefined ? {} : { frameRef: event.frameRef }),
     ...(event.documentRef === undefined ? {} : { documentRef: event.documentRef }),
     ...(event.documentEpoch === undefined ? {} : { documentEpoch: event.documentEpoch }),
   });
-}
-
-function buildObservationContextFromTraceContext(
-  context: TraceContext | undefined,
-): ObservationContext | undefined {
-  if (context === undefined) {
-    return undefined;
-  }
-
-  const normalized = {
-    ...(context.sessionRef === undefined ? {} : { sessionRef: context.sessionRef }),
-    ...(context.pageRef === undefined ? {} : { pageRef: context.pageRef }),
-    ...(context.frameRef === undefined ? {} : { frameRef: context.frameRef }),
-    ...(context.documentRef === undefined ? {} : { documentRef: context.documentRef }),
-    ...(context.documentEpoch === undefined ? {} : { documentEpoch: context.documentEpoch }),
-  } satisfies ObservationContext;
-  return Object.keys(normalized).length === 0 ? undefined : normalized;
 }
 
 function shouldCaptureObservationStepEvent(

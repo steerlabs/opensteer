@@ -15,6 +15,8 @@ import type {
   OpensteerBrowserOptions,
   OpensteerBrowserContextOptions,
   OpensteerBrowserLaunchOptions,
+  ObservabilityConfig,
+  ObservationSink,
 } from "@opensteer/protocol";
 
 import { OpensteerBrowserManager } from "../browser-manager.js";
@@ -56,6 +58,9 @@ export interface OpensteerRuntimeOptions {
     readonly reversePackages?: ReversePackageRegistryStore;
   };
   readonly cleanupRootOnClose?: boolean;
+  readonly observability?: Partial<ObservabilityConfig>;
+  readonly observationSessionId?: string;
+  readonly observationSink?: ObservationSink;
 }
 
 export interface OpensteerSessionRuntimeOptions {
@@ -79,6 +84,9 @@ export interface OpensteerSessionRuntimeOptions {
     readonly reversePackages?: ReversePackageRegistryStore;
   };
   readonly cleanupRootOnClose?: boolean;
+  readonly observability?: Partial<ObservabilityConfig>;
+  readonly observationSessionId?: string;
+  readonly observationSink?: ObservationSink;
 }
 
 export class OpensteerRuntime extends SharedOpensteerSessionRuntime {
@@ -123,6 +131,13 @@ export class OpensteerRuntime extends SharedOpensteerSessionRuntime {
           ? {}
           : { registryOverrides: options.registryOverrides }),
         cleanupRootOnClose,
+        ...(options.observability === undefined ? {} : { observability: options.observability }),
+        ...(options.observationSessionId === undefined
+          ? {}
+          : { observationSessionId: options.observationSessionId }),
+        ...(options.observationSink === undefined
+          ? {}
+          : { observationSink: options.observationSink }),
       }),
     );
   }
@@ -161,6 +176,13 @@ export class OpensteerSessionRuntime extends SharedOpensteerSessionRuntime {
           ? {}
           : { registryOverrides: options.registryOverrides }),
         cleanupRootOnClose,
+        ...(options.observability === undefined ? {} : { observability: options.observability }),
+        ...(options.observationSessionId === undefined
+          ? {}
+          : { observationSessionId: options.observationSessionId }),
+        ...(options.observationSink === undefined
+          ? {}
+          : { observationSink: options.observationSink }),
       }),
     );
   }
@@ -181,6 +203,9 @@ function buildSharedRuntimeOptions(input: {
   readonly extractionDescriptorStore?: OpensteerExtractionDescriptorStore;
   readonly registryOverrides?: SharedOpensteerSessionRuntimeOptions["registryOverrides"];
   readonly cleanupRootOnClose: boolean;
+  readonly observability?: SharedOpensteerSessionRuntimeOptions["observability"];
+  readonly observationSessionId?: SharedOpensteerSessionRuntimeOptions["observationSessionId"];
+  readonly observationSink?: SharedOpensteerSessionRuntimeOptions["observationSink"];
 }): SharedOpensteerSessionRuntimeOptions {
   const ownership = resolveOwnership(input.browser);
   const engineFactory =
@@ -216,6 +241,11 @@ function buildSharedRuntimeOptions(input: {
       ? {}
       : { registryOverrides: input.registryOverrides }),
     cleanupRootOnClose: input.cleanupRootOnClose,
+    ...(input.observability === undefined ? {} : { observability: input.observability }),
+    ...(input.observationSessionId === undefined
+      ? {}
+      : { observationSessionId: input.observationSessionId }),
+    ...(input.observationSink === undefined ? {} : { observationSink: input.observationSink }),
     sessionInfo: {
       provider: {
         mode: "local",
