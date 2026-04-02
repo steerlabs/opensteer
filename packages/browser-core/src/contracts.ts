@@ -1,5 +1,5 @@
 import type { BrowserCapabilities } from "./capabilities.js";
-import type { StepResult } from "./events.js";
+import type { StepEvent, StepResult } from "./events.js";
 import type { CoordinateSpace, Point, Rect, Size, ViewportMetrics } from "./geometry.js";
 import type {
   DocumentEpoch,
@@ -196,6 +196,7 @@ export interface BrowserExecutor {
 export interface BrowserInspector {
   readonly capabilities: Readonly<BrowserCapabilities>;
 
+  drainEvents(input: { readonly pageRef: PageRef }): Promise<readonly StepEvent[]>;
   listPages(input: { readonly sessionRef: SessionRef }): Promise<readonly PageInfo[]>;
   listFrames(input: { readonly pageRef: PageRef }): Promise<readonly FrameInfo[]>;
   getPageInfo(input: { readonly pageRef: PageRef }): Promise<PageInfo>;

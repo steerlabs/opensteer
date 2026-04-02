@@ -13,6 +13,7 @@ import type {
   OpensteerSessionGrantKind,
   OpensteerBrowserContextOptions,
   OpensteerBrowserLaunchOptions,
+  ObservabilityConfig,
 } from "@opensteer/protocol";
 import { syncBrowserProfileCookies, type SyncBrowserProfileCookiesInput } from "./profile-sync.js";
 
@@ -21,6 +22,7 @@ export interface OpensteerCloudSessionCreateInput {
   readonly browser?: OpensteerBrowserLaunchOptions;
   readonly context?: OpensteerBrowserContextOptions;
   readonly browserProfile?: CloudBrowserProfilePreference;
+  readonly observability?: Partial<ObservabilityConfig>;
 }
 
 export interface OpensteerCloudSessionDescriptor {
@@ -59,6 +61,7 @@ export class OpensteerCloudClient {
         ...(input.browser === undefined ? {} : { browser: input.browser }),
         ...(input.context === undefined ? {} : { context: input.context }),
         ...(input.browserProfile === undefined ? {} : { browserProfile: input.browserProfile }),
+        ...(input.observability === undefined ? {} : { observability: input.observability }),
       },
     });
 

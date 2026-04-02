@@ -4,7 +4,6 @@ import { randomUUID } from "node:crypto";
 import type {
   AppendObservationEventInput,
   ObservationArtifact,
-  ObservationContext,
   ObservationEvent,
   ObservationSession,
   ObservationSink,
@@ -31,6 +30,11 @@ import {
 } from "./internal/filesystem.js";
 import type { JsonValue } from "./json.js";
 import { toCanonicalJsonValue } from "./json.js";
+import {
+  createObservationRedactor,
+  normalizeObservationContext,
+  type ObservationRedactor,
+} from "./observation-utils.js";
 
 export interface ListObservationEventsInput {
   readonly kind?: ObservationEvent["kind"];
@@ -127,22 +131,6 @@ export function normalizeObservabilityConfig(
   };
 }
 
-function normalizeContext(context: ObservationContext | undefined): ObservationContext | undefined {
-  if (context === undefined) {
-    return undefined;
-  }
-
-  const normalized = {
-    ...(context.sessionRef === undefined ? {} : { sessionRef: context.sessionRef }),
-    ...(context.pageRef === undefined ? {} : { pageRef: context.pageRef }),
-    ...(context.frameRef === undefined ? {} : { frameRef: context.frameRef }),
-    ...(context.documentRef === undefined ? {} : { documentRef: context.documentRef }),
-    ...(context.documentEpoch === undefined ? {} : { documentEpoch: context.documentEpoch }),
-  } satisfies ObservationContext;
-
-  return Object.keys(normalized).length === 0 ? undefined : normalized;
-}
-
 function eventFileName(sequence: number): string {
   return `${String(sequence).padStart(12, "0")}.json`;
 }
@@ -174,6 +162,7 @@ class FilesystemSessionSink implements SessionObservationSink {
 
 class FilesystemObservationStoreImpl implements FilesystemObservationStore {
   readonly sessionsDirectory: string;
+  private readonly redactors = new Map<string, ObservationRedactor>();
 
   constructor(
     private readonly rootPath: string,
@@ -190,17 +179,21 @@ class FilesystemObservationStoreImpl implements FilesystemObservationStore {
     const sessionId = normalizeNonEmptyString("sessionId", input.sessionId);
     const openedAt = normalizeTimestamp("openedAt", input.openedAt ?? Date.now());
     const config = normalizeObservabilityConfig(input.config);
+    const redactor = createObservationRedactor(config);
+    this.redactors.set(sessionId, redactor);
+    const redactedLabels = redactor.redactLabels(config.labels);
+    const redactedTraceContext = redactor.redactTraceContext(config.traceContext);
 
     await withFilesystemLock(this.sessionLockPath(sessionId), async () => {
-      const existing = await this.getSession(sessionId);
+      const existing = await this.reconcileSessionManifest(sessionId);
       if (existing === undefined) {
         await ensureDirectory(this.sessionEventsDirectory(sessionId));
         await ensureDirectory(this.sessionArtifactsDirectory(sessionId));
         const session: ObservationSession = {
           sessionId,
           profile: config.profile,
-          ...(config.labels === undefined ? {} : { labels: config.labels }),
-          ...(config.traceContext === undefined ? {} : { traceContext: config.traceContext }),
+          ...(redactedLabels === undefined ? {} : { labels: redactedLabels }),
+          ...(redactedTraceContext === undefined ? {} : { traceContext: redactedTraceContext }),
           openedAt,
           updatedAt: openedAt,
           currentSequence: 0,
@@ -214,8 +207,8 @@ class FilesystemObservationStoreImpl implements FilesystemObservationStore {
       const patched: ObservationSession = {
         ...existing,
         profile: config.profile,
-        ...(config.labels === undefined ? {} : { labels: config.labels }),
-        ...(config.traceContext === undefined ? {} : { traceContext: config.traceContext }),
+        ...(redactedLabels === undefined ? {} : { labels: redactedLabels }),
+        ...(redactedTraceContext === undefined ? {} : { traceContext: redactedTraceContext }),
         updatedAt: Math.max(existing.updatedAt, openedAt),
       };
       await writeJsonFileAtomic(this.sessionManifestPath(sessionId), patched);
@@ -253,10 +246,11 @@ class FilesystemObservationStoreImpl implements FilesystemObservationStore {
     }
 
     return withFilesystemLock(this.sessionLockPath(sessionId), async () => {
-      const session = await this.getSession(sessionId);
+      const session = await this.reconcileSessionManifest(sessionId);
       if (session === undefined) {
         throw new Error(`observation session ${sessionId} was not found`);
       }
+      const redactor = this.redactors.get(sessionId) ?? createObservationRedactor(undefined);
 
       const events: ObservationEvent[] = [];
       let sequence = session.currentSequence;
@@ -265,7 +259,10 @@ class FilesystemObservationStoreImpl implements FilesystemObservationStore {
       for (const raw of input) {
         sequence += 1;
         const createdAt = normalizeTimestamp("createdAt", raw.createdAt);
-        const context = normalizeContext(raw.context);
+        const context = normalizeObservationContext(raw.context);
+        const redactedData =
+          raw.data === undefined ? undefined : redactor.redactJson(toCanonicalJsonValue(raw.data));
+        const redactedError = redactor.redactError(raw.error);
         const event: ObservationEvent = {
           eventId: normalizeNonEmptyString(
             "eventId",
@@ -284,19 +281,8 @@ class FilesystemObservationStoreImpl implements FilesystemObservationStore {
             ? {}
             : { parentSpanId: normalizeNonEmptyString("parentSpanId", raw.parentSpanId) }),
           ...(context === undefined ? {} : { context }),
-          ...(raw.data === undefined ? {} : { data: toCanonicalJsonValue(raw.data) }),
-          ...(raw.error === undefined
-            ? {}
-            : {
-                error: {
-                  ...(raw.error.code === undefined ? {} : { code: raw.error.code }),
-                  message: normalizeNonEmptyString("error.message", raw.error.message),
-                  ...(raw.error.retriable === undefined ? {} : { retriable: raw.error.retriable }),
-                  ...(raw.error.details === undefined
-                    ? {}
-                    : { details: toCanonicalJsonValue(raw.error.details) }),
-                },
-              }),
+          ...(redactedData === undefined ? {} : { data: redactedData }),
+          ...(redactedError === undefined ? {} : { error: redactedError }),
           ...(raw.artifactIds === undefined || raw.artifactIds.length === 0
             ? {}
             : { artifactIds: [...raw.artifactIds] }),
@@ -313,7 +299,7 @@ class FilesystemObservationStoreImpl implements FilesystemObservationStore {
       await writeJsonFileAtomic(this.sessionManifestPath(sessionId), {
         ...session,
         currentSequence: sequence,
-        eventCount: sequence,
+        eventCount: session.eventCount + events.length,
         updatedAt,
       } satisfies ObservationSession);
 
@@ -326,13 +312,20 @@ class FilesystemObservationStoreImpl implements FilesystemObservationStore {
     input: WriteObservationArtifactInput,
   ): Promise<ObservationArtifact> {
     return withFilesystemLock(this.sessionLockPath(sessionId), async () => {
-      const session = await this.getSession(sessionId);
+      const session = await this.reconcileSessionManifest(sessionId);
       if (session === undefined) {
         throw new Error(`observation session ${sessionId} was not found`);
       }
+      const redactor = this.redactors.get(sessionId) ?? createObservationRedactor(undefined);
 
       const createdAt = normalizeTimestamp("createdAt", input.createdAt);
-      const context = normalizeContext(input.context);
+      const context = normalizeObservationContext(input.context);
+      const redactedStorageKey =
+        input.storageKey === undefined ? undefined : redactor.redactText(input.storageKey);
+      const redactedMetadata =
+        input.metadata === undefined
+          ? undefined
+          : redactor.redactJson(toCanonicalJsonValue(input.metadata));
       const artifact: ObservationArtifact = {
         artifactId: normalizeNonEmptyString("artifactId", input.artifactId),
         sessionId,
@@ -345,8 +338,8 @@ class FilesystemObservationStoreImpl implements FilesystemObservationStore {
         ...(input.opensteerArtifactId === undefined
           ? {}
           : { opensteerArtifactId: input.opensteerArtifactId }),
-        ...(input.storageKey === undefined ? {} : { storageKey: input.storageKey }),
-        ...(input.metadata === undefined ? {} : { metadata: toCanonicalJsonValue(input.metadata) }),
+        ...(redactedStorageKey === undefined ? {} : { storageKey: redactedStorageKey }),
+        ...(redactedMetadata === undefined ? {} : { metadata: redactedMetadata }),
       };
 
       const artifactPath = this.sessionArtifactPath(sessionId, artifact.artifactId);
@@ -434,7 +427,7 @@ class FilesystemObservationStoreImpl implements FilesystemObservationStore {
 
   async closeSession(sessionId: string, _reason?: string): Promise<void> {
     await withFilesystemLock(this.sessionLockPath(sessionId), async () => {
-      const session = await this.getSession(sessionId);
+      const session = await this.reconcileSessionManifest(sessionId);
       if (session === undefined || session.closedAt !== undefined) {
         return;
       }
@@ -446,6 +439,7 @@ class FilesystemObservationStoreImpl implements FilesystemObservationStore {
         closedAt: now,
       } satisfies ObservationSession);
     });
+    this.redactors.delete(sessionId);
   }
 
   async writeArtifactFromManifest(
@@ -516,6 +510,76 @@ class FilesystemObservationStoreImpl implements FilesystemObservationStore {
 
   private sessionLockPath(sessionId: string): string {
     return path.join(this.sessionDirectory(sessionId), ".lock");
+  }
+
+  private async reconcileSessionManifest(
+    sessionId: string,
+  ): Promise<ObservationSession | undefined> {
+    const session = await this.getSession(sessionId);
+    if (session === undefined) {
+      return undefined;
+    }
+
+    const [hasEventDirectory, hasArtifactDirectory] = await Promise.all([
+      pathExists(this.sessionEventsDirectory(sessionId)),
+      pathExists(this.sessionArtifactsDirectory(sessionId)),
+    ]);
+    const [eventFiles, artifactFiles] = await Promise.all([
+      hasEventDirectory
+        ? listJsonFiles(this.sessionEventsDirectory(sessionId))
+        : Promise.resolve([]),
+      hasArtifactDirectory
+        ? listJsonFiles(this.sessionArtifactsDirectory(sessionId))
+        : Promise.resolve([]),
+    ]);
+
+    const currentSequence = eventFiles.reduce((maxSequence, fileName) => {
+      const parsed = Number.parseInt(fileName.replace(/\.json$/u, ""), 10);
+      return Number.isFinite(parsed) ? Math.max(maxSequence, parsed) : maxSequence;
+    }, 0);
+    const eventCount = eventFiles.length;
+    const artifactCount = artifactFiles.length;
+
+    if (
+      session.currentSequence === currentSequence &&
+      session.eventCount === eventCount &&
+      session.artifactCount === artifactCount
+    ) {
+      return session;
+    }
+
+    const [events, artifacts] = await Promise.all([
+      Promise.all(
+        eventFiles.map((fileName) =>
+          readJsonFile<ObservationEvent>(
+            path.join(this.sessionEventsDirectory(sessionId), fileName),
+          ),
+        ),
+      ),
+      Promise.all(
+        artifactFiles.map((fileName) =>
+          readJsonFile<ObservationArtifact>(
+            path.join(this.sessionArtifactsDirectory(sessionId), fileName),
+          ),
+        ),
+      ),
+    ]);
+
+    const updatedAt = Math.max(
+      session.openedAt,
+      session.closedAt ?? 0,
+      ...events.map((event) => event.createdAt),
+      ...artifacts.map((artifact) => artifact.createdAt),
+    );
+    const reconciled: ObservationSession = {
+      ...session,
+      currentSequence,
+      eventCount,
+      artifactCount,
+      updatedAt,
+    };
+    await writeJsonFileAtomic(this.sessionManifestPath(sessionId), reconciled);
+    return reconciled;
   }
 }
 

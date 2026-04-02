@@ -1,6 +1,8 @@
 export type {
   ArtifactScope,
   ArtifactManifest,
+  ArtifactPayloadType,
+  FilesystemArtifactStore,
   OpensteerArtifactStore,
   ProtocolArtifactDelivery,
   StructuredArtifactKind,
@@ -9,6 +11,7 @@ export type {
   WriteBinaryArtifactInput,
   WriteStructuredArtifactInput,
 } from "./artifacts.js";
+export { createArtifactStore, manifestToExternalBinaryLocation } from "./artifacts.js";
 export type {
   CreateFilesystemOpensteerWorkspaceOptions,
   FilesystemOpensteerWorkspace,

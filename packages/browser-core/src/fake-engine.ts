@@ -681,6 +681,10 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
     );
   }
 
+  async drainEvents(input: { readonly pageRef: PageRef }): Promise<readonly StepEvent[]> {
+    return this.drainQueuedEvents(input.pageRef);
+  }
+
   async listFrames(input: { readonly pageRef: PageRef }): Promise<readonly FrameInfo[]> {
     this.requireCapability("inspector.frameEnumeration");
     const page = this.requirePage(input.pageRef);

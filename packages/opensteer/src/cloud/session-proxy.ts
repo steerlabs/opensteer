@@ -107,6 +107,7 @@ import type {
   OpensteerWriteRequestPlanInput,
   OpensteerActionResult,
   StorageSnapshot,
+  ObservabilityConfig,
 } from "@opensteer/protocol";
 import { OPENSTEER_PROTOCOL_VERSION, opensteerSemanticOperationNames } from "@opensteer/protocol";
 import type { CloudBrowserProfilePreference } from "@opensteer/protocol";
@@ -142,6 +143,7 @@ export interface CloudSessionProxyOptions {
   readonly rootPath?: string;
   readonly workspace?: string;
   readonly cleanupRootOnClose?: boolean;
+  readonly observability?: Partial<ObservabilityConfig>;
 }
 
 interface CloudSessionInitInput {
@@ -160,6 +162,7 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
 
   private readonly cleanupRootOnClose: boolean;
   private readonly cloud: OpensteerCloudClient;
+  private readonly observability: Partial<ObservabilityConfig> | undefined;
   private sessionId: string | undefined;
   private sessionBaseUrl: string | undefined;
   private client: OpensteerSemanticRestClient | undefined;
@@ -169,6 +172,7 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
   constructor(cloud: OpensteerCloudClient, options: CloudSessionProxyOptions = {}) {
     this.cloud = cloud;
     this.workspace = options.workspace;
+    this.observability = options.observability;
     this.rootPath =
       options.rootPath ??
       (this.workspace === undefined
@@ -652,6 +656,9 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
       ...(this.workspace === undefined ? {} : { name: this.workspace }),
       ...(input.launch === undefined ? {} : { browser: input.launch }),
       ...(input.context === undefined ? {} : { context: input.context }),
+      ...(this.observability === undefined
+        ? {}
+        : { observability: this.observability }),
       ...(resolveCloudBrowserProfile(this.cloud, input) === undefined
         ? {}
         : { browserProfile: resolveCloudBrowserProfile(this.cloud, input)! }),
