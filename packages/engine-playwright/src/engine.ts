@@ -187,8 +187,6 @@ interface RecordedPageEvent {
   readonly kind: "page-error";
   readonly message?: string;
   readonly stack?: string;
-  readonly lineNumber?: number;
-  readonly columnNumber?: number;
   readonly timestamp: number;
 }
 
@@ -235,8 +233,6 @@ const PLAYWRIGHT_RUNTIME_EVENT_RECORDER_SOURCE = String.raw`(() => {
           ? event.message
           : event.error?.message || "Uncaught exception",
       stack: typeof event.error?.stack === "string" ? event.error.stack : undefined,
-      lineNumber: typeof event.lineno === "number" ? event.lineno : undefined,
-      columnNumber: typeof event.colno === "number" ? event.colno : undefined,
     });
   });
 
@@ -3205,12 +3201,15 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   }
 
   private createEvent<TKind extends StepEvent["kind"]>(
-    value: Omit<Extract<StepEvent, { readonly kind: TKind }>, "eventId" | "timestamp">,
+    value: Omit<Extract<StepEvent, { readonly kind: TKind }>, "eventId" | "timestamp"> & {
+      readonly timestamp?: number;
+    },
   ): Extract<StepEvent, { readonly kind: TKind }> {
+    const { timestamp, ...event } = value;
     return {
-      ...value,
+      ...event,
       eventId: `event:${++this.eventCounter}`,
-      timestamp: Date.now(),
+      timestamp: timestamp ?? Date.now(),
     } as Extract<StepEvent, { readonly kind: TKind }>;
   }
 
@@ -3259,7 +3258,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
             pageRef: controller.pageRef,
             message: event.message ?? "Uncaught exception",
             ...(event.stack === undefined ? {} : { stack: event.stack }),
-            ...(event.timestamp === undefined ? {} : { timestamp: event.timestamp }),
+            timestamp: event.timestamp,
           }),
         ),
       ),
