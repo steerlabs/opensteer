@@ -29,6 +29,7 @@ import {
   type ReverseReportRegistryStore,
 } from "./registry.js";
 import { createSavedNetworkStore, type SavedNetworkStore } from "./network/saved-store.js";
+import { createObservationStore, type FilesystemObservationStore } from "./observations.js";
 import { createTraceStore, type OpensteerTraceStore } from "./traces.js";
 
 export const OPENSTEER_FILESYSTEM_WORKSPACE_LAYOUT = "opensteer-workspace";
@@ -46,6 +47,7 @@ export interface OpensteerWorkspaceManifest {
     readonly live: "live";
     readonly artifacts: "artifacts";
     readonly traces: "traces";
+    readonly observations: "observations";
     readonly registry: "registry";
   };
 }
@@ -69,10 +71,12 @@ export interface FilesystemOpensteerWorkspace {
   readonly liveCloudPath: string;
   readonly artifactsPath: string;
   readonly tracesPath: string;
+  readonly observationsPath: string;
   readonly registryPath: string;
   readonly lockPath: string;
   readonly artifacts: OpensteerArtifactStore;
   readonly traces: OpensteerTraceStore;
+  readonly observations: FilesystemObservationStore;
   readonly registry: {
     readonly descriptors: DescriptorRegistryStore;
     readonly requestPlans: RequestPlanRegistryStore;
@@ -117,6 +121,7 @@ export async function createFilesystemOpensteerWorkspace(
   const liveCloudPath = path.join(livePath, "cloud.json");
   const artifactsPath = path.join(options.rootPath, "artifacts");
   const tracesPath = path.join(options.rootPath, "traces");
+  const observationsPath = path.join(options.rootPath, "observations");
   const registryPath = path.join(options.rootPath, "registry");
   const lockPath = path.join(options.rootPath, ".lock");
 
@@ -133,6 +138,17 @@ export async function createFilesystemOpensteerWorkspace(
         `workspace ${options.rootPath} uses unsupported version ${String(manifest.version)}`,
       );
     }
+    if (manifest.paths.observations === undefined) {
+      manifest = {
+        ...manifest,
+        updatedAt: Date.now(),
+        paths: {
+          ...manifest.paths,
+          observations: "observations",
+        },
+      };
+      await writeJsonFileAtomic(manifestPath, manifest);
+    }
   } else {
     const createdAt = normalizeTimestamp("createdAt", options.createdAt ?? Date.now());
     manifest = {
@@ -147,6 +163,7 @@ export async function createFilesystemOpensteerWorkspace(
         live: "live",
         artifacts: "artifacts",
         traces: "traces",
+        observations: "observations",
         registry: "registry",
       },
     };
@@ -159,6 +176,7 @@ export async function createFilesystemOpensteerWorkspace(
     ensureDirectory(livePath),
     ensureDirectory(artifactsPath),
     ensureDirectory(tracesPath),
+    ensureDirectory(observationsPath),
     ensureDirectory(registryPath),
   ]);
 
@@ -195,6 +213,9 @@ export async function createFilesystemOpensteerWorkspace(
   const traces = createTraceStore(options.rootPath, artifacts);
   await traces.initialize();
 
+  const observations = createObservationStore(options.rootPath, artifacts);
+  await observations.initialize();
+
   return {
     rootPath: options.rootPath,
     manifestPath,
@@ -207,10 +228,12 @@ export async function createFilesystemOpensteerWorkspace(
     liveCloudPath,
     artifactsPath,
     tracesPath,
+    observationsPath,
     registryPath,
     lockPath,
     artifacts,
     traces,
+    observations,
     registry: {
       descriptors,
       requestPlans,

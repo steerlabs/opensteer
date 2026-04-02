@@ -12,6 +12,7 @@ import {
   type Point,
   type Quad,
   type Rect,
+  type StepEvent,
 } from "@opensteer/browser-core";
 import { OpensteerProtocolError } from "@opensteer/protocol";
 
@@ -92,14 +93,16 @@ export class DomActionExecutor {
         ...(input.timeout === undefined ? {} : { timeout: input.timeout }),
       },
       async (pointerTarget, point, timeout) => {
-        await timeout.runStep(() =>
+        const events: StepEvent[] = [];
+        const moved = await timeout.runStep(() =>
           this.options.engine.mouseMove({
             pageRef: pointerTarget.resolved.pageRef,
             point,
             coordinateSpace: "document-css",
           }),
         );
-        await timeout.runStep(() =>
+        events.push(...moved.events);
+        const clicked = await timeout.runStep(() =>
           this.options.engine.mouseClick({
             pageRef: pointerTarget.resolved.pageRef,
             point,
@@ -109,7 +112,12 @@ export class DomActionExecutor {
             ...(input.modifiers === undefined ? {} : { modifiers: input.modifiers }),
           }),
         );
-        return { resolved: pointerTarget.original, point };
+        events.push(...clicked.events);
+        return {
+          resolved: pointerTarget.original,
+          point,
+          ...(events.length === 0 ? {} : { events }),
+        };
       },
     );
   }
@@ -124,14 +132,18 @@ export class DomActionExecutor {
         ...(input.timeout === undefined ? {} : { timeout: input.timeout }),
       },
       async (pointerTarget, point, timeout) => {
-        await timeout.runStep(() =>
+        const moved = await timeout.runStep(() =>
           this.options.engine.mouseMove({
             pageRef: pointerTarget.resolved.pageRef,
             point,
             coordinateSpace: "document-css",
           }),
         );
-        return { resolved: pointerTarget.original, point };
+        return {
+          resolved: pointerTarget.original,
+          point,
+          ...(moved.events.length === 0 ? {} : { events: moved.events }),
+        };
       },
     );
   }
@@ -146,14 +158,16 @@ export class DomActionExecutor {
         ...(input.timeout === undefined ? {} : { timeout: input.timeout }),
       },
       async (pointerTarget, point, timeout) => {
-        await timeout.runStep(() =>
+        const events: StepEvent[] = [];
+        const moved = await timeout.runStep(() =>
           this.options.engine.mouseMove({
             pageRef: pointerTarget.resolved.pageRef,
             point,
             coordinateSpace: "document-css",
           }),
         );
-        await timeout.runStep(() =>
+        events.push(...moved.events);
+        const scrolled = await timeout.runStep(() =>
           this.options.engine.mouseScroll({
             pageRef: pointerTarget.resolved.pageRef,
             point,
@@ -161,7 +175,12 @@ export class DomActionExecutor {
             delta: input.delta,
           }),
         );
-        return { resolved: pointerTarget.original, point };
+        events.push(...scrolled.events);
+        return {
+          resolved: pointerTarget.original,
+          point,
+          ...(events.length === 0 ? {} : { events }),
+        };
       },
     );
   }

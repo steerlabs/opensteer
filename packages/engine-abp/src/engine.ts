@@ -1550,6 +1550,10 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     );
   }
 
+  async drainEvents(input: { readonly pageRef: PageRef }): Promise<readonly StepEvent[]> {
+    return this.drainQueuedEvents(input.pageRef);
+  }
+
   async listFrames(input: { readonly pageRef: PageRef }): Promise<readonly FrameInfo[]> {
     const controller = this.requirePage(input.pageRef);
     await this.flushDomUpdateTask(controller);

@@ -41,6 +41,7 @@ export type CloudActionMethod = (typeof cloudActionMethods)[number];
 export const cloudErrorCodes = [
   "CLOUD_AUTH_FAILED",
   "CLOUD_SESSION_NOT_FOUND",
+  "CLOUD_ARTIFACT_NOT_FOUND",
   "CLOUD_SESSION_CLOSED",
   "CLOUD_UNSUPPORTED_METHOD",
   "CLOUD_INVALID_REQUEST",

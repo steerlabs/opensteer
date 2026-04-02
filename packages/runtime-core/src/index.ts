@@ -1,5 +1,19 @@
 export { OPENSTEER_RUNTIME_CORE_VERSION } from "./version.js";
 export type {
+  ArtifactManifest,
+  ArtifactPayloadType,
+  ArtifactScope,
+  FilesystemArtifactStore,
+  OpensteerArtifactStore,
+  ProtocolArtifactDelivery,
+  StoredArtifactPayload,
+  StoredArtifactRecord,
+  StructuredArtifactKind,
+  WriteBinaryArtifactInput,
+  WriteStructuredArtifactInput,
+} from "./artifacts.js";
+export { createArtifactStore, manifestToExternalBinaryLocation } from "./artifacts.js";
+export type {
   OpensteerEngineFactory,
   OpensteerEngineFactoryOptions,
   OpensteerSessionRuntimeOptions,
@@ -49,6 +63,12 @@ export {
   OPENSTEER_FILESYSTEM_WORKSPACE_VERSION,
   resolveFilesystemWorkspacePath,
 } from "./root.js";
+export type {
+  FilesystemObservationStore,
+  ListObservationArtifactsInput,
+  ListObservationEventsInput,
+} from "./observations.js";
+export { createObservationStore, normalizeObservabilityConfig } from "./observations.js";
 export type {
   AuthRecipeRecord,
   AuthRecipeRegistryStore,

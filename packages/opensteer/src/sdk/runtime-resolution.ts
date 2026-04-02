@@ -72,6 +72,9 @@ export function createOpensteerSemanticRuntime(
       ...(runtimeOptions.cleanupRootOnClose === undefined
         ? {}
         : { cleanupRootOnClose: runtimeOptions.cleanupRootOnClose }),
+      ...(runtimeOptions.observability === undefined
+        ? {}
+        : { observability: runtimeOptions.observability }),
     });
   }
 
