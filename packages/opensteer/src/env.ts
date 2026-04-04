@@ -1,22 +1,17 @@
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 const ENV_FILENAMES = [".env", ".env.local"] as const;
+const OPENSTEER_ENV_PREFIX = "OPENSTEER_";
 
-let loaded = false;
+export type OpensteerEnvironment = Record<string, string | undefined>;
 
-/**
- * Loads OPENSTEER_* environment variables from `.env` and `.env.local` files,
- * walking up from the given directory. Existing process.env values are never
- * overwritten. Safe to call multiple times -- subsequent calls are no-ops.
- */
-export function loadOpensteerEnvironment(cwd: string = process.cwd()): void {
-  if (loaded) {
-    return;
-  }
-  loaded = true;
-
-  const protectedKeys = new Set(Object.keys(process.env));
+export function resolveOpensteerEnvironment(
+  cwd: string = process.cwd(),
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): OpensteerEnvironment {
+  const resolved = collectOpensteerEnvironment(baseEnv);
+  const protectedKeys = new Set(Object.keys(resolved));
   const directories = collectDirectories(cwd);
 
   for (const directory of directories) {
@@ -33,13 +28,24 @@ export function loadOpensteerEnvironment(cwd: string = process.cwd()): void {
       }
       const parsed = parseEnvFile(contents);
       for (const [key, value] of Object.entries(parsed)) {
-        if (protectedKeys.has(key)) {
+        if (!isOpensteerEnvironmentKey(key) || protectedKeys.has(key)) {
           continue;
         }
-        process.env[key] = value;
-        protectedKeys.add(key);
+        resolved[key] = value;
       }
     }
+  }
+
+  return resolved;
+}
+
+export function loadOpensteerEnvironment(cwd: string = process.cwd()): void {
+  const resolved = resolveOpensteerEnvironment(cwd);
+  for (const [key, value] of Object.entries(resolved)) {
+    if (process.env[key] !== undefined) {
+      continue;
+    }
+    process.env[key] = value;
   }
 }
 
@@ -98,4 +104,19 @@ function parseEnvValue(rawValue: string): string {
   }
 
   return rawValue.replace(/\s+#.*$/u, "").trimEnd();
+}
+
+function collectOpensteerEnvironment(baseEnv: NodeJS.ProcessEnv): OpensteerEnvironment {
+  const resolved: OpensteerEnvironment = {};
+  for (const [key, value] of Object.entries(baseEnv)) {
+    if (!isOpensteerEnvironmentKey(key) || value === undefined) {
+      continue;
+    }
+    resolved[key] = value;
+  }
+  return resolved;
+}
+
+function isOpensteerEnvironmentKey(key: string): boolean {
+  return key.startsWith(OPENSTEER_ENV_PREFIX);
 }

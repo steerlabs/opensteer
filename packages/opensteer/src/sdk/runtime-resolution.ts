@@ -2,6 +2,7 @@ import {
   DEFAULT_OPENSTEER_ENGINE,
   type OpensteerEngineName,
 } from "../internal/engine-selection.js";
+import type { OpensteerEnvironment } from "../env.js";
 import {
   assertProviderSupportsEngine,
   resolveOpensteerProvider,
@@ -22,14 +23,15 @@ export interface OpensteerResolvedRuntimeConfig {
 export function resolveOpensteerRuntimeConfig(
   input: {
     readonly provider?: OpensteerProviderOptions;
-    readonly environmentProvider?: string;
+    readonly environment?: OpensteerEnvironment;
   } = {},
 ): OpensteerResolvedRuntimeConfig {
+  const environment = input.environment ?? process.env;
   const provider = resolveOpensteerProvider({
     ...(input.provider === undefined ? {} : { provider: input.provider }),
-    ...(input.environmentProvider === undefined
+    ...(environment.OPENSTEER_PROVIDER === undefined
       ? {}
-      : { environmentProvider: input.environmentProvider }),
+      : { environmentProvider: environment.OPENSTEER_PROVIDER }),
   });
 
   if (provider.mode === "cloud") {
@@ -37,9 +39,7 @@ export function resolveOpensteerRuntimeConfig(
       provider,
       cloud: resolveCloudConfig({
         ...(input.provider === undefined ? {} : { provider: input.provider }),
-        ...(input.environmentProvider === undefined
-          ? {}
-          : { environmentProvider: input.environmentProvider }),
+        environment,
       })!,
     };
   }
@@ -52,15 +52,14 @@ export function createOpensteerSemanticRuntime(
     readonly runtimeOptions?: OpensteerRuntimeOptions;
     readonly engine?: OpensteerEngineName;
     readonly provider?: OpensteerProviderOptions;
+    readonly environment?: OpensteerEnvironment;
   } = {},
 ): OpensteerDisconnectableRuntime {
   const runtimeOptions = input.runtimeOptions ?? {};
   const engine = input.engine ?? runtimeOptions.engineName ?? DEFAULT_OPENSTEER_ENGINE;
   const config = resolveOpensteerRuntimeConfig({
     ...(input.provider === undefined ? {} : { provider: input.provider }),
-    ...(process.env.OPENSTEER_PROVIDER === undefined
-      ? {}
-      : { environmentProvider: process.env.OPENSTEER_PROVIDER }),
+    ...(input.environment === undefined ? {} : { environment: input.environment }),
   });
   assertProviderSupportsEngine(config.provider.mode, engine);
 
