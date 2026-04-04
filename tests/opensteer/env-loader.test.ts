@@ -13,6 +13,7 @@ afterEach(() => {
   delete process.env.OPENSTEER_BASE_URL;
   delete process.env.OPENSTEER_API_KEY;
   delete process.env.DATABASE_URL;
+  delete process.env.PORT;
 });
 
 describe("CLI env loading", () => {
@@ -25,6 +26,7 @@ describe("CLI env loading", () => {
       await writeFile(
         path.join(rootDir, ".env"),
         [
+          "DATABASE_URL=postgres://parent",
           "OPENSTEER_PROVIDER=local",
           "OPENSTEER_BASE_URL=https://parent.example",
           "OPENSTEER_API_KEY=parent-key",
@@ -36,16 +38,18 @@ describe("CLI env loading", () => {
       );
       await writeFile(
         path.join(childDir, ".env.local"),
-        "OPENSTEER_BASE_URL=https://child-local.example\n",
+        "OPENSTEER_BASE_URL=https://child-local.example\nPORT=4000\n",
       );
 
       vi.stubEnv("OPENSTEER_API_KEY", "protected-key");
 
       await loadCliEnvironment(childDir);
 
+      expect(process.env.DATABASE_URL).toBe("postgres://parent");
       expect(process.env.OPENSTEER_PROVIDER).toBe("cloud");
       expect(process.env.OPENSTEER_BASE_URL).toBe("https://child-local.example");
       expect(process.env.OPENSTEER_API_KEY).toBe("protected-key");
+      expect(process.env.PORT).toBe("4000");
     } finally {
       await rm(rootDir, { recursive: true, force: true });
     }
