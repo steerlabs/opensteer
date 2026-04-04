@@ -53,6 +53,7 @@ const state = vi.hoisted(() => {
     runtimeConfig,
     runtime,
     browserManager,
+    environmentByRoot: new Map<string | undefined, Record<string, string>>(),
     createRuntime: vi.fn(function MockCreateOpensteerSemanticRuntime() {
       return runtime;
     }),
@@ -71,11 +72,18 @@ vi.mock("../../packages/opensteer/src/browser-manager.js", () => ({
   OpensteerBrowserManager: state.browserManagerCtor,
 }));
 
+vi.mock("../../packages/opensteer/src/env.js", () => ({
+  resolveOpensteerEnvironment: vi.fn(
+    (rootDir?: string) => state.environmentByRoot.get(rootDir) ?? {},
+  ),
+}));
+
 import { Opensteer } from "../../packages/opensteer/src/sdk/opensteer.js";
 
 describe("Opensteer v2 SDK surface", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    state.environmentByRoot.clear();
     state.runtimeConfig.provider = {
       mode: "local",
       source: "default",
@@ -109,6 +117,7 @@ describe("Opensteer v2 SDK surface", () => {
       rootDir: "/tmp/opensteer",
     });
     expect(state.createRuntime).toHaveBeenCalledWith({
+      environment: {},
       runtimeOptions: {
         workspace: "github-sync",
         browser: "persistent",
@@ -200,6 +209,7 @@ describe("Opensteer v2 SDK surface", () => {
       provider: {
         mode: "cloud",
       },
+      environment: {},
       runtimeOptions: {
         workspace: "github-sync",
         rootDir: "/tmp/opensteer",
@@ -209,4 +219,69 @@ describe("Opensteer v2 SDK surface", () => {
       "browser.* helpers are only available in local mode.",
     );
   });
+
+  test("passes root-scoped environment to runtime resolution without mutating process.env", async () => {
+    state.environmentByRoot.set("/tmp/opensteer-a", {
+      OPENSTEER_PROVIDER: "cloud",
+      OPENSTEER_API_KEY: "osk_a",
+      OPENSTEER_BASE_URL: "https://a.example",
+    });
+    state.environmentByRoot.set("/tmp/opensteer-b", {
+      OPENSTEER_PROVIDER: "cloud",
+      OPENSTEER_API_KEY: "osk_b",
+      OPENSTEER_BASE_URL: "https://b.example",
+    });
+    state.runtimeConfig.provider = {
+      mode: "cloud",
+      source: "env",
+    };
+
+    const originalProvider = process.env.OPENSTEER_PROVIDER;
+    const originalApiKey = process.env.OPENSTEER_API_KEY;
+    const originalBaseUrl = process.env.OPENSTEER_BASE_URL;
+    delete process.env.OPENSTEER_PROVIDER;
+    delete process.env.OPENSTEER_API_KEY;
+    delete process.env.OPENSTEER_BASE_URL;
+
+    try {
+      new Opensteer({ rootDir: "/tmp/opensteer-a" });
+      new Opensteer({ rootDir: "/tmp/opensteer-b" });
+
+      expect(state.createRuntime).toHaveBeenNthCalledWith(1, {
+        environment: {
+          OPENSTEER_PROVIDER: "cloud",
+          OPENSTEER_API_KEY: "osk_a",
+          OPENSTEER_BASE_URL: "https://a.example",
+        },
+        runtimeOptions: {
+          rootDir: "/tmp/opensteer-a",
+        },
+      });
+      expect(state.createRuntime).toHaveBeenNthCalledWith(2, {
+        environment: {
+          OPENSTEER_PROVIDER: "cloud",
+          OPENSTEER_API_KEY: "osk_b",
+          OPENSTEER_BASE_URL: "https://b.example",
+        },
+        runtimeOptions: {
+          rootDir: "/tmp/opensteer-b",
+        },
+      });
+      expect(process.env.OPENSTEER_PROVIDER).toBeUndefined();
+      expect(process.env.OPENSTEER_API_KEY).toBeUndefined();
+      expect(process.env.OPENSTEER_BASE_URL).toBeUndefined();
+    } finally {
+      restoreEnvValue("OPENSTEER_PROVIDER", originalProvider);
+      restoreEnvValue("OPENSTEER_API_KEY", originalApiKey);
+      restoreEnvValue("OPENSTEER_BASE_URL", originalBaseUrl);
+    }
+  });
 });
+
+function restoreEnvValue(key: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[key];
+    return;
+  }
+  process.env[key] = value;
+}

@@ -7,8 +7,7 @@ This repository contains the open-source SDK, CLI, engines, shared protocol type
 ## Get Started
 
 ```bash
-npm i -g opensteer
-opensteer skills install
+npx --yes opensteer@latest skills install
 ```
 
 If Playwright browser binaries are not installed yet:
@@ -68,19 +67,19 @@ try {
 Opensteer ships a first-party skill pack at [skills/opensteer/SKILL.md](./skills/opensteer/SKILL.md). Install it through the upstream [`skills`](https://skills.sh) CLI for Claude Code, Codex, and other compatible agents.
 
 ```bash
-opensteer skills install
+npx --yes opensteer@latest skills install
 ```
 
 For Claude Code specifically:
 
 ```bash
-opensteer skills install --agent claude-code
+npx --yes opensteer@latest skills install --agent claude-code
 ```
 
 List the skills available in this repository without installing them:
 
 ```bash
-opensteer skills install --list
+npx --yes opensteer@latest skills install --list
 ```
 
 ## Repository Layout

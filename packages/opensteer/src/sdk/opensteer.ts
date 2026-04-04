@@ -106,6 +106,7 @@ import {
   type OpensteerBrowserStatus,
   type WorkspaceBrowserManifest,
 } from "../browser-manager.js";
+import { resolveOpensteerEnvironment } from "../env.js";
 import { OpensteerRuntime, type OpensteerRuntimeOptions } from "./runtime.js";
 import {
   createOpensteerSemanticRuntime,
@@ -238,12 +239,11 @@ export class Opensteer {
   readonly browser: OpensteerBrowserController;
 
   constructor(options: OpensteerOptions = {}) {
+    const environment = resolveOpensteerEnvironment(options.rootDir);
     const { provider, engineName, ...runtimeOptions } = options;
     const runtimeConfig = resolveOpensteerRuntimeConfig({
       ...(provider === undefined ? {} : { provider }),
-      ...(process.env.OPENSTEER_PROVIDER === undefined
-        ? {}
-        : { environmentProvider: process.env.OPENSTEER_PROVIDER }),
+      environment,
     });
 
     if (runtimeConfig.provider.mode === "cloud") {
@@ -251,6 +251,7 @@ export class Opensteer {
       this.runtime = createOpensteerSemanticRuntime({
         ...(provider === undefined ? {} : { provider }),
         ...(engineName === undefined ? {} : { engine: engineName }),
+        environment,
         runtimeOptions: {
           ...runtimeOptions,
         },
@@ -271,6 +272,7 @@ export class Opensteer {
     this.runtime = createOpensteerSemanticRuntime({
       ...(provider === undefined ? {} : { provider }),
       ...(engineName === undefined ? {} : { engine: engineName }),
+      environment,
       runtimeOptions: {
         ...runtimeOptions,
         rootPath: this.browserManager.rootPath,
