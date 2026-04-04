@@ -4,47 +4,36 @@ import path from "node:path";
 const ENV_FILENAMES = [".env", ".env.local"] as const;
 const OPENSTEER_ENV_PREFIX = "OPENSTEER_";
 
+interface CachedOpensteerEnvironment {
+  readonly signature: string;
+  readonly values: OpensteerEnvironment;
+}
+
 export type OpensteerEnvironment = Record<string, string | undefined>;
+const opensteerEnvironmentCache = new Map<string, CachedOpensteerEnvironment>();
 
 export function resolveOpensteerEnvironment(
   cwd: string = process.cwd(),
   baseEnv: NodeJS.ProcessEnv = process.env,
 ): OpensteerEnvironment {
-  const resolved = collectOpensteerEnvironment(baseEnv);
-  const protectedKeys = new Set(Object.keys(resolved));
-  const directories = collectDirectories(cwd);
-
-  for (const directory of directories) {
-    for (const filename of ENV_FILENAMES) {
-      const filePath = path.join(directory, filename);
-      if (!existsSync(filePath)) {
-        continue;
-      }
-      let contents: string;
-      try {
-        contents = readFileSync(filePath, "utf8");
-      } catch {
-        continue;
-      }
-      const parsed = parseEnvFile(contents);
-      for (const [key, value] of Object.entries(parsed)) {
-        if (!isOpensteerEnvironmentKey(key) || protectedKeys.has(key)) {
-          continue;
-        }
-        resolved[key] = value;
-      }
-    }
+  const resolvedCwd = path.resolve(cwd);
+  const signature = buildEnvironmentSignature(baseEnv, isOpensteerEnvironmentKey);
+  const cached = opensteerEnvironmentCache.get(resolvedCwd);
+  if (cached && cached.signature === signature) {
+    return { ...cached.values };
   }
 
-  return resolved;
+  const resolved = resolveEnvironmentFiles(resolvedCwd, baseEnv, isOpensteerEnvironmentKey);
+  opensteerEnvironmentCache.set(resolvedCwd, {
+    signature,
+    values: { ...resolved },
+  });
+  return { ...resolved };
 }
 
-export function loadOpensteerEnvironment(cwd: string = process.cwd()): void {
-  const resolved = resolveOpensteerEnvironment(cwd);
+export function loadEnvironment(cwd: string = process.cwd()): void {
+  const resolved = resolveEnvironmentFiles(path.resolve(cwd), process.env);
   for (const [key, value] of Object.entries(resolved)) {
-    if (process.env[key] !== undefined) {
-      continue;
-    }
     process.env[key] = value;
   }
 }
@@ -106,15 +95,57 @@ function parseEnvValue(rawValue: string): string {
   return rawValue.replace(/\s+#.*$/u, "").trimEnd();
 }
 
-function collectOpensteerEnvironment(baseEnv: NodeJS.ProcessEnv): OpensteerEnvironment {
+function resolveEnvironmentFiles(
+  cwd: string,
+  baseEnv: NodeJS.ProcessEnv,
+  predicate?: (key: string) => boolean,
+): OpensteerEnvironment {
+  const resolved = collectEnvironment(baseEnv, predicate);
+  const protectedKeys = new Set(Object.keys(resolved));
+  const directories = collectDirectories(cwd);
+
+  for (const directory of directories) {
+    for (const filename of ENV_FILENAMES) {
+      const filePath = path.join(directory, filename);
+      if (!existsSync(filePath)) {
+        continue;
+      }
+      const parsed = parseEnvFile(readFileSync(filePath, "utf8"));
+      for (const [key, value] of Object.entries(parsed)) {
+        if ((predicate && !predicate(key)) || protectedKeys.has(key)) {
+          continue;
+        }
+        resolved[key] = value;
+      }
+    }
+  }
+
+  return resolved;
+}
+
+function collectEnvironment(
+  baseEnv: NodeJS.ProcessEnv,
+  predicate?: (key: string) => boolean,
+): OpensteerEnvironment {
   const resolved: OpensteerEnvironment = {};
   for (const [key, value] of Object.entries(baseEnv)) {
-    if (!isOpensteerEnvironmentKey(key) || value === undefined) {
+    if ((predicate && !predicate(key)) || value === undefined) {
       continue;
     }
     resolved[key] = value;
   }
   return resolved;
+}
+
+function buildEnvironmentSignature(
+  baseEnv: NodeJS.ProcessEnv,
+  predicate: (key: string) => boolean,
+): string {
+  return Object.entries(baseEnv)
+    .filter(([key, value]) => predicate(key) && value !== undefined)
+    .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+    .map(([key, value]) => `${key}=${value}`)
+    .join("\n");
 }
 
 function isOpensteerEnvironmentKey(key: string): boolean {

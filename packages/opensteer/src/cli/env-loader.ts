@@ -1,5 +1,5 @@
-import { loadOpensteerEnvironment } from "../env.js";
+import { loadEnvironment } from "../env.js";
 
 export async function loadCliEnvironment(cwd: string): Promise<void> {
-  loadOpensteerEnvironment(cwd);
+  loadEnvironment(cwd);
 }
