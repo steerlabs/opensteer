@@ -1,4 +1,5 @@
 import type { CloudBrowserProfilePreference } from "@opensteer/protocol";
+import type { OpensteerEnvironment } from "../env.js";
 import {
   resolveOpensteerProvider,
   type OpensteerCloudProviderOptions,
@@ -14,14 +15,14 @@ export interface OpensteerCloudConfig {
 export function resolveCloudConfig(
   input: {
     readonly provider?: OpensteerProviderOptions;
-    readonly environmentProvider?: string;
+    readonly environment?: OpensteerEnvironment;
   } = {},
 ): OpensteerCloudConfig | undefined {
   const provider = resolveOpensteerProvider({
     ...(input.provider === undefined ? {} : { provider: input.provider }),
-    ...(input.environmentProvider === undefined
+    ...(input.environment?.OPENSTEER_PROVIDER === undefined
       ? {}
-      : { environmentProvider: input.environmentProvider }),
+      : { environmentProvider: input.environment.OPENSTEER_PROVIDER }),
   });
   if (provider.mode !== "cloud") {
     return undefined;
@@ -31,11 +32,11 @@ export function resolveCloudConfig(
     input.provider?.mode === "cloud"
       ? (input.provider as OpensteerCloudProviderOptions)
       : undefined;
-  const apiKey = cloudProvider?.apiKey ?? process.env.OPENSTEER_API_KEY;
+  const apiKey = cloudProvider?.apiKey ?? input.environment?.OPENSTEER_API_KEY;
   if (!apiKey || apiKey.trim().length === 0) {
     throw new Error("provider=cloud requires OPENSTEER_API_KEY or provider.apiKey.");
   }
-  const baseUrl = cloudProvider?.baseUrl ?? process.env.OPENSTEER_BASE_URL;
+  const baseUrl = cloudProvider?.baseUrl ?? input.environment?.OPENSTEER_BASE_URL;
   if (!baseUrl || baseUrl.trim().length === 0) {
     throw new Error("provider=cloud requires OPENSTEER_BASE_URL or provider.baseUrl.");
   }
