@@ -685,9 +685,7 @@ async function handleStatusCommand(parsed: ParsedCommandLine): Promise<void> {
   const runtimeProvider = buildCliRuntimeProvider(parsed, provider.mode);
   const runtimeConfig = resolveOpensteerRuntimeConfig({
     ...(runtimeProvider === undefined ? {} : { provider: runtimeProvider }),
-    ...(process.env.OPENSTEER_PROVIDER === undefined
-      ? {}
-      : { environmentProvider: process.env.OPENSTEER_PROVIDER }),
+    environment: process.env,
   });
   const status = await collectOpensteerStatus({
     rootDir: process.cwd(),

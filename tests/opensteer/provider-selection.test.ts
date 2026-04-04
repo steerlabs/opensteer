@@ -28,7 +28,7 @@ describe("provider selection", () => {
         provider: {
           mode: "local",
         },
-        environmentProvider: process.env.OPENSTEER_PROVIDER,
+        environment: process.env,
       }),
     ).toEqual({
       provider: {
