@@ -21,8 +21,7 @@ The package is organized around three lanes:
 CLI:
 
 ```bash
-npm i -g opensteer
-opensteer skills install
+npx --yes opensteer@latest skills install
 ```
 
 SDK:
@@ -38,8 +37,9 @@ npm install opensteer
 pnpm add @opensteer/engine-abp
 ```
 
-`opensteer skills install` installs the packaged first-party skill pack through the upstream
-`skills` CLI. Use `opensteer skills install --agent claude-code` when you want to target
+`npx --yes opensteer@latest skills install` installs the packaged first-party skill pack
+through the upstream `skills` CLI. Use
+`npx --yes opensteer@latest skills install --agent claude-code` when you want to target
 Claude Code explicitly.
 
 `opensteer` installs the Playwright-backed local engine by default. Add

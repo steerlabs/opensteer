@@ -106,6 +106,7 @@ import {
   type OpensteerBrowserStatus,
   type WorkspaceBrowserManifest,
 } from "../browser-manager.js";
+import { loadOpensteerEnvironment } from "../env.js";
 import { OpensteerRuntime, type OpensteerRuntimeOptions } from "./runtime.js";
 import {
   createOpensteerSemanticRuntime,
@@ -238,6 +239,7 @@ export class Opensteer {
   readonly browser: OpensteerBrowserController;
 
   constructor(options: OpensteerOptions = {}) {
+    loadOpensteerEnvironment(options.rootDir);
     const { provider, engineName, ...runtimeOptions } = options;
     const runtimeConfig = resolveOpensteerRuntimeConfig({
       ...(provider === undefined ? {} : { provider }),
