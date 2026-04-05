@@ -496,6 +496,7 @@ interface MutationCaptureFinalizeDiagnostics {
 }
 
 const MUTATION_CAPTURE_FINALIZE_TIMEOUT_MS = 5_000;
+const PERSISTED_NETWORK_FLUSH_TIMEOUT_MS = 5_000;
 const PENDING_OPERATION_EVENT_CAPTURE_LIMIT = 64;
 const PENDING_OPERATION_EVENT_CAPTURE_SKEW_MS = 1_000;
 
@@ -8233,7 +8234,33 @@ export class OpensteerSessionRuntime {
       ?.entries.find((entry) => entry.key === key)?.value;
   }
 
-  private async flushPersistedNetworkHistory(): Promise<void> {}
+  private async flushPersistedNetworkHistory(): Promise<void> {
+    if (this.sessionRef === undefined) {
+      return;
+    }
+
+    const root = await this.ensureRoot();
+
+    try {
+      await withDetachedTimeoutSignal(PERSISTED_NETWORK_FLUSH_TIMEOUT_MS, async (signal) => {
+        const browserRecords = await this.readBrowserNetworkRecords(
+          {
+            includeBodies: true,
+            includeCurrentPageOnly: false,
+          },
+          signal,
+        );
+        await this.networkHistory.persist(browserRecords, root.registry.savedNetwork, {
+          bodyWriteMode: "authoritative",
+          redactSecretHeaders: false,
+        });
+      });
+    } catch (error) {
+      if (!isIgnorableRuntimeBindingError(error)) {
+        throw error;
+      }
+    }
+  }
 
   private toDomTargetRef(target: OpensteerTargetInput): DomTargetRef {
     if (target.kind === "description") {
