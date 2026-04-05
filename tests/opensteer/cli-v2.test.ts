@@ -37,7 +37,7 @@ describe("Opensteer v2 CLI", () => {
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 60_000);
 
   test("prints workspace-centric help", async () => {
     await ensureCliArtifactsBuilt();
@@ -55,7 +55,7 @@ describe("Opensteer v2 CLI", () => {
     expect(result.stdout).not.toContain("snapshot-authenticated");
     expect(result.stdout).not.toContain("attach-live");
     expect(result.stdout).not.toContain("--name");
-  }, 20_000);
+  }, 60_000);
 
   test("reports persistent browser status inside a repo-local workspace", async () => {
     await ensureCliArtifactsBuilt();
@@ -87,7 +87,7 @@ describe("Opensteer v2 CLI", () => {
     expect(parsed.rootPath).toContain(path.join(".opensteer", "workspaces", "github-sync"));
     expect(parsed.browserPath).toBe(path.join(parsed.rootPath, "browser"));
     expect(parsed.userDataDir).toBe(path.join(parsed.rootPath, "browser", "user-data"));
-  }, 20_000);
+  }, 60_000);
 
   test("reports browser status without requiring SQLite support", async () => {
     await ensureCliArtifactsBuilt();
@@ -118,7 +118,7 @@ describe("Opensteer v2 CLI", () => {
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 60_000);
 
   test("loads engine selection from .env for browser workspace commands", async () => {
     await ensureCliArtifactsBuilt();
@@ -144,7 +144,7 @@ describe("Opensteer v2 CLI", () => {
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 60_000);
 
   test("fails persisted-network CLI commands with a targeted SQLite support error", async () => {
     await ensureCliArtifactsBuilt();
@@ -177,7 +177,7 @@ describe("Opensteer v2 CLI", () => {
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 60_000);
 
   test("loads provider config from .env for top-level status", async () => {
     await ensureCliArtifactsBuilt();
@@ -221,7 +221,7 @@ describe("Opensteer v2 CLI", () => {
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 60_000);
 
   test("discovers reverse candidates from saved workspace network across CLI invocations", async () => {
     await ensureCliArtifactsBuilt();

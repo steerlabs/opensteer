@@ -27,6 +27,7 @@ import {
   resolveOpensteerRuntimeConfig,
 } from "../sdk/runtime-resolution.js";
 import { collectOpensteerStatus, renderOpensteerStatus } from "./status.js";
+import { runOpensteerRecordCommand } from "./record.js";
 
 const OPERATION_ALIASES = new Map<string, OpensteerSemanticOperationName>([
   ["open", "session.open"],
@@ -120,6 +121,11 @@ async function main(): Promise<void> {
 
   if (parsed.command[0] === "status") {
     await handleStatusCommand(parsed);
+    return;
+  }
+
+  if (parsed.command[0] === "record") {
+    await handleRecordCommandEntry(parsed);
     return;
   }
 
@@ -282,6 +288,63 @@ async function handleBrowserCommand(parsed: ParsedCommandLine): Promise<void> {
   }
 }
 
+async function handleRecordCommandEntry(parsed: ParsedCommandLine): Promise<void> {
+  if (parsed.options.workspace === undefined) {
+    throw new Error('record requires "--workspace <id>".');
+  }
+
+  const url = parsed.options.url ?? parsed.rest[0];
+  if (url === undefined) {
+    throw new Error('record requires "--url <value>" or a positional URL.');
+  }
+
+  const provider = resolveCliProvider(parsed);
+  assertCloudCliOptionsMatchProvider(parsed, provider.mode);
+  if (provider.mode !== "local") {
+    throw new Error(
+      'record requires provider=local. Set "--provider local" or clear OPENSTEER_PROVIDER.',
+    );
+  }
+
+  const engineName = resolveCliEngineName(parsed);
+  if (engineName !== "playwright") {
+    throw new Error('record requires engine=playwright.');
+  }
+
+  if (parsed.options.browser !== undefined && parsed.options.browser !== "persistent") {
+    throw new Error('record only supports "--browser persistent".');
+  }
+
+  if (parsed.options.launch?.headless === true) {
+    throw new Error('record requires a headed browser. Remove "--headless true".');
+  }
+
+  const runtime = createOpensteerSemanticRuntime({
+    provider: {
+      mode: "local",
+    },
+    engine: engineName,
+    runtimeOptions: {
+      workspace: parsed.options.workspace,
+      rootDir: process.cwd(),
+      browser: "persistent",
+      launch: {
+        ...(parsed.options.launch ?? {}),
+        headless: false,
+      },
+      ...(parsed.options.context === undefined ? {} : { context: parsed.options.context }),
+    },
+  });
+
+  await runOpensteerRecordCommand({
+    runtime,
+    workspace: parsed.options.workspace,
+    url,
+    rootDir: process.cwd(),
+    ...(parsed.options.output === undefined ? {} : { outputPath: parsed.options.output }),
+  });
+}
+
 function buildOperationInput(
   operation: OpensteerSemanticOperationName,
   parsed: ParsedCommandLine,
@@ -381,6 +444,8 @@ function resolveOperation(command: readonly string[]): OpensteerSemanticOperatio
 
 interface ParsedCliOptions {
   readonly workspace?: string;
+  readonly url?: string;
+  readonly output?: string;
   readonly requestedEngineName?: string;
   readonly provider?: OpensteerProviderMode;
   readonly cloudBaseUrl?: string;
@@ -494,6 +559,8 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
   };
 
   const workspace = readSingle(rawOptions, "workspace");
+  const url = readSingle(rawOptions, "url");
+  const output = readSingle(rawOptions, "output");
   const sourceUserDataDir = readSingle(rawOptions, "source-user-data-dir");
   const sourceProfileDirectory = readSingle(rawOptions, "source-profile-directory");
   const selector = readSingle(rawOptions, "selector");
@@ -531,6 +598,8 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
 
   const options: ParsedCliOptions = {
     ...(workspace === undefined ? {} : { workspace }),
+    ...(url === undefined ? {} : { url }),
+    ...(output === undefined ? {} : { output }),
     ...(requestedEngineName === undefined ? {} : { requestedEngineName }),
     ...(provider === undefined ? {} : { provider }),
     ...(cloudBaseUrl === undefined ? {} : { cloudBaseUrl }),
@@ -784,6 +853,9 @@ function resolveCommandLength(tokens: readonly string[]): number {
   if (tokens[0] === "status") {
     return 1;
   }
+  if (tokens[0] === "record") {
+    return 1;
+  }
   for (let length = Math.min(3, tokens.length); length >= 1; length -= 1) {
     if (OPERATION_ALIASES.has(tokens.slice(0, length).join(" "))) {
       return length;
@@ -802,6 +874,7 @@ Usage:
   opensteer click --workspace <id> (--element <n> | --selector <css> | --description <text>)
   opensteer input --workspace <id> --text <value> (--element <n> | --selector <css> | --description <text>)
   opensteer extract --workspace <id> --description <text> [--schema-json <json>]
+  opensteer record --workspace <id> --url <url> [--output <path>]
   opensteer close --workspace <id>
   opensteer status [--workspace <id>] [--json]
 
@@ -819,6 +892,8 @@ Common options:
   --help
   --version
   --workspace <id>
+  --url <url>
+  --output <path>
   --provider local|cloud
   --cloud-base-url <url>
   --cloud-api-key <key>
