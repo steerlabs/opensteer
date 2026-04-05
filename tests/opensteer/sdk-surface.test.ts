@@ -14,6 +14,14 @@ const state = vi.hoisted(() => {
       url: (input as { readonly url?: string }).url ?? "about:blank",
       title: "Workspace Runtime",
     })),
+    click: vi.fn(async () => ({
+      actionId: "action:test",
+      pageRef: "page:test",
+      target: {
+        kind: "selector",
+        selector: '[data-cell="A1"]',
+      },
+    })),
     snapshot: vi.fn(async (input = {}) => ({
       url: "https://example.com",
       title: "Workspace Runtime",
@@ -185,6 +193,29 @@ describe("Opensteer v2 SDK surface", () => {
     });
     expect(snapshot).toMatchObject({
       mode: "action",
+    });
+  });
+
+  test("click forwards native gesture options to the semantic runtime", async () => {
+    const opensteer = new Opensteer({
+      workspace: "github-sync",
+    });
+
+    await opensteer.click({
+      selector: '[data-cell="A1"]',
+      clickCount: 2,
+      button: "left",
+      modifiers: ["Shift"],
+    });
+
+    expect(state.runtime.click).toHaveBeenCalledWith({
+      target: {
+        kind: "selector",
+        selector: '[data-cell="A1"]',
+      },
+      clickCount: 2,
+      button: "left",
+      modifiers: ["Shift"],
     });
   });
 

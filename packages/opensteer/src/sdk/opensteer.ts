@@ -13,6 +13,8 @@ import type {
   OpensteerActionResult,
   OpensteerComputerExecuteInput,
   OpensteerComputerExecuteOutput,
+  OpensteerComputerKeyModifier,
+  OpensteerComputerMouseButton,
   OpensteerDomExtractOutput,
   OpensteerGetRequestPlanInput,
   OpensteerInferRequestPlanInput,
@@ -126,6 +128,12 @@ export interface OpensteerTargetOptions {
   readonly selector?: string;
   readonly description?: string;
   readonly captureNetwork?: string;
+}
+
+export interface OpensteerClickOptions extends OpensteerTargetOptions {
+  readonly button?: OpensteerComputerMouseButton;
+  readonly clickCount?: number;
+  readonly modifiers?: readonly OpensteerComputerKeyModifier[];
 }
 
 export interface OpensteerInputOptions extends OpensteerTargetOptions {
@@ -346,8 +354,14 @@ export class Opensteer {
     return this.runtime.addInitScript(normalized);
   }
 
-  async click(input: OpensteerTargetOptions): Promise<OpensteerActionResult> {
-    const normalized = normalizeTargetOptions(input);
+  async click(input: OpensteerClickOptions): Promise<OpensteerActionResult> {
+    const { button, clickCount, modifiers, ...target } = input;
+    const normalized = {
+      ...normalizeTargetOptions(target),
+      ...(button === undefined ? {} : { button }),
+      ...(clickCount === undefined ? {} : { clickCount }),
+      ...(modifiers === undefined ? {} : { modifiers }),
+    };
     return this.runtime.click(normalized);
   }
 

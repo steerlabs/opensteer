@@ -804,11 +804,7 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
       return false;
     }
 
-    if (
-      error.statusCode !== 401 &&
-      error.statusCode !== 404 &&
-      error.statusCode !== 409
-    ) {
+    if (error.statusCode !== 401 && error.statusCode !== 404) {
       return false;
     }
 
