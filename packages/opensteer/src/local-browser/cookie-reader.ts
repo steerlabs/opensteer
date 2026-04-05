@@ -146,10 +146,51 @@ function queryAllCookies(dbPath: string): readonly RawCookieRow[] {
        FROM cookies`,
     );
     stmt.setReadBigInts(true);
-    return stmt.all() as RawCookieRow[];
+    return stmt.all().map(toRawCookieRow);
   } finally {
     database.close();
   }
+}
+
+function toRawCookieRow(
+  row: Record<string, string | number | bigint | Uint8Array | null>,
+): RawCookieRow {
+  return {
+    host_key: readSqliteText(row.host_key, "host_key"),
+    name: readSqliteText(row.name, "name"),
+    value: readSqliteText(row.value, "value"),
+    encrypted_value: readSqliteBuffer(row.encrypted_value, "encrypted_value"),
+    path: readSqliteText(row.path, "path"),
+    expires_utc: readSqliteInteger(row.expires_utc, "expires_utc"),
+    is_secure: readSqliteInteger(row.is_secure, "is_secure"),
+    is_httponly: readSqliteInteger(row.is_httponly, "is_httponly"),
+    samesite: readSqliteInteger(row.samesite, "samesite"),
+    is_persistent: readSqliteInteger(row.is_persistent, "is_persistent"),
+  };
+}
+
+function readSqliteText(value: unknown, field: string): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  throw new Error(`Unexpected SQLite value for ${field}.`);
+}
+
+function readSqliteInteger(value: unknown, field: string): number | bigint {
+  if (typeof value === "number" || typeof value === "bigint") {
+    return value;
+  }
+  throw new Error(`Unexpected SQLite value for ${field}.`);
+}
+
+function readSqliteBuffer(value: unknown, field: string): Buffer {
+  if (Buffer.isBuffer(value)) {
+    return value;
+  }
+  if (value instanceof Uint8Array) {
+    return Buffer.from(value);
+  }
+  throw new Error(`Unexpected SQLite value for ${field}.`);
 }
 
 // ---------------------------------------------------------------------------

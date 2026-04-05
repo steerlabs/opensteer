@@ -402,7 +402,15 @@ describe("cloud browser-profile integration", () => {
     const workspace = "cloud-workspace";
     const workspaceRoot = path.join(rootDir, ".opensteer", "workspaces", workspace);
     const semanticBaseUrl = "https://cloud.example/runtime/session_123";
+    const semanticGrant = {
+      kind: "semantic" as const,
+      transport: "http" as const,
+      url: semanticBaseUrl,
+      token: "semantic-token",
+      expiresAt: 4_102_444_800_000,
+    };
     let createSessionCalls = 0;
+    let accessCalls = 0;
     let getSessionCalls = 0;
     let closeSessionCalls = 0;
     let semanticOpenCalls = 0;
@@ -420,8 +428,29 @@ describe("cloud browser-profile integration", () => {
           ok: true,
           json: async () => ({
             sessionId: "session_123",
-            baseUrl: semanticBaseUrl,
             status: "active",
+            initialGrants: {
+              semantic: semanticGrant,
+            },
+            initialGrantExpiresAt: semanticGrant.expiresAt,
+          }),
+        };
+      }
+
+      if (
+        url === "https://api.opensteer.dev/v1/sessions/session_123/access" &&
+        init?.method === "POST"
+      ) {
+        accessCalls += 1;
+        events.push("access");
+        return {
+          ok: true,
+          json: async () => ({
+            sessionId: "session_123",
+            expiresAt: semanticGrant.expiresAt,
+            grants: {
+              semantic: semanticGrant,
+            },
           }),
         };
       }
@@ -498,13 +527,13 @@ describe("cloud browser-profile integration", () => {
       expect(events.slice(0, 3)).toEqual(["sync", "create-session", "semantic-open"]);
       expect(createSessionCalls).toBe(1);
       expect(semanticOpenCalls).toBe(1);
+      expect(accessCalls).toBe(0);
 
       await first.disconnect();
 
       expect(await readPersistedCloudSessionRecord(workspaceRoot)).toMatchObject({
         provider: "cloud",
         sessionId: "session_123",
-        baseUrl: semanticBaseUrl,
       });
 
       const second = new CloudSessionProxy(client, {
@@ -515,9 +544,10 @@ describe("cloud browser-profile integration", () => {
         url: "https://example.com",
       });
 
-      expect(events.slice(3)).toEqual(["get-session", "sync", "semantic-open"]);
+      expect(events.slice(3)).toEqual(["get-session", "sync", "access", "semantic-open"]);
       expect(createSessionCalls).toBe(1);
       expect(getSessionCalls).toBe(1);
+      expect(accessCalls).toBe(1);
       expect(semanticOpenCalls).toBe(2);
 
       await second.close();
@@ -532,6 +562,14 @@ describe("cloud browser-profile integration", () => {
   test("CloudSessionProxy continues creating a new session when sync fails", async () => {
     syncLocalRegistryToCloudMock.mockRejectedValueOnce(new Error("sync failed"));
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "opensteer-cloud-session-"));
+    const semanticBaseUrl = "https://cloud.example/runtime/session_123";
+    const semanticGrant = {
+      kind: "semantic" as const,
+      transport: "http" as const,
+      url: semanticBaseUrl,
+      token: "semantic-token",
+      expiresAt: 4_102_444_800_000,
+    };
 
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       if (url === "https://api.opensteer.dev/v1/sessions" && init?.method === "POST") {
@@ -539,17 +577,16 @@ describe("cloud browser-profile integration", () => {
           ok: true,
           json: async () => ({
             sessionId: "session_123",
-            baseUrl: "https://cloud.example/runtime/session_123",
             status: "active",
+            initialGrants: {
+              semantic: semanticGrant,
+            },
+            initialGrantExpiresAt: semanticGrant.expiresAt,
           }),
         };
       }
 
-      if (
-        url ===
-          "https://cloud.example/runtime/session_123/api/v2/semantic/operations/session/open" &&
-        init?.method === "POST"
-      ) {
+      if (url === `${semanticBaseUrl}/api/v2/semantic/operations/session/open` && init?.method === "POST") {
         const request = JSON.parse(String(init.body)) as OpensteerRequestEnvelope<unknown>;
         return {
           ok: true,
@@ -595,6 +632,14 @@ describe("cloud browser-profile integration", () => {
   test("CloudSessionProxy continues reusing a persisted session when sync fails", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "opensteer-cloud-session-"));
     const workspace = "cloud-workspace";
+    const semanticBaseUrl = "https://cloud.example/runtime/session_123";
+    const semanticGrant = {
+      kind: "semantic" as const,
+      transport: "http" as const,
+      url: semanticBaseUrl,
+      token: "semantic-token",
+      expiresAt: 4_102_444_800_000,
+    };
 
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       if (url === "https://api.opensteer.dev/v1/sessions" && init?.method === "POST") {
@@ -602,8 +647,11 @@ describe("cloud browser-profile integration", () => {
           ok: true,
           json: async () => ({
             sessionId: "session_123",
-            baseUrl: "https://cloud.example/runtime/session_123",
             status: "active",
+            initialGrants: {
+              semantic: semanticGrant,
+            },
+            initialGrantExpiresAt: semanticGrant.expiresAt,
           }),
         };
       }
@@ -618,10 +666,22 @@ describe("cloud browser-profile integration", () => {
       }
 
       if (
-        url ===
-          "https://cloud.example/runtime/session_123/api/v2/semantic/operations/session/open" &&
+        url === "https://api.opensteer.dev/v1/sessions/session_123/access" &&
         init?.method === "POST"
       ) {
+        return {
+          ok: true,
+          json: async () => ({
+            sessionId: "session_123",
+            expiresAt: semanticGrant.expiresAt,
+            grants: {
+              semantic: semanticGrant,
+            },
+          }),
+        };
+      }
+
+      if (url === `${semanticBaseUrl}/api/v2/semantic/operations/session/open` && init?.method === "POST") {
         const request = JSON.parse(String(init.body)) as OpensteerRequestEnvelope<unknown>;
         return {
           ok: true,
