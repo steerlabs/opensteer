@@ -41,6 +41,7 @@ interface EvaluatedPageState {
   readonly previousUrl: string;
   readonly currentUrl: string;
   readonly focused: boolean;
+  readonly stopRequested: boolean;
   readonly events: readonly RawFlowRecorderEvent[];
 }
 
@@ -52,8 +53,10 @@ export class FlowRecorderCollector {
   private readonly actions: RecordedAction[] = [];
   private nextPageOrdinal = 0;
   private runningLoop: Promise<void> | undefined;
-  private stopRequested = false;
+  private loopStopRequested = false;
+  private stopDetected = false;
   private focusedPageId: string | undefined;
+  private stopWaiters: Array<() => void> = [];
 
   constructor(runtime: RecorderRuntimeAdapter, options: FlowRecorderCollectorOptions = {}) {
     this.runtime = runtime;
@@ -91,17 +94,19 @@ export class FlowRecorderCollector {
     if (this.runningLoop !== undefined) {
       return;
     }
-    this.stopRequested = false;
+    this.loopStopRequested = false;
     this.runningLoop = this.runLoop();
   }
 
   async stop(): Promise<readonly RecordedAction[]> {
-    this.stopRequested = true;
+    this.loopStopRequested = true;
     if (this.runningLoop !== undefined) {
       await this.runningLoop;
       this.runningLoop = undefined;
     }
-    await this.pollOnce().catch(() => undefined);
+    if (!this.stopDetected) {
+      await this.pollOnce().catch(() => undefined);
+    }
     return this.actions.slice();
   }
 
@@ -109,11 +114,27 @@ export class FlowRecorderCollector {
     return this.actions.slice();
   }
 
+  async waitForStop(): Promise<void> {
+    if (this.stopDetected) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      this.stopWaiters.push(resolve);
+    });
+  }
+
   async pollOnce(): Promise<readonly RecordedAction[]> {
     const pollTimestamp = Date.now();
     const { pages } = await this.runtime.listPages();
     const previousPageRefs = new Set(this.pages.keys());
     const evaluatedPages = await this.readEvaluatedPages(pages);
+    if (!this.stopDetected && evaluatedPages.some((page) => page.stopRequested)) {
+      this.stopDetected = true;
+      this.loopStopRequested = true;
+      for (const resolve of this.stopWaiters.splice(0, this.stopWaiters.length)) {
+        resolve();
+      }
+    }
     const actions = this.normalizePoll({
       pollTimestamp,
       previousPageRefs,
@@ -142,11 +163,11 @@ export class FlowRecorderCollector {
   }
 
   private async runLoop(): Promise<void> {
-    while (!this.stopRequested) {
+    while (!this.loopStopRequested) {
       try {
         await this.pollOnce();
       } catch {}
-      if (this.stopRequested) {
+      if (this.loopStopRequested) {
         break;
       }
       await delay(this.pollIntervalMs);
@@ -171,6 +192,7 @@ export class FlowRecorderCollector {
           previousUrl: knownPage.currentUrl,
           currentUrl: snapshot.url,
           focused: snapshot.focused || snapshot.visibilityState === "visible",
+          stopRequested: snapshot.stopRequested,
           events: snapshot.events,
           ...(page.openerPageRef === undefined ? {} : { openerPageRef: page.openerPageRef }),
           ...(knownPage.openerPageId === undefined ? {} : { openerPageId: knownPage.openerPageId }),
@@ -497,6 +519,7 @@ function normalizeSnapshot(value: unknown, fallbackUrl: string): FlowRecorderSna
       url: fallbackUrl,
       focused: false,
       visibilityState: "hidden",
+      stopRequested: false,
       events: [],
     };
   }
@@ -513,6 +536,7 @@ function normalizeSnapshot(value: unknown, fallbackUrl: string): FlowRecorderSna
       snapshot.visibilityState === "hidden"
         ? snapshot.visibilityState
         : "hidden",
+    stopRequested: snapshot.stopRequested === true,
     events: Array.isArray(snapshot.events) ? (snapshot.events as readonly RawFlowRecorderEvent[]) : [],
   };
 }

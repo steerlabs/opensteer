@@ -146,6 +146,37 @@ describe("Opensteer v2 CLI", () => {
     }
   }, 60_000);
 
+  test("accepts option=value syntax for launch args that start with dashes", async () => {
+    await ensureCliArtifactsBuilt();
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "opensteer-cli-arg-equals-"));
+
+    try {
+      const result = await execFile(
+        "node",
+        [
+          CLI_SCRIPT,
+          "browser",
+          "status",
+          "--workspace",
+          "arg-equals",
+          "--arg=--remote-debugging-port=9333",
+        ],
+        {
+          cwd,
+          maxBuffer: 1024 * 1024 * 4,
+        },
+      );
+
+      const parsed = JSON.parse(result.stdout) as {
+        readonly workspace?: string;
+      };
+
+      expect(parsed.workspace).toBe("arg-equals");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test("fails persisted-network CLI commands with a targeted SQLite support error", async () => {
     await ensureCliArtifactsBuilt();
     const cwd = await mkdtemp(path.join(os.tmpdir(), "opensteer-cli-no-sqlite-saved-network-"));

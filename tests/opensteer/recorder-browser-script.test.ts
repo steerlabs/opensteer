@@ -23,7 +23,7 @@ describe.sequential("recorder browser script", () => {
     );
   });
 
-  test("captures trusted DOM actions and prefers stable selectors", async () => {
+  test("captures trusted DOM actions, prefers stable selectors, and exposes browser stop state", async () => {
     const rootDir = await mkdtemp(path.join(tmpdir(), "opensteer-recorder-browser-script-"));
     temporaryRoots.push(rootDir);
 
@@ -93,6 +93,104 @@ describe.sequential("recorder browser script", () => {
       expect(clickEvent?.selector).toContain(`data-testid="submit-button"`);
       expect(typeEvent?.selector).toContain(`name="email"`);
       expect(scrollEvent).toBeDefined();
+      expect((drained as { readonly stopRequested?: boolean }).stopRequested).toBe(false);
+
+      const stopped = (await opensteer.evaluate(`() => {
+        const host = document.querySelector("[data-opensteer-recorder-ui]");
+        if (!(host instanceof HTMLElement) || !(host.shadowRoot instanceof ShadowRoot)) {
+          throw new Error("Recorder UI was not mounted.");
+        }
+        const button = host.shadowRoot.querySelector("button");
+        if (!(button instanceof HTMLButtonElement)) {
+          throw new Error("Recorder stop button was not mounted.");
+        }
+        button.click();
+        const recorder = globalThis.__opensteerFlowRecorder;
+        const stopped = recorder && typeof recorder.drain === "function" ? recorder.drain() : null;
+        return {
+          hostPresent: document.querySelector("[data-opensteer-recorder-ui]") instanceof HTMLElement,
+          stopped,
+        };
+      }`)) as {
+        readonly hostPresent: boolean;
+        readonly stopped: {
+          readonly stopRequested: boolean;
+          readonly events: readonly {
+            readonly kind: string;
+          }[];
+        } | null;
+      };
+
+      expect(stopped.hostPresent).toBe(false);
+      expect(stopped.stopped?.stopRequested).toBe(true);
+      expect(stopped.stopped?.events.some((event) => event.kind === "click")).toBe(false);
+    } finally {
+      await opensteer.close().catch(() => undefined);
+      server.close();
+      await once(server, "close").catch(() => undefined);
+    }
+  }, 60_000);
+
+  test("mounts the stop button after full navigations and on new pages", async () => {
+    const rootDir = await mkdtemp(path.join(tmpdir(), "opensteer-recorder-browser-stop-ui-"));
+    temporaryRoots.push(rootDir);
+
+    const server = createServer((request, response) => {
+      const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      response.setHeader("content-type", "text/html; charset=utf-8");
+      if (url.pathname === "/" || url.pathname === "/next" || url.pathname === "/popup") {
+        response.end(`<!doctype html><html lang="en"><body><main>${url.pathname}</main></body></html>`);
+        return;
+      }
+      response.statusCode = 404;
+      response.end("not found");
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to start recorder stop button fixture server");
+    }
+
+    const baseUrl = `http://127.0.0.1:${String(address.port)}`;
+    const opensteer = new Opensteer({
+      name: "recorder-browser-stop-ui",
+      rootDir,
+      browser: "temporary",
+      launch: {
+        headless: true,
+      },
+    });
+
+    const expectStopButton = async (pageRef?: string) => {
+      const mounted = (await opensteer.evaluate({
+        ...(pageRef === undefined ? {} : { pageRef }),
+        script: `() => {
+          const host = document.querySelector("[data-opensteer-recorder-ui]");
+          if (!(host instanceof HTMLElement) || !(host.shadowRoot instanceof ShadowRoot)) {
+            return false;
+          }
+          const button = host.shadowRoot.querySelector("button");
+          return button instanceof HTMLButtonElement && button.textContent === "Stop recording";
+        }`,
+      })) as boolean;
+      expect(mounted).toBe(true);
+    };
+
+    try {
+      await opensteer.open(`${baseUrl}/`);
+      await opensteer.addInitScript(FLOW_RECORDER_INSTALL_SCRIPT);
+      await opensteer.evaluate(FLOW_RECORDER_INSTALL_SCRIPT);
+
+      await expectStopButton();
+
+      await opensteer.goto(`${baseUrl}/next`);
+      await expectStopButton();
+
+      const popup = await opensteer.newPage({
+        url: `${baseUrl}/popup`,
+      });
+      await expectStopButton(popup.pageRef);
     } finally {
       await opensteer.close().catch(() => undefined);
       server.close();

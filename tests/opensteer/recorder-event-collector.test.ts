@@ -207,4 +207,54 @@ describe("FlowRecorderCollector", () => {
     expect(adapter.addInitScripts).toEqual([FLOW_RECORDER_INSTALL_SCRIPT]);
     expect(adapter.evaluatedScripts).toContain(FLOW_RECORDER_DRAIN_SCRIPT);
   });
+
+  test("resolves stop when the browser recorder requests it", async () => {
+    const adapter = new FakeRecorderRuntimeAdapter({
+      initialPages: [
+        {
+          pageRef: "page-ref-0",
+          url: "https://example.com",
+        },
+      ],
+      initialSnapshots: {
+        "page-ref-0": {
+          url: "https://example.com",
+          focused: true,
+          visibilityState: "visible",
+          stopRequested: false,
+          events: [],
+        },
+      },
+      polls: [
+        {
+          pages: [
+            {
+              pageRef: "page-ref-0",
+              url: "https://example.com",
+            },
+          ],
+          snapshots: {
+            "page-ref-0": {
+              url: "https://example.com",
+              focused: true,
+              visibilityState: "visible",
+              stopRequested: true,
+              events: [],
+            },
+          },
+        },
+      ],
+    });
+
+    const collector = new FlowRecorderCollector(adapter, {
+      pollIntervalMs: 5,
+    });
+    await collector.install();
+    collector.start();
+
+    await collector.waitForStop();
+
+    const actions = await collector.stop();
+    expect(actions).toEqual([]);
+  });
 });

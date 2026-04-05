@@ -2,7 +2,11 @@
 
 import process from "node:process";
 
-import type { OpensteerBrowserOptions, OpensteerSemanticOperationName } from "@opensteer/protocol";
+import type {
+  OpensteerBrowserOptions,
+  OpensteerSemanticOperationName,
+} from "@opensteer/protocol";
+import type { OpensteerSemanticRuntime } from "@opensteer/runtime-core";
 import opensteerPackage from "../../package.json" with { type: "json" };
 
 import { OpensteerBrowserManager } from "../browser-manager.js";
@@ -319,30 +323,63 @@ async function handleRecordCommandEntry(parsed: ParsedCommandLine): Promise<void
     throw new Error('record requires a headed browser. Remove "--headless true".');
   }
 
+  const rootDir = process.cwd();
+  const launch = {
+    ...(parsed.options.launch ?? {}),
+    headless: false,
+  };
+  const browserManager = new OpensteerBrowserManager({
+    rootDir,
+    workspace: parsed.options.workspace,
+    engineName,
+    browser: "persistent",
+    launch,
+    ...(parsed.options.context === undefined ? {} : { context: parsed.options.context }),
+  });
+
   const runtime = createOpensteerSemanticRuntime({
     provider: {
       mode: "local",
     },
     engine: engineName,
     runtimeOptions: {
+      rootPath: browserManager.rootPath,
+      cleanupRootOnClose: browserManager.cleanupRootOnDisconnect,
       workspace: parsed.options.workspace,
-      rootDir: process.cwd(),
       browser: "persistent",
-      launch: {
-        ...(parsed.options.launch ?? {}),
-        headless: false,
-      },
+      launch,
       ...(parsed.options.context === undefined ? {} : { context: parsed.options.context }),
     },
   });
 
   await runOpensteerRecordCommand({
     runtime,
+    closeSession: () => closeOwnedLocalBrowserSession(runtime, browserManager),
     workspace: parsed.options.workspace,
     url,
-    rootDir: process.cwd(),
+    rootDir,
     ...(parsed.options.output === undefined ? {} : { outputPath: parsed.options.output }),
   });
+}
+
+async function closeOwnedLocalBrowserSession(
+  runtime: OpensteerSemanticRuntime,
+  browserManager: OpensteerBrowserManager,
+): Promise<void> {
+  let closeError: unknown;
+  try {
+    await runtime.close();
+  } catch (error) {
+    closeError = error;
+  }
+  try {
+    await browserManager.close();
+  } catch (error) {
+    closeError ??= error;
+  }
+  if (closeError !== undefined) {
+    throw closeError;
+  }
 }
 
 function buildOperationInput(
@@ -489,6 +526,46 @@ interface ParsedCommandLine {
   readonly options: ParsedCliOptions;
 }
 
+const CLI_OPTION_SPECS = {
+  workspace: { kind: "value" },
+  url: { kind: "value" },
+  output: { kind: "value" },
+  engine: { kind: "value" },
+  provider: { kind: "value" },
+  "cloud-base-url": { kind: "value" },
+  "cloud-api-key": { kind: "value" },
+  "cloud-profile-id": { kind: "value" },
+  "cloud-profile-reuse-if-active": { kind: "boolean" },
+  json: { kind: "boolean" },
+  agent: { kind: "value", multiple: true },
+  skill: { kind: "value", multiple: true },
+  global: { kind: "boolean" },
+  yes: { kind: "boolean" },
+  copy: { kind: "boolean" },
+  all: { kind: "boolean" },
+  list: { kind: "boolean" },
+  browser: { kind: "value" },
+  "attach-endpoint": { kind: "value" },
+  "attach-header": { kind: "value", multiple: true },
+  "fresh-tab": { kind: "boolean" },
+  headless: { kind: "boolean" },
+  "executable-path": { kind: "value" },
+  arg: { kind: "value", multiple: true },
+  "timeout-ms": { kind: "value" },
+  "context-json": { kind: "value" },
+  "input-json": { kind: "value" },
+  "schema-json": { kind: "value" },
+  "source-user-data-dir": { kind: "value" },
+  "source-profile-directory": { kind: "value" },
+  selector: { kind: "value" },
+  description: { kind: "value" },
+  element: { kind: "value" },
+  text: { kind: "value" },
+  "press-enter": { kind: "boolean" },
+  direction: { kind: "value" },
+  amount: { kind: "value" },
+} as const satisfies Record<string, { readonly kind: "boolean" | "value"; readonly multiple?: true }>;
+
 function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
   const leadingTokens: string[] = [];
   let index = 0;
@@ -505,18 +582,47 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
 
   while (index < argv.length) {
     const token = argv[index]!;
+    if (token === "--") {
+      rest.push(...argv.slice(index + 1));
+      break;
+    }
     if (!token.startsWith("--")) {
       rest.push(token);
       index += 1;
       continue;
     }
 
-    const key = token.slice(2);
-    const next = argv[index + 1];
-    if (next === undefined || next.startsWith("--")) {
-      rawOptions.set(key, [...(rawOptions.get(key) ?? []), "true"]);
+    const separator = token.indexOf("=");
+    const key = token.slice(2, separator === -1 ? undefined : separator);
+    const spec = CLI_OPTION_SPECS[key as keyof typeof CLI_OPTION_SPECS];
+    if (spec === undefined) {
+      throw new Error(`Unknown option: --${key}.`);
+    }
+
+    if (separator !== -1) {
+      const value = token.slice(separator + 1);
+      rawOptions.set(key, [...(rawOptions.get(key) ?? []), value]);
       index += 1;
       continue;
+    }
+
+    const next = argv[index + 1];
+    if (spec.kind === "boolean") {
+      if (next === undefined || next.startsWith("--")) {
+        rawOptions.set(key, [...(rawOptions.get(key) ?? []), "true"]);
+        index += 1;
+        continue;
+      }
+
+      rawOptions.set(key, [...(rawOptions.get(key) ?? []), next]);
+      index += 2;
+      continue;
+    }
+
+    if (next === undefined || next.startsWith("--")) {
+      throw new Error(
+        `Option "--${key}" requires a value.${next?.startsWith("--") === true ? ` Use "--${key}=<value>" when the value begins with "--".` : ``}`,
+      );
     }
 
     rawOptions.set(key, [...(rawOptions.get(key) ?? []), next]);

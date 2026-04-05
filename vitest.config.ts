@@ -52,6 +52,7 @@ export default defineConfig({
       "tests/opensteer/navigation-network-capture.test.ts",
       "tests/opensteer/policy.test.ts",
       "tests/opensteer/local-browser-stealth.test.ts",
+      "tests/opensteer/record-command.test.ts",
       "tests/opensteer/recorder-browser-script.test.ts",
       "tests/opensteer/recorder-cli.test.ts",
       "tests/opensteer/recorder-codegen.test.ts",

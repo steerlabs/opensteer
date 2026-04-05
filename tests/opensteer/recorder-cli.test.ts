@@ -40,4 +40,30 @@ describe("recorder CLI", () => {
       await rm(cwd, { recursive: true, force: true });
     }
   }, 60_000);
+ 
+  test("rejects removed timeout flags instead of ignoring them", async () => {
+    await ensureCliArtifactsBuilt();
+
+    const execution = execFile(
+      "node",
+      [
+        CLI_SCRIPT,
+        "record",
+        "--workspace",
+        "timeout-removed",
+        "--url",
+        "https://example.com",
+        "--record-timeout-ms",
+        "1000",
+      ],
+      {
+        cwd: process.cwd(),
+        maxBuffer: 1024 * 1024 * 4,
+      },
+    );
+
+    await expect(execution).rejects.toMatchObject({
+      stderr: expect.stringContaining("Unknown option: --record-timeout-ms."),
+    });
+  }, 60_000);
 });
