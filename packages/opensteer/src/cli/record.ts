@@ -1,6 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import process from "node:process";
 
 import {
   FlowRecorderCollector,
@@ -15,6 +14,7 @@ import { resolveFilesystemWorkspacePath } from "../root.js";
 
 export interface OpensteerRecordCommandInput {
   readonly runtime: OpensteerDisconnectableRuntime;
+  readonly closeSession?: () => Promise<void>;
   readonly workspace: string;
   readonly url: string;
   readonly rootDir: string;
@@ -41,9 +41,10 @@ export async function runOpensteerRecordCommand(
       stderr.write(`${formatRecordedAction(action)}\n`);
     },
   });
-  const stopSignal = createStopSignal();
-
-  stderr.write(`Recording browser actions for workspace "${input.workspace}". Press Ctrl+C to stop.\n`);
+  stderr.write(
+    `Recording browser actions for workspace "${input.workspace}". Click "Stop recording" in the browser when you're done.\n`,
+  );
+  let closed = false;
 
   try {
     const opened = await runtime.open({
@@ -52,7 +53,7 @@ export async function runOpensteerRecordCommand(
     await collector.install();
     collector.start();
 
-    await stopSignal;
+    await collector.waitForStop();
 
     const actions = await collector.stop();
     const script = generateReplayScript({
@@ -63,10 +64,17 @@ export async function runOpensteerRecordCommand(
     await mkdir(path.dirname(outputPath), { recursive: true });
     await writeFile(outputPath, script, "utf8");
 
+    if (input.closeSession !== undefined) {
+      await input.closeSession();
+      closed = true;
+    }
+
     stdout.write(`${outputPath}\n`);
     stderr.write(`Wrote replay script to ${outputPath}\n`);
   } finally {
-    await runtime.disconnect().catch(() => undefined);
+    if (!closed) {
+      await runtime.disconnect().catch(() => undefined);
+    }
   }
 }
 
@@ -110,16 +118,6 @@ export function createRecorderRuntimeAdapter(
       };
     },
   };
-}
-
-function createStopSignal(): Promise<void> {
-  return new Promise((resolve) => {
-    const onSigint = () => {
-      process.off("SIGINT", onSigint);
-      resolve();
-    };
-    process.on("SIGINT", onSigint);
-  });
 }
 
 function formatRecordedAction(action: RecordedAction): string {

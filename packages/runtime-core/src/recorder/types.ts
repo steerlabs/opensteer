@@ -176,6 +176,7 @@ export interface FlowRecorderSnapshot {
   readonly url: string;
   readonly focused: boolean;
   readonly visibilityState: "hidden" | "visible" | "prerender";
+  readonly stopRequested: boolean;
   readonly events: readonly RawFlowRecorderEvent[];
 }
 

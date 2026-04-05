@@ -24,7 +24,7 @@ opensteer record --workspace <id> --url <url> --output <path>
 - Recording requires `provider=local`.
 - Recording requires `engine=playwright`.
 - Recording always uses a headed persistent browser for the target workspace.
-- Stop recording with `Ctrl+C`.
+- Stop recording with the injected `Stop recording` button in the browser. The recorder writes the script and closes the browser session after capture completes.
 
 ## Output
 

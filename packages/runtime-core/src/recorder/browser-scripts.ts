@@ -27,6 +27,7 @@ const FLOW_RECORDER_INSTALL_SOURCE = String.raw`(() => {
   const globalScope = globalThis;
   const recorderKey = "__opensteerFlowRecorder";
   const historyStateKey = "__opensteerFlowRecorderHistory";
+  const recorderUiAttribute = "data-opensteer-recorder-ui";
   const queueLimit = 1000;
   const singleAttributePriority = ${JSON.stringify(SINGLE_ATTRIBUTE_PRIORITY)};
   const stablePrimaryAttrKeys = new Set(${JSON.stringify([...STABLE_PRIMARY_ATTR_KEYS])});
@@ -46,6 +47,7 @@ const FLOW_RECORDER_INSTALL_SOURCE = String.raw`(() => {
   const cleanup = [];
   const inputFlushTimers = new Map();
   const pendingInputs = new Map();
+  let stopRequested = false;
   let pendingWheel = undefined;
 
   const actionTargetTags = new Set([
@@ -71,6 +73,22 @@ const FLOW_RECORDER_INSTALL_SOURCE = String.raw`(() => {
     if (queue.length > queueLimit) {
       queue.splice(0, queue.length - queueLimit);
     }
+  }
+
+  function isRecorderUiNode(node) {
+    let current = node instanceof Node ? node : null;
+    while (current) {
+      if (current instanceof Element && current.hasAttribute(recorderUiAttribute)) {
+        return true;
+      }
+      const root = typeof current.getRootNode === "function" ? current.getRootNode() : null;
+      if (root instanceof ShadowRoot) {
+        current = root.host;
+        continue;
+      }
+      current = current instanceof Element ? current.parentElement : null;
+    }
+    return false;
   }
 
   function isValidAttributeName(name) {
@@ -180,8 +198,14 @@ const FLOW_RECORDER_INSTALL_SOURCE = String.raw`(() => {
   }
 
   function nearestRecordTarget(node) {
+    if (isRecorderUiNode(node)) {
+      return null;
+    }
     let current = node instanceof Element ? node : null;
     while (current) {
+      if (current.hasAttribute(recorderUiAttribute)) {
+        return null;
+      }
       const tag = current.tagName.toLowerCase();
       if (
         actionTargetTags.has(tag) ||
@@ -487,6 +511,103 @@ const FLOW_RECORDER_INSTALL_SOURCE = String.raw`(() => {
     });
   }
 
+  function requestStop() {
+    stopRequested = true;
+  }
+
+  function mountStopButton() {
+    if (document.querySelector("[" + recorderUiAttribute + "]")) {
+      return true;
+    }
+    if (stopRequested) {
+      return true;
+    }
+    const parent = document.body || document.documentElement;
+    if (!(parent instanceof HTMLElement)) {
+      return false;
+    }
+
+    const host = document.createElement("div");
+    host.setAttribute(recorderUiAttribute, "true");
+    const shadowRoot = host.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent = [
+      ":host {",
+      "  all: initial;",
+      "  display: block;",
+      "  position: fixed;",
+      "  top: 16px;",
+      "  right: 16px;",
+      "  z-index: 2147483647;",
+      "  pointer-events: auto;",
+      "  color-scheme: only light;",
+      "  contain: content;",
+      "  isolation: isolate;",
+      "}",
+      "button {",
+      "  appearance: none;",
+      "  border: 1px solid rgba(15, 23, 42, 0.2);",
+      "  border-radius: 999px;",
+      "  background: rgba(15, 23, 42, 0.92);",
+      "  color: #ffffff;",
+      "  color-scheme: only light;",
+      "  cursor: pointer;",
+      "  font: 600 12px/1.2 ui-sans-serif, system-ui, sans-serif;",
+      "  letter-spacing: 0.01em;",
+      "  padding: 10px 14px;",
+      "  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.22);",
+      "}",
+      "button:hover {",
+      "  background: rgba(15, 23, 42, 0.98);",
+      "}",
+      "button:focus-visible {",
+      "  outline: 2px solid #2563eb;",
+      "  outline-offset: 2px;",
+      "}",
+    ].join("\n");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Stop recording";
+    button.setAttribute("aria-label", "Stop recording");
+    const consumePointerEvent = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
+      button.addEventListener(type, consumePointerEvent);
+    }
+    button.addEventListener("click", () => {
+      requestStop();
+      host.remove();
+    });
+    shadowRoot.append(style, button);
+    parent.appendChild(host);
+    cleanup.push(() => {
+      host.remove();
+    });
+    return true;
+  }
+
+  function ensureStopButtonMounted() {
+    if (mountStopButton()) {
+      return;
+    }
+
+    const observer = new MutationObserver(() => {
+      if (!mountStopButton()) {
+        return;
+      }
+      observer.disconnect();
+    });
+    observer.observe(document, {
+      childList: true,
+      subtree: true,
+    });
+    cleanup.push(() => {
+      observer.disconnect();
+    });
+  }
+
   addListener(document, "click", (event) => {
     if (!event.isTrusted) {
       return;
@@ -702,6 +823,7 @@ const FLOW_RECORDER_INSTALL_SOURCE = String.raw`(() => {
       url: location.href,
       focused: document.hasFocus(),
       visibilityState: document.visibilityState,
+      stopRequested,
       events: queue.splice(0, queue.length),
     };
   }
@@ -712,6 +834,7 @@ const FLOW_RECORDER_INSTALL_SOURCE = String.raw`(() => {
       return buildSelector(target);
     },
     drain,
+    requestStop,
     dispose() {
       flushAllInputs();
       flushPendingWheel();
@@ -727,6 +850,7 @@ const FLOW_RECORDER_INSTALL_SOURCE = String.raw`(() => {
     },
   };
 
+  ensureStopButtonMounted();
   onInstall();
 })();`;
 
@@ -739,6 +863,7 @@ export const FLOW_RECORDER_DRAIN_SCRIPT = String.raw`(() => {
       url: location.href,
       focused: document.hasFocus(),
       visibilityState: document.visibilityState,
+      stopRequested: false,
       events: [],
     };
   }

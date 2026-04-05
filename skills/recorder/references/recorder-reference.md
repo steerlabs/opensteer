@@ -45,6 +45,7 @@ opensteer record --workspace <id> --url <url> [--output <path>]
 
 1. Start recording with `opensteer record`.
 2. Perform the workflow manually in the headed browser.
-3. Stop with `Ctrl+C`.
-4. Review the generated `recorded-flow.ts`.
-5. Run the script with `tsx` or integrate it into a larger automation.
+3. Click the `Stop recording` button in the browser.
+4. Wait for the recorder to write `recorded-flow.ts` and close the browser session.
+5. Review the generated `recorded-flow.ts`.
+6. Run the script with `tsx` or integrate it into a larger automation.

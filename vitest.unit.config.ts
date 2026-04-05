@@ -44,6 +44,7 @@ export default defineConfig({
       "tests/opensteer/cloud-browser-profile.test.ts",
       "tests/opensteer/extraction-descriptor.test.ts",
       "tests/opensteer/local-browser-stealth.test.ts",
+      "tests/opensteer/record-command.test.ts",
       "tests/opensteer/recorder-cli.test.ts",
       "tests/opensteer/recorder-codegen.test.ts",
       "tests/opensteer/recorder-event-collector.test.ts",
