@@ -10,6 +10,7 @@ import type {
   CloudSelectorCacheImportEntry,
   CloudSelectorCacheImportResponse,
   OpensteerSessionAccessGrantResponse,
+  OpensteerSessionGrant,
   OpensteerSessionGrantKind,
   OpensteerBrowserContextOptions,
   OpensteerBrowserLaunchOptions,
@@ -23,12 +24,18 @@ export interface OpensteerCloudSessionCreateInput {
   readonly context?: OpensteerBrowserContextOptions;
   readonly browserProfile?: CloudBrowserProfilePreference;
   readonly observability?: Partial<ObservabilityConfig>;
+  readonly sourceType?: "manual" | "local-cloud";
+  readonly sourceRef?: string;
+  readonly localWorkspaceRootPath?: string;
+  readonly locality?: "auto" | "off";
 }
 
 export interface OpensteerCloudSessionDescriptor {
   readonly sessionId: string;
-  readonly baseUrl: string;
   readonly status?: string;
+  readonly baseUrl?: string;
+  readonly initialGrants?: Partial<Record<OpensteerSessionGrantKind, OpensteerSessionGrant>>;
+  readonly initialGrantExpiresAt?: number;
 }
 
 interface OpensteerCloudSessionState {
@@ -62,6 +69,12 @@ export class OpensteerCloudClient {
         ...(input.context === undefined ? {} : { context: input.context }),
         ...(input.browserProfile === undefined ? {} : { browserProfile: input.browserProfile }),
         ...(input.observability === undefined ? {} : { observability: input.observability }),
+        ...(input.sourceType === undefined ? {} : { sourceType: input.sourceType }),
+        ...(input.sourceRef === undefined ? {} : { sourceRef: input.sourceRef }),
+        ...(input.localWorkspaceRootPath === undefined
+          ? {}
+          : { localWorkspaceRootPath: input.localWorkspaceRootPath }),
+        ...(input.locality === undefined ? {} : { locality: input.locality }),
       },
     });
 

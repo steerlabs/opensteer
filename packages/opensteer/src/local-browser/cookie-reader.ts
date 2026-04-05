@@ -5,7 +5,10 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
-import type { DatabaseSync as NodeSqliteDatabaseSync } from "node:sqlite";
+import type {
+  DatabaseSync as NodeSqliteDatabaseSync,
+  SQLOutputValue,
+} from "node:sqlite";
 
 import {
   type BrowserBrandId,
@@ -117,7 +120,7 @@ interface RawCookieRow {
   readonly host_key: string;
   readonly name: string;
   readonly value: string;
-  readonly encrypted_value: Buffer;
+  readonly encrypted_value: Buffer | Uint8Array;
   readonly path: string;
   readonly expires_utc: number | bigint;
   readonly is_secure: number | bigint;
@@ -146,10 +149,25 @@ function queryAllCookies(dbPath: string): readonly RawCookieRow[] {
        FROM cookies`,
     );
     stmt.setReadBigInts(true);
-    return stmt.all() as RawCookieRow[];
+    return stmt.all().map(toRawCookieRow);
   } finally {
     database.close();
   }
+}
+
+function toRawCookieRow(row: Record<string, SQLOutputValue>): RawCookieRow {
+  return {
+    host_key: row.host_key as string,
+    name: row.name as string,
+    value: row.value as string,
+    encrypted_value: row.encrypted_value as Buffer | Uint8Array,
+    path: row.path as string,
+    expires_utc: row.expires_utc as number | bigint,
+    is_secure: row.is_secure as number | bigint,
+    is_httponly: row.is_httponly as number | bigint,
+    samesite: row.samesite as number | bigint,
+    is_persistent: row.is_persistent as number | bigint,
+  };
 }
 
 // ---------------------------------------------------------------------------

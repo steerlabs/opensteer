@@ -20,6 +20,19 @@ export interface OpensteerResolvedRuntimeConfig {
   readonly cloud?: OpensteerCloudConfig;
 }
 
+const LOCAL_ONLY_RUNTIME_OPTION_KEYS = [
+  "launch",
+  "context",
+  "engine",
+  "engineFactory",
+  "policy",
+  "descriptorStore",
+  "extractionDescriptorStore",
+  "registryOverrides",
+  "observationSessionId",
+  "observationSink",
+] as const satisfies readonly (keyof OpensteerRuntimeOptions)[];
+
 export function resolveOpensteerRuntimeConfig(
   input: {
     readonly provider?: OpensteerProviderOptions;
@@ -61,9 +74,27 @@ export function createOpensteerSemanticRuntime(
     ...(input.provider === undefined ? {} : { provider: input.provider }),
     ...(input.environment === undefined ? {} : { environment: input.environment }),
   });
-  assertProviderSupportsEngine(config.provider.mode, engine);
+  const localOnlyRuntimeOptions = listLocalOnlyRuntimeOptions(runtimeOptions);
+  const providerMode =
+    config.provider.mode === "cloud" &&
+    config.provider.source !== "explicit" &&
+    localOnlyRuntimeOptions.length > 0
+      ? "local"
+      : config.provider.mode;
 
-  if (config.provider.mode === "cloud") {
+  if (
+    config.provider.mode === "cloud" &&
+    config.provider.source === "explicit" &&
+    localOnlyRuntimeOptions.length > 0
+  ) {
+    throw new Error(
+      `provider=cloud does not support local runtime options: ${localOnlyRuntimeOptions.join(", ")}.`,
+    );
+  }
+
+  assertProviderSupportsEngine(providerMode, engine);
+
+  if (providerMode === "cloud") {
     return new CloudSessionProxy(new OpensteerCloudClient(config.cloud!), {
       ...(runtimeOptions.rootDir === undefined ? {} : { rootDir: runtimeOptions.rootDir }),
       ...(runtimeOptions.rootPath === undefined ? {} : { rootPath: runtimeOptions.rootPath }),
@@ -81,4 +112,8 @@ export function createOpensteerSemanticRuntime(
     ...runtimeOptions,
     engineName: engine,
   });
+}
+
+function listLocalOnlyRuntimeOptions(runtimeOptions: OpensteerRuntimeOptions): string[] {
+  return LOCAL_ONLY_RUNTIME_OPTION_KEYS.filter((key) => runtimeOptions[key] !== undefined);
 }

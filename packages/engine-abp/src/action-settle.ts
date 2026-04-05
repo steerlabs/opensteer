@@ -20,7 +20,7 @@ interface AbpActionSettlerContext {
   setExecutionPaused(controller: PageController, paused: boolean): Promise<void>;
   flushDomUpdateTask(controller: PageController): Promise<void>;
   getMainFrameDocumentRef(controller: PageController): DocumentRef | undefined;
-  waitForNavigationContentLoaded(controller: PageController, timeoutMs: number): Promise<void>;
+  isCurrentMainFrameBootstrapSettled(controller: PageController): boolean;
   throwBackgroundError(controller: PageController): void;
   isPageClosedError(error: unknown): boolean;
 }
@@ -132,8 +132,12 @@ export function createAbpActionSettler(context: AbpActionSettlerContext) {
           ...(signal === undefined ? {} : { signal }),
           snapshot,
           getCurrentMainFrameDocumentRef: () => context.getMainFrameDocumentRef(controller),
-          waitForNavigationContentLoaded: (remainingMs) =>
-            context.waitForNavigationContentLoaded(controller, remainingMs),
+          getCurrentPageUrl: () =>
+            controller.mainFrameRef === undefined
+              ? undefined
+              : controller.framesByCdpId.get(controller.mainFrameRef)?.currentDocument.url,
+          isCurrentMainFrameBootstrapSettled: () =>
+            context.isCurrentMainFrameBootstrapSettled(controller),
           readTrackerState: () => readTrackerState(controller),
           throwBackgroundError: () => context.throwBackgroundError(controller),
           isPageClosed: () => controller.lifecycleState === "closed",

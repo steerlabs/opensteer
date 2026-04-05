@@ -97,6 +97,66 @@ describe("provider selection", () => {
     }
   });
 
+  test("env cloud falls back to local when local-only runtime options are provided", async () => {
+    vi.stubEnv("OPENSTEER_PROVIDER", "cloud");
+    vi.stubEnv("OPENSTEER_API_KEY", "osk_test");
+    vi.stubEnv("OPENSTEER_BASE_URL", "https://cloud.example");
+
+    const runtime = createOpensteerSemanticRuntime({
+      runtimeOptions: {
+        policy: {
+          timeout: {
+            resolveTimeoutMs() {
+              return 1000;
+            },
+          },
+        },
+      },
+    });
+
+    expect(runtime).toBeInstanceOf(OpensteerRuntime);
+    await runtime.disconnect();
+  });
+
+  test("explicit cloud rejects local-only runtime options", () => {
+    vi.stubEnv("OPENSTEER_API_KEY", "osk_test");
+    vi.stubEnv("OPENSTEER_BASE_URL", "https://cloud.example");
+
+    expect(() =>
+      createOpensteerSemanticRuntime({
+        provider: {
+          mode: "cloud",
+        },
+        runtimeOptions: {
+          policy: {
+            timeout: {
+              resolveTimeoutMs() {
+                return 1000;
+              },
+            },
+          },
+        },
+      }),
+    ).toThrow("provider=cloud does not support local runtime options: policy.");
+  });
+
+  test("explicit cloud allows browser runtime options", async () => {
+    vi.stubEnv("OPENSTEER_API_KEY", "osk_test");
+    vi.stubEnv("OPENSTEER_BASE_URL", "https://cloud.example");
+
+    const runtime = createOpensteerSemanticRuntime({
+      provider: {
+        mode: "cloud",
+      },
+      runtimeOptions: {
+        browser: "persistent",
+      },
+    });
+
+    expect(runtime).toBeInstanceOf(CloudSessionProxy);
+    await runtime.disconnect();
+  });
+
   test("existing cloud lane does not force cloud execution when provider resolves to local", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "opensteer-provider-local-"));
     const workspace = "docs";

@@ -11,6 +11,7 @@ export const CROSS_DOCUMENT_DETECTION_WINDOW_MS = 500;
 export interface ActionBoundarySnapshot {
   readonly pageRef: PageRef;
   readonly documentRef: DocumentRef;
+  readonly url?: string;
 }
 
 export type ActionBoundarySettleTrigger = "dom-action" | "navigation";
@@ -29,7 +30,8 @@ export interface WaitForActionBoundaryInput {
   readonly snapshot?: ActionBoundarySnapshot;
   readonly pollIntervalMs?: number;
   getCurrentMainFrameDocumentRef(): DocumentRef | undefined;
-  waitForNavigationContentLoaded(timeoutMs: number): Promise<void>;
+  getCurrentPageUrl?(): string | undefined;
+  isCurrentMainFrameBootstrapSettled?(): boolean;
   readTrackerState(): Promise<PostLoadTrackerState | undefined>;
   throwBackgroundError(): void;
   isPageClosed(): boolean;
@@ -55,7 +57,6 @@ export async function waitForActionBoundary(
   const pollIntervalMs = input.pollIntervalMs ?? DEFAULT_ACTION_BOUNDARY_POLL_INTERVAL_MS;
   let trigger: ActionBoundarySettleTrigger = "dom-action";
   let crossDocument = false;
-  let waitedForNavigationContentLoaded = false;
 
   while (Date.now() < deadline) {
     input.throwBackgroundError();
@@ -79,6 +80,7 @@ export async function waitForActionBoundary(
     }
 
     const currentDocumentRef = input.getCurrentMainFrameDocumentRef();
+    const currentPageUrl = input.getCurrentPageUrl?.();
     if (
       input.snapshot !== undefined &&
       currentDocumentRef !== undefined &&
@@ -86,13 +88,17 @@ export async function waitForActionBoundary(
     ) {
       trigger = "navigation";
       crossDocument = true;
-      if (!waitedForNavigationContentLoaded) {
-        waitedForNavigationContentLoaded = true;
-        const remaining = Math.max(0, deadline - Date.now());
-        if (remaining > 0) {
-          await input.waitForNavigationContentLoaded(remaining);
-        }
-      }
+    }
+    if (
+      !crossDocument &&
+      input.snapshot?.url !== undefined &&
+      currentPageUrl !== undefined &&
+      currentPageUrl !== input.snapshot.url &&
+      input.isCurrentMainFrameBootstrapSettled !== undefined &&
+      !input.isCurrentMainFrameBootstrapSettled()
+    ) {
+      trigger = "navigation";
+      crossDocument = true;
     }
 
     if (
@@ -105,6 +111,15 @@ export async function waitForActionBoundary(
         crossDocument,
         bootstrapSettled: true,
       };
+    }
+
+    if (
+      crossDocument &&
+      input.isCurrentMainFrameBootstrapSettled !== undefined &&
+      !input.isCurrentMainFrameBootstrapSettled()
+    ) {
+      await delay(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
+      continue;
     }
 
     if (crossDocument && postLoadTrackerIsSettled(await input.readTrackerState())) {
