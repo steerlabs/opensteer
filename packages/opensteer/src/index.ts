@@ -185,6 +185,7 @@ export type {
   OpensteerCaptureScriptsResult,
   OpensteerCaptchaSolveOptions,
   OpensteerCaptchaSolveResult,
+  OpensteerClickOptions,
   OpensteerComputerExecuteOptions,
   OpensteerComputerExecuteResult,
   OpensteerExtractOptions,

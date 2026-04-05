@@ -442,6 +442,9 @@ export interface OpensteerInspectStorageInput {
 
 export interface OpensteerDomClickInput {
   readonly target: OpensteerTargetInput;
+  readonly button?: OpensteerComputerMouseButton;
+  readonly clickCount?: number;
+  readonly modifiers?: readonly OpensteerComputerKeyModifier[];
   readonly persistAsDescription?: string;
   readonly captureNetwork?: string;
 }
@@ -1210,9 +1213,25 @@ const opensteerInspectStorageInputSchema: JsonSchema = objectSchema(
   },
 );
 
+const opensteerComputerMouseButtonSchema: JsonSchema = enumSchema(["left", "middle", "right"] as const, {
+  title: "OpensteerComputerMouseButton",
+});
+
+const opensteerComputerKeyModifierSchema: JsonSchema = enumSchema(
+  ["Shift", "Control", "Alt", "Meta"] as const,
+  {
+    title: "OpensteerComputerKeyModifier",
+  },
+);
+
 const opensteerDomClickInputSchema: JsonSchema = objectSchema(
   {
     target: opensteerTargetInputSchema,
+    button: opensteerComputerMouseButtonSchema,
+    clickCount: integerSchema({ minimum: 1 }),
+    modifiers: arraySchema(opensteerComputerKeyModifierSchema, {
+      uniqueItems: true,
+    }),
     persistAsDescription: stringSchema(),
     captureNetwork: stringSchema({ minLength: 1 }),
   },
@@ -1319,20 +1338,6 @@ const opensteerSessionCloseOutputSchema: JsonSchema = objectSchema(
   {
     title: "OpensteerSessionCloseOutput",
     required: ["closed"],
-  },
-);
-
-const opensteerComputerMouseButtonSchema: JsonSchema = enumSchema(
-  ["left", "middle", "right"] as const,
-  {
-    title: "OpensteerComputerMouseButton",
-  },
-);
-
-const opensteerComputerKeyModifierSchema: JsonSchema = enumSchema(
-  ["Shift", "Control", "Alt", "Meta"] as const,
-  {
-    title: "OpensteerComputerKeyModifier",
   },
 );
 

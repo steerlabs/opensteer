@@ -202,6 +202,22 @@ describe("protocol descriptor", () => {
   });
 });
 
+describe("semantic protocol validation", () => {
+  test("accepts native click gesture options on dom.click", () => {
+    expect(() =>
+      assertValidSemanticOperationInput("dom.click", {
+        target: {
+          kind: "selector",
+          selector: '[data-cell="A1"]',
+        },
+        button: "left",
+        clickCount: 2,
+        modifiers: ["Shift"],
+      }),
+    ).not.toThrow();
+  });
+});
+
 describe("protocol capabilities and errors", () => {
   test("preserves the public capability catalog and supports direct membership checks", () => {
     const capabilitySet = ["inspect.html", "surface.rest"] as const;

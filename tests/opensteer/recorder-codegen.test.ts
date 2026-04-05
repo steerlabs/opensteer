@@ -40,6 +40,30 @@ describe("recorder codegen", () => {
     expect(script).not.toContain(`await dispatchKey(page0, "Enter");`);
   });
 
+  test("replays recorded double-clicks as a single native gesture", () => {
+    const script = generateReplayScript({
+      workspace: "recorder-test",
+      startUrl: "https://example.com",
+      actions: [
+        {
+          kind: "dblclick",
+          timestamp: 1,
+          pageId: "page0",
+          pageUrl: "https://example.com",
+          selector: 'div[data-cell="A1"]',
+          detail: {
+            kind: "dblclick",
+          },
+        },
+      ] satisfies readonly RecordedAction[],
+    });
+
+    expect(script).toContain(
+      `await opensteer.click({ selector: "div[data-cell=\\"A1\\"]", clickCount: 2 });`,
+    );
+    expect(script.match(/await opensteer\.click\(/g)).toHaveLength(1);
+  });
+
   test("generates stable multi-tab replay with page variables", () => {
     const script = generateReplayScript({
       workspace: "recorder-test",

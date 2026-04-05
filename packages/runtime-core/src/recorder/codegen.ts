@@ -146,10 +146,7 @@ export function generateReplayScript(options: CodegenOptions): string {
       case "dblclick":
         lines.push(`  await ensureActive(${pageVar});`);
         lines.push(
-          `  await opensteer.click({ selector: ${JSON.stringify(requireSelector(action))} });`,
-        );
-        lines.push(
-          `  await opensteer.click({ selector: ${JSON.stringify(requireSelector(action))} });`,
+          `  await opensteer.click({ selector: ${JSON.stringify(requireSelector(action))}, clickCount: 2 });`,
         );
         break;
       case "keypress":

@@ -47,6 +47,7 @@ const FLOW_RECORDER_INSTALL_SOURCE = String.raw`(() => {
   const cleanup = [];
   const inputFlushTimers = new Map();
   const pendingInputs = new Map();
+  let historyStateCache = undefined;
   let stopRequested = false;
   let pendingWheel = undefined;
 
@@ -367,44 +368,76 @@ const FLOW_RECORDER_INSTALL_SOURCE = String.raw`(() => {
     inputFlushTimers.set(selector, timerId);
   }
 
-  function updateHistoryState(mode, nextUrl) {
-    let state;
+  function createDefaultHistoryState(currentUrl) {
+    return {
+      entries: [currentUrl],
+      index: 0,
+    };
+  }
+
+  function normalizeHistoryState(state) {
+    if (
+      !state ||
+      !Array.isArray(state.entries) ||
+      !state.entries.every((entry) => typeof entry === "string") ||
+      !Number.isInteger(state.index)
+    ) {
+      return undefined;
+    }
+    const entries = state.entries.slice();
+    if (entries.length === 0) {
+      return createDefaultHistoryState(location.href);
+    }
+    return {
+      entries,
+      index: Math.min(entries.length - 1, Math.max(0, state.index)),
+    };
+  }
+
+  function writeHistoryState(state) {
+    const normalized = normalizeHistoryState(state) ?? createDefaultHistoryState(location.href);
+    historyStateCache = normalized;
     try {
-      const raw = sessionStorage.getItem(historyStateKey);
-      state = raw ? JSON.parse(raw) : undefined;
-    } catch {
-      state = undefined;
-    }
-    if (!state || !Array.isArray(state.entries) || typeof state.index !== "number") {
-      state = { entries: [location.href], index: 0 };
-    }
-    if (mode === "replace") {
-      state.entries[state.index] = nextUrl;
-    } else if (mode === "push") {
-      state.entries = state.entries.slice(0, state.index + 1);
-      state.entries.push(nextUrl);
-      state.index = state.entries.length - 1;
-    } else if (mode === "back") {
-      state.index = Math.max(0, state.index - 1);
-    } else if (mode === "forward") {
-      state.index = Math.min(state.entries.length - 1, state.index + 1);
-    }
-    try {
-      sessionStorage.setItem(historyStateKey, JSON.stringify(state));
+      sessionStorage.setItem(historyStateKey, JSON.stringify(normalized));
     } catch {}
-    return state;
+    return normalized;
+  }
+
+  function applyHistoryState(state, mode, nextUrl) {
+    const current = normalizeHistoryState(state) ?? createDefaultHistoryState(location.href);
+    const nextState = {
+      entries: current.entries.slice(),
+      index: current.index,
+    };
+    if (mode === "replace") {
+      nextState.entries[nextState.index] = nextUrl;
+    } else if (mode === "push") {
+      nextState.entries = nextState.entries.slice(0, nextState.index + 1);
+      nextState.entries.push(nextUrl);
+      nextState.index = nextState.entries.length - 1;
+    } else if (mode === "back") {
+      nextState.index = Math.max(0, nextState.index - 1);
+    } else if (mode === "forward") {
+      nextState.index = Math.min(nextState.entries.length - 1, nextState.index + 1);
+    }
+    return nextState;
+  }
+
+  function updateHistoryState(mode, nextUrl) {
+    return writeHistoryState(applyHistoryState(readHistoryState(), mode, nextUrl));
   }
 
   function readHistoryState() {
+    const cached = normalizeHistoryState(historyStateCache);
+    if (cached) {
+      historyStateCache = cached;
+      return cached;
+    }
     try {
       const raw = sessionStorage.getItem(historyStateKey);
-      const parsed = raw ? JSON.parse(raw) : undefined;
-      if (
-        parsed &&
-        Array.isArray(parsed.entries) &&
-        parsed.entries.every((entry) => typeof entry === "string") &&
-        typeof parsed.index === "number"
-      ) {
+      const parsed = normalizeHistoryState(raw ? JSON.parse(raw) : undefined);
+      if (parsed) {
+        historyStateCache = parsed;
         return parsed;
       }
     } catch {}
@@ -416,28 +449,30 @@ const FLOW_RECORDER_INSTALL_SOURCE = String.raw`(() => {
     if (!state) {
       return undefined;
     }
+    if (state.entries[state.index] === currentUrl) {
+      return undefined;
+    }
     if (state.entries[state.index - 1] === currentUrl) {
-      updateHistoryState("back", currentUrl);
+      writeHistoryState({
+        entries: state.entries,
+        index: state.index - 1,
+      });
       return "go-back";
     }
     if (state.entries[state.index + 1] === currentUrl) {
-      updateHistoryState("forward", currentUrl);
+      writeHistoryState({
+        entries: state.entries,
+        index: state.index + 1,
+      });
       return "go-forward";
     }
     const existingIndex = state.entries.lastIndexOf(currentUrl);
-    if (existingIndex !== -1) {
-      if (existingIndex < state.index) {
-        while (readHistoryState()?.index > existingIndex) {
-          updateHistoryState("back", currentUrl);
-        }
-        return "go-back";
-      }
-      if (existingIndex > state.index) {
-        while (readHistoryState()?.index < existingIndex) {
-          updateHistoryState("forward", currentUrl);
-        }
-        return "go-forward";
-      }
+    if (existingIndex !== -1 && existingIndex !== state.index) {
+      writeHistoryState({
+        entries: state.entries,
+        index: existingIndex,
+      });
+      return existingIndex < state.index ? "go-back" : "go-forward";
     }
     return undefined;
   }
@@ -796,7 +831,8 @@ const FLOW_RECORDER_INSTALL_SOURCE = String.raw`(() => {
       });
       return;
     }
-    if (readHistoryState()?.entries[readHistoryState().index] !== currentUrl) {
+    const state = readHistoryState();
+    if (state?.entries[state.index] !== currentUrl) {
       updateHistoryState("push", currentUrl);
       enqueue({
         kind: "navigate",
