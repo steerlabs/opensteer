@@ -20,6 +20,7 @@ interface PlaywrightActionSettlerContext {
   flushPendingPageTasks(sessionRef: PageController["sessionRef"]): Promise<void>;
   flushDomUpdateTask(controller: PageController): Promise<void>;
   getMainFrameDocumentRef(controller: PageController): DocumentRef | undefined;
+  isCurrentMainFrameBootstrapSettled(controller: PageController): boolean;
   throwBackgroundError(controller: PageController): void;
 }
 
@@ -125,18 +126,9 @@ export function createPlaywrightActionSettler(context: PlaywrightActionSettlerCo
         ...(signal === undefined ? {} : { signal }),
         snapshot,
         getCurrentMainFrameDocumentRef: () => context.getMainFrameDocumentRef(controller),
-        waitForNavigationContentLoaded: async (remainingMs) => {
-          try {
-            await controller.page.waitForLoadState("domcontentloaded", {
-              timeout: remainingMs,
-            });
-          } catch (error) {
-            if (controller.lifecycleState === "closed" || isContextClosedError(error)) {
-              return;
-            }
-            throw normalizePlaywrightError(error, controller.pageRef);
-          }
-        },
+        getCurrentPageUrl: () => controller.page.url(),
+        isCurrentMainFrameBootstrapSettled: () =>
+          context.isCurrentMainFrameBootstrapSettled(controller),
         readTrackerState: () => readTrackerState(controller),
         throwBackgroundError: () => context.throwBackgroundError(controller),
         isPageClosed: () => controller.lifecycleState === "closed",

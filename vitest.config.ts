@@ -38,6 +38,7 @@ export default defineConfig({
       "tests/browser-core/fake-engine.conformance.test.ts",
       "tests/browser-core/fake-engine.test.ts",
       "tests/browser-core/identity-and-geometry.test.ts",
+      "tests/browser-core/post-load-tracker.test.ts",
       "tests/engine-abp/abp-engine.test.ts",
       "tests/engine-abp/abp-unit.test.ts",
       "tests/opensteer/browser-manager.test.ts",

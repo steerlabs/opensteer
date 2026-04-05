@@ -627,7 +627,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       controller.mainFrameRef === undefined
         ? undefined
         : this.frames.get(controller.mainFrameRef)?.currentDocument.documentRef,
-    waitForNavigationContentLoaded: async () => undefined,
+    isCurrentMainFrameBootstrapSettled: () => true,
     throwBackgroundError: (controller) => this.throwBackgroundError(controller),
     isPageClosedError: isAbpPageClosedError,
   });

@@ -61,9 +61,27 @@ export function createOpensteerSemanticRuntime(
     ...(input.provider === undefined ? {} : { provider: input.provider }),
     ...(input.environment === undefined ? {} : { environment: input.environment }),
   });
-  assertProviderSupportsEngine(config.provider.mode, engine);
+  const localOnlyRuntimeOptions = listLocalOnlyRuntimeOptions(runtimeOptions);
+  const providerMode =
+    config.provider.mode === "cloud" &&
+    config.provider.source !== "explicit" &&
+    localOnlyRuntimeOptions.length > 0
+      ? "local"
+      : config.provider.mode;
 
-  if (config.provider.mode === "cloud") {
+  if (
+    config.provider.mode === "cloud" &&
+    config.provider.source === "explicit" &&
+    localOnlyRuntimeOptions.length > 0
+  ) {
+    throw new Error(
+      `provider=cloud does not support local runtime options: ${localOnlyRuntimeOptions.join(", ")}.`,
+    );
+  }
+
+  assertProviderSupportsEngine(providerMode, engine);
+
+  if (providerMode === "cloud") {
     return new CloudSessionProxy(new OpensteerCloudClient(config.cloud!), {
       ...(runtimeOptions.rootDir === undefined ? {} : { rootDir: runtimeOptions.rootDir }),
       ...(runtimeOptions.rootPath === undefined ? {} : { rootPath: runtimeOptions.rootPath }),
@@ -81,4 +99,41 @@ export function createOpensteerSemanticRuntime(
     ...runtimeOptions,
     engineName: engine,
   });
+}
+
+function listLocalOnlyRuntimeOptions(runtimeOptions: OpensteerRuntimeOptions): string[] {
+  const localOnlyKeys: string[] = [];
+
+  if (runtimeOptions.launch !== undefined) {
+    localOnlyKeys.push("launch");
+  }
+  if (runtimeOptions.context !== undefined) {
+    localOnlyKeys.push("context");
+  }
+  if (runtimeOptions.engine !== undefined) {
+    localOnlyKeys.push("engine");
+  }
+  if (runtimeOptions.engineFactory !== undefined) {
+    localOnlyKeys.push("engineFactory");
+  }
+  if (runtimeOptions.policy !== undefined) {
+    localOnlyKeys.push("policy");
+  }
+  if (runtimeOptions.descriptorStore !== undefined) {
+    localOnlyKeys.push("descriptorStore");
+  }
+  if (runtimeOptions.extractionDescriptorStore !== undefined) {
+    localOnlyKeys.push("extractionDescriptorStore");
+  }
+  if (runtimeOptions.registryOverrides !== undefined) {
+    localOnlyKeys.push("registryOverrides");
+  }
+  if (runtimeOptions.observationSessionId !== undefined) {
+    localOnlyKeys.push("observationSessionId");
+  }
+  if (runtimeOptions.observationSink !== undefined) {
+    localOnlyKeys.push("observationSink");
+  }
+
+  return localOnlyKeys;
 }
