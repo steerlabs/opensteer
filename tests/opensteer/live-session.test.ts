@@ -26,7 +26,6 @@ describe("live session records", () => {
       provider: "cloud",
       workspace: "docs",
       sessionId: "session_123",
-      baseUrl: "https://cloud.example/runtime/session_123",
       startedAt: 100,
       updatedAt: 200,
     });
@@ -35,7 +34,6 @@ describe("live session records", () => {
       provider: "cloud",
       workspace: "docs",
       sessionId: "session_123",
-      baseUrl: "https://cloud.example/runtime/session_123",
       startedAt: 100,
       updatedAt: 200,
     });
@@ -93,14 +91,12 @@ describe("live session records", () => {
       version: 1,
       provider: "cloud",
       sessionId: "session_456",
-      baseUrl: "https://cloud.example/runtime/session_456",
       startedAt: 1,
       updatedAt: 2,
     });
 
     await expect(readPersistedCloudSessionRecord(rootPath)).resolves.toMatchObject({
       sessionId: "session_456",
-      baseUrl: "https://cloud.example/runtime/session_456",
     });
     await expect(readFile(resolveCloudSessionRecordPath(rootPath), "utf8")).resolves.toContain(
       '"provider": "cloud"',
@@ -128,7 +124,6 @@ describe("live session records", () => {
       version: 1,
       provider: "cloud",
       sessionId: "session_789",
-      baseUrl: "https://cloud.example/runtime/session_789",
       startedAt: 1,
       updatedAt: 1,
     });

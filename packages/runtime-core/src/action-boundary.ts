@@ -30,6 +30,7 @@ export async function captureActionBoundarySnapshot(
   return {
     pageRef,
     documentRef: mainFrame.documentRef,
+    url: mainFrame.url,
   };
 }
 

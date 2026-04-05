@@ -106,6 +106,7 @@ import type {
   OpensteerWriteAuthRecipeInput,
   OpensteerWriteRequestPlanInput,
   OpensteerActionResult,
+  OpensteerSessionGrant,
   StorageSnapshot,
   ObservabilityConfig,
 } from "@opensteer/protocol";
@@ -130,9 +131,13 @@ import type {
   OpensteerRouteOptions,
   OpensteerRouteRegistration,
 } from "../sdk/instrumentation.js";
-import { OpensteerSemanticRestClient } from "../sdk/semantic-rest-client.js";
+import {
+  OpensteerSemanticRestClient,
+  OpensteerSemanticRestError,
+} from "../sdk/semantic-rest-client.js";
 import type { OpensteerDisconnectableRuntime } from "../sdk/semantic-runtime.js";
 import { OpensteerCloudAutomationClient } from "./automation-client.js";
+import type { OpensteerCloudSessionCreateInput } from "./client.js";
 import { OpensteerCloudClient } from "./client.js";
 import { syncLocalRegistryToCloud } from "./registry-sync.js";
 
@@ -164,7 +169,7 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
   private readonly cloud: OpensteerCloudClient;
   private readonly observability: Partial<ObservabilityConfig> | undefined;
   private sessionId: string | undefined;
-  private sessionBaseUrl: string | undefined;
+  private semanticGrant: OpensteerSessionGrant | undefined;
   private client: OpensteerSemanticRestClient | undefined;
   private automation: OpensteerCloudAutomationClient | undefined;
   private workspaceStore: FilesystemOpensteerWorkspace | undefined;
@@ -239,7 +244,7 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
         this.workspace !== undefined || this.sessionId !== undefined || persisted !== undefined,
       capabilities: {
         semanticOperations: opensteerSemanticOperationNames,
-        sessionGrants: ["automation", "view", "cdp"],
+        sessionGrants: ["semantic", "automation", "view", "cdp"],
         instrumentation: {
           route: true,
           interceptScript: true,
@@ -586,7 +591,7 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
   async close(): Promise<OpensteerSessionCloseOutput> {
     const session =
       (await this.loadPersistedSession()) ??
-      (this.sessionId === undefined || this.sessionBaseUrl === undefined
+      (this.sessionId === undefined
         ? undefined
         : {
             layout: "opensteer-session" as const,
@@ -594,7 +599,6 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
             provider: "cloud" as const,
             ...(this.workspace === undefined ? {} : { workspace: this.workspace }),
             sessionId: this.sessionId,
-            baseUrl: this.sessionBaseUrl,
             startedAt: Date.now(),
             updatedAt: Date.now(),
           });
@@ -614,7 +618,7 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
       this.automation = undefined;
       this.client = undefined;
       this.sessionId = undefined;
-      this.sessionBaseUrl = undefined;
+      this.semanticGrant = undefined;
       if (this.cleanupRootOnClose) {
         await rm(this.rootPath, { recursive: true, force: true }).catch(() => undefined);
       }
@@ -633,7 +637,7 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     await this.automation?.close().catch(() => undefined);
     this.automation = undefined;
     this.sessionId = undefined;
-    this.sessionBaseUrl = undefined;
+    this.semanticGrant = undefined;
   }
 
   private async ensureSession(input: CloudSessionInitInput = {}): Promise<void> {
@@ -642,39 +646,55 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     }
 
     assertSupportedCloudBrowserMode(input.browser);
+    const localCloud = this.shouldUseLocalCloudTransport();
+    const browserProfile = resolveCloudBrowserProfile(this.cloud, input);
 
     const persisted = await this.loadPersistedSession();
     if (persisted !== undefined && (await this.isReusableCloudSession(persisted.sessionId))) {
-      await this.syncRegistryToCloud();
+      if (localCloud) {
+        void this.syncRegistryToCloud();
+      } else {
+        await this.syncRegistryToCloud();
+      }
       this.bindClient(persisted);
       return;
     }
 
-    await this.syncRegistryToCloud();
+    if (localCloud) {
+      void this.syncRegistryToCloud();
+    } else {
+      await this.syncRegistryToCloud();
+    }
 
-    const session = await this.cloud.createSession({
+    const baseCreateInput: OpensteerCloudSessionCreateInput = {
       ...(this.workspace === undefined ? {} : { name: this.workspace }),
       ...(input.launch === undefined ? {} : { browser: input.launch }),
       ...(input.context === undefined ? {} : { context: input.context }),
-      ...(this.observability === undefined
-        ? {}
-        : { observability: this.observability }),
-      ...(resolveCloudBrowserProfile(this.cloud, input) === undefined
-        ? {}
-        : { browserProfile: resolveCloudBrowserProfile(this.cloud, input)! }),
-    });
+      ...(this.observability === undefined ? {} : { observability: this.observability }),
+      ...(browserProfile === undefined ? {} : { browserProfile }),
+    };
+    const createInput: OpensteerCloudSessionCreateInput =
+      localCloud && this.workspace !== undefined
+        ? {
+            ...baseCreateInput,
+            sourceType: "local-cloud",
+            sourceRef: this.workspace,
+            localWorkspaceRootPath: this.rootPath,
+            locality: "auto",
+          }
+        : baseCreateInput;
+    const session = await this.cloud.createSession(createInput);
     const record: PersistedCloudSessionRecord = {
       layout: "opensteer-session",
       version: 1,
       provider: "cloud",
       ...(this.workspace === undefined ? {} : { workspace: this.workspace }),
       sessionId: session.sessionId,
-      baseUrl: session.baseUrl,
       startedAt: Date.now(),
       updatedAt: Date.now(),
     };
     await this.writePersistedSession(record);
-    this.bindClient(record);
+    this.bindClient(record, session.initialGrants?.semantic);
   }
 
   private async syncRegistryToCloud(): Promise<void> {
@@ -685,18 +705,20 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     try {
       const workspaceStore = await this.ensureWorkspaceStore();
       await syncLocalRegistryToCloud(this.cloud, this.workspace, workspaceStore);
-    } catch (error) {
-      // Session startup must not fail if the registry sync fails.
-      void error;
-    }
+    } catch {}
   }
 
-  private bindClient(record: Pick<PersistedCloudSessionRecord, "sessionId" | "baseUrl">): void {
+  private bindClient(
+    record: Pick<PersistedCloudSessionRecord, "sessionId">,
+    initialSemanticGrant?: OpensteerSessionGrant,
+  ): void {
     this.sessionId = record.sessionId;
-    this.sessionBaseUrl = record.baseUrl;
+    this.semanticGrant =
+      initialSemanticGrant?.kind === "semantic" ? initialSemanticGrant : undefined;
     this.client = new OpensteerSemanticRestClient({
-      baseUrl: record.baseUrl,
-      getAuthorizationHeader: async () => this.cloud.buildAuthorizationHeader(),
+      getBaseUrl: async () => (await this.ensureSemanticGrant()).url,
+      getAuthorizationHeader: async () => `Bearer ${(await this.ensureSemanticGrant()).token}`,
+      handleError: (error) => this.handleSemanticClientError(error),
     });
     this.automation = new OpensteerCloudAutomationClient(this.cloud, record.sessionId);
   }
@@ -753,6 +775,60 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     }
     return this.automation;
   }
+
+  private async ensureSemanticGrant(forceRefresh = false): Promise<OpensteerSessionGrant> {
+    if (
+      !forceRefresh &&
+      this.semanticGrant?.kind === "semantic" &&
+      this.semanticGrant.expiresAt > Date.now() + 10_000
+    ) {
+      return this.semanticGrant;
+    }
+
+    if (!this.sessionId) {
+      throw new Error("Cloud session has not been initialized.");
+    }
+
+    const issued = await this.cloud.issueAccess(this.sessionId, ["semantic"]);
+    const grant = issued.grants.semantic;
+    if (!grant || grant.transport !== "http") {
+      throw new Error("cloud did not issue a valid semantic grant");
+    }
+
+    this.semanticGrant = grant;
+    return grant;
+  }
+
+  private async handleSemanticClientError(error: unknown): Promise<boolean> {
+    if (!(error instanceof OpensteerSemanticRestError)) {
+      return false;
+    }
+
+    if (
+      error.statusCode !== 401 &&
+      error.statusCode !== 404 &&
+      error.statusCode !== 409
+    ) {
+      return false;
+    }
+
+    this.semanticGrant = undefined;
+    try {
+      await this.ensureSemanticGrant(true);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private shouldUseLocalCloudTransport(): boolean {
+    if (this.workspace === undefined) {
+      return false;
+    }
+
+    const config = this.cloud.getConfig();
+    return isLoopbackBaseUrl(config.baseUrl);
+  }
 }
 
 function resolveCloudBrowserProfile(
@@ -774,4 +850,20 @@ function assertSupportedCloudBrowserMode(browser: OpensteerOpenInput["browser"] 
 
 function isMissingCloudSessionError(error: unknown): boolean {
   return error instanceof Error && /\b404\b/.test(error.message);
+}
+
+function isLoopbackBaseUrl(baseUrl: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    return false;
+  }
+
+  return (
+    url.hostname === "localhost" ||
+    url.hostname === "127.0.0.1" ||
+    url.hostname === "::1" ||
+    url.hostname === "[::1]"
+  );
 }

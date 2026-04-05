@@ -32,6 +32,17 @@ import {
 let baseUrl = "";
 let closeServer: (() => Promise<void>) | undefined;
 
+function createLocalOpensteer(
+  options: ConstructorParameters<typeof Opensteer>[0] = {},
+): Opensteer {
+  return new Opensteer({
+    provider: {
+      mode: "local",
+    },
+    ...options,
+  });
+}
+
 describe.sequential("cross-document action boundary", () => {
   beforeAll(async () => {
     const server = createServer((request, response) => {
@@ -227,7 +238,7 @@ describe.sequential("cross-document action boundary", () => {
   }, 60_000);
 
   test("captures named hydration requests after pressEnter navigation", async () => {
-    const opensteer = new Opensteer({
+    const opensteer = createLocalOpensteer({
       name: "navigation-network-capture",
       browser: "temporary",
       launch: {
@@ -270,7 +281,7 @@ describe.sequential("cross-document action boundary", () => {
   }, 60_000);
 
   test("pressEnter submits even when typing keeps bootstrap trackers noisy", async () => {
-    const opensteer = new Opensteer({
+    const opensteer = createLocalOpensteer({
       name: "navigation-network-noisy-enter",
       browser: "temporary",
       launch: {
@@ -317,9 +328,55 @@ describe.sequential("cross-document action boundary", () => {
     }
   }, 60_000);
 
+  test("click navigations succeed even when the destination page keeps scheduling timers", async () => {
+    const opensteer = createLocalOpensteer({
+      name: "navigation-network-noisy-click",
+      browser: "temporary",
+      launch: {
+        headless: true,
+      },
+      policy: createPolicyWithOverrides({
+        timeoutOverrides: {
+          "dom.click": 5_000,
+        },
+      }),
+    });
+
+    try {
+      await opensteer.open(`${baseUrl}/sdk/noisy-click`);
+      await opensteer.click({
+        selector: "#continue",
+        captureNetwork: "noisy-click",
+      });
+
+      await expect(
+        opensteer.extract({
+          description: "noisy click hydration status",
+          schema: {
+            status: {
+              selector: "#hydration-status",
+            },
+          },
+        }),
+      ).resolves.toEqual({
+        status: "hydrated",
+      });
+
+      const { records } = await opensteer.queryNetwork({
+        capture: "noisy-click",
+        limit: 20,
+      });
+      expect(
+        records.find((entry) => entry.record.url.includes("/sdk/api/hydration"))?.record.status,
+      ).toBe(200);
+    } finally {
+      await opensteer.close().catch(() => undefined);
+    }
+  }, 60_000);
+
   test("does not persist action-triggered network without captureNetwork", async () => {
     const rootPath = await mkdtemp(path.join(os.tmpdir(), "opensteer-no-capture-"));
-    const opensteer = new Opensteer({
+    const opensteer = createLocalOpensteer({
       name: "navigation-network-no-capture",
       rootPath,
       cleanupRootOnClose: false,
@@ -365,7 +422,7 @@ describe.sequential("cross-document action boundary", () => {
   }, 60_000);
 
   test("waits for same-tab navigation hydration before returning computer-use clicks", async () => {
-    const opensteer = new Opensteer({
+    const opensteer = createLocalOpensteer({
       name: "computer-action-boundary",
       browser: "temporary",
       launch: {
@@ -419,7 +476,7 @@ describe.sequential("cross-document action boundary", () => {
 
   test("returns success and records degraded visual settle traces", async () => {
     const rootPath = await mkdtemp(path.join(os.tmpdir(), "opensteer-soft-settle-"));
-    const opensteer = new Opensteer({
+    const opensteer = createLocalOpensteer({
       name: "soft-settle-boundary",
       rootPath,
       cleanupRootOnClose: false,
@@ -481,7 +538,7 @@ describe.sequential("cross-document action boundary", () => {
   }, 60_000);
 
   test("throws when DOMContentLoaded is missed before the hard interaction deadline", async () => {
-    const opensteer = new Opensteer({
+    const opensteer = createLocalOpensteer({
       name: "hard-boundary-timeout",
       browser: "temporary",
       launch: {
@@ -508,7 +565,7 @@ describe.sequential("cross-document action boundary", () => {
 
   test("persists observed network deltas when a captureNetwork operation times out", async () => {
     const rootPath = await mkdtemp(path.join(os.tmpdir(), "opensteer-timeout-persist-"));
-    const opensteer = new Opensteer({
+    const opensteer = createLocalOpensteer({
       name: "timeout-persist",
       rootPath,
       cleanupRootOnClose: false,
@@ -572,6 +629,12 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   if (route === "hydration-click") {
     response.setHeader("content-type", "text/html; charset=utf-8");
     response.end(hydrationClickDocument(scope));
+    return;
+  }
+
+  if (route === "noisy-click") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(noisyClickDocument(scope));
     return;
   }
 
@@ -697,6 +760,15 @@ function hydrationClickDocument(scope: string): string {
   );
 }
 
+function noisyClickDocument(scope: string): string {
+  return html(
+    `
+      <a id="continue" href="/${scope}/hydration-results?mode=noisy-click">Open results</a>
+    `,
+    `${scope} noisy click`,
+  );
+}
+
 function hardTimeoutClickDocument(scope: string): string {
   return html(
     `
@@ -712,6 +784,13 @@ function hydrationResultsDocument(scope: string, mode: string): string {
       <div id="products">SSR results ${mode}</div>
       <div id="hydration-status">ssr</div>
       <script>
+        if (${JSON.stringify(mode)} === "noisy-click") {
+          const schedule = () => {
+            setTimeout(schedule, 0);
+          };
+          schedule();
+        }
+
         document.addEventListener("DOMContentLoaded", () => {
           setTimeout(() => {
             void fetch("/${scope}/api/hydration?mode=" + encodeURIComponent(${JSON.stringify(mode)}))

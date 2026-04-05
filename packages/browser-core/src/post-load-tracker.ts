@@ -72,7 +72,6 @@ export function buildPostLoadTrackerInstallScript(): string {
       pendingTimeouts: 0,
       pendingXhrs: 0,
       readyState: document.readyState,
-      timeoutIds: new Set(),
     };
     globalObject.__opensteerActionBoundaryTrackerInstalled = true;
     globalObject.__opensteerActionBoundaryTracker = tracker;
@@ -109,36 +108,6 @@ export function buildPostLoadTrackerInstallScript(): string {
 
     document.addEventListener("readystatechange", markMutation);
     addEventListener("load", markMutation, { once: true });
-
-    const nativeSetTimeout = globalObject.setTimeout.bind(globalObject);
-    const nativeClearTimeout = globalObject.clearTimeout.bind(globalObject);
-    globalObject.setTimeout = function(callback, delay, ...args) {
-      tracker.pendingTimeouts += 1;
-      markNetwork();
-      let handle;
-      const wrapped =
-        typeof callback === "function"
-          ? (...callbackArgs) => {
-              if (tracker.timeoutIds.delete(handle)) {
-                tracker.pendingTimeouts = Math.max(0, tracker.pendingTimeouts - 1);
-              }
-              try {
-                return callback(...callbackArgs);
-              } finally {
-                markMutation();
-              }
-            }
-          : callback;
-      handle = nativeSetTimeout(wrapped, delay, ...args);
-      tracker.timeoutIds.add(handle);
-      return handle;
-    };
-    globalObject.clearTimeout = function(handle) {
-      if (tracker.timeoutIds.delete(handle)) {
-        tracker.pendingTimeouts = Math.max(0, tracker.pendingTimeouts - 1);
-      }
-      return nativeClearTimeout(handle);
-    };
 
     if (typeof globalObject.fetch === "function") {
       const nativeFetch = globalObject.fetch.bind(globalObject);
@@ -205,7 +174,7 @@ export function postLoadTrackerIsSettled(
     return false;
   }
 
-  if (tracker.pendingFetches > 0 || tracker.pendingTimeouts > 0 || tracker.pendingXhrs > 0) {
+  if (tracker.pendingFetches > 0 || tracker.pendingXhrs > 0) {
     return false;
   }
 

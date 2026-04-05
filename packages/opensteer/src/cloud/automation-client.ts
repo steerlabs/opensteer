@@ -181,7 +181,10 @@ export class OpensteerCloudAutomationClient {
 
   private async connect(): Promise<void> {
     const grant = await this.issueGrant("automation");
-    const wsUrl = new URL(grant.wsUrl);
+    if (grant.transport !== "ws") {
+      throw new Error(`cloud issued an invalid ${grant.kind} grant transport`);
+    }
+    const wsUrl = new URL(grant.url);
     wsUrl.searchParams.set("token", grant.token);
 
     const socket = new WebSocket(wsUrl);

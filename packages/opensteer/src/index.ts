@@ -133,6 +133,7 @@ export {
   buildDomDescriptorKey,
   buildDomDescriptorPayload,
   buildDomDescriptorVersion,
+  createDomDescriptorStore,
   hashDomDescriptorDescription,
   parseDomDescriptorRecord,
   OPENSTEER_DOM_ACTION_BRIDGE_SYMBOL,

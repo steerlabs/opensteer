@@ -180,9 +180,13 @@ async function describeCloudLane(input: {
     status: "connected",
     current: input.current,
     summary: input.record.sessionId,
-    detail: input.record.baseUrl,
     sessionId: input.record.sessionId,
-    baseUrl: input.record.baseUrl,
+    ...(input.cloudConfig === undefined
+      ? {}
+      : {
+          detail: input.cloudConfig.baseUrl,
+          baseUrl: input.cloudConfig.baseUrl,
+        }),
   };
 
   if (input.cloudConfig === undefined) {
