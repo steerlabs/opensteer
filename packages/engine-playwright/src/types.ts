@@ -80,6 +80,7 @@ export interface DocumentState {
   readonly documentRef: DocumentRef;
   documentEpoch: DocumentEpoch;
   url: string;
+  domContentLoadedAt: number | undefined;
   parentDocumentRef: DocumentRef | undefined;
   readonly nodeRefsByBackendNodeId: Map<number, NodeRef>;
   readonly backendNodeIdsByNodeRef: Map<NodeRef, number>;

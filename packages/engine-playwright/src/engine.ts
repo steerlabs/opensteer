@@ -286,6 +286,9 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       controller.mainFrameRef === undefined
         ? undefined
         : this.frames.get(controller.mainFrameRef)?.currentDocument.documentRef,
+    isCurrentMainFrameBootstrapSettled: (controller) =>
+      controller.mainFrameRef !== undefined &&
+      this.frames.get(controller.mainFrameRef)?.currentDocument.domContentLoadedAt !== undefined,
     throwBackgroundError: (controller) => this.throwBackgroundError(controller),
   });
   private pageCounter = 0;
@@ -1875,6 +1878,9 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
         this.handlePlaywrightResponse(controller, response),
       ),
     );
+    page.on("domcontentloaded", () =>
+      this.runControllerEvent(controller, () => this.handlePageDomContentLoaded(controller)),
+    );
     page.on("close", () => this.handleUnexpectedPageClose(controller));
 
     const frameTree = await cdp.send("Page.getFrameTree");
@@ -1941,6 +1947,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       documentRef,
       documentEpoch: createDocumentEpoch(0),
       url: "about:blank",
+      domContentLoadedAt: undefined,
       parentDocumentRef: parent?.currentDocument.documentRef,
       nodeRefsByBackendNodeId: new Map(),
       backendNodeIdsByNodeRef: new Map(),
@@ -2001,6 +2008,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       documentRef: nextDocumentRef,
       documentEpoch: createDocumentEpoch(0),
       url: combineFrameUrl(frame.url, frame.urlFragment),
+      domContentLoadedAt: undefined,
       parentDocumentRef: parent?.currentDocument.documentRef,
       nodeRefsByBackendNodeId: new Map(),
       backendNodeIdsByNodeRef: new Map(),
@@ -2037,6 +2045,15 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     this.queueDocumentReconciliation(controller);
   }
 
+  private handlePageDomContentLoaded(controller: PageController): void {
+    const mainFrame =
+      controller.mainFrameRef === undefined ? undefined : this.frames.get(controller.mainFrameRef);
+    if (mainFrame === undefined) {
+      return;
+    }
+    mainFrame.currentDocument.domContentLoadedAt = Date.now();
+  }
+
   private syncFrameTree(controller: PageController, tree: FrameTreeNode): void {
     const visit = (node: FrameTreeNode, parentFrameRef?: FrameRef): void => {
       const existing = controller.framesByCdpId.get(node.frame.id);
@@ -2050,6 +2067,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
           documentRef,
           documentEpoch: createDocumentEpoch(0),
           url: combineFrameUrl(node.frame.url, node.frame.urlFragment),
+          domContentLoadedAt: undefined,
           parentDocumentRef:
             parentFrameRef === undefined
               ? undefined
