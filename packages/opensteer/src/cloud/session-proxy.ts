@@ -670,9 +670,7 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
       ...(this.workspace === undefined ? {} : { name: this.workspace }),
       ...(input.launch === undefined ? {} : { browser: input.launch }),
       ...(input.context === undefined ? {} : { context: input.context }),
-      ...(this.observability === undefined
-        ? {}
-        : { observability: this.observability }),
+      ...(this.observability === undefined ? {} : { observability: this.observability }),
       ...(browserProfile === undefined ? {} : { browserProfile }),
     };
     const createInput: OpensteerCloudSessionCreateInput =
@@ -707,9 +705,7 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     try {
       const workspaceStore = await this.ensureWorkspaceStore();
       await syncLocalRegistryToCloud(this.cloud, this.workspace, workspaceStore);
-    } catch {
-      // Session startup must not fail if the registry sync fails.
-    }
+    } catch {}
   }
 
   private bindClient(
@@ -721,9 +717,8 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
       initialSemanticGrant?.kind === "semantic" ? initialSemanticGrant : undefined;
     this.client = new OpensteerSemanticRestClient({
       getBaseUrl: async () => (await this.ensureSemanticGrant()).url,
-      getAuthorizationHeader: async () =>
-        `Bearer ${(await this.ensureSemanticGrant()).token}`,
-      handleError: async (error) => this.handleSemanticClientError(error),
+      getAuthorizationHeader: async () => `Bearer ${(await this.ensureSemanticGrant()).token}`,
+      handleError: (error) => this.handleSemanticClientError(error),
     });
     this.automation = new OpensteerCloudAutomationClient(this.cloud, record.sessionId);
   }

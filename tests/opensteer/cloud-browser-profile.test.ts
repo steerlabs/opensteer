@@ -5,6 +5,8 @@ import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
+  createErrorEnvelope,
+  createOpensteerError,
   createSuccessEnvelope,
   type OpensteerRequestEnvelope,
   type OpensteerReverseCasePayload,
@@ -586,7 +588,10 @@ describe("cloud browser-profile integration", () => {
         };
       }
 
-      if (url === `${semanticBaseUrl}/api/v2/semantic/operations/session/open` && init?.method === "POST") {
+      if (
+        url === `${semanticBaseUrl}/api/v2/semantic/operations/session/open` &&
+        init?.method === "POST"
+      ) {
         const request = JSON.parse(String(init.body)) as OpensteerRequestEnvelope<unknown>;
         return {
           ok: true,
@@ -681,7 +686,10 @@ describe("cloud browser-profile integration", () => {
         };
       }
 
-      if (url === `${semanticBaseUrl}/api/v2/semantic/operations/session/open` && init?.method === "POST") {
+      if (
+        url === `${semanticBaseUrl}/api/v2/semantic/operations/session/open` &&
+        init?.method === "POST"
+      ) {
         const request = JSON.parse(String(init.body)) as OpensteerRequestEnvelope<unknown>;
         return {
           ok: true,
@@ -731,6 +739,90 @@ describe("cloud browser-profile integration", () => {
     } finally {
       await rm(rootDir, { recursive: true, force: true });
     }
+  });
+
+  test("CloudSessionProxy surfaces semantic 409 conflicts without refreshing the grant", async () => {
+    const semanticBaseUrl = "https://cloud.example/runtime/session_123";
+    const semanticGrant = {
+      kind: "semantic" as const,
+      transport: "http" as const,
+      url: semanticBaseUrl,
+      token: "semantic-token",
+      expiresAt: 4_102_444_800_000,
+    };
+    let accessCalls = 0;
+
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "https://api.opensteer.dev/v1/sessions" && init?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({
+            sessionId: "session_123",
+            status: "active",
+            initialGrants: {
+              semantic: semanticGrant,
+            },
+            initialGrantExpiresAt: semanticGrant.expiresAt,
+          }),
+        };
+      }
+
+      if (
+        url === "https://api.opensteer.dev/v1/sessions/session_123/access" &&
+        init?.method === "POST"
+      ) {
+        accessCalls += 1;
+        return {
+          ok: true,
+          json: async () => ({
+            sessionId: "session_123",
+            expiresAt: semanticGrant.expiresAt,
+            grants: {
+              semantic: semanticGrant,
+            },
+          }),
+        };
+      }
+
+      if (
+        url === `${semanticBaseUrl}/api/v2/semantic/operations/session/open` &&
+        init?.method === "POST"
+      ) {
+        const request = JSON.parse(String(init.body)) as OpensteerRequestEnvelope<unknown>;
+        return {
+          ok: false,
+          status: 409,
+          json: async () =>
+            createErrorEnvelope(
+              request,
+              createOpensteerError("conflict", "session state conflict"),
+            ),
+        };
+      }
+
+      throw new Error(`Unexpected fetch ${init?.method ?? "GET"} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const proxy = new CloudSessionProxy(
+      new OpensteerCloudClient({
+        apiKey: "osk_test",
+        baseUrl: "https://api.opensteer.dev",
+      }),
+    );
+
+    await expect(
+      proxy.open({
+        url: "https://example.com",
+      }),
+    ).rejects.toMatchObject({
+      name: "OpensteerSemanticRestError",
+      statusCode: 409,
+      opensteerError: expect.objectContaining({
+        code: "conflict",
+      }),
+    });
+    expect(accessCalls).toBe(0);
   });
 
   test("CloudSessionProxy rejects attach browser mode before creating a session", async () => {

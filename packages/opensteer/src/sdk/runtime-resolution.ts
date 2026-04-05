@@ -20,6 +20,19 @@ export interface OpensteerResolvedRuntimeConfig {
   readonly cloud?: OpensteerCloudConfig;
 }
 
+const LOCAL_ONLY_RUNTIME_OPTION_KEYS = [
+  "launch",
+  "context",
+  "engine",
+  "engineFactory",
+  "policy",
+  "descriptorStore",
+  "extractionDescriptorStore",
+  "registryOverrides",
+  "observationSessionId",
+  "observationSink",
+] as const satisfies readonly (keyof OpensteerRuntimeOptions)[];
+
 export function resolveOpensteerRuntimeConfig(
   input: {
     readonly provider?: OpensteerProviderOptions;
@@ -102,38 +115,5 @@ export function createOpensteerSemanticRuntime(
 }
 
 function listLocalOnlyRuntimeOptions(runtimeOptions: OpensteerRuntimeOptions): string[] {
-  const localOnlyKeys: string[] = [];
-
-  if (runtimeOptions.launch !== undefined) {
-    localOnlyKeys.push("launch");
-  }
-  if (runtimeOptions.context !== undefined) {
-    localOnlyKeys.push("context");
-  }
-  if (runtimeOptions.engine !== undefined) {
-    localOnlyKeys.push("engine");
-  }
-  if (runtimeOptions.engineFactory !== undefined) {
-    localOnlyKeys.push("engineFactory");
-  }
-  if (runtimeOptions.policy !== undefined) {
-    localOnlyKeys.push("policy");
-  }
-  if (runtimeOptions.descriptorStore !== undefined) {
-    localOnlyKeys.push("descriptorStore");
-  }
-  if (runtimeOptions.extractionDescriptorStore !== undefined) {
-    localOnlyKeys.push("extractionDescriptorStore");
-  }
-  if (runtimeOptions.registryOverrides !== undefined) {
-    localOnlyKeys.push("registryOverrides");
-  }
-  if (runtimeOptions.observationSessionId !== undefined) {
-    localOnlyKeys.push("observationSessionId");
-  }
-  if (runtimeOptions.observationSink !== undefined) {
-    localOnlyKeys.push("observationSink");
-  }
-
-  return localOnlyKeys;
+  return LOCAL_ONLY_RUNTIME_OPTION_KEYS.filter((key) => runtimeOptions[key] !== undefined);
 }

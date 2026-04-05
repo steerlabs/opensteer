@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "opensteer": {
+      "source": "steerlabs/opensteer",
+      "sourceType": "github",
+      "computedHash": "9c95c6b61ad7dd6bc13f68d06fa817b1f24dd5fe134cbfc9d6ace5fa04d3f473"
+    }
+  }
+}
