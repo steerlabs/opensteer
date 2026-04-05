@@ -11,8 +11,14 @@ import {
 } from "@opensteer/protocol";
 
 export interface OpensteerSemanticRestConnection {
-  readonly baseUrl: string;
+  readonly getBaseUrl: () => Promise<string>;
   readonly getAuthorizationHeader: () => Promise<string>;
+  readonly handleError?: (
+    error: unknown,
+    input: {
+      readonly operation: OpensteerSemanticOperationName;
+    },
+  ) => Promise<boolean>;
 }
 
 export class OpensteerSemanticRestError extends Error {
@@ -34,6 +40,14 @@ export class OpensteerSemanticRestClient {
     operation: OpensteerSemanticOperationName,
     input: TInput,
   ): Promise<TOutput> {
+    return this.invokeInternal(operation, input, false);
+  }
+
+  private async invokeInternal<TInput, TOutput>(
+    operation: OpensteerSemanticOperationName,
+    input: TInput,
+    hasRetried: boolean,
+  ): Promise<TOutput> {
     const endpoint = opensteerSemanticRestEndpoints.find((entry) => entry.name === operation);
     if (!endpoint) {
       throw new Error(`unsupported semantic operation ${operation}`);
@@ -45,7 +59,7 @@ export class OpensteerSemanticRestClient {
 
     let response: Response;
     try {
-      response = await fetch(`${this.connection.baseUrl}${endpoint.path}`, {
+      response = await fetch(`${await this.connection.getBaseUrl()}${endpoint.path}`, {
         method: "POST",
         headers: {
           authorization: await this.connection.getAuthorizationHeader(),
@@ -68,6 +82,13 @@ export class OpensteerSemanticRestClient {
       }
       return envelope.data;
     } catch (error) {
+      if (
+        !hasRetried &&
+        this.connection.handleError &&
+        (await this.connection.handleError(error, { operation }))
+      ) {
+        return this.invokeInternal(operation, input, true);
+      }
       if (operation === "session.close" && isFetchFailure(error)) {
         return { closed: true } as TOutput;
       }

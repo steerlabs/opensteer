@@ -37,7 +37,6 @@ export interface PersistedLocalBrowserSessionRecord extends PersistedSessionReco
 export interface PersistedCloudSessionRecord extends PersistedSessionRecordBase {
   readonly provider: "cloud";
   readonly sessionId: string;
-  readonly baseUrl: string;
   readonly startedAt: number;
 }
 
@@ -116,8 +115,6 @@ function isPersistedCloudSessionRecord(
     value.provider === "cloud" &&
     typeof value.sessionId === "string" &&
     value.sessionId.length > 0 &&
-    typeof value.baseUrl === "string" &&
-    value.baseUrl.length > 0 &&
     typeof value.startedAt === "number" &&
     Number.isFinite(value.startedAt) &&
     typeof value.updatedAt === "number" &&

@@ -39,7 +39,6 @@ describe("opensteer status", () => {
         provider: "cloud",
         workspace,
         sessionId: "session_123",
-        baseUrl: "https://cloud.example/runtime/session_123",
         startedAt: Date.now(),
         updatedAt: Date.now(),
       });
@@ -50,6 +49,10 @@ describe("opensteer status", () => {
         provider: {
           mode: "cloud",
           source: "env",
+        },
+        cloudConfig: {
+          apiKey: "osk_test",
+          baseUrl: "https://api.opensteer.dev",
         },
       });
 
@@ -74,7 +77,7 @@ describe("opensteer status", () => {
             status: "connected",
             current: true,
             sessionId: "session_123",
-            baseUrl: "https://cloud.example/runtime/session_123",
+            baseUrl: "https://api.opensteer.dev",
           },
         },
       });

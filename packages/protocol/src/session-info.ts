@@ -3,9 +3,10 @@ import type { OpensteerSemanticOperationName } from "./semantic.js";
 import type { OpensteerCapability } from "./capabilities.js";
 import type { OpensteerProtocolVersion } from "./version.js";
 
-export const opensteerSessionGrantKinds = ["automation", "view", "cdp"] as const;
+export const opensteerSessionGrantKinds = ["semantic", "automation", "view", "cdp"] as const;
 
 export type OpensteerSessionGrantKind = (typeof opensteerSessionGrantKinds)[number];
+export type OpensteerSessionGrantTransport = "http" | "ws";
 export type OpensteerProviderMode = "local" | "cloud";
 export type OpensteerSessionOwnership = "owned" | "attached" | "managed";
 
@@ -30,7 +31,8 @@ export interface OpensteerSessionCapabilities {
 
 export interface OpensteerSessionGrant {
   readonly kind: OpensteerSessionGrantKind;
-  readonly wsUrl: string;
+  readonly transport: OpensteerSessionGrantTransport;
+  readonly url: string;
   readonly token: string;
   readonly expiresAt: number;
 }
