@@ -177,6 +177,12 @@ if (!status.live) {
 
 ## Request Capture, Plans, And Recipes
 
+For the complete pipeline with mandatory phases, see [Request Plan Pipeline](request-workflow.md). This section covers SDK method signatures and examples for reusable scripts.
+
+The deliverable of a request capture workflow is a persisted request plan tested via `request()`. `rawRequest()` is a diagnostic probe — not the deliverable.
+
+### Capture, Probe, and Infer
+
 ```ts
 await opensteer.open();
 await opensteer.goto({
@@ -196,8 +202,10 @@ const records = await opensteer.queryNetwork({
   limit: 20,
 });
 
+// DIAGNOSTIC ONLY — probe transport to determine portability.
+// Do NOT return this data as the final answer. Proceed to inferRequestPlan.
 const response = await opensteer.rawRequest({
-  transport: "context-http",
+  transport: "direct-http",
   url: "https://example.com/api/products",
   method: "POST",
   body: {
@@ -205,43 +213,123 @@ const response = await opensteer.rawRequest({
   },
 });
 
+// Infer plan with the transport you proved works
 await opensteer.inferRequestPlan({
   recordId: records.records[0]!.recordId,
   key: "products.search",
   version: "v1",
-});
-
-await opensteer.inferRequestPlan({
-  recordId: records.records[0]!.recordId,
-  key: "products.search.portable",
-  version: "v1",
   transport: "direct-http",
 });
 
-await opensteer.tagNetwork({
-  tag: "products-load",
-});
-
+// Replay the plan — this is the deliverable
 await opensteer.request("products.search", {
   query: { q: "laptop" },
 });
 ```
 
-Rules:
+### Read and Fix Plans
+
+After inferring a plan, read it to validate auth and annotate parameters:
+
+```ts
+// Read the inferred plan
+const plan = await opensteer.getRequestPlan({
+  key: "products.search",
+  version: "v1",
+});
+
+// Inspect plan.payload.auth — if auth.strategy is set but the API is public,
+// rewrite the plan with auth removed
+await opensteer.writeRequestPlan({
+  key: "products.search",
+  version: "v1",
+  tags: ["products", "search"],
+  provenance: {
+    source: "manual",
+    notes: "Auth removed — API is public. Parameters annotated.",
+  },
+  payload: {
+    ...plan.payload,
+    auth: undefined, // Remove spurious auth classification
+    parameters: [
+      { name: "q", in: "query", required: true, description: "Search keyword" },
+      { name: "count", in: "query", defaultValue: "24", description: "Results per page" },
+      { name: "offset", in: "query", defaultValue: "0", description: "Pagination offset" },
+    ],
+  },
+});
+```
+
+### Auth Recipes
+
+When an API genuinely requires auth, create an auth recipe that acquires tokens automatically:
+
+```ts
+// Write an auth recipe that acquires a bearer token
+await opensteer.writeAuthRecipe({
+  key: "example.auth",
+  version: "v1",
+  payload: {
+    description: "Acquire guest bearer token for example.com API",
+    steps: [
+      {
+        kind: "directRequest",
+        request: {
+          url: "https://example.com/api/oauth/token",
+          transport: "direct-http",
+          method: "POST",
+          body: { json: { grant_type: "client_credentials" } },
+        },
+        capture: {
+          bodyJsonPointer: { pointer: "/access_token", saveAs: "token" },
+        },
+      },
+    ],
+    outputs: {
+      headers: { Authorization: "Bearer {{token}}" },
+    },
+  },
+});
+
+// Bind the auth recipe to a plan by rewriting the plan with auth.recipe
+const plan = await opensteer.getRequestPlan({ key: "products.search" });
+await opensteer.writeRequestPlan({
+  key: "products.search",
+  version: "v1",
+  payload: {
+    ...plan.payload,
+    auth: {
+      strategy: "bearer-token",
+      recipe: { key: "example.auth", version: "v1" },
+      failurePolicy: { on: "status", status: "401", action: "recover" },
+    },
+  },
+});
+
+// Now request.execute automatically runs the auth recipe on 401
+const result = await opensteer.request("products.search", {
+  query: { q: "laptop" },
+});
+```
+
+**Recipe step types:** `directRequest`, `sessionRequest`, `request`, `readCookie`, `readStorage`, `evaluate`, `waitForNetwork`, `waitForCookie`, `goto`, `solveCaptcha`, `hook`. Each step can `capture` values; `outputs` maps captured variables to `headers`, `query`, `params`, or `body` overrides.
+
+### Rules
 
 - `captureNetwork` is supported on `goto()`, `click()`, `scroll()`, `input()`, and `hover()`. It is NOT supported on `open()`. Use `open()` then `goto({ url, captureNetwork })` to name initial navigation capture.
 - Query by capture first, then query all traffic to catch async requests that fire after page load.
-- Probe discovered APIs with `rawRequest()` using `direct-http` first, then `context-http`.
+- Probe discovered APIs with `rawRequest()` using `direct-http` first, then `context-http`. `rawRequest()` is diagnostic — always proceed to `inferRequestPlan`.
 - Persistence is automatic; use `tagNetwork()` when you want to label a slice of already-persisted history for later lookup.
 - Use recipes when replay needs deterministic setup work. Use auth recipes when the setup is specifically auth-related. They live in separate registries.
 
-`rawRequest` input shapes:
+### Input Shapes
 
-- `headers` MUST be an array: `[{ name: "Authorization", value: "Bearer ..." }]`. NOT `{ Authorization: "Bearer ..." }`.
-- `body` MUST be one of: `{ json: { ... } }`, `{ text: "..." }`, or `{ base64: "..." }`. NOT a raw string or object.
+- `rawRequest` `headers` MUST be an array: `[{ name: "Authorization", value: "Bearer ..." }]`. NOT `{ Authorization: "Bearer ..." }`.
+- `rawRequest` `body` MUST be one of: `{ json: { ... } }`, `{ text: "..." }`, or `{ base64: "..." }`. NOT a raw string or object.
 - `rawRequest()` may populate parsed JSON on `data`. If it does not, decode `response.body.data` with `Buffer.from(..., "base64").toString("utf8")`.
+- Recipe step `request` fields accept `{ key: value }` objects for headers (unlike `rawRequest`).
 
-Common errors and fixes:
+### Common Errors
 
 | Error                                                        | Cause                                                 | Fix                                                               |
 | ------------------------------------------------------------ | ----------------------------------------------------- | ----------------------------------------------------------------- |
