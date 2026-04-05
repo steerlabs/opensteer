@@ -197,4 +197,92 @@ describe.sequential("recorder browser script", () => {
       await once(server, "close").catch(() => undefined);
     }
   }, 60_000);
+
+  test("classifies multi-step history traversal without depending on storage writes", async () => {
+    const rootDir = await mkdtemp(path.join(tmpdir(), "opensteer-recorder-history-state-"));
+    temporaryRoots.push(rootDir);
+
+    const server = createServer((request, response) => {
+      const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      response.setHeader("content-type", "text/html; charset=utf-8");
+      if (url.pathname === "/" || url.pathname === "/step1" || url.pathname === "/step2") {
+        response.end(`<!doctype html><html lang="en"><body><main>${url.pathname}</main></body></html>`);
+        return;
+      }
+      response.statusCode = 404;
+      response.end("not found");
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to start recorder history-state fixture server");
+    }
+
+    const baseUrl = `http://127.0.0.1:${String(address.port)}`;
+    const opensteer = new Opensteer({
+      name: "recorder-history-state",
+      rootDir,
+      browser: "temporary",
+      launch: {
+        headless: true,
+      },
+    });
+
+    try {
+      await opensteer.open(`${baseUrl}/`);
+      await opensteer.addInitScript(FLOW_RECORDER_INSTALL_SCRIPT);
+      await opensteer.evaluate(FLOW_RECORDER_INSTALL_SCRIPT);
+
+      await opensteer.evaluate(`() => {
+        history.pushState({ step: 1 }, "", "/step1");
+        history.pushState({ step: 2 }, "", "/step2");
+      }`);
+      await opensteer.evaluate(FLOW_RECORDER_DRAIN_SCRIPT);
+
+      await opensteer.evaluate(`() => {
+        Object.defineProperty(Storage.prototype, "setItem", {
+          configurable: true,
+          writable: true,
+          value() {
+            throw new Error("blocked");
+          },
+        });
+      }`);
+
+      const drained = (await opensteer.evaluate(`() => {
+        return new Promise((resolve, reject) => {
+          const timeoutId = setTimeout(() => {
+            reject(new Error("timed out waiting for popstate"));
+          }, 2_000);
+          addEventListener(
+            "popstate",
+            () => {
+              clearTimeout(timeoutId);
+              setTimeout(() => {
+                const recorder = globalThis.__opensteerFlowRecorder;
+                resolve(recorder && typeof recorder.drain === "function" ? recorder.drain() : null);
+              }, 0);
+            },
+            { once: true },
+          );
+          history.go(-2);
+        });
+      }`)) as {
+        readonly url: string;
+        readonly events: readonly {
+          readonly kind: string;
+          readonly url?: string;
+        }[];
+      } | null;
+
+      expect(drained?.url).toBe(`${baseUrl}/`);
+      expect(drained?.events.some((event) => event.kind === "go-back" && event.url === `${baseUrl}/`))
+        .toBe(true);
+    } finally {
+      await opensteer.close().catch(() => undefined);
+      server.close();
+      await once(server, "close").catch(() => undefined);
+    }
+  }, 60_000);
 });

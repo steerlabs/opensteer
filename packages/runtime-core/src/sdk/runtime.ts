@@ -1273,6 +1273,9 @@ export class OpensteerSessionRuntime {
         const result = await this.requireDom().click({
           pageRef,
           target,
+          ...(input.button === undefined ? {} : { button: input.button }),
+          ...(input.clickCount === undefined ? {} : { clickCount: input.clickCount }),
+          ...(input.modifiers === undefined ? {} : { modifiers: input.modifiers }),
           timeout,
         });
         return {
