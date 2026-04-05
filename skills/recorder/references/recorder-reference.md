@@ -1,10 +1,24 @@
 # Recorder Reference
 
+Read this file when you need recorder constraints, replay details, or non-default invocation patterns.
+
 ## Command
 
 ```bash
 opensteer record --workspace <id> --url <url> [--output <path>]
 ```
+
+Useful launch-arg pattern when the value begins with dashes:
+
+```bash
+opensteer record --workspace <id> --url <url> --arg=--remote-debugging-port=9333
+```
+
+## Stop behavior
+
+- The recorder stops when the user clicks the injected `Stop recording` button in the browser.
+- After stop, the CLI writes the replay script and closes the owned browser session.
+- Do not use removed timeout flags such as `--record-timeout-ms`.
 
 ## What Gets Recorded
 
@@ -31,6 +45,12 @@ opensteer record --workspace <id> --url <url> [--output <path>]
 - Activates the correct page before page-scoped SDK actions
 - Merges `Enter` into the preceding `input()` call when the capture sequence allows it
 - Uses `evaluate()` helpers when replay needs behavior that is not yet exposed as a first-class SDK helper
+
+## Replay verification
+
+- Default generated path: `.opensteer/workspaces/<id>/recorded-flow.ts`
+- Typical replay command: `pnpm exec tsx <path-to-recorded-flow.ts>`
+- Review the script before replay if the user performed unsupported or approximate browser actions
 
 ## Limitations
 

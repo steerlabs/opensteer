@@ -1,30 +1,39 @@
 ---
 name: recorder
-description: "Records live browser interaction flows and generates deterministic TypeScript replay scripts with the Opensteer SDK. Use when the user wants to record a manual browser session, capture a workflow for replay, or turn browsing into reusable Opensteer code."
+description: "Use when the user wants to record a live browser workflow and turn it into a deterministic Opensteer replay script. Prefer this for manual browser capture, multi-tab flow recording, and agent-guided record-and-replay setup with the Opensteer CLI."
 argument-hint: "[url]"
 ---
 
 # Recorder
 
-The recorder opens a headed local Playwright browser, captures DOM-level user actions, and writes a replayable TypeScript script to the workspace.
+Use the Opensteer recorder to open a headed local Playwright browser, capture DOM-level actions, and write a replayable TypeScript script.
 
-## When To Use
+## When to use
 
 - Record a real browser flow for later replay.
 - Turn a manual QA walkthrough into Opensteer SDK code.
 - Capture a multi-tab browsing session as a starting point for automation.
 
-## CLI
+## Quick start
 
 ```bash
 opensteer record --workspace <id> --url <url>
 opensteer record --workspace <id> --url <url> --output <path>
 ```
 
+1. Start recording with `opensteer record --workspace <id> --url <url>`.
+2. Perform the workflow in the headed browser.
+3. Stop recording with the injected `Stop recording` button in the browser.
+4. Wait for the CLI to write the script path and close the browser session.
+5. Inspect the generated file before replaying or editing it.
+
+## Guardrails
+
 - Recording requires `provider=local`.
 - Recording requires `engine=playwright`.
 - Recording always uses a headed persistent browser for the target workspace.
-- Stop recording with the injected `Stop recording` button in the browser. The recorder writes the script and closes the browser session after capture completes.
+- Stopping is browser-driven. Do not rely on `Ctrl+C` or removed timeout flags.
+- If a launch argument value starts with `--`, pass it as `--arg=...`, not `--arg ...`.
 
 ## Output
 
@@ -32,11 +41,12 @@ opensteer record --workspace <id> --url <url> --output <path>
 - The generated script imports `Opensteer` from `opensteer`.
 - Replay uses public SDK methods such as `open`, `goto`, `click`, `input`, `scroll`, `newPage`, `closePage`, `activatePage`, and `evaluate`.
 
-## Notes
+## Agent workflow
 
-- v1 records top-frame DOM interactions and tab lifecycle events.
-- Some browser-native gestures are approximated in replay when the public SDK does not expose a direct primitive.
-- Review and edit the generated script before committing it to a long-lived automation workflow.
+- Use the browser stop button as the primary stop path.
+- After recording, read the generated script and summarize what was captured before changing it.
+- If the user asks for replay verification, run the generated script instead of only inspecting the file.
+- If the flow depends on recorder limits such as iframes or file upload, read the reference file before promising support.
 
 ## References
 
