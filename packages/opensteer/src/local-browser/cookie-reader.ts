@@ -5,7 +5,10 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
-import type { DatabaseSync as NodeSqliteDatabaseSync } from "node:sqlite";
+import type {
+  DatabaseSync as NodeSqliteDatabaseSync,
+  SQLOutputValue,
+} from "node:sqlite";
 
 import {
   type BrowserBrandId,
@@ -117,7 +120,7 @@ interface RawCookieRow {
   readonly host_key: string;
   readonly name: string;
   readonly value: string;
-  readonly encrypted_value: Buffer;
+  readonly encrypted_value: Buffer | Uint8Array;
   readonly path: string;
   readonly expires_utc: number | bigint;
   readonly is_secure: number | bigint;
@@ -152,45 +155,19 @@ function queryAllCookies(dbPath: string): readonly RawCookieRow[] {
   }
 }
 
-function toRawCookieRow(
-  row: Record<string, string | number | bigint | Uint8Array | null>,
-): RawCookieRow {
+function toRawCookieRow(row: Record<string, SQLOutputValue>): RawCookieRow {
   return {
-    host_key: readSqliteText(row.host_key, "host_key"),
-    name: readSqliteText(row.name, "name"),
-    value: readSqliteText(row.value, "value"),
-    encrypted_value: readSqliteBuffer(row.encrypted_value, "encrypted_value"),
-    path: readSqliteText(row.path, "path"),
-    expires_utc: readSqliteInteger(row.expires_utc, "expires_utc"),
-    is_secure: readSqliteInteger(row.is_secure, "is_secure"),
-    is_httponly: readSqliteInteger(row.is_httponly, "is_httponly"),
-    samesite: readSqliteInteger(row.samesite, "samesite"),
-    is_persistent: readSqliteInteger(row.is_persistent, "is_persistent"),
+    host_key: row.host_key as string,
+    name: row.name as string,
+    value: row.value as string,
+    encrypted_value: row.encrypted_value as Buffer | Uint8Array,
+    path: row.path as string,
+    expires_utc: row.expires_utc as number | bigint,
+    is_secure: row.is_secure as number | bigint,
+    is_httponly: row.is_httponly as number | bigint,
+    samesite: row.samesite as number | bigint,
+    is_persistent: row.is_persistent as number | bigint,
   };
-}
-
-function readSqliteText(value: unknown, field: string): string {
-  if (typeof value === "string") {
-    return value;
-  }
-  throw new Error(`Unexpected SQLite value for ${field}.`);
-}
-
-function readSqliteInteger(value: unknown, field: string): number | bigint {
-  if (typeof value === "number" || typeof value === "bigint") {
-    return value;
-  }
-  throw new Error(`Unexpected SQLite value for ${field}.`);
-}
-
-function readSqliteBuffer(value: unknown, field: string): Buffer {
-  if (Buffer.isBuffer(value)) {
-    return value;
-  }
-  if (value instanceof Uint8Array) {
-    return Buffer.from(value);
-  }
-  throw new Error(`Unexpected SQLite value for ${field}.`);
 }
 
 // ---------------------------------------------------------------------------
