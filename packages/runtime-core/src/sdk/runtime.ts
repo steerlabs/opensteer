@@ -1273,6 +1273,9 @@ export class OpensteerSessionRuntime {
         const result = await this.requireDom().click({
           pageRef,
           target,
+          ...(input.button === undefined ? {} : { button: input.button }),
+          ...(input.clickCount === undefined ? {} : { clickCount: input.clickCount }),
+          ...(input.modifiers === undefined ? {} : { modifiers: input.modifiers }),
           timeout,
         });
         return {
@@ -8449,6 +8452,12 @@ export class OpensteerSessionRuntime {
       return "live";
     } catch (error) {
       if (isIgnorableRuntimeBindingError(error)) {
+        const remainingPages = await engine.listPages({ sessionRef }).catch(() => undefined);
+        const replacementPageRef = remainingPages?.[0]?.pageRef;
+        if (replacementPageRef !== undefined) {
+          this.pageRef = replacementPageRef;
+          return "live";
+        }
         return "invalid";
       }
       throw error;
