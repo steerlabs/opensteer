@@ -17,10 +17,6 @@ export async function ensureCliArtifactsBuilt(): Promise<void> {
 }
 
 async function ensureCliArtifactsBuiltOnce(): Promise<void> {
-  if (await pathExists(CLI_SCRIPT)) {
-    return;
-  }
-
   await mkdir(path.dirname(CLI_BUILD_LOCK), { recursive: true });
 
   while (true) {
@@ -33,19 +29,14 @@ async function ensureCliArtifactsBuiltOnce(): Promise<void> {
       }
 
       await waitForCliArtifactsOrLockRelease();
-      if (await pathExists(CLI_SCRIPT)) {
-        return;
-      }
     }
   }
 
   try {
-    if (!(await pathExists(CLI_SCRIPT))) {
-      await execFile("pnpm", ["build"], {
-        cwd: process.cwd(),
-        maxBuffer: 1024 * 1024 * 4,
-      });
-    }
+    await execFile("pnpm", ["build"], {
+      cwd: process.cwd(),
+      maxBuffer: 1024 * 1024 * 4,
+    });
   } finally {
     await rm(CLI_BUILD_LOCK, { recursive: true, force: true }).catch(() => undefined);
   }

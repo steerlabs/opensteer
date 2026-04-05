@@ -8449,6 +8449,12 @@ export class OpensteerSessionRuntime {
       return "live";
     } catch (error) {
       if (isIgnorableRuntimeBindingError(error)) {
+        const remainingPages = await engine.listPages({ sessionRef }).catch(() => undefined);
+        const replacementPageRef = remainingPages?.[0]?.pageRef;
+        if (replacementPageRef !== undefined) {
+          this.pageRef = replacementPageRef;
+          return "live";
+        }
         return "invalid";
       }
       throw error;
