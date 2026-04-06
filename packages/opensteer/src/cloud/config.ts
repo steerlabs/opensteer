@@ -55,3 +55,15 @@ export function resolveCloudConfig(
       : { browserProfile: cloudProvider.browserProfile }),
   };
 }
+
+export function requireCloudAppBaseUrl(
+  cloudConfig: Pick<OpensteerCloudConfig, "appBaseUrl">,
+): string {
+  const appBaseUrl = cloudConfig.appBaseUrl;
+  if (!appBaseUrl || appBaseUrl.trim().length === 0) {
+    throw new Error(
+      'record with provider=cloud requires OPENSTEER_CLOUD_APP_BASE_URL or "--cloud-app-base-url".',
+    );
+  }
+  return appBaseUrl.trim().replace(/\/+$/, "");
+}
