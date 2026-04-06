@@ -1,4 +1,5 @@
 import type { BrowserCapabilities } from "./capabilities.js";
+import type { ActionBoundarySnapshot } from "./action-boundary.js";
 import type { StepEvent, StepResult } from "./events.js";
 import type { CoordinateSpace, Point, Rect, Size, ViewportMetrics } from "./geometry.js";
 import type {
@@ -209,11 +210,19 @@ export interface BrowserInspector {
     readonly frameRef?: FrameRef;
     readonly documentRef?: DocumentRef;
   }): Promise<DomSnapshot>;
+  getActionBoundarySnapshot(input: { readonly pageRef: PageRef }): Promise<ActionBoundarySnapshot>;
   waitForVisualStability(input: {
     readonly pageRef: PageRef;
     readonly timeoutMs?: number;
     readonly settleMs?: number;
     readonly scope?: VisualStabilityScope;
+  }): Promise<void>;
+  waitForPostLoadQuiet(input: {
+    readonly pageRef: PageRef;
+    readonly timeoutMs?: number;
+    readonly quietMs?: number;
+    readonly captureWindowMs?: number;
+    readonly signal?: AbortSignal;
   }): Promise<void>;
   readText(input: NodeLocator): Promise<string | null>;
   readAttributes(
