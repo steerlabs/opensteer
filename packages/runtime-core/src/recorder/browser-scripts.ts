@@ -12,7 +12,18 @@ const SINGLE_ATTRIBUTE_PRIORITY = Array.from(
   new Set(["data-testid", "data-test", "data-qa", "data-cy", "id", ...STABLE_PRIMARY_ATTR_KEYS]),
 );
 
-const FLOW_RECORDER_INSTALL_SOURCE = String.raw`(() => {
+export interface FlowRecorderInstallScriptOptions {
+  readonly showStopButton?: boolean;
+}
+
+export function createFlowRecorderInstallScript(
+  options: FlowRecorderInstallScriptOptions = {},
+): string {
+  const normalizedOptions = {
+    showStopButton: options.showStopButton ?? true,
+  } as const;
+
+  return String.raw`(() => {
   const TOP_LEVEL_ONLY = (() => {
     try {
       return window.top === window.self;
@@ -37,6 +48,7 @@ const FLOW_RECORDER_INSTALL_SOURCE = String.raw`(() => {
   const volatileLazyLoadingAttrs = new Set(${JSON.stringify([...VOLATILE_LAZY_LOADING_ATTRS])});
   const volatileClassTokens = new Set(${JSON.stringify([...VOLATILE_CLASS_TOKENS])});
   const volatileLazyClassTokens = new Set(${JSON.stringify([...VOLATILE_LAZY_CLASS_TOKENS])});
+  const options = ${JSON.stringify(normalizedOptions)};
 
   const previous = globalScope[recorderKey];
   if (previous && typeof previous.dispose === "function") {
@@ -886,11 +898,14 @@ const FLOW_RECORDER_INSTALL_SOURCE = String.raw`(() => {
     },
   };
 
-  ensureStopButtonMounted();
+  if (options.showStopButton) {
+    ensureStopButtonMounted();
+  }
   onInstall();
 })();`;
+}
 
-export const FLOW_RECORDER_INSTALL_SCRIPT = FLOW_RECORDER_INSTALL_SOURCE;
+export const FLOW_RECORDER_INSTALL_SCRIPT = createFlowRecorderInstallScript();
 
 export const FLOW_RECORDER_DRAIN_SCRIPT = String.raw`(() => {
   const recorder = globalThis.__opensteerFlowRecorder;

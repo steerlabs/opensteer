@@ -9,6 +9,7 @@ import {
 export interface OpensteerCloudConfig {
   readonly apiKey: string;
   readonly baseUrl: string;
+  readonly appBaseUrl?: string;
   readonly browserProfile?: CloudBrowserProfilePreference;
 }
 
@@ -40,10 +41,15 @@ export function resolveCloudConfig(
   if (!baseUrl || baseUrl.trim().length === 0) {
     throw new Error("provider=cloud requires OPENSTEER_BASE_URL or provider.baseUrl.");
   }
+  const appBaseUrl =
+    cloudProvider?.appBaseUrl ?? input.environment?.OPENSTEER_CLOUD_APP_BASE_URL;
 
   return {
     apiKey: apiKey.trim(),
     baseUrl: baseUrl.trim().replace(/\/+$/, ""),
+    ...(appBaseUrl === undefined || appBaseUrl.trim().length === 0
+      ? {}
+      : { appBaseUrl: appBaseUrl.trim().replace(/\/+$/, "") }),
     ...(cloudProvider?.browserProfile === undefined
       ? {}
       : { browserProfile: cloudProvider.browserProfile }),

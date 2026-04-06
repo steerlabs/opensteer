@@ -3,6 +3,7 @@ import type {
   BrowserProfileImportCreateRequest,
   BrowserProfileImportCreateResponse,
   BrowserProfileImportDescriptor,
+  CloudSessionRecordingState,
   CloudBrowserProfilePreference,
   CloudRegistryImportEntry,
   CloudRegistryImportResponse,
@@ -106,6 +107,33 @@ export class OpensteerCloudClient {
       },
     });
     return (await response.json()) as OpensteerSessionAccessGrantResponse;
+  }
+
+  async getSessionRecording(sessionId: string): Promise<CloudSessionRecordingState> {
+    const response = await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/recording`, {
+      method: "GET",
+    });
+    return (await response.json()) as CloudSessionRecordingState;
+  }
+
+  async startSessionRecording(sessionId: string): Promise<CloudSessionRecordingState> {
+    const response = await this.request(
+      `/v1/sessions/${encodeURIComponent(sessionId)}/recording/start`,
+      {
+        method: "POST",
+      },
+    );
+    return (await response.json()) as CloudSessionRecordingState;
+  }
+
+  async stopSessionRecording(sessionId: string): Promise<CloudSessionRecordingState> {
+    const response = await this.request(
+      `/v1/sessions/${encodeURIComponent(sessionId)}/recording/stop`,
+      {
+        method: "POST",
+      },
+    );
+    return (await response.json()) as CloudSessionRecordingState;
   }
 
   async closeSession(sessionId: string): Promise<void> {
