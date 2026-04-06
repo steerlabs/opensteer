@@ -237,6 +237,84 @@ describe.sequential("cross-document action boundary", () => {
     }
   }, 60_000);
 
+  test("waits for same-document Enter transitions in the DOM runtime", async () => {
+    const engine = await createPlaywrightBrowserCoreEngine({
+      launch: { headless: true },
+    });
+
+    try {
+      const dom = createDomRuntime({ engine });
+      const sessionRef = await engine.createSession();
+      const created = await engine.createPage({
+        sessionRef,
+        url: `${baseUrl}/runtime/same-document-enter`,
+      });
+
+      const startedAt = Date.now();
+      await dom.input({
+        pageRef: created.data.pageRef,
+        target: {
+          kind: "selector",
+          selector: "#search-input",
+        },
+        text: "airpods",
+        pressEnter: true,
+      });
+      const elapsed = Date.now() - startedAt;
+
+      expect(await readHydrationStatus(engine, created.data.pageRef)).toBe("hydrated");
+      expect(
+        (
+          await engine.getNetworkRecords({
+            sessionRef,
+            pageRef: created.data.pageRef,
+          })
+        ).find((record) => record.url.includes("/runtime/api/hydration"))?.status,
+      ).toBe(200);
+      expect(elapsed).toBeLessThan(5_000);
+    } finally {
+      await engine.dispose();
+    }
+  }, 60_000);
+
+  test("waits for same-document click transitions in the DOM runtime", async () => {
+    const engine = await createPlaywrightBrowserCoreEngine({
+      launch: { headless: true },
+    });
+
+    try {
+      const dom = createDomRuntime({ engine });
+      const sessionRef = await engine.createSession();
+      const created = await engine.createPage({
+        sessionRef,
+        url: `${baseUrl}/runtime/same-document-click`,
+      });
+
+      const startedAt = Date.now();
+      await dom.click({
+        pageRef: created.data.pageRef,
+        target: {
+          kind: "selector",
+          selector: "#continue",
+        },
+      });
+      const elapsed = Date.now() - startedAt;
+
+      expect(await readHydrationStatus(engine, created.data.pageRef)).toBe("hydrated");
+      expect(
+        (
+          await engine.getNetworkRecords({
+            sessionRef,
+            pageRef: created.data.pageRef,
+          })
+        ).find((record) => record.url.includes("/runtime/api/hydration"))?.status,
+      ).toBe(200);
+      expect(elapsed).toBeLessThan(5_000);
+    } finally {
+      await engine.dispose();
+    }
+  }, 60_000);
+
   test("captures named hydration requests after pressEnter navigation", async () => {
     const opensteer = createLocalOpensteer({
       name: "navigation-network-capture",
@@ -632,6 +710,18 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
+  if (route === "same-document-enter") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(sameDocumentEnterDocument(scope));
+    return;
+  }
+
+  if (route === "same-document-click") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(sameDocumentClickDocument(scope));
+    return;
+  }
+
   if (route === "noisy-click") {
     response.setHeader("content-type", "text/html; charset=utf-8");
     response.end(noisyClickDocument(scope));
@@ -660,6 +750,13 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     await wait(150);
     response.setHeader("content-type", "application/json; charset=utf-8");
     response.end(JSON.stringify({ status: "hydrated", mode: url.searchParams.get("mode") }));
+    return;
+  }
+
+  if (route === "api" && url.pathname.endsWith("/api/poll")) {
+    await wait(30);
+    response.statusCode = 204;
+    response.end();
     return;
   }
 
@@ -766,6 +863,88 @@ function noisyClickDocument(scope: string): string {
       <a id="continue" href="/${scope}/hydration-results?mode=noisy-click">Open results</a>
     `,
     `${scope} noisy click`,
+  );
+}
+
+function sameDocumentEnterDocument(scope: string): string {
+  return html(
+    `
+      <form id="search-form" action="/${scope}/same-document-enter" method="GET">
+        <input id="search-input" name="q" type="text" value="" />
+        <button id="search-submit" type="submit">Search</button>
+      </form>
+      <div id="products"></div>
+      <div id="hydration-status">idle</div>
+      <script>
+        const form = document.getElementById("search-form");
+        const input = document.getElementById("search-input");
+        const status = document.getElementById("hydration-status");
+        const products = document.getElementById("products");
+
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          if (status) {
+            status.textContent = "loading";
+          }
+          const query = encodeURIComponent(input.value || "");
+          const response = await fetch("/${scope}/api/hydration?mode=same-document-enter&q=" + query);
+          const payload = await response.json();
+          if (products) {
+            products.textContent = "results:" + (payload.mode || "unknown");
+          }
+          if (status) {
+            status.textContent = String(payload.status || "unknown");
+          }
+          let count = 0;
+          window.__sameDocumentPoll = window.setInterval(() => {
+            count += 1;
+            fetch("/${scope}/api/poll?i=" + count).catch(() => {});
+            if (count >= 25) {
+              window.clearInterval(window.__sameDocumentPoll);
+            }
+          }, 100);
+        });
+      </script>
+    `,
+    `${scope} same document enter`,
+  );
+}
+
+function sameDocumentClickDocument(scope: string): string {
+  return html(
+    `
+      <button id="continue" type="button">Load results</button>
+      <div id="products"></div>
+      <div id="hydration-status">idle</div>
+      <script>
+        const button = document.getElementById("continue");
+        const status = document.getElementById("hydration-status");
+        const products = document.getElementById("products");
+
+        button.addEventListener("click", async () => {
+          if (status) {
+            status.textContent = "loading";
+          }
+          const response = await fetch("/${scope}/api/hydration?mode=same-document-click");
+          const payload = await response.json();
+          if (products) {
+            products.textContent = "results:" + (payload.mode || "unknown");
+          }
+          if (status) {
+            status.textContent = String(payload.status || "unknown");
+          }
+          let count = 0;
+          window.__sameDocumentPoll = window.setInterval(() => {
+            count += 1;
+            fetch("/${scope}/api/poll?i=" + count).catch(() => {});
+            if (count >= 25) {
+              window.clearInterval(window.__sameDocumentPoll);
+            }
+          }, 100);
+        });
+      </script>
+    `,
+    `${scope} same document click`,
   );
 }
 

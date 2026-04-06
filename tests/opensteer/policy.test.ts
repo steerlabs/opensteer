@@ -198,6 +198,7 @@ describe("Phase 7 policy settle", () => {
 describe("Phase 7 visual stability settle observers", () => {
   function createMockEngine(waitImpl?: () => Promise<void>) {
     return {
+      waitForPostLoadQuiet: vi.fn(() => Promise.resolve()),
       waitForVisualStability: vi.fn(waitImpl ?? (() => Promise.resolve())),
     } as unknown as BrowserCoreEngine;
   }
@@ -329,13 +330,20 @@ describe("Phase 7 visual stability settle observers", () => {
     expect(engine.waitForVisualStability).not.toHaveBeenCalled();
   });
 
-  test("navigation observer calls waitForVisualStability", async () => {
+  test("navigation observer waits for post-load quiet before visual stability", async () => {
     const engine = createMockEngine();
     const policy = defaultPolicy().settle;
     const context = createContextWithEngine("navigation", engine);
 
     await settleWithPolicy(policy, context);
 
+    expect(engine.waitForPostLoadQuiet).toHaveBeenCalledWith({
+      pageRef: context.pageRef,
+      timeoutMs: 7_000,
+      quietMs: 400,
+      captureWindowMs: 1_000,
+      signal: context.signal,
+    });
     expect(engine.waitForVisualStability).toHaveBeenCalledWith({
       pageRef: context.pageRef,
       timeoutMs: 7_000,
@@ -347,6 +355,7 @@ describe("Phase 7 visual stability settle observers", () => {
   test("navigation observer returns false on error, falls back to delay", async () => {
     vi.useFakeTimers();
     const engine = createMockEngine(() => Promise.reject(new Error("page closed")));
+    engine.waitForPostLoadQuiet = vi.fn(() => Promise.reject(new Error("page closed")));
     const policy = defaultPolicy().settle;
     const context = createContextWithEngine("navigation", engine);
 
