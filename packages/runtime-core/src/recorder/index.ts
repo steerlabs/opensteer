@@ -1,5 +1,6 @@
 export type {
   ClickRecordedActionDetail,
+  CloudReplayTarget,
   CodegenOptions,
   CloseTabRecordedActionDetail,
   DblclickRecordedActionDetail,
@@ -7,6 +8,7 @@ export type {
   GoBackRecordedActionDetail,
   GoForwardRecordedActionDetail,
   KeypressRecordedActionDetail,
+  LocalReplayTarget,
   NavigateRecordedActionDetail,
   NewTabRecordedActionDetail,
   RawFlowRecorderClickEvent,
@@ -20,10 +22,12 @@ export type {
   RawFlowRecorderScrollEvent,
   RawFlowRecorderSelectOptionEvent,
   RawFlowRecorderTypeEvent,
+  RecorderInitialPageState,
   RecordedAction,
   RecordedActionDetail,
   RecordedActionKind,
   RecorderPageState,
+  ReplayTarget,
   RecordingOptions,
   ReloadRecordedActionDetail,
   ScrollRecordedActionDetail,
@@ -32,12 +36,10 @@ export type {
   TypeRecordedActionDetail,
 } from "./types.js";
 export {
+  createFlowRecorderInstallScript,
   FLOW_RECORDER_DRAIN_SCRIPT,
   FLOW_RECORDER_INSTALL_SCRIPT,
 } from "./browser-scripts.js";
 export { FlowRecorderCollector } from "./event-collector.js";
-export type {
-  FlowRecorderCollectorOptions,
-  RecorderRuntimeAdapter,
-} from "./event-collector.js";
+export type { FlowRecorderCollectorOptions, RecorderRuntimeAdapter } from "./event-collector.js";
 export { generateReplayScript } from "./codegen.js";

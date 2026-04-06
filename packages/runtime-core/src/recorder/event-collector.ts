@@ -1,11 +1,9 @@
-import {
-  FLOW_RECORDER_DRAIN_SCRIPT,
-  FLOW_RECORDER_INSTALL_SCRIPT,
-} from "./browser-scripts.js";
+import { FLOW_RECORDER_DRAIN_SCRIPT, FLOW_RECORDER_INSTALL_SCRIPT } from "./browser-scripts.js";
 import type {
   FlowRecorderSnapshot,
   RawFlowRecorderEvent,
   RecordedAction,
+  RecorderPageState,
 } from "./types.js";
 
 export interface RecorderRuntimeAdapter {
@@ -23,6 +21,7 @@ export interface RecorderRuntimeAdapter {
 export interface FlowRecorderCollectorOptions {
   readonly pollIntervalMs?: number;
   readonly onAction?: (action: RecordedAction) => void | Promise<void>;
+  readonly installScript?: string;
 }
 
 interface KnownRecorderPageState {
@@ -49,6 +48,7 @@ export class FlowRecorderCollector {
   private readonly runtime: RecorderRuntimeAdapter;
   private readonly pollIntervalMs: number;
   private readonly onAction;
+  private readonly installScript: string;
   private readonly pages = new Map<string, KnownRecorderPageState>();
   private readonly actions: RecordedAction[] = [];
   private nextPageOrdinal = 0;
@@ -62,11 +62,12 @@ export class FlowRecorderCollector {
     this.runtime = runtime;
     this.pollIntervalMs = options.pollIntervalMs ?? 250;
     this.onAction = options.onAction;
+    this.installScript = options.installScript ?? FLOW_RECORDER_INSTALL_SCRIPT;
   }
 
   async install(): Promise<void> {
     await this.runtime.addInitScript({
-      script: FLOW_RECORDER_INSTALL_SCRIPT,
+      script: this.installScript,
     });
 
     const { pages } = await this.runtime.listPages();
@@ -76,10 +77,12 @@ export class FlowRecorderCollector {
 
     await Promise.all(
       pages.map((page) =>
-        this.runtime.evaluate({
-          script: FLOW_RECORDER_INSTALL_SCRIPT,
-          pageRef: page.pageRef,
-        }).catch(() => undefined),
+        this.runtime
+          .evaluate({
+            script: this.installScript,
+            pageRef: page.pageRef,
+          })
+          .catch(() => undefined),
       ),
     );
 
@@ -112,6 +115,22 @@ export class FlowRecorderCollector {
 
   getActions(): readonly RecordedAction[] {
     return this.actions.slice();
+  }
+
+  getPages(): readonly RecorderPageState[] {
+    return [...this.pages.values()]
+      .map((page) => ({
+        pageId: page.pageId,
+        pageRef: page.pageRef,
+        ...(page.openerPageRef === undefined ? {} : { openerPageRef: page.openerPageRef }),
+        ...(page.openerPageId === undefined ? {} : { openerPageId: page.openerPageId }),
+        currentUrl: page.currentUrl,
+      }))
+      .sort((left, right) => comparePageIds(left.pageId, right.pageId));
+  }
+
+  getFocusedPageId(): string | undefined {
+    return this.focusedPageId;
   }
 
   async waitForStop(): Promise<void> {
@@ -234,10 +253,17 @@ export class FlowRecorderCollector {
 
     for (const listedPage of input.listedPages) {
       if (!input.previousPageRefs.has(listedPage.pageRef)) {
-        const created = this.ensureKnownPage(listedPage.pageRef, listedPage.url, listedPage.openerPageRef);
+        const created = this.ensureKnownPage(
+          listedPage.pageRef,
+          listedPage.url,
+          listedPage.openerPageRef,
+        );
         actions.push({
           kind: "new-tab",
-          timestamp: Math.max(0, (firstEventTimestampByPage.get(listedPage.pageRef) ?? input.pollTimestamp) - 1),
+          timestamp: Math.max(
+            0,
+            (firstEventTimestampByPage.get(listedPage.pageRef) ?? input.pollTimestamp) - 1,
+          ),
           pageId: created.pageId,
           pageUrl: listedPage.url,
           detail: {
@@ -273,11 +299,12 @@ export class FlowRecorderCollector {
 
       if (
         evaluatedPage.previousUrl !== evaluatedPage.currentUrl &&
-        !evaluatedPage.events.some((event) =>
-          event.kind === "navigate" ||
-          event.kind === "reload" ||
-          event.kind === "go-back" ||
-          event.kind === "go-forward",
+        !evaluatedPage.events.some(
+          (event) =>
+            event.kind === "navigate" ||
+            event.kind === "reload" ||
+            event.kind === "go-back" ||
+            event.kind === "go-forward",
         )
       ) {
         actions.push({
@@ -301,7 +328,11 @@ export class FlowRecorderCollector {
           this.normalizeRawEvent(event, knownPage, evaluatedPage.currentUrl),
         ),
       );
-      this.updateKnownPage(evaluatedPage.pageRef, evaluatedPage.currentUrl, evaluatedPage.openerPageRef);
+      this.updateKnownPage(
+        evaluatedPage.pageRef,
+        evaluatedPage.currentUrl,
+        evaluatedPage.openerPageRef,
+      );
     }
 
     const focusedPage = input.evaluatedPages.find((page) => page.focused);
@@ -484,7 +515,8 @@ export class FlowRecorderCollector {
     if (existing !== undefined) {
       return existing;
     }
-    const openerPageId = openerPageRef === undefined ? undefined : this.pages.get(openerPageRef)?.pageId;
+    const openerPageId =
+      openerPageRef === undefined ? undefined : this.pages.get(openerPageRef)?.pageId;
 
     const page = {
       pageId: `page${String(this.nextPageOrdinal++)}`,
@@ -503,7 +535,8 @@ export class FlowRecorderCollector {
       this.ensureKnownPage(pageRef, url, openerPageRef);
       return;
     }
-    const openerPageId = openerPageRef === undefined ? undefined : this.pages.get(openerPageRef)?.pageId;
+    const openerPageId =
+      openerPageRef === undefined ? undefined : this.pages.get(openerPageRef)?.pageId;
     this.pages.set(pageRef, {
       ...current,
       currentUrl: url,
@@ -537,7 +570,9 @@ function normalizeSnapshot(value: unknown, fallbackUrl: string): FlowRecorderSna
         ? snapshot.visibilityState
         : "hidden",
     stopRequested: snapshot.stopRequested === true,
-    events: Array.isArray(snapshot.events) ? (snapshot.events as readonly RawFlowRecorderEvent[]) : [],
+    events: Array.isArray(snapshot.events)
+      ? (snapshot.events as readonly RawFlowRecorderEvent[])
+      : [],
   };
 }
 
@@ -580,6 +615,15 @@ function actionSortPriority(kind: RecordedAction["kind"]): number {
     case "close-tab":
       return 6;
   }
+}
+
+function comparePageIds(left: string, right: string): number {
+  const leftMatch = /^page(\d+)$/u.exec(left);
+  const rightMatch = /^page(\d+)$/u.exec(right);
+  if (leftMatch && rightMatch) {
+    return Number(leftMatch[1]) - Number(rightMatch[1]);
+  }
+  return left.localeCompare(right);
 }
 
 function delay(ms: number): Promise<void> {

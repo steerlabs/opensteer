@@ -79,6 +79,15 @@ export const cloudSessionStatuses = [
 
 export type CloudSessionStatus = (typeof cloudSessionStatuses)[number];
 
+export const cloudSessionRecordingStatuses = [
+  "idle",
+  "recording",
+  "completed",
+  "failed",
+] as const;
+
+export type CloudSessionRecordingStatus = (typeof cloudSessionRecordingStatuses)[number];
+
 export const cloudSessionSourceTypes = [
   "agent-thread",
   "agent-run",
@@ -202,6 +211,23 @@ export interface CloudSessionSummary {
   readonly sourceType: CloudSessionSourceType;
   readonly sourceRef?: string;
   readonly label?: string;
+}
+
+export interface CloudSessionRecordingResult {
+  readonly fileName: string;
+  readonly script: string;
+  readonly actionCount: number;
+}
+
+export interface CloudSessionRecordingState {
+  readonly sessionId: string;
+  readonly status: CloudSessionRecordingStatus;
+  readonly actionCount: number;
+  readonly startedAt?: number;
+  readonly stoppedAt?: number;
+  readonly updatedAt: number;
+  readonly error?: string;
+  readonly result?: CloudSessionRecordingResult;
 }
 
 export interface CloudSelectorCacheImportEntry {
@@ -401,6 +427,9 @@ export interface BrowserProfileImportDescriptor {
 
 const cloudActionMethodSet = new Set<CloudActionMethod>(cloudActionMethods);
 const cloudErrorCodeSet = new Set<CloudErrorCode>(cloudErrorCodes);
+const cloudSessionRecordingStatusSet = new Set<CloudSessionRecordingStatus>(
+  cloudSessionRecordingStatuses,
+);
 const cloudSessionSourceTypeSet = new Set<CloudSessionSourceType>(cloudSessionSourceTypes);
 const cloudSessionStatusSet = new Set<CloudSessionStatus>(cloudSessionStatuses);
 
@@ -420,4 +449,13 @@ export function isCloudSessionSourceType(value: unknown): value is CloudSessionS
 
 export function isCloudSessionStatus(value: unknown): value is CloudSessionStatus {
   return typeof value === "string" && cloudSessionStatusSet.has(value as CloudSessionStatus);
+}
+
+export function isCloudSessionRecordingStatus(
+  value: unknown,
+): value is CloudSessionRecordingStatus {
+  return (
+    typeof value === "string" &&
+    cloudSessionRecordingStatusSet.has(value as CloudSessionRecordingStatus)
+  );
 }

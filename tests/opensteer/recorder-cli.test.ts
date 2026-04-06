@@ -40,7 +40,83 @@ describe("recorder CLI", () => {
       await rm(cwd, { recursive: true, force: true });
     }
   }, 60_000);
- 
+
+  test("routes provider=cloud record through cloud config validation instead of the local-only guard", async () => {
+    await ensureCliArtifactsBuilt();
+
+    const execution = execFile(
+      "node",
+      [
+        CLI_SCRIPT,
+        "record",
+        "--provider",
+        "cloud",
+        "--workspace",
+        "cloud-recording",
+        "--url",
+        "https://example.com",
+        "--cloud-api-key",
+        "test-api-key",
+      ],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          OPENSTEER_PROVIDER: "",
+          OPENSTEER_BASE_URL: "",
+          OPENSTEER_API_KEY: "",
+          OPENSTEER_CLOUD_APP_BASE_URL: "",
+        },
+        maxBuffer: 1024 * 1024 * 4,
+      },
+    );
+
+    await expect(execution).rejects.toMatchObject({
+      stderr: expect.stringContaining(
+        "provider=cloud requires OPENSTEER_BASE_URL or provider.baseUrl.",
+      ),
+    });
+  }, 60_000);
+
+  test("allows headless cloud recording and keeps the local headed validation local-only", async () => {
+    await ensureCliArtifactsBuilt();
+
+    const execution = execFile(
+      "node",
+      [
+        CLI_SCRIPT,
+        "record",
+        "--provider",
+        "cloud",
+        "--workspace",
+        "cloud-recording",
+        "--url",
+        "https://example.com",
+        "--headless",
+        "true",
+        "--cloud-api-key",
+        "test-api-key",
+      ],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          OPENSTEER_PROVIDER: "",
+          OPENSTEER_BASE_URL: "",
+          OPENSTEER_API_KEY: "",
+          OPENSTEER_CLOUD_APP_BASE_URL: "",
+        },
+        maxBuffer: 1024 * 1024 * 4,
+      },
+    );
+
+    await expect(execution).rejects.toMatchObject({
+      stderr: expect.stringContaining(
+        "provider=cloud requires OPENSTEER_BASE_URL or provider.baseUrl.",
+      ),
+    });
+  }, 60_000);
+
   test("rejects removed timeout flags instead of ignoring them", async () => {
     await ensureCliArtifactsBuilt();
 
