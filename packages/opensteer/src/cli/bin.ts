@@ -31,7 +31,7 @@ import {
   resolveOpensteerRuntimeConfig,
 } from "../sdk/runtime-resolution.js";
 import { collectOpensteerStatus, renderOpensteerStatus } from "./status.js";
-import { runOpensteerRecordCommand } from "./record.js";
+import { runOpensteerCloudRecordCommand, runOpensteerRecordCommand } from "./record.js";
 
 const OPERATION_ALIASES = new Map<string, OpensteerSemanticOperationName>([
   ["open", "session.open"],
@@ -304,30 +304,50 @@ async function handleRecordCommandEntry(parsed: ParsedCommandLine): Promise<void
 
   const provider = resolveCliProvider(parsed);
   assertCloudCliOptionsMatchProvider(parsed, provider.mode);
-  if (provider.mode !== "local") {
-    throw new Error(
-      'record requires provider=local. Set "--provider local" or clear OPENSTEER_PROVIDER.',
-    );
-  }
-
   const engineName = resolveCliEngineName(parsed);
   if (engineName !== "playwright") {
     throw new Error('record requires engine=playwright.');
   }
+  const rootDir = process.cwd();
+  const recordBrowser = parsed.options.browser;
 
-  if (parsed.options.browser !== undefined && parsed.options.browser !== "persistent") {
-    throw new Error('record only supports "--browser persistent".');
+  if (provider.mode === "cloud") {
+    if (typeof recordBrowser === "object") {
+      throw new Error('record does not support browser.mode="attach".');
+    }
+
+    const runtimeProvider = buildCliRuntimeProvider(parsed, provider.mode);
+    const runtimeConfig = resolveOpensteerRuntimeConfig({
+      ...(runtimeProvider === undefined ? {} : { provider: runtimeProvider }),
+      environment: process.env,
+    });
+
+    await runOpensteerCloudRecordCommand({
+      cloudConfig: runtimeConfig.cloud!,
+      workspace: parsed.options.workspace,
+      url,
+      rootDir,
+      ...(recordBrowser === undefined ? {} : { browser: recordBrowser }),
+      ...(parsed.options.launch === undefined ? {} : { launch: parsed.options.launch }),
+      ...(parsed.options.context === undefined ? {} : { context: parsed.options.context }),
+      ...(parsed.options.output === undefined ? {} : { outputPath: parsed.options.output }),
+    });
+    return;
   }
 
   if (parsed.options.launch?.headless === true) {
     throw new Error('record requires a headed browser. Remove "--headless true".');
   }
 
-  const rootDir = process.cwd();
+  if (recordBrowser !== undefined && recordBrowser !== "persistent") {
+    throw new Error('record only supports "--browser persistent".');
+  }
+
   const launch = {
     ...(parsed.options.launch ?? {}),
     headless: false,
   };
+
   const browserManager = new OpensteerBrowserManager({
     rootDir,
     workspace: parsed.options.workspace,
@@ -487,6 +507,7 @@ interface ParsedCliOptions {
   readonly provider?: OpensteerProviderMode;
   readonly cloudBaseUrl?: string;
   readonly cloudApiKey?: string;
+  readonly cloudAppBaseUrl?: string;
   readonly cloudProfileId?: string;
   readonly cloudProfileReuseIfActive?: boolean;
   readonly json?: boolean;
@@ -534,6 +555,7 @@ const CLI_OPTION_SPECS = {
   provider: { kind: "value" },
   "cloud-base-url": { kind: "value" },
   "cloud-api-key": { kind: "value" },
+  "cloud-app-base-url": { kind: "value" },
   "cloud-profile-id": { kind: "value" },
   "cloud-profile-reuse-if-active": { kind: "boolean" },
   json: { kind: "boolean" },
@@ -688,6 +710,7 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
       : normalizeOpensteerProviderMode(providerValue, "--provider");
   const cloudBaseUrl = readSingle(rawOptions, "cloud-base-url");
   const cloudApiKey = readSingle(rawOptions, "cloud-api-key");
+  const cloudAppBaseUrl = readSingle(rawOptions, "cloud-app-base-url");
   const cloudProfileId = readSingle(rawOptions, "cloud-profile-id");
   const cloudProfileReuseIfActive = readOptionalBoolean(
     rawOptions,
@@ -710,6 +733,7 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
     ...(provider === undefined ? {} : { provider }),
     ...(cloudBaseUrl === undefined ? {} : { cloudBaseUrl }),
     ...(cloudApiKey === undefined ? {} : { cloudApiKey }),
+    ...(cloudAppBaseUrl === undefined ? {} : { cloudAppBaseUrl }),
     ...(cloudProfileId === undefined ? {} : { cloudProfileId }),
     ...(cloudProfileReuseIfActive === undefined ? {} : { cloudProfileReuseIfActive }),
     ...(json === undefined ? {} : { json }),
@@ -824,6 +848,7 @@ function buildCliRuntimeProvider(
   const hasCloudOverrides =
     parsed.options.cloudBaseUrl !== undefined ||
     parsed.options.cloudApiKey !== undefined ||
+    parsed.options.cloudAppBaseUrl !== undefined ||
     browserProfile !== undefined;
   if (!hasCloudOverrides && explicitProvider?.mode !== "cloud") {
     return undefined;
@@ -833,6 +858,9 @@ function buildCliRuntimeProvider(
     mode: "cloud",
     ...(parsed.options.cloudBaseUrl === undefined ? {} : { baseUrl: parsed.options.cloudBaseUrl }),
     ...(parsed.options.cloudApiKey === undefined ? {} : { apiKey: parsed.options.cloudApiKey }),
+    ...(parsed.options.cloudAppBaseUrl === undefined
+      ? {}
+      : { appBaseUrl: parsed.options.cloudAppBaseUrl }),
     ...(browserProfile === undefined ? {} : { browserProfile }),
   };
 }
@@ -845,6 +873,7 @@ function assertCloudCliOptionsMatchProvider(
     providerMode !== "cloud" &&
     (parsed.options.cloudBaseUrl !== undefined ||
       parsed.options.cloudApiKey !== undefined ||
+      parsed.options.cloudAppBaseUrl !== undefined ||
       parsed.options.cloudProfileId !== undefined ||
       parsed.options.cloudProfileReuseIfActive === true)
   ) {
@@ -1003,6 +1032,7 @@ Common options:
   --provider local|cloud
   --cloud-base-url <url>
   --cloud-api-key <key>
+  --cloud-app-base-url <url>
   --cloud-profile-id <id>
   --cloud-profile-reuse-if-active <true|false>
   --json <true|false>

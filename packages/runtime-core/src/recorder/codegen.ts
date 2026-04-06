@@ -1,4 +1,11 @@
-import type { CodegenOptions, RecordedAction } from "./types.js";
+import type {
+  CloudReplayTarget,
+  CodegenOptions,
+  LocalReplayTarget,
+  RecordedAction,
+  RecorderInitialPageState,
+  ReplayTarget,
+} from "./types.js";
 
 const DISPATCH_KEY_SCRIPT = String.raw`(key) => {
   const target = document.activeElement;
@@ -48,17 +55,16 @@ const WINDOW_SCROLL_SCRIPT = String.raw`(deltaX, deltaY) => {
 }`;
 
 export function generateReplayScript(options: CodegenOptions): string {
-  const pageIds = collectPageIds(options.actions);
-  const initialPageId = pageIds[0] ?? "page0";
+  const replayTarget = resolveReplayTarget(options);
+  const initialPages = orderInitialPages(resolveInitialPages(options));
+  const activeInitialPageId = resolveActiveInitialPageId(options, initialPages);
+  const initialPageId = initialPages[0]?.pageId ?? "page0";
   const lines: string[] = [
     `import { Opensteer } from "opensteer";`,
     ``,
-    `const opensteer = new Opensteer({`,
-    `  workspace: ${JSON.stringify(options.workspace)},`,
-    `  browser: "persistent",`,
-    `});`,
+    ...renderOpensteerBootstrap(replayTarget),
     ``,
-    `const ${initialPageId} = (await opensteer.open(${JSON.stringify(options.startUrl)})).pageRef;`,
+    `const ${initialPageId} = (await opensteer.open(${JSON.stringify(initialPages[0]?.initialUrl ?? "")})).pageRef;`,
     `let activePageRef: string | undefined = ${initialPageId};`,
     ``,
     `async function ensureActive(pageRef: string): Promise<void> {`,
@@ -100,6 +106,20 @@ export function generateReplayScript(options: CodegenOptions): string {
   ];
 
   const declaredPages = new Set<string>([initialPageId]);
+  for (const page of initialPages.slice(1)) {
+    const openerPageId =
+      page.openerPageId !== undefined && declaredPages.has(page.openerPageId)
+        ? page.openerPageId
+        : undefined;
+    lines.push(
+      `  const ${page.pageId} = (await opensteer.newPage(${renderNewPageInput(openerPageId, page.initialUrl)})).pageRef;`,
+    );
+    lines.push(`  activePageRef = ${page.pageId};`);
+    declaredPages.add(page.pageId);
+  }
+  if (activeInitialPageId !== undefined && activeInitialPageId !== initialPageId) {
+    lines.push(`  await ensureActive(${activeInitialPageId});`);
+  }
   for (let index = 0; index < options.actions.length; index += 1) {
     const action = options.actions[index]!;
     const pageVar = action.pageId;
@@ -150,9 +170,7 @@ export function generateReplayScript(options: CodegenOptions): string {
         );
         break;
       case "keypress":
-        lines.push(
-          `  await dispatchKey(${pageVar}, ${JSON.stringify(action.detail.key)});`,
-        );
+        lines.push(`  await dispatchKey(${pageVar}, ${JSON.stringify(action.detail.key)});`);
         break;
       case "scroll": {
         const { direction, amount, isWindowScroll } = normalizeScrollAction(action);
@@ -180,9 +198,10 @@ export function generateReplayScript(options: CodegenOptions): string {
       case "new-tab": {
         const openerPageVar = action.detail.openerPageId;
         const shouldUseWaitForPage = shouldUsePopupWait(options.actions, index, openerPageVar);
-        const creationLine = shouldUseWaitForPage && openerPageVar !== undefined
-          ? `  const ${pageVar} = (await opensteer.waitForPage({ openerPageRef: ${openerPageVar}, timeoutMs: 30_000 })).pageRef;`
-          : `  const ${pageVar} = (await opensteer.newPage({${renderNewPageArguments(action.detail.openerPageId, action.detail.initialUrl)}})).pageRef;`;
+        const creationLine =
+          shouldUseWaitForPage && openerPageVar !== undefined
+            ? `  const ${pageVar} = (await opensteer.waitForPage({ openerPageRef: ${openerPageVar}, timeoutMs: 30_000 })).pageRef;`
+            : `  const ${pageVar} = (await opensteer.newPage(${renderNewPageInput(action.detail.openerPageId, action.detail.initialUrl)})).pageRef;`;
         lines.push(creationLine);
         lines.push(`  activePageRef = ${pageVar};`);
         declaredPages.add(pageVar);
@@ -217,30 +236,129 @@ export function generateReplayScript(options: CodegenOptions): string {
   return `${lines.join("\n")}\n`;
 }
 
-function collectPageIds(actions: readonly RecordedAction[]): string[] {
-  const orderedIds = new Set<string>(["page0"]);
-  for (const action of actions) {
-    orderedIds.add(action.pageId);
-    if (action.kind === "new-tab" && action.detail.openerPageId !== undefined) {
-      orderedIds.add(action.detail.openerPageId);
-    }
-    if (action.kind === "switch-tab" && action.detail.fromPageId !== undefined) {
-      orderedIds.add(action.detail.fromPageId);
-    }
-    if (action.kind === "switch-tab") {
-      orderedIds.add(action.detail.toPageId);
-    }
+function resolveReplayTarget(options: CodegenOptions): ReplayTarget {
+  if (options.replayTarget !== undefined) {
+    return options.replayTarget;
   }
-  return [...orderedIds].sort(comparePageIds);
+  if (options.workspace !== undefined) {
+    return {
+      kind: "local",
+      workspace: options.workspace,
+    } satisfies LocalReplayTarget;
+  }
+  throw new Error("Replay codegen requires either replayTarget or workspace.");
 }
 
-function comparePageIds(left: string, right: string): number {
-  const leftMatch = /^page(\d+)$/u.exec(left);
-  const rightMatch = /^page(\d+)$/u.exec(right);
-  if (leftMatch && rightMatch) {
-    return Number(leftMatch[1]) - Number(rightMatch[1]);
+function resolveInitialPages(options: CodegenOptions): readonly RecorderInitialPageState[] {
+  if (options.initialPages !== undefined && options.initialPages.length > 0) {
+    const unique = new Set<string>();
+    return options.initialPages.map((page) => {
+      if (unique.has(page.pageId)) {
+        throw new Error(`Duplicate initial page id "${page.pageId}" in recording bootstrap.`);
+      }
+      unique.add(page.pageId);
+      return page;
+    });
   }
-  return left.localeCompare(right);
+  const startUrl = options.startUrl;
+  if (startUrl === undefined) {
+    throw new Error("Replay codegen requires startUrl when initialPages is not provided.");
+  }
+  return [
+    {
+      pageId: "page0",
+      initialUrl: startUrl,
+    },
+  ];
+}
+
+function resolveActiveInitialPageId(
+  options: CodegenOptions,
+  initialPages: readonly RecorderInitialPageState[],
+): string | undefined {
+  if (options.activePageId !== undefined) {
+    return options.activePageId;
+  }
+  return initialPages[0]?.pageId;
+}
+
+function renderOpensteerBootstrap(replayTarget: ReplayTarget): string[] {
+  if (replayTarget.kind === "local") {
+    return [
+      `const opensteer = new Opensteer({`,
+      `  workspace: ${JSON.stringify(replayTarget.workspace)},`,
+      `  browser: "persistent",`,
+      `});`,
+    ];
+  }
+
+  return [
+    renderRequireEnvHelper(replayTarget),
+    ``,
+    `const opensteer = new Opensteer({`,
+    `  provider: {`,
+    `    mode: "cloud",`,
+    `    baseUrl: requireEnv(${JSON.stringify(replayTarget.baseUrlEnvVar ?? "OPENSTEER_BASE_URL")}),`,
+    `    apiKey: requireEnv(${JSON.stringify(replayTarget.apiKeyEnvVar ?? "OPENSTEER_API_KEY")}),`,
+    ...renderCloudBrowserProfile(replayTarget),
+    `  },`,
+    `});`,
+  ];
+}
+
+function renderRequireEnvHelper(replayTarget: CloudReplayTarget): string {
+  const baseUrlEnvVar = replayTarget.baseUrlEnvVar ?? "OPENSTEER_BASE_URL";
+  const apiKeyEnvVar = replayTarget.apiKeyEnvVar ?? "OPENSTEER_API_KEY";
+  return [
+    `function requireEnv(name: string): string {`,
+    `  const value = process.env[name];`,
+    `  if (typeof value === "string" && value.trim().length > 0) {`,
+    `    return value;`,
+    `  }`,
+    `  throw new Error(\`Missing environment variable \${name}. Set ${baseUrlEnvVar} and ${apiKeyEnvVar} before replaying this recording.\`);`,
+    `}`,
+  ].join("\n");
+}
+
+function renderCloudBrowserProfile(replayTarget: CloudReplayTarget): string[] {
+  if (replayTarget.browserProfileId === undefined) {
+    return [];
+  }
+  return [
+    `    browserProfile: {`,
+    `      profileId: ${JSON.stringify(replayTarget.browserProfileId)},`,
+    ...(replayTarget.reuseBrowserProfileIfActive ? [`      reuseIfActive: true,`] : []),
+    `    },`,
+  ];
+}
+
+function orderInitialPages(
+  initialPages: readonly RecorderInitialPageState[],
+): RecorderInitialPageState[] {
+  const ordered: RecorderInitialPageState[] = [];
+  const declared = new Set<string>();
+  const remaining = [...initialPages];
+
+  while (remaining.length > 0) {
+    let advanced = false;
+    for (let index = 0; index < remaining.length; index += 1) {
+      const page = remaining[index]!;
+      if (page.openerPageId !== undefined && !declared.has(page.openerPageId)) {
+        continue;
+      }
+      ordered.push(page);
+      declared.add(page.pageId);
+      remaining.splice(index, 1);
+      advanced = true;
+      break;
+    }
+
+    if (!advanced) {
+      ordered.push(...remaining.splice(0, remaining.length));
+    }
+  }
+
+  return ordered;
 }
 
 function requireSelector(action: RecordedAction): string {
@@ -290,16 +408,16 @@ function shouldUsePopupWait(
   );
 }
 
-function renderNewPageArguments(openerPageId: string | undefined, initialUrl: string): string {
+function renderNewPageInput(openerPageId: string | undefined, initialUrl: string): string {
   const argumentsList: string[] = [];
   if (openerPageId !== undefined) {
-    argumentsList.push(` openerPageRef: ${openerPageId}`);
+    argumentsList.push(`openerPageRef: ${openerPageId}`);
   }
   if (initialUrl.length > 0 && initialUrl !== "about:blank") {
-    argumentsList.push(` url: ${JSON.stringify(initialUrl)}`);
+    argumentsList.push(`url: ${JSON.stringify(initialUrl)}`);
   }
   if (argumentsList.length === 0) {
-    return ``;
+    return `{}`;
   }
-  return ` ${argumentsList.join(",")}`.trimStart();
+  return `{ ${argumentsList.join(", ")} }`;
 }

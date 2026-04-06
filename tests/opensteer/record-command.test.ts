@@ -9,7 +9,10 @@ import {
   FLOW_RECORDER_DRAIN_SCRIPT,
   FLOW_RECORDER_INSTALL_SCRIPT,
 } from "../../packages/runtime-core/src/index.js";
-import { runOpensteerRecordCommand } from "../../packages/opensteer/src/cli/record.js";
+import {
+  runOpensteerCloudRecordCommand,
+  runOpensteerRecordCommand,
+} from "../../packages/opensteer/src/cli/record.js";
 import type { OpensteerDisconnectableRuntime } from "../../packages/opensteer/src/sdk/semantic-runtime.js";
 
 interface FakeRecordPlan {
@@ -94,6 +97,87 @@ class FakeRecordRuntime {
 
   async disconnect(): Promise<void> {
     this.disconnectCalls += 1;
+  }
+}
+
+class FakeCloudRecordRuntime {
+  readonly openCalls: Array<{
+    readonly url?: string;
+    readonly browser?: "temporary" | "persistent";
+    readonly launch?: Record<string, unknown>;
+    readonly context?: Record<string, unknown>;
+  }> = [];
+  closeCalls = 0;
+
+  async open(input: {
+    readonly url?: string;
+    readonly browser?: "temporary" | "persistent";
+    readonly launch?: Record<string, unknown>;
+    readonly context?: Record<string, unknown>;
+  }): Promise<{ readonly url: string }> {
+    this.openCalls.push(input);
+    return { url: input.url ?? "about:blank" };
+  }
+
+  async info(): Promise<{ readonly sessionId: string }> {
+    return {
+      sessionId: "cloud-session-123",
+    };
+  }
+
+  async close(): Promise<void> {
+    this.closeCalls += 1;
+  }
+}
+
+interface FakeCloudRecordingResult {
+  readonly fileName: string;
+  readonly script: string;
+  readonly actionCount: number;
+}
+
+interface FakeCloudRecordingState {
+  readonly status: "idle" | "recording" | "completed" | "failed";
+  readonly result?: FakeCloudRecordingResult;
+  readonly error?: string;
+}
+
+interface FakeCloudRecordingResponse extends FakeCloudRecordingState {
+  readonly sessionId: string;
+  readonly actionCount: number;
+  readonly updatedAt: number;
+}
+
+class FakeCloudRecordClient {
+  readonly startCalls: string[] = [];
+  readonly getCalls: string[] = [];
+
+  constructor(private readonly states: readonly FakeCloudRecordingState[]) {}
+
+  async startSessionRecording(sessionId: string): Promise<{
+    readonly sessionId: string;
+    readonly status: "recording";
+    readonly actionCount: number;
+    readonly updatedAt: number;
+  }> {
+    this.startCalls.push(sessionId);
+    return {
+      sessionId,
+      status: "recording",
+      actionCount: 0,
+      updatedAt: Date.now(),
+    };
+  }
+
+  async getSessionRecording(sessionId: string): Promise<FakeCloudRecordingResponse> {
+    this.getCalls.push(sessionId);
+    const state = this.states[Math.min(this.getCalls.length - 1, this.states.length - 1)]!;
+    return {
+      sessionId,
+      actionCount: state.result?.actionCount ?? 0,
+      updatedAt: Date.now(),
+      ...state,
+    };
   }
 }
 
@@ -229,5 +313,67 @@ describe("runOpensteerRecordCommand", () => {
     });
 
     expect(runtime.disconnectCalls).toBe(1);
+  });
+
+  test("writes the cloud replay script after the browser session UI stops recording", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "opensteer-record-command-"));
+    temporaryRoots.push(rootDir);
+
+    const runtime = new FakeCloudRecordRuntime();
+    const client = new FakeCloudRecordClient([
+      { status: "recording" },
+      {
+        status: "completed",
+        result: {
+          fileName: "recorded-flow.ts",
+          script: 'console.log("cloud recording");\n',
+          actionCount: 3,
+        },
+      },
+    ]);
+    const sleep = vi.fn(async () => undefined);
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const outputPath = path.join(rootDir, "recorded-flow.ts");
+
+    await runOpensteerCloudRecordCommand({
+      cloudConfig: {
+        apiKey: "test-api-key",
+        baseUrl: "http://127.0.0.1:8180",
+        appBaseUrl: "http://127.0.0.1:3000",
+      },
+      workspace: "recorded-cloud",
+      url: "https://example.com",
+      rootDir,
+      outputPath,
+      browser: "persistent",
+      launch: {
+        headless: false,
+      },
+      runtime,
+      client,
+      sleep,
+      stdout,
+      stderr,
+    });
+
+    expect(runtime.openCalls).toEqual([
+      {
+        url: "https://example.com",
+        browser: "persistent",
+        launch: {
+          headless: false,
+        },
+      },
+    ]);
+    expect(client.startCalls).toEqual(["cloud-session-123"]);
+    expect(client.getCalls).toEqual(["cloud-session-123", "cloud-session-123"]);
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(runtime.closeCalls).toBe(1);
+    await expect(readFile(outputPath, "utf8")).resolves.toBe('console.log("cloud recording");\n');
+    expect(stdout.read()?.toString("utf8")).toContain(outputPath);
+    expect(stderr.read()?.toString("utf8")).toContain(
+      "http://127.0.0.1:3000/browsers/cloud-session-123",
+    );
   });
 });

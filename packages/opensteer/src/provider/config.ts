@@ -13,6 +13,7 @@ export interface OpensteerCloudProviderOptions {
   readonly mode: "cloud";
   readonly apiKey?: string;
   readonly baseUrl?: string;
+  readonly appBaseUrl?: string;
   readonly browserProfile?: CloudBrowserProfilePreference;
   readonly region?: string;
   readonly sessionId?: string;

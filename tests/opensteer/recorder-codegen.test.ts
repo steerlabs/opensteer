@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
 
-import { generateReplayScript, type RecordedAction } from "../../packages/runtime-core/src/index.js";
+import {
+  generateReplayScript,
+  type RecordedAction,
+} from "../../packages/runtime-core/src/index.js";
 
 describe("recorder codegen", () => {
   test("merges Enter into the preceding input call", () => {
@@ -156,7 +159,9 @@ describe("recorder codegen", () => {
     expect(script).toContain(
       `await opensteer.scroll({ selector: "#results", direction: "down", amount: 480 });`,
     );
-    expect(script).toContain(`script: "(deltaX, deltaY) => {\\n  window.scrollBy(Number(deltaX), Number(deltaY));\\n}",`);
+    expect(script).toContain(
+      `script: "(deltaX, deltaY) => {\\n  window.scrollBy(Number(deltaX), Number(deltaY));\\n}",`,
+    );
     expect(script).toContain(`args: [0, -240],`);
   });
 
@@ -167,7 +172,75 @@ describe("recorder codegen", () => {
       actions: [],
     });
 
-    expect(script).toContain(`const page0 = (await opensteer.open("https://example.com")).pageRef;`);
+    expect(script).toContain(
+      `const page0 = (await opensteer.open("https://example.com")).pageRef;`,
+    );
     expect(script).toContain(`await opensteer.close();`);
+  });
+
+  test("generates cloud replay bootstrap with env-backed provider config", () => {
+    const script = generateReplayScript({
+      actions: [],
+      initialPages: [
+        {
+          pageId: "page0",
+          initialUrl: "https://example.com",
+        },
+      ],
+      replayTarget: {
+        kind: "cloud",
+        browserProfileId: "bp_123",
+        reuseBrowserProfileIfActive: true,
+      },
+    });
+
+    expect(script).toContain(`mode: "cloud"`);
+    expect(script).toContain(`baseUrl: requireEnv("OPENSTEER_BASE_URL")`);
+    expect(script).toContain(`apiKey: requireEnv("OPENSTEER_API_KEY")`);
+    expect(script).toContain(`profileId: "bp_123"`);
+    expect(script).toContain(`reuseIfActive: true`);
+  });
+
+  test("bootstraps pre-existing cloud tabs before replaying actions", () => {
+    const script = generateReplayScript({
+      actions: [
+        {
+          kind: "click",
+          timestamp: 1,
+          pageId: "page1",
+          pageUrl: "https://example.com/docs",
+          selector: 'a[data-action="start"]',
+          detail: {
+            kind: "click",
+            button: 0,
+            modifiers: [],
+          },
+        },
+      ] satisfies readonly RecordedAction[],
+      initialPages: [
+        {
+          pageId: "page0",
+          initialUrl: "https://example.com",
+        },
+        {
+          pageId: "page1",
+          initialUrl: "https://example.com/docs",
+          openerPageId: "page0",
+        },
+      ],
+      activePageId: "page1",
+      replayTarget: {
+        kind: "cloud",
+      },
+    });
+
+    expect(script).toContain(
+      `const page0 = (await opensteer.open("https://example.com")).pageRef;`,
+    );
+    expect(script).toContain(
+      `const page1 = (await opensteer.newPage({ openerPageRef: page0, url: "https://example.com/docs" })).pageRef;`,
+    );
+    expect(script).toContain(`await ensureActive(page1);`);
+    expect(script).toContain(`await opensteer.click({ selector: "a[data-action=\\"start\\"]" });`);
   });
 });

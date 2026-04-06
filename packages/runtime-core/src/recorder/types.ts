@@ -128,7 +128,10 @@ export type SelectOptionRecordedAction = RecordedActionBase<
 >;
 export type NewTabRecordedAction = RecordedActionBase<"new-tab", NewTabRecordedActionDetail>;
 export type CloseTabRecordedAction = RecordedActionBase<"close-tab", CloseTabRecordedActionDetail>;
-export type SwitchTabRecordedAction = RecordedActionBase<"switch-tab", SwitchTabRecordedActionDetail>;
+export type SwitchTabRecordedAction = RecordedActionBase<
+  "switch-tab",
+  SwitchTabRecordedActionDetail
+>;
 export type GoBackRecordedAction = RecordedActionBase<"go-back", GoBackRecordedActionDetail>;
 export type GoForwardRecordedAction = RecordedActionBase<
   "go-forward",
@@ -158,10 +161,34 @@ export interface RecordingOptions {
   readonly pollIntervalMs?: number;
 }
 
+export interface RecorderInitialPageState {
+  readonly pageId: string;
+  readonly initialUrl: string;
+  readonly openerPageId?: string;
+}
+
+export interface LocalReplayTarget {
+  readonly kind: "local";
+  readonly workspace: string;
+}
+
+export interface CloudReplayTarget {
+  readonly kind: "cloud";
+  readonly baseUrlEnvVar?: string;
+  readonly apiKeyEnvVar?: string;
+  readonly browserProfileId?: string;
+  readonly reuseBrowserProfileIfActive?: boolean;
+}
+
+export type ReplayTarget = LocalReplayTarget | CloudReplayTarget;
+
 export interface CodegenOptions {
   readonly actions: readonly RecordedAction[];
-  readonly workspace: string;
-  readonly startUrl: string;
+  readonly workspace?: string;
+  readonly startUrl?: string;
+  readonly initialPages?: readonly RecorderInitialPageState[];
+  readonly activePageId?: string;
+  readonly replayTarget?: ReplayTarget;
 }
 
 export interface RecorderPageState {

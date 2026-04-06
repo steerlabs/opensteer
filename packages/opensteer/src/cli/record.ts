@@ -7,8 +7,18 @@ import {
   type RecorderRuntimeAdapter,
   type RecordedAction,
 } from "@opensteer/runtime-core";
-import type { PageRef } from "@opensteer/protocol";
+import type {
+  CloudSessionRecordingState,
+  OpensteerBrowserContextOptions,
+  OpensteerBrowserLaunchOptions,
+  OpensteerOpenOutput,
+  OpensteerSessionInfo,
+  PageRef,
+} from "@opensteer/protocol";
 
+import { OpensteerCloudClient } from "../cloud/client.js";
+import type { OpensteerCloudConfig } from "../cloud/config.js";
+import { CloudSessionProxy } from "../cloud/session-proxy.js";
 import type { OpensteerDisconnectableRuntime } from "../sdk/semantic-runtime.js";
 import { resolveFilesystemWorkspacePath } from "../root.js";
 
@@ -22,6 +32,39 @@ export interface OpensteerRecordCommandInput {
   readonly pollIntervalMs?: number;
   readonly stdout?: NodeJS.WritableStream;
   readonly stderr?: NodeJS.WritableStream;
+}
+
+interface OpensteerCloudRecordRuntime {
+  open(input: {
+    readonly url?: string;
+    readonly browser?: "temporary" | "persistent";
+    readonly launch?: OpensteerBrowserLaunchOptions;
+    readonly context?: OpensteerBrowserContextOptions;
+  }): Promise<OpensteerOpenOutput>;
+  info(): Promise<OpensteerSessionInfo>;
+  close(): Promise<unknown>;
+}
+
+interface OpensteerCloudRecordClient {
+  startSessionRecording(sessionId: string): Promise<CloudSessionRecordingState>;
+  getSessionRecording(sessionId: string): Promise<CloudSessionRecordingState>;
+}
+
+export interface OpensteerCloudRecordCommandInput {
+  readonly cloudConfig: OpensteerCloudConfig;
+  readonly workspace: string;
+  readonly url: string;
+  readonly rootDir: string;
+  readonly outputPath?: string;
+  readonly browser?: "temporary" | "persistent";
+  readonly launch?: OpensteerBrowserLaunchOptions;
+  readonly context?: OpensteerBrowserContextOptions;
+  readonly pollIntervalMs?: number;
+  readonly stdout?: NodeJS.WritableStream;
+  readonly stderr?: NodeJS.WritableStream;
+  readonly runtime?: OpensteerCloudRecordRuntime;
+  readonly client?: OpensteerCloudRecordClient;
+  readonly sleep?: (ms: number) => Promise<void>;
 }
 
 export async function runOpensteerRecordCommand(
@@ -78,6 +121,71 @@ export async function runOpensteerRecordCommand(
   }
 }
 
+export async function runOpensteerCloudRecordCommand(
+  input: OpensteerCloudRecordCommandInput,
+): Promise<void> {
+  const stdout = input.stdout ?? process.stdout;
+  const stderr = input.stderr ?? process.stderr;
+  const outputPath = resolveRecordOutputPath({
+    rootDir: input.rootDir,
+    workspace: input.workspace,
+    ...(input.outputPath === undefined ? {} : { outputPath: input.outputPath }),
+  });
+  let cloud: OpensteerCloudClient | undefined;
+  const resolveCloud = (): OpensteerCloudClient => {
+    cloud ??= new OpensteerCloudClient(input.cloudConfig);
+    return cloud;
+  };
+  const runtime =
+    input.runtime ??
+    new CloudSessionProxy(resolveCloud(), {
+      rootDir: input.rootDir,
+      workspace: input.workspace,
+    });
+  const client = input.client ?? resolveCloud();
+  const sleep = input.sleep ?? delay;
+  let closed = false;
+
+  try {
+    await runtime.open({
+      url: input.url,
+      ...(input.browser === undefined ? {} : { browser: input.browser }),
+      ...(input.launch === undefined ? {} : { launch: input.launch }),
+      ...(input.context === undefined ? {} : { context: input.context }),
+    });
+    const sessionId = await resolveCloudRecordingSessionId(runtime);
+    const sessionUrl = buildCloudRecordingSessionUrl(input.cloudConfig, sessionId);
+
+    await client.startSessionRecording(sessionId);
+    stderr.write(
+      `Recording browser actions for workspace "${input.workspace}". Open ${sessionUrl} and click "Stop recording" in the browser session toolbar when you're done.\n`,
+    );
+
+    const completed = await waitForCloudRecordingCompletion({
+      client,
+      sessionId,
+      ...(input.pollIntervalMs === undefined ? {} : { pollIntervalMs: input.pollIntervalMs }),
+      sleep,
+    });
+    if (completed.result === undefined) {
+      throw new Error("Cloud recording completed without a replay script.");
+    }
+
+    await mkdir(path.dirname(outputPath), { recursive: true });
+    await writeFile(outputPath, completed.result.script, "utf8");
+    await runtime.close();
+    closed = true;
+
+    stdout.write(`${outputPath}\n`);
+    stderr.write(`Cloud browser session: ${sessionUrl}\n`);
+    stderr.write(`Wrote replay script to ${outputPath}\n`);
+  } finally {
+    if (!closed) {
+      await runtime.close().catch(() => undefined);
+    }
+  }
+}
+
 export function resolveRecordOutputPath(input: {
   readonly rootDir: string;
   readonly workspace: string;
@@ -120,6 +228,49 @@ export function createRecorderRuntimeAdapter(
   };
 }
 
+function buildCloudRecordingSessionUrl(
+  cloudConfig: Pick<OpensteerCloudConfig, "appBaseUrl">,
+  sessionId: string,
+): string {
+  const baseUrl = cloudConfig.appBaseUrl;
+  if (!baseUrl || baseUrl.trim().length === 0) {
+    throw new Error(
+      'record with provider=cloud requires OPENSTEER_CLOUD_APP_BASE_URL or "--cloud-app-base-url".',
+    );
+  }
+  return `${baseUrl.replace(/\/+$/, "")}/browsers/${encodeURIComponent(sessionId)}`;
+}
+
+async function resolveCloudRecordingSessionId(
+  runtime: Pick<OpensteerCloudRecordRuntime, "info">,
+): Promise<string> {
+  const info = await runtime.info();
+  if (typeof info.sessionId !== "string" || info.sessionId.length === 0) {
+    throw new Error("Cloud recording could not resolve the created session id.");
+  }
+  return info.sessionId;
+}
+
+async function waitForCloudRecordingCompletion(input: {
+  readonly client: OpensteerCloudRecordClient;
+  readonly sessionId: string;
+  readonly pollIntervalMs?: number;
+  readonly sleep: (ms: number) => Promise<void>;
+}): Promise<CloudSessionRecordingState> {
+  const pollIntervalMs = input.pollIntervalMs ?? 1_000;
+
+  for (;;) {
+    const state = await input.client.getSessionRecording(input.sessionId);
+    if (state.status === "completed") {
+      return state;
+    }
+    if (state.status === "failed") {
+      throw new Error(state.error ?? "Cloud recording failed.");
+    }
+    await input.sleep(pollIntervalMs);
+  }
+}
+
 function formatRecordedAction(action: RecordedAction): string {
   const time = new Date(action.timestamp).toISOString().slice(11, 19);
   switch (action.kind) {
@@ -150,4 +301,10 @@ function formatRecordedAction(action: RecordedAction): string {
     case "reload":
       return `[${time}] reload ${action.pageId}`;
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
