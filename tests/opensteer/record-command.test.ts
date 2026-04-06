@@ -376,4 +376,35 @@ describe("runOpensteerRecordCommand", () => {
       "http://127.0.0.1:3000/browsers/cloud-session-123",
     );
   });
+
+  test("fails cloud recording before opening a session when appBaseUrl is missing", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "opensteer-record-command-"));
+    temporaryRoots.push(rootDir);
+
+    const runtime = new FakeCloudRecordRuntime();
+    const client = new FakeCloudRecordClient([]);
+
+    await expect(
+      runOpensteerCloudRecordCommand({
+        cloudConfig: {
+          apiKey: "test-api-key",
+          baseUrl: "http://127.0.0.1:8180",
+        },
+        workspace: "recorded-cloud",
+        url: "https://example.com",
+        rootDir,
+        runtime,
+        client,
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+      }),
+    ).rejects.toThrow(
+      'record with provider=cloud requires OPENSTEER_CLOUD_APP_BASE_URL or "--cloud-app-base-url".',
+    );
+
+    expect(runtime.openCalls).toEqual([]);
+    expect(runtime.closeCalls).toBe(0);
+    expect(client.startCalls).toEqual([]);
+    expect(client.getCalls).toEqual([]);
+  });
 });

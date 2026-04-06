@@ -117,6 +117,45 @@ describe("recorder CLI", () => {
     });
   }, 60_000);
 
+  test("requires a cloud app base URL before starting cloud recording", async () => {
+    await ensureCliArtifactsBuilt();
+
+    const execution = execFile(
+      "node",
+      [
+        CLI_SCRIPT,
+        "record",
+        "--provider",
+        "cloud",
+        "--workspace",
+        "cloud-recording",
+        "--url",
+        "https://example.com",
+        "--cloud-api-key",
+        "test-api-key",
+        "--cloud-base-url",
+        "https://api.opensteer.dev",
+      ],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          OPENSTEER_PROVIDER: "",
+          OPENSTEER_BASE_URL: "",
+          OPENSTEER_API_KEY: "",
+          OPENSTEER_CLOUD_APP_BASE_URL: "",
+        },
+        maxBuffer: 1024 * 1024 * 4,
+      },
+    );
+
+    await expect(execution).rejects.toMatchObject({
+      stderr: expect.stringContaining(
+        "record with provider=cloud requires OPENSTEER_CLOUD_APP_BASE_URL",
+      ),
+    });
+  }, 60_000);
+
   test("rejects removed timeout flags instead of ignoring them", async () => {
     await ensureCliArtifactsBuilt();
 
