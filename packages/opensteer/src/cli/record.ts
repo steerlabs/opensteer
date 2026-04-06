@@ -21,6 +21,7 @@ import { requireCloudAppBaseUrl, type OpensteerCloudConfig } from "../cloud/conf
 import { CloudSessionProxy } from "../cloud/session-proxy.js";
 import type { OpensteerDisconnectableRuntime } from "../sdk/semantic-runtime.js";
 import { resolveFilesystemWorkspacePath } from "../root.js";
+import { openBrowserUrl, type BrowserUrlOpener } from "./open-browser.js";
 
 export interface OpensteerRecordCommandInput {
   readonly runtime: OpensteerDisconnectableRuntime;
@@ -65,6 +66,7 @@ export interface OpensteerCloudRecordCommandInput {
   readonly runtime?: OpensteerCloudRecordRuntime;
   readonly client?: OpensteerCloudRecordClient;
   readonly sleep?: (ms: number) => Promise<void>;
+  readonly openUrl?: BrowserUrlOpener;
 }
 
 export async function runOpensteerRecordCommand(
@@ -145,6 +147,7 @@ export async function runOpensteerCloudRecordCommand(
     });
   const client = input.client ?? resolveCloud();
   const sleep = input.sleep ?? delay;
+  const openUrl = input.openUrl ?? openBrowserUrl;
   let closed = false;
 
   try {
@@ -158,6 +161,11 @@ export async function runOpensteerCloudRecordCommand(
     const sessionUrl = buildCloudRecordingSessionUrl(cloudAppBaseUrl, sessionId);
 
     await client.startSessionRecording(sessionId);
+    await tryOpenCloudRecordingSessionUrl({
+      sessionUrl,
+      stderr,
+      openUrl,
+    });
     stderr.write(
       `Recording browser actions for workspace "${input.workspace}". Open ${sessionUrl} and click "Stop recording" in the browser session toolbar when you're done.\n`,
     );
@@ -234,6 +242,20 @@ function buildCloudRecordingSessionUrl(
   sessionId: string,
 ): string {
   return `${appBaseUrl}/browsers/${encodeURIComponent(sessionId)}`;
+}
+
+async function tryOpenCloudRecordingSessionUrl(input: {
+  readonly sessionUrl: string;
+  readonly stderr: NodeJS.WritableStream;
+  readonly openUrl: BrowserUrlOpener;
+}): Promise<void> {
+  try {
+    await input.openUrl(input.sessionUrl);
+  } catch {
+    input.stderr.write(
+      `Could not automatically open the cloud browser session. Open it manually: ${input.sessionUrl}\n`,
+    );
+  }
 }
 
 async function resolveCloudRecordingSessionId(

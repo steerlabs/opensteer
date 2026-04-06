@@ -332,6 +332,7 @@ describe("runOpensteerRecordCommand", () => {
       },
     ]);
     const sleep = vi.fn(async () => undefined);
+    const openUrl = vi.fn(async () => undefined);
     const stdout = new PassThrough();
     const stderr = new PassThrough();
     const outputPath = path.join(rootDir, "recorded-flow.ts");
@@ -353,6 +354,7 @@ describe("runOpensteerRecordCommand", () => {
       runtime,
       client,
       sleep,
+      openUrl,
       stdout,
       stderr,
     });
@@ -369,11 +371,60 @@ describe("runOpensteerRecordCommand", () => {
     expect(client.startCalls).toEqual(["cloud-session-123"]);
     expect(client.getCalls).toEqual(["cloud-session-123", "cloud-session-123"]);
     expect(sleep).toHaveBeenCalledTimes(1);
+    expect(openUrl).toHaveBeenCalledWith("http://127.0.0.1:3000/browsers/cloud-session-123");
     expect(runtime.closeCalls).toBe(1);
     await expect(readFile(outputPath, "utf8")).resolves.toBe('console.log("cloud recording");\n');
     expect(stdout.read()?.toString("utf8")).toContain(outputPath);
     expect(stderr.read()?.toString("utf8")).toContain(
       "http://127.0.0.1:3000/browsers/cloud-session-123",
+    );
+  });
+
+  test("continues cloud recording when opening the browser URL fails", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "opensteer-record-command-"));
+    temporaryRoots.push(rootDir);
+
+    const runtime = new FakeCloudRecordRuntime();
+    const client = new FakeCloudRecordClient([
+      {
+        status: "completed",
+        result: {
+          fileName: "recorded-flow.ts",
+          script: 'console.log("cloud recording");\n',
+          actionCount: 1,
+        },
+      },
+    ]);
+    const openUrl = vi.fn(async () => {
+      throw new Error("No browser available");
+    });
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const outputPath = path.join(rootDir, "recorded-flow.ts");
+
+    await runOpensteerCloudRecordCommand({
+      cloudConfig: {
+        apiKey: "test-api-key",
+        baseUrl: "http://127.0.0.1:8180",
+        appBaseUrl: "http://127.0.0.1:3000",
+      },
+      workspace: "recorded-cloud",
+      url: "https://example.com",
+      rootDir,
+      outputPath,
+      runtime,
+      client,
+      openUrl,
+      stdout,
+      stderr,
+    });
+
+    expect(openUrl).toHaveBeenCalledWith("http://127.0.0.1:3000/browsers/cloud-session-123");
+    expect(runtime.closeCalls).toBe(1);
+    await expect(readFile(outputPath, "utf8")).resolves.toBe('console.log("cloud recording");\n');
+    expect(stdout.read()?.toString("utf8")).toContain(outputPath);
+    expect(stderr.read()?.toString("utf8")).toContain(
+      "Could not automatically open the cloud browser session.",
     );
   });
 
