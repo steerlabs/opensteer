@@ -27,6 +27,7 @@ import {
   closedSessionError,
   type GetNetworkRecordsInput,
   type BrowserCoreEngine,
+  type ActionBoundarySnapshot,
   type BrowserInitScriptInput,
   type BrowserInitScriptRegistration,
   type BrowserRouteRegistration,
@@ -1133,6 +1134,15 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     );
   }
 
+  async getActionBoundarySnapshot(input: {
+    readonly pageRef: PageRef;
+  }): Promise<ActionBoundarySnapshot> {
+    const controller = this.requirePage(input.pageRef);
+    await this.flushPendingPageTasks(controller.sessionRef);
+    await this.flushDomUpdateTask(controller);
+    return this.actionSettler.captureSnapshot(controller);
+  }
+
   async waitForVisualStability(input: {
     readonly pageRef: PageRef;
     readonly timeoutMs?: number;
@@ -1147,6 +1157,28 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       ...(input.scope === undefined ? {} : { scope: input.scope }),
     });
     await this.flushDomUpdateTask(controller);
+  }
+
+  async waitForPostLoadQuiet(input: {
+    readonly pageRef: PageRef;
+    readonly timeoutMs?: number;
+    readonly quietMs?: number;
+    readonly captureWindowMs?: number;
+    readonly signal?: AbortSignal;
+  }): Promise<void> {
+    const controller = this.requirePage(input.pageRef);
+    await this.flushPendingPageTasks(controller.sessionRef);
+    await this.actionSettler.waitForPostLoadQuiet({
+      controller,
+      timeoutMs: clampPlaywrightActionSettleTimeout(input.timeoutMs),
+      ...(input.quietMs === undefined ? {} : { quietMs: input.quietMs }),
+      ...(input.captureWindowMs === undefined ? {} : { captureWindowMs: input.captureWindowMs }),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    });
+    await this.flushPendingPageTasks(controller.sessionRef);
+    if (controller.lifecycleState !== "closed") {
+      await this.flushDomUpdateTask(controller);
+    }
   }
 
   async readText(input: NodeLocator): Promise<string | null> {
