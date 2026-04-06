@@ -1,7 +1,8 @@
 import type { DocumentRef, PageRef } from "./identity.js";
 import {
   DEFAULT_ACTION_BOUNDARY_POLL_INTERVAL_MS,
-  postLoadTrackerIsSettled,
+  postLoadTrackerHasTrackedNetworkActivitySince,
+  type PostLoadTrackerSnapshot,
   type PostLoadTrackerState,
 } from "./post-load-tracker.js";
 
@@ -12,6 +13,7 @@ export interface ActionBoundarySnapshot {
   readonly pageRef: PageRef;
   readonly documentRef: DocumentRef;
   readonly url?: string;
+  readonly tracker?: PostLoadTrackerSnapshot;
 }
 
 export type ActionBoundarySettleTrigger = "dom-action" | "navigation";
@@ -57,6 +59,7 @@ export async function waitForActionBoundary(
   const pollIntervalMs = input.pollIntervalMs ?? DEFAULT_ACTION_BOUNDARY_POLL_INTERVAL_MS;
   let trigger: ActionBoundarySettleTrigger = "dom-action";
   let crossDocument = false;
+  let sameDocumentAsyncActivity = false;
 
   while (Date.now() < deadline) {
     input.throwBackgroundError();
@@ -91,6 +94,18 @@ export async function waitForActionBoundary(
     }
     if (
       !crossDocument &&
+      !sameDocumentAsyncActivity &&
+      input.snapshot?.tracker !== undefined &&
+      postLoadTrackerHasTrackedNetworkActivitySince(
+        input.snapshot.tracker,
+        await input.readTrackerState(),
+      )
+    ) {
+      trigger = "navigation";
+      sameDocumentAsyncActivity = true;
+    }
+    if (
+      !crossDocument &&
       input.snapshot?.url !== undefined &&
       currentPageUrl !== undefined &&
       currentPageUrl !== input.snapshot.url &&
@@ -113,6 +128,14 @@ export async function waitForActionBoundary(
       };
     }
 
+    if (sameDocumentAsyncActivity) {
+      return {
+        trigger,
+        crossDocument,
+        bootstrapSettled: true,
+      };
+    }
+
     if (
       crossDocument &&
       input.isCurrentMainFrameBootstrapSettled !== undefined &&
@@ -122,7 +145,7 @@ export async function waitForActionBoundary(
       continue;
     }
 
-    if (crossDocument && postLoadTrackerIsSettled(await input.readTrackerState())) {
+    if (crossDocument) {
       return {
         trigger,
         crossDocument,

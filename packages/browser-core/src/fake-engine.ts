@@ -23,6 +23,7 @@ import {
   staleNodeRefError,
   unsupportedCapabilityError,
 } from "./errors.js";
+import type { ActionBoundarySnapshot } from "./action-boundary.js";
 import {
   createDevicePixelRatio,
   createPageScaleFactor,
@@ -719,6 +720,28 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
     return clone(document.domSnapshot);
   }
 
+  async getActionBoundarySnapshot(input: {
+    readonly pageRef: PageRef;
+  }): Promise<ActionBoundarySnapshot> {
+    this.requireCapability("inspector.frameEnumeration");
+    const page = this.requirePage(input.pageRef);
+    const mainFrameRef = Array.from(page.frameRefs).find(
+      (frameRef) => this.requireFrame(frameRef).frameInfo.isMainFrame,
+    );
+    if (mainFrameRef === undefined) {
+      throw createBrowserCoreError(
+        "operation-failed",
+        `page ${input.pageRef} does not expose a main frame`,
+      );
+    }
+    const frame = this.requireFrame(mainFrameRef);
+    return {
+      pageRef: input.pageRef,
+      documentRef: frame.frameInfo.documentRef,
+      url: frame.frameInfo.url,
+    };
+  }
+
   async waitForVisualStability(_input: {
     readonly pageRef: PageRef;
     readonly timeoutMs?: number;
@@ -727,6 +750,14 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
   }): Promise<void> {
     this.requireCapability("inspector.visualStability");
   }
+
+  async waitForPostLoadQuiet(_input: {
+    readonly pageRef: PageRef;
+    readonly timeoutMs?: number;
+    readonly quietMs?: number;
+    readonly captureWindowMs?: number;
+    readonly signal?: AbortSignal;
+  }): Promise<void> {}
 
   async readText(input: NodeLocator): Promise<string | null> {
     this.requireCapability("inspector.text");

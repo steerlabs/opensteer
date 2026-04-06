@@ -1,5 +1,6 @@
 import {
   DEFAULT_VISUAL_STABILITY_SETTLE_MS,
+  DEFAULT_POST_LOAD_TRACKER_QUIET_WINDOW_MS,
   type VisualStabilityScope,
 } from "@opensteer/browser-core";
 
@@ -86,6 +87,8 @@ const NAVIGATION_VISUAL_STABILITY_PROFILE: VisualStabilityProfile = {
   timeoutMs: 7_000,
 };
 
+const NAVIGATION_POST_LOAD_CAPTURE_WINDOW_MS = 1_000;
+
 const defaultDomActionSettleObserver: SettleObserver = {
   async settle(input) {
     if (input.trigger !== "dom-action") {
@@ -138,6 +141,13 @@ const defaultNavigationSettleObserver: SettleObserver = {
     }
 
     try {
+      await input.engine.waitForPostLoadQuiet({
+        pageRef: input.pageRef,
+        timeoutMs: effectiveTimeout,
+        quietMs: DEFAULT_POST_LOAD_TRACKER_QUIET_WINDOW_MS,
+        captureWindowMs: Math.min(NAVIGATION_POST_LOAD_CAPTURE_WINDOW_MS, effectiveTimeout),
+        signal: input.signal,
+      });
       await input.engine.waitForVisualStability({
         pageRef: input.pageRef,
         timeoutMs: effectiveTimeout,

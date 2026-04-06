@@ -1,8 +1,13 @@
 import {
   CROSS_DOCUMENT_INTERACTION_TIMEOUT_MS,
+  capturePostLoadTrackerSnapshot,
+  buildPostLoadTrackerBeginExpression,
+  buildPostLoadTrackerFreezeExpression,
   buildPostLoadTrackerInstallScript,
   buildPostLoadTrackerReadExpression,
+  DEFAULT_POST_LOAD_TRACKER_QUIET_WINDOW_MS,
   normalizePostLoadTrackerState,
+  postLoadTrackerIsSettled,
   waitForActionBoundary,
   type ActionBoundaryOutcome,
   type ActionBoundarySettleTrigger,
@@ -14,6 +19,7 @@ import {
 import type { PageController } from "./types.js";
 
 export const DEFAULT_ABP_ACTION_SETTLE_TIMEOUT_MS = CROSS_DOCUMENT_INTERACTION_TIMEOUT_MS;
+export const DEFAULT_ABP_POST_LOAD_CAPTURE_WINDOW_MS = 1_000;
 
 interface AbpActionSettlerContext {
   syncExecutionPaused(controller: PageController): Promise<boolean>;
@@ -48,6 +54,8 @@ function abortError(signal: AbortSignal): unknown {
 
 export function createAbpActionSettler(context: AbpActionSettlerContext) {
   const installScript = buildPostLoadTrackerInstallScript();
+  const beginExpression = buildPostLoadTrackerBeginExpression();
+  const freezeExpression = buildPostLoadTrackerFreezeExpression();
   const readExpression = buildPostLoadTrackerReadExpression();
 
   async function installTracker(controller: PageController): Promise<void> {
@@ -87,6 +95,80 @@ export function createAbpActionSettler(context: AbpActionSettlerContext) {
         return undefined;
       }
       throw error;
+    }
+  }
+
+  async function beginTrackerObservation(controller: PageController): Promise<void> {
+    await installTracker(controller);
+    await controller.cdp.send("Runtime.evaluate", {
+      expression: beginExpression,
+      returnByValue: true,
+      awaitPromise: true,
+    });
+  }
+
+  async function freezeTrackerObservation(controller: PageController): Promise<void> {
+    await controller.cdp.send("Runtime.evaluate", {
+      expression: freezeExpression,
+      returnByValue: true,
+      awaitPromise: true,
+    });
+  }
+
+  async function captureSnapshot(controller: PageController): Promise<ActionBoundarySnapshot> {
+    const documentRef = context.getMainFrameDocumentRef(controller);
+    if (documentRef === undefined) {
+      throw new Error(`page ${controller.pageRef} does not expose a main frame`);
+    }
+    await beginTrackerObservation(controller);
+    const tracker = await readTrackerState(controller);
+    return {
+      pageRef: controller.pageRef,
+      documentRef,
+      ...(controller.mainFrameRef === undefined
+        ? {}
+        : {
+            url: controller.framesByCdpId.get(controller.mainFrameRef)?.currentDocument.url,
+          }),
+      ...(tracker === undefined ? {} : { tracker: capturePostLoadTrackerSnapshot(tracker) }),
+    };
+  }
+
+  async function waitForPostLoadQuiet(input: {
+    readonly controller: PageController;
+    readonly timeoutMs: number;
+    readonly quietMs?: number;
+    readonly captureWindowMs?: number;
+    readonly signal?: AbortSignal;
+  }): Promise<void> {
+    const { controller, timeoutMs, signal } = input;
+    if (timeoutMs <= 0) {
+      return;
+    }
+    const quietMs = input.quietMs ?? DEFAULT_POST_LOAD_TRACKER_QUIET_WINDOW_MS;
+    const captureWindowMs = Math.max(
+      0,
+      Math.min(input.captureWindowMs ?? DEFAULT_ABP_POST_LOAD_CAPTURE_WINDOW_MS, timeoutMs),
+    );
+    const deadline = Date.now() + timeoutMs;
+    await installTracker(controller);
+    if (captureWindowMs > 0) {
+      await delayWithSignal(captureWindowMs, signal, deadline);
+    }
+    await freezeTrackerObservation(controller);
+
+    while (Date.now() < deadline) {
+      if (signal?.aborted) {
+        throw abortError(signal);
+      }
+      context.throwBackgroundError(controller);
+      if (controller.lifecycleState === "closed") {
+        return;
+      }
+      if (postLoadTrackerIsSettled(await readTrackerState(controller), quietMs)) {
+        return;
+      }
+      await delayWithSignal(100, signal, deadline);
     }
   }
 
@@ -173,7 +255,35 @@ export function createAbpActionSettler(context: AbpActionSettlerContext) {
   }
 
   return {
+    captureSnapshot,
     installTracker,
+    waitForPostLoadQuiet,
     settle,
   };
+}
+
+async function delayWithSignal(
+  delayMs: number,
+  signal: AbortSignal | undefined,
+  deadline: number,
+): Promise<void> {
+  const effectiveDelay = Math.max(0, Math.min(delayMs, Math.max(0, deadline - Date.now())));
+  if (effectiveDelay <= 0) {
+    return;
+  }
+  if (signal?.aborted) {
+    throw abortError(signal);
+  }
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, effectiveDelay);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(abortError(signal!));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
