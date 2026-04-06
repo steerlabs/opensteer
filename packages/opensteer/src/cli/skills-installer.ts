@@ -4,6 +4,8 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
+export const OPENSTEER_GITHUB_SOURCE = "steerlabs/opensteer";
+
 export interface OpensteerSkillsInstallOptions {
   readonly agents?: readonly string[];
   readonly skills?: readonly string[];
@@ -21,7 +23,8 @@ interface OpensteerSkillsInvocation {
 
 interface OpensteerSkillsInstallerDeps {
   readonly resolveSkillsCliPath: () => string;
-  readonly resolveSkillSourcePath: () => string;
+  readonly resolveLocalSkillSourcePath: () => string;
+  readonly checkGitHubReachable: () => Promise<boolean>;
   readonly spawnInvocation: (invocation: OpensteerSkillsInvocation) => Promise<number>;
 }
 
@@ -75,7 +78,7 @@ export function resolveOpensteerSkillsCliPath(): string {
   return cliPath;
 }
 
-export function resolveOpensteerSkillSourcePath(): string {
+export function resolveOpensteerLocalSkillSourcePath(): string {
   let ancestor = path.dirname(fileURLToPath(import.meta.url));
 
   for (let index = 0; index < 6; index += 1) {
@@ -90,21 +93,40 @@ export function resolveOpensteerSkillSourcePath(): string {
   throw new Error("Unable to find the packaged Opensteer skill source directory.");
 }
 
+export async function checkOpensteerGitHubReachable(): Promise<boolean> {
+  try {
+    const response = await fetch(`https://github.com/${OPENSTEER_GITHUB_SOURCE}`, {
+      method: "HEAD",
+      signal: AbortSignal.timeout(3000),
+      redirect: "manual",
+    });
+    return response.status < 500;
+  } catch {
+    return false;
+  }
+}
+
 export async function runOpensteerSkillsInstaller(
   options: OpensteerSkillsInstallOptions = {},
   overrideDeps: Partial<OpensteerSkillsInstallerDeps> = {},
 ): Promise<number> {
   const deps: OpensteerSkillsInstallerDeps = {
     resolveSkillsCliPath: resolveOpensteerSkillsCliPath,
-    resolveSkillSourcePath: resolveOpensteerSkillSourcePath,
+    resolveLocalSkillSourcePath: resolveOpensteerLocalSkillSourcePath,
+    checkGitHubReachable: checkOpensteerGitHubReachable,
     spawnInvocation: spawnOpensteerSkillsInvocation,
     ...overrideDeps,
   };
 
+  const useGitHub = await deps.checkGitHubReachable();
+  const skillSourcePath = useGitHub
+    ? OPENSTEER_GITHUB_SOURCE
+    : deps.resolveLocalSkillSourcePath();
+
   const invocation = createOpensteerSkillsInvocation({
     options,
     skillsCliPath: deps.resolveSkillsCliPath(),
-    skillSourcePath: deps.resolveSkillSourcePath(),
+    skillSourcePath,
   });
 
   return deps.spawnInvocation(invocation);
