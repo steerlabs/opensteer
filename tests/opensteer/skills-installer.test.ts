@@ -4,6 +4,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   createOpensteerSkillsInvocation,
+  OPENSTEER_GITHUB_SOURCE,
   runOpensteerSkillsInstaller,
 } from "../../packages/opensteer/src/cli/skills-installer.js";
 
@@ -47,7 +48,7 @@ describe("Opensteer skills installer", () => {
     });
   });
 
-  test("uses the resolved packaged skill directory when running", async () => {
+  test("uses GitHub source when reachable for registry tracking", async () => {
     let receivedInvocation:
       | {
           readonly cliPath: string;
@@ -61,7 +62,38 @@ describe("Opensteer skills installer", () => {
       },
       {
         resolveSkillsCliPath: () => "/tmp/skills-cli.mjs",
-        resolveSkillSourcePath: () => path.join("/tmp", "packaged-skills"),
+        resolveLocalSkillSourcePath: () => path.join("/tmp", "packaged-skills"),
+        checkGitHubReachable: async () => true,
+        spawnInvocation: async (invocation) => {
+          receivedInvocation = invocation;
+          return 0;
+        },
+      },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(receivedInvocation).toEqual({
+      cliPath: "/tmp/skills-cli.mjs",
+      cliArgs: ["add", OPENSTEER_GITHUB_SOURCE, "--skill", "opensteer", "--yes"],
+    });
+  });
+
+  test("falls back to local bundled skills when GitHub is unreachable", async () => {
+    let receivedInvocation:
+      | {
+          readonly cliPath: string;
+          readonly cliArgs: readonly string[];
+        }
+      | undefined;
+
+    const exitCode = await runOpensteerSkillsInstaller(
+      {
+        yes: true,
+      },
+      {
+        resolveSkillsCliPath: () => "/tmp/skills-cli.mjs",
+        resolveLocalSkillSourcePath: () => path.join("/tmp", "packaged-skills"),
+        checkGitHubReachable: async () => false,
         spawnInvocation: async (invocation) => {
           receivedInvocation = invocation;
           return 0;
