@@ -17,7 +17,7 @@ import type {
 } from "@opensteer/protocol";
 
 import { OpensteerCloudClient } from "../cloud/client.js";
-import type { OpensteerCloudConfig } from "../cloud/config.js";
+import { requireCloudAppBaseUrl, type OpensteerCloudConfig } from "../cloud/config.js";
 import { CloudSessionProxy } from "../cloud/session-proxy.js";
 import type { OpensteerDisconnectableRuntime } from "../sdk/semantic-runtime.js";
 import { resolveFilesystemWorkspacePath } from "../root.js";
@@ -126,6 +126,7 @@ export async function runOpensteerCloudRecordCommand(
 ): Promise<void> {
   const stdout = input.stdout ?? process.stdout;
   const stderr = input.stderr ?? process.stderr;
+  const cloudAppBaseUrl = requireCloudAppBaseUrl(input.cloudConfig);
   const outputPath = resolveRecordOutputPath({
     rootDir: input.rootDir,
     workspace: input.workspace,
@@ -154,7 +155,7 @@ export async function runOpensteerCloudRecordCommand(
       ...(input.context === undefined ? {} : { context: input.context }),
     });
     const sessionId = await resolveCloudRecordingSessionId(runtime);
-    const sessionUrl = buildCloudRecordingSessionUrl(input.cloudConfig, sessionId);
+    const sessionUrl = buildCloudRecordingSessionUrl(cloudAppBaseUrl, sessionId);
 
     await client.startSessionRecording(sessionId);
     stderr.write(
@@ -229,16 +230,10 @@ export function createRecorderRuntimeAdapter(
 }
 
 function buildCloudRecordingSessionUrl(
-  cloudConfig: Pick<OpensteerCloudConfig, "appBaseUrl">,
+  appBaseUrl: string,
   sessionId: string,
 ): string {
-  const baseUrl = cloudConfig.appBaseUrl;
-  if (!baseUrl || baseUrl.trim().length === 0) {
-    throw new Error(
-      'record with provider=cloud requires OPENSTEER_CLOUD_APP_BASE_URL or "--cloud-app-base-url".',
-    );
-  }
-  return `${baseUrl.replace(/\/+$/, "")}/browsers/${encodeURIComponent(sessionId)}`;
+  return `${appBaseUrl}/browsers/${encodeURIComponent(sessionId)}`;
 }
 
 async function resolveCloudRecordingSessionId(
