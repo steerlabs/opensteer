@@ -1,5 +1,6 @@
 export const OPENSTEER_INTERACTIVE_ATTR = "data-opensteer-interactive";
 export const OPENSTEER_HIDDEN_ATTR = "data-opensteer-hidden";
+export const OPENSTEER_SELF_HIDDEN_ATTR = "data-opensteer-hidden-self";
 export const OPENSTEER_SCROLLABLE_ATTR = "data-opensteer-scrollable";
 
 export const OPENSTEER_NODE_ID_ATTR = "data-os-node-id";

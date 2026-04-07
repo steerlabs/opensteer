@@ -11,8 +11,9 @@ import {
   OPENSTEER_INTERACTIVE_ATTR,
   OPENSTEER_NODE_ID_ATTR,
   OPENSTEER_SCROLLABLE_ATTR,
+  OPENSTEER_SELF_HIDDEN_ATTR,
   OPENSTEER_SHADOW_BOUNDARY_TAG,
-  OPENSTEER_UNAVAILABLE_ATTR,
+  OPENSTEER_SPARSE_COUNTER_ATTR,
   ROOT_TAGS,
   hasNonNegativeTabIndex,
   isBoundaryTag,
@@ -28,8 +29,6 @@ const NOISE_SELECTORS = [
   "[hidden]",
   "[style*='display: none']",
   "[style*='display:none']",
-  "[style*='visibility: hidden']",
-  "[style*='visibility:hidden']",
 ];
 
 interface ClickableContext {
@@ -49,11 +48,28 @@ function compactHtml(html: string): string {
 }
 
 function truncateValue(value: string, max: number): string {
-  if (value.length <= max) {
-    return value;
+  let serializedLength = 0;
+  let result = "";
+
+  for (const char of value) {
+    let nextLength = 1;
+    if (char === "&") {
+      nextLength = 5;
+    } else if (char === "<" || char === ">") {
+      nextLength = 4;
+    } else if (char === '"') {
+      nextLength = 6;
+    }
+
+    if (serializedLength + nextLength > max) {
+      break;
+    }
+
+    result += char;
+    serializedLength += nextLength;
   }
 
-  return value.slice(0, max);
+  return result;
 }
 
 function removeNoise($: CheerioAPI): void {
@@ -74,6 +90,43 @@ function removeComments($: CheerioAPI): void {
     });
 }
 
+function markInlineSelfHiddenFallback($: CheerioAPI): void {
+  $(
+    "[style*='visibility: hidden'], [style*='visibility:hidden'], [style*='visibility: collapse'], [style*='visibility:collapse']",
+  ).each(
+    function markInlineVisibilityHidden() {
+      const el = $(this as Element);
+      if (el.attr(OPENSTEER_HIDDEN_ATTR) === undefined) {
+        el.attr(OPENSTEER_SELF_HIDDEN_ATTR, "1");
+      }
+    },
+  );
+}
+
+function pruneSelfHiddenNodes($: CheerioAPI): void {
+  const nodes: Cheerio<Element>[] = [];
+  $(`[${OPENSTEER_SELF_HIDDEN_ATTR}]`).each(function collectSelfHiddenNodes() {
+    nodes.push($(this as Element));
+  });
+  nodes.sort((left, right) => right.parents().length - left.parents().length);
+
+  for (const el of nodes) {
+    if (!el[0]) {
+      continue;
+    }
+
+    el.contents().each(function removeSelfHiddenText(this: AnyNode) {
+      if (this.type === "text") {
+        $(this).remove();
+      }
+    });
+
+    if (el.children().length === 0) {
+      el.remove();
+    }
+  }
+}
+
 function hasDirectText($: CheerioAPI, el: Cheerio<Element>): boolean {
   return (
     el.contents().filter(function hasDirectNodeText(this: AnyNode) {
@@ -84,6 +137,28 @@ function hasDirectText($: CheerioAPI, el: Cheerio<Element>): boolean {
 
 function hasTextDeep(el: Cheerio<Element>): boolean {
   return el.text().trim().length > 0;
+}
+
+function hasActionLabel(attrs: Record<string, string | undefined>): boolean {
+  return (
+    (typeof attrs["aria-label"] === "string" && attrs["aria-label"].trim() !== "") ||
+    (typeof attrs.title === "string" && attrs.title.trim() !== "") ||
+    (typeof attrs.placeholder === "string" && attrs.placeholder.trim() !== "") ||
+    (typeof attrs.value === "string" && attrs.value.trim() !== "")
+  );
+}
+
+function unwrapActionNode($: CheerioAPI, el: Cheerio<Element>): void {
+  if (hasTextDeep(el)) {
+    if (el.prev().length > 0) {
+      el.before(" ");
+    }
+    if (el.next().length > 0) {
+      el.after(" ");
+    }
+  }
+
+  el.replaceWith(el.contents());
 }
 
 function stripToAttrs(el: Cheerio<Element>, keep: Set<string>): void {
@@ -376,6 +451,8 @@ export function cleanForExtraction(html: string): string {
   const $ = cheerio.load(html, { xmlMode: false });
   removeNoise($);
   removeComments($);
+  markInlineSelfHiddenFallback($);
+  pruneSelfHiddenNodes($);
 
   const $clean = cheerio.load(
     $.html()
@@ -394,7 +471,8 @@ export function cleanForExtraction(html: string): string {
     const tag = (node.tagName || "").toLowerCase();
     const cValue = el.attr("c");
     const osBoundary = el.attr(OPENSTEER_BOUNDARY_ATTR);
-    const osUnavailable = el.attr(OPENSTEER_UNAVAILABLE_ATTR);
+    const osNodeId = el.attr(OPENSTEER_NODE_ID_ATTR);
+    const osSparseCounter = el.attr(OPENSTEER_SPARSE_COUNTER_ATTR);
     const srcValue = el.attr("src");
     const srcsetValue = el.attr("srcset");
     const altValue = el.attr("alt");
@@ -415,8 +493,11 @@ export function cleanForExtraction(html: string): string {
     if (osBoundary !== undefined) {
       el.attr(OPENSTEER_BOUNDARY_ATTR, osBoundary);
     }
-    if (osUnavailable !== undefined) {
-      el.attr(OPENSTEER_UNAVAILABLE_ATTR, osUnavailable);
+    if (osNodeId !== undefined) {
+      el.attr(OPENSTEER_NODE_ID_ATTR, osNodeId);
+    }
+    if (osSparseCounter !== undefined) {
+      el.attr(OPENSTEER_SPARSE_COUNTER_ATTR, osSparseCounter);
     }
 
     if (tag === "img") {
@@ -453,9 +534,12 @@ export function cleanForAction(html: string): string {
   const $ = cheerio.load(html, { xmlMode: false });
   removeNoise($);
   removeComments($);
+  markInlineSelfHiddenFallback($);
+  pruneSelfHiddenNodes($);
 
   const clickableMark = "data-clickable-marker";
   const indicatorMark = "data-keep-indicator";
+  const branchMark = "data-keep-branch";
   const context: ClickableContext = {
     hasPreMarked: $(`[${OPENSTEER_INTERACTIVE_ATTR}]`).length > 0,
   };
@@ -469,16 +553,8 @@ export function cleanForAction(html: string): string {
 
   $(`[${clickableMark}]`).each(function markIndicators() {
     const el = $(this as Element);
-    if (hasTextDeep(el)) {
-      return;
-    }
-
     const wrapperAttrs = el.attr() || {};
-    const hasWrapperIndicator =
-      (typeof wrapperAttrs["aria-label"] === "string" &&
-        wrapperAttrs["aria-label"].trim() !== "") ||
-      (typeof wrapperAttrs.title === "string" && wrapperAttrs.title.trim() !== "");
-    if (hasWrapperIndicator) {
+    if (hasTextDeep(el) || hasActionLabel(wrapperAttrs)) {
       return;
     }
 
@@ -488,11 +564,56 @@ export function cleanForAction(html: string): string {
       return;
     }
 
+    const pictureSourceIndicator = el.find("picture source[src], picture source[srcset]").first();
+    if (pictureSourceIndicator.length) {
+      pictureSourceIndicator.attr(indicatorMark, "1");
+      return;
+    }
+
     const semanticIndicator = el
       .find('[aria-label], [title], [data-icon], [role="img"], svg')
       .first();
     if (semanticIndicator.length) {
       semanticIndicator.attr(indicatorMark, "1");
+    }
+  });
+
+  $(`[${clickableMark}]`).each(function removeEmptyClickable() {
+    const el = $(this as Element);
+    const node = el[0];
+    const tag = (node?.tagName || "").toLowerCase();
+    if (NATIVE_INTERACTIVE_TAGS.has(tag) || tag === "a") {
+      return;
+    }
+    if (el.children().length > 0 || hasDirectText($, el)) {
+      return;
+    }
+
+    const wrapperAttrs = el.attr() || {};
+    if (!hasActionLabel(wrapperAttrs)) {
+      el.remove();
+    }
+  });
+
+  $(`[${clickableMark}], [${indicatorMark}]`).each(function markBranches() {
+    let current = $(this as Element).parent();
+
+    while (current.length > 0) {
+      const node = current[0];
+      if (!node || node.type !== "tag") {
+        break;
+      }
+
+      const ancestor = current as Cheerio<Element>;
+      const tag = (((node as Element).tagName || "") as string).toLowerCase();
+      if (ROOT_TAGS.has(tag) || ancestor.attr(clickableMark) !== undefined) {
+        break;
+      }
+
+      if (!isBoundaryTag(tag)) {
+        ancestor.attr(branchMark, "1");
+      }
+      current = ancestor.parent();
     }
   });
 
@@ -516,24 +637,116 @@ export function cleanForAction(html: string): string {
         continue;
       }
 
-      if (
-        el.attr(clickableMark) !== undefined ||
-        el.attr(indicatorMark) !== undefined ||
-        hasDirectText($, el)
-      ) {
+      if (el.attr(clickableMark) !== undefined || el.attr(indicatorMark) !== undefined) {
         continue;
       }
 
-      if (el.children().length === 0) {
+      const insideClickable = el.parents(`[${clickableMark}]`).length > 0;
+      const preserveBranch = el.attr(branchMark) !== undefined;
+      const hasContent = el.children().length > 0 || hasDirectText($, el);
+
+      if (insideClickable || preserveBranch) {
+        if (!hasContent) {
+          el.remove();
+        } else {
+          unwrapActionNode($, el);
+        }
+        changed = true;
+        continue;
+      }
+
+      if (!hasContent) {
         el.remove();
         changed = true;
         continue;
       }
 
-      el.replaceWith(el.contents());
+      unwrapActionNode($, el);
       changed = true;
     }
   }
+
+  $.root()
+    .find("*")
+    .contents()
+    .each(function normalizeActionTextNodes(this: AnyNode) {
+      if (this.type !== "text") {
+        return;
+      }
+
+      const currentText = (this as { data?: string }).data ?? "";
+      const normalized = currentText.replace(/\s+/g, " ");
+      if (normalized.trim() === "") {
+        const previous = (this as { prev?: AnyNode | null }).prev;
+        const next = (this as { next?: AnyNode | null }).next;
+        if (previous != null && next != null) {
+          (this as { data?: string }).data = " ";
+        } else {
+          $(this).remove();
+        }
+        return;
+      }
+
+      (this as { data?: string }).data = normalized;
+    });
+
+  $.root()
+    .find("*")
+    .each(function collapseActionTextRuns() {
+      const parent = $(this as Element);
+      const children = parent.contents().toArray();
+      let run: AnyNode[] = [];
+
+      const flush = () => {
+        if (run.length === 0) {
+          return;
+        }
+
+        const first = run[0];
+        if (!first || first.type !== "text") {
+          run = [];
+          return;
+        }
+
+        const combined = run
+          .map((node) => ((node as { data?: string }).data ?? ""))
+          .join("")
+          .replace(/\s+/g, " ");
+        const startsParent = children[0] === first;
+        const endsParent = children[children.length - 1] === run[run.length - 1];
+        let normalized = combined;
+        if (startsParent) {
+          normalized = normalized.replace(/^\s+/, "");
+        }
+        if (endsParent) {
+          normalized = normalized.replace(/\s+$/, "");
+        }
+
+        if (normalized === "") {
+          for (const node of run) {
+            $(node).remove();
+          }
+        } else {
+          (first as { data?: string }).data = normalized;
+          for (const node of run.slice(1)) {
+            $(node).remove();
+          }
+        }
+
+        run = [];
+      };
+
+      for (const child of children) {
+        if (child.type === "text") {
+          run.push(child);
+          continue;
+        }
+
+        flush();
+      }
+
+      flush();
+    });
 
   $("*").each(function stripActionAttrs() {
     const el = $(this as Element);
@@ -545,7 +758,12 @@ export function cleanForAction(html: string): string {
     const tag = (node.tagName || "").toLowerCase();
     const clickable = el.attr(clickableMark) !== undefined;
     const indicator = el.attr(indicatorMark) !== undefined;
-    const keep = new Set<string>(["c", OPENSTEER_BOUNDARY_ATTR, OPENSTEER_UNAVAILABLE_ATTR]);
+    const keep = new Set<string>([
+      "c",
+      OPENSTEER_BOUNDARY_ATTR,
+      OPENSTEER_NODE_ID_ATTR,
+      OPENSTEER_SPARSE_COUNTER_ATTR,
+    ]);
 
     if (clickable) {
       for (const attr of [
@@ -581,10 +799,11 @@ export function cleanForAction(html: string): string {
 
     el.removeAttr(clickableMark);
     el.removeAttr(indicatorMark);
+    el.removeAttr(branchMark);
     el.removeAttr(OPENSTEER_INTERACTIVE_ATTR);
     el.removeAttr(OPENSTEER_HIDDEN_ATTR);
     el.removeAttr(OPENSTEER_SCROLLABLE_ATTR);
-    el.removeAttr(OPENSTEER_NODE_ID_ATTR);
+    el.removeAttr(OPENSTEER_SELF_HIDDEN_ATTR);
   });
 
   return compactHtml(deduplicateImages($.html()));

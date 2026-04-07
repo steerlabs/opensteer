@@ -2157,6 +2157,58 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     }
   }
 
+  async evaluateFrame(input: {
+    readonly frameRef: FrameRef;
+    readonly script: string;
+    readonly args?: readonly unknown[];
+    readonly timeoutMs?: number;
+  }): Promise<StepResult<unknown>> {
+    const frame = this.requireFrame(input.frameRef);
+    const controller = this.requirePage(frame.pageRef);
+    const startedAt = Date.now();
+
+    try {
+      const executionContextId = await withTimeout(
+        this.ensureFrameExecutionContext(controller, frame.cdpFrameId),
+        input.timeoutMs,
+      );
+      const serialized = JSON.stringify({
+        script: input.script,
+        args: input.args ?? [],
+      });
+      const evaluated = await withTimeout(
+        controller.cdp.send<{
+          readonly result?: {
+            readonly value?: unknown;
+          };
+        }>("Runtime.evaluate", {
+          contextId: executionContextId,
+          expression: `(() => {
+            const input = ${serialized};
+            const evaluated = (0, eval)(input.script);
+            if (typeof evaluated === "function") {
+              return evaluated(...(input.args ?? []));
+            }
+            return evaluated;
+          })()`,
+          returnByValue: true,
+          awaitPromise: true,
+        }),
+        input.timeoutMs,
+      );
+
+      return this.createStepResult(controller.sessionRef, controller.pageRef, startedAt, {
+        frameRef: frame.frameRef,
+        documentRef: frame.currentDocument.documentRef,
+        documentEpoch: frame.currentDocument.documentEpoch,
+        events: this.drainQueuedEvents(controller.pageRef),
+        data: evaluated.result?.value,
+      });
+    } catch (error) {
+      throw normalizeAbpError(error, controller.pageRef);
+    }
+  }
+
   async addInitScript(_input: BrowserInitScriptInput): Promise<BrowserInitScriptRegistration> {
     throw unsupportedCapabilityError("instrumentation.initScripts");
   }
@@ -3687,6 +3739,20 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
       });
     }
     return frame;
+  }
+
+  private async ensureFrameExecutionContext(
+    controller: PageController,
+    cdpFrameId: string,
+  ): Promise<number> {
+    const isolatedWorld = await controller.cdp.send<{
+      readonly executionContextId: number;
+    }>("Page.createIsolatedWorld", {
+      frameId: cdpFrameId,
+      worldName: "__opensteer_snapshot__",
+      grantUniveralAccess: true,
+    });
+    return isolatedWorld.executionContextId;
   }
 
   private requireDocument(documentRef: DocumentRef): DocumentState {

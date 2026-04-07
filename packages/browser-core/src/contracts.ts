@@ -256,6 +256,12 @@ export interface BrowserInspector {
     readonly args?: readonly unknown[];
     readonly timeoutMs?: number;
   }): Promise<StepResult<unknown>>;
+  evaluateFrame(input: {
+    readonly frameRef: FrameRef;
+    readonly script: string;
+    readonly args?: readonly unknown[];
+    readonly timeoutMs?: number;
+  }): Promise<StepResult<unknown>>;
 }
 
 export interface SessionTransportExecutor {
