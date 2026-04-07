@@ -116,6 +116,21 @@ function truncateValue(value: string, max: number): string {
   return `${head}${TRUNCATION_SUFFIX}`;
 }
 
+function getAttrLimit(attr: string): number | undefined {
+  if (URL_ATTRS.has(attr)) {
+    return URL_ATTR_MAX;
+  }
+  if (TEXT_ATTRS.has(attr)) {
+    return TEXT_ATTR_MAX;
+  }
+  return undefined;
+}
+
+function setBoundedAttr(el: Cheerio<Element>, attr: string, value: string): void {
+  const limit = getAttrLimit(attr);
+  el.attr(attr, limit === undefined ? value : truncateValue(value, limit));
+}
+
 function removeNoise($: CheerioAPI): void {
   for (const tag of STRIP_TAGS) {
     $(tag).remove();
@@ -137,14 +152,12 @@ function removeComments($: CheerioAPI): void {
 function markInlineSelfHiddenFallback($: CheerioAPI): void {
   $(
     "[style*='visibility: hidden'], [style*='visibility:hidden'], [style*='visibility: collapse'], [style*='visibility:collapse']",
-  ).each(
-    function markInlineVisibilityHidden() {
-      const el = $(this as Element);
-      if (el.attr(OPENSTEER_HIDDEN_ATTR) === undefined) {
-        el.attr(OPENSTEER_SELF_HIDDEN_ATTR, "1");
-      }
-    },
-  );
+  ).each(function markInlineVisibilityHidden() {
+    const el = $(this as Element);
+    if (el.attr(OPENSTEER_HIDDEN_ATTR) === undefined) {
+      el.attr(OPENSTEER_SELF_HIDDEN_ATTR, "1");
+    }
+  });
 }
 
 function pruneSelfHiddenNodes($: CheerioAPI): void {
@@ -218,22 +231,13 @@ function stripToAttrs(el: Cheerio<Element>, keep: Set<string>): void {
       continue;
     }
 
-    if (URL_ATTRS.has(attr)) {
-      el.attr(attr, truncateValue(value, URL_ATTR_MAX));
-      continue;
-    }
-
-    if (TEXT_ATTRS.has(attr)) {
-      el.attr(attr, truncateValue(value, TEXT_ATTR_MAX));
+    if (getAttrLimit(attr) !== undefined) {
+      setBoundedAttr(el, attr, value);
     }
   }
 }
 
-function restoreBoundedAttr(
-  el: Cheerio<Element>,
-  attr: string,
-  value: string | undefined,
-): void {
+function restoreBoundedAttr(el: Cheerio<Element>, attr: string, value: string | undefined): void {
   if (typeof value !== "string") {
     return;
   }
@@ -243,17 +247,7 @@ function restoreBoundedAttr(
     return;
   }
 
-  if (URL_ATTRS.has(attr)) {
-    el.attr(attr, truncateValue(value, URL_ATTR_MAX));
-    return;
-  }
-
-  if (TEXT_ATTRS.has(attr)) {
-    el.attr(attr, truncateValue(value, TEXT_ATTR_MAX));
-    return;
-  }
-
-  el.attr(attr, value);
+  setBoundedAttr(el, attr, value);
 }
 
 function deduplicateImages(html: string): string {
@@ -764,7 +758,7 @@ export function cleanForAction(html: string): string {
         }
 
         const combined = run
-          .map((node) => ((node as { data?: string }).data ?? ""))
+          .map((node) => (node as { data?: string }).data ?? "")
           .join("")
           .replace(/\s+/g, " ");
         const startsParent = children[0] === first;

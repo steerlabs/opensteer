@@ -64,6 +64,8 @@ export default defineConfig({
       "tests/opensteer/runtime-recipes.test.ts",
       "tests/opensteer/sdk-surface.test.ts",
       "tests/opensteer/skills-installer.test.ts",
+      "tests/opensteer/snapshot-cleaner.test.ts",
+      "tests/opensteer/snapshot-visibility.test.ts",
       "tests/opensteer/workspace-root.test.ts",
       "tests/protocol/public-contract.test.ts",
     ],

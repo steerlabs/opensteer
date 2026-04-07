@@ -215,9 +215,7 @@ async function evaluateFrameBestEffort(
       script,
       args,
     });
-  } catch {
-    // Preserve the old behavior: inaccessible or transient frames are skipped.
-  }
+  } catch {}
 }
 
 export async function markLiveSnapshotSemantics(options: {

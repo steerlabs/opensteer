@@ -38,7 +38,7 @@ describe("action snapshot cleaner", () => {
     );
     expect(cleaned).toContain("Standalone text");
 
-    expect(cleaned).not.toContain("<div c=\"20\">");
+    expect(cleaned).not.toContain('<div c="20">');
     expect(cleaned).not.toContain('<div c="2"');
     expect(cleaned).not.toContain('<span c="6"');
     expect(cleaned).not.toContain('<div c="9"');
@@ -46,9 +46,9 @@ describe("action snapshot cleaner", () => {
   });
 
   test("truncates serialized action srcset output", () => {
-    const srcset = Array.from({ length: 8 }, (_, index) => {
-      const width = (index + 1) * 16;
-      return `https://cdn.example.com/image-${index}.png?wid=${width}&qlt=80 ${width}w`;
+    const srcset = Array.from({ length: 12 }, (_, index) => {
+      const width = (index + 1) * 160;
+      return `https://cdn.example.com/image-${index}.png?token=${"abc123".repeat(12)}&wid=${width}&qlt=80 ${width}w`;
     }).join(", ");
 
     const cleaned = cleanForAction(`
