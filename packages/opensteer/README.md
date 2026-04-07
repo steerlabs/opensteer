@@ -1,30 +1,18 @@
-# Opensteer Package
+# Opensteer
 
-`opensteer` is the main product surface for the repository. It exposes:
+`opensteer` is a browser-backed toolkit for agents exploring websites.
 
-- a semantic SDK with session continuity inside one process
-- a thin JSON-first CLI
-- a local per-session service so CLI commands can share one live browser session
-- browser-native observation and instrumentation primitives
-- deterministic replay through request plans, recipes, and saved evidence
-- HTML-first snapshots, DOM action replay, computer-use actions, descriptor persistence, traces,
-  and artifacts
+It focuses on the parts normal code cannot do reliably on its own:
 
-The package is organized around three lanes:
+- capture real browser traffic from real browser actions
+- inspect captured requests without dumping huge raw payloads
+- replay requests with browser-grade transports
+- read browser cookies, storage, and page state
+- turn discoveries into plain TypeScript with `session.fetch()`
 
-- `Interact`: open pages, navigate, evaluate, inspect DOM state, manage pages, use computer actions
-- `Observe / Instrument`: capture network, capture scripts, add init scripts, route requests, replace scripts
-- `Replay / Execute`: `direct-http`, `context-http`, `page-http`, reverse workflows, request plans, and recipes
+The goal is discovery first, code second. The artifact should usually be working code, not a custom registry abstraction.
 
 ## Install
-
-CLI:
-
-```bash
-npx --yes opensteer@latest skills install
-```
-
-SDK:
 
 ```bash
 pnpm add opensteer
@@ -32,309 +20,194 @@ pnpm exec playwright install chromium
 
 # npm
 npm install opensteer
-
-# Optional ABP backend for `--engine abp`
-pnpm add @opensteer/engine-abp
+npx playwright install chromium
 ```
 
-`npx --yes opensteer@latest skills install` installs the packaged first-party skill pack
-through the upstream `skills` CLI. Use
-`npx --yes opensteer@latest skills install --agent claude-code` when you want to target
-Claude Code explicitly.
+The package uses the Playwright-backed local engine by default.
 
-`opensteer` installs the Playwright-backed local engine by default. Add
-`@opensteer/engine-abp` only when you need the ABP backend.
+## CLI Quickstart
 
-Cloud features require access to an Opensteer Cloud deployment. This repository includes cloud
-client code and shared contracts; the managed Opensteer Cloud service is operated separately.
+```bash
+opensteer open https://example.com --workspace demo
+opensteer goto https://example.com/search --workspace demo --capture-network search
+opensteer network query --workspace demo --capture search --json
+opensteer network detail rec_123 --workspace demo
+opensteer replay rec_123 --workspace demo
+opensteer cookies --workspace demo --domain example.com
+opensteer storage --workspace demo --domain example.com
+opensteer state --workspace demo --domain example.com
+opensteer close --workspace demo
+```
 
-## SDK
+For DOM exploration:
+
+```bash
+opensteer snapshot action --workspace demo
+opensteer click --workspace demo --description "search button" --capture-network search
+opensteer input --workspace demo --description "search input" --text "laptop" --capture-network search
+opensteer extract --workspace demo --description "page summary" --schema-json '{"title":{"element":3}}'
+```
+
+## SDK Quickstart
 
 ```ts
 import { Opensteer } from "opensteer";
 
 const opensteer = new Opensteer({
-  name: "docs-example",
+  workspace: "demo",
   rootDir: process.cwd(),
-  browser: { headless: true },
 });
 
-try {
-  await opensteer.open({
-    url: "https://example.com",
-    browser: {
-      headless: true,
-    },
-  });
-  const snapshot = await opensteer.snapshot("action");
-  const firstButton = snapshot.counters.find((counter) => counter.tagName === "BUTTON");
-  if (firstButton) {
-    await opensteer.click({
-      element: firstButton.element,
-      description: "primary button",
-    });
+await opensteer.open("https://example.com");
+await opensteer.goto("https://example.com/search", {
+  captureNetwork: "search",
+});
+
+const records = await opensteer.network.query({
+  capture: "search",
+  json: true,
+});
+
+const detail = await opensteer.network.detail(records.records[0]!.recordId);
+const replay = await opensteer.network.replay(records.records[0]!.recordId);
+
+console.log(detail.summary.url);
+console.log(replay.transport);
+```
+
+## `session.fetch()`
+
+After discovery, write ordinary TypeScript using `fetch()` on the session.
+
+```ts
+import { Opensteer } from "opensteer";
+
+const opensteer = new Opensteer({
+  workspace: "target",
+  rootDir: process.cwd(),
+});
+
+async function ensureTargetSession() {
+  const cookies = await opensteer.cookies(".target.com");
+  if (cookies.has("visitorId")) {
+    return;
   }
+  await opensteer.goto("https://target.com");
+}
 
-  const extracted = await opensteer.extract({
-    description: "page summary",
-    schema: {
-      url: { source: "current_url" },
-      title: { selector: "title" },
+export async function searchTarget(keyword: string, count = 24) {
+  await ensureTargetSession();
+
+  const response = await opensteer.fetch(
+    "https://redsky.target.com/redsky_aggregations/v1/web/plp_search_v2",
+    {
+      query: {
+        keyword,
+        count,
+        offset: 0,
+        channel: "WEB",
+        platform: "desktop",
+      },
     },
-  });
+  );
 
-  console.log(snapshot.html);
-  console.log(extracted);
-} finally {
-  await opensteer.close();
+  return response.json();
 }
 ```
 
-Browser-backed replay:
+Transport is selected automatically by default. Force it only when discovery showed a specific requirement:
 
 ```ts
-import { Opensteer } from "opensteer";
+const response = await opensteer.fetch("https://api.example.com/search", {
+  query: { keyword: "laptop" },
+  transport: "matched-tls",
+});
+```
 
-const opensteer = new Opensteer({
-  name: "browser-backed-replay",
-  rootDir: process.cwd(),
-  browser: { headless: true },
+## Browser State
+
+Opensteer exposes the browser state agents need for request tracing:
+
+```ts
+const cookies = await opensteer.cookies("example.com");
+const localStorage = await opensteer.storage("example.com", "local");
+const sessionStorage = await opensteer.storage("example.com", "session");
+const state = await opensteer.state("example.com");
+```
+
+`cookies()` returns a lightweight cookie jar:
+
+```ts
+cookies.has("session");
+cookies.get("session");
+cookies.getAll();
+cookies.serialize();
+```
+
+## DOM Automation
+
+```ts
+await opensteer.click({ description: "search button", captureNetwork: "search" });
+await opensteer.input({
+  description: "search input",
+  text: "laptop",
+  pressEnter: true,
+  captureNetwork: "search",
 });
 
-try {
-  await opensteer.open("https://example.com/app");
-  const token = await opensteer.evaluate<string>({
-    script: "() => window.exampleToken",
-  });
-
-  const response = await opensteer.rawRequest({
-    transport: "context-http",
-    url: "https://example.com/api/items",
-    method: "POST",
-    body: {
-      json: { token },
-    },
-  });
-
-  console.log(response.data);
-} finally {
-  await opensteer.close();
-}
-```
-
-Attach to an existing CLI-opened local session:
-
-```ts
-import { Opensteer } from "opensteer";
-
-const opensteer = Opensteer.attach({
-  name: "docs-example",
-  rootDir: process.cwd(),
-});
-
-try {
-  const state = await opensteer.open();
-  console.log(state.url);
-} finally {
-  await opensteer.disconnect();
-}
-```
-
-Launch a cloud session with a specific browser profile:
-
-```ts
-import { Opensteer } from "opensteer";
-
-const opensteer = new Opensteer({
-  cloud: {
-    apiKey: process.env.OPENSTEER_API_KEY!,
-    browserProfile: {
-      profileId: "bp_123",
-      reuseIfActive: true,
-    },
+const data = await opensteer.extract({
+  description: "page summary",
+  schema: {
+    title: { selector: "title" },
+    url: { source: "current_url" },
   },
 });
 ```
 
-Sync cookies from a live Chromium browser into an existing cloud profile:
+Use `snapshot("action")` or `snapshot("extraction")` during exploration. The snapshot result is the filtered HTML string, not a huge raw DOM object.
 
-```ts
-import { OpensteerCloudClient } from "opensteer";
+## Public SDK Surface
 
-const client = new OpensteerCloudClient({
-  apiKey: process.env.OPENSTEER_API_KEY!,
-  baseUrl: process.env.OPENSTEER_BASE_URL ?? "https://api.opensteer.dev",
-});
-
-await client.syncBrowserProfileCookies({
-  profileId: "bp_123",
-  attachEndpoint: "9222",
-  domains: ["github.com"],
-});
-```
-
-## CLI
-
-```bash
-opensteer open https://example.com --name docs-example --headless true
-opensteer open https://example.com --name docs-example --browser attach-live --attach-endpoint 9222
-opensteer open https://example.com --name docs-example --browser snapshot-session \
-  --source-user-data-dir "~/Library/Application Support/Google/Chrome" \
-  --source-profile-directory Default
-opensteer open https://example.com --name docs-example --browser snapshot-authenticated \
-  --source-user-data-dir "~/Library/Application Support/Google/Chrome" \
-  --source-profile-directory "Profile 1"
-opensteer browser discover
-opensteer browser inspect --endpoint 9222
-opensteer local-profile list
-opensteer local-profile inspect --user-data-dir "~/Library/Application Support/Opensteer Chrome"
-opensteer local-profile unlock --user-data-dir "~/Library/Application Support/Opensteer Chrome"
-opensteer profile sync \
-  --profile-id bp_123 \
-  --attach-endpoint 9222 \
-  --domain github.com
-opensteer open https://example.com --name docs-example --engine abp
-opensteer snapshot action --name docs-example
-opensteer click 3 --name docs-example --description "primary button"
-opensteer extract --name docs-example --description "page summary" \
-  --schema '{"url":{"source":"current_url"},"title":{"selector":"title"}}'
-opensteer computer '{"type":"screenshot"}' --name docs-example
-opensteer close --name docs-example
-```
-
-CLI long flags are canonical kebab-case, for example `--root-dir`, `--network-tag`, and
-`--press-enter`. Unknown flags and flags used on the wrong command fail fast instead of being
-silently ignored.
-
-Action and data commands print JSON to stdout. Help commands print human-readable usage text.
-Browser state does not live in the CLI process. It lives
-in the local session service recorded under `.opensteer/runtime/sessions/<name>/service.json`.
-`opensteer computer` prints compact screenshot metadata and points at the persisted image through
-`screenshot.path` for local shells and `screenshot.payload.uri` for the canonical file-backed
-location.
-
-Use `--engine <playwright|abp>` on `open` to choose the backend for a new session. You can also
-set `OPENSTEER_ENGINE=abp` to change the default engine for `open` in the current shell. Engine
-selection is fixed when the session service starts, so `OPENSTEER_ENGINE` and `--engine` only
-affect `open`, not commands like `snapshot` or `click` that attach to an existing session.
-When using `--engine abp`, Opensteer accepts the ABP launch options it can actually honor:
-`--headless`, `--executable-path`, and equivalent `--browser-json` fields for `headless`, `args`,
-and `executablePath`. Unsupported shared browser/context options fail fast instead of being
-ignored.
-
-Use `opensteer local-profile inspect` to diagnose whether a live Chromium profile is safe to reuse
-as a snapshot source or whether it should be attached via CDP instead. `opensteer local-profile unlock`
-remains limited to explicit `stale_lock` recovery; Opensteer does not mutate or take ownership of
-real user-data-dirs as part of `open`.
-
-## Connect To Real Browser
-
-- `managed` launches a fresh isolated Chrome/Chromium process with a temporary `user-data-dir`.
-- `snapshot-session` copies a source profile into a temporary owned browser directory without full authenticated OS-integrated state. Use it when persisted cookies/storage are enough.
-- `snapshot-authenticated` copies a source profile into a temporary owned browser directory and preserves the authenticated browser state needed for harder replay cases.
-- `attach-live` connects to an already-running Chrome/Chromium instance. Pass `endpoint` for an explicit CDP target, or omit it to auto-discover a locally attachable browser.
-
-When you are launching a browser yourself for `attach-live`, prefer a dedicated profile directory:
-
-```bash
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
-  --user-data-dir="$HOME/Library/Application Support/Opensteer Chrome" \
-  --remote-debugging-port=9222
-```
-
-When attaching to an existing browser, Opensteer may land on an already-open tab such as `chrome://newtab`. Pass `--fresh-tab` when you want a clean working page immediately after attach.
-
-## Transport Guide
-
-- `direct-http`: use when the request is replayable without a browser
-- `context-http`: use when browser cookies or browser session state are required
-- `page-http`: use when request execution must happen inside the live page JavaScript world
-
-`goto()` plus `waitForNetwork()` is a separate pattern. It is how you observe the
-page's own traffic; it is not a transport.
-
-## Session Root
-
-By default, Opensteer writes into:
-
-```text
-<cwd>/.opensteer
-```
-
-Important subtrees:
-
-```text
-.opensteer/
-  artifacts/
-  traces/
-  registry/
-  runtime/
-    sessions/
-```
-
-## Public Methods
-
-- `Opensteer.attach({ name?, rootDir? })`
-- `discoverLocalCdpBrowsers({ timeoutMs? })`
-- `inspectCdpEndpoint({ endpoint, headers?, timeoutMs? })`
-- `inspectLocalBrowserProfile({ userDataDir? })`
-- `unlockLocalBrowserProfile({ userDataDir })`
-- `open(url | { url?, name?, browser?, context? })`
-- `goto(url | { url, captureNetwork? })`
-- `evaluate(script | { script, pageRef?, args? })`
-- `evaluateJson({ script, pageRef?, args? })`
-- `waitForNetwork({ ...filters, pageRef?, includeBodies?, timeoutMs? })`
-- `waitForResponse({ ...filters, pageRef?, includeBodies?, timeoutMs? })`
+- `new Opensteer({ workspace?, rootDir?, browser?, provider? })`
+- `open(url | input?)`
+- `info()`
 - `listPages()`
-- `newPage({ url?, openerPageRef? })`
-- `activatePage({ pageRef })`
-- `closePage({ pageRef })`
-- `waitForPage({ openerPageRef?, urlIncludes?, timeoutMs? })`
+- `newPage()`
+- `activatePage()`
+- `closePage()`
+- `goto(url, { captureNetwork? })`
+- `evaluate(script | input)`
+- `evaluateJson(input)`
+- `addInitScript(input)`
 - `snapshot("action" | "extraction")`
-- `click({ element | selector | description, captureNetwork? })`
-- `hover({ element | selector | description, captureNetwork? })`
-- `input({ element | selector | description, text, captureNetwork? })`
-- `scroll({ element | selector | description, direction, amount, captureNetwork? })`
+- `click({ element? | selector? | description?, captureNetwork? })`
+- `hover({ element? | selector? | description?, captureNetwork? })`
+- `input({ text, element? | selector? | description?, captureNetwork? })`
+- `scroll({ direction, amount, element? | selector? | description?, captureNetwork? })`
 - `extract({ description, schema? })`
-- `queryNetwork({ recordId?, requestId?, capture?, tag?, url?, hostname?, path?, method?, status?, resourceType?, pageRef?, includeBodies?, limit? })`
-- `tagNetwork({ tag, ...filters })`
-- `clearNetwork({ tag? })`
-- `captureScripts({ pageRef?, includeInline?, includeExternal?, includeDynamic?, includeWorkers?, urlFilter?, persist? })`
-- `addInitScript({ script, args?, pageRef? })`
-- `route({ urlPattern, resourceTypes?, times?, handler })`
-- `interceptScript({ urlPattern, handler, times? })`
-- `rawRequest({ transport?, pageRef?, url, method?, headers?, body?, followRedirects? })`
-- `inferRequestPlan({ recordId, key, version, transport? })`
-- `writeRequestPlan({ key, version, payload, tags?, provenance?, freshness? })`
-- `getRequestPlan({ key, version? })`
-- `listRequestPlans({ key? })`
-- `writeRecipe({ key, version, payload, tags?, provenance? })`
-- `getRecipe({ key, version? })`
-- `listRecipes({ key? })`
-- `runRecipe({ key, version?, input? })`
-- `request(key, { path?, query?, headers?, body? })`
-- `computerExecute({ action, screenshot?, captureNetwork? })`
-- `disconnect()`
+- `network.query(input?)`
+- `network.detail(recordId)`
+- `network.replay(recordId, overrides?)`
+- `waitForNetwork(input?)`
+- `waitForResponse(input?)`
+- `waitForPage(input?)`
+- `cookies(domain?)`
+- `storage(domain?, "local" | "session")`
+- `state(domain?)`
+- `fetch(url, options?)`
+- `computerExecute(input)`
+- `route(input)`
+- `interceptScript(input)`
+- `browser.status()`
+- `browser.clone(input)`
+- `browser.reset()`
+- `browser.delete()`
 - `close()`
+- `disconnect()`
 
-`element` targets use counters from the latest snapshot. `description` replays a stored descriptor.
-`selector` resolves a CSS selector directly and, when not explicitly scoped, searches the current
-page before falling back to child frames.
+## Design Notes
 
-Use `disconnect()` for attached sessions when you want to release the SDK handle but keep the
-underlying session alive. Use `close()` when you want to destructively end the session.
-
-Profile inspection is independent from session ownership. `inspectLocalBrowserProfile()` returns a
-structured status union (`available`, `unsupported_default_user_data_dir`, `opensteer_owned`,
-`browser_owned`, `stale_lock`) that launch, CLI, and SDK all consume. Failed owned launches throw
-`OpensteerLocalProfileUnavailableError` with the inspection attached for programmatic handling.
-
-The reverse-engineering workflow is: perform a browser action, inspect traffic with
-`queryNetwork()`, optionally instrument with `addInitScript()`, `route()`, or
-`captureScripts()`, experiment with `rawRequest()`, promote a record with
-`inferRequestPlan()`, passing `transport` when you have already proven a portable
-request path, then replay with `request()`.
-
-`route()` and `interceptScript()` are available on owned local sessions and
-cloud-managed sessions. They remain unavailable on attached sessions because
-attached browsers do not provide an owned routing surface.
+- `network query` is intentionally summary-oriented. Use `network detail` for deep inspection.
+- `replay` is transport-aware and should usually replace manual probe logic.
+- `browser status` intentionally does not leak the raw browser websocket endpoint.
+- The package also exports advanced cloud and browser-management utilities, but the core agent workflow is the local discovery-first SDK and CLI shown above.

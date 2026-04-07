@@ -12,6 +12,8 @@ import type { CaptchaProvider, CaptchaType } from "./captcha.js";
 import { captchaProviderSchema, captchaTypeSchema } from "./captcha.js";
 import type { JsonSchema, JsonValue } from "./json.js";
 import { pageRefSchema, type PageRef } from "./identity.js";
+import { cookieRecordSchema, storageEntrySchema } from "./storage.js";
+import type { CookieRecord, StorageEntry } from "./storage.js";
 import {
   arraySchema,
   defineSchema,
@@ -377,14 +379,184 @@ export interface OpensteerNetworkQueryInput {
   readonly hostname?: string;
   readonly path?: string;
   readonly method?: string;
-  readonly status?: string;
+  readonly status?: string | number;
   readonly resourceType?: NetworkResourceType;
   readonly includeBodies?: boolean;
+  readonly json?: boolean;
+  readonly before?: string;
+  readonly after?: string;
   readonly limit?: number;
 }
 
+export interface OpensteerGraphqlSummary {
+  readonly operationType?: "query" | "mutation" | "subscription" | "unknown";
+  readonly operationName?: string;
+  readonly persisted?: boolean;
+}
+
+export interface OpensteerNetworkBodySummary {
+  readonly bytes?: number;
+  readonly contentType?: string;
+  readonly streaming?: boolean;
+}
+
+export interface OpensteerNetworkSummaryRecord {
+  readonly recordId: string;
+  readonly capture?: string;
+  readonly savedAt?: number;
+  readonly kind: NetworkQueryRecord["record"]["kind"];
+  readonly method: string;
+  readonly status?: number;
+  readonly resourceType: NetworkResourceType;
+  readonly url: string;
+  readonly request?: OpensteerNetworkBodySummary;
+  readonly response?: OpensteerNetworkBodySummary;
+  readonly graphql?: OpensteerGraphqlSummary;
+  readonly websocket?: {
+    readonly subprotocol?: string;
+  };
+}
+
 export interface OpensteerNetworkQueryOutput {
-  readonly records: readonly NetworkQueryRecord[];
+  readonly records: readonly OpensteerNetworkSummaryRecord[];
+}
+
+export interface OpensteerParsedCookie {
+  readonly name: string;
+  readonly value: string;
+}
+
+export interface OpensteerStructuredBodyPreview {
+  readonly contentType?: string;
+  readonly bytes: number;
+  readonly truncated: boolean;
+  readonly data?: JsonValue | string;
+  readonly note?: string;
+}
+
+export interface OpensteerNetworkRedirectHop {
+  readonly method: string;
+  readonly status?: number;
+  readonly url: string;
+  readonly location?: string;
+  readonly setCookie?: readonly string[];
+}
+
+export interface OpensteerNetworkDetailOutput {
+  readonly recordId: string;
+  readonly capture?: string;
+  readonly savedAt?: number;
+  readonly summary: OpensteerNetworkSummaryRecord;
+  readonly requestHeaders: readonly HeaderEntry[];
+  readonly responseHeaders: readonly HeaderEntry[];
+  readonly cookiesSent?: readonly OpensteerParsedCookie[];
+  readonly requestBody?: OpensteerStructuredBodyPreview;
+  readonly responseBody?: OpensteerStructuredBodyPreview;
+  readonly graphql?: OpensteerGraphqlSummary & {
+    readonly variables?: JsonValue;
+  };
+  readonly redirectChain?: readonly OpensteerNetworkRedirectHop[];
+  readonly notes?: readonly string[];
+}
+
+export interface OpensteerReplayAttempt {
+  readonly transport: TransportKind;
+  readonly status?: number;
+  readonly ok: boolean;
+  readonly durationMs: number;
+  readonly note?: string;
+  readonly error?: string;
+}
+
+export interface OpensteerNetworkReplayOverrides {
+  readonly query?: OpensteerRequestScalarMap;
+  readonly headers?: OpensteerRequestScalarMap;
+  readonly body?: OpensteerRequestBodyInput;
+  readonly variables?: JsonValue;
+}
+
+export interface OpensteerNetworkReplayInput extends OpensteerNetworkReplayOverrides {
+  readonly recordId: string;
+  readonly pageRef?: PageRef;
+}
+
+export interface OpensteerNetworkReplayOutput {
+  readonly recordId: string;
+  readonly transport?: TransportKind;
+  readonly attempts: readonly OpensteerReplayAttempt[];
+  readonly response?: OpensteerRequestResponseResult;
+  readonly data?: JsonValue | string;
+  readonly note?: string;
+}
+
+export type OpensteerSessionFetchTransport = "auto" | "direct" | "matched-tls" | "page";
+
+export interface OpensteerSessionFetchInput {
+  readonly pageRef?: PageRef;
+  readonly url: string;
+  readonly method?: string;
+  readonly query?: OpensteerRequestScalarMap;
+  readonly headers?: OpensteerRequestScalarMap;
+  readonly body?: OpensteerRequestBodyInput;
+  readonly transport?: OpensteerSessionFetchTransport;
+  readonly cookies?: boolean;
+  readonly followRedirects?: boolean;
+}
+
+export interface OpensteerSessionFetchOutput {
+  readonly transport?: TransportKind;
+  readonly attempts: readonly OpensteerReplayAttempt[];
+  readonly response?: OpensteerRequestResponseResult;
+  readonly data?: JsonValue | string;
+  readonly note?: string;
+}
+
+export interface OpensteerCookieQueryInput {
+  readonly domain?: string;
+}
+
+export interface OpensteerCookieQueryOutput {
+  readonly domain?: string;
+  readonly cookies: readonly CookieRecord[];
+}
+
+export type OpensteerStorageArea = "local" | "session";
+
+export interface OpensteerStorageQueryInput {
+  readonly domain?: string;
+}
+
+export interface OpensteerStorageDomainSnapshot {
+  readonly domain: string;
+  readonly localStorage: readonly StorageEntry[];
+  readonly sessionStorage: readonly StorageEntry[];
+}
+
+export interface OpensteerStorageQueryOutput {
+  readonly domains: readonly OpensteerStorageDomainSnapshot[];
+}
+
+export interface OpensteerHiddenField {
+  readonly path: string;
+  readonly name: string;
+  readonly value: string;
+}
+
+export interface OpensteerStateDomainSnapshot {
+  readonly domain: string;
+  readonly cookies: readonly CookieRecord[];
+  readonly hiddenFields: readonly OpensteerHiddenField[];
+  readonly localStorage: readonly StorageEntry[];
+  readonly sessionStorage: readonly StorageEntry[];
+  readonly globals?: Readonly<Record<string, JsonValue>>;
+}
+
+export interface OpensteerStateQueryInput {
+  readonly domain?: string;
+}
+
+export interface OpensteerStateQueryOutput {
+  readonly domains: readonly OpensteerStateDomainSnapshot[];
 }
 
 export interface OpensteerNetworkTagInput {
@@ -1274,23 +1446,305 @@ export const opensteerNetworkQueryInputSchema: JsonSchema = objectSchema(
     hostname: stringSchema({ minLength: 1 }),
     path: stringSchema({ minLength: 1 }),
     method: stringSchema({ minLength: 1 }),
-    status: stringSchema({ minLength: 1 }),
+    status: oneOfSchema([
+      integerSchema({ minimum: 100, maximum: 599 }),
+      stringSchema({ minLength: 1 }),
+    ]),
     resourceType: networkResourceTypeSchema,
     includeBodies: { type: "boolean" },
-    limit: integerSchema({ minimum: 1, maximum: 200 }),
+    json: { type: "boolean" },
+    before: stringSchema({ minLength: 1 }),
+    after: stringSchema({ minLength: 1 }),
+    limit: integerSchema({ minimum: 1, maximum: 1000 }),
   },
   {
     title: "OpensteerNetworkQueryInput",
   },
 );
 
+const opensteerGraphqlSummarySchema: JsonSchema = objectSchema(
+  {
+    operationType: enumSchema(["query", "mutation", "subscription", "unknown"] as const),
+    operationName: stringSchema({ minLength: 1 }),
+    persisted: { type: "boolean" },
+  },
+  {
+    title: "OpensteerGraphqlSummary",
+  },
+);
+
+const opensteerNetworkBodySummarySchema: JsonSchema = objectSchema(
+  {
+    bytes: integerSchema({ minimum: 0 }),
+    contentType: stringSchema({ minLength: 1 }),
+    streaming: { type: "boolean" },
+  },
+  {
+    title: "OpensteerNetworkBodySummary",
+  },
+);
+
+export const opensteerNetworkSummaryRecordSchema: JsonSchema = objectSchema(
+  {
+    recordId: stringSchema({ minLength: 1 }),
+    capture: stringSchema({ minLength: 1 }),
+    savedAt: integerSchema({ minimum: 0 }),
+    kind: enumSchema(["http", "websocket", "event-stream"] as const),
+    method: stringSchema({ minLength: 1 }),
+    status: integerSchema({ minimum: 100, maximum: 599 }),
+    resourceType: networkResourceTypeSchema,
+    url: stringSchema({ minLength: 1 }),
+    request: opensteerNetworkBodySummarySchema,
+    response: opensteerNetworkBodySummarySchema,
+    graphql: opensteerGraphqlSummarySchema,
+    websocket: objectSchema(
+      {
+        subprotocol: stringSchema({ minLength: 1 }),
+      },
+      {
+        title: "OpensteerWebsocketSummary",
+      },
+    ),
+  },
+  {
+    title: "OpensteerNetworkSummaryRecord",
+    required: ["recordId", "kind", "method", "resourceType", "url"],
+  },
+);
+
 export const opensteerNetworkQueryOutputSchema: JsonSchema = objectSchema(
   {
-    records: arraySchema(networkQueryRecordSchema),
+    records: arraySchema(opensteerNetworkSummaryRecordSchema),
   },
   {
     title: "OpensteerNetworkQueryOutput",
     required: ["records"],
+  },
+);
+
+const opensteerParsedCookieSchema: JsonSchema = objectSchema(
+  {
+    name: stringSchema({ minLength: 1 }),
+    value: stringSchema(),
+  },
+  {
+    title: "OpensteerParsedCookie",
+    required: ["name", "value"],
+  },
+);
+
+const opensteerStructuredBodyPreviewSchema: JsonSchema = objectSchema(
+  {
+    contentType: stringSchema({ minLength: 1 }),
+    bytes: integerSchema({ minimum: 0 }),
+    truncated: { type: "boolean" },
+    data: oneOfSchema([jsonValueSchema, stringSchema()]),
+    note: stringSchema(),
+  },
+  {
+    title: "OpensteerStructuredBodyPreview",
+    required: ["bytes", "truncated"],
+  },
+);
+
+const opensteerNetworkRedirectHopSchema: JsonSchema = objectSchema(
+  {
+    method: stringSchema({ minLength: 1 }),
+    status: integerSchema({ minimum: 100, maximum: 599 }),
+    url: stringSchema({ minLength: 1 }),
+    location: stringSchema({ minLength: 1 }),
+    setCookie: arraySchema(stringSchema()),
+  },
+  {
+    title: "OpensteerNetworkRedirectHop",
+    required: ["method", "url"],
+  },
+);
+
+export const opensteerNetworkDetailOutputSchema: JsonSchema = objectSchema(
+  {
+    recordId: stringSchema({ minLength: 1 }),
+    capture: stringSchema({ minLength: 1 }),
+    savedAt: integerSchema({ minimum: 0 }),
+    summary: opensteerNetworkSummaryRecordSchema,
+    requestHeaders: arraySchema(headerEntrySchema),
+    responseHeaders: arraySchema(headerEntrySchema),
+    cookiesSent: arraySchema(opensteerParsedCookieSchema),
+    requestBody: opensteerStructuredBodyPreviewSchema,
+    responseBody: opensteerStructuredBodyPreviewSchema,
+    graphql: objectSchema(
+      {
+        operationType: enumSchema(["query", "mutation", "subscription", "unknown"] as const),
+        operationName: stringSchema({ minLength: 1 }),
+        persisted: { type: "boolean" },
+        variables: jsonValueSchema,
+      },
+      {
+        title: "OpensteerGraphqlDetail",
+      },
+    ),
+    redirectChain: arraySchema(opensteerNetworkRedirectHopSchema),
+    notes: arraySchema(stringSchema()),
+  },
+  {
+    title: "OpensteerNetworkDetailOutput",
+    required: ["recordId", "summary", "requestHeaders", "responseHeaders"],
+  },
+);
+
+const opensteerReplayAttemptSchema: JsonSchema = objectSchema(
+  {
+    transport: transportKindSchema,
+    status: integerSchema({ minimum: 100, maximum: 599 }),
+    ok: { type: "boolean" },
+    durationMs: integerSchema({ minimum: 0 }),
+    note: stringSchema(),
+    error: stringSchema(),
+  },
+  {
+    title: "OpensteerReplayAttempt",
+    required: ["transport", "ok", "durationMs"],
+  },
+);
+
+export const opensteerNetworkReplayInputSchema: JsonSchema = objectSchema(
+  {
+    recordId: stringSchema({ minLength: 1 }),
+    pageRef: pageRefSchema,
+    query: opensteerRequestScalarMapSchema,
+    headers: opensteerRequestScalarMapSchema,
+    body: opensteerRequestBodyInputSchema,
+    variables: jsonValueSchema,
+  },
+  {
+    title: "OpensteerNetworkReplayInput",
+    required: ["recordId"],
+  },
+);
+
+export let opensteerNetworkReplayOutputSchema: JsonSchema;
+
+const opensteerSessionFetchTransportSchema: JsonSchema = enumSchema(
+  ["auto", "direct", "matched-tls", "page"] as const,
+  {
+    title: "OpensteerSessionFetchTransport",
+  },
+);
+
+export const opensteerSessionFetchInputSchema: JsonSchema = objectSchema(
+  {
+    pageRef: pageRefSchema,
+    url: stringSchema({ minLength: 1 }),
+    method: stringSchema({ minLength: 1 }),
+    query: opensteerRequestScalarMapSchema,
+    headers: opensteerRequestScalarMapSchema,
+    body: opensteerRequestBodyInputSchema,
+    transport: opensteerSessionFetchTransportSchema,
+    cookies: { type: "boolean" },
+    followRedirects: { type: "boolean" },
+  },
+  {
+    title: "OpensteerSessionFetchInput",
+    required: ["url"],
+  },
+);
+
+export let opensteerSessionFetchOutputSchema: JsonSchema;
+
+export const opensteerCookieQueryInputSchema: JsonSchema = objectSchema(
+  {
+    domain: stringSchema({ minLength: 1 }),
+  },
+  {
+    title: "OpensteerCookieQueryInput",
+  },
+);
+
+export const opensteerCookieQueryOutputSchema: JsonSchema = objectSchema(
+  {
+    domain: stringSchema({ minLength: 1 }),
+    cookies: arraySchema(cookieRecordSchema),
+  },
+  {
+    title: "OpensteerCookieQueryOutput",
+    required: ["cookies"],
+  },
+);
+
+const opensteerStorageDomainSnapshotSchema: JsonSchema = objectSchema(
+  {
+    domain: stringSchema({ minLength: 1 }),
+    localStorage: arraySchema(storageEntrySchema),
+    sessionStorage: arraySchema(storageEntrySchema),
+  },
+  {
+    title: "OpensteerStorageDomainSnapshot",
+    required: ["domain", "localStorage", "sessionStorage"],
+  },
+);
+
+export const opensteerStorageQueryInputSchema: JsonSchema = objectSchema(
+  {
+    domain: stringSchema({ minLength: 1 }),
+  },
+  {
+    title: "OpensteerStorageQueryInput",
+  },
+);
+
+export const opensteerStorageQueryOutputSchema: JsonSchema = objectSchema(
+  {
+    domains: arraySchema(opensteerStorageDomainSnapshotSchema),
+  },
+  {
+    title: "OpensteerStorageQueryOutput",
+    required: ["domains"],
+  },
+);
+
+const opensteerHiddenFieldSchema: JsonSchema = objectSchema(
+  {
+    path: stringSchema({ minLength: 1 }),
+    name: stringSchema({ minLength: 1 }),
+    value: stringSchema(),
+  },
+  {
+    title: "OpensteerHiddenField",
+    required: ["path", "name", "value"],
+  },
+);
+
+const opensteerStateDomainSnapshotSchema: JsonSchema = objectSchema(
+  {
+    domain: stringSchema({ minLength: 1 }),
+    cookies: arraySchema(cookieRecordSchema),
+    hiddenFields: arraySchema(opensteerHiddenFieldSchema),
+    localStorage: arraySchema(storageEntrySchema),
+    sessionStorage: arraySchema(storageEntrySchema),
+    globals: recordSchema(jsonValueSchema),
+  },
+  {
+    title: "OpensteerStateDomainSnapshot",
+    required: ["domain", "cookies", "hiddenFields", "localStorage", "sessionStorage"],
+  },
+);
+
+export const opensteerStateQueryInputSchema: JsonSchema = objectSchema(
+  {
+    domain: stringSchema({ minLength: 1 }),
+  },
+  {
+    title: "OpensteerStateQueryInput",
+  },
+);
+
+export const opensteerStateQueryOutputSchema: JsonSchema = objectSchema(
+  {
+    domains: arraySchema(opensteerStateDomainSnapshotSchema),
+  },
+  {
+    title: "OpensteerStateQueryOutput",
+    required: ["domains"],
   },
 );
 
@@ -1550,6 +2004,35 @@ export const opensteerRequestResponseResultSchema: JsonSchema = objectSchema(
   {
     title: "OpensteerRequestResponseResult",
     required: ["url", "status", "statusText", "headers", "redirected"],
+  },
+);
+
+opensteerNetworkReplayOutputSchema = objectSchema(
+  {
+    recordId: stringSchema({ minLength: 1 }),
+    transport: transportKindSchema,
+    attempts: arraySchema(opensteerReplayAttemptSchema),
+    response: opensteerRequestResponseResultSchema,
+    data: oneOfSchema([jsonValueSchema, stringSchema()]),
+    note: stringSchema(),
+  },
+  {
+    title: "OpensteerNetworkReplayOutput",
+    required: ["recordId", "attempts"],
+  },
+);
+
+opensteerSessionFetchOutputSchema = objectSchema(
+  {
+    transport: transportKindSchema,
+    attempts: arraySchema(opensteerReplayAttemptSchema),
+    response: opensteerRequestResponseResultSchema,
+    data: oneOfSchema([jsonValueSchema, stringSchema()]),
+    note: stringSchema(),
+  },
+  {
+    title: "OpensteerSessionFetchOutput",
+    required: ["attempts"],
   },
 );
 

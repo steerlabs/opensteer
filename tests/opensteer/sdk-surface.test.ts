@@ -22,6 +22,13 @@ const state = vi.hoisted(() => {
         selector: '[data-cell="A1"]',
       },
     })),
+    computerExecute: vi.fn(async () => ({
+      pageRef: "page:test",
+      actionId: "computer:test",
+      screenshot: {
+        path: "/tmp/screenshot.png",
+      },
+    })),
     snapshot: vi.fn(async (input = {}) => ({
       url: "https://example.com",
       title: "Workspace Runtime",
@@ -191,8 +198,28 @@ describe("Opensteer v2 SDK surface", () => {
     expect(state.runtime.snapshot).toHaveBeenCalledWith({
       mode: "action",
     });
-    expect(snapshot).toMatchObject({
-      mode: "action",
+    expect(snapshot).toBe("<html></html>");
+  });
+
+  test("computerExecute forwards computer actions to the semantic runtime", async () => {
+    const opensteer = new Opensteer({
+      workspace: "github-sync",
+    });
+
+    await opensteer.computerExecute({
+      action: {
+        type: "click",
+        x: 10,
+        y: 20,
+      },
+    });
+
+    expect(state.runtime.computerExecute).toHaveBeenCalledWith({
+      action: {
+        type: "click",
+        x: 10,
+        y: 20,
+      },
     });
   });
 

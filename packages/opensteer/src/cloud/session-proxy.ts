@@ -7,7 +7,6 @@ import { OPENSTEER_RUNTIME_CORE_VERSION } from "@opensteer/runtime-core";
 import type {
   OpensteerArtifactReadInput,
   OpensteerArtifactReadOutput,
-  CookieRecord,
   OpensteerAddInitScriptInput,
   OpensteerAddInitScriptOutput,
   OpensteerCaptchaSolveInput,
@@ -40,6 +39,9 @@ import type {
   OpensteerNetworkMinimizeOutput,
   OpensteerNetworkQueryInput,
   OpensteerNetworkQueryOutput,
+  OpensteerNetworkDetailOutput,
+  OpensteerNetworkReplayInput,
+  OpensteerNetworkReplayOutput,
   OpensteerNetworkTagInput,
   OpensteerNetworkTagOutput,
   OpensteerInteractionCaptureInput,
@@ -75,6 +77,8 @@ import type {
   OpensteerRunAuthRecipeInput,
   OpensteerRunAuthRecipeOutput,
   OpensteerSessionInfo,
+  OpensteerSessionFetchInput,
+  OpensteerSessionFetchOutput,
   OpensteerScriptBeautifyInput,
   OpensteerScriptBeautifyOutput,
   OpensteerScriptDeobfuscateInput,
@@ -106,11 +110,19 @@ import type {
   OpensteerWriteAuthRecipeInput,
   OpensteerWriteRequestPlanInput,
   OpensteerActionResult,
+  OpensteerCookieQueryInput,
+  OpensteerCookieQueryOutput,
   OpensteerSessionGrant,
-  StorageSnapshot,
+  OpensteerStateQueryInput,
+  OpensteerStateQueryOutput,
+  OpensteerStorageQueryInput,
+  OpensteerStorageQueryOutput,
   ObservabilityConfig,
 } from "@opensteer/protocol";
-import { OPENSTEER_PROTOCOL_VERSION, opensteerSemanticOperationNames } from "@opensteer/protocol";
+import {
+  OPENSTEER_PROTOCOL_VERSION,
+  opensteerExposedSemanticOperationNames,
+} from "@opensteer/protocol";
 import type { CloudBrowserProfilePreference } from "@opensteer/protocol";
 
 import type { AuthRecipeRecord, RecipeRecord, RequestPlanRecord } from "../registry.js";
@@ -243,7 +255,7 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
       reconnectable:
         this.workspace !== undefined || this.sessionId !== undefined || persisted !== undefined,
       capabilities: {
-        semanticOperations: opensteerSemanticOperationNames,
+        semanticOperations: opensteerExposedSemanticOperationNames,
         sessionGrants: ["semantic", "automation", "view", "cdp"],
         instrumentation: {
           route: true,
@@ -326,6 +338,18 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
   async queryNetwork(input: OpensteerNetworkQueryInput = {}): Promise<OpensteerNetworkQueryOutput> {
     await this.ensureSession();
     return this.requireClient().invoke("network.query", input);
+  }
+
+  async getNetworkDetail(input: {
+    readonly recordId: string;
+  }): Promise<OpensteerNetworkDetailOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("network.detail", input);
+  }
+
+  async replayNetwork(input: OpensteerNetworkReplayInput): Promise<OpensteerNetworkReplayOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("network.replay", input);
   }
 
   async tagNetwork(input: OpensteerNetworkTagInput): Promise<OpensteerNetworkTagOutput> {
@@ -478,11 +502,9 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     return this.requireClient().invoke("captcha.solve", input);
   }
 
-  async getCookies(
-    input: { readonly urls?: readonly string[] } = {},
-  ): Promise<readonly CookieRecord[]> {
+  async getCookies(input: OpensteerCookieQueryInput = {}): Promise<OpensteerCookieQueryOutput> {
     await this.ensureSession();
-    return this.requireAutomation().invoke("inspect.cookies", input);
+    return this.requireClient().invoke("session.cookies", input);
   }
 
   async route(input: OpensteerRouteOptions): Promise<OpensteerRouteRegistration> {
@@ -498,13 +520,20 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
   }
 
   async getStorageSnapshot(
-    input: {
-      readonly includeSessionStorage?: boolean;
-      readonly includeIndexedDb?: boolean;
-    } = {},
-  ): Promise<StorageSnapshot> {
+    input: OpensteerStorageQueryInput = {},
+  ): Promise<OpensteerStorageQueryOutput> {
     await this.ensureSession();
-    return this.requireClient().invoke("inspect.storage", input);
+    return this.requireClient().invoke("session.storage", input);
+  }
+
+  async getBrowserState(input: OpensteerStateQueryInput = {}): Promise<OpensteerStateQueryOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("session.state", input);
+  }
+
+  async fetch(input: OpensteerSessionFetchInput): Promise<OpensteerSessionFetchOutput> {
+    await this.ensureSession();
+    return this.requireClient().invoke("session.fetch", input);
   }
 
   async rawRequest(input: OpensteerRawRequestInput): Promise<OpensteerRawRequestOutput> {

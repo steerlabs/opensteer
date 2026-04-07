@@ -412,9 +412,6 @@ describe("semantic protocol descriptors", () => {
     expect(
       opensteerSemanticOperationSpecificationMap["scripts.capture"]?.requiredCapabilities,
     ).toEqual(["inspect.html", "inspect.network", "inspect.networkBodies"]);
-    expect(
-      opensteerSemanticOperationSpecificationMap["request.execute"]?.requiredCapabilities,
-    ).toEqual([]);
   });
 
   test("uses the dedicated semantic REST namespace and capability resolution rules", () => {
@@ -427,8 +424,8 @@ describe("semantic protocol descriptors", () => {
     const computerEndpoint = opensteerSemanticRestEndpoints.find(
       (endpoint) => endpoint.name === "computer.execute",
     );
-    const requestEndpoint = opensteerSemanticRestEndpoints.find(
-      (endpoint) => endpoint.name === "request.execute",
+    const fetchEndpoint = opensteerSemanticRestEndpoints.find(
+      (endpoint) => endpoint.name === "session.fetch",
     );
 
     expect(openEndpoint?.path).toBe(
@@ -440,9 +437,12 @@ describe("semantic protocol descriptors", () => {
     expect(computerEndpoint?.path).toBe(
       `${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/computer/execute`,
     );
-    expect(requestEndpoint?.path).toBe(
-      `${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/request/execute`,
+    expect(fetchEndpoint?.path).toBe(
+      `${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/session/fetch`,
     );
+    expect(
+      opensteerSemanticRestEndpoints.find((endpoint) => endpoint.name === "request.execute"),
+    ).toBeUndefined();
     expect(
       resolveSemanticRequiredCapabilities(
         opensteerSemanticOperationSpecificationMap["session.open"]!,
@@ -482,33 +482,6 @@ describe("semantic protocol descriptors", () => {
         },
       ),
     ).toEqual(["input.keyboard", "artifacts.screenshot", "inspect.viewportMetrics"]);
-    expect(
-      resolveSemanticRequiredCapabilities(
-        opensteerSemanticOperationSpecificationMap["request.raw"]!,
-        {
-          url: "https://example.com/api/data",
-          transport: "context-http",
-        },
-      ),
-    ).toEqual(["inspect.cookies"]);
-    expect(
-      resolveSemanticRequiredCapabilities(
-        opensteerSemanticOperationSpecificationMap["request.raw"]!,
-        {
-          url: "https://example.com/api/data",
-          transport: "session-http",
-        },
-      ),
-    ).toEqual(["transport.sessionHttp"]);
-    expect(
-      resolveSemanticRequiredCapabilities(
-        opensteerSemanticOperationSpecificationMap["request.raw"]!,
-        {
-          url: "https://example.com/api/data",
-          transport: "page-http",
-        },
-      ),
-    ).toEqual(["pages.manage"]);
     expect(
       resolveSemanticRequiredCapabilities(
         opensteerSemanticOperationSpecificationMap["page.add-init-script"]!,
@@ -586,91 +559,6 @@ describe("semantic protocol descriptors", () => {
     expect(
       computerOutputSchema?.properties?.screenshot?.properties?.payload?.properties,
     ).not.toHaveProperty("data");
-  });
-
-  test("validates request workflow shapes at the semantic boundary", () => {
-    expect(() =>
-      assertValidSemanticOperationInput("request-plan.write", {
-        key: "get-user",
-        version: "1.0.0",
-        payload: {
-          transport: {
-            kind: "session-http",
-            requiresBrowser: true,
-          },
-          endpoint: {
-            method: "GET",
-            urlTemplate: "https://example.com/users/{userId}",
-          },
-          parameters: [
-            {
-              name: "userId",
-              in: "path",
-            },
-          ],
-        },
-      }),
-    ).not.toThrow();
-    expect(() =>
-      assertValidSemanticOperationInput("request-plan.write", {
-        key: "get-user",
-        version: "1.0.0",
-        lifecycle: "active",
-        payload: {
-          transport: {
-            kind: "session-http",
-            requiresBrowser: true,
-          },
-          endpoint: {
-            method: "GET",
-            urlTemplate: "https://example.com/users/{userId}",
-          },
-        },
-      }),
-    ).toThrow(/invalid request-plan\.write input/i);
-    expect(() =>
-      assertValidSemanticOperationInput("request-plan.infer", {
-        recordId: "rec_123",
-        key: "get-user",
-        version: "1.0.0",
-      }),
-    ).not.toThrow();
-    expect(() =>
-      assertValidSemanticOperationInput("request-plan.infer", {
-        recordId: "rec_123",
-        key: "get-user",
-        version: "1.0.0",
-        transport: "direct-http",
-      }),
-    ).not.toThrow();
-    expect(() =>
-      assertValidSemanticOperationInput("request-plan.infer", {
-        recordId: "rec_123",
-        key: "get-user",
-        version: "1.0.0",
-        transport: "page-http",
-      }),
-    ).not.toThrow();
-    expect(() =>
-      assertValidSemanticOperationInput("request-plan.infer", {
-        recordId: "rec_123",
-        key: "get-user",
-        version: "1.0.0",
-        transport: "unsupported",
-      }),
-    ).toThrow(/invalid request-plan\.infer input/i);
-
-    expect(() =>
-      assertValidSemanticOperationInput("request.execute", {
-        key: "get-user",
-        params: {
-          userId: "abc",
-        },
-        headers: {
-          csrf: "token",
-        },
-      }),
-    ).not.toThrow();
   });
 
   test("uses workspace-centric session.open input and rejects v1 browser modes", () => {

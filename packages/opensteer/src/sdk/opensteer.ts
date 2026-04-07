@@ -1,45 +1,20 @@
 import type {
-  OpensteerArtifactReadInput,
-  OpensteerArtifactReadOutput,
   CookieRecord,
+  OpensteerCookieQueryOutput,
+  OpensteerActionResult,
   OpensteerAddInitScriptInput,
   OpensteerAddInitScriptOutput,
-  OpensteerCaptchaSolveInput,
-  OpensteerCaptchaSolveOutput,
-  OpensteerCaptureScriptsInput,
-  OpensteerCaptureScriptsOutput,
-  OpensteerGetRecipeInput,
-  OpensteerGetAuthRecipeInput,
-  OpensteerActionResult,
   OpensteerComputerExecuteInput,
   OpensteerComputerExecuteOutput,
   OpensteerComputerKeyModifier,
   OpensteerComputerMouseButton,
-  OpensteerDomExtractOutput,
-  OpensteerGetRequestPlanInput,
-  OpensteerInferRequestPlanInput,
-  OpensteerListRecipesInput,
-  OpensteerListRecipesOutput,
-  OpensteerListAuthRecipesInput,
-  OpensteerListAuthRecipesOutput,
-  OpensteerNetworkClearInput,
-  OpensteerNetworkClearOutput,
-  OpensteerNetworkDiffInput,
-  OpensteerNetworkDiffOutput,
-  OpensteerNetworkMinimizeInput,
-  OpensteerNetworkMinimizeOutput,
+  OpensteerNetworkDetailOutput,
   OpensteerNetworkQueryInput,
   OpensteerNetworkQueryOutput,
-  OpensteerNetworkTagInput,
-  OpensteerNetworkTagOutput,
-  OpensteerInteractionCaptureInput,
-  OpensteerInteractionCaptureOutput,
-  OpensteerInteractionDiffInput,
-  OpensteerInteractionDiffOutput,
-  OpensteerInteractionGetInput,
-  OpensteerInteractionGetOutput,
-  OpensteerInteractionReplayInput,
-  OpensteerInteractionReplayOutput,
+  OpensteerNetworkReplayInput,
+  OpensteerNetworkReplayOutput,
+  OpensteerOpenInput,
+  OpensteerOpenOutput,
   OpensteerPageActivateInput,
   OpensteerPageActivateOutput,
   OpensteerPageCloseInput,
@@ -52,68 +27,23 @@ import type {
   OpensteerPageListOutput,
   OpensteerPageNewInput,
   OpensteerPageNewOutput,
-  OpensteerPageSnapshotInput,
-  OpensteerPageSnapshotOutput,
-  OpensteerListRequestPlansInput,
-  OpensteerListRequestPlansOutput,
-  OpensteerRawRequestInput,
-  OpensteerRawRequestOutput,
-  OpensteerRequestExecuteInput,
-  OpensteerRequestExecuteOutput,
-  OpensteerRunRecipeInput,
-  OpensteerRunRecipeOutput,
-  OpensteerRunAuthRecipeInput,
-  OpensteerRunAuthRecipeOutput,
-  OpensteerSessionInfo,
-  OpensteerScriptBeautifyInput,
-  OpensteerScriptBeautifyOutput,
-  OpensteerScriptDeobfuscateInput,
-  OpensteerScriptDeobfuscateOutput,
-  OpensteerScriptSandboxInput,
-  OpensteerScriptSandboxOutput,
-  OpensteerReverseExportInput,
-  OpensteerReverseExportOutput,
-  OpensteerReverseDiscoverInput,
-  OpensteerReverseDiscoverOutput,
-  OpensteerReverseQueryInput,
-  OpensteerReverseQueryOutput,
-  OpensteerReversePackageCreateInput,
-  OpensteerReversePackageCreateOutput,
-  OpensteerReversePackageGetInput,
-  OpensteerReversePackageGetOutput,
-  OpensteerReversePackageListInput,
-  OpensteerReversePackageListOutput,
-  OpensteerReversePackagePatchInput,
-  OpensteerReversePackagePatchOutput,
-  OpensteerReversePackageRunInput,
-  OpensteerReversePackageRunOutput,
-  OpensteerReverseReportInput,
-  OpensteerReverseReportOutput,
+  OpensteerRequestResponseResult,
   OpensteerSessionCloseOutput,
-  OpensteerOpenInput,
-  OpensteerOpenOutput,
+  OpensteerSessionFetchInput,
+  OpensteerSessionInfo,
   OpensteerSnapshotMode,
+  OpensteerStateQueryOutput,
+  OpensteerStorageArea,
+  OpensteerStorageDomainSnapshot,
   OpensteerTargetInput,
-  OpensteerTransportProbeInput,
-  OpensteerTransportProbeOutput,
-  OpensteerWriteRecipeInput,
-  OpensteerWriteAuthRecipeInput,
-  OpensteerWriteRequestPlanInput,
-  StorageSnapshot,
 } from "@opensteer/protocol";
 
-import type { AuthRecipeRecord, RecipeRecord, RequestPlanRecord } from "../registry.js";
 import {
   OpensteerBrowserManager,
   type OpensteerBrowserStatus,
   type WorkspaceBrowserManifest,
 } from "../browser-manager.js";
 import { resolveOpensteerEnvironment } from "../env.js";
-import { OpensteerRuntime, type OpensteerRuntimeOptions } from "./runtime.js";
-import {
-  createOpensteerSemanticRuntime,
-  resolveOpensteerRuntimeConfig,
-} from "./runtime-resolution.js";
 import type { OpensteerProviderOptions } from "../provider/config.js";
 import type {
   OpensteerInterceptScriptOptions,
@@ -121,6 +51,11 @@ import type {
   OpensteerRouteOptions,
   OpensteerRouteRegistration,
 } from "./instrumentation.js";
+import type { OpensteerRuntimeOptions } from "./runtime.js";
+import {
+  createOpensteerSemanticRuntime,
+  resolveOpensteerRuntimeConfig,
+} from "./runtime-resolution.js";
 import type { OpensteerDisconnectableRuntime } from "./semantic-runtime.js";
 
 export interface OpensteerTargetOptions {
@@ -163,67 +98,41 @@ export interface OpensteerWaitForPageOptions {
   readonly pollIntervalMs?: number;
 }
 
-export type OpensteerGotoOptions = OpensteerPageGotoInput;
-export type OpensteerSnapshotOptions = OpensteerSnapshotMode | OpensteerPageSnapshotInput;
-export type OpensteerSnapshotResult = OpensteerPageSnapshotOutput;
-
-export type OpensteerComputerExecuteOptions = OpensteerComputerExecuteInput;
-export type OpensteerComputerExecuteResult = OpensteerComputerExecuteOutput;
+export type OpensteerAddInitScriptOptions = OpensteerAddInitScriptInput;
+export type OpensteerGotoOptions = Omit<OpensteerPageGotoInput, "url">;
 export type OpensteerNetworkQueryOptions = OpensteerNetworkQueryInput;
 export type OpensteerNetworkQueryResult = OpensteerNetworkQueryOutput;
-export type OpensteerNetworkTagOptions = OpensteerNetworkTagInput;
-export type OpensteerNetworkTagResult = OpensteerNetworkTagOutput;
-export type OpensteerNetworkMinimizeOptions = OpensteerNetworkMinimizeInput;
-export type OpensteerNetworkMinimizeResult = OpensteerNetworkMinimizeOutput;
-export type OpensteerNetworkDiffOptions = OpensteerNetworkDiffInput;
-export type OpensteerNetworkDiffResult = OpensteerNetworkDiffOutput;
-export type OpensteerNetworkProbeOptions = OpensteerTransportProbeInput;
-export type OpensteerNetworkProbeResult = OpensteerTransportProbeOutput;
-export type OpensteerReverseDiscoverOptions = OpensteerReverseDiscoverInput;
-export type OpensteerReverseDiscoverResult = OpensteerReverseDiscoverOutput;
-export type OpensteerReverseQueryOptions = OpensteerReverseQueryInput;
-export type OpensteerReverseQueryResult = OpensteerReverseQueryOutput;
-export type OpensteerReversePackageCreateOptions = OpensteerReversePackageCreateInput;
-export type OpensteerReversePackageCreateResult = OpensteerReversePackageCreateOutput;
-export type OpensteerReversePackageRunOptions = OpensteerReversePackageRunInput;
-export type OpensteerReversePackageRunResult = OpensteerReversePackageRunOutput;
-export type OpensteerReverseExportOptions = OpensteerReverseExportInput;
-export type OpensteerReverseExportResult = OpensteerReverseExportOutput;
-export type OpensteerReverseReportOptions = OpensteerReverseReportInput;
-export type OpensteerReverseReportResult = OpensteerReverseReportOutput;
-export type OpensteerReversePackageGetOptions = OpensteerReversePackageGetInput;
-export type OpensteerReversePackageGetResult = OpensteerReversePackageGetOutput;
-export type OpensteerReversePackageListOptions = OpensteerReversePackageListInput;
-export type OpensteerReversePackageListResult = OpensteerReversePackageListOutput;
-export type OpensteerReversePackagePatchOptions = OpensteerReversePackagePatchInput;
-export type OpensteerReversePackagePatchResult = OpensteerReversePackagePatchOutput;
-export type OpensteerInteractionCaptureOptions = OpensteerInteractionCaptureInput;
-export type OpensteerInteractionCaptureResult = OpensteerInteractionCaptureOutput;
-export type OpensteerInteractionGetOptions = OpensteerInteractionGetInput;
-export type OpensteerInteractionGetResult = OpensteerInteractionGetOutput;
-export type OpensteerInteractionDiffOptions = OpensteerInteractionDiffInput;
-export type OpensteerInteractionDiffResult = OpensteerInteractionDiffOutput;
-export type OpensteerInteractionReplayOptions = OpensteerInteractionReplayInput;
-export type OpensteerInteractionReplayResult = OpensteerInteractionReplayOutput;
-export type OpensteerNetworkClearOptions = OpensteerNetworkClearInput;
-export type OpensteerNetworkClearResult = OpensteerNetworkClearOutput;
-export type OpensteerRawRequestOptions = OpensteerRawRequestInput;
-export type OpensteerRawRequestResult = OpensteerRawRequestOutput;
-export type OpensteerRequestOptions = Omit<OpensteerRequestExecuteInput, "key">;
-export type OpensteerRequestResult = OpensteerRequestExecuteOutput;
-export type OpensteerCaptureScriptsOptions = OpensteerCaptureScriptsInput;
-export type OpensteerCaptureScriptsResult = OpensteerCaptureScriptsOutput;
-export type OpensteerScriptBeautifyOptions = OpensteerScriptBeautifyInput;
-export type OpensteerScriptBeautifyResult = OpensteerScriptBeautifyOutput;
-export type OpensteerScriptDeobfuscateOptions = OpensteerScriptDeobfuscateInput;
-export type OpensteerScriptDeobfuscateResult = OpensteerScriptDeobfuscateOutput;
-export type OpensteerScriptSandboxOptions = OpensteerScriptSandboxInput;
-export type OpensteerScriptSandboxResult = OpensteerScriptSandboxOutput;
-export type OpensteerArtifactReadOptions = OpensteerArtifactReadInput;
-export type OpensteerArtifactReadResult = OpensteerArtifactReadOutput;
-export type OpensteerCaptchaSolveOptions = OpensteerCaptchaSolveInput;
-export type OpensteerCaptchaSolveResult = OpensteerCaptchaSolveOutput;
-export type OpensteerAddInitScriptOptions = OpensteerAddInitScriptInput;
+export type OpensteerNetworkDetailResult = OpensteerNetworkDetailOutput;
+export type OpensteerNetworkReplayOptions = Omit<OpensteerNetworkReplayInput, "recordId">;
+export type OpensteerNetworkReplayResult = OpensteerNetworkReplayOutput;
+export type OpensteerFetchOptions = Omit<OpensteerSessionFetchInput, "url">;
+export type OpensteerComputerExecuteOptions = OpensteerComputerExecuteInput;
+export type OpensteerStorageMap = Readonly<Record<string, string>>;
+export type OpensteerBrowserState = OpensteerStateQueryOutput;
+
+export interface OpensteerCookieJar {
+  readonly domain?: string;
+  has(name: string): boolean;
+  get(name: string): string | undefined;
+  getAll(): readonly CookieRecord[];
+  serialize(): string;
+}
+
+export interface OpensteerDomController {
+  click(input: OpensteerClickOptions): Promise<OpensteerActionResult>;
+  hover(input: OpensteerTargetOptions): Promise<OpensteerActionResult>;
+  input(input: OpensteerInputOptions): Promise<OpensteerActionResult>;
+  scroll(input: OpensteerScrollOptions): Promise<OpensteerActionResult>;
+}
+
+export interface OpensteerNetworkController {
+  query(input?: OpensteerNetworkQueryOptions): Promise<OpensteerNetworkQueryResult>;
+  detail(recordId: string): Promise<OpensteerNetworkDetailResult>;
+  replay(
+    recordId: string,
+    overrides?: OpensteerNetworkReplayOptions,
+  ): Promise<OpensteerNetworkReplayResult>;
+}
 
 export interface OpensteerOptions extends OpensteerRuntimeOptions {
   readonly provider?: OpensteerProviderOptions;
@@ -241,10 +150,40 @@ export interface OpensteerBrowserController {
   delete(): Promise<void>;
 }
 
+class SessionCookieJar implements OpensteerCookieJar {
+  readonly domain?: string;
+  private readonly cookies: readonly CookieRecord[];
+
+  constructor(output: OpensteerCookieQueryOutput) {
+    if (output.domain !== undefined) {
+      this.domain = output.domain;
+    }
+    this.cookies = output.cookies;
+  }
+
+  has(name: string): boolean {
+    return this.cookies.some((cookie) => cookie.name === name);
+  }
+
+  get(name: string): string | undefined {
+    return this.cookies.find((cookie) => cookie.name === name)?.value;
+  }
+
+  getAll(): readonly CookieRecord[] {
+    return this.cookies;
+  }
+
+  serialize(): string {
+    return this.cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; ");
+  }
+}
+
 export class Opensteer {
   private readonly runtime: OpensteerDisconnectableRuntime;
   private readonly browserManager: OpensteerBrowserManager | undefined;
   readonly browser: OpensteerBrowserController;
+  readonly dom: OpensteerDomController;
+  readonly network: OpensteerNetworkController;
 
   constructor(options: OpensteerOptions = {}) {
     const environment = resolveOpensteerEnvironment(options.rootDir);
@@ -260,38 +199,52 @@ export class Opensteer {
         ...(provider === undefined ? {} : { provider }),
         ...(engineName === undefined ? {} : { engine: engineName }),
         environment,
-        runtimeOptions: {
-          ...runtimeOptions,
-        },
+        runtimeOptions,
       });
       this.browser = createUnsupportedBrowserController();
-      return;
+    } else {
+      this.browserManager = new OpensteerBrowserManager({
+        ...(runtimeOptions.rootDir === undefined ? {} : { rootDir: runtimeOptions.rootDir }),
+        ...(runtimeOptions.rootPath === undefined ? {} : { rootPath: runtimeOptions.rootPath }),
+        ...(runtimeOptions.workspace === undefined ? {} : { workspace: runtimeOptions.workspace }),
+        ...(engineName === undefined ? {} : { engineName }),
+        ...(runtimeOptions.browser === undefined ? {} : { browser: runtimeOptions.browser }),
+        ...(runtimeOptions.launch === undefined ? {} : { launch: runtimeOptions.launch }),
+        ...(runtimeOptions.context === undefined ? {} : { context: runtimeOptions.context }),
+      });
+      this.runtime = createOpensteerSemanticRuntime({
+        ...(provider === undefined ? {} : { provider }),
+        ...(engineName === undefined ? {} : { engine: engineName }),
+        environment,
+        runtimeOptions: {
+          ...runtimeOptions,
+          rootPath: this.browserManager.rootPath,
+          cleanupRootOnClose: this.browserManager.cleanupRootOnDisconnect,
+        },
+      });
+      this.browser = {
+        status: () => this.browserManager!.status(),
+        clone: (input) => this.browserManager!.clonePersistentBrowser(input),
+        reset: () => this.browserManager!.reset(),
+        delete: () => this.browserManager!.delete(),
+      };
     }
 
-    this.browserManager = new OpensteerBrowserManager({
-      ...(runtimeOptions.rootDir === undefined ? {} : { rootDir: runtimeOptions.rootDir }),
-      ...(runtimeOptions.rootPath === undefined ? {} : { rootPath: runtimeOptions.rootPath }),
-      ...(runtimeOptions.workspace === undefined ? {} : { workspace: runtimeOptions.workspace }),
-      ...(engineName === undefined ? {} : { engineName }),
-      ...(runtimeOptions.browser === undefined ? {} : { browser: runtimeOptions.browser }),
-      ...(runtimeOptions.launch === undefined ? {} : { launch: runtimeOptions.launch }),
-      ...(runtimeOptions.context === undefined ? {} : { context: runtimeOptions.context }),
-    });
-    this.runtime = createOpensteerSemanticRuntime({
-      ...(provider === undefined ? {} : { provider }),
-      ...(engineName === undefined ? {} : { engine: engineName }),
-      environment,
-      runtimeOptions: {
-        ...runtimeOptions,
-        rootPath: this.browserManager.rootPath,
-        cleanupRootOnClose: this.browserManager.cleanupRootOnDisconnect,
-      },
-    });
-    this.browser = {
-      status: () => this.browserManager!.status(),
-      clone: (input) => this.browserManager!.clonePersistentBrowser(input),
-      reset: () => this.browserManager!.reset(),
-      delete: () => this.browserManager!.delete(),
+    this.dom = {
+      click: (input) => this.click(input),
+      hover: (input) => this.hover(input),
+      input: (input) => this.input(input),
+      scroll: (input) => this.scroll(input),
+    };
+
+    this.network = {
+      query: (input = {}) => this.queryNetwork(input),
+      detail: (recordId) => this.runtime.getNetworkDetail({ recordId }),
+      replay: (recordId, overrides = {}) =>
+        this.runtime.replayNetwork({
+          recordId,
+          ...overrides,
+        }),
     };
   }
 
@@ -319,8 +272,11 @@ export class Opensteer {
     return this.runtime.closePage(input);
   }
 
-  async goto(input: string | OpensteerGotoOptions): Promise<OpensteerPageGotoOutput> {
-    return this.runtime.goto(typeof input === "string" ? { url: input } : input);
+  async goto(url: string, options: OpensteerGotoOptions = {}): Promise<OpensteerPageGotoOutput> {
+    return this.runtime.goto({
+      url,
+      ...options,
+    });
   }
 
   async evaluate(
@@ -332,8 +288,7 @@ export class Opensteer {
             script: input,
           }
         : input;
-    const result = await this.runtime.evaluate(normalized);
-    return result.value;
+    return (await this.runtime.evaluate(normalized)).value;
   }
 
   async evaluateJson(
@@ -345,52 +300,47 @@ export class Opensteer {
   async addInitScript(
     input: string | OpensteerAddInitScriptInput,
   ): Promise<OpensteerAddInitScriptOutput> {
-    const normalized =
+    return this.runtime.addInitScript(
       typeof input === "string"
         ? {
             script: input,
           }
-        : input;
-    return this.runtime.addInitScript(normalized);
+        : input,
+    );
   }
 
   async click(input: OpensteerClickOptions): Promise<OpensteerActionResult> {
     const { button, clickCount, modifiers, ...target } = input;
-    const normalized = {
+    return this.runtime.click({
       ...normalizeTargetOptions(target),
       ...(button === undefined ? {} : { button }),
       ...(clickCount === undefined ? {} : { clickCount }),
       ...(modifiers === undefined ? {} : { modifiers }),
-    };
-    return this.runtime.click(normalized);
+    });
   }
 
   async hover(input: OpensteerTargetOptions): Promise<OpensteerActionResult> {
-    const normalized = normalizeTargetOptions(input);
-    return this.runtime.hover(normalized);
+    return this.runtime.hover(normalizeTargetOptions(input));
   }
 
   async input(input: OpensteerInputOptions): Promise<OpensteerActionResult> {
-    const normalized = normalizeTargetOptions(input);
     return this.runtime.input({
-      ...normalized,
+      ...normalizeTargetOptions(input),
       text: input.text,
       ...(input.pressEnter === undefined ? {} : { pressEnter: input.pressEnter }),
     });
   }
 
   async scroll(input: OpensteerScrollOptions): Promise<OpensteerActionResult> {
-    const normalized = normalizeTargetOptions(input);
     return this.runtime.scroll({
-      ...normalized,
+      ...normalizeTargetOptions(input),
       direction: input.direction,
       amount: input.amount,
     });
   }
 
-  async extract(input: OpensteerExtractOptions): Promise<OpensteerDomExtractOutput["data"]> {
-    const result = await this.runtime.extract(input);
-    return result.data;
+  async extract(input: OpensteerExtractOptions): Promise<unknown> {
+    return (await this.runtime.extract(input)).data;
   }
 
   async queryNetwork(
@@ -406,20 +356,15 @@ export class Opensteer {
     const timeoutAt = Date.now() + (timeoutMs ?? 30_000);
     const pollInterval = pollIntervalMs ?? 100;
     const baseline = new Set(
-      (
-        await this.runtime.queryNetwork({
-          ...query,
-          limit: 200,
-        })
-      ).records.map((record) => record.recordId),
+      (await this.runtime.queryNetwork({ ...query, limit: 200 })).records.map(
+        (record) => record.recordId,
+      ),
     );
 
     while (true) {
-      const { records } = await this.runtime.queryNetwork({
-        ...query,
-        limit: 200,
-      });
-      const next = records.find((record) => !baseline.has(record.recordId));
+      const next = (await this.runtime.queryNetwork({ ...query, limit: 200 })).records.find(
+        (record) => !baseline.has(record.recordId),
+      );
       if (next !== undefined) {
         return next;
       }
@@ -444,8 +389,7 @@ export class Opensteer {
     const pollIntervalMs = input.pollIntervalMs ?? 100;
 
     while (true) {
-      const { pages } = await this.runtime.listPages();
-      const match = pages.find((page) => {
+      const match = (await this.runtime.listPages()).pages.find((page) => {
         if (baseline.has(page.pageRef)) {
           return false;
         }
@@ -467,212 +411,48 @@ export class Opensteer {
     }
   }
 
-  async snapshot(input: OpensteerSnapshotOptions = {}): Promise<OpensteerSnapshotResult> {
-    return this.runtime.snapshot(typeof input === "string" ? { mode: input } : input);
+  async snapshot(mode: OpensteerSnapshotMode = "action"): Promise<string> {
+    return (await this.runtime.snapshot({ mode })).html;
   }
 
-  async tagNetwork(input: OpensteerNetworkTagOptions): Promise<OpensteerNetworkTagResult> {
-    return this.runtime.tagNetwork(input);
+  async cookies(domain?: string): Promise<OpensteerCookieJar> {
+    return new SessionCookieJar(
+      await this.runtime.getCookies(domain === undefined ? {} : { domain }),
+    );
   }
 
-  async minimizeNetwork(
-    input: OpensteerNetworkMinimizeOptions,
-  ): Promise<OpensteerNetworkMinimizeResult> {
-    return this.runtime.minimizeNetwork(input);
+  async storage(
+    domain?: string,
+    type: OpensteerStorageArea = "local",
+  ): Promise<OpensteerStorageMap> {
+    const snapshot = await this.runtime.getStorageSnapshot(domain === undefined ? {} : { domain });
+    const domainSnapshot = pickStorageDomainSnapshot(snapshot, domain);
+    if (domainSnapshot === undefined) {
+      return {};
+    }
+    const entries = type === "local" ? domainSnapshot.localStorage : domainSnapshot.sessionStorage;
+    return Object.fromEntries(entries.map((entry) => [entry.key, entry.value]));
   }
 
-  async diffNetwork(input: OpensteerNetworkDiffOptions): Promise<OpensteerNetworkDiffResult> {
-    return this.runtime.diffNetwork(input);
+  async state(domain?: string): Promise<OpensteerBrowserState> {
+    return this.runtime.getBrowserState(domain === undefined ? {} : { domain });
   }
 
-  async probeNetwork(input: OpensteerNetworkProbeOptions): Promise<OpensteerNetworkProbeResult> {
-    return this.runtime.probeNetwork(input);
-  }
-
-  async reverseDiscover(
-    input: OpensteerReverseDiscoverOptions = {},
-  ): Promise<OpensteerReverseDiscoverResult> {
-    return this.runtime.discoverReverse(input);
-  }
-
-  async reverseQuery(input: OpensteerReverseQueryOptions): Promise<OpensteerReverseQueryResult> {
-    return this.runtime.queryReverse(input);
-  }
-
-  async createReversePackage(
-    input: OpensteerReversePackageCreateOptions,
-  ): Promise<OpensteerReversePackageCreateResult> {
-    return this.runtime.createReversePackage(input);
-  }
-
-  async runReversePackage(
-    input: OpensteerReversePackageRunOptions,
-  ): Promise<OpensteerReversePackageRunResult> {
-    return this.runtime.runReversePackage(input);
-  }
-
-  async reverseExport(input: OpensteerReverseExportOptions): Promise<OpensteerReverseExportResult> {
-    return this.runtime.exportReverse(input);
-  }
-
-  async reverseReport(input: OpensteerReverseReportOptions): Promise<OpensteerReverseReportResult> {
-    return this.runtime.getReverseReport(input);
-  }
-
-  async getReversePackage(
-    input: OpensteerReversePackageGetOptions,
-  ): Promise<OpensteerReversePackageGetResult> {
-    return this.runtime.getReversePackage(input);
-  }
-
-  async listReversePackages(
-    input: OpensteerReversePackageListOptions = {},
-  ): Promise<OpensteerReversePackageListResult> {
-    return this.runtime.listReversePackages(input);
-  }
-
-  async patchReversePackage(
-    input: OpensteerReversePackagePatchOptions,
-  ): Promise<OpensteerReversePackagePatchResult> {
-    return this.runtime.patchReversePackage(input);
-  }
-
-  async interactionCapture(
-    input: OpensteerInteractionCaptureOptions,
-  ): Promise<OpensteerInteractionCaptureResult> {
-    return this.runtime.captureInteraction(input);
-  }
-
-  async getInteraction(
-    input: OpensteerInteractionGetOptions,
-  ): Promise<OpensteerInteractionGetResult> {
-    return this.runtime.getInteraction(input);
-  }
-
-  async interactionDiff(
-    input: OpensteerInteractionDiffOptions,
-  ): Promise<OpensteerInteractionDiffResult> {
-    return this.runtime.diffInteraction(input);
-  }
-
-  async interactionReplay(
-    input: OpensteerInteractionReplayOptions,
-  ): Promise<OpensteerInteractionReplayResult> {
-    return this.runtime.replayInteraction(input);
-  }
-
-  async clearNetwork(
-    input: OpensteerNetworkClearOptions = {},
-  ): Promise<OpensteerNetworkClearResult> {
-    return this.runtime.clearNetwork(input);
-  }
-
-  async captureScripts(
-    input: OpensteerCaptureScriptsOptions = {},
-  ): Promise<OpensteerCaptureScriptsResult> {
-    return this.runtime.captureScripts(input);
-  }
-
-  async readArtifact(input: OpensteerArtifactReadOptions): Promise<OpensteerArtifactReadResult> {
-    return this.runtime.readArtifact(input);
-  }
-
-  async beautifyScript(
-    input: OpensteerScriptBeautifyOptions,
-  ): Promise<OpensteerScriptBeautifyResult> {
-    return this.runtime.beautifyScript(input);
-  }
-
-  async deobfuscateScript(
-    input: OpensteerScriptDeobfuscateOptions,
-  ): Promise<OpensteerScriptDeobfuscateResult> {
-    return this.runtime.deobfuscateScript(input);
-  }
-
-  async sandboxScript(input: OpensteerScriptSandboxOptions): Promise<OpensteerScriptSandboxResult> {
-    return this.runtime.sandboxScript(input);
-  }
-
-  async solveCaptcha(input: OpensteerCaptchaSolveOptions): Promise<OpensteerCaptchaSolveResult> {
-    return this.runtime.solveCaptcha(input);
-  }
-
-  async getCookies(
-    input: { readonly urls?: readonly string[] } = {},
-  ): Promise<readonly CookieRecord[]> {
-    return this.runtime.getCookies(input);
-  }
-
-  async getStorageSnapshot(
-    input: {
-      readonly includeSessionStorage?: boolean;
-      readonly includeIndexedDb?: boolean;
-    } = {},
-  ): Promise<StorageSnapshot> {
-    return this.runtime.getStorageSnapshot(input);
-  }
-
-  async writeRequestPlan(input: OpensteerWriteRequestPlanInput): Promise<RequestPlanRecord> {
-    return this.runtime.writeRequestPlan(input);
-  }
-
-  async inferRequestPlan(input: OpensteerInferRequestPlanInput): Promise<RequestPlanRecord> {
-    return this.runtime.inferRequestPlan(input);
-  }
-
-  async getRequestPlan(input: OpensteerGetRequestPlanInput): Promise<RequestPlanRecord> {
-    return this.runtime.getRequestPlan(input);
-  }
-
-  async listRequestPlans(
-    input: OpensteerListRequestPlansInput = {},
-  ): Promise<OpensteerListRequestPlansOutput> {
-    return this.runtime.listRequestPlans(input);
-  }
-
-  async writeAuthRecipe(input: OpensteerWriteAuthRecipeInput): Promise<AuthRecipeRecord> {
-    return this.runtime.writeAuthRecipe(input);
-  }
-
-  async writeRecipe(input: OpensteerWriteRecipeInput): Promise<RecipeRecord> {
-    return this.runtime.writeRecipe(input);
-  }
-
-  async getAuthRecipe(input: OpensteerGetAuthRecipeInput): Promise<AuthRecipeRecord> {
-    return this.runtime.getAuthRecipe(input);
-  }
-
-  async getRecipe(input: OpensteerGetRecipeInput): Promise<RecipeRecord> {
-    return this.runtime.getRecipe(input);
-  }
-
-  async listAuthRecipes(
-    input: OpensteerListAuthRecipesInput = {},
-  ): Promise<OpensteerListAuthRecipesOutput> {
-    return this.runtime.listAuthRecipes(input);
-  }
-
-  async listRecipes(input: OpensteerListRecipesInput = {}): Promise<OpensteerListRecipesOutput> {
-    return this.runtime.listRecipes(input);
-  }
-
-  async runAuthRecipe(input: OpensteerRunAuthRecipeInput): Promise<OpensteerRunAuthRecipeOutput> {
-    return this.runtime.runAuthRecipe(input);
-  }
-
-  async runRecipe(input: OpensteerRunRecipeInput): Promise<OpensteerRunRecipeOutput> {
-    return this.runtime.runRecipe(input);
-  }
-
-  async request(key: string, input: OpensteerRequestOptions = {}): Promise<OpensteerRequestResult> {
-    return this.runtime.request({
-      key,
-      ...input,
+  async fetch(url: string, options: OpensteerFetchOptions = {}): Promise<Response> {
+    const result = await this.runtime.fetch({
+      url,
+      ...options,
     });
+    if (result.response === undefined) {
+      throw new Error(result.note ?? `session.fetch did not produce a response for ${url}`);
+    }
+    return toResponse(result.response);
   }
 
-  async rawRequest(input: OpensteerRawRequestOptions): Promise<OpensteerRawRequestResult> {
-    return this.runtime.rawRequest(input);
+  async computerExecute(
+    input: OpensteerComputerExecuteOptions,
+  ): Promise<OpensteerComputerExecuteOutput> {
+    return this.runtime.computerExecute(input);
   }
 
   async route(input: OpensteerRouteOptions): Promise<OpensteerRouteRegistration> {
@@ -683,12 +463,6 @@ export class Opensteer {
     input: OpensteerInterceptScriptOptions,
   ): Promise<OpensteerRouteRegistration> {
     return this.requireOwnedInstrumentationRuntime("interceptScript").interceptScript(input);
-  }
-
-  async computerExecute(
-    input: OpensteerComputerExecuteOptions,
-  ): Promise<OpensteerComputerExecuteResult> {
-    return this.runtime.computerExecute(input);
   }
 
   async close(): Promise<OpensteerSessionCloseOutput> {
@@ -708,20 +482,15 @@ export class Opensteer {
   private requireOwnedInstrumentationRuntime(
     method: "route" | "interceptScript",
   ): OpensteerInstrumentableRuntime {
-    if (isInstrumentableRuntime(this.runtime)) {
-      return this.runtime;
+    if (
+      typeof (this.runtime as Partial<OpensteerInstrumentableRuntime>).route === "function" &&
+      typeof (this.runtime as Partial<OpensteerInstrumentableRuntime>).interceptScript ===
+        "function"
+    ) {
+      return this.runtime as OpensteerDisconnectableRuntime & OpensteerInstrumentableRuntime;
     }
     throw new Error(`${method}() is not available for this session runtime.`);
   }
-}
-
-function isInstrumentableRuntime(
-  runtime: OpensteerDisconnectableRuntime,
-): runtime is OpensteerDisconnectableRuntime & OpensteerInstrumentableRuntime {
-  return (
-    typeof (runtime as Partial<OpensteerInstrumentableRuntime>).route === "function" &&
-    typeof (runtime as Partial<OpensteerInstrumentableRuntime>).interceptScript === "function"
-  );
 }
 
 function createUnsupportedBrowserController(): OpensteerBrowserController {
@@ -752,7 +521,7 @@ function normalizeTargetOptions(input: OpensteerTargetOptions): {
     return {
       target: {
         kind: "element",
-        element: input.element!,
+        element: input.element,
       },
       ...(input.description === undefined ? {} : { persistAsDescription: input.description }),
       ...(input.captureNetwork === undefined ? {} : { captureNetwork: input.captureNetwork }),
@@ -763,7 +532,7 @@ function normalizeTargetOptions(input: OpensteerTargetOptions): {
     return {
       target: {
         kind: "selector",
-        selector: input.selector!,
+        selector: input.selector,
       },
       ...(input.description === undefined ? {} : { persistAsDescription: input.description }),
       ...(input.captureNetwork === undefined ? {} : { captureNetwork: input.captureNetwork }),
@@ -781,6 +550,36 @@ function normalizeTargetOptions(input: OpensteerTargetOptions): {
     },
     ...(input.captureNetwork === undefined ? {} : { captureNetwork: input.captureNetwork }),
   };
+}
+
+function pickStorageDomainSnapshot(
+  snapshot: {
+    readonly domains: readonly OpensteerStorageDomainSnapshot[];
+  },
+  domain: string | undefined,
+): OpensteerStorageDomainSnapshot | undefined {
+  if (snapshot.domains.length === 0) {
+    return undefined;
+  }
+  if (domain === undefined) {
+    return snapshot.domains[0];
+  }
+  return snapshot.domains.find((entry) => entry.domain === domain);
+}
+
+function toResponse(response: OpensteerRequestResponseResult): Response {
+  return new Response(decodeBody(response), {
+    status: response.status,
+    statusText: response.statusText,
+    headers: Object.fromEntries(response.headers.map((header) => [header.name, header.value])),
+  });
+}
+
+function decodeBody(response: OpensteerRequestResponseResult): Uint8Array | undefined {
+  if (response.body === undefined) {
+    return undefined;
+  }
+  return Uint8Array.from(Buffer.from(response.body.data, "base64"));
 }
 
 function delay(ms: number): Promise<void> {

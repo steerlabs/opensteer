@@ -20,7 +20,7 @@ export interface SavedNetworkQueryInput {
   readonly hostname?: string;
   readonly path?: string;
   readonly method?: string;
-  readonly status?: string;
+  readonly status?: string | number;
   readonly resourceType?: NetworkResourceType;
   readonly includeBodies?: boolean;
   readonly limit?: number;
@@ -228,7 +228,7 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
 
   async query(input: SavedNetworkQueryInput = {}): Promise<readonly NetworkQueryRecord[]> {
     const database = await this.requireDatabase();
-    const limit = Math.max(1, Math.min(input.limit ?? 50, 200));
+    const limit = Math.max(1, Math.min(input.limit ?? 50, 1000));
     const { whereSql, parameters } = buildSavedNetworkWhere(input);
     const rows = database
       .prepare(
@@ -497,7 +497,7 @@ function buildSavedNetworkWhere(input: SavedNetworkQueryInput): {
   }
   if (input.status !== undefined) {
     clauses.push("instr(lower(COALESCE(CAST(r.status AS TEXT), '')), ?) > 0");
-    parameters.push(input.status.toLowerCase());
+    parameters.push(String(input.status).toLowerCase());
   }
   if (input.resourceType !== undefined) {
     clauses.push("r.resource_type = ?");
