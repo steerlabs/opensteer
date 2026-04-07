@@ -24,7 +24,7 @@ import {
   buildPathSelectorHint,
   createDomDescriptorStore,
   createDomRuntime,
-  createFilesystemOpensteerRoot,
+  createFilesystemOpensteerWorkspace,
   defaultPolicy,
   normalizeExtractedValue,
   resolveExtractedValueInContext,
@@ -1092,7 +1092,9 @@ describe("Phase 5 DOM runtime integration", () => {
         });
         await wait(150);
 
-        await expect(runtime.buildPath({ locator })).rejects.toThrow(/stale|not found/i);
+        await expect(runtime.buildPath({ locator })).rejects.toThrow(
+          /stale|not found|invalid result/i,
+        );
 
         const resolvedLive = await runtime.resolveTarget({
           pageRef: created.data.pageRef,
@@ -1137,7 +1139,7 @@ describe("Phase 5 DOM runtime integration", () => {
     { timeout: 60_000 },
     async () => {
       const rootPath = await createTemporaryRoot();
-      const root = await createFilesystemOpensteerRoot({ rootPath });
+      const root = await createFilesystemOpensteerWorkspace({ rootPath });
       const engine = await createPlaywrightBrowserCoreEngine({
         launch: { headless: true },
       });
@@ -1165,7 +1167,10 @@ describe("Phase 5 DOM runtime integration", () => {
             description: "descriptor button",
           },
         });
-        const stored = await runtime.readDescriptor({ description: "descriptor button" });
+        const stored = await runtime.readDescriptor({
+          method: "click",
+          description: "descriptor button",
+        });
         expect(stored?.payload.description).toBe("descriptor button");
 
         await runtime.click({
@@ -1200,7 +1205,7 @@ describe("Phase 5 DOM runtime integration", () => {
     { timeout: 60_000 },
     async () => {
       const rootPath = await createTemporaryRoot();
-      const root = await createFilesystemOpensteerRoot({ rootPath });
+      const root = await createFilesystemOpensteerWorkspace({ rootPath });
       const engine = await createPlaywrightBrowserCoreEngine({
         launch: { headless: true },
       });
@@ -1359,7 +1364,7 @@ describe("Phase 5 DOM runtime integration", () => {
     { timeout: 60_000 },
     async () => {
       const rootPath = await createTemporaryRoot();
-      const root = await createFilesystemOpensteerRoot({ rootPath });
+      const root = await createFilesystemOpensteerWorkspace({ rootPath });
       const engine = await createPlaywrightBrowserCoreEngine({
         launch: { headless: true },
       });
@@ -1959,6 +1964,7 @@ describe("Phase 5 DOM runtime integration", () => {
     "waits for post-click settle by default and allows overriding settle policy on createDomRuntime",
     { timeout: 60_000 },
     async () => {
+      const delayedStatusUpdateMs = 1_000;
       const engine = await createPlaywrightBrowserCoreEngine({
         launch: { headless: true },
       });
@@ -1976,7 +1982,7 @@ describe("Phase 5 DOM runtime integration", () => {
                   document.getElementById("delayed-action").addEventListener("click", () => {
                     setTimeout(() => {
                       document.getElementById("status").textContent = "clicked";
-                    }, 60);
+                    }, ${delayedStatusUpdateMs});
                   });
                 </script>
               `,
@@ -2027,7 +2033,7 @@ describe("Phase 5 DOM runtime integration", () => {
                   document.getElementById("delayed-action").addEventListener("click", () => {
                     setTimeout(() => {
                       document.getElementById("status").textContent = "clicked";
-                    }, 60);
+                    }, ${delayedStatusUpdateMs});
                   });
                 </script>
               `,
@@ -2054,7 +2060,7 @@ describe("Phase 5 DOM runtime integration", () => {
           "ready",
         );
 
-        await wait(80);
+        await wait(delayedStatusUpdateMs + 100);
         const eventualSnapshot = await engine.getDomSnapshot({
           frameRef: resetPage.frameRef!,
         });

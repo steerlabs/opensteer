@@ -47,6 +47,7 @@ export default defineConfig({
       "tests/opensteer/conformance-local.test.ts",
       "tests/opensteer/env-loader.test.ts",
       "tests/opensteer/evaluate-null.test.ts",
+      "tests/opensteer/dom-runtime.test.ts",
       "tests/opensteer/extraction-descriptor.test.ts",
       "tests/opensteer/live-session.test.ts",
       "tests/opensteer/navigation-network-capture.test.ts",

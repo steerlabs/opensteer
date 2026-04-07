@@ -473,18 +473,28 @@ function normalizeTargetInput(
   const hasElement = parsed.options.element !== undefined;
   const hasSelector = parsed.options.selector !== undefined;
   const hasDescription = parsed.options.description !== undefined;
-  const selected = Number(hasElement) + Number(hasSelector) + Number(hasDescription);
-  if (selected !== 1) {
-    throw new Error('Specify exactly one of "--element", "--selector", or "--description".');
+
+  // Build the target: --element takes precedence over --selector; --description alone is a target.
+  // When --description is combined with --element or --selector, it becomes persistAsDescription.
+  const target = hasElement
+    ? { kind: "element", element: parsed.options.element! }
+    : hasSelector
+      ? { kind: "selector", selector: parsed.options.selector! }
+      : hasDescription
+        ? { kind: "description", description: parsed.options.description! }
+        : undefined;
+
+  if (target === undefined) {
+    throw new Error('Specify at least one of "--element", "--selector", or "--description".');
   }
+
+  const persistAsDescription =
+    hasDescription && (hasElement || hasSelector) ? parsed.options.description! : undefined;
 
   return {
     ...input,
-    target: hasElement
-      ? { kind: "element", element: parsed.options.element! }
-      : hasSelector
-        ? { kind: "selector", selector: parsed.options.selector! }
-        : { kind: "description", description: parsed.options.description! },
+    target,
+    ...(persistAsDescription !== undefined ? { persistAsDescription } : {}),
   };
 }
 
@@ -1006,8 +1016,8 @@ Usage:
   opensteer open <url> --workspace <id> [--browser persistent|temporary|attach]
   opensteer goto <url> --workspace <id>
   opensteer snapshot [action|extraction] --workspace <id>
-  opensteer click --workspace <id> (--element <n> | --selector <css> | --description <text>)
-  opensteer input --workspace <id> --text <value> (--element <n> | --selector <css> | --description <text>)
+  opensteer click --workspace <id> (--element <n> | --selector <css> | --description <text>) [--description <text>]
+  opensteer input --workspace <id> --text <value> (--element <n> | --selector <css> | --description <text>) [--description <text>]
   opensteer extract --workspace <id> --description <text> [--schema-json <json>]
   opensteer record --workspace <id> --url <url> [--output <path>]
   opensteer close --workspace <id>

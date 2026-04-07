@@ -78,6 +78,7 @@
   "scripts": {
     "build": "tsup && node ../../scripts/sync-package-skills.mjs",
     "clean": "rimraf dist skills",
+    "replay:target-airpods": "tsx ../../../scripts/replay-target-airpods.ts --workspace target-airpods --headless false",
     "prepack": "node ../../scripts/sync-package-skills.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   }
