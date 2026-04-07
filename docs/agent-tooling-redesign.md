@@ -174,7 +174,10 @@ This must be replaced with operation-aware formatters.
 
 ### 3a. `session.open` / `page.goto`
 
-**No changes needed.** Output is already clean:
+Output is already small enough. `sessionRef` and `pageRef` are internal refs
+the agent rarely uses directly (it uses `--workspace` instead), but they're
+only 2 lines and could matter for multi-tab scenarios.
+
 ```json
 {
   "sessionRef": "session:abc123",
@@ -282,7 +285,6 @@ Request headers:
   accept: application/json
   accept-encoding: gzip, deflate, br
   accept-language: en-US,en;q=0.9
-  cookie: visitorId=019D66B8ECA2...; TealeafAkaSid=...
   user-agent: Mozilla/5.0 ...
 
 Response headers:
@@ -290,7 +292,7 @@ Response headers:
   content-length: 189432
   set-cookie: (none)
 
-Cookies sent:
+Cookies sent (extracted from Cookie header):
   visitorId: 019D66B8ECA20200B47204FAD9B3D1C6
   TealeafAkaSid: xHkF2a9...
 
@@ -342,7 +344,8 @@ Request body (1,234 bytes, application/json, truncated):
 
 Design choices:
 - Headers as `name: value` text, not JSON arrays
-- Cookies extracted from the `Cookie` header and shown separately
+- Raw `Cookie` header omitted from request headers; replaced by parsed
+  "Cookies sent" section (same data, easier to read, no duplication)
 - Request body shown for POST/PUT/PATCH only (omitted for GET/DELETE/HEAD)
 - Response body parsed and truncated
 - No base64 blobs ever
@@ -722,7 +725,6 @@ const opensteer = new Opensteer({ workspace: "target", rootDir: process.cwd() })
 async function ensureTargetSession(session: typeof opensteer) {
   const cookies = await session.cookies(".target.com");
   if (cookies.has("visitorId")) return;
-  await session.open("https://target.com");
   await session.goto("https://target.com");
 }
 

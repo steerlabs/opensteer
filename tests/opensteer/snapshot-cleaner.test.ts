@@ -69,11 +69,12 @@ describe("action snapshot cleaner", () => {
     const match = cleaned.match(/srcset="([^"]*)"/);
     expect(match).not.toBeNull();
     expect(match?.[1].length ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(500);
+    expect(match?.[1].endsWith(" [truncated]")).toBe(true);
   });
 
   test("truncates escaped action attributes by serialized length", () => {
-    const noisyUrl = `https://example.com/${`a&b<>"`.repeat(120)}`;
-    const noisyLabel = `Label ${`<&">`.repeat(80)}`;
+    const noisyUrl = `https://example.com/${`a&b<>`.repeat(140)}`;
+    const noisyLabel = `Label ${`<&>`.repeat(120)}`;
 
     const cleaned = cleanForAction(`
       <html>
@@ -97,6 +98,8 @@ describe("action snapshot cleaner", () => {
     expect(ariaLabelMatch).not.toBeNull();
     expect(hrefMatch?.[1].length ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(500);
     expect(ariaLabelMatch?.[1].length ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(150);
+    expect(hrefMatch?.[1].endsWith(" [truncated]")).toBe(true);
+    expect(ariaLabelMatch?.[1].endsWith(" [truncated]")).toBe(true);
   });
 
   test("strips unavailable iframe markers from public output", () => {
@@ -128,6 +131,42 @@ describe("action snapshot cleaner", () => {
     expect(extractionCleaned).not.toContain("data-os-unavailable");
     expect(actionCleaned).toContain('data-os-node-id="node-2"');
     expect(extractionCleaned).toContain('data-os-node-id="node-2"');
+  });
+
+  test("truncates serialized extraction URL attributes", () => {
+    const noisyHref = `https://example.com/${`a&b<>`.repeat(140)}`;
+    const srcset = Array.from({ length: 8 }, (_, index) => {
+      const width = (index + 1) * 320;
+      return `https://cdn.example.com/image-${index}.png?token=${`<&>`.repeat(70)}&wid=${width} ${width}w`;
+    }).join(", ");
+
+    const cleaned = cleanForExtraction(`
+      <html>
+        <body>
+          <a href="${noisyHref}" c="1">Product link</a>
+          <img
+            c="2"
+            alt="Long image"
+            src="https://cdn.example.com/original.png?token=${`<&>`.repeat(100)}"
+            srcset="${srcset}"
+          />
+        </body>
+      </html>
+    `);
+
+    const hrefMatch = cleaned.match(/href="([^"]*)"/);
+    const srcMatch = cleaned.match(/src="([^"]*)"/);
+    const srcsetMatch = cleaned.match(/srcset="([^"]*)"/);
+
+    expect(hrefMatch).not.toBeNull();
+    expect(srcMatch).not.toBeNull();
+    expect(srcsetMatch).not.toBeNull();
+    expect(hrefMatch?.[1].length ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(500);
+    expect(srcMatch?.[1].length ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(500);
+    expect(srcsetMatch?.[1].length ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(500);
+    expect(hrefMatch?.[1].endsWith(" [truncated]")).toBe(true);
+    expect(srcMatch?.[1].endsWith(" [truncated]")).toBe(true);
+    expect(srcsetMatch?.[1].endsWith(" [truncated]")).toBe(true);
   });
 
   test("preserves visible descendants from self-hidden wrappers while dropping hidden text", () => {

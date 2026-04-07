@@ -23,6 +23,9 @@ const STRIP_TAGS = new Set(["script", "style", "noscript", "meta", "link", "temp
 
 const TEXT_ATTR_MAX = 150;
 const URL_ATTR_MAX = 500;
+const URL_ATTRS = new Set(["href", "src", "srcset"]);
+const TEXT_ATTRS = new Set(["alt", "title", "aria-label", "placeholder", "value"]);
+const TRUNCATION_SUFFIX = " [truncated]";
 
 const NOISE_SELECTORS = [
   `[${OPENSTEER_HIDDEN_ATTR}]`,
@@ -47,7 +50,30 @@ function compactHtml(html: string): string {
     .trim();
 }
 
-function truncateValue(value: string, max: number): string {
+function getSerializedLength(value: string): number {
+  let serializedLength = 0;
+
+  for (const char of value) {
+    if (char === "&") {
+      serializedLength += 5;
+      continue;
+    }
+    if (char === "<" || char === ">") {
+      serializedLength += 4;
+      continue;
+    }
+    if (char === '"') {
+      serializedLength += 6;
+      continue;
+    }
+
+    serializedLength += 1;
+  }
+
+  return serializedLength;
+}
+
+function takeValueWithinSerializedLength(value: string, max: number): string {
   let serializedLength = 0;
   let result = "";
 
@@ -70,6 +96,24 @@ function truncateValue(value: string, max: number): string {
   }
 
   return result;
+}
+
+function truncateValue(value: string, max: number): string {
+  if (getSerializedLength(value) <= max) {
+    return value;
+  }
+
+  const suffixLength = getSerializedLength(TRUNCATION_SUFFIX);
+  if (suffixLength >= max) {
+    return takeValueWithinSerializedLength(TRUNCATION_SUFFIX, max);
+  }
+
+  const head = takeValueWithinSerializedLength(value, max - suffixLength).replace(/\s+$/u, "");
+  if (head.length === 0) {
+    return TRUNCATION_SUFFIX.trimStart();
+  }
+
+  return `${head}${TRUNCATION_SUFFIX}`;
 }
 
 function removeNoise($: CheerioAPI): void {
@@ -174,21 +218,42 @@ function stripToAttrs(el: Cheerio<Element>, keep: Set<string>): void {
       continue;
     }
 
-    if (attr === "href" || attr === "src" || attr === "srcset") {
+    if (URL_ATTRS.has(attr)) {
       el.attr(attr, truncateValue(value, URL_ATTR_MAX));
       continue;
     }
 
-    if (
-      attr === "alt" ||
-      attr === "title" ||
-      attr === "aria-label" ||
-      attr === "placeholder" ||
-      attr === "value"
-    ) {
+    if (TEXT_ATTRS.has(attr)) {
       el.attr(attr, truncateValue(value, TEXT_ATTR_MAX));
     }
   }
+}
+
+function restoreBoundedAttr(
+  el: Cheerio<Element>,
+  attr: string,
+  value: string | undefined,
+): void {
+  if (typeof value !== "string") {
+    return;
+  }
+
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return;
+  }
+
+  if (URL_ATTRS.has(attr)) {
+    el.attr(attr, truncateValue(value, URL_ATTR_MAX));
+    return;
+  }
+
+  if (TEXT_ATTRS.has(attr)) {
+    el.attr(attr, truncateValue(value, TEXT_ATTR_MAX));
+    return;
+  }
+
+  el.attr(attr, value);
 }
 
 function deduplicateImages(html: string): string {
@@ -501,24 +566,14 @@ export function cleanForExtraction(html: string): string {
     }
 
     if (tag === "img") {
-      if (srcValue) {
-        el.attr("src", srcValue);
-      }
-      if (srcsetValue) {
-        el.attr("srcset", srcsetValue);
-      }
-      if (altValue) {
-        el.attr("alt", truncateValue(altValue, TEXT_ATTR_MAX));
-      }
+      restoreBoundedAttr(el, "src", srcValue);
+      restoreBoundedAttr(el, "srcset", srcsetValue);
+      restoreBoundedAttr(el, "alt", altValue);
     } else if (isPictureSource) {
-      if (srcValue != null && srcValue.trim() !== "") {
-        el.attr("src", srcValue);
-      }
-      if (srcsetValue != null && srcsetValue.trim() !== "") {
-        el.attr("srcset", srcsetValue);
-      }
-    } else if (tag === "a" && hrefValue) {
-      el.attr("href", hrefValue);
+      restoreBoundedAttr(el, "src", srcValue);
+      restoreBoundedAttr(el, "srcset", srcsetValue);
+    } else if (tag === "a") {
+      restoreBoundedAttr(el, "href", hrefValue);
     }
   });
 
