@@ -3750,6 +3750,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     }>("Page.createIsolatedWorld", {
       frameId: cdpFrameId,
       worldName: "__opensteer_snapshot__",
+      // CDP spells this field as `grantUniveralAccess`.
       grantUniveralAccess: true,
     });
     return isolatedWorld.executionContextId;

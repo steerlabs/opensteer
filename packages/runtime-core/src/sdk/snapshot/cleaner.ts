@@ -359,18 +359,6 @@ function serializeForExtraction($: CheerioAPI, root: AnyNode): string {
       .replace(/"/g, "&quot;");
   }
 
-  function escapeAttribute(value: string): string {
-    if (!value) {
-      return "";
-    }
-
-    return value
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
-
   function traverse(node: AnyNode, depth: number): void {
     if (node.type === "text") {
       const text = ((node as { readonly data?: string }).data || "").replace(/\s+/g, " ").trim();
@@ -413,7 +401,7 @@ function serializeForExtraction($: CheerioAPI, root: AnyNode): string {
     const attrText =
       attrKeys.length === 0
         ? ""
-        : ` ${attrKeys.map((key) => `${key}="${escapeAttribute(attrs[key] || "")}"`).join(" ")}`;
+        : ` ${attrKeys.map((key) => `${key}="${escapeHtml(attrs[key] || "")}"`).join(" ")}`;
 
     if (VOID_TAGS.has(tagName)) {
       lines.push(`${"  ".repeat(depth)}<${tagName}${attrText} />`);

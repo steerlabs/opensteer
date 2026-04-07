@@ -215,7 +215,9 @@ async function evaluateFrameBestEffort(
       script,
       args,
     });
-  } catch {}
+  } catch {
+    // Best effort: frames may detach or navigate while marking semantics.
+  }
 }
 
 export async function markLiveSnapshotSemantics(options: {
