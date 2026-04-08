@@ -44,7 +44,7 @@ export {
   buildDomDescriptorPayload,
   buildDomDescriptorVersion,
   createDomDescriptorStore,
-  hashDomDescriptorDescription,
+  hashDomDescriptorName,
   normalizeDomDescriptorNamespace,
   parseDomDescriptorRecord,
 } from "./descriptors.js";

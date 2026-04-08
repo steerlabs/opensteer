@@ -122,14 +122,14 @@ export function createAbpActionSettler(context: AbpActionSettlerContext) {
     }
     await beginTrackerObservation(controller);
     const tracker = await readTrackerState(controller);
+    const mainFrameUrl =
+      controller.mainFrameRef === undefined
+        ? undefined
+        : controller.framesByCdpId.get(controller.mainFrameRef)?.currentDocument.url;
     return {
       pageRef: controller.pageRef,
       documentRef,
-      ...(controller.mainFrameRef === undefined
-        ? {}
-        : {
-            url: controller.framesByCdpId.get(controller.mainFrameRef)?.currentDocument.url,
-          }),
+      ...(mainFrameUrl === undefined ? {} : { url: mainFrameUrl }),
       ...(tracker === undefined ? {} : { tracker: capturePostLoadTrackerSnapshot(tracker) }),
     };
   }

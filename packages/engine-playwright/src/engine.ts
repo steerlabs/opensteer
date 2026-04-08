@@ -1487,6 +1487,47 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     }
   }
 
+  async evaluateFrame(input: {
+    readonly frameRef: FrameRef;
+    readonly script: string;
+    readonly args?: readonly unknown[];
+    readonly timeoutMs?: number;
+  }): Promise<StepResult<unknown>> {
+    const frameState = this.requireFrame(input.frameRef);
+    const controller = this.requirePage(frameState.pageRef);
+    const startedAt = Date.now();
+    const frame = this.requireLiveFrame(input.frameRef);
+
+    try {
+      const result = await withTimeout(
+        frame.evaluate(
+          ({ script, args }) => {
+            const evaluated = (0, eval)(script) as unknown;
+            if (typeof evaluated === "function") {
+              return (evaluated as (...args: readonly unknown[]) => unknown)(...(args ?? []));
+            }
+            return evaluated;
+          },
+          {
+            script: input.script,
+            args: input.args ?? [],
+          },
+        ),
+        input.timeoutMs,
+      );
+
+      return this.createStepResult(controller.sessionRef, controller.pageRef, startedAt, {
+        frameRef: frameState.frameRef,
+        documentRef: frameState.currentDocument.documentRef,
+        documentEpoch: frameState.currentDocument.documentEpoch,
+        events: this.drainQueuedEvents(controller.pageRef),
+        data: result,
+      });
+    } catch (error) {
+      throw normalizePlaywrightError(error, controller.pageRef);
+    }
+  }
+
   async addInitScript(input: BrowserInitScriptInput): Promise<BrowserInitScriptRegistration> {
     if (!hasCapability(this.capabilities, "instrumentation.initScripts")) {
       throw unsupportedCapabilityError("instrumentation.initScripts");
@@ -3712,9 +3753,7 @@ function normalizeRuntimeConsoleLevel(
   }
 }
 
-function formatRuntimeExceptionMessage(
-  details: RuntimeExceptionDetails | undefined,
-): string {
+function formatRuntimeExceptionMessage(details: RuntimeExceptionDetails | undefined): string {
   const description = details?.exception?.description?.trim();
   if (description) {
     const firstLine = description.split("\n")[0]?.trim() ?? "";
@@ -3760,9 +3799,7 @@ function formatRuntimeRemoteObject(object: RuntimeRemoteObject): string {
     return object.unserializableValue;
   }
   if (object.value !== undefined) {
-    return typeof object.value === "string"
-      ? object.value
-      : JSON.stringify(object.value);
+    return typeof object.value === "string" ? object.value : JSON.stringify(object.value);
   }
   if (object.description !== undefined && object.description.length > 0) {
     return object.description;
@@ -3774,9 +3811,7 @@ function formatRuntimeRemoteObject(object: RuntimeRemoteObject): string {
         if (!property.name) {
           return "";
         }
-        return property.value === undefined
-          ? property.name
-          : `${property.name}: ${property.value}`;
+        return property.value === undefined ? property.name : `${property.name}: ${property.value}`;
       })
       .filter((value) => value.length > 0) ?? [];
   return previewParts.join(", ");

@@ -1,12 +1,9 @@
 import type {
   OpensteerArtifactReadInput,
   OpensteerArtifactReadOutput,
-  CookieRecord,
   OpensteerCaptchaSolveInput,
   OpensteerCaptchaSolveOutput,
   OpensteerActionResult,
-  OpensteerGetRecipeInput,
-  OpensteerGetAuthRecipeInput,
   OpensteerComputerExecuteInput,
   OpensteerComputerExecuteOutput,
   OpensteerDomClickInput,
@@ -15,24 +12,19 @@ import type {
   OpensteerDomHoverInput,
   OpensteerDomInputInput,
   OpensteerDomScrollInput,
-  OpensteerGetRequestPlanInput,
-  OpensteerInferRequestPlanInput,
-  OpensteerListRecipesInput,
-  OpensteerListRecipesOutput,
-  OpensteerListAuthRecipesInput,
-  OpensteerListAuthRecipesOutput,
-  OpensteerListRequestPlansInput,
-  OpensteerListRequestPlansOutput,
-  OpensteerNetworkClearInput,
-  OpensteerNetworkClearOutput,
-  OpensteerNetworkDiffInput,
-  OpensteerNetworkDiffOutput,
-  OpensteerNetworkMinimizeInput,
-  OpensteerNetworkMinimizeOutput,
   OpensteerNetworkQueryInput,
   OpensteerNetworkQueryOutput,
-  OpensteerNetworkTagInput,
-  OpensteerNetworkTagOutput,
+  OpensteerNetworkDetailOutput,
+  OpensteerNetworkReplayInput,
+  OpensteerNetworkReplayOutput,
+  OpensteerCookieQueryInput,
+  OpensteerCookieQueryOutput,
+  OpensteerStorageQueryInput,
+  OpensteerStorageQueryOutput,
+  OpensteerStateQueryInput,
+  OpensteerStateQueryOutput,
+  OpensteerSessionFetchInput,
+  OpensteerSessionFetchOutput,
   OpensteerInteractionCaptureInput,
   OpensteerInteractionCaptureOutput,
   OpensteerInteractionDiffInput,
@@ -41,8 +33,6 @@ import type {
   OpensteerInteractionGetOutput,
   OpensteerInteractionReplayInput,
   OpensteerInteractionReplayOutput,
-  OpensteerTransportProbeInput,
-  OpensteerTransportProbeOutput,
   OpensteerPageActivateInput,
   OpensteerPageActivateOutput,
   OpensteerAddInitScriptInput,
@@ -55,24 +45,6 @@ import type {
   OpensteerScriptDeobfuscateOutput,
   OpensteerScriptSandboxInput,
   OpensteerScriptSandboxOutput,
-  OpensteerReverseExportInput,
-  OpensteerReverseExportOutput,
-  OpensteerReversePackageGetInput,
-  OpensteerReversePackageGetOutput,
-  OpensteerReversePackageListInput,
-  OpensteerReversePackageListOutput,
-  OpensteerReversePackageCreateInput,
-  OpensteerReversePackageCreateOutput,
-  OpensteerReversePackagePatchInput,
-  OpensteerReversePackagePatchOutput,
-  OpensteerReversePackageRunInput,
-  OpensteerReversePackageRunOutput,
-  OpensteerReverseReportInput,
-  OpensteerReverseReportOutput,
-  OpensteerReverseDiscoverInput,
-  OpensteerReverseDiscoverOutput,
-  OpensteerReverseQueryInput,
-  OpensteerReverseQueryOutput,
   OpensteerPageCloseInput,
   OpensteerPageCloseOutput,
   OpensteerPageEvaluateInput,
@@ -85,25 +57,11 @@ import type {
   OpensteerPageNewOutput,
   OpensteerPageSnapshotInput,
   OpensteerPageSnapshotOutput,
-  OpensteerRawRequestInput,
-  OpensteerRawRequestOutput,
-  OpensteerRequestExecuteInput,
-  OpensteerRequestExecuteOutput,
-  OpensteerRunRecipeInput,
-  OpensteerRunRecipeOutput,
-  OpensteerRunAuthRecipeInput,
-  OpensteerRunAuthRecipeOutput,
   OpensteerSessionInfo,
   OpensteerSessionCloseOutput,
   OpensteerOpenInput,
   OpensteerOpenOutput,
-  OpensteerWriteRecipeInput,
-  OpensteerWriteAuthRecipeInput,
-  OpensteerWriteRequestPlanInput,
-  StorageSnapshot,
 } from "@opensteer/protocol";
-
-import type { AuthRecipeRecord, RecipeRecord, RequestPlanRecord } from "../registry.js";
 
 export interface OpensteerRuntimeOperationOptions {
   readonly signal?: AbortSignal;
@@ -171,58 +129,16 @@ export interface OpensteerSemanticRuntime {
     input?: OpensteerNetworkQueryInput,
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerNetworkQueryOutput>;
-  tagNetwork(
-    input: OpensteerNetworkTagInput,
+  getNetworkDetail(
+    input: {
+      readonly recordId: string;
+    },
     options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerNetworkTagOutput>;
-  minimizeNetwork(
-    input: OpensteerNetworkMinimizeInput,
+  ): Promise<OpensteerNetworkDetailOutput>;
+  replayNetwork(
+    input: OpensteerNetworkReplayInput,
     options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerNetworkMinimizeOutput>;
-  diffNetwork(
-    input: OpensteerNetworkDiffInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerNetworkDiffOutput>;
-  probeNetwork(
-    input: OpensteerTransportProbeInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerTransportProbeOutput>;
-  discoverReverse(
-    input: OpensteerReverseDiscoverInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerReverseDiscoverOutput>;
-  queryReverse(
-    input: OpensteerReverseQueryInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerReverseQueryOutput>;
-  createReversePackage(
-    input: OpensteerReversePackageCreateInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerReversePackageCreateOutput>;
-  runReversePackage(
-    input: OpensteerReversePackageRunInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerReversePackageRunOutput>;
-  exportReverse(
-    input: OpensteerReverseExportInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerReverseExportOutput>;
-  getReverseReport(
-    input: OpensteerReverseReportInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerReverseReportOutput>;
-  getReversePackage(
-    input: OpensteerReversePackageGetInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerReversePackageGetOutput>;
-  listReversePackages(
-    input?: OpensteerReversePackageListInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerReversePackageListOutput>;
-  patchReversePackage(
-    input: OpensteerReversePackagePatchInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerReversePackagePatchOutput>;
+  ): Promise<OpensteerNetworkReplayOutput>;
   captureInteraction(
     input: OpensteerInteractionCaptureInput,
     options?: OpensteerRuntimeOperationOptions,
@@ -239,10 +155,6 @@ export interface OpensteerSemanticRuntime {
     input: OpensteerInteractionReplayInput,
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerInteractionReplayOutput>;
-  clearNetwork(
-    input?: OpensteerNetworkClearInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerNetworkClearOutput>;
   captureScripts(
     input?: OpensteerCaptureScriptsInput,
     options?: OpensteerRuntimeOperationOptions,
@@ -268,74 +180,21 @@ export interface OpensteerSemanticRuntime {
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerCaptchaSolveOutput>;
   getCookies(
-    input?: {
-      readonly urls?: readonly string[];
-    },
+    input?: OpensteerCookieQueryInput,
     options?: OpensteerRuntimeOperationOptions,
-  ): Promise<readonly CookieRecord[]>;
+  ): Promise<OpensteerCookieQueryOutput>;
   getStorageSnapshot(
-    input?: {
-      readonly includeSessionStorage?: boolean;
-      readonly includeIndexedDb?: boolean;
-    },
+    input?: OpensteerStorageQueryInput,
     options?: OpensteerRuntimeOperationOptions,
-  ): Promise<StorageSnapshot>;
-  rawRequest(
-    input: OpensteerRawRequestInput,
+  ): Promise<OpensteerStorageQueryOutput>;
+  getBrowserState(
+    input?: OpensteerStateQueryInput,
     options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerRawRequestOutput>;
-  inferRequestPlan(
-    input: OpensteerInferRequestPlanInput,
+  ): Promise<OpensteerStateQueryOutput>;
+  fetch(
+    input: OpensteerSessionFetchInput,
     options?: OpensteerRuntimeOperationOptions,
-  ): Promise<RequestPlanRecord>;
-  writeRequestPlan(
-    input: OpensteerWriteRequestPlanInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<RequestPlanRecord>;
-  getRequestPlan(
-    input: OpensteerGetRequestPlanInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<RequestPlanRecord>;
-  listRequestPlans(
-    input?: OpensteerListRequestPlansInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerListRequestPlansOutput>;
-  writeAuthRecipe(
-    input: OpensteerWriteAuthRecipeInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<AuthRecipeRecord>;
-  writeRecipe(
-    input: OpensteerWriteRecipeInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<RecipeRecord>;
-  getAuthRecipe(
-    input: OpensteerGetAuthRecipeInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<AuthRecipeRecord>;
-  getRecipe(
-    input: OpensteerGetRecipeInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<RecipeRecord>;
-  listAuthRecipes(
-    input?: OpensteerListAuthRecipesInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerListAuthRecipesOutput>;
-  listRecipes(
-    input?: OpensteerListRecipesInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerListRecipesOutput>;
-  runAuthRecipe(
-    input: OpensteerRunAuthRecipeInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerRunAuthRecipeOutput>;
-  runRecipe(
-    input: OpensteerRunRecipeInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerRunRecipeOutput>;
-  request(
-    input: OpensteerRequestExecuteInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerRequestExecuteOutput>;
+  ): Promise<OpensteerSessionFetchOutput>;
   computerExecute(
     input: OpensteerComputerExecuteInput,
     options?: OpensteerRuntimeOperationOptions,

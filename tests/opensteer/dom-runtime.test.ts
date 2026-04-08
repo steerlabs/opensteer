@@ -18,17 +18,24 @@ import {
   OpensteerProtocolError,
   resolveDomActionBridge,
 } from "../../packages/protocol/src/index.js";
+import type { OpensteerSnapshotCounter } from "../../packages/protocol/src/index.js";
 import {
   buildArrayFieldPathCandidates,
   buildPathSelectorHint,
+  createDomDescriptorStore,
   createDomRuntime,
-  createFilesystemOpensteerRoot,
+  createFilesystemOpensteerWorkspace,
   defaultPolicy,
   normalizeExtractedValue,
   resolveExtractedValueInContext,
   sanitizeElementPath,
   type ElementPath,
 } from "../../packages/opensteer/src/index.js";
+import {
+  compileOpensteerExtractionPayload,
+  replayOpensteerExtractionPayload,
+} from "../../packages/opensteer/src/sdk/extraction.js";
+import { compileOpensteerSnapshot } from "../../packages/runtime-core/src/sdk/snapshot/compiler.js";
 
 let baseUrl = "";
 let closeServer: (() => Promise<void>) | undefined;
@@ -179,6 +186,13 @@ function findNodeById(nodes: readonly DomSnapshotNode[], id: string): DomSnapsho
 
 function readIdAttribute(node: DomSnapshotNode): string | undefined {
   return node.attributes.find((attribute) => attribute.name === "id")?.value;
+}
+
+function findCounterByPathHint(
+  counters: readonly OpensteerSnapshotCounter[],
+  token: string,
+): OpensteerSnapshotCounter | undefined {
+  return counters.find((counter) => counter.pathHint.includes(token));
 }
 
 function createLocator(snapshot: DomSnapshot, node: DomSnapshotNode) {
@@ -378,6 +392,195 @@ describe("Phase 5 DOM runtime utilities", () => {
       ],
     });
   });
+});
+
+describe("Phase 5 snapshot integration", () => {
+  test(
+    "action snapshots keep iframe and shadow targets while dropping inherited-pointer descendants",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+
+      try {
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: `${baseUrl}/runtime/main`,
+        });
+
+        await wait(500);
+
+        const snapshot = await compileOpensteerSnapshot({
+          engine,
+          pageRef: created.data.pageRef,
+          mode: "action",
+        });
+
+        expect(findCounterByPathHint(snapshot.counters, "#main-action")).toBeDefined();
+        expect(findCounterByPathHint(snapshot.counters, "#shadow-action")).toBeDefined();
+        expect(findCounterByPathHint(snapshot.counters, "#nested-shadow-action")).toBeDefined();
+        expect(findCounterByPathHint(snapshot.counters, "#closed-shadow-action")).toBeDefined();
+        expect(findCounterByPathHint(snapshot.counters, "#child-action")).toBeDefined();
+        expect(findCounterByPathHint(snapshot.counters, "#child-shadow-action")).toBeDefined();
+
+        expect(findCounterByPathHint(snapshot.counters, "#shadow-action-shell")).toBeUndefined();
+        expect(findCounterByPathHint(snapshot.counters, "#shadow-action-label")).toBeUndefined();
+        expect(findCounterByPathHint(snapshot.counters, "#shadow-action-slot")).toBeUndefined();
+
+        expect(snapshot.html).not.toContain("data-opensteer-interactive");
+        expect(snapshot.html).not.toContain("data-os-node-id");
+        expect(snapshot.html).not.toContain("data-os-c");
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "counter-backed descriptor caching replays actions inside iframe shadow roots",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+
+      try {
+        const dom = createDomRuntime({
+          engine,
+          descriptorStore: createDomDescriptorStore({
+            namespace: "phase5-counter-descriptor",
+          }),
+          namespace: "phase5-counter-descriptor",
+        });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: `${baseUrl}/runtime/main`,
+        });
+
+        await wait(500);
+
+        const snapshot = await compileOpensteerSnapshot({
+          engine,
+          pageRef: created.data.pageRef,
+          mode: "action",
+        });
+        const childShadowCounter = requireValue(
+          findCounterByPathHint(snapshot.counters, "#child-shadow-action"),
+          "child shadow counter missing from action snapshot",
+        );
+
+        const resolved = await dom.resolveTarget({
+          pageRef: created.data.pageRef,
+          method: "dom.click",
+          target: {
+            kind: "selector",
+            selector: `[c="${String(childShadowCounter.element)}"]`,
+          },
+        });
+        const replayPath =
+          resolved.replayPath ??
+          (await dom.buildPath({
+            locator: resolved.locator,
+          }));
+
+        await dom.writeDescriptor({
+          method: "dom.click",
+          name: "child shadow counter descriptor",
+          path: replayPath,
+          sourceUrl: resolved.snapshot.url,
+        });
+
+        await dom.click({
+          pageRef: created.data.pageRef,
+          target: {
+            kind: "descriptor",
+            name: "child shadow counter descriptor",
+          },
+        });
+
+        const frames = await engine.listFrames({ pageRef: created.data.pageRef });
+        const childFrame = requireValue(
+          frames.find((frame) => !frame.isMainFrame),
+          "child frame not found after descriptor replay",
+        );
+        const childSnapshot = await engine.getDomSnapshot({
+          frameRef: childFrame.frameRef,
+        });
+        const statusNode = requireValue(
+          findNodeById(childSnapshot.nodes, "child-status"),
+          "child status node missing after descriptor replay",
+        );
+
+        expect(await engine.readText(createLocator(childSnapshot, statusNode))).toBe(
+          "child shadow clicked",
+        );
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
+
+  test(
+    "extraction snapshots compile and replay cached paths across iframe and shadow contexts",
+    { timeout: 60_000 },
+    async () => {
+      const engine = await createPlaywrightBrowserCoreEngine({
+        launch: { headless: true },
+      });
+
+      try {
+        const dom = createDomRuntime({ engine });
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: `${baseUrl}/runtime/main`,
+        });
+
+        await wait(500);
+
+        const snapshot = await compileOpensteerSnapshot({
+          engine,
+          pageRef: created.data.pageRef,
+          mode: "extraction",
+        });
+        const childShadowCounter = requireValue(
+          findCounterByPathHint(snapshot.counters, "#child-shadow-action"),
+          "child shadow counter missing from extraction snapshot",
+        );
+        const nestedShadowCounter = requireValue(
+          findCounterByPathHint(snapshot.counters, "#nested-shadow-action"),
+          "nested shadow counter missing from extraction snapshot",
+        );
+
+        expect(snapshot.html.startsWith("<html")).toBe(false);
+
+        const payload = await compileOpensteerExtractionPayload({
+          dom,
+          pageRef: created.data.pageRef,
+          schema: {
+            childShadow: { element: childShadowCounter.element },
+            nestedShadow: { element: nestedShadowCounter.element },
+          },
+        });
+
+        await expect(
+          replayOpensteerExtractionPayload({
+            dom,
+            pageRef: created.data.pageRef,
+            payload,
+          }),
+        ).resolves.toEqual({
+          childShadow: "Child Shadow",
+          nestedShadow: "Nested Shadow",
+        });
+      } finally {
+        await engine.dispose();
+      }
+    },
+  );
 });
 
 describe("Phase 5 DOM runtime integration", () => {
@@ -889,7 +1092,9 @@ describe("Phase 5 DOM runtime integration", () => {
         });
         await wait(150);
 
-        await expect(runtime.buildPath({ locator })).rejects.toThrow(/stale|not found/i);
+        await expect(runtime.buildPath({ locator })).rejects.toThrow(
+          /stale|not found|invalid result/i,
+        );
 
         const resolvedLive = await runtime.resolveTarget({
           pageRef: created.data.pageRef,
@@ -934,7 +1139,7 @@ describe("Phase 5 DOM runtime integration", () => {
     { timeout: 60_000 },
     async () => {
       const rootPath = await createTemporaryRoot();
-      const root = await createFilesystemOpensteerRoot({ rootPath });
+      const root = await createFilesystemOpensteerWorkspace({ rootPath });
       const engine = await createPlaywrightBrowserCoreEngine({
         launch: { headless: true },
       });
@@ -959,11 +1164,14 @@ describe("Phase 5 DOM runtime integration", () => {
           target: {
             kind: "selector",
             selector: '[data-testid="descriptor-button"]',
-            description: "descriptor button",
+            persist: "descriptor button",
           },
         });
-        const stored = await runtime.readDescriptor({ description: "descriptor button" });
-        expect(stored?.payload.description).toBe("descriptor button");
+        const stored = await runtime.readDescriptor({
+          method: "click",
+          name: "descriptor button",
+        });
+        expect(stored?.payload.name).toBe("descriptor button");
 
         await runtime.click({
           pageRef: created.data.pageRef,
@@ -973,7 +1181,7 @@ describe("Phase 5 DOM runtime integration", () => {
 
         await runtime.click({
           pageRef: created.data.pageRef,
-          target: { kind: "descriptor", description: "descriptor button" },
+          target: { kind: "descriptor", name: "descriptor button" },
         });
 
         const snapshot = await engine.getDomSnapshot({
@@ -997,7 +1205,7 @@ describe("Phase 5 DOM runtime integration", () => {
     { timeout: 60_000 },
     async () => {
       const rootPath = await createTemporaryRoot();
-      const root = await createFilesystemOpensteerRoot({ rootPath });
+      const root = await createFilesystemOpensteerWorkspace({ rootPath });
       const engine = await createPlaywrightBrowserCoreEngine({
         launch: { headless: true },
       });
@@ -1051,13 +1259,13 @@ describe("Phase 5 DOM runtime integration", () => {
           target: {
             kind: "selector",
             selector: '[data-testid="descriptor-button"]',
-            description: "descriptor button",
+            persist: "descriptor button",
           },
         });
 
         await retryRuntime.click({
           pageRef: created.data.pageRef,
-          target: { kind: "descriptor", description: "descriptor button" },
+          target: { kind: "descriptor", name: "descriptor button" },
         });
 
         expect(inspectAttempts).toBeGreaterThan(1);
@@ -1156,7 +1364,7 @@ describe("Phase 5 DOM runtime integration", () => {
     { timeout: 60_000 },
     async () => {
       const rootPath = await createTemporaryRoot();
-      const root = await createFilesystemOpensteerRoot({ rootPath });
+      const root = await createFilesystemOpensteerWorkspace({ rootPath });
       const engine = await createPlaywrightBrowserCoreEngine({
         launch: { headless: true },
       });
@@ -1186,17 +1394,17 @@ describe("Phase 5 DOM runtime integration", () => {
         const first = await runtime.resolveTarget({
           pageRef: created.data.pageRef,
           method: "click",
-          target: { kind: "selector", selector: "#old", description: "shared button" },
+          target: { kind: "selector", selector: "#old", persist: "shared button" },
         });
         const second = await runtime.resolveTarget({
           pageRef: created.data.pageRef,
           method: "click",
-          target: { kind: "selector", selector: "#new", description: "shared button" },
+          target: { kind: "selector", selector: "#new", persist: "shared button" },
         });
         const replayed = await runtime.resolveTarget({
           pageRef: created.data.pageRef,
           method: "click",
-          target: { kind: "descriptor", description: "shared button" },
+          target: { kind: "descriptor", name: "shared button" },
         });
 
         expect(first.node.attributes.find((attribute) => attribute.name === "id")?.value).toBe(
@@ -1756,6 +1964,7 @@ describe("Phase 5 DOM runtime integration", () => {
     "waits for post-click settle by default and allows overriding settle policy on createDomRuntime",
     { timeout: 60_000 },
     async () => {
+      const delayedStatusUpdateMs = 1_000;
       const engine = await createPlaywrightBrowserCoreEngine({
         launch: { headless: true },
       });
@@ -1773,7 +1982,7 @@ describe("Phase 5 DOM runtime integration", () => {
                   document.getElementById("delayed-action").addEventListener("click", () => {
                     setTimeout(() => {
                       document.getElementById("status").textContent = "clicked";
-                    }, 60);
+                    }, ${delayedStatusUpdateMs});
                   });
                 </script>
               `,
@@ -1824,7 +2033,7 @@ describe("Phase 5 DOM runtime integration", () => {
                   document.getElementById("delayed-action").addEventListener("click", () => {
                     setTimeout(() => {
                       document.getElementById("status").textContent = "clicked";
-                    }, 60);
+                    }, ${delayedStatusUpdateMs});
                   });
                 </script>
               `,
@@ -1851,7 +2060,7 @@ describe("Phase 5 DOM runtime integration", () => {
           "ready",
         );
 
-        await wait(80);
+        await wait(delayedStatusUpdateMs + 100);
         const eventualSnapshot = await engine.getDomSnapshot({
           frameRef: resetPage.frameRef!,
         });

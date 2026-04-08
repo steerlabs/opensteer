@@ -394,7 +394,7 @@ class DefaultDomRuntime implements DomRuntime {
           input.pageRef,
           input.target.anchor,
           "anchor",
-          input.target.description,
+          input.target.persist,
         );
         break;
       case "path":
@@ -403,7 +403,7 @@ class DefaultDomRuntime implements DomRuntime {
           input.pageRef,
           sanitizeElementPath(input.target.path),
           "path",
-          input.target.description,
+          input.target.persist,
         );
         break;
       case "selector":
@@ -429,15 +429,15 @@ class DefaultDomRuntime implements DomRuntime {
   ): Promise<ResolvedDomTarget> {
     const descriptor = await this.descriptors.read({
       method,
-      description: target.description,
+      name: target.name,
     });
     if (!descriptor) {
       throw new OpensteerProtocolError(
         "not-found",
-        `no stored DOM descriptor found for "${target.description}"`,
+        `no stored DOM descriptor found for "${target.name}"`,
         {
           details: {
-            description: target.description,
+            name: target.name,
             kind: "dom-descriptor",
           },
         },
@@ -456,7 +456,7 @@ class DefaultDomRuntime implements DomRuntime {
       pageRef,
       descriptor.payload.path,
       "descriptor",
-      descriptor.payload.description,
+      descriptor.payload.name,
       descriptor,
     );
   }
@@ -472,13 +472,13 @@ class DefaultDomRuntime implements DomRuntime {
       const anchor = await this.buildAnchorFromSnapshotNode(session, snapshot, node);
       const replayPath = await this.tryBuildPathFromNode(snapshot, node);
       return this.createResolvedTarget("live", snapshot, node, anchor, {
-        ...(target.description === undefined ? {} : { description: target.description }),
+        ...(target.persist === undefined ? {} : { persist: target.persist }),
         ...(replayPath === undefined ? {} : { replayPath }),
       });
     }
 
     if (target.anchor) {
-      return this.resolveAnchorTarget(session, pageRef, target.anchor, "live", target.description);
+      return this.resolveAnchorTarget(session, pageRef, target.anchor, "live", target.persist);
     }
 
     throw new Error(
@@ -502,16 +502,16 @@ class DefaultDomRuntime implements DomRuntime {
       descriptorWriter ?? ((input: DomWriteDescriptorInput) => this.descriptors.write(input));
     const replayPath = await this.tryBuildPathFromNode(snapshot, node);
     const descriptor =
-      target.description === undefined
+      target.persist === undefined
         ? undefined
         : await writeDescriptor({
             method,
-            description: target.description,
+            name: target.persist,
             path: replayPath ?? (await this.buildPathForNode(snapshot, node)),
             sourceUrl: snapshot.url,
           });
     return this.createResolvedTarget("selector", snapshot, node, anchor, {
-      ...(target.description === undefined ? {} : { description: target.description }),
+      ...(target.persist === undefined ? {} : { persist: target.persist }),
       selectorUsed: target.selector,
       ...(replayPath === undefined ? {} : { replayPath }),
       ...(descriptor === undefined ? {} : { descriptor }),
@@ -628,7 +628,7 @@ class DefaultDomRuntime implements DomRuntime {
     pageRef: PageRef,
     rawPath: ReplayElementPath,
     source: ResolvedDomTarget["source"],
-    description?: string,
+    persist?: string,
     descriptor?: DomDescriptorRecord,
   ): Promise<ResolvedDomTarget> {
     const path = sanitizeReplayElementPath(rawPath);
@@ -645,7 +645,7 @@ class DefaultDomRuntime implements DomRuntime {
 
     const anchor = await this.buildAnchorFromSnapshotNode(session, context.snapshot, target.node);
     return this.createResolvedTarget(source, context.snapshot, target.node, anchor, {
-      ...(description === undefined ? {} : { description }),
+      ...(persist === undefined ? {} : { persist }),
       replayPath: path,
       ...(source === "path" || source === "descriptor" ? { selectorUsed: target.selector } : {}),
       ...(descriptor === undefined ? {} : { descriptor }),
@@ -657,7 +657,7 @@ class DefaultDomRuntime implements DomRuntime {
     pageRef: PageRef,
     rawAnchor: StructuralElementAnchor,
     source: Extract<ResolvedDomTarget["source"], "anchor" | "live">,
-    description?: string,
+    persist?: string,
   ): Promise<ResolvedDomTarget> {
     const anchor = sanitizeStructuralElementAnchor(rawAnchor);
     const context = await this.resolveAnchorContext(session, pageRef, anchor.context);
@@ -670,7 +670,7 @@ class DefaultDomRuntime implements DomRuntime {
 
     const replayPath = await this.tryBuildPathFromNode(context.snapshot, target.node);
     return this.createResolvedTarget(source, context.snapshot, target.node, anchor, {
-      ...(description === undefined ? {} : { description }),
+      ...(persist === undefined ? {} : { persist }),
       ...(replayPath === undefined ? {} : { replayPath }),
     });
   }
@@ -874,7 +874,7 @@ class DefaultDomRuntime implements DomRuntime {
     node: DomSnapshotNode,
     anchor: StructuralElementAnchor,
     options: {
-      readonly description?: string;
+      readonly persist?: string;
       readonly replayPath?: ReplayElementPath;
       readonly selectorUsed?: string;
       readonly descriptor?: DomDescriptorRecord;
@@ -900,7 +900,7 @@ class DefaultDomRuntime implements DomRuntime {
       ...(options.replayPath === undefined
         ? {}
         : { replayPath: sanitizeReplayElementPath(options.replayPath) }),
-      ...(options.description === undefined ? {} : { description: options.description }),
+      ...(options.persist === undefined ? {} : { persist: options.persist }),
       ...(options.selectorUsed === undefined ? {} : { selectorUsed: options.selectorUsed }),
       ...(options.descriptor === undefined ? {} : { descriptor: options.descriptor }),
     };

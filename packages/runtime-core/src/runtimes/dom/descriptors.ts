@@ -27,18 +27,44 @@ export function createDomDescriptorStore(options: {
   return new MemoryDomDescriptorStore(namespace);
 }
 
-export function hashDomDescriptorDescription(description: string): string {
-  return sha256Hex(description.trim());
+export function hashDomDescriptorName(name: string): string {
+  return sha256Hex(name.trim());
+}
+
+const DOM_DESCRIPTOR_METHOD_ALIASES: Readonly<Record<string, string>> = Object.freeze({
+  click: "dom.click",
+  hover: "dom.hover",
+  input: "dom.input",
+  scroll: "dom.scroll",
+});
+
+function normalizeDomDescriptorMethod(method: string): string {
+  const normalized = method.trim();
+  return DOM_DESCRIPTOR_METHOD_ALIASES[normalized] ?? normalized;
+}
+
+function buildDomDescriptorKeys(options: {
+  readonly namespace?: string;
+  readonly method: string;
+  readonly name: string;
+}): readonly string[] {
+  const namespace = normalizeDomDescriptorNamespace(options.namespace);
+  const nameHash = hashDomDescriptorName(options.name);
+  const rawMethod = options.method.trim();
+  const canonicalMethod = normalizeDomDescriptorMethod(rawMethod);
+  const methods = new Set([canonicalMethod]);
+  if (rawMethod.length > 0) {
+    methods.add(rawMethod);
+  }
+  return [...methods].map((method) => `dom:${namespace}:${method}:${nameHash}`);
 }
 
 export function buildDomDescriptorKey(options: {
   readonly namespace?: string;
   readonly method: string;
-  readonly description: string;
+  readonly name: string;
 }): string {
-  return `dom:${normalizeDomDescriptorNamespace(options.namespace)}:${options.method}:${hashDomDescriptorDescription(
-    options.description,
-  )}`;
+  return buildDomDescriptorKeys(options)[0]!;
 }
 
 export function normalizeDomDescriptorNamespace(namespace: string | undefined): string {
@@ -53,8 +79,8 @@ function sha256Hex(value: string): string {
 export function buildDomDescriptorPayload(input: DomWriteDescriptorInput): DomDescriptorPayload {
   return {
     kind: "dom-target",
-    method: input.method,
-    description: input.description,
+    method: normalizeDomDescriptorMethod(input.method),
+    name: input.name,
     path: sanitizeReplayElementPath(input.path),
     ...(input.sourceUrl === undefined ? {} : { sourceUrl: input.sourceUrl }),
   };
@@ -76,7 +102,13 @@ export function parseDomDescriptorRecord(
   if (raw.kind !== "dom-target") {
     return undefined;
   }
-  if (typeof raw.method !== "string" || typeof raw.description !== "string") {
+  const name =
+    typeof raw.name === "string"
+      ? raw.name
+      : typeof raw.description === "string"
+        ? raw.description
+        : undefined;
+  if (typeof raw.method !== "string" || name === undefined) {
     return undefined;
   }
   if (!raw.path || typeof raw.path !== "object" || Array.isArray(raw.path)) {
@@ -88,8 +120,8 @@ export function parseDomDescriptorRecord(
 
   const normalizedPayload: DomDescriptorPayload = {
     kind: "dom-target",
-    method: raw.method,
-    description: raw.description,
+    method: normalizeDomDescriptorMethod(raw.method),
+    name,
     path: sanitizeReplayElementPath(raw.path as DomDescriptorPayload["path"]),
     ...(typeof raw.sourceUrl === "string" ? { sourceUrl: raw.sourceUrl } : {}),
   };
@@ -111,17 +143,18 @@ class FilesystemDomDescriptorStore implements DomDescriptorStore {
   ) {}
 
   async read(input: DomReadDescriptorInput): Promise<DomDescriptorRecord | undefined> {
-    const record = await this.registry.resolve({
-      key: buildDomDescriptorKey({
-        namespace: this.namespace,
-        method: input.method,
-        description: input.description,
-      }),
-    });
-    if (!record) {
-      return undefined;
+    for (const key of buildDomDescriptorKeys({
+      namespace: this.namespace,
+      method: input.method,
+      name: input.name,
+    })) {
+      const record = await this.registry.resolve({ key });
+      if (!record) {
+        continue;
+      }
+      return parseDomDescriptorRecord(record);
     }
-    return parseDomDescriptorRecord(record);
+    return undefined;
   }
 
   async write(input: DomWriteDescriptorInput): Promise<DomDescriptorRecord> {
@@ -129,7 +162,7 @@ class FilesystemDomDescriptorStore implements DomDescriptorStore {
     const key = buildDomDescriptorKey({
       namespace: this.namespace,
       method: input.method,
-      description: input.description,
+      name: input.name,
     });
     const version = buildDomDescriptorVersion(payload);
     const existing = await this.registry.resolve({ key, version });
@@ -148,7 +181,7 @@ class FilesystemDomDescriptorStore implements DomDescriptorStore {
       version,
       createdAt: input.createdAt ?? now,
       updatedAt: input.updatedAt ?? input.createdAt ?? now,
-      tags: ["dom-runtime", input.method],
+      tags: ["dom-runtime", payload.method],
       provenance: {
         source: "opensteer.dom",
         sourceId: key,
@@ -171,13 +204,17 @@ class MemoryDomDescriptorStore implements DomDescriptorStore {
   constructor(private readonly namespace: string) {}
 
   async read(input: DomReadDescriptorInput): Promise<DomDescriptorRecord | undefined> {
-    return this.latestByKey.get(
-      buildDomDescriptorKey({
-        namespace: this.namespace,
-        method: input.method,
-        description: input.description,
-      }),
-    );
+    for (const key of buildDomDescriptorKeys({
+      namespace: this.namespace,
+      method: input.method,
+      name: input.name,
+    })) {
+      const record = this.latestByKey.get(key);
+      if (record) {
+        return record;
+      }
+    }
+    return undefined;
   }
 
   async write(input: DomWriteDescriptorInput): Promise<DomDescriptorRecord> {
@@ -185,7 +222,7 @@ class MemoryDomDescriptorStore implements DomDescriptorStore {
     const key = buildDomDescriptorKey({
       namespace: this.namespace,
       method: input.method,
-      description: input.description,
+      name: input.name,
     });
     const version = buildDomDescriptorVersion(payload);
     const existing = this.recordsByKey.get(key)?.get(version);

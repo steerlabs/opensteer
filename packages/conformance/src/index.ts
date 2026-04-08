@@ -5,12 +5,8 @@ import type {
   OpensteerAddInitScriptOutput,
   OpensteerComputerExecuteInput,
   OpensteerComputerExecuteOutput,
-  OpensteerNetworkClearInput,
-  OpensteerNetworkClearOutput,
   OpensteerNetworkQueryInput,
   OpensteerNetworkQueryOutput,
-  OpensteerNetworkTagInput,
-  OpensteerNetworkTagOutput,
   OpensteerOpenInput,
   OpensteerOpenOutput,
   OpensteerPageActivateInput,
@@ -22,10 +18,7 @@ import type {
   OpensteerPageListOutput,
   OpensteerPageNewInput,
   OpensteerPageNewOutput,
-  OpensteerPageSnapshotInput,
-  OpensteerPageSnapshotOutput,
   OpensteerSnapshotMode,
-  StorageSnapshot,
 } from "@opensteer/protocol";
 
 export const opensteerConformanceFamilies = [
@@ -35,12 +28,6 @@ export const opensteerConformanceFamilies = [
   "cookies-storage",
   "network-capture",
   "route-intercept",
-  "requests-request-plans",
-  "recipes-auth-recipes",
-  "interactions",
-  "scripts-artifacts",
-  "reverse-flows",
-  "captcha",
   "computer-execute",
 ] as const;
 
@@ -65,28 +52,26 @@ export interface OpensteerConformanceTarget {
   newPage(input?: OpensteerPageNewInput): Promise<OpensteerPageNewOutput>;
   activatePage(input: OpensteerPageActivateInput): Promise<OpensteerPageActivateOutput>;
   closePage(input?: OpensteerPageCloseInput): Promise<OpensteerPageCloseOutput>;
-  goto(input: string | { readonly url: string; readonly captureNetwork?: string }): Promise<unknown>;
+  goto(url: string, options?: { readonly captureNetwork?: string }): Promise<unknown>;
   evaluate(input: string | OpensteerPageEvaluateInput): Promise<unknown>;
   addInitScript(input: string | OpensteerAddInitScriptInput): Promise<OpensteerAddInitScriptOutput>;
-  snapshot(
-    input?: OpensteerSnapshotMode | OpensteerPageSnapshotInput,
-  ): Promise<OpensteerPageSnapshotOutput>;
+  snapshot(input?: OpensteerSnapshotMode): Promise<string>;
   click(input: {
     readonly selector?: string;
     readonly element?: number;
-    readonly description?: string;
+    readonly persist?: string;
     readonly captureNetwork?: string;
   }): Promise<OpensteerActionResult>;
   hover?(input: {
     readonly selector?: string;
     readonly element?: number;
-    readonly description?: string;
+    readonly persist?: string;
     readonly captureNetwork?: string;
   }): Promise<OpensteerActionResult>;
   input(input: {
     readonly selector?: string;
     readonly element?: number;
-    readonly description?: string;
+    readonly persist?: string;
     readonly captureNetwork?: string;
     readonly text: string;
     readonly pressEnter?: boolean;
@@ -94,23 +79,39 @@ export interface OpensteerConformanceTarget {
   scroll(input: {
     readonly selector?: string;
     readonly element?: number;
-    readonly description?: string;
+    readonly persist?: string;
     readonly captureNetwork?: string;
     readonly direction: "up" | "down" | "left" | "right";
     readonly amount: number;
   }): Promise<OpensteerActionResult>;
   extract(input: {
-    readonly description: string;
+    readonly persist: string;
     readonly schema?: Record<string, unknown>;
   }): Promise<unknown>;
-  getCookies(input?: { readonly urls?: readonly string[] }): Promise<readonly CookieRecord[]>;
-  getStorageSnapshot(input?: {
-    readonly includeSessionStorage?: boolean;
-    readonly includeIndexedDb?: boolean;
-  }): Promise<StorageSnapshot>;
+  cookies(domain?: string): Promise<{
+    has(name: string): boolean;
+    get(name: string): string | undefined;
+    getAll(): readonly CookieRecord[];
+    serialize(): string;
+  }>;
+  storage(domain?: string, type?: "local" | "session"): Promise<Readonly<Record<string, string>>>;
+  readonly network: {
+    detail(recordId: string): Promise<{
+      readonly recordId: string;
+      readonly requestHeaders: readonly { readonly name: string; readonly value: string }[];
+      readonly responseHeaders: readonly { readonly name: string; readonly value: string }[];
+      readonly responseBody?: {
+        readonly data?: unknown;
+      };
+    }>;
+    replay(recordId: string): Promise<{
+      readonly attempts: readonly unknown[];
+      readonly response?: {
+        readonly status: number;
+      };
+    }>;
+  };
   queryNetwork(input?: OpensteerNetworkQueryInput): Promise<OpensteerNetworkQueryOutput>;
-  tagNetwork(input: OpensteerNetworkTagInput): Promise<OpensteerNetworkTagOutput>;
-  clearNetwork(input?: OpensteerNetworkClearInput): Promise<OpensteerNetworkClearOutput>;
   route?(input: {
     readonly pageRef?: string;
     readonly urlPattern: string;
@@ -308,7 +309,7 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
 
       const extracted = asRecord(
         await target.extract({
-          description: "conformance fixture state",
+          persist: "conformance fixture state",
           schema: {
             status: { selector: "#status" },
             mirror: { selector: "#mirror" },
@@ -320,12 +321,10 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
       assertEqual(extracted.mirror, "typed-value");
 
       const snapshot = await target.snapshot();
-      assertEqual(snapshot.title, "Opensteer Conformance Main");
       assert(
-        snapshot.counters.length > 0,
-        "expected snapshot() to return actionable counters for the page",
+        snapshot.includes("typed-value"),
+        "expected snapshot() to include current page content",
       );
-      assertEqual(snapshot.url, urls.main);
     },
   },
   {
@@ -343,41 +342,31 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
         })()
       `);
 
-      const cookies = await target.getCookies({ urls: [urls.main] });
+      const cookies = await target.cookies(new URL(urls.main).hostname);
       assert(
-        cookies.some(
-          (cookie) => cookie.name === "conformance-cookie" && cookie.value === "available",
-        ),
-        "expected inspect.cookies to include the cookie written in-page",
+        cookies.has("conformance-cookie") && cookies.get("conformance-cookie") === "available",
+        "expected session.cookies to include the cookie written in-page",
       );
 
-      const snapshot = await target.getStorageSnapshot({
-        includeSessionStorage: true,
-      });
-      const origin = snapshot.origins.find((entry) => entry.origin === new URL(urls.main).origin);
-      assert(origin, "expected a storage origin snapshot for the fixture origin");
-      assert(
-        origin.localStorage.some(
-          (entry) => entry.key === "conformance-key" && entry.value === "stored",
-        ),
-        "expected inspect.storage to include localStorage entries",
+      const localStorage = await target.storage(new URL(urls.main).hostname, "local");
+      assertEqual(
+        localStorage["conformance-key"],
+        "stored",
+        "expected session.storage(local) to include localStorage entries",
       );
-      assert(
-        (snapshot.sessionStorage ?? []).some(
-          (entry) =>
-            entry.origin === new URL(urls.main).origin &&
-            entry.entries.some(
-              (item) => item.key === "conformance-session-key" && item.value === "sessioned",
-            ),
-        ),
-        "expected inspect.storage to include sessionStorage entries when requested",
+
+      const sessionStorage = await target.storage(new URL(urls.main).hostname, "session");
+      assertEqual(
+        sessionStorage["conformance-session-key"],
+        "sessioned",
+        "expected session.storage(session) to include sessionStorage entries",
       );
     },
   },
   {
     id: "network-capture",
     family: "network-capture",
-    description: "queries, tags, and clears persisted network records",
+    description: "queries captured traffic, inspects details, and replays a captured request",
     async run({ target, urls }) {
       await target.open(urls.main);
       const networkUrl = new URL("/api/network?kind=live", urls.baseUrl).href;
@@ -398,54 +387,23 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
         "expected network.query to observe the live request",
       );
 
-      const withBodies = await target.queryNetwork({
+      const records = await target.queryNetwork({
         url: networkUrl,
-        includeBodies: true,
         limit: 10,
       });
-      const hasPersistedResponseBody = (record: OpensteerNetworkQueryOutput["records"][number]) =>
-        record.record.responseBody !== undefined &&
-        Buffer.from(record.record.responseBody.data, "base64").toString("utf8") ===
-          "network:live";
+      const record = records.records[0];
+      assert(record, "expected network.query to return at least one captured record");
+
+      const detail = await target.network.detail(record.recordId);
       assert(
-        withBodies.records.some(hasPersistedResponseBody),
-        "expected network.query({ includeBodies: true }) to persist the response body",
+        detail.requestHeaders.length > 0 || detail.responseHeaders.length > 0,
+        "expected network.detail to expose request or response headers",
       );
 
-      await target.queryNetwork({
-        url: networkUrl,
-        limit: 10,
-      });
-
-      const afterMetadataRefresh = await target.queryNetwork({
-        url: networkUrl,
-        includeBodies: true,
-        limit: 10,
-      });
+      const replay = await target.network.replay(record.recordId);
       assert(
-        afterMetadataRefresh.records.some(hasPersistedResponseBody),
-        "expected metadata-only refreshes to preserve previously persisted response bodies",
-      );
-
-      const tagged = await target.tagNetwork({
-        tag: "conformance-network",
-        url: networkUrl,
-      });
-      assert(tagged.taggedCount > 0, "expected network.tag to tag at least one record");
-
-      const persisted = await target.queryNetwork({
-        tag: "conformance-network",
-      });
-      assert(persisted.records.length > 0, "expected persisted network records to be queryable");
-
-      await target.clearNetwork({ tag: "conformance-network" });
-      const afterClear = await target.queryNetwork({
-        tag: "conformance-network",
-      });
-      assertEqual(
-        afterClear.records.length,
-        0,
-        "expected network.clear to remove saved records for the tag",
+        replay.attempts.length > 0 && (replay.response?.status ?? 0) >= 200,
+        "expected network.replay to attempt at least one transport and return a successful response",
       );
     },
   },
@@ -511,7 +469,7 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
       });
       const status = asRecord(
         await target.extract({
-          description: "conformance computer status",
+          persist: "conformance computer status",
           schema: {
             status: { selector: "#status" },
           },
