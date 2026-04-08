@@ -72,13 +72,31 @@ describe("CLI surface parsing", () => {
     });
   });
 
+  test("builds extract input from positional schema and optional persist", async () => {
+    const parsed = parseCommandLine([
+      "extract",
+      "{\"title\":{\"element\":3}}",
+      "--persist",
+      "page summary",
+    ]);
+
+    await expect(buildOperationInput("dom.extract", parsed, DUMMY_RUNTIME)).resolves.toEqual({
+      persist: "page summary",
+      schema: {
+        title: {
+          element: 3,
+        },
+      },
+    });
+  });
+
   test("builds fetch input with scoped JSON flags", async () => {
     const parsed = parseCommandLine([
       "fetch",
       "https://example.com/api/search",
       "--method",
       "POST",
-      "--body-json",
+      "--body",
       "{\"keyword\":\"laptop\"}",
       "--header",
       "accept=application/json",
@@ -100,6 +118,19 @@ describe("CLI surface parsing", () => {
       },
       cookies: false,
       followRedirects: true,
+    });
+  });
+
+  test("reads open context from --context", () => {
+    const parsed = parseCommandLine([
+      "open",
+      "https://example.com",
+      "--context",
+      "{\"locale\":\"en-US\"}",
+    ]);
+
+    expect(parsed.options.context).toEqual({
+      locale: "en-US",
     });
   });
 

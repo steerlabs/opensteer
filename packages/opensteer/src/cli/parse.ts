@@ -74,7 +74,7 @@ const CLI_OPTION_SPECS = {
   "executable-path": { kind: "value" },
   arg: { kind: "value", multiple: true },
   "timeout-ms": { kind: "value" },
-  "context-json": { kind: "value" },
+  context: { kind: "value" },
   "source-user-data-dir": { kind: "value" },
   "source-profile-directory": { kind: "value" },
   element: { kind: "value" },
@@ -95,10 +95,9 @@ const CLI_OPTION_SPECS = {
   limit: { kind: "value" },
   query: { kind: "value", multiple: true },
   header: { kind: "value", multiple: true },
-  "body-json": { kind: "value" },
+  body: { kind: "value" },
   "body-text": { kind: "value" },
   variables: { kind: "value" },
-  schema: { kind: "value" },
   dx: { kind: "value" },
   dy: { kind: "value" },
   steps: { kind: "value" },
@@ -255,7 +254,7 @@ export function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
   const copy = readOptionalBoolean(rawOptions, "copy");
   const all = readOptionalBoolean(rawOptions, "all");
   const list = readOptionalBoolean(rawOptions, "list");
-  const context = readJsonObject(rawOptions, "context-json");
+  const context = readJsonObject(rawOptions, "context");
   const sourceUserDataDir = readSingle(rawOptions, "source-user-data-dir");
   const sourceProfileDirectory = readSingle(rawOptions, "source-profile-directory");
 

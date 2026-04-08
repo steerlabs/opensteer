@@ -82,7 +82,7 @@ export interface OpensteerScrollOptions extends OpensteerTargetOptions {
 }
 
 export interface OpensteerExtractOptions {
-  readonly description: string;
+  readonly persist: string;
   readonly schema?: Record<string, unknown>;
 }
 

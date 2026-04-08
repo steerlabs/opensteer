@@ -14,12 +14,12 @@ Design decisions optimize for agent comprehension and token efficiency.
 ### Input design
 
 - **Positional args for primary inputs.** The thing the command is about goes
-  first: `click 5`, `scroll down 3`, `extract "product prices"`. No flag
+  first: `click 5`, `scroll down 3`, `extract '{"items":[{"name":{"element":13}}]}'`. No flag
   ceremony for the essential argument.
 - **Flags for optional/secondary inputs.** `--capture-network`, `--press-enter`,
   `--persist`, `--button`. Always scalar values.
-- **JSON only for inherently unstructured data.** Request bodies (`--body-json`),
-  schemas (`--schema`), arbitrary dicts (`--cookies`, `--globals`). Never a
+- **JSON only for inherently unstructured data.** Request bodies (`--body`),
+  extraction schemas (positional `extract <schema>`), arbitrary dicts (`--cookies`, `--globals`). Never a
   generic `--input-json` blob. JSON is scoped to one named parameter.
 - **Union types become separate subcommands.** The command name is the
   discriminator: `computer click`, `computer type`, `computer key`. Not one
@@ -82,10 +82,10 @@ audit, all 33 exposed operations have CLI paths — 41 CLI commands total
 | `hover <element>` | `dom.hover` | element number | `--persist`, `--capture-network` |
 | `input <element> <text>` | `dom.input` | element number, text | `--press-enter`, `--persist`, `--capture-network` |
 | `scroll <dir> <amount>` | `dom.scroll` | direction, amount | `--element` (scope), `--persist`, `--capture-network` |
-| `extract <description>` | `dom.extract` | description | `--schema` |
+| `extract <schema>` | `dom.extract` | schema JSON | `--persist` |
 | `network query` | `network.query` | — | 11 filter flags |
 | `network detail <id>` | `network.detail` | recordId | — |
-| `replay <id>` | `network.replay` | recordId | `--query`, `--header`, `--body-json`, `--variables` |
+| `replay <id>` | `network.replay` | recordId | `--query`, `--header`, `--body`, `--variables` |
 | `cookies [domain]` | `session.cookies` | domain (optional) | — |
 | `storage [domain]` | `session.storage` | domain (optional) | — |
 | `state [domain]` | `session.state` | domain (optional) | — |
@@ -108,7 +108,7 @@ audit, all 33 exposed operations have CLI paths — 41 CLI commands total
 | `computer drag <x1> <y1> <x2> <y2>` | `computer.execute` | start/end coords | `--steps`, `--capture-network` |
 | `computer screenshot` | `computer.execute` | — | `--format` |
 | `computer wait <ms>` | `computer.execute` | ms | — |
-| `fetch <url>` | `session.fetch` | url | `--method`, `--header`, `--query`, `--body-json`, `--transport`, `--cookies`, `--follow-redirects` |
+| `fetch <url>` | `session.fetch` | url | `--method`, `--header`, `--query`, `--body`, `--transport`, `--cookies`, `--follow-redirects` |
 | `captcha solve` | `captcha.solve` | — | `--provider`, `--api-key`, `--type`, `--site-key`, `--page-url`, `--timeout` |
 | `scripts capture` | `scripts.capture` | — | `--url-filter`, `--persist`, `--inline`, `--external`, `--dynamic`, `--workers` |
 | `scripts beautify <id>` | `scripts.beautify` | artifactId | `--persist` |
@@ -190,7 +190,7 @@ advertised in `--help` and passes everything through `--input-json`.
 
 **Delete the flag, the option definition, and the early-return override in
 `buildOperationInput`.** Keep `readJsonObject` — it's still used by
-`--body-json`, `--variables`, `--context-json`, and `--schema`.
+`--body`, `--variables`, and `--context`.
 
 Rationale for full removal over "keep as undocumented escape hatch":
 
@@ -237,10 +237,10 @@ their standard input building, not a JSON bypass.
 | `--text <value>` | input | Became positional second arg |
 | `--direction <dir>` | scroll | Became positional first arg |
 | `--amount <n>` | scroll | Became positional second arg |
-| `--description <text>` | extract | Became positional first arg |
+| `--description <text>` | extract | Replaced by `--persist <name>` |
 | `--domain <domain>` | cookies, storage, state | Became optional positional first arg |
 | `--input-json` | all | Removed entirely (see Section 3) |
-| `--schema-json` | extract | Renamed to `--schema` |
+| `--schema-json` | extract | Replaced by positional schema input |
 
 ### Flags added
 
@@ -257,7 +257,7 @@ their standard input building, not a JSON bypass.
 | `--method <m>` | fetch | string | HTTP method (default: GET) |
 | `--header <k=v>` | fetch | repeatable key=value | HTTP headers |
 | `--query <k=v>` | fetch | repeatable key=value | Query parameters |
-| `--body-json <json>` | fetch | JSON string | Request body (JSON) |
+| `--body <json>` | fetch | JSON string | Request body (JSON) |
 | `--body-text <text>` | fetch | string | Request body (raw text) |
 | `--transport <t>` | fetch | `auto\|direct\|matched-tls\|page` | Transport layer |
 | `--cookies` | fetch | boolean | Include browser cookies |
@@ -291,7 +291,7 @@ their standard input building, not a JSON bypass.
 
 | Old | New | Reason |
 |---|---|---|
-| `--schema-json <json>` | `--schema <json>` | `-json` suffix is redundant |
+| `--schema-json <json>` | positional `<schema>` | schema is the primary input, not a flag |
 
 ### JSON flag values (exhaustive list)
 
@@ -301,8 +301,8 @@ objects, schemas):
 
 | Flag | Command | Why JSON |
 |---|---|---|
-| `--body-json` | fetch, replay | HTTP request bodies are inherently JSON |
-| `--schema` | extract | JSON Schema definition |
+| `--body` | fetch, replay | HTTP request bodies are inherently JSON |
+| positional `<schema>` | extract | extraction schema JSON |
 | `--variables` | replay | Arbitrary key-value overrides |
 | `--cookies` | scripts sandbox | Arbitrary key-value map |
 | `--globals` | scripts sandbox | Arbitrary key-value map |
@@ -336,7 +336,7 @@ opensteer click <element> [--button left|middle|right] [--persist <name>] [--cap
 opensteer hover <element> [--persist <name>] [--capture-network <label>]
 opensteer input <element> <text> [--press-enter] [--persist <name>] [--capture-network <label>]
 opensteer scroll <direction> <amount> [--element <n>] [--persist <name>] [--capture-network <label>]
-opensteer extract <description> [--schema <json>]
+opensteer extract <schema> [--persist <name>]
 opensteer evaluate <script>
 opensteer init-script <script>
 ```
@@ -355,8 +355,8 @@ opensteer tab close [n]
 ```
 opensteer network query [--capture <label>] [--url <pattern>] [--hostname <host>] [--path <path>] [--method <m>] [--status <code>] [--type <resourceType>] [--json] [--before <id>] [--after <id>] [--limit <n>]
 opensteer network detail <recordId>
-opensteer replay <recordId> [--query key=value ...] [--header key=value ...] [--body-json <json>] [--variables <json>]
-opensteer fetch <url> [--method POST] [--header key=value ...] [--query key=value ...] [--body-json <json>] [--body-text <text>] [--transport auto|direct|matched-tls|page] [--cookies] [--follow-redirects]
+opensteer replay <recordId> [--query key=value ...] [--header key=value ...] [--body <json>] [--variables <json>]
+opensteer fetch <url> [--method POST] [--header key=value ...] [--query key=value ...] [--body <json>] [--body-text <text>] [--transport auto|direct|matched-tls|page] [--cookies] [--follow-redirects]
 ```
 
 ### Browser state
@@ -476,20 +476,20 @@ body preview (truncated JSON), cookies, and timing. ✓
 ```
 opensteer replay rec:abc123 --query keyword=headphones --query count=10
 opensteer replay rec:abc123 --header Auth="Bearer newtoken"
-opensteer replay rec:abc123 --body-json '{"query":"laptop","page":2}'
+opensteer replay rec:abc123 --body '{"query":"laptop","page":2}'
 opensteer replay rec:abc123 --variables '{"keyword":"headphones"}'
 ```
 
 Positional recordId. `--query` and `--header` are repeatable `key=value` flags.
-`--body-json` and `--variables` take JSON strings (inherently unstructured). ✓
+`--body` and `--variables` take JSON strings (inherently unstructured). ✓
 
 ### Step 6: Direct HTTP fetch (alternative to replay)
 
 ```
-opensteer fetch https://api.target.com/v1/search --method POST --header Accept=application/json --header Auth="Bearer tok" --body-json '{"q":"laptop"}' --cookies
+opensteer fetch https://api.target.com/v1/search --method POST --header Accept=application/json --header Auth="Bearer tok" --body '{"q":"laptop"}' --cookies
 ```
 
-Positional URL. Repeatable `--header`. `--body-json` for the request body.
+Positional URL. Repeatable `--header`. `--body` for the request body.
 `--cookies` boolean to include browser cookies. `--transport` to control
 how the request is made (direct HTTP vs browser context). ✓
 
@@ -504,7 +504,7 @@ opensteer state .target.com
 Optional positional domain filter. ✓
 
 **All 7 steps work with zero JSON input blobs.** JSON appears only as specific
-flag values for request bodies (`--body-json`) and variable maps (`--variables`).
+flag values for request bodies (`--body`) and variable maps (`--variables`).
 
 ---
 
@@ -704,7 +704,7 @@ DOM:
   hover <element> [--persist <name>] [--capture-network <label>]
   input <element> <text> [--press-enter] [--persist <name>] [--capture-network <label>]
   scroll <direction> <amount> [--element <n>] [--persist <name>] [--capture-network <label>]
-  extract <description> [--schema <json>]
+  extract <schema> [--persist <name>]
   evaluate <script>
 
 Tabs:
@@ -716,8 +716,8 @@ Tabs:
 Network:
   network query [--capture <label>] [--url <pattern>] [--method <m>] [--status <code>] [--type <t>] [--json] [--limit <n>] [filters...]
   network detail <recordId>
-  replay <recordId> [--query k=v ...] [--header k=v ...] [--body-json <json>] [--variables <json>]
-  fetch <url> [--method POST] [--header k=v ...] [--body-json <json>] [--cookies] [--transport auto|direct|matched-tls|page]
+  replay <recordId> [--query k=v ...] [--header k=v ...] [--body <json>] [--variables <json>]
+  fetch <url> [--method POST] [--header k=v ...] [--body <json>] [--cookies] [--transport auto|direct|matched-tls|page]
 
 Browser state:
   cookies [domain]
@@ -756,7 +756,7 @@ engineering reads the first 4 sections and has everything it needs.
 | "Common options" dump | Was a confusing flat list of 30+ flags |
 | `--input-json` | Removed entirely from code |
 | `--selector`, `--description` | Removed entirely from code |
-| `--context-json` | Advanced browser context config |
+| `--context` | Advanced browser context config |
 | Cloud-specific flags | Only relevant for cloud users |
 | `--engine` | Default is playwright, rarely changed |
 | `--attach-endpoint/header` | Advanced attach mode |
@@ -820,7 +820,8 @@ After the rename, SDK supports three targeting modes:
 - `{ selector: "#submit" }` — by CSS selector
 
 CLI only exposes element numbers (positional) with optional `--persist` for
-caching. Persist-based resolve and selector targeting are SDK-only.
+caching. `extract` follows the same pattern with positional schema and optional
+`--persist`. Persist-based resolve and selector targeting are SDK-only.
 
 ### Fields only accessible via SDK
 
@@ -857,14 +858,14 @@ CLI support isn't justified):
 
 1. **Delete `--input-json`**: option definition, early-return in
    `buildOperationInput`. Keep `readJsonObject` — it's still used by
-   `--body-json`, `--variables`, `--context-json`, and `--schema`.
+   `--body`, `--variables`, and `--context`.
    Rewrite 1 test.
 
 2. **Add `buildOperationInput` cases** for all new commands: tab, computer,
    fetch, captcha, scripts, interaction, artifact, evaluate, init-script.
 
 3. **Make positional**: element on click/hover/input, text on input,
-   direction/amount on scroll, description on extract, domain on
+   direction/amount on scroll, schema on extract, domain on
    cookies/storage/state.
 
 4. **Remove from parsing**: `--selector`, `--description` (targeting),

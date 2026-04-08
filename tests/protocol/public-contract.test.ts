@@ -216,6 +216,39 @@ describe("semantic protocol validation", () => {
       }),
     ).not.toThrow();
   });
+
+  test("accepts dom.extract with schema-only and named replay inputs", () => {
+    expect(() =>
+      assertValidSemanticOperationInput("dom.extract", {
+        schema: {
+          title: {
+            element: 3,
+          },
+        },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      assertValidSemanticOperationInput("dom.extract", {
+        persist: "product cards",
+        schema: {
+          items: [
+            {
+              name: {
+                element: 13,
+              },
+            },
+          ],
+        },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      assertValidSemanticOperationInput("dom.extract", {
+        persist: "product cards",
+      }),
+    ).not.toThrow();
+  });
 });
 
 describe("protocol capabilities and errors", () => {
@@ -455,7 +488,7 @@ describe("semantic protocol descriptors", () => {
       resolveSemanticRequiredCapabilities(
         opensteerSemanticOperationSpecificationMap["dom.extract"]!,
         {
-          description: "product cards",
+          persist: "product cards",
         },
       ),
     ).toEqual(["inspect.domSnapshot", "inspect.text", "inspect.attributes"]);

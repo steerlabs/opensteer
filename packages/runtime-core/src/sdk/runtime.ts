@@ -1137,7 +1137,6 @@ export class OpensteerSessionRuntime {
     assertValidSemanticOperationInput("dom.extract", input);
 
     const pageRef = await this.ensurePageRef();
-    const descriptors = this.requireExtractionDescriptors();
     const startedAt = Date.now();
 
     try {
@@ -1176,27 +1175,33 @@ export class OpensteerSessionRuntime {
             const pageInfo = await timeout.runStep(() =>
               this.requireEngine().getPageInfo({ pageRef }),
             );
-            descriptor = await timeout.runStep(() =>
-              descriptors.write({
-                description: input.description,
-                root: payload,
-                schemaHash: canonicalJsonString(input.schema),
-                sourceUrl: pageInfo.url,
-              }),
-            );
+            const persist = input.persist;
+            if (persist !== undefined) {
+              const descriptors = this.requireExtractionDescriptors();
+              descriptor = await timeout.runStep(() =>
+                descriptors.write({
+                  persist,
+                  root: payload,
+                  schemaHash: canonicalJsonString(input.schema),
+                  sourceUrl: pageInfo.url,
+                }),
+              );
+            }
           } else {
+            const persist = input.persist!;
+            const descriptors = this.requireExtractionDescriptors();
             const storedDescriptor = await timeout.runStep(() =>
               descriptors.read({
-                description: input.description,
+                persist,
               }),
             );
             if (!storedDescriptor) {
               throw new OpensteerProtocolError(
                 "not-found",
-                `no stored extraction descriptor found for "${input.description}"`,
+                `no stored extraction descriptor found for "${persist}"`,
                 {
                   details: {
-                    description: input.description,
+                    persist,
                     workspace: this.workspace,
                     kind: "extraction-descriptor",
                   },
@@ -1238,8 +1243,8 @@ export class OpensteerSessionRuntime {
         outcome: "ok",
         artifacts,
         data: {
-          description: input.description,
-          ...(descriptor.payload.schemaHash === undefined
+          ...(input.persist === undefined ? {} : { persist: input.persist }),
+          ...(descriptor?.payload.schemaHash === undefined
             ? {}
             : { schemaHash: descriptor.payload.schemaHash }),
           data: output.data,

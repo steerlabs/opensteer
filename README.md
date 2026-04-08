@@ -29,8 +29,8 @@ opensteer open https://example.com --workspace demo
 opensteer snapshot action --workspace demo
 opensteer click 3 --workspace demo --persist "primary call to action"
 opensteer snapshot extraction --workspace demo
-opensteer extract "page summary" --workspace demo \
-  --schema '{"title":{"selector":"title"},"url":{"source":"current_url"}}'
+opensteer extract '{"title":{"element":3},"url":{"source":"current_url"}}' \
+  --workspace demo --persist "page summary"
 opensteer close --workspace demo
 ```
 
@@ -52,7 +52,7 @@ try {
   await opensteer.snapshot("extraction");
 
   const data = await opensteer.extract({
-    description: "page summary",
+    persist: "page summary",
     schema: {
       title: { selector: "title" },
       url: { source: "current_url" },

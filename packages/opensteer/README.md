@@ -46,7 +46,7 @@ opensteer snapshot action --workspace demo
 opensteer input 5 laptop --workspace demo --persist "search input" --capture-network search
 opensteer click 7 --workspace demo --persist "search button" --capture-network search
 opensteer snapshot extraction --workspace demo
-opensteer extract "page summary" --workspace demo --schema '{"title":{"element":3}}'
+opensteer extract '{"title":{"element":3}}' --workspace demo --persist "page summary"
 ```
 
 ## SDK Quickstart
@@ -157,7 +157,7 @@ await opensteer.input({
 });
 
 const data = await opensteer.extract({
-  description: "page summary",
+  persist: "page summary",
   schema: {
     title: { selector: "title" },
     url: { source: "current_url" },
@@ -185,7 +185,7 @@ Use `snapshot("action")` or `snapshot("extraction")` during exploration. The sna
 - `hover({ element? | selector? | persist?, captureNetwork? })`
 - `input({ text, element? | selector? | persist?, captureNetwork? })`
 - `scroll({ direction, amount, element? | selector? | persist?, captureNetwork? })`
-- `extract({ description, schema? })`
+- `extract({ persist, schema? })`
 - `network.query(input?)`
 - `network.detail(recordId)`
 - `network.replay(recordId, overrides?)`

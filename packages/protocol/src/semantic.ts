@@ -389,7 +389,7 @@ export interface OpensteerDomScrollInput {
 }
 
 export interface OpensteerDomExtractInput {
-  readonly description: string;
+  readonly persist?: string;
   readonly schema?: Readonly<Record<string, unknown>>;
 }
 
@@ -1185,16 +1185,21 @@ const opensteerExtractSchemaSchema: JsonSchema = objectSchema(
   },
 );
 
-const opensteerDomExtractInputSchema: JsonSchema = objectSchema(
-  {
-    description: stringSchema(),
-    schema: opensteerExtractSchemaSchema,
-  },
-  {
-    title: "OpensteerDomExtractInput",
-    required: ["description"],
-  },
-);
+const opensteerDomExtractInputSchema: JsonSchema = defineSchema({
+  ...objectSchema(
+    {
+      persist: stringSchema(),
+      schema: opensteerExtractSchemaSchema,
+    },
+    {
+      title: "OpensteerDomExtractInput",
+    },
+  ),
+  anyOf: [
+    defineSchema({ required: ["persist"] }),
+    defineSchema({ required: ["schema"] }),
+  ],
+});
 
 const jsonValueSchema: JsonSchema = recordSchema({}, { title: "JsonValueRecord" });
 
@@ -1596,7 +1601,8 @@ const opensteerSemanticOperationSpecificationsBase = [
   }),
   defineSemanticOperationSpec<OpensteerDomExtractInput, OpensteerDomExtractOutput>({
     name: "dom.extract",
-    description: "Run structured DOM extraction with persisted Opensteer extraction descriptors.",
+    description:
+      "Run structured DOM extraction and optionally persist the extraction descriptor for replay.",
     inputSchema: opensteerDomExtractInputSchema,
     outputSchema: opensteerDomExtractOutputSchema,
     requiredCapabilities: ["inspect.domSnapshot", "inspect.text", "inspect.attributes"],

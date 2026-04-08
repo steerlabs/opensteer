@@ -333,7 +333,7 @@ describe.sequential("cross-document action boundary", () => {
 
       await expect(
         opensteer.extract({
-          description: "hydration status",
+          persist: "hydration status",
           schema: {
             status: {
               selector: "#hydration-status",
@@ -379,7 +379,7 @@ describe.sequential("cross-document action boundary", () => {
 
       await expect(
         opensteer.extract({
-          description: "noisy hydration status",
+          persist: "noisy hydration status",
           schema: {
             status: {
               selector: "#hydration-status",
@@ -423,7 +423,7 @@ describe.sequential("cross-document action boundary", () => {
 
       await expect(
         opensteer.extract({
-          description: "noisy click hydration status",
+          persist: "noisy click hydration status",
           schema: {
             status: {
               selector: "#hydration-status",
@@ -466,7 +466,7 @@ describe.sequential("cross-document action boundary", () => {
 
       await expect(
         opensteer.extract({
-          description: "hydration status without capture",
+          persist: "hydration status without capture",
           schema: {
             status: {
               selector: "#hydration-status",
@@ -518,7 +518,7 @@ describe.sequential("cross-document action boundary", () => {
 
       await expect(
         opensteer.extract({
-          description: "computer hydration status",
+          persist: "computer hydration status",
           schema: {
             status: {
               selector: "#hydration-status",
@@ -531,7 +531,7 @@ describe.sequential("cross-document action boundary", () => {
 
       await expect(
         opensteer.extract({
-          description: "computer current page",
+          persist: "computer current page",
           schema: {
             url: {
               source: "current_url",

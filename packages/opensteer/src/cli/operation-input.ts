@@ -134,12 +134,12 @@ export async function buildOperationInput(
     }
     case "dom.extract": {
       if (parsed.rest[0] === undefined) {
-        throw new Error("extract requires a description.");
+        throw new Error("extract requires a schema.");
       }
-      const schema = readJsonObject(parsed.rawOptions, "schema");
+      const persist = readExtractPersistName(parsed);
       return {
-        description: joinRest(parsed.rest, 0),
-        ...(schema === undefined ? {} : { schema }),
+        schema: parseRequiredJsonObjectArgument(joinRest(parsed.rest, 0), "extract schema"),
+        ...(persist === undefined ? {} : { persist }),
       };
     }
     case "network.query": {
@@ -181,7 +181,7 @@ export async function buildOperationInput(
       }
       const query = parseKeyValueList(parsed.rawOptions.get("query"));
       const headers = parseKeyValueList(parsed.rawOptions.get("header"));
-      const bodyJson = readJsonValue(parsed.rawOptions, "body-json");
+      const bodyJson = readJsonValue(parsed.rawOptions, "body");
       const variables = readJsonObject(parsed.rawOptions, "variables");
       return {
         recordId: parsed.rest[0],
@@ -196,13 +196,13 @@ export async function buildOperationInput(
       if (url === undefined) {
         throw new Error("fetch requires a URL.");
       }
-      const bodyJson = readJsonValue(parsed.rawOptions, "body-json");
+      const bodyJson = readJsonValue(parsed.rawOptions, "body");
       const bodyText = readSingle(parsed.rawOptions, "body-text");
       const method = readSingle(parsed.rawOptions, "method");
       const query = parseKeyValueList(parsed.rawOptions.get("query"));
       const headers = parseKeyValueList(parsed.rawOptions.get("header"));
       if (bodyJson !== undefined && bodyText !== undefined) {
-        throw new Error('Use either "--body-json" or "--body-text", not both.');
+        throw new Error('Use either "--body" or "--body-text", not both.');
       }
       const transport = readSingle(parsed.rawOptions, "transport");
       const cookies = readOptionalBoolean(parsed.rawOptions, "cookies");
@@ -612,6 +612,28 @@ function readPersistName(
     throw new Error('scroll requires "--element <n>" when using "--persist <name>".');
   }
   return value;
+}
+
+function readExtractPersistName(parsed: ParsedCommandLine): string | undefined {
+  const value = readSingle(parsed.rawOptions, "persist");
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === "true" || value === "false") {
+    throw new Error('extract requires "--persist <name>" when using --persist.');
+  }
+  return value;
+}
+
+function parseRequiredJsonObjectArgument(
+  value: string,
+  label: string,
+): Record<string, unknown> {
+  const parsed = JSON.parse(value);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${label} must be a JSON object.`);
+  }
+  return parsed as Record<string, unknown>;
 }
 
 function joinRest(rest: readonly string[], startIndex: number): string {

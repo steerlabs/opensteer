@@ -15,7 +15,7 @@ DOM:
   hover <element> [--persist <name>] [--capture-network <label>]
   input <element> <text> [--press-enter] [--persist <name>] [--capture-network <label>]
   scroll <direction> <amount> [--element <n>] [--persist <name>] [--capture-network <label>]
-  extract <description> [--schema <json>]
+  extract <schema> [--persist <name>]
   evaluate <script>
   init-script <script>
 
@@ -29,8 +29,8 @@ Network:
   network query [--capture <label>] [--url <pattern>] [--hostname <host>] [--path <path>] [--method <m>] [--status <code>] [--type <resourceType>] [--json] [--before <id>] [--after <id>] [--limit <n>]
     --json filters to JSON and GraphQL responses only
   network detail <recordId>
-  replay <recordId> [--query key=value ...] [--header key=value ...] [--body-json <json>] [--variables <json>]
-  fetch <url> [--method <m>] [--header key=value ...] [--query key=value ...] [--body-json <json>] [--body-text <text>] [--transport auto|direct|matched-tls|page] [--cookies] [--follow-redirects]
+  replay <recordId> [--query key=value ...] [--header key=value ...] [--body <json>] [--variables <json>]
+  fetch <url> [--method <m>] [--header key=value ...] [--query key=value ...] [--body <json>] [--body-text <text>] [--transport auto|direct|matched-tls|page] [--cookies] [--follow-redirects]
 
 Browser State:
   cookies [domain]

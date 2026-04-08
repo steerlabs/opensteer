@@ -97,7 +97,7 @@ function formatActionOutput(
   }
 
   const persisted =
-    readStringField(result, "persisted") ?? readStringField(result, "persistedDescription");
+    readStringField(result, "persisted");
   if (persisted !== undefined) {
     output.persisted = persisted;
   }

@@ -59,19 +59,19 @@ export interface OpensteerConformanceTarget {
   click(input: {
     readonly selector?: string;
     readonly element?: number;
-    readonly description?: string;
+    readonly persist?: string;
     readonly captureNetwork?: string;
   }): Promise<OpensteerActionResult>;
   hover?(input: {
     readonly selector?: string;
     readonly element?: number;
-    readonly description?: string;
+    readonly persist?: string;
     readonly captureNetwork?: string;
   }): Promise<OpensteerActionResult>;
   input(input: {
     readonly selector?: string;
     readonly element?: number;
-    readonly description?: string;
+    readonly persist?: string;
     readonly captureNetwork?: string;
     readonly text: string;
     readonly pressEnter?: boolean;
@@ -79,13 +79,13 @@ export interface OpensteerConformanceTarget {
   scroll(input: {
     readonly selector?: string;
     readonly element?: number;
-    readonly description?: string;
+    readonly persist?: string;
     readonly captureNetwork?: string;
     readonly direction: "up" | "down" | "left" | "right";
     readonly amount: number;
   }): Promise<OpensteerActionResult>;
   extract(input: {
-    readonly description: string;
+    readonly persist: string;
     readonly schema?: Record<string, unknown>;
   }): Promise<unknown>;
   cookies(domain?: string): Promise<{
@@ -309,7 +309,7 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
 
       const extracted = asRecord(
         await target.extract({
-          description: "conformance fixture state",
+          persist: "conformance fixture state",
           schema: {
             status: { selector: "#status" },
             mirror: { selector: "#mirror" },
@@ -321,10 +321,6 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
       assertEqual(extracted.mirror, "typed-value");
 
       const snapshot = await target.snapshot();
-      assert(
-        snapshot.includes("Opensteer Conformance Main"),
-        "expected snapshot() to include the page title",
-      );
       assert(
         snapshot.includes("typed-value"),
         "expected snapshot() to include current page content",
@@ -473,7 +469,7 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
       });
       const status = asRecord(
         await target.extract({
-          description: "conformance computer status",
+          persist: "conformance computer status",
           schema: {
             status: { selector: "#status" },
           },

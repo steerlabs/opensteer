@@ -98,7 +98,7 @@ export type PersistedOpensteerExtractionPayload = PersistedOpensteerExtractionOb
 
 export interface OpensteerExtractionDescriptorPayload {
   readonly kind: "dom-extraction";
-  readonly description: string;
+  readonly persist: string;
   readonly root: PersistedOpensteerExtractionPayload;
   readonly schemaHash?: string;
   readonly sourceUrl?: string;
@@ -115,10 +115,10 @@ export interface OpensteerExtractionDescriptorRecord {
 
 export interface OpensteerExtractionDescriptorStore {
   read(input: {
-    readonly description: string;
+    readonly persist: string;
   }): Promise<OpensteerExtractionDescriptorRecord | undefined>;
   write(input: {
-    readonly description: string;
+    readonly persist: string;
     readonly root: PersistedOpensteerExtractionPayload;
     readonly schemaHash?: string;
     readonly sourceUrl?: string;
@@ -915,8 +915,8 @@ function normalizeNamespace(namespace: string | undefined): string {
   return normalized.length === 0 ? "default" : normalized;
 }
 
-function descriptionKey(namespace: string, description: string): string {
-  return `extract:${namespace}:${sha256Hex(description.trim())}`;
+function persistKey(namespace: string, persist: string): string {
+  return `extract:${namespace}:${sha256Hex(persist.trim())}`;
 }
 
 export function parseExtractionDescriptorRecord(
@@ -928,7 +928,8 @@ export function parseExtractionDescriptorRecord(
   }
 
   const raw = payload as Record<string, unknown>;
-  if (raw.kind !== "dom-extraction" || typeof raw.description !== "string") {
+  const persist = typeof raw.persist === "string" ? raw.persist : raw.description;
+  if (raw.kind !== "dom-extraction" || typeof persist !== "string") {
     return undefined;
   }
 
@@ -945,7 +946,7 @@ export function parseExtractionDescriptorRecord(
     updatedAt: record.updatedAt,
     payload: {
       kind: "dom-extraction",
-      description: raw.description,
+      persist,
       root,
       ...(typeof raw.schemaHash === "string" ? { schemaHash: raw.schemaHash } : {}),
       ...(typeof raw.sourceUrl === "string" ? { sourceUrl: raw.sourceUrl } : {}),
@@ -1046,16 +1047,16 @@ class FilesystemOpensteerExtractionDescriptorStore implements OpensteerExtractio
   ) {}
 
   async read(input: {
-    readonly description: string;
+    readonly persist: string;
   }): Promise<OpensteerExtractionDescriptorRecord | undefined> {
     const record = await this.registry.resolve({
-      key: descriptionKey(this.namespace, input.description),
+      key: persistKey(this.namespace, input.persist),
     });
     return record === undefined ? undefined : parseExtractionDescriptorRecord(record);
   }
 
   async write(input: {
-    readonly description: string;
+    readonly persist: string;
     readonly root: PersistedOpensteerExtractionPayload;
     readonly schemaHash?: string;
     readonly sourceUrl?: string;
@@ -1064,12 +1065,12 @@ class FilesystemOpensteerExtractionDescriptorStore implements OpensteerExtractio
   }): Promise<OpensteerExtractionDescriptorRecord> {
     const payload: OpensteerExtractionDescriptorPayload = {
       kind: "dom-extraction",
-      description: input.description,
+      persist: input.persist,
       root: input.root,
       ...(input.schemaHash === undefined ? {} : { schemaHash: input.schemaHash }),
       ...(input.sourceUrl === undefined ? {} : { sourceUrl: input.sourceUrl }),
     };
-    const key = descriptionKey(this.namespace, input.description);
+    const key = persistKey(this.namespace, input.persist);
     const version = sha256Hex(canonicalJsonString(payload));
     const existing = await this.registry.resolve({ key, version });
     if (existing) {
@@ -1113,13 +1114,13 @@ class MemoryOpensteerExtractionDescriptorStore implements OpensteerExtractionDes
   constructor(private readonly namespace: string) {}
 
   async read(input: {
-    readonly description: string;
+    readonly persist: string;
   }): Promise<OpensteerExtractionDescriptorRecord | undefined> {
-    return this.latestByKey.get(descriptionKey(this.namespace, input.description));
+    return this.latestByKey.get(persistKey(this.namespace, input.persist));
   }
 
   async write(input: {
-    readonly description: string;
+    readonly persist: string;
     readonly root: PersistedOpensteerExtractionPayload;
     readonly schemaHash?: string;
     readonly sourceUrl?: string;
@@ -1128,12 +1129,12 @@ class MemoryOpensteerExtractionDescriptorStore implements OpensteerExtractionDes
   }): Promise<OpensteerExtractionDescriptorRecord> {
     const payload: OpensteerExtractionDescriptorPayload = {
       kind: "dom-extraction",
-      description: input.description,
+      persist: input.persist,
       root: input.root,
       ...(input.schemaHash === undefined ? {} : { schemaHash: input.schemaHash }),
       ...(input.sourceUrl === undefined ? {} : { sourceUrl: input.sourceUrl }),
     };
-    const key = descriptionKey(this.namespace, input.description);
+    const key = persistKey(this.namespace, input.persist);
     const version = sha256Hex(canonicalJsonString(payload));
     const existing = this.recordsByKey.get(key)?.get(version);
     if (existing) {
