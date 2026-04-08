@@ -199,6 +199,8 @@ function hasTextDeep(el: Cheerio<Element>): boolean {
 function hasActionLabel(attrs: Record<string, string | undefined>): boolean {
   return (
     (typeof attrs["aria-label"] === "string" && attrs["aria-label"].trim() !== "") ||
+    (typeof attrs["aria-labelledby"] === "string" && attrs["aria-labelledby"].trim() !== "") ||
+    (typeof attrs["aria-describedby"] === "string" && attrs["aria-describedby"].trim() !== "") ||
     (typeof attrs.title === "string" && attrs.title.trim() !== "") ||
     (typeof attrs.placeholder === "string" && attrs.placeholder.trim() !== "") ||
     (typeof attrs.value === "string" && attrs.value.trim() !== "")
