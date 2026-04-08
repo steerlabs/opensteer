@@ -2,7 +2,6 @@ import type { HeaderEntry } from "./network.js";
 import {
   bodyPayloadSchema,
   headerEntrySchema,
-  networkQueryRecordSchema,
   networkResourceTypeSchema,
   type BodyPayload,
   type NetworkQueryRecord,
@@ -1126,8 +1125,6 @@ const opensteerRecipeRetryOverridesSchema: JsonSchema = objectSchema(
     title: "OpensteerRecipeRetryOverrides",
   },
 );
-
-const opensteerAuthRecipeRetryOverridesSchema: JsonSchema = opensteerRecipeRetryOverridesSchema;
 
 const opensteerRecipeStepResponseCaptureSchema: JsonSchema = objectSchema(
   {

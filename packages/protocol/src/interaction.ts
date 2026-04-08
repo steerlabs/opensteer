@@ -4,7 +4,6 @@ import {
   defineSchema,
   integerSchema,
   objectSchema,
-  recordSchema,
   stringSchema,
   enumSchema,
   oneOfSchema,

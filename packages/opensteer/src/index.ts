@@ -31,35 +31,15 @@ export type {
 } from "./observations.js";
 export { createObservationStore, normalizeObservabilityConfig } from "./observations.js";
 export type {
-  AuthRecipeRecord,
-  AuthRecipeRegistryStore,
   InteractionTraceRecord,
   InteractionTraceRegistryStore,
-  RecipeRecord,
-  RecipeRegistryStore,
   DescriptorRecord,
   DescriptorRegistryStore,
   RegistryProvenance,
   RegistryRecord,
-  ReverseCaseRecord,
-  ReverseCaseRegistryStore,
-  ReversePackageRecord,
-  ReversePackageRegistryStore,
-  ReverseReportRecord,
-  ReverseReportRegistryStore,
-  RequestPlanFreshness,
-  RequestPlanRecord,
-  RequestPlanRegistryStore,
   ResolveRegistryRecordInput,
-  UpdateReverseCaseInput,
-  WriteRecipeInput,
-  WriteAuthRecipeInput,
   WriteDescriptorInput,
   WriteInteractionTraceInput,
-  WriteRequestPlanInput,
-  WriteReverseCaseInput,
-  WriteReversePackageInput,
-  WriteReverseReportInput,
 } from "./registry.js";
 export type { SavedNetworkStore, SavedNetworkQueryInput } from "./network/saved-store.js";
 export type { JsonArray, JsonObject, JsonPrimitive, JsonValue } from "./json.js";

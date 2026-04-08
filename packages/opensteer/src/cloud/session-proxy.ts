@@ -21,29 +21,11 @@ import type {
   OpensteerDomHoverInput,
   OpensteerDomInputInput,
   OpensteerDomScrollInput,
-  OpensteerGetRecipeInput,
-  OpensteerGetAuthRecipeInput,
-  OpensteerGetRequestPlanInput,
-  OpensteerInferRequestPlanInput,
-  OpensteerListRecipesInput,
-  OpensteerListRecipesOutput,
-  OpensteerListAuthRecipesInput,
-  OpensteerListAuthRecipesOutput,
-  OpensteerListRequestPlansInput,
-  OpensteerListRequestPlansOutput,
-  OpensteerNetworkClearInput,
-  OpensteerNetworkClearOutput,
-  OpensteerNetworkDiffInput,
-  OpensteerNetworkDiffOutput,
-  OpensteerNetworkMinimizeInput,
-  OpensteerNetworkMinimizeOutput,
   OpensteerNetworkQueryInput,
   OpensteerNetworkQueryOutput,
   OpensteerNetworkDetailOutput,
   OpensteerNetworkReplayInput,
   OpensteerNetworkReplayOutput,
-  OpensteerNetworkTagInput,
-  OpensteerNetworkTagOutput,
   OpensteerInteractionCaptureInput,
   OpensteerInteractionCaptureOutput,
   OpensteerInteractionDiffInput,
@@ -68,14 +50,6 @@ import type {
   OpensteerPageNewOutput,
   OpensteerPageSnapshotInput,
   OpensteerPageSnapshotOutput,
-  OpensteerRawRequestInput,
-  OpensteerRawRequestOutput,
-  OpensteerRequestExecuteInput,
-  OpensteerRequestExecuteOutput,
-  OpensteerRunRecipeInput,
-  OpensteerRunRecipeOutput,
-  OpensteerRunAuthRecipeInput,
-  OpensteerRunAuthRecipeOutput,
   OpensteerSessionInfo,
   OpensteerSessionFetchInput,
   OpensteerSessionFetchOutput,
@@ -85,30 +59,7 @@ import type {
   OpensteerScriptDeobfuscateOutput,
   OpensteerScriptSandboxInput,
   OpensteerScriptSandboxOutput,
-  OpensteerReverseDiscoverInput,
-  OpensteerReverseDiscoverOutput,
-  OpensteerReverseExportInput,
-  OpensteerReverseExportOutput,
-  OpensteerReverseQueryInput,
-  OpensteerReverseQueryOutput,
-  OpensteerReversePackageCreateInput,
-  OpensteerReversePackageCreateOutput,
-  OpensteerReversePackageGetInput,
-  OpensteerReversePackageGetOutput,
-  OpensteerReversePackageListInput,
-  OpensteerReversePackageListOutput,
-  OpensteerReversePackagePatchInput,
-  OpensteerReversePackagePatchOutput,
-  OpensteerReversePackageRunInput,
-  OpensteerReversePackageRunOutput,
-  OpensteerReverseReportInput,
-  OpensteerReverseReportOutput,
   OpensteerSessionCloseOutput,
-  OpensteerTransportProbeInput,
-  OpensteerTransportProbeOutput,
-  OpensteerWriteRecipeInput,
-  OpensteerWriteAuthRecipeInput,
-  OpensteerWriteRequestPlanInput,
   OpensteerActionResult,
   OpensteerCookieQueryInput,
   OpensteerCookieQueryOutput,
@@ -124,8 +75,6 @@ import {
   opensteerExposedSemanticOperationNames,
 } from "@opensteer/protocol";
 import type { CloudBrowserProfilePreference } from "@opensteer/protocol";
-
-import type { AuthRecipeRecord, RecipeRecord, RequestPlanRecord } from "../registry.js";
 import {
   clearPersistedSessionRecord,
   readPersistedCloudSessionRecord,
@@ -352,87 +301,6 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     return this.requireClient().invoke("network.replay", input);
   }
 
-  async tagNetwork(input: OpensteerNetworkTagInput): Promise<OpensteerNetworkTagOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("network.tag", input);
-  }
-
-  async minimizeNetwork(
-    input: OpensteerNetworkMinimizeInput,
-  ): Promise<OpensteerNetworkMinimizeOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("network.minimize", input);
-  }
-
-  async diffNetwork(input: OpensteerNetworkDiffInput): Promise<OpensteerNetworkDiffOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("network.diff", input);
-  }
-
-  async probeNetwork(input: OpensteerTransportProbeInput): Promise<OpensteerTransportProbeOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("network.probe", input);
-  }
-
-  async discoverReverse(
-    input: OpensteerReverseDiscoverInput,
-  ): Promise<OpensteerReverseDiscoverOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("reverse.discover", input);
-  }
-
-  async queryReverse(input: OpensteerReverseQueryInput): Promise<OpensteerReverseQueryOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("reverse.query", input);
-  }
-
-  async createReversePackage(
-    input: OpensteerReversePackageCreateInput,
-  ): Promise<OpensteerReversePackageCreateOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("reverse.package.create", input);
-  }
-
-  async runReversePackage(
-    input: OpensteerReversePackageRunInput,
-  ): Promise<OpensteerReversePackageRunOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("reverse.package.run", input);
-  }
-
-  async exportReverse(input: OpensteerReverseExportInput): Promise<OpensteerReverseExportOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("reverse.export", input);
-  }
-
-  async getReverseReport(
-    input: OpensteerReverseReportInput,
-  ): Promise<OpensteerReverseReportOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("reverse.report", input);
-  }
-
-  async getReversePackage(
-    input: OpensteerReversePackageGetInput,
-  ): Promise<OpensteerReversePackageGetOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("reverse.package.get", input);
-  }
-
-  async listReversePackages(
-    input: OpensteerReversePackageListInput = {},
-  ): Promise<OpensteerReversePackageListOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("reverse.package.list", input);
-  }
-
-  async patchReversePackage(
-    input: OpensteerReversePackagePatchInput,
-  ): Promise<OpensteerReversePackagePatchOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("reverse.package.patch", input);
-  }
-
   async captureInteraction(
     input: OpensteerInteractionCaptureInput,
   ): Promise<OpensteerInteractionCaptureOutput> {
@@ -459,11 +327,6 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
   ): Promise<OpensteerInteractionReplayOutput> {
     await this.ensureSession();
     return this.requireClient().invoke("interaction.replay", input);
-  }
-
-  async clearNetwork(input: OpensteerNetworkClearInput = {}): Promise<OpensteerNetworkClearOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("network.clear", input);
   }
 
   async captureScripts(
@@ -534,80 +397,6 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
   async fetch(input: OpensteerSessionFetchInput): Promise<OpensteerSessionFetchOutput> {
     await this.ensureSession();
     return this.requireClient().invoke("session.fetch", input);
-  }
-
-  async rawRequest(input: OpensteerRawRequestInput): Promise<OpensteerRawRequestOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("request.raw", input);
-  }
-
-  async inferRequestPlan(input: OpensteerInferRequestPlanInput): Promise<RequestPlanRecord> {
-    await this.ensureSession();
-    return this.requireClient().invoke("request-plan.infer", input);
-  }
-
-  async writeRequestPlan(input: OpensteerWriteRequestPlanInput): Promise<RequestPlanRecord> {
-    await this.ensureSession();
-    return this.requireClient().invoke("request-plan.write", input);
-  }
-
-  async getRequestPlan(input: OpensteerGetRequestPlanInput): Promise<RequestPlanRecord> {
-    await this.ensureSession();
-    return this.requireClient().invoke("request-plan.get", input);
-  }
-
-  async listRequestPlans(
-    input: OpensteerListRequestPlansInput = {},
-  ): Promise<OpensteerListRequestPlansOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("request-plan.list", input);
-  }
-
-  async writeAuthRecipe(input: OpensteerWriteAuthRecipeInput): Promise<AuthRecipeRecord> {
-    await this.ensureSession();
-    return this.requireClient().invoke("auth-recipe.write", input);
-  }
-
-  async writeRecipe(input: OpensteerWriteRecipeInput): Promise<RecipeRecord> {
-    await this.ensureSession();
-    return this.requireClient().invoke("recipe.write", input);
-  }
-
-  async getAuthRecipe(input: OpensteerGetAuthRecipeInput): Promise<AuthRecipeRecord> {
-    await this.ensureSession();
-    return this.requireClient().invoke("auth-recipe.get", input);
-  }
-
-  async getRecipe(input: OpensteerGetRecipeInput): Promise<RecipeRecord> {
-    await this.ensureSession();
-    return this.requireClient().invoke("recipe.get", input);
-  }
-
-  async listAuthRecipes(
-    input: OpensteerListAuthRecipesInput = {},
-  ): Promise<OpensteerListAuthRecipesOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("auth-recipe.list", input);
-  }
-
-  async listRecipes(input: OpensteerListRecipesInput = {}): Promise<OpensteerListRecipesOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("recipe.list", input);
-  }
-
-  async runAuthRecipe(input: OpensteerRunAuthRecipeInput): Promise<OpensteerRunAuthRecipeOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("auth-recipe.run", input);
-  }
-
-  async runRecipe(input: OpensteerRunRecipeInput): Promise<OpensteerRunRecipeOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("recipe.run", input);
-  }
-
-  async request(input: OpensteerRequestExecuteInput): Promise<OpensteerRequestExecuteOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("request.execute", input);
   }
 
   async computerExecute(

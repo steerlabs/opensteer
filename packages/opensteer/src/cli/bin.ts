@@ -2,7 +2,6 @@
 
 import process from "node:process";
 
-import type { OpensteerSemanticOperationName } from "@opensteer/protocol";
 import opensteerPackage from "../../package.json" with { type: "json" };
 
 import { OpensteerBrowserManager } from "../browser-manager.js";
@@ -99,10 +98,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const operation =
-    parsed.command[0] === "run"
-      ? (parsed.rest[0] as OpensteerSemanticOperationName | undefined)
-      : resolveOperation(parsed.command);
+  const operation = resolveOperation(parsed.command);
   if (!operation) {
     throw new Error(`Unknown command: ${parsed.command.join(" ")}`);
   }
@@ -136,18 +132,10 @@ async function main(): Promise<void> {
     },
   });
 
-  const operationParsed =
-    parsed.command[0] === "run"
-      ? {
-          ...parsed,
-          rest: parsed.rest.slice(1),
-        }
-      : parsed;
-
   let result: unknown;
   let renderOperation = operation;
   try {
-    const input = await buildOperationInput(operation, operationParsed, runtime);
+    const input = await buildOperationInput(operation, parsed, runtime);
     result = await dispatchSemanticOperation(runtime, operation, input);
 
     if (parsed.command[0] === "tab" && operation !== "page.list") {

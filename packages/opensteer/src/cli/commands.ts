@@ -66,7 +66,7 @@ export function resolveCommandLength(tokens: readonly string[]): number {
   if (tokens[0] === "skills") {
     return Math.min(tokens.length, 2);
   }
-  if (tokens[0] === "run" || tokens[0] === "status" || tokens[0] === "record") {
+  if (tokens[0] === "status" || tokens[0] === "record") {
     return 1;
   }
   for (let length = Math.min(3, tokens.length); length >= 1; length -= 1) {

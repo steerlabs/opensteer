@@ -103,12 +103,9 @@ describe("CLI surface parsing", () => {
     });
   });
 
-  test("rejects unsupported semantic operations for the direct CLI input surface", async () => {
-    const parsed = parseCommandLine(["run", "request.raw"]);
-
-    await expect(buildOperationInput("request.raw", parsed, DUMMY_RUNTIME)).rejects.toThrow(
-      "request.raw does not have a direct CLI input shape",
-    );
+  test("treats run as an unknown command", () => {
+    const parsed = parseCommandLine(["run", "network.query"]);
+    expect(parsed.command).toEqual(["run"]);
   });
 
   test("labels network query json mode as a response filter in output", () => {
