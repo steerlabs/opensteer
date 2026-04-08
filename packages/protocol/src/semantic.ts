@@ -187,7 +187,7 @@ export interface OpensteerTargetByElement {
 
 export interface OpensteerTargetByPersist {
   readonly kind: "persist";
-  readonly name: string;
+  readonly persist: string;
 }
 
 export interface OpensteerTargetBySelector {
@@ -218,7 +218,6 @@ export interface OpensteerActionResult {
     readonly x: number;
     readonly y: number;
   };
-  readonly persisted?: string;
 }
 
 export interface OpensteerSnapshotCounter {
@@ -766,11 +765,11 @@ const targetByElementSchema: JsonSchema = objectSchema(
 const targetByPersistSchema: JsonSchema = objectSchema(
   {
     kind: enumSchema(["persist"] as const),
-    name: stringSchema(),
+    persist: stringSchema(),
   },
   {
     title: "OpensteerTargetByPersist",
-    required: ["kind", "name"],
+    required: ["kind", "persist"],
   },
 );
 
@@ -822,7 +821,6 @@ const opensteerActionResultSchema: JsonSchema = objectSchema(
   {
     target: opensteerResolvedTargetSchema,
     point: pointSchema,
-    persisted: stringSchema(),
   },
   {
     title: "OpensteerActionResult",

@@ -47,11 +47,11 @@ await opensteer.click({ persist: "primary button" });
 await opensteer.input({ persist: "search input", text: "laptop", pressEnter: true });
 ```
 
-Extraction still uses `description`:
+Persist works for extraction too:
 
 ```ts
 const summary = await opensteer.extract({
-  description: "page summary",
+  persist: "page summary",
   schema: {
     title: { selector: "title" },
     url: { source: "current_url" },
@@ -61,8 +61,7 @@ const summary = await opensteer.extract({
 
 Rules:
 
-- Use `persist` for DOM actions.
-- Use `description` for extraction descriptors.
+- Use `persist` for reusable DOM targets and extraction descriptors.
 - Use `selector` only as a low-level escape hatch.
 
 ## Network Discovery

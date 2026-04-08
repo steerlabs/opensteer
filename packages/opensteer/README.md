@@ -185,7 +185,7 @@ Use `snapshot("action")` or `snapshot("extraction")` during exploration. The sna
 - `hover({ element? | selector? | persist?, captureNetwork? })`
 - `input({ text, element? | selector? | persist?, captureNetwork? })`
 - `scroll({ direction, amount, element? | selector? | persist?, captureNetwork? })`
-- `extract({ persist, schema? })`
+- `extract({ schema } | { persist, schema? })`
 - `network.query(input?)`
 - `network.detail(recordId)`
 - `network.replay(recordId, overrides?)`

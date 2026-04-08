@@ -2,14 +2,19 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
   collectOpensteerStatus,
   renderOpensteerStatus,
 } from "../../packages/opensteer/src/cli/status.js";
+import { OpensteerCloudClient } from "../../packages/opensteer/src/cloud/client.js";
 import { resolveFilesystemWorkspacePath } from "../../packages/opensteer/src/root.js";
 import { writePersistedSessionRecord } from "../../packages/opensteer/src/live-session.js";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("opensteer status", () => {
   test("reports provider resolution and both workspace lanes independently", async () => {
@@ -21,6 +26,10 @@ describe("opensteer status", () => {
     });
 
     try {
+      vi.spyOn(OpensteerCloudClient.prototype, "getSession").mockResolvedValue({
+        status: "active",
+      } satisfies Awaited<ReturnType<OpensteerCloudClient["getSession"]>>);
+
       await writePersistedSessionRecord(rootPath, {
         layout: "opensteer-session",
         version: 1,

@@ -81,10 +81,15 @@ export interface OpensteerScrollOptions extends OpensteerTargetOptions {
   readonly amount: number;
 }
 
-export interface OpensteerExtractOptions {
-  readonly persist: string;
-  readonly schema?: Record<string, unknown>;
-}
+export type OpensteerExtractOptions =
+  | {
+      readonly persist: string;
+      readonly schema?: Record<string, unknown>;
+    }
+  | {
+      readonly persist?: string;
+      readonly schema: Record<string, unknown>;
+    };
 
 export interface OpensteerWaitForNetworkOptions extends OpensteerNetworkQueryInput {
   readonly timeoutMs?: number;
@@ -546,7 +551,7 @@ function normalizeTargetOptions(input: OpensteerTargetOptions): {
   return {
     target: {
       kind: "persist",
-      name: input.persist,
+      persist: input.persist,
     },
     ...(input.captureNetwork === undefined ? {} : { captureNetwork: input.captureNetwork }),
   };

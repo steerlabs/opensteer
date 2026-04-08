@@ -10,8 +10,8 @@ opensteer snapshot action --workspace demo
 opensteer input 5 laptop --workspace demo --persist "search input" --capture-network search
 opensteer click 7 --workspace demo --persist "search button" --capture-network search
 opensteer snapshot extraction --workspace demo
-opensteer extract "search results" --workspace demo \
-  --schema '{"items":[{"name":{"element":13},"price":{"element":14}},{"name":{"element":22},"price":{"element":23}}]}'
+opensteer extract '{"items":[{"name":{"element":13},"price":{"element":14}},{"name":{"element":22},"price":{"element":23}}]}' \
+  --workspace demo --persist "search results"
 opensteer close --workspace demo
 ```
 
@@ -41,7 +41,7 @@ opensteer close --workspace demo
 opensteer click 7 --workspace demo --persist "primary button"
 opensteer input 5 "search term" --workspace demo --persist "search input" --press-enter
 opensteer scroll down 400 --workspace demo
-opensteer extract "page summary" --workspace demo --schema '{"title":{"element":3}}'
+opensteer extract '{"title":{"element":3}}' --workspace demo --persist "page summary"
 ```
 
 ### Network Discovery

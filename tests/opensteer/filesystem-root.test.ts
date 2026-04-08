@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, test } from "vitest";
 
-import { createFilesystemOpensteerRoot } from "../../packages/opensteer/src/index.js";
+import { createFilesystemOpensteerWorkspace } from "../../packages/opensteer/src/index.js";
 import { bodyPayloadFromUtf8 } from "../../packages/protocol/src/network.js";
 
 const temporaryRoots: string[] = [];
@@ -70,11 +70,11 @@ describe("Phase 3 filesystem root", () => {
   test("initializes the root layout idempotently and only creates the expected tree", async () => {
     const rootPath = await createTemporaryRoot();
 
-    const first = await createFilesystemOpensteerRoot({
+    const first = await createFilesystemOpensteerWorkspace({
       rootPath,
       createdAt: 100,
     });
-    const second = await createFilesystemOpensteerRoot({
+    const second = await createFilesystemOpensteerWorkspace({
       rootPath,
     });
 
@@ -84,7 +84,11 @@ describe("Phase 3 filesystem root", () => {
       "artifacts/manifests/",
       "artifacts/objects/",
       "artifacts/objects/sha256/",
-      "opensteer-root.json",
+      "browser/",
+      "browser/user-data/",
+      "live/",
+      "observations/",
+      "observations/sessions/",
       "registry/",
       "registry/auth-recipes/",
       "registry/auth-recipes/indexes/",
@@ -98,6 +102,10 @@ describe("Phase 3 filesystem root", () => {
       "registry/interaction-traces/indexes/",
       "registry/interaction-traces/indexes/by-key/",
       "registry/interaction-traces/records/",
+      "registry/recipes/",
+      "registry/recipes/indexes/",
+      "registry/recipes/indexes/by-key/",
+      "registry/recipes/records/",
       "registry/request-plans/",
       "registry/request-plans/indexes/",
       "registry/request-plans/indexes/by-key/",
@@ -116,12 +124,13 @@ describe("Phase 3 filesystem root", () => {
       "registry/reverse-reports/records/",
       "traces/",
       "traces/runs/",
+      "workspace.json",
     ]);
   });
 
   test("lazily creates saved-network sqlite files on first saved-network use", async () => {
     const rootPath = await createTemporaryRoot();
-    const root = await createFilesystemOpensteerRoot({ rootPath });
+    const root = await createFilesystemOpensteerWorkspace({ rootPath });
     const databasePath = path.join(root.registryPath, "saved-network.sqlite");
     const shmPath = `${databasePath}-shm`;
     const walPath = `${databasePath}-wal`;
@@ -217,7 +226,7 @@ describe("Phase 3 filesystem root", () => {
 
   test("preserves persisted bodies during metadata-only upserts", async () => {
     const rootPath = await createTemporaryRoot();
-    const root = await createFilesystemOpensteerRoot({ rootPath });
+    const root = await createFilesystemOpensteerWorkspace({ rootPath });
     const responseBody = bodyPayloadFromUtf8("network:live", {
       mimeType: "text/plain",
     });
@@ -314,7 +323,7 @@ describe("Phase 3 filesystem root", () => {
 
   test("stores structured and binary artifacts with stable hashes and protocol adapters", async () => {
     const rootPath = await createTemporaryRoot();
-    const root = await createFilesystemOpensteerRoot({ rootPath });
+    const root = await createFilesystemOpensteerWorkspace({ rootPath });
 
     const screenshotBytes = new Uint8Array([1, 2, 3, 4, 5]);
     const screenshotArtifact = await root.artifacts.writeBinary({
@@ -427,7 +436,7 @@ describe("Phase 3 filesystem root", () => {
 
   test("records ordered traces and builds protocol-compatible trace bundles", async () => {
     const rootPath = await createTemporaryRoot();
-    const root = await createFilesystemOpensteerRoot({ rootPath });
+    const root = await createFilesystemOpensteerWorkspace({ rootPath });
 
     const screenshotArtifact = await root.artifacts.writeBinary({
       artifactId: "artifact:screenshot",
@@ -555,7 +564,7 @@ describe("Phase 3 filesystem root", () => {
 
   test("fails trace bundle materialization when a referenced artifact is missing", async () => {
     const rootPath = await createTemporaryRoot();
-    const root = await createFilesystemOpensteerRoot({ rootPath });
+    const root = await createFilesystemOpensteerWorkspace({ rootPath });
     const run = await root.traces.createRun({
       runId: "run:missing-artifact",
       createdAt: 100,
@@ -581,7 +590,7 @@ describe("Phase 3 filesystem root", () => {
 
   test("serializes parallel trace appends without losing entries", async () => {
     const rootPath = await createTemporaryRoot();
-    const root = await createFilesystemOpensteerRoot({ rootPath });
+    const root = await createFilesystemOpensteerWorkspace({ rootPath });
     const run = await root.traces.createRun({
       runId: "run:parallel-appends",
       createdAt: 1,
@@ -629,7 +638,7 @@ describe("Phase 3 filesystem root", () => {
 
   test("stores descriptor and request-plan registries with deterministic resolution and duplicate rejection", async () => {
     const rootPath = await createTemporaryRoot();
-    const root = await createFilesystemOpensteerRoot({ rootPath });
+    const root = await createFilesystemOpensteerWorkspace({ rootPath });
 
     await root.registry.descriptors.write({
       id: "descriptor:a",
@@ -798,7 +807,7 @@ describe("Phase 3 filesystem root", () => {
 
   test("rejects concurrent duplicate request-plan versions", async () => {
     const rootPath = await createTemporaryRoot();
-    const root = await createFilesystemOpensteerRoot({ rootPath });
+    const root = await createFilesystemOpensteerWorkspace({ rootPath });
 
     const writes = await Promise.allSettled([
       root.registry.requestPlans.write({
@@ -835,7 +844,7 @@ describe("Phase 3 filesystem root", () => {
 
   test("lists request plans and updates freshness without changing the content hash", async () => {
     const rootPath = await createTemporaryRoot();
-    const root = await createFilesystemOpensteerRoot({ rootPath });
+    const root = await createFilesystemOpensteerWorkspace({ rootPath });
 
     const plan = await root.registry.requestPlans.write({
       id: "request-plan:list-a",
@@ -877,7 +886,7 @@ describe("Phase 3 filesystem root", () => {
 
   test("rejects concurrent duplicate artifact ids without overwriting the winner", async () => {
     const rootPath = await createTemporaryRoot();
-    const root = await createFilesystemOpensteerRoot({ rootPath });
+    const root = await createFilesystemOpensteerWorkspace({ rootPath });
 
     const writes = await Promise.allSettled([
       root.artifacts.writeBinary({
@@ -914,7 +923,7 @@ describe("Phase 3 filesystem root", () => {
 
   test("keeps trace, artifact, and registry metadata boundaries separate on disk", async () => {
     const rootPath = await createTemporaryRoot();
-    const root = await createFilesystemOpensteerRoot({ rootPath });
+    const root = await createFilesystemOpensteerWorkspace({ rootPath });
 
     const artifact = await root.artifacts.writeBinary({
       artifactId: "artifact:boundary",

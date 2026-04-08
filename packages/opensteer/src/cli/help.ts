@@ -11,11 +11,11 @@ Navigation:
 
 DOM:
   snapshot [action|extraction]
-  click <element> [--button left|middle|right] [--persist <name>] [--capture-network <label>]
-  hover <element> [--persist <name>] [--capture-network <label>]
-  input <element> <text> [--press-enter] [--persist <name>] [--capture-network <label>]
-  scroll <direction> <amount> [--element <n>] [--persist <name>] [--capture-network <label>]
-  extract <schema> [--persist <name>]
+  click <element> [--button left|middle|right] [--persist <key>] [--capture-network <label>]
+  hover <element> [--persist <key>] [--capture-network <label>]
+  input <element> <text> [--press-enter] [--persist <key>] [--capture-network <label>]
+  scroll <direction> <amount> [--element <n>] [--persist <key>] [--capture-network <label>]
+  extract <schema> [--persist <key>]
   evaluate <script>
   init-script <script>
 

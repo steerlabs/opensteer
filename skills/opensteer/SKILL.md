@@ -56,7 +56,7 @@ opensteer hover 3 --workspace demo --persist "menu trigger"
 opensteer scroll down 400 --workspace demo
 ```
 
-`--persist <name>` saves the element's structural DOM path for deterministic SDK replay. Element number is always required on CLI — persist is save-only, not a targeting mode.
+`--persist <key>` saves the element's structural DOM path for deterministic SDK replay. Element number is always required on CLI — persist is save-only, not a targeting mode.
 
 ### Step 3: Extract
 
@@ -85,7 +85,7 @@ const opensteer = new Opensteer({ workspace: "demo", rootDir: process.cwd() });
 try {
   await opensteer.open("https://example.com");
 
-  // Replay by persist name — no element numbers or snapshots needed
+  // Replay by persist key — no element numbers or snapshots needed
   await opensteer.input({ persist: "search input", text: "laptop", pressEnter: true });
   await opensteer.click({ persist: "search button" });
 

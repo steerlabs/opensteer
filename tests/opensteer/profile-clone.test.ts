@@ -54,8 +54,15 @@ describe("browser profile snapshot cloning", () => {
       '{"profile":{}}',
     );
     await expect(
-      readFile(path.join(targetUserDataDir, "Default", "Preferences"), "utf8"),
-    ).resolves.toBe("{}");
+      readFile(path.join(targetUserDataDir, "Default", "Preferences"), "utf8").then((value) =>
+        JSON.parse(value),
+      ),
+    ).resolves.toEqual({
+      profile: {
+        exit_type: "Normal",
+        exited_cleanly: true,
+      },
+    });
     await expect(
       readFile(path.join(targetUserDataDir, "Default", "Cookies"), "utf8"),
     ).resolves.toBe("cookies");

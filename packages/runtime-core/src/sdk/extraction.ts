@@ -928,8 +928,7 @@ export function parseExtractionDescriptorRecord(
   }
 
   const raw = payload as Record<string, unknown>;
-  const persist = typeof raw.persist === "string" ? raw.persist : raw.description;
-  if (raw.kind !== "dom-extraction" || typeof persist !== "string") {
+  if (raw.kind !== "dom-extraction" || typeof raw.persist !== "string") {
     return undefined;
   }
 
@@ -946,7 +945,7 @@ export function parseExtractionDescriptorRecord(
     updatedAt: record.updatedAt,
     payload: {
       kind: "dom-extraction",
-      persist,
+      persist: raw.persist,
       root,
       ...(typeof raw.schemaHash === "string" ? { schemaHash: raw.schemaHash } : {}),
       ...(typeof raw.sourceUrl === "string" ? { sourceUrl: raw.sourceUrl } : {}),
