@@ -134,7 +134,7 @@ export {
   buildDomDescriptorPayload,
   buildDomDescriptorVersion,
   createDomDescriptorStore,
-  hashDomDescriptorDescription,
+  hashDomDescriptorName,
   parseDomDescriptorRecord,
   OPENSTEER_DOM_ACTION_BRIDGE_SYMBOL,
   buildArrayFieldPathCandidates,

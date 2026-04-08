@@ -128,8 +128,8 @@ describe("cloud browser-profile integration", () => {
       {
         workspace: "work",
         method: "dom.click",
-        descriptionHash: "a".repeat(64),
-        description: "Submit",
+        nameHash: "a".repeat(64),
+        name: "Submit",
         path: { resolution: "deterministic", context: [], nodes: [{ tag: "button" }] },
         createdAt: 10,
         updatedAt: 20,

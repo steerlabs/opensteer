@@ -61,7 +61,7 @@ import type { OpensteerDisconnectableRuntime } from "./semantic-runtime.js";
 export interface OpensteerTargetOptions {
   readonly element?: number;
   readonly selector?: string;
-  readonly description?: string;
+  readonly persist?: string;
   readonly captureNetwork?: string;
 }
 
@@ -508,13 +508,13 @@ function createUnsupportedBrowserController(): OpensteerBrowserController {
 
 function normalizeTargetOptions(input: OpensteerTargetOptions): {
   readonly target: OpensteerTargetInput;
-  readonly persistAsDescription?: string;
+  readonly persist?: string;
   readonly captureNetwork?: string;
 } {
   const hasElement = input.element !== undefined;
   const hasSelector = input.selector !== undefined;
   if (hasElement && hasSelector) {
-    throw new Error("Specify exactly one of element, selector, or description.");
+    throw new Error("Specify exactly one of element, selector, or persist.");
   }
 
   if (hasElement) {
@@ -523,7 +523,7 @@ function normalizeTargetOptions(input: OpensteerTargetOptions): {
         kind: "element",
         element: input.element,
       },
-      ...(input.description === undefined ? {} : { persistAsDescription: input.description }),
+      ...(input.persist === undefined ? {} : { persist: input.persist }),
       ...(input.captureNetwork === undefined ? {} : { captureNetwork: input.captureNetwork }),
     };
   }
@@ -534,19 +534,19 @@ function normalizeTargetOptions(input: OpensteerTargetOptions): {
         kind: "selector",
         selector: input.selector,
       },
-      ...(input.description === undefined ? {} : { persistAsDescription: input.description }),
+      ...(input.persist === undefined ? {} : { persist: input.persist }),
       ...(input.captureNetwork === undefined ? {} : { captureNetwork: input.captureNetwork }),
     };
   }
 
-  if (input.description === undefined) {
-    throw new Error("Specify exactly one of element, selector, or description.");
+  if (input.persist === undefined) {
+    throw new Error("Specify exactly one of element, selector, or persist.");
   }
 
   return {
     target: {
-      kind: "description",
-      description: input.description,
+      kind: "persist",
+      name: input.persist,
     },
     ...(input.captureNetwork === undefined ? {} : { captureNetwork: input.captureNetwork }),
   };

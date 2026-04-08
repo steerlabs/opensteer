@@ -210,7 +210,18 @@ export class OpensteerCloudClient {
   ): Promise<CloudSelectorCacheImportResponse> {
     const response = await this.request("/selector-cache/import", {
       method: "POST",
-      body: { entries },
+      body: {
+        entries: entries.map((entry) => ({
+          workspace: entry.workspace,
+          method: entry.method,
+          descriptionHash: entry.nameHash,
+          ...(entry.name === undefined ? {} : { description: entry.name }),
+          path: entry.path,
+          ...(entry.schemaHash === undefined ? {} : { schemaHash: entry.schemaHash }),
+          createdAt: entry.createdAt,
+          updatedAt: entry.updatedAt,
+        })),
+      },
     });
     return (await response.json()) as CloudSelectorCacheImportResponse;
   }

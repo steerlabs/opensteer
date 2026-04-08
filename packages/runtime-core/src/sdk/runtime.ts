@@ -5532,7 +5532,7 @@ export class OpensteerSessionRuntime {
   private async runDomAction<
     TInput extends {
       readonly target: OpensteerTargetInput;
-      readonly persistAsDescription?: string;
+      readonly persist?: string;
       readonly captureNetwork?: string;
     },
   >(
@@ -5569,7 +5569,7 @@ export class OpensteerSessionRuntime {
             pageRef,
             operation,
             input.target,
-            input.persistAsDescription,
+            input.persist,
             timeout,
           );
           try {
@@ -5588,7 +5588,7 @@ export class OpensteerSessionRuntime {
           mutationCaptureDiagnostics = diagnostics;
         },
       );
-      const output = toOpensteerActionResult(executed.result, preparedTarget.persistedDescription);
+      const output = toOpensteerActionResult(executed.result, preparedTarget.persisted);
       const actionEvents = "events" in executed.result ? executed.result.events : undefined;
 
       await this.appendTrace({
@@ -5600,9 +5600,9 @@ export class OpensteerSessionRuntime {
         data: {
           target: output.target,
           ...(output.point === undefined ? {} : { point: output.point }),
-          ...(output.persistedDescription === undefined
+          ...(output.persisted === undefined
             ? {}
-            : { persistedDescription: output.persistedDescription }),
+            : { persisted: output.persisted }),
           ...(boundaryDiagnostics === undefined ? {} : { settle: boundaryDiagnostics }),
           ...buildMutationCaptureTraceData(mutationCaptureDiagnostics),
         },
@@ -5640,20 +5640,20 @@ export class OpensteerSessionRuntime {
     pageRef: PageRef,
     method: string,
     target: OpensteerTargetInput,
-    persistAsDescription: string | undefined,
+    persist: string | undefined,
     timeout: TimeoutExecutionContext,
   ): Promise<{
     readonly target: DomTargetRef;
-    readonly persistedDescription?: string;
+    readonly persisted?: string;
   }> {
     const domTarget = this.toDomTargetRef(target);
-    if (target.kind === "description") {
+    if (target.kind === "persist") {
       return {
         target: domTarget,
       };
     }
 
-    if (persistAsDescription === undefined) {
+    if (persist === undefined) {
       return {
         target: domTarget,
       };
@@ -5683,7 +5683,7 @@ export class OpensteerSessionRuntime {
       await timeout.runStep(() =>
         this.requireDom().writeDescriptor({
           method,
-          description: persistAsDescription,
+          name: persist,
           path: stablePath,
           sourceUrl: resolved.snapshot.url,
         }),
@@ -5691,9 +5691,9 @@ export class OpensteerSessionRuntime {
       return {
         target: {
           kind: "descriptor",
-          description: persistAsDescription,
+          name: persist,
         },
-        persistedDescription: persistAsDescription,
+        persisted: persist,
       };
     }
 
@@ -5713,14 +5713,14 @@ export class OpensteerSessionRuntime {
       ));
     if (!stablePath) {
       throw new Error(
-        `unable to persist "${persistAsDescription}" because no stable DOM path could be built for ${method}`,
+        `unable to persist "${persist}" because no stable DOM path could be built for ${method}`,
       );
     }
 
     await timeout.runStep(() =>
       this.requireDom().writeDescriptor({
         method,
-        description: persistAsDescription,
+        name: persist,
         path: stablePath,
         sourceUrl: resolved.snapshot.url,
       }),
@@ -5729,9 +5729,9 @@ export class OpensteerSessionRuntime {
     return {
       target: {
         kind: "descriptor",
-        description: persistAsDescription,
+        name: persist,
       },
-      persistedDescription: persistAsDescription,
+      persisted: persist,
     };
   }
 
@@ -8872,6 +8872,10 @@ export class OpensteerSessionRuntime {
       return;
     }
 
+    if (this.networkHistory.getKnownRequestIds().size === 0) {
+      return;
+    }
+
     const root = await this.ensureRoot();
 
     try {
@@ -8896,10 +8900,10 @@ export class OpensteerSessionRuntime {
   }
 
   private toDomTargetRef(target: OpensteerTargetInput): DomTargetRef {
-    if (target.kind === "description") {
+    if (target.kind === "persist") {
       return {
         kind: "descriptor",
-        description: target.description,
+        name: target.name,
       };
     }
 
@@ -13775,7 +13779,7 @@ function toOpensteerActionResult(
         readonly resolved: ResolvedDomTarget;
         readonly point?: undefined;
       },
-  persistedDescription: string | undefined,
+  persisted: string | undefined,
 ): OpensteerActionResult {
   return {
     target: toOpensteerResolvedTarget(result.resolved),
@@ -13787,7 +13791,7 @@ function toOpensteerActionResult(
             y: result.point.y,
           },
         }),
-    ...(persistedDescription === undefined ? {} : { persistedDescription }),
+    ...(persisted === undefined ? {} : { persisted }),
   };
 }
 
@@ -13800,7 +13804,7 @@ function toOpensteerResolvedTarget(target: ResolvedDomTarget): OpensteerResolved
     nodeRef: target.nodeRef,
     tagName: target.node.nodeName.toUpperCase(),
     pathHint: buildPathSelectorHint(target.replayPath ?? target.anchor),
-    ...(target.description === undefined ? {} : { description: target.description }),
+    ...(target.persist === undefined ? {} : { persist: target.persist }),
     ...(target.selectorUsed === undefined ? {} : { selectorUsed: target.selectorUsed }),
   };
 }

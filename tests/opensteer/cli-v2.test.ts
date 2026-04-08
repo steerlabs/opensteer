@@ -47,12 +47,19 @@ describe("Opensteer v2 CLI", () => {
       maxBuffer: 1024 * 1024 * 4,
     });
 
-    expect(result.stdout).toContain("Opensteer v2 CLI");
-    expect(result.stdout).toContain("opensteer open <url> [--workspace <id>] [--attach-endpoint <url>]");
+    expect(result.stdout).toContain("Opensteer CLI");
+    expect(result.stdout).toContain("open <url> [--workspace <id>] [--headless] [--provider local|cloud]");
     expect(result.stdout).toContain("--workspace <id>");
-    expect(result.stdout).toContain("--attach-endpoint <url>");
-    expect(result.stdout).not.toContain("--browser temporary|persistent|attach");
-    expect(result.stdout).toContain("browser clone --workspace <id> --source-user-data-dir <path>");
+    expect(result.stdout).toContain("--json filters to JSON and GraphQL responses only");
+    expect(result.stdout).not.toContain("opensteer run");
+    expect(result.stdout).not.toContain("--input-json");
+    expect(result.stdout).not.toContain("--description");
+    expect(result.stdout).not.toContain("--selector");
+    expect(result.stdout).not.toContain("--schema-json");
+    expect(result.stdout).not.toContain("record <url> [--output <path>]");
+    expect(result.stdout).not.toContain("skills install");
+    expect(result.stdout).not.toContain("browser status");
+    expect(result.stdout).not.toContain("browser clone");
     expect(result.stdout).not.toContain("snapshot-session");
     expect(result.stdout).not.toContain("snapshot-authenticated");
     expect(result.stdout).not.toContain("attach-live");
@@ -176,6 +183,30 @@ describe("Opensteer v2 CLI", () => {
     }
   }, 60_000);
 
+  test("falls back to OPENSTEER_WORKSPACE for workspace commands", async () => {
+    await ensureCliArtifactsBuilt();
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "opensteer-cli-workspace-env-"));
+
+    try {
+      const result = await execFile("node", [CLI_SCRIPT, "browser", "status"], {
+        cwd,
+        env: {
+          ...process.env,
+          OPENSTEER_WORKSPACE: "workspace-from-env",
+        },
+        maxBuffer: 1024 * 1024 * 4,
+      });
+
+      const parsed = JSON.parse(result.stdout) as {
+        readonly workspace?: string;
+      };
+
+      expect(parsed.workspace).toBe("workspace-from-env");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test("fails persisted-network CLI commands with a targeted SQLite support error", async () => {
     await ensureCliArtifactsBuilt();
     const cwd = await mkdtemp(path.join(os.tmpdir(), "opensteer-cli-no-sqlite-saved-network-"));
@@ -186,12 +217,10 @@ describe("Opensteer v2 CLI", () => {
         [
           "--no-experimental-sqlite",
           CLI_SCRIPT,
-          "run",
-          "network.query",
+          "network",
+          "query",
           "--workspace",
           "sqlite-required",
-          "--input-json",
-          JSON.stringify({}),
         ],
         {
           cwd,

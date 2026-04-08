@@ -30,12 +30,12 @@ The package uses the Playwright-backed local engine by default.
 ```bash
 opensteer open https://example.com --workspace demo
 opensteer goto https://example.com/search --workspace demo --capture-network search
-opensteer network query --workspace demo --capture search --json
+opensteer network query --workspace demo --capture search
 opensteer network detail rec_123 --workspace demo
 opensteer replay rec_123 --workspace demo
-opensteer cookies --workspace demo --domain example.com
-opensteer storage --workspace demo --domain example.com
-opensteer state --workspace demo --domain example.com
+opensteer cookies example.com --workspace demo
+opensteer storage example.com --workspace demo
+opensteer state example.com --workspace demo
 opensteer close --workspace demo
 ```
 
@@ -43,9 +43,10 @@ For DOM exploration:
 
 ```bash
 opensteer snapshot action --workspace demo
-opensteer click --workspace demo --description "search button" --capture-network search
-opensteer input --workspace demo --description "search input" --text "laptop" --capture-network search
-opensteer extract --workspace demo --description "page summary" --schema-json '{"title":{"element":3}}'
+opensteer input 5 laptop --workspace demo --persist "search input" --capture-network search
+opensteer click 7 --workspace demo --persist "search button" --capture-network search
+opensteer snapshot extraction --workspace demo
+opensteer extract "page summary" --workspace demo --schema '{"title":{"element":3}}'
 ```
 
 ## SDK Quickstart
@@ -147,9 +148,9 @@ cookies.serialize();
 ## DOM Automation
 
 ```ts
-await opensteer.click({ description: "search button", captureNetwork: "search" });
+await opensteer.click({ persist: "search button", captureNetwork: "search" });
 await opensteer.input({
-  description: "search input",
+  persist: "search input",
   text: "laptop",
   pressEnter: true,
   captureNetwork: "search",
@@ -180,10 +181,10 @@ Use `snapshot("action")` or `snapshot("extraction")` during exploration. The sna
 - `evaluateJson(input)`
 - `addInitScript(input)`
 - `snapshot("action" | "extraction")`
-- `click({ element? | selector? | description?, captureNetwork? })`
-- `hover({ element? | selector? | description?, captureNetwork? })`
-- `input({ text, element? | selector? | description?, captureNetwork? })`
-- `scroll({ direction, amount, element? | selector? | description?, captureNetwork? })`
+- `click({ element? | selector? | persist?, captureNetwork? })`
+- `hover({ element? | selector? | persist?, captureNetwork? })`
+- `input({ text, element? | selector? | persist?, captureNetwork? })`
+- `scroll({ direction, amount, element? | selector? | persist?, captureNetwork? })`
 - `extract({ description, schema? })`
 - `network.query(input?)`
 - `network.detail(recordId)`

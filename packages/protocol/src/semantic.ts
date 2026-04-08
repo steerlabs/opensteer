@@ -290,9 +290,9 @@ export interface OpensteerTargetByElement {
   readonly element: number;
 }
 
-export interface OpensteerTargetByDescription {
-  readonly kind: "description";
-  readonly description: string;
+export interface OpensteerTargetByPersist {
+  readonly kind: "persist";
+  readonly name: string;
 }
 
 export interface OpensteerTargetBySelector {
@@ -302,7 +302,7 @@ export interface OpensteerTargetBySelector {
 
 export type OpensteerTargetInput =
   | OpensteerTargetByElement
-  | OpensteerTargetByDescription
+  | OpensteerTargetByPersist
   | OpensteerTargetBySelector;
 
 export interface OpensteerResolvedTarget {
@@ -313,7 +313,7 @@ export interface OpensteerResolvedTarget {
   readonly nodeRef: NodeRef;
   readonly tagName: string;
   readonly pathHint: string;
-  readonly description?: string;
+  readonly persist?: string;
   readonly selectorUsed?: string;
 }
 
@@ -323,7 +323,7 @@ export interface OpensteerActionResult {
     readonly x: number;
     readonly y: number;
   };
-  readonly persistedDescription?: string;
+  readonly persisted?: string;
 }
 
 export interface OpensteerSnapshotCounter {
@@ -467,13 +467,13 @@ export interface OpensteerDomClickInput {
   readonly button?: OpensteerComputerMouseButton;
   readonly clickCount?: number;
   readonly modifiers?: readonly OpensteerComputerKeyModifier[];
-  readonly persistAsDescription?: string;
+  readonly persist?: string;
   readonly captureNetwork?: string;
 }
 
 export interface OpensteerDomHoverInput {
   readonly target: OpensteerTargetInput;
-  readonly persistAsDescription?: string;
+  readonly persist?: string;
   readonly captureNetwork?: string;
 }
 
@@ -481,7 +481,7 @@ export interface OpensteerDomInputInput {
   readonly target: OpensteerTargetInput;
   readonly text: string;
   readonly pressEnter?: boolean;
-  readonly persistAsDescription?: string;
+  readonly persist?: string;
   readonly captureNetwork?: string;
 }
 
@@ -489,7 +489,7 @@ export interface OpensteerDomScrollInput {
   readonly target: OpensteerTargetInput;
   readonly direction: "up" | "down" | "left" | "right";
   readonly amount: number;
-  readonly persistAsDescription?: string;
+  readonly persist?: string;
   readonly captureNetwork?: string;
 }
 
@@ -924,14 +924,14 @@ const targetByElementSchema: JsonSchema = objectSchema(
   },
 );
 
-const targetByDescriptionSchema: JsonSchema = objectSchema(
+const targetByPersistSchema: JsonSchema = objectSchema(
   {
-    kind: enumSchema(["description"] as const),
-    description: stringSchema(),
+    kind: enumSchema(["persist"] as const),
+    name: stringSchema(),
   },
   {
-    title: "OpensteerTargetByDescription",
-    required: ["kind", "description"],
+    title: "OpensteerTargetByPersist",
+    required: ["kind", "name"],
   },
 );
 
@@ -947,7 +947,7 @@ const targetBySelectorSchema: JsonSchema = objectSchema(
 );
 
 const opensteerTargetInputSchema: JsonSchema = oneOfSchema(
-  [targetByElementSchema, targetByDescriptionSchema, targetBySelectorSchema],
+  [targetByElementSchema, targetByPersistSchema, targetBySelectorSchema],
   {
     title: "OpensteerTargetInput",
   },
@@ -962,7 +962,7 @@ const opensteerResolvedTargetSchema: JsonSchema = objectSchema(
     nodeRef: nodeRefSchema,
     tagName: stringSchema(),
     pathHint: stringSchema(),
-    description: stringSchema(),
+    persist: stringSchema(),
     selectorUsed: stringSchema(),
   },
   {
@@ -983,7 +983,7 @@ const opensteerActionResultSchema: JsonSchema = objectSchema(
   {
     target: opensteerResolvedTargetSchema,
     point: pointSchema,
-    persistedDescription: stringSchema(),
+    persisted: stringSchema(),
   },
   {
     title: "OpensteerActionResult",
@@ -1312,7 +1312,7 @@ const opensteerDomClickInputSchema: JsonSchema = objectSchema(
     modifiers: arraySchema(opensteerComputerKeyModifierSchema, {
       uniqueItems: true,
     }),
-    persistAsDescription: stringSchema(),
+    persist: stringSchema(),
     captureNetwork: stringSchema({ minLength: 1 }),
   },
   {
@@ -1324,7 +1324,7 @@ const opensteerDomClickInputSchema: JsonSchema = objectSchema(
 const opensteerDomHoverInputSchema = objectSchema(
   {
     target: opensteerTargetInputSchema,
-    persistAsDescription: stringSchema(),
+    persist: stringSchema(),
     captureNetwork: stringSchema({ minLength: 1 }),
   },
   {
@@ -1338,7 +1338,7 @@ const opensteerDomInputInputSchema: JsonSchema = objectSchema(
     target: opensteerTargetInputSchema,
     text: stringSchema(),
     pressEnter: { type: "boolean" },
-    persistAsDescription: stringSchema(),
+    persist: stringSchema(),
     captureNetwork: stringSchema({ minLength: 1 }),
   },
   {
@@ -1352,7 +1352,7 @@ const opensteerDomScrollInputSchema: JsonSchema = objectSchema(
     target: opensteerTargetInputSchema,
     direction: enumSchema(["up", "down", "left", "right"] as const),
     amount: integerSchema({ minimum: 1 }),
-    persistAsDescription: stringSchema(),
+    persist: stringSchema(),
     captureNetwork: stringSchema({ minLength: 1 }),
   },
   {

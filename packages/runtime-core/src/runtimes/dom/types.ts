@@ -44,7 +44,7 @@ export type ElementPath = ReplayElementPath;
 export interface DomDescriptorPayload {
   readonly kind: "dom-target";
   readonly method: string;
-  readonly description: string;
+  readonly name: string;
   readonly path: ReplayElementPath;
   readonly sourceUrl?: string;
 }
@@ -60,32 +60,32 @@ export interface DomDescriptorRecord {
 
 export interface DescriptorTargetRef {
   readonly kind: "descriptor";
-  readonly description: string;
+  readonly name: string;
 }
 
 export interface LiveTargetRef {
   readonly kind: "live";
   readonly locator: NodeLocator;
   readonly anchor?: StructuralElementAnchor;
-  readonly description?: string;
+  readonly persist?: string;
 }
 
 export interface AnchorTargetRef {
   readonly kind: "anchor";
   readonly anchor: StructuralElementAnchor;
-  readonly description?: string;
+  readonly persist?: string;
 }
 
 export interface PathTargetRef {
   readonly kind: "path";
   readonly path: ReplayElementPath;
-  readonly description?: string;
+  readonly persist?: string;
 }
 
 export interface SelectorTargetRef {
   readonly kind: "selector";
   readonly selector: string;
-  readonly description?: string;
+  readonly persist?: string;
   readonly frameRef?: FrameRef;
   readonly documentRef?: DocumentRef;
 }
@@ -109,7 +109,7 @@ export interface ResolvedDomTarget {
   readonly node: DomSnapshotNode;
   readonly anchor: StructuralElementAnchor;
   readonly replayPath?: ReplayElementPath;
-  readonly description?: string;
+  readonly persist?: string;
   readonly selectorUsed?: string;
   readonly descriptor?: DomDescriptorRecord;
 }
@@ -126,7 +126,7 @@ export interface DomResolveTargetInput {
 
 export interface DomWriteDescriptorInput {
   readonly method: string;
-  readonly description: string;
+  readonly name: string;
   readonly path: ReplayElementPath;
   readonly sourceUrl?: string;
   readonly createdAt?: number;
@@ -135,7 +135,7 @@ export interface DomWriteDescriptorInput {
 
 export interface DomReadDescriptorInput {
   readonly method: string;
-  readonly description: string;
+  readonly name: string;
 }
 
 export interface DomActionOutcome {

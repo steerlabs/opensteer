@@ -488,7 +488,7 @@ describe("Phase 5 snapshot integration", () => {
 
         await dom.writeDescriptor({
           method: "dom.click",
-          description: "child shadow counter descriptor",
+          name: "child shadow counter descriptor",
           path: replayPath,
           sourceUrl: resolved.snapshot.url,
         });
@@ -497,7 +497,7 @@ describe("Phase 5 snapshot integration", () => {
           pageRef: created.data.pageRef,
           target: {
             kind: "descriptor",
-            description: "child shadow counter descriptor",
+            name: "child shadow counter descriptor",
           },
         });
 
@@ -1164,14 +1164,14 @@ describe("Phase 5 DOM runtime integration", () => {
           target: {
             kind: "selector",
             selector: '[data-testid="descriptor-button"]',
-            description: "descriptor button",
+            persist: "descriptor button",
           },
         });
         const stored = await runtime.readDescriptor({
           method: "click",
-          description: "descriptor button",
+          name: "descriptor button",
         });
-        expect(stored?.payload.description).toBe("descriptor button");
+        expect(stored?.payload.name).toBe("descriptor button");
 
         await runtime.click({
           pageRef: created.data.pageRef,
@@ -1181,7 +1181,7 @@ describe("Phase 5 DOM runtime integration", () => {
 
         await runtime.click({
           pageRef: created.data.pageRef,
-          target: { kind: "descriptor", description: "descriptor button" },
+          target: { kind: "descriptor", name: "descriptor button" },
         });
 
         const snapshot = await engine.getDomSnapshot({
@@ -1259,13 +1259,13 @@ describe("Phase 5 DOM runtime integration", () => {
           target: {
             kind: "selector",
             selector: '[data-testid="descriptor-button"]',
-            description: "descriptor button",
+            persist: "descriptor button",
           },
         });
 
         await retryRuntime.click({
           pageRef: created.data.pageRef,
-          target: { kind: "descriptor", description: "descriptor button" },
+          target: { kind: "descriptor", name: "descriptor button" },
         });
 
         expect(inspectAttempts).toBeGreaterThan(1);
@@ -1394,17 +1394,17 @@ describe("Phase 5 DOM runtime integration", () => {
         const first = await runtime.resolveTarget({
           pageRef: created.data.pageRef,
           method: "click",
-          target: { kind: "selector", selector: "#old", description: "shared button" },
+          target: { kind: "selector", selector: "#old", persist: "shared button" },
         });
         const second = await runtime.resolveTarget({
           pageRef: created.data.pageRef,
           method: "click",
-          target: { kind: "selector", selector: "#new", description: "shared button" },
+          target: { kind: "selector", selector: "#new", persist: "shared button" },
         });
         const replayed = await runtime.resolveTarget({
           pageRef: created.data.pageRef,
           method: "click",
-          target: { kind: "descriptor", description: "shared button" },
+          target: { kind: "descriptor", name: "shared button" },
         });
 
         expect(first.node.attributes.find((attribute) => attribute.name === "id")?.value).toBe(

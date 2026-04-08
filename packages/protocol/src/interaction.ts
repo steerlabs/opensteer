@@ -211,14 +211,14 @@ const targetByElementSchema: JsonSchema = objectSchema(
   },
 );
 
-const targetByDescriptionSchema: JsonSchema = objectSchema(
+const targetByPersistSchema: JsonSchema = objectSchema(
   {
-    kind: enumSchema(["description"] as const),
-    description: stringSchema(),
+    kind: enumSchema(["persist"] as const),
+    name: stringSchema(),
   },
   {
-    title: "OpensteerInteractionTargetByDescription",
-    required: ["kind", "description"],
+    title: "OpensteerInteractionTargetByPersist",
+    required: ["kind", "name"],
   },
 );
 
@@ -234,7 +234,7 @@ const targetBySelectorSchema: JsonSchema = objectSchema(
 );
 
 const opensteerInteractionTargetInputSchema: JsonSchema = oneOfSchema(
-  [targetByElementSchema, targetByDescriptionSchema, targetBySelectorSchema],
+  [targetByElementSchema, targetByPersistSchema, targetBySelectorSchema],
   {
     title: "OpensteerInteractionTargetInput",
   },
