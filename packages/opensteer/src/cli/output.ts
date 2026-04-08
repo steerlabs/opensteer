@@ -96,10 +96,9 @@ function formatActionOutput(
     };
   }
 
-  const persisted =
-    readStringField(result, "persisted");
-  if (persisted !== undefined) {
-    output.persisted = persisted;
+  const persist = readStringField(target, "persist");
+  if (persist !== undefined) {
+    output.persist = persist;
   }
 
   const text = readStringField(input, "text");

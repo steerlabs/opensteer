@@ -429,15 +429,15 @@ class DefaultDomRuntime implements DomRuntime {
   ): Promise<ResolvedDomTarget> {
     const descriptor = await this.descriptors.read({
       method,
-      name: target.name,
+      persist: target.persist,
     });
     if (!descriptor) {
       throw new OpensteerProtocolError(
         "not-found",
-        `no stored DOM descriptor found for "${target.name}"`,
+        `no stored DOM descriptor found for "${target.persist}"`,
         {
           details: {
-            name: target.name,
+            persist: target.persist,
             kind: "dom-descriptor",
           },
         },
@@ -456,7 +456,7 @@ class DefaultDomRuntime implements DomRuntime {
       pageRef,
       descriptor.payload.path,
       "descriptor",
-      descriptor.payload.name,
+      descriptor.payload.persist,
       descriptor,
     );
   }
@@ -506,7 +506,7 @@ class DefaultDomRuntime implements DomRuntime {
         ? undefined
         : await writeDescriptor({
             method,
-            name: target.persist,
+            persist: target.persist,
             path: replayPath ?? (await this.buildPathForNode(snapshot, node)),
             sourceUrl: snapshot.url,
           });

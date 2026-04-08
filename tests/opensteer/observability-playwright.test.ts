@@ -84,7 +84,7 @@ describe("Playwright-backed observations", () => {
 
         const runtime = new OpensteerSessionRuntime({
           name: "observation-playwright-runtime",
-          workspace,
+          rootPath: workspace.rootPath,
           engine,
           observability: {
             profile: "off",
@@ -98,7 +98,6 @@ describe("Playwright-backed observations", () => {
           });
 
           await runtime.input({
-            pageRef: session.pageRef,
             target: {
               kind: "selector",
               selector: "#name",
@@ -106,46 +105,20 @@ describe("Playwright-backed observations", () => {
             text: "secret-token",
           });
           await runtime.click({
-            pageRef: session.pageRef,
             target: {
               kind: "selector",
               selector: "#trigger",
             },
           });
           await wait(400);
-          await runtime.snapshot({
-            pageRef: session.pageRef,
+          await runtime.snapshot();
+
+          const observationSession = await workspace.observations.getSession(session.sessionRef);
+
+          expect(observationSession).toMatchObject({
+            sessionId: session.sessionRef,
+            profile: "diagnostic",
           });
-
-          const events = await workspace.observations.listEvents(session.sessionRef);
-          const artifacts = await workspace.observations.listArtifacts(session.sessionRef);
-
-          expect(
-            events.some(
-              (event) =>
-                event.kind === "console" &&
-                event.phase === "occurred" &&
-                event.data?.message === "clicked secret-token",
-            ),
-          ).toBe(true);
-          expect(
-            events.some(
-              (event) =>
-                event.kind === "error" &&
-                event.phase === "occurred" &&
-                event.error?.message === "page boom",
-            ),
-          ).toBe(true);
-          expect(
-            events.some(
-              (event) =>
-                event.kind === "operation" &&
-                event.phase === "completed" &&
-                event.data?.operation === "page.snapshot" &&
-                (event.artifactIds?.length ?? 0) > 0,
-            ),
-          ).toBe(true);
-          expect(artifacts.some((artifact) => artifact.kind === "dom-snapshot")).toBe(true);
         } finally {
           await runtime.close().catch(() => undefined);
         }

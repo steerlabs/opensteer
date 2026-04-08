@@ -165,4 +165,21 @@ describe("CLI surface parsing", () => {
 
     expect(output).toContain('[network.query] 1 record from capture "search" (JSON/GraphQL only)');
   });
+
+  test("surfaces action persist keys through the resolved target", () => {
+    const output = renderOperationOutput(
+      "dom.click",
+      {
+        target: {
+          tagName: "BUTTON",
+          pathHint: "button#search",
+          persist: "search button",
+        },
+      },
+      undefined,
+    );
+
+    expect(output).toContain('"persist": "search button"');
+    expect(output).not.toContain('"persisted"');
+  });
 });

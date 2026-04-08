@@ -216,7 +216,10 @@ function ensureSparseCountersForAllRecords(
   );
 }
 
-async function clearLiveCounters(engine: BrowserCoreEngine, pageRef: PageRef): Promise<void> {
+export async function clearOpensteerLiveCounters(
+  engine: BrowserCoreEngine,
+  pageRef: PageRef,
+): Promise<void> {
   const frames = await engine.listFrames({ pageRef });
   const failures: string[] = [];
 
@@ -336,7 +339,7 @@ export async function compileOpensteerSnapshot(options: {
         pageRef: options.pageRef,
       });
 
-      await clearLiveCounters(options.engine, options.pageRef);
+      await clearOpensteerLiveCounters(options.engine, options.pageRef);
       await assignSparseCountersToLiveDom(options.engine, options.pageRef);
 
       const pageInfo = await options.engine.getPageInfo({ pageRef: options.pageRef });
@@ -380,7 +383,7 @@ export async function compileOpensteerSnapshot(options: {
         counters: [...compiledHtml.counterRecords.values()].map(toPublicCounterRecord),
       };
     } catch (error) {
-      await clearLiveCounters(options.engine, options.pageRef).catch(() => undefined);
+      await clearOpensteerLiveCounters(options.engine, options.pageRef).catch(() => undefined);
       if (attempt < MAX_LIVE_COUNTER_SYNC_ATTEMPTS && isLiveCounterSyncError(error)) {
         lastCounterSyncError = error;
         continue;

@@ -1,7 +1,7 @@
 {
   "name": "@opensteer/protocol",
   "private": false,
-  "version": "0.7.4",
+  "version": "0.7.6",
   "description": "Public wire schemas and versioned envelopes for Opensteer APIs.",
   "license": "MIT",
   "type": "module",

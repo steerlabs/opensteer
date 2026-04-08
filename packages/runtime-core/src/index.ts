@@ -33,7 +33,7 @@ export {
   buildDomDescriptorPayload,
   buildDomDescriptorVersion,
   createDomDescriptorStore,
-  hashDomDescriptorName,
+  hashDomDescriptorPersist,
   parseDomDescriptorRecord,
   sanitizeReplayElementPath,
 } from "./runtimes/dom/index.js";

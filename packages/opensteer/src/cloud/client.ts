@@ -214,8 +214,8 @@ export class OpensteerCloudClient {
         entries: entries.map((entry) => ({
           workspace: entry.workspace,
           method: entry.method,
-          descriptionHash: entry.nameHash,
-          ...(entry.name === undefined ? {} : { description: entry.name }),
+          persistHash: entry.persistHash,
+          ...(entry.persist === undefined ? {} : { persist: entry.persist }),
           path: entry.path,
           ...(entry.schemaHash === undefined ? {} : { schemaHash: entry.schemaHash }),
           createdAt: entry.createdAt,

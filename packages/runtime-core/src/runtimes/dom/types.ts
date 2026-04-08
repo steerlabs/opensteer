@@ -44,7 +44,7 @@ export type ElementPath = ReplayElementPath;
 export interface DomDescriptorPayload {
   readonly kind: "dom-target";
   readonly method: string;
-  readonly name: string;
+  readonly persist: string;
   readonly path: ReplayElementPath;
   readonly sourceUrl?: string;
 }
@@ -60,7 +60,7 @@ export interface DomDescriptorRecord {
 
 export interface DescriptorTargetRef {
   readonly kind: "descriptor";
-  readonly name: string;
+  readonly persist: string;
 }
 
 export interface LiveTargetRef {
@@ -126,7 +126,7 @@ export interface DomResolveTargetInput {
 
 export interface DomWriteDescriptorInput {
   readonly method: string;
-  readonly name: string;
+  readonly persist: string;
   readonly path: ReplayElementPath;
   readonly sourceUrl?: string;
   readonly createdAt?: number;
@@ -135,7 +135,7 @@ export interface DomWriteDescriptorInput {
 
 export interface DomReadDescriptorInput {
   readonly method: string;
-  readonly name: string;
+  readonly persist: string;
 }
 
 export interface DomActionOutcome {

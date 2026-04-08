@@ -187,7 +187,7 @@ import {
   type OpensteerExtractionDescriptorRecord,
 } from "./extraction.js";
 import { inflateDataPathObject } from "./extraction-data-path.js";
-import { compileOpensteerSnapshot } from "./snapshot/compiler.js";
+import { clearOpensteerLiveCounters, compileOpensteerSnapshot } from "./snapshot/compiler.js";
 import type { InteractionTraceRecord } from "../registry.js";
 import { beautifyScriptContent } from "../scripts/beautify.js";
 import { deobfuscateScriptContent } from "../scripts/deobfuscate.js";
@@ -2269,6 +2269,7 @@ export class OpensteerSessionRuntime {
             });
             boundaryDiagnostics = takeActionBoundaryDiagnostics(timeout.signal);
             timeout.throwIfAborted();
+            await this.invalidateLiveSnapshotCounters([pageRef, output.pageRef], timeout);
             this.pageRef = output.pageRef;
             const artifacts = await this.persistComputerArtifacts(output, timeout);
             return {
@@ -2491,7 +2492,7 @@ export class OpensteerSessionRuntime {
           mutationCaptureDiagnostics = diagnostics;
         },
       );
-      const output = toOpensteerActionResult(executed.result, preparedTarget.persisted);
+      const output = toOpensteerActionResult(executed.result);
       const actionEvents = "events" in executed.result ? executed.result.events : undefined;
 
       await this.appendTrace({
@@ -2503,9 +2504,6 @@ export class OpensteerSessionRuntime {
         data: {
           target: output.target,
           ...(output.point === undefined ? {} : { point: output.point }),
-          ...(output.persisted === undefined
-            ? {}
-            : { persisted: output.persisted }),
           ...(boundaryDiagnostics === undefined ? {} : { settle: boundaryDiagnostics }),
           ...buildMutationCaptureTraceData(mutationCaptureDiagnostics),
         },
@@ -2547,7 +2545,6 @@ export class OpensteerSessionRuntime {
     timeout: TimeoutExecutionContext,
   ): Promise<{
     readonly target: DomTargetRef;
-    readonly persisted?: string;
   }> {
     const domTarget = this.toDomTargetRef(target);
     if (target.kind === "persist") {
@@ -2586,7 +2583,7 @@ export class OpensteerSessionRuntime {
       await timeout.runStep(() =>
         this.requireDom().writeDescriptor({
           method,
-          name: persist,
+          persist,
           path: stablePath,
           sourceUrl: resolved.snapshot.url,
         }),
@@ -2594,9 +2591,8 @@ export class OpensteerSessionRuntime {
       return {
         target: {
           kind: "descriptor",
-          name: persist,
+          persist,
         },
-        persisted: persist,
       };
     }
 
@@ -2623,7 +2619,7 @@ export class OpensteerSessionRuntime {
     await timeout.runStep(() =>
       this.requireDom().writeDescriptor({
         method,
-        name: persist,
+        persist,
         path: stablePath,
         sourceUrl: resolved.snapshot.url,
       }),
@@ -2632,9 +2628,8 @@ export class OpensteerSessionRuntime {
     return {
       target: {
         kind: "descriptor",
-        name: persist,
+        persist,
       },
-      persisted: persist,
     };
   }
 
@@ -2706,6 +2701,22 @@ export class OpensteerSessionRuntime {
     );
     const byRequestId = new Map(withBodies.map((record) => [record.record.requestId, record]));
     return limited.map((record) => byRequestId.get(record.record.requestId) ?? record);
+  }
+
+  private async invalidateLiveSnapshotCounters(
+    pageRefs: readonly PageRef[],
+    timeout: TimeoutExecutionContext,
+  ): Promise<void> {
+    const engine = this.requireEngine();
+    for (const pageRef of new Set(pageRefs)) {
+      try {
+        await timeout.runStep(() => clearOpensteerLiveCounters(engine, pageRef));
+      } catch (error) {
+        if (!isIgnorableRuntimeBindingError(error)) {
+          throw error;
+        }
+      }
+    }
   }
 
   private async captureScriptsInternal(
@@ -4319,7 +4330,7 @@ export class OpensteerSessionRuntime {
     if (target.kind === "persist") {
       return {
         kind: "descriptor",
-        name: target.name,
+        persist: target.persist,
       };
     }
 
@@ -6662,7 +6673,6 @@ function toOpensteerActionResult(
         readonly resolved: ResolvedDomTarget;
         readonly point?: undefined;
       },
-  persisted: string | undefined,
 ): OpensteerActionResult {
   return {
     target: toOpensteerResolvedTarget(result.resolved),
@@ -6674,7 +6684,6 @@ function toOpensteerActionResult(
             y: result.point.y,
           },
         }),
-    ...(persisted === undefined ? {} : { persisted }),
   };
 }
 
