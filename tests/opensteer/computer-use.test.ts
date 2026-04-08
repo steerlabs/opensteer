@@ -225,7 +225,7 @@ describe("Phase 9 computer-use runtime", () => {
       expect(output.action.type).toBe("click");
 
       const extracted = await opensteer.extract({
-        description: "computer status through sdk wrapper",
+        persist: "computer status through sdk wrapper",
         schema: {
           status: {
             selector: "#status",
@@ -324,7 +324,7 @@ describe("Phase 9 computer-use runtime", () => {
       expect(popup.pageRef).not.toBe(opened.pageRef);
 
       const currentUrl = await runtime.extract({
-        description: "popup current url",
+        persist: "popup current url",
         schema: {
           currentUrl: { source: "current_url" },
         },
@@ -546,7 +546,7 @@ describe("Phase 9 computer-use runtime", () => {
 
 async function extractStatus(runtime: OpensteerSessionRuntime): Promise<string> {
   const result = await runtime.extract({
-    description: "computer status",
+    persist: "computer status",
     schema: {
       status: {
         selector: "#status",
@@ -558,7 +558,7 @@ async function extractStatus(runtime: OpensteerSessionRuntime): Promise<string> 
 
 async function extractMirror(runtime: OpensteerSessionRuntime): Promise<string> {
   const result = await runtime.extract({
-    description: "computer mirror",
+    persist: "computer mirror",
     schema: {
       mirror: {
         selector: "#mirror",
@@ -570,7 +570,7 @@ async function extractMirror(runtime: OpensteerSessionRuntime): Promise<string> 
 
 async function extractDragValue(runtime: OpensteerSessionRuntime): Promise<string> {
   const result = await runtime.extract({
-    description: "computer drag value",
+    persist: "computer drag value",
     schema: {
       dragValue: {
         selector: "#drag-value",

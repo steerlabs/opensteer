@@ -135,6 +135,97 @@ describe("Extraction descriptor replay paths", () => {
     }
   }, 60_000);
 
+  test("bounds extraction snapshot HTML attrs while c-backed replay keeps full live values", async () => {
+    const engine = await createPlaywrightBrowserCoreEngine({
+      launch: { headless: true },
+    });
+
+    try {
+      const dom = createDomRuntime({ engine });
+      const sessionRef = await engine.createSession();
+      const largeHref = `https://example.com/product?token=${"abc123&<>".repeat(90)}`;
+      const largeImageUrl = `https://cdn.example.com/hero-large.png?token=${"z9<&>".repeat(110)}`;
+      const created = await engine.createPage({
+        sessionRef,
+        url: dataUrl(
+          `
+            <a id="long-link" href="${largeHref}">Long link</a>
+            <img
+              id="hero-image"
+              srcset="
+                https://cdn.example.com/hero-small.png?token=small 320w,
+                ${largeImageUrl} 2048w
+              "
+              alt="Hero"
+            />
+          `,
+          "Extraction bounded html",
+        ),
+      });
+
+      await wait(300);
+
+      const snapshot = await compileOpensteerSnapshot({
+        engine,
+        pageRef: created.data.pageRef,
+        mode: "extraction",
+      });
+
+      const hrefMatch = snapshot.html.match(/href="([^"]*)"/);
+      const srcsetMatch = snapshot.html.match(/srcset="([^"]*)"/);
+      expect(hrefMatch).not.toBeNull();
+      expect(srcsetMatch).not.toBeNull();
+      expect(hrefMatch?.[1].length ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(500);
+      expect(srcsetMatch?.[1].length ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(500);
+      expect(hrefMatch?.[1].endsWith(" [truncated]")).toBe(true);
+      expect(srcsetMatch?.[1].endsWith(" [truncated]")).toBe(true);
+
+      const linkCounter = snapshot.counters.find((candidate) =>
+        candidate.pathHint.includes("#long-link"),
+      );
+      const imageCounter = snapshot.counters.find((candidate) =>
+        candidate.pathHint.includes("#hero-image"),
+      );
+      if (!linkCounter || !imageCounter) {
+        throw new Error("failed to find counters for bounded extraction replay");
+      }
+
+      const payload = await compileOpensteerExtractionPayload({
+        dom,
+        pageRef: created.data.pageRef,
+        schema: {
+          link: { element: linkCounter.element, attribute: "href" },
+          image: { element: imageCounter.element, attribute: "srcset" },
+        },
+      });
+
+      const originalReadText = engine.readText.bind(engine);
+      const originalReadAttributes = engine.readAttributes.bind(engine);
+      engine.readText = async () => {
+        throw new Error("readText should not be called during bounded extraction replay");
+      };
+      engine.readAttributes = async () => {
+        throw new Error("readAttributes should not be called during bounded extraction replay");
+      };
+
+      await expect(
+        replayOpensteerExtractionPayload({
+          dom,
+          pageRef: created.data.pageRef,
+          payload,
+        }),
+      ).resolves.toEqual({
+        link: largeHref,
+        image: largeImageUrl,
+      });
+
+      engine.readText = originalReadText;
+      engine.readAttributes = originalReadAttributes;
+    } finally {
+      await engine.dispose();
+    }
+  }, 60_000);
+
   test("compiles and replays array descriptors when row classes normalize differently", async () => {
     const engine = await createPlaywrightBrowserCoreEngine({
       launch: { headless: true },

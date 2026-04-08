@@ -25,31 +25,34 @@ npm install opensteer
 ## Quick Start
 
 ```bash
-opensteer open https://example.com --name demo
-opensteer snapshot action --name demo
-opensteer click 3 --name demo --description "primary call to action"
-opensteer snapshot extraction --name demo
-opensteer extract --name demo \
-  --description "page summary" \
-  --schema '{"title":{"selector":"title"},"url":{"source":"current_url"}}'
-opensteer close --name demo
+opensteer open https://example.com --workspace demo
+opensteer snapshot action --workspace demo
+opensteer click 3 --workspace demo --persist "primary call to action"
+opensteer snapshot extraction --workspace demo
+opensteer extract '{"title":{"element":3},"url":{"source":"current_url"}}' \
+  --workspace demo --persist "page summary"
+opensteer close --workspace demo
 ```
 
 ```ts
 import { Opensteer } from "opensteer";
 
 const opensteer = new Opensteer({
-  name: "demo",
+  workspace: "demo",
   rootDir: process.cwd(),
-  browser: { headless: true },
 });
 
 try {
   await opensteer.open("https://example.com");
   await opensteer.snapshot("action");
+  await opensteer.click({
+    element: 3,
+    persist: "primary call to action",
+  });
+  await opensteer.snapshot("extraction");
 
   const data = await opensteer.extract({
-    description: "page summary",
+    persist: "page summary",
     schema: {
       title: { selector: "title" },
       url: { source: "current_url" },

@@ -41,12 +41,6 @@ import {
   type ScreenshotArtifact,
   type ScreenshotFormat,
 } from "./snapshots.js";
-import {
-  cookieRecordSchema,
-  storageSnapshotSchema,
-  type CookieRecord,
-  type StorageSnapshot,
-} from "./storage.js";
 import type {
   OpensteerArtifactReadInput,
   OpensteerArtifactReadOutput,
@@ -57,72 +51,33 @@ import {
   opensteerArtifactReadOutputSchema,
 } from "./artifacts.js";
 import {
-  opensteerGetAuthRecipeInputSchema,
-  opensteerListAuthRecipesInputSchema,
-  opensteerListAuthRecipesOutputSchema,
-  opensteerGetRequestPlanInputSchema,
-  opensteerRunAuthRecipeInputSchema,
-  opensteerRunAuthRecipeOutputSchema,
-  opensteerListRequestPlansInputSchema,
-  opensteerListRequestPlansOutputSchema,
-  opensteerNetworkClearInputSchema,
-  opensteerNetworkClearOutputSchema,
+  opensteerCookieQueryInputSchema,
+  opensteerCookieQueryOutputSchema,
+  opensteerNetworkDetailOutputSchema,
   opensteerNetworkQueryInputSchema,
   opensteerNetworkQueryOutputSchema,
-  opensteerNetworkTagInputSchema,
-  opensteerNetworkTagOutputSchema,
-  opensteerInferRequestPlanInputSchema,
-  opensteerRawRequestInputSchema,
-  opensteerRawRequestOutputSchema,
-  opensteerRequestExecuteInputSchema,
-  opensteerRequestExecuteOutputSchema,
-  opensteerAuthRecipeRecordSchema,
-  opensteerRequestPlanRecordSchema,
-  opensteerWriteAuthRecipeInputSchema,
-  opensteerWriteRequestPlanInputSchema,
-  type OpensteerGetAuthRecipeInput,
-  type OpensteerGetRequestPlanInput,
-  type OpensteerListAuthRecipesInput,
-  type OpensteerListAuthRecipesOutput,
-  type OpensteerListRequestPlansInput,
-  type OpensteerListRequestPlansOutput,
-  type OpensteerInferRequestPlanInput,
-  type OpensteerNetworkClearInput,
-  type OpensteerNetworkClearOutput,
+  opensteerNetworkReplayInputSchema,
+  opensteerNetworkReplayOutputSchema,
+  opensteerSessionFetchInputSchema,
+  opensteerSessionFetchOutputSchema,
+  opensteerStateQueryInputSchema,
+  opensteerStateQueryOutputSchema,
+  opensteerStorageQueryInputSchema,
+  opensteerStorageQueryOutputSchema,
+  type OpensteerCookieQueryInput,
+  type OpensteerCookieQueryOutput,
+  type OpensteerNetworkDetailOutput,
   type OpensteerNetworkQueryInput,
   type OpensteerNetworkQueryOutput,
-  type OpensteerNetworkTagInput,
-  type OpensteerNetworkTagOutput,
-  type OpensteerRawRequestInput,
-  type OpensteerRawRequestOutput,
-  type OpensteerRequestExecuteInput,
-  type OpensteerRequestExecuteOutput,
-  type OpensteerAuthRecipeRecord,
-  type OpensteerRunAuthRecipeInput,
-  type OpensteerRunAuthRecipeOutput,
-  type OpensteerRequestPlanRecord,
-  type TransportKind,
-  type OpensteerWriteAuthRecipeInput,
-  type OpensteerWriteRequestPlanInput,
+  type OpensteerNetworkReplayInput,
+  type OpensteerNetworkReplayOutput,
+  type OpensteerSessionFetchInput,
+  type OpensteerSessionFetchOutput,
+  type OpensteerStateQueryInput,
+  type OpensteerStateQueryOutput,
+  type OpensteerStorageQueryInput,
+  type OpensteerStorageQueryOutput,
 } from "./requests.js";
-import {
-  opensteerNetworkDiffInputSchema,
-  opensteerNetworkDiffOutputSchema,
-  type OpensteerNetworkDiffInput,
-  type OpensteerNetworkDiffOutput,
-} from "./diff.js";
-import {
-  opensteerNetworkMinimizeInputSchema,
-  opensteerNetworkMinimizeOutputSchema,
-  type OpensteerNetworkMinimizeInput,
-  type OpensteerNetworkMinimizeOutput,
-} from "./minimize.js";
-import {
-  opensteerTransportProbeInputSchema,
-  opensteerTransportProbeOutputSchema,
-  type OpensteerTransportProbeInput,
-  type OpensteerTransportProbeOutput,
-} from "./probe.js";
 import {
   opensteerScriptBeautifyInputSchema,
   opensteerScriptBeautifyOutputSchema,
@@ -143,44 +98,6 @@ import {
   type OpensteerCaptchaSolveInput,
   type OpensteerCaptchaSolveOutput,
 } from "./captcha.js";
-import {
-  opensteerReverseExportInputSchema,
-  opensteerReverseExportOutputSchema,
-  opensteerReverseDiscoverInputSchema,
-  opensteerReverseDiscoverOutputSchema,
-  opensteerReverseQueryInputSchema,
-  opensteerReverseQueryOutputSchema,
-  opensteerReversePackageCreateInputSchema,
-  opensteerReversePackageCreateOutputSchema,
-  opensteerReversePackageGetInputSchema,
-  opensteerReversePackageGetOutputSchema,
-  opensteerReversePackageListInputSchema,
-  opensteerReversePackageListOutputSchema,
-  opensteerReversePackagePatchInputSchema,
-  opensteerReversePackagePatchOutputSchema,
-  opensteerReversePackageRunInputSchema,
-  opensteerReversePackageRunOutputSchema,
-  opensteerReverseReportInputSchema,
-  opensteerReverseReportOutputSchema,
-  type OpensteerReverseDiscoverInput,
-  type OpensteerReverseDiscoverOutput,
-  type OpensteerReverseQueryInput,
-  type OpensteerReverseQueryOutput,
-  type OpensteerReversePackageCreateInput,
-  type OpensteerReversePackageCreateOutput,
-  type OpensteerReverseExportInput,
-  type OpensteerReverseExportOutput,
-  type OpensteerReversePackageGetInput,
-  type OpensteerReversePackageGetOutput,
-  type OpensteerReversePackageListInput,
-  type OpensteerReversePackageListOutput,
-  type OpensteerReversePackagePatchInput,
-  type OpensteerReversePackagePatchOutput,
-  type OpensteerReversePackageRunInput,
-  type OpensteerReversePackageRunOutput,
-  type OpensteerReverseReportInput,
-  type OpensteerReverseReportOutput,
-} from "./reverse.js";
 import {
   opensteerInteractionCaptureInputSchema,
   opensteerInteractionCaptureOutputSchema,
@@ -268,9 +185,9 @@ export interface OpensteerTargetByElement {
   readonly element: number;
 }
 
-export interface OpensteerTargetByDescription {
-  readonly kind: "description";
-  readonly description: string;
+export interface OpensteerTargetByPersist {
+  readonly kind: "persist";
+  readonly name: string;
 }
 
 export interface OpensteerTargetBySelector {
@@ -280,7 +197,7 @@ export interface OpensteerTargetBySelector {
 
 export type OpensteerTargetInput =
   | OpensteerTargetByElement
-  | OpensteerTargetByDescription
+  | OpensteerTargetByPersist
   | OpensteerTargetBySelector;
 
 export interface OpensteerResolvedTarget {
@@ -291,7 +208,7 @@ export interface OpensteerResolvedTarget {
   readonly nodeRef: NodeRef;
   readonly tagName: string;
   readonly pathHint: string;
-  readonly description?: string;
+  readonly persist?: string;
   readonly selectorUsed?: string;
 }
 
@@ -301,7 +218,7 @@ export interface OpensteerActionResult {
     readonly x: number;
     readonly y: number;
   };
-  readonly persistedDescription?: string;
+  readonly persisted?: string;
 }
 
 export interface OpensteerSnapshotCounter {
@@ -445,13 +362,13 @@ export interface OpensteerDomClickInput {
   readonly button?: OpensteerComputerMouseButton;
   readonly clickCount?: number;
   readonly modifiers?: readonly OpensteerComputerKeyModifier[];
-  readonly persistAsDescription?: string;
+  readonly persist?: string;
   readonly captureNetwork?: string;
 }
 
 export interface OpensteerDomHoverInput {
   readonly target: OpensteerTargetInput;
-  readonly persistAsDescription?: string;
+  readonly persist?: string;
   readonly captureNetwork?: string;
 }
 
@@ -459,7 +376,7 @@ export interface OpensteerDomInputInput {
   readonly target: OpensteerTargetInput;
   readonly text: string;
   readonly pressEnter?: boolean;
-  readonly persistAsDescription?: string;
+  readonly persist?: string;
   readonly captureNetwork?: string;
 }
 
@@ -467,12 +384,12 @@ export interface OpensteerDomScrollInput {
   readonly target: OpensteerTargetInput;
   readonly direction: "up" | "down" | "left" | "right";
   readonly amount: number;
-  readonly persistAsDescription?: string;
+  readonly persist?: string;
   readonly captureNetwork?: string;
 }
 
 export interface OpensteerDomExtractInput {
-  readonly description: string;
+  readonly persist?: string;
   readonly schema?: Readonly<Record<string, unknown>>;
 }
 
@@ -621,57 +538,69 @@ export const opensteerSemanticOperationNames = [
   "dom.scroll",
   "dom.extract",
   "network.query",
-  "network.tag",
-  "network.clear",
-  "network.minimize",
-  "network.diff",
-  "network.probe",
-  "reverse.discover",
-  "reverse.query",
-  "reverse.package.create",
-  "reverse.package.run",
-  "reverse.export",
-  "reverse.report",
-  "reverse.package.get",
-  "reverse.package.list",
-  "reverse.package.patch",
+  "network.detail",
+  "network.replay",
   "interaction.capture",
   "interaction.get",
   "interaction.diff",
   "interaction.replay",
   "artifact.read",
-  "inspect.cookies",
-  "inspect.storage",
+  "session.cookies",
+  "session.storage",
+  "session.state",
+  "session.fetch",
   "scripts.capture",
   "scripts.beautify",
   "scripts.deobfuscate",
   "scripts.sandbox",
   "captcha.solve",
-  "request.raw",
-  "request-plan.infer",
-  "request-plan.write",
-  "request-plan.get",
-  "request-plan.list",
-  "recipe.write",
-  "recipe.get",
-  "recipe.list",
-  "recipe.run",
-  "auth-recipe.write",
-  "auth-recipe.get",
-  "auth-recipe.list",
-  "auth-recipe.run",
-  "request.execute",
   "computer.execute",
   "session.close",
 ] as const;
 
 export type OpensteerSemanticOperationName = (typeof opensteerSemanticOperationNames)[number];
 
+export const opensteerExposedSemanticOperationNames = [
+  "session.open",
+  "page.list",
+  "page.new",
+  "page.activate",
+  "page.close",
+  "page.goto",
+  "page.evaluate",
+  "page.add-init-script",
+  "page.snapshot",
+  "dom.click",
+  "dom.hover",
+  "dom.input",
+  "dom.scroll",
+  "dom.extract",
+  "network.query",
+  "network.detail",
+  "network.replay",
+  "interaction.capture",
+  "interaction.get",
+  "interaction.diff",
+  "interaction.replay",
+  "artifact.read",
+  "session.cookies",
+  "session.storage",
+  "session.state",
+  "session.fetch",
+  "scripts.capture",
+  "scripts.beautify",
+  "scripts.deobfuscate",
+  "scripts.sandbox",
+  "captcha.solve",
+  "computer.execute",
+  "session.close",
+] as const satisfies readonly OpensteerSemanticOperationName[];
+
 export interface OpensteerSemanticOperationSpec<TInput = unknown, TOutput = unknown> {
   readonly name: OpensteerSemanticOperationName;
   readonly description: string;
   readonly inputSchema: JsonSchema;
-  readonly outputSchema: JsonSchema;
+  readonly outputSchema: JsonSchema & { readonly __output?: TOutput };
   readonly requiredCapabilities: readonly OpensteerCapability[];
   readonly packageRunnable?: boolean;
   resolveRequiredCapabilities?(input: TInput): readonly OpensteerCapability[];
@@ -707,44 +636,24 @@ const opensteerPackageRunnableSemanticOperationNames = new Set<OpensteerSemantic
   "dom.scroll",
   "dom.extract",
   "network.query",
-  "network.tag",
-  "network.clear",
-  "network.minimize",
-  "network.diff",
-  "network.probe",
+  "network.detail",
+  "network.replay",
   "interaction.capture",
   "interaction.get",
   "interaction.diff",
   "interaction.replay",
   "artifact.read",
-  "inspect.cookies",
-  "inspect.storage",
+  "session.cookies",
+  "session.storage",
+  "session.state",
+  "session.fetch",
   "scripts.capture",
   "scripts.beautify",
   "scripts.deobfuscate",
   "scripts.sandbox",
   "captcha.solve",
-  "request.raw",
-  "request.execute",
   "computer.execute",
 ]);
-
-function resolveTransportRequiredCapabilities(
-  transport: TransportKind | undefined,
-  fallback: TransportKind,
-): readonly OpensteerCapability[] {
-  switch (transport ?? fallback) {
-    case "direct-http":
-      return [];
-    case "matched-tls":
-    case "context-http":
-      return ["inspect.cookies"];
-    case "page-http":
-      return ["pages.manage"];
-    case "session-http":
-      return ["transport.sessionHttp"];
-  }
-}
 
 const snapshotModeSchema: JsonSchema = enumSchema(["action", "extraction"] as const, {
   title: "OpensteerSnapshotMode",
@@ -854,14 +763,14 @@ const targetByElementSchema: JsonSchema = objectSchema(
   },
 );
 
-const targetByDescriptionSchema: JsonSchema = objectSchema(
+const targetByPersistSchema: JsonSchema = objectSchema(
   {
-    kind: enumSchema(["description"] as const),
-    description: stringSchema(),
+    kind: enumSchema(["persist"] as const),
+    name: stringSchema(),
   },
   {
-    title: "OpensteerTargetByDescription",
-    required: ["kind", "description"],
+    title: "OpensteerTargetByPersist",
+    required: ["kind", "name"],
   },
 );
 
@@ -877,7 +786,7 @@ const targetBySelectorSchema: JsonSchema = objectSchema(
 );
 
 const opensteerTargetInputSchema: JsonSchema = oneOfSchema(
-  [targetByElementSchema, targetByDescriptionSchema, targetBySelectorSchema],
+  [targetByElementSchema, targetByPersistSchema, targetBySelectorSchema],
   {
     title: "OpensteerTargetInput",
   },
@@ -892,7 +801,7 @@ const opensteerResolvedTargetSchema: JsonSchema = objectSchema(
     nodeRef: nodeRefSchema,
     tagName: stringSchema(),
     pathHint: stringSchema(),
-    description: stringSchema(),
+    persist: stringSchema(),
     selectorUsed: stringSchema(),
   },
   {
@@ -913,7 +822,7 @@ const opensteerActionResultSchema: JsonSchema = objectSchema(
   {
     target: opensteerResolvedTargetSchema,
     point: pointSchema,
-    persistedDescription: stringSchema(),
+    persisted: stringSchema(),
   },
   {
     title: "OpensteerActionResult",
@@ -1190,26 +1099,13 @@ const opensteerPageSnapshotOutputSchema: JsonSchema = objectSchema(
   },
 );
 
-const opensteerInspectCookiesInputSchema: JsonSchema = objectSchema(
+const opensteerNetworkDetailInputSchema: JsonSchema = objectSchema(
   {
-    urls: arraySchema(stringSchema({ minLength: 1 })),
+    recordId: stringSchema({ minLength: 1 }),
   },
   {
-    title: "OpensteerInspectCookiesInput",
-  },
-);
-
-const opensteerInspectCookiesOutputSchema: JsonSchema = arraySchema(cookieRecordSchema, {
-  title: "OpensteerInspectCookiesOutput",
-});
-
-const opensteerInspectStorageInputSchema: JsonSchema = objectSchema(
-  {
-    includeSessionStorage: { type: "boolean" },
-    includeIndexedDb: { type: "boolean" },
-  },
-  {
-    title: "OpensteerInspectStorageInput",
+    title: "OpensteerNetworkDetailInput",
+    required: ["recordId"],
   },
 );
 
@@ -1232,7 +1128,7 @@ const opensteerDomClickInputSchema: JsonSchema = objectSchema(
     modifiers: arraySchema(opensteerComputerKeyModifierSchema, {
       uniqueItems: true,
     }),
-    persistAsDescription: stringSchema(),
+    persist: stringSchema(),
     captureNetwork: stringSchema({ minLength: 1 }),
   },
   {
@@ -1244,7 +1140,7 @@ const opensteerDomClickInputSchema: JsonSchema = objectSchema(
 const opensteerDomHoverInputSchema = objectSchema(
   {
     target: opensteerTargetInputSchema,
-    persistAsDescription: stringSchema(),
+    persist: stringSchema(),
     captureNetwork: stringSchema({ minLength: 1 }),
   },
   {
@@ -1258,7 +1154,7 @@ const opensteerDomInputInputSchema: JsonSchema = objectSchema(
     target: opensteerTargetInputSchema,
     text: stringSchema(),
     pressEnter: { type: "boolean" },
-    persistAsDescription: stringSchema(),
+    persist: stringSchema(),
     captureNetwork: stringSchema({ minLength: 1 }),
   },
   {
@@ -1272,7 +1168,7 @@ const opensteerDomScrollInputSchema: JsonSchema = objectSchema(
     target: opensteerTargetInputSchema,
     direction: enumSchema(["up", "down", "left", "right"] as const),
     amount: integerSchema({ minimum: 1 }),
-    persistAsDescription: stringSchema(),
+    persist: stringSchema(),
     captureNetwork: stringSchema({ minLength: 1 }),
   },
   {
@@ -1289,16 +1185,21 @@ const opensteerExtractSchemaSchema: JsonSchema = objectSchema(
   },
 );
 
-const opensteerDomExtractInputSchema: JsonSchema = objectSchema(
-  {
-    description: stringSchema(),
-    schema: opensteerExtractSchemaSchema,
-  },
-  {
-    title: "OpensteerDomExtractInput",
-    required: ["description"],
-  },
-);
+const opensteerDomExtractInputSchema: JsonSchema = defineSchema({
+  ...objectSchema(
+    {
+      persist: stringSchema(),
+      schema: opensteerExtractSchemaSchema,
+    },
+    {
+      title: "OpensteerDomExtractInput",
+    },
+  ),
+  anyOf: [
+    defineSchema({ required: ["persist"] }),
+    defineSchema({ required: ["schema"] }),
+  ],
+});
 
 const jsonValueSchema: JsonSchema = recordSchema({}, { title: "JsonValueRecord" });
 
@@ -1700,134 +1601,40 @@ const opensteerSemanticOperationSpecificationsBase = [
   }),
   defineSemanticOperationSpec<OpensteerDomExtractInput, OpensteerDomExtractOutput>({
     name: "dom.extract",
-    description: "Run structured DOM extraction with persisted Opensteer extraction descriptors.",
+    description:
+      "Run structured DOM extraction and optionally persist the extraction descriptor for replay.",
     inputSchema: opensteerDomExtractInputSchema,
     outputSchema: opensteerDomExtractOutputSchema,
     requiredCapabilities: ["inspect.domSnapshot", "inspect.text", "inspect.attributes"],
   }),
   defineSemanticOperationSpec<OpensteerNetworkQueryInput, OpensteerNetworkQueryOutput>({
     name: "network.query",
-    description: "Query persisted network records for reverse engineering workflows.",
+    description:
+      "Query captured network traffic with chronological summaries optimized for agent inspection.",
     inputSchema: opensteerNetworkQueryInputSchema,
     outputSchema: opensteerNetworkQueryOutputSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<OpensteerNetworkTagInput, OpensteerNetworkTagOutput>({
-    name: "network.tag",
-    description: "Apply a tag to persisted network records matching the provided filters.",
-    inputSchema: opensteerNetworkTagInputSchema,
-    outputSchema: opensteerNetworkTagOutputSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<OpensteerNetworkClearInput, OpensteerNetworkClearOutput>({
-    name: "network.clear",
-    description: "Clear saved network records globally or for a specific tag.",
-    inputSchema: opensteerNetworkClearInputSchema,
-    outputSchema: opensteerNetworkClearOutputSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<OpensteerNetworkMinimizeInput, OpensteerNetworkMinimizeOutput>({
-    name: "network.minimize",
-    description:
-      "Minimize a saved captured request by identifying the smallest viable header, cookie, query, and body-field set.",
-    inputSchema: opensteerNetworkMinimizeInputSchema,
-    outputSchema: opensteerNetworkMinimizeOutputSchema,
-    requiredCapabilities: [],
-    resolveRequiredCapabilities: (input) =>
-      resolveTransportRequiredCapabilities(input.transport, "session-http"),
-  }),
-  defineSemanticOperationSpec<OpensteerNetworkDiffInput, OpensteerNetworkDiffOutput>({
-    name: "network.diff",
-    description:
-      "Compare two captured requests and responses field-by-field with entropy analysis for likely encrypted values.",
-    inputSchema: opensteerNetworkDiffInputSchema,
-    outputSchema: opensteerNetworkDiffOutputSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<OpensteerTransportProbeInput, OpensteerTransportProbeOutput>({
-    name: "network.probe",
-    description:
-      "Probe a captured request across transport layers and recommend the lightest working execution path.",
-    inputSchema: opensteerTransportProbeInputSchema,
-    outputSchema: opensteerTransportProbeOutputSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<OpensteerReverseDiscoverInput, OpensteerReverseDiscoverOutput>({
-    name: "reverse.discover",
-    description:
-      "Capture and index a bounded reverse-engineering observation window, then return the case handle, summary, report id, and query metadata only.",
-    inputSchema: opensteerReverseDiscoverInputSchema,
-    outputSchema: opensteerReverseDiscoverOutputSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<OpensteerReverseQueryInput, OpensteerReverseQueryOutput>({
-    name: "reverse.query",
-    description:
-      "Query a cached reverse case with deterministic filters and explicit sort keys or preset shortcuts over records, clusters, or candidates.",
-    inputSchema: opensteerReverseQueryInputSchema,
-    outputSchema: opensteerReverseQueryOutputSchema,
-    requiredCapabilities: [],
+    requiredCapabilities: ["inspect.network"],
   }),
   defineSemanticOperationSpec<
-    OpensteerReversePackageCreateInput,
-    OpensteerReversePackageCreateOutput
+    {
+      readonly recordId: string;
+    },
+    OpensteerNetworkDetailOutput
   >({
-    name: "reverse.package.create",
+    name: "network.detail",
     description:
-      "Create an explicit reverse package draft from a chosen observed record or advisory candidate, with an optional advisory template.",
-    inputSchema: opensteerReversePackageCreateInputSchema,
-    outputSchema: opensteerReversePackageCreateOutputSchema,
-    requiredCapabilities: [],
+      "Inspect one captured network record with parsed headers, cookies, redirects, and truncated bodies.",
+    inputSchema: opensteerNetworkDetailInputSchema,
+    outputSchema: opensteerNetworkDetailOutputSchema,
+    requiredCapabilities: ["inspect.network", "inspect.networkBodies"],
   }),
-  defineSemanticOperationSpec<OpensteerReversePackageRunInput, OpensteerReversePackageRunOutput>({
-    name: "reverse.package.run",
+  defineSemanticOperationSpec<OpensteerNetworkReplayInput, OpensteerNetworkReplayOutput>({
+    name: "network.replay",
     description:
-      "Run a reverse package draft through its operation, await-record, and assertion steps, returning executed bindings and first failure details.",
-    inputSchema: opensteerReversePackageRunInputSchema,
-    outputSchema: opensteerReversePackageRunOutputSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<OpensteerReverseExportInput, OpensteerReverseExportOutput>({
-    name: "reverse.export",
-    description:
-      "Export or clone a reverse-engineering package, including a request plan when the package is portable.",
-    inputSchema: opensteerReverseExportInputSchema,
-    outputSchema: opensteerReverseExportOutputSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<OpensteerReverseReportInput, OpensteerReverseReportOutput>({
-    name: "reverse.report",
-    description:
-      "Read an evidence-centered discovery report or a draft-centered package report, including linked evidence, replay attempts, and advisory suggestions.",
-    inputSchema: opensteerReverseReportInputSchema,
-    outputSchema: opensteerReverseReportOutputSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<OpensteerReversePackageGetInput, OpensteerReversePackageGetOutput>({
-    name: "reverse.package.get",
-    description:
-      "Read a standalone reverse-engineering package so an agent can inspect its workflow, resolvers, requirements, and linked evidence.",
-    inputSchema: opensteerReversePackageGetInputSchema,
-    outputSchema: opensteerReversePackageGetOutputSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<OpensteerReversePackageListInput, OpensteerReversePackageListOutput>({
-    name: "reverse.package.list",
-    description: "List reverse-engineering packages by case, key, kind, or readiness.",
-    inputSchema: opensteerReversePackageListInputSchema,
-    outputSchema: opensteerReversePackageListOutputSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<
-    OpensteerReversePackagePatchInput,
-    OpensteerReversePackagePatchOutput
-  >({
-    name: "reverse.package.patch",
-    description:
-      "Write a new immutable reverse-engineering package revision by patching editable workflow, resolver, validator, and evidence sections.",
-    inputSchema: opensteerReversePackagePatchInputSchema,
-    outputSchema: opensteerReversePackagePatchOutputSchema,
-    requiredCapabilities: [],
+      "Replay a captured request through the transport ladder and report the transport that worked.",
+    inputSchema: opensteerNetworkReplayInputSchema,
+    outputSchema: opensteerNetworkReplayOutputSchema,
+    requiredCapabilities: ["inspect.network", "inspect.cookies", "pages.manage"],
   }),
   defineSemanticOperationSpec<OpensteerInteractionCaptureInput, OpensteerInteractionCaptureOutput>({
     name: "interaction.capture",
@@ -1908,131 +1715,53 @@ const opensteerSemanticOperationSpecificationsBase = [
     outputSchema: opensteerCaptchaSolveOutputSchema,
     requiredCapabilities: ["pages.manage"],
   }),
-  defineSemanticOperationSpec<OpensteerInspectCookiesInput, readonly CookieRecord[]>({
-    name: "inspect.cookies",
-    description: "Read cookies from the current browser session.",
-    inputSchema: opensteerInspectCookiesInputSchema,
-    outputSchema: opensteerInspectCookiesOutputSchema,
+  defineSemanticOperationSpec<OpensteerCookieQueryInput, OpensteerCookieQueryOutput>({
+    name: "session.cookies",
+    description: "Read browser cookies for the active page domain or an explicitly selected domain.",
+    inputSchema: opensteerCookieQueryInputSchema,
+    outputSchema: opensteerCookieQueryOutputSchema,
     requiredCapabilities: ["inspect.cookies"],
   }),
-  defineSemanticOperationSpec<OpensteerInspectStorageInput, StorageSnapshot>({
-    name: "inspect.storage",
-    description: "Read browser storage state from the current browser session.",
-    inputSchema: opensteerInspectStorageInputSchema,
-    outputSchema: storageSnapshotSchema,
-    requiredCapabilities: ["inspect.localStorage"],
+  defineSemanticOperationSpec<OpensteerStorageQueryInput, OpensteerStorageQueryOutput>({
+    name: "session.storage",
+    description:
+      "Read localStorage and sessionStorage grouped by domain for the active browser session.",
+    inputSchema: opensteerStorageQueryInputSchema,
+    outputSchema: opensteerStorageQueryOutputSchema,
+    requiredCapabilities: ["inspect.localStorage", "inspect.sessionStorage"],
+  }),
+  defineSemanticOperationSpec<OpensteerStateQueryInput, OpensteerStateQueryOutput>({
+    name: "session.state",
+    description:
+      "Read browser cookies, storage, hidden fields, and selected page globals grouped by domain.",
+    inputSchema: opensteerStateQueryInputSchema,
+    outputSchema: opensteerStateQueryOutputSchema,
+    requiredCapabilities: [
+      "inspect.cookies",
+      "inspect.localStorage",
+      "inspect.sessionStorage",
+      "pages.manage",
+    ],
+  }),
+  defineSemanticOperationSpec<OpensteerSessionFetchInput, OpensteerSessionFetchOutput>({
+    name: "session.fetch",
+    description:
+      "Execute a session-aware HTTP request with browser cookies and automatic transport selection.",
+    inputSchema: opensteerSessionFetchInputSchema,
+    outputSchema: opensteerSessionFetchOutputSchema,
+    requiredCapabilities: [],
     resolveRequiredCapabilities: (input) => {
-      const capabilities: OpensteerCapability[] = ["inspect.localStorage"];
-      if (input.includeSessionStorage ?? false) {
-        capabilities.push("inspect.sessionStorage");
+      switch (input.transport ?? "auto") {
+        case "direct":
+          return [];
+        case "matched-tls":
+          return ["inspect.cookies"];
+        case "page":
+          return ["pages.manage"];
+        case "auto":
+          return ["inspect.cookies", "pages.manage"];
       }
-      if (input.includeIndexedDb ?? false) {
-        capabilities.push("inspect.indexedDb");
-      }
-      return capabilities;
     },
-  }),
-  defineSemanticOperationSpec<OpensteerRawRequestInput, OpensteerRawRequestOutput>({
-    name: "request.raw",
-    description:
-      "Execute a raw HTTP request through either the current browser session or a direct HTTP transport.",
-    inputSchema: opensteerRawRequestInputSchema,
-    outputSchema: opensteerRawRequestOutputSchema,
-    requiredCapabilities: [],
-    resolveRequiredCapabilities: (input) =>
-      resolveTransportRequiredCapabilities(input.transport, "context-http"),
-  }),
-  defineSemanticOperationSpec<OpensteerInferRequestPlanInput, OpensteerRequestPlanRecord>({
-    name: "request-plan.infer",
-    description: "Infer and persist a request plan from a selected network record.",
-    inputSchema: opensteerInferRequestPlanInputSchema,
-    outputSchema: opensteerRequestPlanRecordSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<OpensteerWriteRequestPlanInput, OpensteerRequestPlanRecord>({
-    name: "request-plan.write",
-    description: "Validate and persist a reusable request plan in the local registry.",
-    inputSchema: opensteerWriteRequestPlanInputSchema,
-    outputSchema: opensteerRequestPlanRecordSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<OpensteerGetRequestPlanInput, OpensteerRequestPlanRecord>({
-    name: "request-plan.get",
-    description: "Resolve a request plan by key and optional version.",
-    inputSchema: opensteerGetRequestPlanInputSchema,
-    outputSchema: opensteerRequestPlanRecordSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<OpensteerListRequestPlansInput, OpensteerListRequestPlansOutput>({
-    name: "request-plan.list",
-    description: "List request plans from the local registry.",
-    inputSchema: opensteerListRequestPlansInputSchema,
-    outputSchema: opensteerListRequestPlansOutputSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<OpensteerWriteAuthRecipeInput, OpensteerAuthRecipeRecord>({
-    name: "recipe.write",
-    description: "Validate and persist a reusable recipe in the local registry.",
-    inputSchema: opensteerWriteAuthRecipeInputSchema,
-    outputSchema: opensteerAuthRecipeRecordSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<OpensteerGetAuthRecipeInput, OpensteerAuthRecipeRecord>({
-    name: "recipe.get",
-    description: "Resolve a recipe by key and optional version.",
-    inputSchema: opensteerGetAuthRecipeInputSchema,
-    outputSchema: opensteerAuthRecipeRecordSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<OpensteerListAuthRecipesInput, OpensteerListAuthRecipesOutput>({
-    name: "recipe.list",
-    description: "List recipes from the local registry.",
-    inputSchema: opensteerListAuthRecipesInputSchema,
-    outputSchema: opensteerListAuthRecipesOutputSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<OpensteerRunAuthRecipeInput, OpensteerRunAuthRecipeOutput>({
-    name: "recipe.run",
-    description: "Run a stored recipe deterministically against the current runtime.",
-    inputSchema: opensteerRunAuthRecipeInputSchema,
-    outputSchema: opensteerRunAuthRecipeOutputSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<OpensteerWriteAuthRecipeInput, OpensteerAuthRecipeRecord>({
-    name: "auth-recipe.write",
-    description: "Validate and persist a reusable auth recovery recipe in the local registry.",
-    inputSchema: opensteerWriteAuthRecipeInputSchema,
-    outputSchema: opensteerAuthRecipeRecordSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<OpensteerGetAuthRecipeInput, OpensteerAuthRecipeRecord>({
-    name: "auth-recipe.get",
-    description: "Resolve an auth recipe by key and optional version.",
-    inputSchema: opensteerGetAuthRecipeInputSchema,
-    outputSchema: opensteerAuthRecipeRecordSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<OpensteerListAuthRecipesInput, OpensteerListAuthRecipesOutput>({
-    name: "auth-recipe.list",
-    description: "List auth recovery recipes from the local registry.",
-    inputSchema: opensteerListAuthRecipesInputSchema,
-    outputSchema: opensteerListAuthRecipesOutputSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<OpensteerRunAuthRecipeInput, OpensteerRunAuthRecipeOutput>({
-    name: "auth-recipe.run",
-    description: "Run a stored auth recovery recipe deterministically against the current runtime.",
-    inputSchema: opensteerRunAuthRecipeInputSchema,
-    outputSchema: opensteerRunAuthRecipeOutputSchema,
-    requiredCapabilities: [],
-  }),
-  defineSemanticOperationSpec<OpensteerRequestExecuteInput, OpensteerRequestExecuteOutput>({
-    name: "request.execute",
-    description:
-      "Execute a request plan through its configured transport and deterministic auth recovery policy.",
-    inputSchema: opensteerRequestExecuteInputSchema,
-    outputSchema: opensteerRequestExecuteOutputSchema,
-    requiredCapabilities: [],
   }),
   defineSemanticOperationSpec<OpensteerComputerExecuteInput, OpensteerComputerExecuteOutput>({
     name: "computer.execute",
@@ -2075,14 +1804,23 @@ const opensteerSemanticOperationSpecificationsBase = [
   }),
 ] as const satisfies readonly OpensteerSemanticOperationSpec[];
 
-export const opensteerSemanticOperationSpecifications =
+const exposedSemanticOperationNameSet = new Set<OpensteerSemanticOperationName>(
+  opensteerExposedSemanticOperationNames,
+);
+
+const opensteerSemanticOperationSpecificationsInternal =
   opensteerSemanticOperationSpecificationsBase.map((spec) => ({
     ...spec,
     packageRunnable: opensteerPackageRunnableSemanticOperationNames.has(spec.name),
   })) as readonly OpensteerSemanticOperationSpec[];
 
+export const opensteerSemanticOperationSpecifications =
+  opensteerSemanticOperationSpecificationsInternal.filter((spec) =>
+    exposedSemanticOperationNameSet.has(spec.name),
+  ) as readonly OpensteerSemanticOperationSpec[];
+
 export const opensteerSemanticOperationSpecificationMap = Object.fromEntries(
-  opensteerSemanticOperationSpecifications.map((spec) => [spec.name, spec]),
+  opensteerSemanticOperationSpecificationsInternal.map((spec) => [spec.name, spec]),
 ) as Record<OpensteerSemanticOperationName, OpensteerSemanticOperationSpec>;
 
 const semanticRestBasePath = `${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic`;

@@ -1,32 +1,25 @@
 # Workflows
 
-Opensteer has three standard workflows.
+Opensteer’s default workflow is discovery first, then plain code.
 
-## 1. Browser Action + Network Capture
+## 1. Capture
 
-Use this when you do not yet know the replay shape.
+1. Open a real page with `open()` or `goto()`.
+2. Trigger the relevant page action with `captureNetwork`.
+3. Use `network.query()` to scan captured traffic.
 
-1. Open a real page.
-2. Perform the action that triggers the request.
-3. Inspect traffic with `queryNetwork()` or `waitForNetwork()`.
-4. Tag useful evidence with `tagNetwork()` when you want to organize persisted captures.
-5. Promote a captured record into a request plan with `inferRequestPlan()`.
+## 2. Inspect
 
-This is the default reverse-engineering workflow.
+1. Use `network.detail(recordId)` on the most relevant request.
+2. Check `cookies()`, `storage()`, or `state()` when auth or browser state matters.
+3. Use `network.query({ before, after })` to trace dependencies.
 
-## 2. Browser-Backed Replay
+## 3. Replay
 
-Use this when a site needs browser cookies, JavaScript-minted tokens, or page-owned execution.
+1. Use `network.replay(recordId)` to confirm the captured request is reproducible.
+2. Let replay auto-select the transport and inspect which transport succeeded.
 
-- `context-http`: browser session state matters, but page JavaScript execution does not
-- `page-eval-http`: the request must execute inside the live page JavaScript world
-- `goto()` + `waitForNetwork()`: observe the page's own request instead of constructing one yourself
+## 4. Codify
 
-Recipes are the standard way to prepare or recover browser-backed state.
-
-## 3. Pure Replay
-
-Use `direct-http` when the target request is replayable without a browser.
-
-This is the lowest-overhead path, but it is not the default assumption for protected
-sites. Opensteer treats browser-backed replay as a first-class path, not as a fallback.
+1. Write plain TypeScript with `session.fetch()`.
+2. Keep the code as the durable artifact instead of promoting requests into a custom registry.

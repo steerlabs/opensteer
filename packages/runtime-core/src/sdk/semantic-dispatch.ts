@@ -62,74 +62,14 @@ export async function dispatchSemanticOperation(
         input as Parameters<OpensteerSemanticRuntime["queryNetwork"]>[0],
         options,
       );
-    case "network.tag":
-      return runtime.tagNetwork(
-        input as Parameters<OpensteerSemanticRuntime["tagNetwork"]>[0],
+    case "network.detail":
+      return runtime.getNetworkDetail(
+        input as Parameters<OpensteerSemanticRuntime["getNetworkDetail"]>[0],
         options,
       );
-    case "network.clear":
-      return runtime.clearNetwork(
-        input as Parameters<OpensteerSemanticRuntime["clearNetwork"]>[0],
-        options,
-      );
-    case "network.minimize":
-      return runtime.minimizeNetwork(
-        input as Parameters<OpensteerSemanticRuntime["minimizeNetwork"]>[0],
-        options,
-      );
-    case "network.diff":
-      return runtime.diffNetwork(
-        input as Parameters<OpensteerSemanticRuntime["diffNetwork"]>[0],
-        options,
-      );
-    case "network.probe":
-      return runtime.probeNetwork(
-        input as Parameters<OpensteerSemanticRuntime["probeNetwork"]>[0],
-        options,
-      );
-    case "reverse.discover":
-      return runtime.discoverReverse(
-        input as Parameters<OpensteerSemanticRuntime["discoverReverse"]>[0],
-        options,
-      );
-    case "reverse.query":
-      return runtime.queryReverse(
-        input as Parameters<OpensteerSemanticRuntime["queryReverse"]>[0],
-        options,
-      );
-    case "reverse.package.create":
-      return runtime.createReversePackage(
-        input as Parameters<OpensteerSemanticRuntime["createReversePackage"]>[0],
-        options,
-      );
-    case "reverse.package.run":
-      return runtime.runReversePackage(
-        input as Parameters<OpensteerSemanticRuntime["runReversePackage"]>[0],
-        options,
-      );
-    case "reverse.export":
-      return runtime.exportReverse(
-        input as Parameters<OpensteerSemanticRuntime["exportReverse"]>[0],
-        options,
-      );
-    case "reverse.report":
-      return runtime.getReverseReport(
-        input as Parameters<OpensteerSemanticRuntime["getReverseReport"]>[0],
-        options,
-      );
-    case "reverse.package.get":
-      return runtime.getReversePackage(
-        input as Parameters<OpensteerSemanticRuntime["getReversePackage"]>[0],
-        options,
-      );
-    case "reverse.package.list":
-      return runtime.listReversePackages(
-        input as Parameters<OpensteerSemanticRuntime["listReversePackages"]>[0],
-        options,
-      );
-    case "reverse.package.patch":
-      return runtime.patchReversePackage(
-        input as Parameters<OpensteerSemanticRuntime["patchReversePackage"]>[0],
+    case "network.replay":
+      return runtime.replayNetwork(
+        input as Parameters<OpensteerSemanticRuntime["replayNetwork"]>[0],
         options,
       );
     case "interaction.capture":
@@ -157,16 +97,23 @@ export async function dispatchSemanticOperation(
         input as Parameters<OpensteerSemanticRuntime["readArtifact"]>[0],
         options,
       );
-    case "inspect.cookies":
+    case "session.cookies":
       return runtime.getCookies(
         input as Parameters<OpensteerSemanticRuntime["getCookies"]>[0],
         options,
       );
-    case "inspect.storage":
+    case "session.storage":
       return runtime.getStorageSnapshot(
         input as Parameters<OpensteerSemanticRuntime["getStorageSnapshot"]>[0],
         options,
       );
+    case "session.state":
+      return runtime.getBrowserState(
+        input as Parameters<OpensteerSemanticRuntime["getBrowserState"]>[0],
+        options,
+      );
+    case "session.fetch":
+      return runtime.fetch(input as Parameters<OpensteerSemanticRuntime["fetch"]>[0], options);
     case "scripts.capture":
       return runtime.captureScripts(
         input as Parameters<OpensteerSemanticRuntime["captureScripts"]>[0],
@@ -192,73 +139,6 @@ export async function dispatchSemanticOperation(
         input as Parameters<OpensteerSemanticRuntime["solveCaptcha"]>[0],
         options,
       );
-    case "request.raw":
-      return runtime.rawRequest(
-        input as Parameters<OpensteerSemanticRuntime["rawRequest"]>[0],
-        options,
-      );
-    case "request-plan.infer":
-      return runtime.inferRequestPlan(
-        input as Parameters<OpensteerSemanticRuntime["inferRequestPlan"]>[0],
-        options,
-      );
-    case "request-plan.write":
-      return runtime.writeRequestPlan(
-        input as Parameters<OpensteerSemanticRuntime["writeRequestPlan"]>[0],
-        options,
-      );
-    case "request-plan.get":
-      return runtime.getRequestPlan(
-        input as Parameters<OpensteerSemanticRuntime["getRequestPlan"]>[0],
-        options,
-      );
-    case "request-plan.list":
-      return runtime.listRequestPlans(
-        input as Parameters<OpensteerSemanticRuntime["listRequestPlans"]>[0],
-        options,
-      );
-    case "recipe.write":
-      return runtime.writeRecipe(
-        input as Parameters<OpensteerSemanticRuntime["writeRecipe"]>[0],
-        options,
-      );
-    case "recipe.get":
-      return runtime.getRecipe(
-        input as Parameters<OpensteerSemanticRuntime["getRecipe"]>[0],
-        options,
-      );
-    case "recipe.list":
-      return runtime.listRecipes(
-        input as Parameters<OpensteerSemanticRuntime["listRecipes"]>[0],
-        options,
-      );
-    case "recipe.run":
-      return runtime.runRecipe(
-        input as Parameters<OpensteerSemanticRuntime["runRecipe"]>[0],
-        options,
-      );
-    case "auth-recipe.write":
-      return runtime.writeAuthRecipe(
-        input as Parameters<OpensteerSemanticRuntime["writeAuthRecipe"]>[0],
-        options,
-      );
-    case "auth-recipe.get":
-      return runtime.getAuthRecipe(
-        input as Parameters<OpensteerSemanticRuntime["getAuthRecipe"]>[0],
-        options,
-      );
-    case "auth-recipe.list":
-      return runtime.listAuthRecipes(
-        input as Parameters<OpensteerSemanticRuntime["listAuthRecipes"]>[0],
-        options,
-      );
-    case "auth-recipe.run":
-      return runtime.runAuthRecipe(
-        input as Parameters<OpensteerSemanticRuntime["runAuthRecipe"]>[0],
-        options,
-      );
-    case "request.execute":
-      return runtime.request(input as Parameters<OpensteerSemanticRuntime["request"]>[0], options);
     case "computer.execute":
       return runtime.computerExecute(
         input as Parameters<OpensteerSemanticRuntime["computerExecute"]>[0],

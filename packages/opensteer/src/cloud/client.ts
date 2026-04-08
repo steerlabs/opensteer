@@ -7,7 +7,6 @@ import type {
   CloudBrowserProfilePreference,
   CloudRegistryImportEntry,
   CloudRegistryImportResponse,
-  CloudRequestPlanImportEntry,
   CloudSelectorCacheImportEntry,
   CloudSelectorCacheImportResponse,
   OpensteerSessionAccessGrantResponse,
@@ -211,7 +210,18 @@ export class OpensteerCloudClient {
   ): Promise<CloudSelectorCacheImportResponse> {
     const response = await this.request("/selector-cache/import", {
       method: "POST",
-      body: { entries },
+      body: {
+        entries: entries.map((entry) => ({
+          workspace: entry.workspace,
+          method: entry.method,
+          descriptionHash: entry.nameHash,
+          ...(entry.name === undefined ? {} : { description: entry.name }),
+          path: entry.path,
+          ...(entry.schemaHash === undefined ? {} : { schemaHash: entry.schemaHash }),
+          createdAt: entry.createdAt,
+          updatedAt: entry.updatedAt,
+        })),
+      },
     });
     return (await response.json()) as CloudSelectorCacheImportResponse;
   }
@@ -220,56 +230,6 @@ export class OpensteerCloudClient {
     entries: readonly CloudRegistryImportEntry[],
   ): Promise<CloudRegistryImportResponse> {
     const response = await this.request("/registry/descriptors/import", {
-      method: "POST",
-      body: { entries },
-    });
-    return (await response.json()) as CloudRegistryImportResponse;
-  }
-
-  async importRequestPlans(
-    entries: readonly CloudRequestPlanImportEntry[],
-  ): Promise<CloudRegistryImportResponse> {
-    const response = await this.request("/registry/request-plans/import", {
-      method: "POST",
-      body: { entries },
-    });
-    return (await response.json()) as CloudRegistryImportResponse;
-  }
-
-  async importRecipes(
-    entries: readonly CloudRegistryImportEntry[],
-  ): Promise<CloudRegistryImportResponse> {
-    const response = await this.request("/registry/recipes/import", {
-      method: "POST",
-      body: { entries },
-    });
-    return (await response.json()) as CloudRegistryImportResponse;
-  }
-
-  async importAuthRecipes(
-    entries: readonly CloudRegistryImportEntry[],
-  ): Promise<CloudRegistryImportResponse> {
-    const response = await this.request("/registry/auth-recipes/import", {
-      method: "POST",
-      body: { entries },
-    });
-    return (await response.json()) as CloudRegistryImportResponse;
-  }
-
-  async importReverseCases(
-    entries: readonly CloudRegistryImportEntry[],
-  ): Promise<CloudRegistryImportResponse> {
-    const response = await this.request("/registry/reverse-cases/import", {
-      method: "POST",
-      body: { entries },
-    });
-    return (await response.json()) as CloudRegistryImportResponse;
-  }
-
-  async importReversePackages(
-    entries: readonly CloudRegistryImportEntry[],
-  ): Promise<CloudRegistryImportResponse> {
-    const response = await this.request("/registry/reverse-packages/import", {
       method: "POST",
       body: { entries },
     });

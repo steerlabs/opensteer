@@ -1,81 +1,347 @@
 ---
 name: opensteer
-description: "Handles Opensteer browser automation, structured DOM extraction, and browser-backed request replay with the Opensteer CLI and SDK. Use when the user mentions Opensteer, browser automation, real Chromium sessions, persistent workspace browser state, descriptor-backed DOM actions or extraction, request plans, recipes, or browser-backed API replay. Do NOT use for: generic HTTP client calls (curl/fetch), Playwright without Opensteer, or static file downloads."
+description: "Handles Opensteer browser automation, structured DOM extraction, and browser-backed API reverse engineering. Use when the user mentions Opensteer, browser automation, real Chromium sessions, DOM extraction, network capture, replay, cookies, reverse-engineering a site API, or browser-grade fetch."
 argument-hint: "[goal]"
 ---
 
 # Opensteer
 
-Opensteer controls a real Chromium browser through persistent workspaces. It has three capabilities: (1) DOM automation and structured data extraction from rendered pages, (2) network request capture and replay for reverse-engineering APIs, and (3) browser and workspace administration. Workspaces persist browser state, DOM/extraction descriptors, network history, request plans, recipes, and artifacts under `.opensteer/workspaces/<id>`.
+Opensteer gives agents a real Chromium browser for two jobs normal code cannot do:
 
-## Task Triage
+1. **DOM automation** — interact with pages and extract structured data via snapshot-based element targeting.
+2. **API reverse engineering** — capture real browser traffic, identify APIs, test transport portability, and write replay code.
 
-If invoked directly, treat `$ARGUMENTS` as the goal. **Before taking any action, walk through these gates in order:**
+The workflow is always: **explore with CLI, then write reusable code with SDK.**
 
-**GATE 1:** Is the deliverable a replayable request plan, custom API endpoint, or lower-overhead API call?
-Signals: the user mentions API, endpoint, request, network traffic, reverse-engineer, replay, or the deliverable is a replayable request rather than page content.
-**YES** → Load [Request Plan Pipeline](references/request-workflow.md). Start by opening the page with `captureNetwork` on navigation, then query captured traffic. Do NOT start with a DOM snapshot.
+## When To Use
 
-**GATE 2:** Is the deliverable structured data from a rendered page, or a browser automation flow?
-Signals: the user mentions scraping page content, filling forms, clicking through a flow, extracting visible data, or the deliverable is structured data from the rendered page.
-**YES** → Load [CLI Reference](references/cli-reference.md). Start with `snapshot action` or `snapshot extraction`.
+- Task involves a website's API, network traffic, auth headers, or replay → **API workflow**
+- Task involves page content, forms, clicking, typing, or extracting visible data → **DOM workflow**
+- Task involves browser profiles, attaching to Chrome, or workspace setup → **Browser management**
+- Unsure → Start with the API workflow. Capture traffic first, then decide.
 
-**GATE 3:** Is the task browser or workspace administration?
-Signals: the user mentions cloning a profile, managing browser state, attaching to a running browser, checking workspace status.
-**YES** → Load [CLI Reference](references/cli-reference.md) (Browser Lifecycle) or [SDK Reference](references/sdk-reference.md) (Browser Admin).
+## Rules
 
-**GATE 4:** Unsure. Open the page with `captureNetwork` on `goto`. Query traffic with `queryNetwork()`.
-- If relevant JSON APIs appear → go to GATE 1 (request plan path).
-- If the data is server-rendered HTML with no backing API → go to GATE 2 (DOM path).
+1. Set `--workspace <id>` on every command, or export `OPENSTEER_WORKSPACE`.
+2. Re-snapshot after every navigation before using element numbers.
+3. Import as `import { Opensteer } from "opensteer"` — never a relative path.
+4. SDK constructor needs only two fields:
+   ```ts
+   const opensteer = new Opensteer({ workspace: "demo", rootDir: process.cwd() });
+   ```
+5. `persist` is the only naming mechanism for reusable targets and extractions.
+6. `--capture-network <label>` is opt-in. Add it to any action when you need traffic.
+7. `opensteer.fetch()` works without a page open — it uses the session cookie jar and transport stack directly.
+8. Element numbers come from `c="N"` attributes in snapshot HTML. Always snapshot first, then act.
 
-## Deliverables
+---
 
-Each workflow has a specific deliverable. Verify you have produced it before closing the browser.
+## DOM Automation
 
-- **Request Plan Pipeline:** A persisted request plan (`key` + `version`) that returns valid data via `request.execute`. `rawRequest()` is a diagnostic probe used during the pipeline — it is never the deliverable.
-- **DOM Extraction:** A persisted extraction descriptor replayable via `extract --description`.
-- **Administration:** Confirmation of the browser/workspace state change.
+### Step 1: Open and snapshot
 
-## References
+```bash
+opensteer open https://example.com --workspace demo
+opensteer snapshot action --workspace demo
+```
 
-**Load the relevant reference(s) for your task before taking action.**
+Read the `html` output. Find `c="N"` markers — these are your element IDs.
 
-- [CLI Reference](references/cli-reference.md) — DOM exploration, snapshots, extraction, browser lifecycle, profile cloning
-- [SDK Reference](references/sdk-reference.md) — TypeScript code for DOM automation, request capture, and browser admin. Use when the task requires a reusable script.
-- [Request Plan Pipeline](references/request-workflow.md) — Gated phases: capture, discover, probe, infer plan, validate auth, annotate parameters, test plan, auth recipes
+### Step 2: Interact
 
-## Startup Checks
+```bash
+opensteer click 7 --workspace demo --persist "search button"
+opensteer input 5 "laptop" --workspace demo --press-enter --persist "search input"
+opensteer hover 3 --workspace demo --persist "menu trigger"
+opensteer scroll down 400 --workspace demo
+```
 
-- Verify `opensteer` is available in the repo or on `PATH` before planning the workflow.
-- If Chromium binaries are missing, install them through Playwright before debugging page behavior.
-- Reuse an existing workspace id for the same site or feature when one already exists.
+`--persist <name>` saves the element's structural DOM path for deterministic SDK replay. Element number is always required on CLI — persist is save-only, not a targeting mode.
 
-## Exploration First
+### Step 3: Extract
 
-Always explore with the CLI before writing automation scripts. Exploration looks different depending on the task:
+Re-snapshot, then extract with a JSON schema referencing element numbers:
 
-- **DOM tasks:** use `snapshot action` / `snapshot extraction` to understand the page structure. Read the `html` field — it contains a filtered DOM with inline `c="N"` attributes marking every element. Use those `c` values as `element` numbers in commands and schemas.
-- **Request tasks:** use `captureNetwork` on navigation/actions, then `queryNetwork()` to inspect the captured traffic. Probe discovered APIs with `rawRequest()` (diagnostic only), then infer and test plans.
-- Only write a reusable SDK script if the user asks for one. CLI exploration is often the entire task.
-- Always close the browser when done: `opensteer close --workspace <id>`.
+```bash
+opensteer snapshot extraction --workspace demo
+opensteer extract '{"items":[{"name":{"element":13},"price":{"element":14}}]}' \
+  --persist "search results" --workspace demo
+```
 
-## Request Constraints
+The positional argument is the JSON schema. `--persist` names it for SDK replay.
 
-- `captureNetwork` is opt-in and is NOT supported on `open()`. Use `open()` to launch the browser, then `goto({ url, captureNetwork })` to navigate with capture.
-- `rawRequest` headers must be `[{name, value}]` arrays, not `{key: value}` objects.
-- `rawRequest` body must be `{json: {...}}`, `{text: "..."}`, or `{base64: "..."}` — not raw strings.
-- After inferring a plan, always validate the auth classification (Phase 5 in the pipeline). Inferred auth metadata is often wrong for public APIs.
+### Step 4: Close
 
-## DOM Constraints
+```bash
+opensteer close --workspace demo
+```
 
-- `persistAsDescription` requires the verbose `opensteer run dom.*` syntax. The short CLI commands (`click`, `input`, etc.) do NOT support it.
-- Extraction schemas are **literal**: N template rows in → exactly N rows back. Replay with `description` alone (no schema) to get ALL matching rows via the saved generalized selector.
-- Prefer Opensteer surfaces (`extract()`, descriptors, `captureNetwork`) over raw Playwright / `page.evaluate()` so data stays in the workspace.
+### SDK Replay
 
-## Common Mistakes
+```ts
+import { Opensteer } from "opensteer";
+const opensteer = new Opensteer({ workspace: "demo", rootDir: process.cwd() });
 
-- Parsing the `counters` array instead of reading the `html` string from snapshots. Read the HTML — find `c="N"` values.
-- Using `page.evaluate()` or CSS selectors when `extract()` can express the output.
-- Forgetting to re-snapshot after navigation. Always re-snapshot before targeting new elements.
-- Leaving the browser running after task completion. Always run `opensteer close` when done.
-- Do not use removed surfaces: `--name`, `Opensteer.attach()`, cloud/profile-sync helpers, `local-profile`, legacy snapshot browser modes, `@opensteer/engine-abp`.
+try {
+  await opensteer.open("https://example.com");
+
+  // Replay by persist name — no element numbers or snapshots needed
+  await opensteer.input({ persist: "search input", text: "laptop", pressEnter: true });
+  await opensteer.click({ persist: "search button" });
+
+  // Extract using cached schema
+  const data = await opensteer.extract({ persist: "search results" });
+  console.log(data);
+} finally {
+  await opensteer.close();
+}
+```
+
+When `persist` is used with `element`, it **saves** the path. When used alone, it **resolves** from cache.
+
+---
+
+## API Reverse Engineering
+
+### Step 1: Capture traffic
+
+Open the site and trigger the real browser action with `--capture-network`:
+
+```bash
+opensteer open https://example.com --workspace demo
+opensteer goto https://example.com/search --workspace demo --capture-network page-load
+opensteer input 5 "laptop" --workspace demo --press-enter --capture-network search
+```
+
+### Step 2: Find the API
+
+```bash
+opensteer network query --workspace demo --capture search
+opensteer network query --workspace demo --capture search --hostname api.example.com --json
+```
+
+`--json` filters to JSON and GraphQL responses only. Other filters: `--url`, `--path`, `--method`, `--status`, `--type`, `--before`, `--after`, `--limit`.
+
+### Step 3: Inspect
+
+```bash
+opensteer network detail rec_123 --workspace demo
+```
+
+Shows: URL, method, request headers, cookies sent, request/response body preview, GraphQL metadata, redirect chain.
+
+### Step 4: Test replay
+
+```bash
+opensteer replay rec_123 --workspace demo
+opensteer replay rec_123 --workspace demo --query keyword=headphones --query count=10
+```
+
+Replay tries transports automatically and reports which succeeded:
+
+| Transport | Meaning | SDK usage |
+|---|---|---|
+| `direct-http` | Plain HTTP works | `opensteer.fetch(url)` (default) |
+| `matched-tls` | Needs TLS fingerprint matching | `opensteer.fetch(url, { transport: "matched-tls" })` |
+| `page-http` | Needs a live browser page | `opensteer.fetch(url, { transport: "page" })` |
+
+### Step 5: Check browser state (if replay returns 401/403)
+
+```bash
+opensteer cookies example.com --workspace demo
+opensteer storage example.com --workspace demo
+opensteer state example.com --workspace demo
+```
+
+Look for session cookies, CSRF tokens, or storage-backed auth that the request depends on.
+
+### Step 6: Write SDK code
+
+```bash
+opensteer close --workspace demo
+```
+
+```ts
+import { Opensteer } from "opensteer";
+const opensteer = new Opensteer({ workspace: "demo", rootDir: process.cwd() });
+
+async function ensureSession() {
+  const cookies = await opensteer.cookies("example.com");
+  if (cookies.has("session")) return;
+  await opensteer.goto("https://example.com");
+}
+
+export async function search(keyword: string) {
+  await ensureSession();
+  const response = await opensteer.fetch("https://api.example.com/search", {
+    query: { keyword, count: 24 },
+  });
+  return response.json();
+}
+```
+
+If replay showed a required transport, carry it into `fetch()`:
+
+```ts
+const response = await opensteer.fetch("https://api.example.com/search", {
+  query: { keyword: "laptop" },
+  transport: "matched-tls",
+});
+```
+
+IMPORTANT: `opensteer.fetch()` does not require opening a browser page. It works directly with the session's cookies and transport stack. Only call `opensteer.open()` or `opensteer.goto()` if you need to establish session cookies first.
+
+---
+
+## Browser Management
+
+### Import a Chrome profile
+
+Copy cookies, localStorage, and session state from an existing Chrome installation:
+
+```bash
+opensteer browser clone --workspace my-site \
+  --source-user-data-dir "$HOME/Library/Application Support/Google/Chrome" \
+  --source-profile-directory Default
+```
+
+### Attach to a running browser
+
+Start Chrome with remote debugging, then connect Opensteer:
+
+```bash
+# Terminal 1: launch Chrome
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
+
+# Terminal 2: attach Opensteer
+opensteer open https://example.com --workspace demo --attach-endpoint http://localhost:9222
+```
+
+### Headful mode
+
+```bash
+opensteer open https://example.com --workspace demo --headless false
+```
+
+### Workspace lifecycle
+
+```bash
+opensteer browser status --workspace demo
+opensteer browser reset --workspace demo     # reset browser data, keep workspace
+opensteer browser delete --workspace demo    # delete workspace entirely
+```
+
+---
+
+## Tabs
+
+```bash
+opensteer tab list --workspace demo
+opensteer tab new https://other-page.com --workspace demo
+opensteer tab 2 --workspace demo             # switch to tab 2
+opensteer tab close 2 --workspace demo
+```
+
+## Run JavaScript
+
+```bash
+opensteer evaluate "document.title" --workspace demo
+```
+
+## Computer-Use (Coordinate-Based)
+
+For canvas, WebGL, or complex iframes where DOM element targeting fails:
+
+```bash
+opensteer computer click 245 380 --workspace demo --capture-network action
+opensteer computer type "search query" --workspace demo
+opensteer computer key Enter --workspace demo
+opensteer computer scroll 400 300 --dx 0 --dy -200 --workspace demo
+opensteer computer screenshot --workspace demo
+```
+
+---
+
+## CLI Quick Reference
+
+| Command | Positional args | Key flags |
+|---|---|---|
+| `open <url>` | url | `--headless`, `--provider`, `--attach-endpoint`, `--attach-header` |
+| `close` | — | — |
+| `status` | — | — |
+| `goto <url>` | url | `--capture-network` |
+| `snapshot [mode]` | action \| extraction | — |
+| `click <element>` | element number | `--persist`, `--capture-network`, `--button` |
+| `hover <element>` | element number | `--persist`, `--capture-network` |
+| `input <element> <text>` | element, text | `--persist`, `--press-enter`, `--capture-network` |
+| `scroll <dir> <amount>` | direction, amount | `--element`, `--persist`, `--capture-network` |
+| `extract <schema>` | JSON schema | `--persist` |
+| `evaluate <script>` | JS expression | — |
+| `network query` | — | `--capture`, `--url`, `--hostname`, `--json`, `--limit`, +6 filters |
+| `network detail <id>` | recordId | — |
+| `replay <id>` | recordId | `--query`, `--header`, `--body`, `--variables` |
+| `fetch <url>` | url | `--method`, `--header`, `--query`, `--body`, `--transport`, `--cookies` |
+| `cookies [domain]` | domain (optional) | — |
+| `storage [domain]` | domain (optional) | — |
+| `state [domain]` | domain (optional) | — |
+| `tab list / new / <n> / close` | varies | — |
+| `computer click/type/key/scroll/move/drag/screenshot/wait` | varies | `--capture-network` |
+
+## SDK Quick Reference
+
+```ts
+// Browser lifecycle
+await opensteer.open(url);
+await opensteer.goto(url, { captureNetwork?: "label" });
+await opensteer.close();
+
+// DOM actions — save to cache
+await opensteer.click({ element: 7, persist: "name" });
+await opensteer.input({ element: 5, text: "...", persist: "name", pressEnter: true });
+await opensteer.hover({ element: 3, persist: "name" });
+await opensteer.scroll({ direction: "down", amount: 400 });
+
+// DOM actions — resolve from cache
+await opensteer.click({ persist: "name" });
+await opensteer.input({ persist: "name", text: "..." });
+
+// Extraction
+await opensteer.extract({ persist: "name" });                    // cached schema
+await opensteer.extract({ persist: "name", schema: { ... } });   // inline schema
+
+// Network discovery
+const records = await opensteer.network.query({ capture: "label", limit: 20 });
+const detail = await opensteer.network.detail(recordId);
+const replay = await opensteer.network.replay(recordId, { query: { k: "v" } });
+
+// Fetch — works without a page open
+const response = await opensteer.fetch(url, {
+  query?: { key: "value" },
+  method?: "POST",
+  headers?: { Authorization: "Bearer ..." },
+  body?: { ... },
+  transport?: "auto" | "direct" | "matched-tls" | "page",
+});
+
+// Browser state
+const cookies = await opensteer.cookies("domain.com"); // .has(), .get(), .serialize()
+const storage = await opensteer.storage("domain.com", "local");
+const state = await opensteer.state("domain.com");
+
+// Snapshots
+const html = await opensteer.snapshot("action");
+const html = await opensteer.snapshot("extraction");
+```
+
+---
+
+## Common Issues
+
+| Symptom | Fix |
+|---|---|
+| Element numbers wrong after navigation | Re-snapshot before using element numbers |
+| `replay` returns 401/403 | Check `cookies`, `storage`, `state` — request depends on session tokens |
+| `replay` works but `fetch()` fails | Use the transport replay discovered: `transport: "matched-tls"` or `"page"` |
+| Direct HTTP blocked, browser transport works | Site uses TLS fingerprinting — use `transport: "matched-tls"` |
+| Extract returns empty data | Element numbers changed — re-snapshot and rebuild the schema |
+| `fetch()` fails with no session | Call `opensteer.goto(url)` first to establish cookies, then `fetch()` |

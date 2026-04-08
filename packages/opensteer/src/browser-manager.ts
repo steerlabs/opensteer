@@ -96,13 +96,7 @@ export interface OpensteerBrowserStatus {
   readonly mode: "temporary" | "persistent" | "attach";
   readonly engine: OpensteerEngineName;
   readonly workspace?: string;
-  readonly rootPath: string;
   readonly live: boolean;
-  readonly browserPath?: string;
-  readonly userDataDir?: string;
-  readonly endpoint?: string;
-  readonly baseUrl?: string;
-  readonly manifest?: WorkspaceBrowserManifest;
 }
 
 export interface OpensteerBrowserManagerOptions {
@@ -176,25 +170,16 @@ export class OpensteerBrowserManager {
       return {
         mode: "temporary",
         engine: this.engineName,
-        rootPath: this.rootPath,
         live: false,
       };
     }
 
-    const workspace = await this.ensureWorkspaceStore();
-    const manifest = await this.readBrowserManifest(workspace);
-    const liveRecord = await this.readLivePersistentBrowser(workspace);
+    const liveRecord = await this.readLivePersistentBrowser(await this.ensureWorkspaceStore());
     return {
       mode: this.mode,
       engine: liveRecord?.engine ?? this.engineName,
       ...(this.workspace === undefined ? {} : { workspace: this.workspace }),
-      rootPath: workspace.rootPath,
       live: liveRecord !== undefined,
-      browserPath: workspace.browserPath,
-      userDataDir: workspace.browserUserDataDir,
-      ...(liveRecord?.endpoint === undefined ? {} : { endpoint: liveRecord.endpoint }),
-      ...(liveRecord?.baseUrl === undefined ? {} : { baseUrl: liveRecord.baseUrl }),
-      ...(manifest === undefined ? {} : { manifest }),
     };
   }
 
@@ -857,6 +842,9 @@ function buildChromeArgs(
   }
 
   args.push(...(launch?.args ?? []));
+  if (!(launch?.args ?? []).some((entry) => !entry.startsWith("-"))) {
+    args.push("about:blank");
+  }
   return args;
 }
 

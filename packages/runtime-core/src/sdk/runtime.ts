@@ -2,8 +2,6 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
-import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
 
 import {
   bodyPayloadFromUtf8,
@@ -25,8 +23,8 @@ import {
   assertValidSemanticOperationInput,
   createNetworkRequestId,
   createSessionRef,
-  opensteerSemanticOperationNames,
-  opensteerSemanticOperationSpecificationMap,
+  opensteerExposedSemanticOperationNames,
+  type BodyPayload as ProtocolBodyPayload,
   type OpensteerArtifactReadInput,
   type OpensteerArtifactReadOutput,
   type CaptchaDetectionResult,
@@ -37,9 +35,6 @@ import {
   type OpensteerActionResult,
   type OpensteerAddInitScriptInput,
   type OpensteerAddInitScriptOutput,
-  type OpensteerGetRecipeInput,
-  type OpensteerAuthRecipeRetryOverrides,
-  type OpensteerAuthRecipeStep,
   type OpensteerBrowserOptions,
   type OpensteerBrowserContextOptions,
   type OpensteerBrowserLaunchOptions,
@@ -54,23 +49,25 @@ import {
   type OpensteerDomInputInput,
   type OpensteerDomScrollInput,
   type OpensteerError,
-  type OpensteerGetAuthRecipeInput,
-  type OpensteerGetRequestPlanInput,
-  type OpensteerInferRequestPlanInput,
-  type OpensteerListRecipesInput,
-  type OpensteerListRecipesOutput,
-  type OpensteerListAuthRecipesInput,
-  type OpensteerListAuthRecipesOutput,
-  type OpensteerNetworkClearInput,
-  type OpensteerNetworkClearOutput,
-  type OpensteerNetworkDiffInput,
-  type OpensteerNetworkDiffOutput,
-  type OpensteerNetworkMinimizeInput,
-  type OpensteerNetworkMinimizeOutput,
   type OpensteerNetworkQueryInput,
   type OpensteerNetworkQueryOutput,
-  type OpensteerNetworkTagInput,
-  type OpensteerNetworkTagOutput,
+  type OpensteerNetworkDetailOutput,
+  type OpensteerNetworkReplayInput,
+  type OpensteerNetworkReplayOutput,
+  type OpensteerNetworkRedirectHop,
+  type OpensteerCookieQueryInput,
+  type OpensteerCookieQueryOutput,
+  type OpensteerStorageQueryInput,
+  type OpensteerStorageQueryOutput,
+  type OpensteerStateQueryInput,
+  type OpensteerStateQueryOutput,
+  type OpensteerSessionFetchInput,
+  type OpensteerSessionFetchOutput,
+  type OpensteerNetworkSummaryRecord,
+  type OpensteerReplayAttempt,
+  type OpensteerStorageDomainSnapshot,
+  type OpensteerStateDomainSnapshot,
+  type OpensteerHiddenField,
   type OpensteerPageActivateInput,
   type OpensteerPageActivateOutput,
   type OpensteerPageCloseInput,
@@ -85,19 +82,10 @@ import {
   type OpensteerPageNewOutput,
   type OpensteerPageSnapshotInput,
   type OpensteerPageSnapshotOutput,
-  type OpensteerListRequestPlansInput,
-  type OpensteerListRequestPlansOutput,
-  type OpensteerRawRequestInput,
   type OpensteerRawRequestOutput,
-  type OpensteerRequestFailurePolicy,
-  type OpensteerRequestExecuteInput,
-  type OpensteerRequestExecuteOutput,
-  type OpensteerRunRecipeInput,
-  type OpensteerRunRecipeOutput,
+  type OpensteerRequestBodyInput,
   type OpensteerRequestTransportResult,
   type OpensteerRequestResponseResult,
-  type OpensteerRunAuthRecipeInput,
-  type OpensteerRunAuthRecipeOutput,
   type NetworkQueryRecord,
   type OpensteerOpenInput,
   type OpensteerOpenOutput,
@@ -113,8 +101,6 @@ import {
   type OpensteerScriptSandboxOutput,
   type OpensteerSnapshotMode,
   type OpensteerTargetInput,
-  type OpensteerTransportProbeInput,
-  type OpensteerTransportProbeOutput,
   type OpensteerInteractionCaptureInput,
   type OpensteerInteractionCaptureOutput,
   type OpensteerInteractionCaptureStep,
@@ -124,64 +110,17 @@ import {
   type OpensteerInteractionGetOutput,
   type OpensteerInteractionReplayInput,
   type OpensteerInteractionReplayOutput,
-  type OpensteerObservationCluster,
-  type OpensteerReverseAdvisoryTemplate,
-  type OpensteerReverseCandidateRecord,
-  type OpensteerExecutableResolver,
-  type OpensteerReverseExperimentRecord,
-  type OpensteerReverseDiscoverInput,
-  type OpensteerReverseDiscoverOutput,
-  type OpensteerReverseExportInput,
-  type OpensteerReverseExportOutput,
-  type OpensteerReverseGuardRecord,
-  type OpensteerReverseManualCalibrationMode,
-  type OpensteerReverseObservationRecord,
-  type OpensteerReverseObservedRecord,
-  type OpensteerReverseQueryFilters,
-  type OpensteerReverseQueryInput,
-  type OpensteerReverseQueryOutput,
-  type OpensteerReverseSortKey,
-  type OpensteerReverseQuerySort,
-  type OpensteerReverseQuerySnapshot,
-  type OpensteerReverseQueryView,
-  type OpensteerReversePackageCreateInput,
-  type OpensteerReversePackageCreateOutput,
-  type OpensteerReversePackageGetInput,
-  type OpensteerReversePackageGetOutput,
-  type OpensteerReversePackageKind,
-  type OpensteerReversePackageListInput,
-  type OpensteerReversePackageListOutput,
-  type OpensteerReversePackagePatchInput,
-  type OpensteerReversePackagePatchOutput,
-  type OpensteerReversePackageReadiness,
-  type OpensteerReverseReplayRunRecord,
-  type OpensteerReversePackageRunInput,
-  type OpensteerReversePackageRunOutput,
-  type OpensteerReverseReportInput,
-  type OpensteerReverseReportOutput,
-  type OpensteerReverseReportKind,
-  type OpensteerReverseRequirement,
-  type OpensteerReverseSuggestedEdit,
-  type OpensteerReverseTargetHints,
-  type OpensteerReverseWorkflowStep,
   type OpensteerStateDelta,
   type OpensteerStateSnapshot,
-  type OpensteerStateSourceKind,
-  type OpensteerValueReference,
-  type OpensteerValueTemplate,
-  type OpensteerValidationRule,
   type OpensteerEvent,
   type AppendObservationEventInput,
   type ObservationSink,
   type ObservationContext,
   type ObservabilityConfig,
   type SessionObservationSink,
-  type OpensteerWriteRecipeInput,
   type StorageSnapshot,
   type TraceContext,
   type TransportKind,
-  type OpensteerWriteAuthRecipeInput,
-  type OpensteerWriteRequestPlanInput,
   type HeaderEntry,
   type ScriptSourceArtifactData,
 } from "@opensteer/protocol";
@@ -209,7 +148,6 @@ import { OPENSTEER_RUNTIME_CORE_VERSION } from "../version.js";
 import {
   buildPathSelectorHint,
   createDomRuntime,
-  sanitizeElementPath,
   type DomActionOutcome,
   type DomDescriptorStore,
   type DomRuntime,
@@ -226,9 +164,6 @@ import type {
   OpensteerRouteOptions,
   OpensteerRouteRegistration,
 } from "./instrumentation.js";
-import { dispatchSemanticOperation } from "./semantic-dispatch.js";
-import { inferRequestPlanFromNetworkRecord } from "../requests/inference.js";
-import { normalizeRequestPlanPayload } from "../requests/plans/index.js";
 import {
   filterValidHttpHeaders,
   headerValue,
@@ -237,45 +172,10 @@ import {
   toProtocolRequestResponseResult,
   toProtocolRequestTransportResult,
 } from "../requests/shared.js";
-import {
-  finalizeMaterializedTransportRequest,
-  stripManagedRequestHeaders,
-} from "../reverse/materialization.js";
-import { diffNetworkRecords } from "../network/diff.js";
+import { finalizeMaterializedTransportRequest } from "../reverse/materialization.js";
 import { NetworkHistory } from "../network/history.js";
 import type { SavedNetworkQueryInput } from "../network/saved-store.js";
-import {
-  materializePreparedMinimizationRequest,
-  minimizePreparedRequest,
-  prepareMinimizationRequest,
-  type PreparedMinimizationRequest,
-} from "../network/minimize.js";
-import { TRANSPORT_PROBE_LADDER, selectTransportProbeRecommendation } from "../network/probe.js";
-import {
-  analyzeReverseCandidate,
-  buildChannelDescriptor,
-  compareReverseAnalysisResults,
-  describeReverseBodyCodec,
-  matchReverseTargetHints,
-} from "../reverse/analysis.js";
-import { clusterReverseObservationRecords } from "../reverse/discovery.js";
 import { executeMatchedTlsTransportRequest as executeMatchedTlsTransportRequestWithCurl } from "../requests/execution/matched-tls/index.js";
-import {
-  evaluateValidationRulesForEventStreamReplay,
-  evaluateValidationRulesForHttpResponse,
-  evaluateValidationRulesForObservedRecord,
-  evaluateValidationRulesForWebSocketReplay,
-  buildReverseValidationRules,
-} from "../reverse/validation.js";
-import {
-  buildReversePackageRequirements,
-  buildReversePackageWorkflow,
-  buildReversePackageSuggestedEdits,
-  cloneReversePackageResolvers,
-  deriveReversePackageKind,
-  deriveReversePackageReadiness,
-  deriveReversePackageUnresolvedRequirements,
-} from "../reverse/workflows.js";
 import {
   assertValidOpensteerExtractionSchemaRoot,
   compileOpensteerExtractionFieldTargets,
@@ -288,20 +188,7 @@ import {
 } from "./extraction.js";
 import { inflateDataPathObject } from "./extraction-data-path.js";
 import { compileOpensteerSnapshot } from "./snapshot/compiler.js";
-import type {
-  AuthRecipeRecord,
-  AuthRecipeRegistryStore,
-  InteractionTraceRecord,
-  RecipeRecord,
-  RecipeRegistryStore,
-  RequestPlanRecord,
-  RequestPlanRegistryStore,
-  ReverseCaseRecord,
-  ReverseCaseRegistryStore,
-  ReversePackageRecord,
-  ReversePackageRegistryStore,
-  ReverseReportRecord,
-} from "../registry.js";
+import type { InteractionTraceRecord } from "../registry.js";
 import { beautifyScriptContent } from "../scripts/beautify.js";
 import { deobfuscateScriptContent } from "../scripts/deobfuscate.js";
 import { runScriptSandbox } from "../scripts/sandbox.js";
@@ -314,19 +201,6 @@ import { diffInteractionTraces } from "../interaction/diff.js";
 type DisposableBrowserCoreEngine = BrowserCoreEngine & {
   dispose?: () => Promise<void>;
 };
-
-type RecipeRegistryKind = "recipe" | "auth-recipe";
-
-interface ResolvedRecipeBinding {
-  readonly source: RecipeRegistryKind;
-  readonly recipe: {
-    readonly key: string;
-    readonly version?: string;
-  };
-  readonly cachePolicy?: "none" | "untilFailure";
-}
-
-const requireForAuthRecipeHook = createRequire(import.meta.url);
 
 export interface OpensteerEngineFactoryOptions {
   readonly browser?: OpensteerBrowserOptions;
@@ -350,13 +224,6 @@ export interface OpensteerSessionRuntimeOptions {
   readonly policy?: OpensteerPolicy;
   readonly descriptorStore?: DomDescriptorStore;
   readonly extractionDescriptorStore?: OpensteerExtractionDescriptorStore;
-  readonly registryOverrides?: {
-    readonly requestPlans?: RequestPlanRegistryStore;
-    readonly authRecipes?: AuthRecipeRegistryStore;
-    readonly recipes?: RecipeRegistryStore;
-    readonly reverseCases?: ReverseCaseRegistryStore;
-    readonly reversePackages?: ReversePackageRegistryStore;
-  };
   readonly cleanupRootOnClose?: boolean;
   readonly sessionInfo?: Partial<Omit<OpensteerSessionInfo, "sessionId" | "activePageRef">>;
   readonly observability?: Partial<ObservabilityConfig>;
@@ -371,91 +238,6 @@ interface OpensteerTraceArtifacts {
 interface PersistedComputerArtifacts {
   readonly manifests: readonly ArtifactManifest[];
   readonly output: OpensteerComputerExecuteOutput;
-}
-
-interface InternalReverseCaptureInput {
-  readonly caseId?: string;
-  readonly key?: string;
-  readonly objective?: string;
-  readonly notes?: string;
-  readonly tags?: readonly string[];
-  readonly pageRef?: PageRef;
-  readonly stateSource?: OpensteerStateSourceKind;
-  readonly network?: {
-    readonly url?: string;
-    readonly hostname?: string;
-    readonly path?: string;
-    readonly method?: string;
-    readonly resourceType?: string;
-    readonly includeBodies?: boolean;
-  };
-  readonly includeScripts?: boolean;
-  readonly includeStorage?: boolean;
-  readonly includeSessionStorage?: boolean;
-  readonly includeIndexedDb?: boolean;
-  readonly interactionTraceIds?: readonly string[];
-  readonly captureWindowMs?: number;
-}
-
-interface InternalReverseCaptureOutput {
-  readonly case: ReverseCaseRecord;
-  readonly observation: OpensteerReverseObservationRecord;
-}
-
-interface InternalReverseAnalyzeInput {
-  readonly caseId: string;
-  readonly observationId?: string;
-  readonly targetHints?: OpensteerReverseTargetHints;
-}
-
-interface InternalReverseAnalyzeOutput {
-  readonly case: ReverseCaseRecord;
-  readonly analyzedObservationIds: readonly string[];
-  readonly candidateCount: number;
-}
-
-interface ReverseQueryExecutionInput {
-  readonly caseRecord: ReverseCaseRecord;
-  readonly view: OpensteerReverseQueryView;
-  readonly filters?: OpensteerReverseQueryFilters;
-  readonly sort?: OpensteerReverseQuerySort;
-  readonly limit?: number;
-  readonly cursor?: string;
-}
-
-interface ReverseQueryExecutionResult {
-  readonly query: OpensteerReverseQuerySnapshot;
-  readonly output: OpensteerReverseQueryOutput;
-}
-
-interface ReversePackageWriteInput {
-  readonly caseRecord: ReverseCaseRecord;
-  readonly source: OpensteerReversePackageCreateInput["source"];
-  readonly sourceRecordId: string;
-  readonly candidate?: OpensteerReverseCandidateRecord;
-  readonly template?: OpensteerReverseAdvisoryTemplate;
-  readonly kind: OpensteerReversePackageKind;
-  readonly readiness: OpensteerReversePackageReadiness;
-  readonly validators: readonly OpensteerValidationRule[];
-  readonly workflow: readonly OpensteerReverseWorkflowStep[];
-  readonly resolvers: readonly OpensteerExecutableResolver[];
-  readonly unresolvedRequirements: readonly OpensteerReverseRequirement[];
-  readonly suggestedEdits: readonly OpensteerReverseSuggestedEdit[];
-  readonly attachedTraceIds: readonly string[];
-  readonly attachedArtifactIds: readonly string[];
-  readonly attachedRecordIds: readonly string[];
-  readonly stateSnapshots: readonly OpensteerStateSnapshot[];
-  readonly requestPlan?: RequestPlanRecord;
-  readonly notes?: string;
-  readonly parentPackageId?: string;
-  readonly manualCalibration?: OpensteerReverseManualCalibrationMode;
-  readonly key?: string;
-  readonly version?: string;
-  readonly provenanceSource:
-    | "reverse.discover"
-    | "reverse.package.create"
-    | "reverse.export"
-    | "reverse.package.patch";
 }
 
 interface OpensteerSessionTraceInput {
@@ -500,15 +282,6 @@ const PERSISTED_NETWORK_FLUSH_TIMEOUT_MS = 5_000;
 const PENDING_OPERATION_EVENT_CAPTURE_LIMIT = 64;
 const PENDING_OPERATION_EVENT_CAPTURE_SKEW_MS = 1_000;
 
-interface CookieJarEntry {
-  readonly name: string;
-  readonly value: string;
-  readonly domain: string;
-  readonly path: string;
-  readonly secure: boolean;
-  readonly expiresAt?: number;
-}
-
 interface ScriptTransformSource {
   readonly content: string;
   readonly artifactId?: string;
@@ -528,7 +301,6 @@ export class OpensteerSessionRuntime {
   private readonly injectedExtractionDescriptorStore:
     | OpensteerExtractionDescriptorStore
     | undefined;
-  private readonly registryOverrides: OpensteerSessionRuntimeOptions["registryOverrides"];
   private readonly cleanupRootOnClose: boolean;
   private readonly sessionInfoBase: Partial<
     Omit<OpensteerSessionInfo, "sessionId" | "activePageRef">
@@ -549,8 +321,6 @@ export class OpensteerSessionRuntime {
   private observations: SessionObservationSink | undefined;
   private readonly operationEventStorage = new AsyncLocalStorage<OpensteerEvent[]>();
   private readonly pendingOperationEventCaptures: PendingOperationEventCapture[] = [];
-  private readonly cookieJars = new Map<string, CookieJarEntry[]>();
-  private readonly recipeCache = new Map<string, OpensteerRunRecipeOutput>();
   private ownsEngine = false;
 
   constructor(options: OpensteerSessionRuntimeOptions) {
@@ -569,7 +339,6 @@ export class OpensteerSessionRuntime {
     this.policy = options.policy ?? defaultPolicy();
     this.injectedDescriptorStore = options.descriptorStore;
     this.injectedExtractionDescriptorStore = options.extractionDescriptorStore;
-    this.registryOverrides = options.registryOverrides;
     this.cleanupRootOnClose = options.cleanupRootOnClose ?? options.workspace === undefined;
     this.sessionInfoBase = options.sessionInfo ?? {};
     this.observationConfig = normalizeObservabilityConfig(options.observability);
@@ -594,7 +363,7 @@ export class OpensteerSessionRuntime {
       ...(this.pageRef === undefined ? {} : { activePageRef: this.pageRef }),
       reconnectable: base.reconnectable ?? !this.cleanupRootOnClose,
       capabilities: base.capabilities ?? {
-        semanticOperations: opensteerSemanticOperationNames,
+        semanticOperations: opensteerExposedSemanticOperationNames,
         instrumentation: {
           route: true,
           interceptScript: true,
@@ -1368,7 +1137,6 @@ export class OpensteerSessionRuntime {
     assertValidSemanticOperationInput("dom.extract", input);
 
     const pageRef = await this.ensurePageRef();
-    const descriptors = this.requireExtractionDescriptors();
     const startedAt = Date.now();
 
     try {
@@ -1407,27 +1175,33 @@ export class OpensteerSessionRuntime {
             const pageInfo = await timeout.runStep(() =>
               this.requireEngine().getPageInfo({ pageRef }),
             );
-            descriptor = await timeout.runStep(() =>
-              descriptors.write({
-                description: input.description,
-                root: payload,
-                schemaHash: canonicalJsonString(input.schema),
-                sourceUrl: pageInfo.url,
-              }),
-            );
+            const persist = input.persist;
+            if (persist !== undefined) {
+              const descriptors = this.requireExtractionDescriptors();
+              descriptor = await timeout.runStep(() =>
+                descriptors.write({
+                  persist,
+                  root: payload,
+                  schemaHash: canonicalJsonString(input.schema),
+                  sourceUrl: pageInfo.url,
+                }),
+              );
+            }
           } else {
+            const persist = input.persist!;
+            const descriptors = this.requireExtractionDescriptors();
             const storedDescriptor = await timeout.runStep(() =>
               descriptors.read({
-                description: input.description,
+                persist,
               }),
             );
             if (!storedDescriptor) {
               throw new OpensteerProtocolError(
                 "not-found",
-                `no stored extraction descriptor found for "${input.description}"`,
+                `no stored extraction descriptor found for "${persist}"`,
                 {
                   details: {
-                    description: input.description,
+                    persist,
                     workspace: this.workspace,
                     kind: "extraction-descriptor",
                   },
@@ -1469,8 +1243,8 @@ export class OpensteerSessionRuntime {
         outcome: "ok",
         artifacts,
         data: {
-          description: input.description,
-          ...(descriptor.payload.schemaHash === undefined
+          ...(input.persist === undefined ? {} : { persist: input.persist }),
+          ...(descriptor?.payload.schemaHash === undefined
             ? {}
             : { schemaHash: descriptor.payload.schemaHash }),
           data: output.data,
@@ -1511,12 +1285,21 @@ export class OpensteerSessionRuntime {
         "network.query",
         async (timeout) => {
           await this.syncPersistedNetworkSelection(timeout, input, {
-            includeBodies: input.includeBodies ?? false,
+            includeBodies: false,
           });
+          const rawRecords = await timeout.runStep(() =>
+            root.registry.savedNetwork.query({
+              ...this.toSavedNetworkQueryInput(input),
+              limit: Math.max(input.limit ?? 50, 1000),
+            }),
+          );
+          const filtered = filterNetworkSummaryRecords(rawRecords, input);
+          const sorted = sortPersistedNetworkRecordsChronologically(filtered);
+          const sliced = sliceNetworkSummaryWindow(sorted, input);
+          const limited = sliced.slice(0, Math.max(1, Math.min(input.limit ?? 50, 200)));
+          const summaries = await this.buildNetworkSummaryRecords(limited, timeout);
           return {
-            records: await timeout.runStep(() =>
-              root.registry.savedNetwork.query(this.toSavedNetworkQueryInput(input)),
-            ),
+            records: summaries,
           } satisfies OpensteerNetworkQueryOutput;
         },
         options,
@@ -1528,8 +1311,9 @@ export class OpensteerSessionRuntime {
         completedAt: Date.now(),
         outcome: "ok",
         data: {
-          includeBodies: input.includeBodies ?? false,
           limit: input.limit ?? 50,
+          ...(input.capture === undefined ? {} : { capture: input.capture }),
+          ...(input.json === true ? { json: true } : {}),
           count: output.records.length,
         },
         context: buildRuntimeTraceContext({
@@ -1554,119 +1338,106 @@ export class OpensteerSessionRuntime {
     }
   }
 
-  async tagNetwork(
-    input: OpensteerNetworkTagInput,
+  async getNetworkDetail(
+    input: {
+      readonly recordId: string;
+    },
     options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerNetworkTagOutput> {
-    assertValidSemanticOperationInput("network.tag", input);
-
-    const root = await this.ensureRoot();
-    const filter = this.toQueryInputFromTagInput(input);
-    const savedFilter = this.toSavedNetworkQueryInput(filter);
+  ): Promise<OpensteerNetworkDetailOutput> {
     const startedAt = Date.now();
     try {
       const output = await this.runWithOperationTimeout(
-        "network.tag",
+        "network.detail",
         async (timeout) => {
-          const records = await this.syncPersistedNetworkSelection(timeout, filter, {
-            includeBodies: false,
+          const record = await this.resolveNetworkRecordByRecordId(input.recordId, timeout, {
+            includeBodies: true,
+            redactSecretHeaders: false,
           });
-          this.networkHistory.addTag(records, input.tag);
-          return {
-            taggedCount: await timeout.runStep(() =>
-              root.registry.savedNetwork.tagByFilter(savedFilter, input.tag),
-            ),
-          } satisfies OpensteerNetworkTagOutput;
+          return this.buildNetworkDetail(record, timeout);
         },
         options,
       );
 
       await this.appendTrace({
-        operation: "network.tag",
+        operation: "network.detail",
         startedAt,
         completedAt: Date.now(),
         outcome: "ok",
         data: {
-          tag: input.tag,
-          taggedCount: output.taggedCount,
+          recordId: input.recordId,
+          status: output.summary.status,
+          url: output.summary.url,
         },
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
       });
       return output;
     } catch (error) {
       await this.appendTrace({
-        operation: "network.tag",
+        operation: "network.detail",
         startedAt,
         completedAt: Date.now(),
         outcome: "error",
         error,
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
       });
       throw error;
     }
   }
 
-  async clearNetwork(
-    input: OpensteerNetworkClearInput = {},
+  async replayNetwork(
+    input: OpensteerNetworkReplayInput,
     options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerNetworkClearOutput> {
-    assertValidSemanticOperationInput("network.clear", input);
-
-    const root = await this.ensureRoot();
+  ): Promise<OpensteerNetworkReplayOutput> {
     const startedAt = Date.now();
     try {
       const output = await this.runWithOperationTimeout(
-        "network.clear",
+        "network.replay",
         async (timeout) => {
-          if (this.sessionRef !== undefined) {
-            if (input.capture !== undefined || input.tag !== undefined) {
-              const records = await this.queryLiveNetwork(
-                {
-                  ...(input.capture === undefined ? {} : { capture: input.capture }),
-                  ...(input.tag === undefined ? {} : { tag: input.tag }),
-                },
-                timeout,
-                {
-                  ignoreLimit: true,
-                },
-              );
-              this.networkHistory.tombstoneRequestIds(
-                records.map((record) => record.record.requestId),
-              );
-            } else {
-              const liveRequestIds = await this.readLiveRequestIds(timeout, {
-                includeCurrentPageOnly: false,
-              });
-              this.networkHistory.tombstoneRequestIds(liveRequestIds);
-            }
-          }
-          if (input.capture === undefined && input.tag === undefined) {
-            this.networkHistory.tombstoneRequestIds(this.networkHistory.getKnownRequestIds());
-          }
-          return {
-            clearedCount: await timeout.runStep(() => root.registry.savedNetwork.clear(input)),
-          } satisfies OpensteerNetworkClearOutput;
+          const source = await this.resolveNetworkRecordByRecordId(input.recordId, timeout, {
+            includeBodies: true,
+            redactSecretHeaders: false,
+          });
+          const replayRequest = buildReplayTransportRequest(source, input);
+          return this.executeNetworkReplay(source, replayRequest, timeout, {
+            ...(input.pageRef === undefined ? {} : { pageRef: input.pageRef }),
+          });
         },
         options,
       );
 
       await this.appendTrace({
-        operation: "network.clear",
+        operation: "network.replay",
         startedAt,
         completedAt: Date.now(),
         outcome: "ok",
         data: {
-          ...(input.capture === undefined ? {} : { capture: input.capture }),
-          ...(input.tag === undefined ? {} : { tag: input.tag }),
-          clearedCount: output.clearedCount,
+          recordId: input.recordId,
+          transport: output.transport,
+          attempts: output.attempts.length,
         },
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
       });
       return output;
     } catch (error) {
       await this.appendTrace({
-        operation: "network.clear",
+        operation: "network.replay",
         startedAt,
         completedAt: Date.now(),
         outcome: "error",
         error,
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
       });
       throw error;
     }
@@ -1718,144 +1489,6 @@ export class OpensteerSessionRuntime {
     }
   }
 
-  async minimizeNetwork(
-    input: OpensteerNetworkMinimizeInput,
-    options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerNetworkMinimizeOutput> {
-    assertValidSemanticOperationInput("network.minimize", input);
-
-    const transport = normalizeTransportKind(input.transport ?? "session-http");
-    const startedAt = Date.now();
-    try {
-      const output = await this.runWithOperationTimeout(
-        "network.minimize",
-        async (timeout) => {
-          const record = await this.resolveNetworkRecordByRecordId(input.recordId, timeout, {
-            includeBodies: true,
-            redactSecretHeaders: false,
-          });
-          const prepared = prepareMinimizationRequest(record, input.preserve);
-          const fullKeepState = createFullMinimizationKeepState(prepared);
-          const referenceRequest = materializePreparedMinimizationRequest(prepared, fullKeepState);
-          const baselineResponse = await this.executeAnalysisTransportRequest(
-            transport,
-            referenceRequest,
-            timeout,
-          );
-          const baselineFingerprint = buildSuccessFingerprint(baselineResponse);
-          const maxTrials = Math.max(1, input.maxTrials ?? 50);
-          const preserve = input.preserve;
-          const analysis = await minimizePreparedRequest({
-            prepared,
-            ...(preserve === undefined ? {} : { preserve }),
-            maxTrials: Math.max(0, maxTrials - 1),
-            test: async (request) => {
-              const response = await this.executeAnalysisTransportRequest(
-                transport,
-                request,
-                timeout,
-              );
-              return matchesSuccessFingerprint(response, baselineFingerprint, input.successPolicy);
-            },
-          });
-
-          return {
-            recordId: input.recordId,
-            totalTrials: analysis.totalTrials + 1,
-            fields: analysis.fields,
-            minimizedPlan: buildMinimizedRequestPlan({
-              record,
-              request: analysis.minimizedRequest,
-              transport,
-              kept: analysis.kept,
-            }),
-          } satisfies OpensteerNetworkMinimizeOutput;
-        },
-        options,
-      );
-
-      await this.appendTrace({
-        operation: "network.minimize",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "ok",
-        data: {
-          recordId: input.recordId,
-          totalTrials: output.totalTrials,
-          fieldCount: output.fields.length,
-        },
-        context: buildRuntimeTraceContext({
-          sessionRef: this.sessionRef,
-          pageRef: this.pageRef,
-        }),
-      });
-      return output;
-    } catch (error) {
-      await this.appendTrace({
-        operation: "network.minimize",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "error",
-        error,
-        context: buildRuntimeTraceContext({
-          sessionRef: this.sessionRef,
-          pageRef: this.pageRef,
-        }),
-      });
-      throw error;
-    }
-  }
-
-  async diffNetwork(
-    input: OpensteerNetworkDiffInput,
-    options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerNetworkDiffOutput> {
-    assertValidSemanticOperationInput("network.diff", input);
-
-    const startedAt = Date.now();
-    try {
-      const output = await this.runWithOperationTimeout(
-        "network.diff",
-        async (timeout) => {
-          const [left, right] = await Promise.all([
-            this.resolveNetworkRecordByRecordId(input.leftRecordId, timeout, {
-              includeBodies: true,
-              redactSecretHeaders: false,
-            }),
-            this.resolveNetworkRecordByRecordId(input.rightRecordId, timeout, {
-              includeBodies: true,
-              redactSecretHeaders: false,
-            }),
-          ]);
-          return diffNetworkRecords(left, right, input);
-        },
-        options,
-      );
-
-      await this.appendTrace({
-        operation: "network.diff",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "ok",
-        data: {
-          leftRecordId: input.leftRecordId,
-          rightRecordId: input.rightRecordId,
-          summary: output.summary,
-        },
-      });
-      return output;
-    } catch (error) {
-      await this.appendTrace({
-        operation: "network.diff",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "error",
-        error,
-      });
-      throw error;
-    }
-  }
-
   async readArtifact(
     input: OpensteerArtifactReadInput,
     options: RuntimeOperationOptions = {},
@@ -1886,1896 +1519,6 @@ export class OpensteerSessionRuntime {
     );
   }
 
-  async probeNetwork(
-    input: OpensteerTransportProbeInput,
-    options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerTransportProbeOutput> {
-    assertValidSemanticOperationInput("network.probe", input);
-
-    const startedAt = Date.now();
-    try {
-      const output = await this.runWithOperationTimeout(
-        "network.probe",
-        async (timeout) => {
-          const record = await this.resolveNetworkRecordByRecordId(input.recordId, timeout, {
-            includeBodies: true,
-            redactSecretHeaders: false,
-          });
-          const prepared = prepareMinimizationRequest(record);
-          const request = materializePreparedMinimizationRequest(
-            prepared,
-            createFullMinimizationKeepState(prepared),
-          );
-          const baselineFingerprint = buildCapturedRecordSuccessFingerprint(record);
-
-          const results: OpensteerTransportProbeOutput["results"][number][] = [];
-          for (const transport of TRANSPORT_PROBE_LADDER) {
-            const trialStartedAt = Date.now();
-            try {
-              const response = await this.executeAnalysisTransportRequest(
-                transport,
-                request,
-                timeout,
-              );
-              results.push({
-                transport,
-                status: response.status,
-                success: matchesSuccessFingerprint(response, baselineFingerprint),
-                durationMs: Date.now() - trialStartedAt,
-              });
-            } catch (error) {
-              results.push({
-                transport,
-                status: null,
-                success: false,
-                durationMs: Date.now() - trialStartedAt,
-                error: normalizeRuntimeErrorMessage(error),
-              });
-            }
-          }
-
-          return {
-            results,
-            recommendation: selectTransportProbeRecommendation(results),
-          } satisfies OpensteerTransportProbeOutput;
-        },
-        options,
-      );
-
-      await this.appendTrace({
-        operation: "network.probe",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "ok",
-        data: {
-          recordId: input.recordId,
-          recommendation: output.recommendation,
-        },
-      });
-      return output;
-    } catch (error) {
-      await this.appendTrace({
-        operation: "network.probe",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "error",
-        error,
-      });
-      throw error;
-    }
-  }
-
-  async discoverReverse(
-    input: OpensteerReverseDiscoverInput,
-    options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerReverseDiscoverOutput> {
-    assertValidSemanticOperationInput("reverse.discover", input);
-
-    const startedAt = Date.now();
-    try {
-      const output = await this.runWithOperationTimeout(
-        "reverse.discover",
-        async (timeout) => {
-          const capture = await this.captureReverseCaseInternal(input, timeout);
-          const analyzed = await this.analyzeReverseCaseInternal(
-            {
-              caseId: capture.case.id,
-              observationId: capture.observation.id,
-              ...(input.targetHints === undefined ? {} : { targetHints: input.targetHints }),
-            },
-            timeout,
-          );
-          const report = await this.writeReverseReportRecord({
-            kind: "discovery",
-            caseRecord: analyzed.case,
-          });
-          return {
-            caseId: analyzed.case.id,
-            reportId: report.id,
-            summary: {
-              observationIds: analyzed.analyzedObservationIds,
-              recordCount: analyzed.case.payload.observedRecords.length,
-              clusterCount: analyzed.case.payload.observationClusters.length,
-              candidateCount: analyzed.case.payload.candidates.length,
-            },
-            index: buildReverseDiscoveryIndex(analyzed.case),
-          } satisfies OpensteerReverseDiscoverOutput;
-        },
-        options,
-      );
-
-      await this.appendTrace({
-        operation: "reverse.discover",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "ok",
-        data: {
-          caseId: output.caseId,
-          reportId: output.reportId,
-        },
-      });
-      return output;
-    } catch (error) {
-      await this.appendTrace({
-        operation: "reverse.discover",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "error",
-        error,
-      });
-      throw error;
-    }
-  }
-
-  async queryReverse(
-    input: OpensteerReverseQueryInput,
-    options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerReverseQueryOutput> {
-    assertValidSemanticOperationInput("reverse.query", input);
-    return this.runWithOperationTimeout(
-      "reverse.query",
-      async () => {
-        const caseRecord = await this.resolveReverseCaseById(input.caseId);
-        return this.queryReverseCaseInternal({
-          caseRecord,
-          view: input.view ?? "candidates",
-          ...(input.filters === undefined ? {} : { filters: input.filters }),
-          ...(input.sort === undefined ? {} : { sort: input.sort }),
-          ...(input.limit === undefined ? {} : { limit: input.limit }),
-          ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
-        }).output;
-      },
-      options,
-    );
-  }
-
-  async createReversePackage(
-    input: OpensteerReversePackageCreateInput,
-    options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerReversePackageCreateOutput> {
-    assertValidSemanticOperationInput("reverse.package.create", input);
-    return this.runWithOperationTimeout(
-      "reverse.package.create",
-      async (timeout) => {
-        const caseRecord = await this.resolveReverseCaseById(input.caseId);
-        const source = await this.resolveReversePackageSource(caseRecord, input.source, timeout);
-        const template =
-          source.candidate === undefined
-            ? undefined
-            : resolveReverseTemplate(source.candidate, input.templateId);
-        const sourceChannel = source.candidate?.channel ?? source.observedRecord.channel;
-        const validators = buildReverseValidationRules({
-          record: await this.resolveNetworkRecordByRecordId(source.sourceRecordId, timeout, {
-            includeBodies: true,
-            redactSecretHeaders: false,
-          }),
-          channel: sourceChannel,
-        });
-        const draft = await this.buildReversePackageDraft(
-          {
-            caseRecord,
-            ...(source.candidate === undefined ? {} : { candidate: source.candidate }),
-            ...(template === undefined ? {} : { template }),
-            validators,
-            ...(input.notes === undefined ? {} : { notes: input.notes }),
-          },
-          timeout,
-        );
-        const packageRecord = await this.writeReversePackage({
-          caseRecord,
-          source: input.source,
-          sourceRecordId: source.sourceRecordId,
-          ...(source.candidate === undefined ? {} : { candidate: source.candidate }),
-          ...(template === undefined ? {} : { template }),
-          kind: draft.kind,
-          readiness: draft.readiness,
-          validators,
-          workflow: draft.workflow,
-          resolvers: draft.resolvers,
-          unresolvedRequirements: draft.unresolvedRequirements,
-          suggestedEdits: draft.suggestedEdits,
-          attachedTraceIds: draft.attachedTraceIds,
-          attachedArtifactIds: draft.attachedArtifactIds,
-          attachedRecordIds: draft.attachedRecordIds,
-          stateSnapshots: draft.stateSnapshots,
-          ...(draft.notes === undefined ? {} : { notes: draft.notes }),
-          ...(input.key === undefined ? {} : { key: input.key }),
-          ...(input.version === undefined ? {} : { version: input.version }),
-          provenanceSource: "reverse.package.create",
-        });
-        const report = await this.writeReverseReportRecord({
-          kind: "package",
-          caseRecord,
-          packageRecord,
-        });
-        return {
-          package: packageRecord,
-          report,
-        } satisfies OpensteerReversePackageCreateOutput;
-      },
-      options,
-    );
-  }
-
-  async runReversePackage(
-    input: OpensteerReversePackageRunInput,
-    options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerReversePackageRunOutput> {
-    assertValidSemanticOperationInput("reverse.package.run", input);
-
-    return this.runWithOperationTimeout(
-      "reverse.package.run",
-      async (timeout) => {
-        const packageRecord = await this.resolveReversePackageById(input.packageId);
-
-        const replay = await this.replayReversePackageInternal(
-          packageRecord,
-          timeout,
-          input.pageRef,
-        );
-        const caseRecord = await this.tryResolveReverseCaseById(packageRecord.payload.caseId);
-        if (caseRecord !== undefined) {
-          await (
-            await this.ensureRoot()
-          ).registry.reverseCases.update({
-            id: caseRecord.id,
-            payload: {
-              ...caseRecord.payload,
-              experiments: [
-                ...caseRecord.payload.experiments,
-                {
-                  id: `experiment:${randomUUID()}`,
-                  createdAt: replay.run.createdAt,
-                  ...(replay.candidate === undefined ? {} : { candidateId: replay.candidate.id }),
-                  ...(replay.template === undefined ? {} : { templateId: replay.template.id }),
-                  kind: "replay-attempt",
-                  hypothesis: `replay ${replay.candidate?.id ?? packageRecord.payload.source.id} via package ${packageRecord.id}`,
-                  success: replay.run.success,
-                  ...(replay.run.status === undefined ? {} : { status: replay.run.status }),
-                  ...(replay.run.error === undefined ? {} : { notes: replay.run.error }),
-                  validation: replay.run.validation,
-                },
-              ],
-              replayRuns: [...caseRecord.payload.replayRuns, replay.run],
-            },
-          });
-          const refreshedCaseRecord = await this.resolveReverseCaseById(caseRecord.id);
-          await this.writeReverseReportRecord({
-            kind: "package",
-            caseRecord: refreshedCaseRecord,
-            packageRecord,
-          });
-        }
-
-        return {
-          packageId: packageRecord.id,
-          caseId: packageRecord.payload.caseId,
-          source: packageRecord.payload.source,
-          ...(replay.candidate === undefined ? {} : { candidateId: replay.candidate.id }),
-          ...(replay.template === undefined ? {} : { templateId: replay.template.id }),
-          success: replay.run.success,
-          kind: packageRecord.payload.kind,
-          readiness: packageRecord.payload.readiness,
-          ...(replay.candidate === undefined ? {} : { channel: replay.candidate.channel.kind }),
-          ...(replay.template?.transport === undefined
-            ? {}
-            : { transport: replay.template.transport }),
-          ...(packageRecord.payload.stateSource === undefined
-            ? {}
-            : { stateSource: packageRecord.payload.stateSource }),
-          ...(replay.run.recordId === undefined ? {} : { recordId: replay.run.recordId }),
-          ...(replay.run.status === undefined ? {} : { status: replay.run.status }),
-          validation: replay.run.validation,
-          executedStepIds: replay.run.executedStepIds,
-          ...(replay.run.failedStepId === undefined
-            ? {}
-            : { failedStepId: replay.run.failedStepId }),
-          bindings: replay.run.bindings ?? {},
-          replayRunId: replay.run.id,
-          unresolvedRequirements: packageRecord.payload.unresolvedRequirements,
-          suggestedEdits: packageRecord.payload.suggestedEdits,
-          ...(replay.run.error === undefined ? {} : { error: replay.run.error }),
-        } satisfies OpensteerReversePackageRunOutput;
-      },
-      options,
-    );
-  }
-
-  async exportReverse(
-    input: OpensteerReverseExportInput,
-    options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerReverseExportOutput> {
-    assertValidSemanticOperationInput("reverse.export", input);
-
-    return this.runWithOperationTimeout(
-      "reverse.export",
-      async (timeout) => {
-        const root = await this.ensureRoot();
-        const sourcePackage = await this.resolveReversePackageById(input.packageId);
-        let requestPlan =
-          sourcePackage.payload.requestPlanId === undefined
-            ? undefined
-            : await root.registry.requestPlans.getById(sourcePackage.payload.requestPlanId);
-        let exportedPayload = sourcePackage.payload;
-
-        if (
-          requestPlan === undefined &&
-          sourcePackage.payload.kind === "portable-http" &&
-          sourcePackage.payload.readiness === "runnable" &&
-          sourcePackage.payload.candidate !== undefined &&
-          sourcePackage.payload.template !== undefined
-        ) {
-          const caseRecord = await this.resolveReverseCaseById(sourcePackage.payload.caseId);
-          requestPlan = await this.writePortableReverseRequestPlan(
-            caseRecord,
-            sourcePackage.payload.candidate,
-            sourcePackage.payload.template,
-            timeout,
-            {
-              key: `${caseRecord.key}:portable:${Date.now()}`,
-              version: "1.0.0",
-              provenanceSource: "reverse.export",
-            },
-          );
-          exportedPayload = {
-            ...exportedPayload,
-            requestPlanId: requestPlan.id,
-          };
-        }
-
-        const packageRecord =
-          input.key === undefined &&
-          input.version === undefined &&
-          exportedPayload === sourcePackage.payload
-            ? sourcePackage
-            : await root.registry.reversePackages.write({
-                key: input.key ?? `${sourcePackage.key}:copy:${Date.now()}`,
-                version: input.version ?? sourcePackage.version,
-                tags: sourcePackage.tags,
-                provenance: {
-                  source: "reverse.export",
-                  sourceId: sourcePackage.id,
-                },
-                payload: exportedPayload,
-              });
-
-        if (packageRecord.payload.candidateId !== undefined) {
-          const caseRecord = await this.tryResolveReverseCaseById(packageRecord.payload.caseId);
-          if (caseRecord !== undefined) {
-            await root.registry.reverseCases.update({
-              id: caseRecord.id,
-              payload: {
-                ...caseRecord.payload,
-                exports: [
-                  ...caseRecord.payload.exports,
-                  {
-                    id: `export:${randomUUID()}`,
-                    createdAt: Date.now(),
-                    candidateId: packageRecord.payload.candidateId,
-                    ...(packageRecord.payload.templateId === undefined
-                      ? {}
-                      : { templateId: packageRecord.payload.templateId }),
-                    packageId: packageRecord.id,
-                    kind: packageRecord.payload.kind,
-                    readiness: packageRecord.payload.readiness,
-                    ...(requestPlan === undefined ? {} : { requestPlanId: requestPlan.id }),
-                  },
-                ],
-              },
-            });
-          }
-        }
-
-        return {
-          package: packageRecord,
-          ...(requestPlan === undefined ? {} : { requestPlan }),
-        } satisfies OpensteerReverseExportOutput;
-      },
-      options,
-    );
-  }
-
-  async getReverseReport(
-    input: OpensteerReverseReportInput,
-    options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerReverseReportOutput> {
-    assertValidSemanticOperationInput("reverse.report", input);
-
-    return this.runWithOperationTimeout(
-      "reverse.report",
-      async () => {
-        if (
-          input.packageId === undefined &&
-          input.reportId === undefined &&
-          input.caseId === undefined
-        ) {
-          throw new OpensteerProtocolError(
-            "invalid-argument",
-            "reverse report requires packageId, caseId, or reportId",
-          );
-        }
-        const report =
-          input.reportId !== undefined
-            ? await this.resolveReverseReportById(input.reportId)
-            : input.packageId !== undefined
-              ? await this.resolveReverseReportByPackageId(input.packageId)
-              : await this.resolveReverseReportByCaseId(input.caseId!, input.kind ?? "discovery");
-        return {
-          report,
-        } satisfies OpensteerReverseReportOutput;
-      },
-      options,
-    );
-  }
-
-  async getReversePackage(
-    input: OpensteerReversePackageGetInput,
-    options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerReversePackageGetOutput> {
-    assertValidSemanticOperationInput("reverse.package.get", input);
-    return this.runWithOperationTimeout(
-      "reverse.package.get",
-      async () => ({
-        package: await this.resolveReversePackageById(input.packageId),
-      }),
-      options,
-    );
-  }
-
-  async listReversePackages(
-    input: OpensteerReversePackageListInput = {},
-    options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerReversePackageListOutput> {
-    assertValidSemanticOperationInput("reverse.package.list", input);
-    return this.runWithOperationTimeout(
-      "reverse.package.list",
-      async () => {
-        const packages = await (
-          await this.ensureRoot()
-        ).registry.reversePackages.list(input.key === undefined ? {} : { key: input.key });
-        return {
-          packages: packages.filter((entry) => {
-            if (input.caseId !== undefined && entry.payload.caseId !== input.caseId) {
-              return false;
-            }
-            if (input.kind !== undefined && entry.payload.kind !== input.kind) {
-              return false;
-            }
-            if (input.readiness !== undefined && entry.payload.readiness !== input.readiness) {
-              return false;
-            }
-            return true;
-          }),
-        } satisfies OpensteerReversePackageListOutput;
-      },
-      options,
-    );
-  }
-
-  async patchReversePackage(
-    input: OpensteerReversePackagePatchInput,
-    options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerReversePackagePatchOutput> {
-    assertValidSemanticOperationInput("reverse.package.patch", input);
-
-    return this.runWithOperationTimeout(
-      "reverse.package.patch",
-      async (timeout) => {
-        const sourcePackage = await this.resolveReversePackageById(input.packageId);
-        const caseRecord = await this.resolveReverseCaseById(sourcePackage.payload.caseId);
-        const candidate = sourcePackage.payload.candidate;
-        const template = sourcePackage.payload.template;
-
-        const validators =
-          input.validators ??
-          (candidate === undefined
-            ? sourcePackage.payload.validators
-            : buildReverseValidationRules({
-                record: await this.resolveNetworkRecordByRecordId(candidate.recordId, timeout, {
-                  includeBodies: true,
-                  redactSecretHeaders: false,
-                }),
-                channel: candidate.channel,
-              }));
-        const notes = input.notes ?? sourcePackage.payload.notes;
-        const draft = await this.buildReversePackageDraft(
-          {
-            caseRecord,
-            ...(candidate === undefined ? {} : { candidate }),
-            ...(template === undefined ? {} : { template }),
-            validators,
-            ...(input.workflow === undefined ? {} : { workflow: input.workflow }),
-            ...(input.resolvers === undefined ? {} : { resolvers: input.resolvers }),
-            ...(input.attachedTraceIds === undefined
-              ? {}
-              : { attachedTraceIds: input.attachedTraceIds }),
-            ...(input.attachedArtifactIds === undefined
-              ? {}
-              : { attachedArtifactIds: input.attachedArtifactIds }),
-            ...(input.attachedRecordIds === undefined
-              ? {}
-              : { attachedRecordIds: input.attachedRecordIds }),
-            ...(input.stateSnapshotIds === undefined
-              ? {}
-              : { stateSnapshotIds: input.stateSnapshotIds }),
-            ...(notes === undefined ? {} : { notes }),
-          },
-          timeout,
-        );
-        const packageRecord = await this.writeReversePackage({
-          caseRecord,
-          source: sourcePackage.payload.source,
-          sourceRecordId: sourcePackage.payload.sourceRecordId,
-          ...(candidate === undefined ? {} : { candidate }),
-          ...(template === undefined ? {} : { template }),
-          kind: draft.kind,
-          readiness: draft.readiness,
-          validators,
-          workflow: draft.workflow,
-          resolvers: draft.resolvers,
-          unresolvedRequirements: draft.unresolvedRequirements,
-          suggestedEdits: draft.suggestedEdits,
-          attachedTraceIds: draft.attachedTraceIds,
-          attachedArtifactIds: draft.attachedArtifactIds,
-          attachedRecordIds: draft.attachedRecordIds,
-          stateSnapshots: draft.stateSnapshots,
-          ...(draft.notes === undefined ? {} : { notes: draft.notes }),
-          parentPackageId: sourcePackage.id,
-          key: input.key ?? `${sourcePackage.key}:patch:${Date.now()}`,
-          version: input.version ?? sourcePackage.version,
-          provenanceSource: "reverse.package.patch",
-        });
-        const report = await this.writeReverseReportRecord({
-          kind: "package",
-          caseRecord,
-          packageRecord,
-        });
-        return {
-          package: packageRecord,
-          report,
-        } satisfies OpensteerReversePackagePatchOutput;
-      },
-      options,
-    );
-  }
-
-  private async captureReverseCaseInternal(
-    input: InternalReverseCaptureInput,
-    timeout: TimeoutExecutionContext,
-  ): Promise<InternalReverseCaptureOutput> {
-    const root = await this.ensureRoot();
-    const pageRef = input.pageRef ?? (await this.ensurePageRef());
-    const pageInfo = await this.requireEngine().getPageInfo({ pageRef });
-    const stateSource = input.stateSource ?? this.resolveCurrentStateSource();
-    const existingCase =
-      input.caseId === undefined ? undefined : await this.resolveReverseCaseById(input.caseId);
-    const caseRecord =
-      existingCase ??
-      (await root.registry.reverseCases.write({
-        key: input.key ?? buildReverseCaseKey(input.objective, pageInfo.url),
-        version: "1.0.0",
-        ...(input.tags === undefined ? {} : { tags: input.tags }),
-        provenance: {
-          source: "reverse.discover",
-          ...(pageInfo.url.length === 0 ? {} : { sourceId: pageInfo.url }),
-        },
-        payload: {
-          objective: input.objective ?? `Reverse engineer ${pageInfo.url}`,
-          ...(input.notes === undefined ? {} : { notes: input.notes }),
-          status: "capturing",
-          stateSource,
-          observations: [],
-          observationClusters: [],
-          observedRecords: [],
-          candidates: [],
-          guards: [],
-          stateSnapshots: [],
-          stateDeltas: [],
-          experiments: [],
-          replayRuns: [],
-          exports: [],
-        },
-      }));
-
-    const networkRecords = await this.queryLiveNetwork(
-      {
-        pageRef,
-        ...(input.network?.url === undefined ? {} : { url: input.network.url }),
-        ...(input.network?.hostname === undefined ? {} : { hostname: input.network.hostname }),
-        ...(input.network?.path === undefined ? {} : { path: input.network.path }),
-        ...(input.network?.method === undefined ? {} : { method: input.network.method }),
-        includeBodies: input.network?.includeBodies ?? true,
-      },
-      timeout,
-      {
-        ignoreLimit: true,
-        redactSecretHeaders: false,
-      },
-    );
-    const persistedNetwork = filterReverseObservationWindow(
-      networkRecords.filter(isReverseRelevantNetworkRecord),
-      this.networkHistory,
-      input.captureWindowMs,
-    );
-    const fallbackSavedNetwork =
-      persistedNetwork.length === 0
-        ? (
-            await root.registry.savedNetwork.query({
-              ...(input.network?.url === undefined ? {} : { url: input.network.url }),
-              ...(input.network?.hostname === undefined
-                ? {}
-                : { hostname: input.network.hostname }),
-              ...(input.network?.path === undefined ? {} : { path: input.network.path }),
-              ...(input.network?.method === undefined ? {} : { method: input.network.method }),
-              includeBodies: input.network?.includeBodies ?? true,
-              limit: 200,
-            })
-          ).filter(isReverseRelevantNetworkRecord)
-        : [];
-    const observationNetwork =
-      persistedNetwork.length > 0 ? persistedNetwork : fallbackSavedNetwork;
-    const observationId = `observation:${randomUUID()}`;
-    const networkTag = `reverse-case:${caseRecord.id}:${observationId}`;
-    if (observationNetwork.length > 0) {
-      await root.registry.savedNetwork.save(observationNetwork, {
-        tag: networkTag,
-        bodyWriteMode: input.network?.includeBodies === false ? "metadata-only" : "authoritative",
-      });
-    }
-
-    const scriptArtifactIds =
-      input.includeScripts === false
-        ? []
-        : (
-            await this.captureScriptsInternal(
-              pageRef,
-              {
-                pageRef,
-                includeExternal: true,
-                includeInline: true,
-                includeDynamic: true,
-                includeWorkers: true,
-                persist: true,
-              },
-              timeout,
-            )
-          ).scripts.flatMap((script) =>
-            script.artifactId === undefined ? [] : [script.artifactId],
-          );
-
-    const stateSnapshot = await this.captureReverseStateSnapshot(pageRef, timeout, {
-      includeStorage: input.includeStorage ?? true,
-      includeSessionStorage: input.includeSessionStorage ?? true,
-      includeIndexedDb: input.includeIndexedDb ?? false,
-    });
-
-    const linkedInteractionTraceIds = await Promise.all(
-      (input.interactionTraceIds ?? []).map(
-        async (traceId) => (await this.resolveInteractionTraceById(traceId)).id,
-      ),
-    );
-    const nextGuards = mergeReverseGuards(
-      caseRecord.payload.guards,
-      linkedInteractionTraceIds.map((traceId) => ({
-        id: `guard:${traceId}`,
-        kind: "interaction" as const,
-        label: `Interaction guard ${traceId}`,
-        status: "satisfied" as const,
-        interactionTraceId: traceId,
-      })),
-    );
-    const nextStateDeltas = [
-      ...caseRecord.payload.stateDeltas,
-      ...(
-        await Promise.all(
-          linkedInteractionTraceIds.map(async (traceId) => {
-            const trace = await this.resolveInteractionTraceById(traceId);
-            return trace.payload.stateDelta;
-          }),
-        )
-      ).filter((delta): delta is OpensteerStateDelta => delta !== undefined),
-    ];
-
-    const observation: OpensteerReverseObservationRecord = {
-      id: observationId,
-      capturedAt: Date.now(),
-      pageRef,
-      url: pageInfo.url,
-      stateSource,
-      networkRecordIds: observationNetwork.map((record) => record.recordId),
-      scriptArtifactIds,
-      interactionTraceIds: linkedInteractionTraceIds,
-      stateSnapshotIds: [stateSnapshot.id],
-      ...(input.notes === undefined ? {} : { notes: input.notes }),
-    };
-
-    const updatedCase = await root.registry.reverseCases.update({
-      id: caseRecord.id,
-      tags: mergeStringArrays(caseRecord.tags, input.tags ?? []),
-      payload: {
-        ...caseRecord.payload,
-        ...(input.notes === undefined ? {} : { notes: input.notes }),
-        stateSource,
-        status: "capturing",
-        observations: [...caseRecord.payload.observations, observation],
-        guards: nextGuards,
-        stateSnapshots: [...caseRecord.payload.stateSnapshots, stateSnapshot],
-        stateDeltas: nextStateDeltas,
-      },
-    });
-
-    return {
-      case: updatedCase,
-      observation,
-    };
-  }
-
-  private async analyzeReverseCaseInternal(
-    input: InternalReverseAnalyzeInput & {
-      readonly targetHints?: OpensteerReverseTargetHints;
-    },
-    timeout: TimeoutExecutionContext,
-  ): Promise<InternalReverseAnalyzeOutput> {
-    const root = await this.ensureRoot();
-    const caseRecord = await this.resolveReverseCaseById(input.caseId);
-    const targetObservationIds =
-      input.observationId === undefined
-        ? caseRecord.payload.observations.map((observation) => observation.id)
-        : [input.observationId];
-    const targetObservations = caseRecord.payload.observations.filter((observation) =>
-      targetObservationIds.includes(observation.id),
-    );
-
-    const analyzedCandidates: OpensteerReverseCandidateRecord[] = [];
-    const analyzedClusters: OpensteerObservationCluster[] = [];
-    const analyzedObservedRecords: OpensteerReverseObservedRecord[] = [];
-    for (const observation of targetObservations) {
-      const guards = caseRecord.payload.guards.filter((guard) =>
-        observation.interactionTraceIds.includes(guard.interactionTraceId ?? ""),
-      );
-      const observationRecords = await Promise.all(
-        observation.networkRecordIds.map(async (recordId) => ({
-          record: await this.resolveNetworkRecordByRecordId(recordId, timeout, {
-            includeBodies: true,
-            redactSecretHeaders: false,
-          }),
-          observedAt: this.networkHistory.getObservedAt(recordId),
-        })),
-      );
-      const clusteredRecords = observationRecords.map((entry) => {
-        const bodyCodec = describeReverseBodyCodec(entry.record).codec;
-        const channel = buildChannelDescriptor(entry.record);
-        const matchedTargetHints = matchReverseTargetHints(channel, bodyCodec, input.targetHints);
-        return {
-          record: entry.record,
-          ...(entry.observedAt === undefined ? {} : { observedAt: entry.observedAt }),
-          channel,
-          bodyCodec,
-          matchedTargetHints,
-        };
-      });
-      const clusters = clusterReverseObservationRecords({
-        observationId: observation.id,
-        records: clusteredRecords,
-      });
-      analyzedClusters.push(...clusters);
-      const clusterByRecordId = new Map<string, OpensteerObservationCluster>();
-      const relationKindsByRecordId = new Map<
-        string,
-        Set<OpensteerObservationCluster["members"][number]["relation"]>
-      >();
-      for (const cluster of clusters) {
-        for (const member of cluster.members) {
-          clusterByRecordId.set(member.recordId, cluster);
-          const relationKinds = relationKindsByRecordId.get(member.recordId) ?? new Set();
-          relationKinds.add(member.relation);
-          relationKindsByRecordId.set(member.recordId, relationKinds);
-        }
-      }
-
-      for (const entry of clusteredRecords) {
-        const record = entry.record;
-        const cluster = clusterByRecordId.get(record.recordId);
-        if (cluster === undefined) {
-          continue;
-        }
-        const analysis = analyzeReverseCandidate({
-          observationId: observation.id,
-          record,
-          ...(observation.url === undefined ? {} : { observationUrl: observation.url }),
-          stateSource: caseRecord.payload.stateSource,
-          guards,
-          scriptArtifactIds: observation.scriptArtifactIds,
-          ...(input.targetHints === undefined ? {} : { targetHints: input.targetHints }),
-        });
-        analyzedCandidates.push({
-          id: `candidate:${record.recordId}`,
-          observationId: observation.id,
-          clusterId: cluster.id,
-          recordId: record.recordId,
-          channel: analysis.channel,
-          bodyCodec: analysis.bodyCodec,
-          boundary: analysis.boundary,
-          summary: analysis.summary,
-          matchedTargetHints: analysis.matchedTargetHints,
-          advisoryTags: analysis.advisoryTags,
-          constraints: analysis.constraints,
-          signals: analysis.signals,
-          inputs: analysis.inputs,
-          resolvers: analysis.resolvers,
-          guardIds: Array.from(
-            new Set(analysis.advisoryTemplates.flatMap((template) => template.guardIds)),
-          ).sort((left, right) => left.localeCompare(right)),
-          scriptArtifactIds: observation.scriptArtifactIds,
-          advisoryTemplates: analysis.advisoryTemplates,
-        });
-      }
-
-      analyzedObservedRecords.push(
-        ...clusteredRecords.map((entry) => {
-          const cluster = clusterByRecordId.get(entry.record.recordId);
-          if (cluster === undefined) {
-            throw new OpensteerProtocolError(
-              "operation-failed",
-              `reverse observation cluster missing record ${entry.record.recordId}`,
-            );
-          }
-          return {
-            recordId: entry.record.recordId,
-            observationId: observation.id,
-            clusterId: cluster.id,
-            ...(entry.observedAt === undefined ? {} : { observedAt: entry.observedAt }),
-            channel: entry.channel,
-            bodyCodec: entry.bodyCodec,
-            ...(entry.record.record.resourceType === undefined
-              ? {}
-              : { resourceType: entry.record.record.resourceType }),
-            ...(entry.record.record.status === undefined
-              ? {}
-              : { status: entry.record.record.status }),
-            matchedTargetHints: entry.matchedTargetHints,
-            relationKinds: [...(relationKindsByRecordId.get(entry.record.recordId) ?? new Set())],
-          } satisfies OpensteerReverseObservedRecord;
-        }),
-      );
-    }
-
-    analyzedCandidates.sort(
-      (left, right) =>
-        compareReverseAnalysisResults(left, right) || left.id.localeCompare(right.id),
-    );
-    const untouchedCandidates = caseRecord.payload.candidates.filter(
-      (candidate) => !targetObservationIds.includes(candidate.observationId),
-    );
-    const untouchedObservedRecords = caseRecord.payload.observedRecords.filter(
-      (record) => !targetObservationIds.includes(record.observationId),
-    );
-    const nextCandidates = [...untouchedCandidates, ...analyzedCandidates];
-    const nextObservedRecords = [...untouchedObservedRecords, ...analyzedObservedRecords].sort(
-      (left, right) =>
-        (right.observedAt ?? 0) - (left.observedAt ?? 0) ||
-        left.recordId.localeCompare(right.recordId),
-    );
-
-    const updatedCase = await root.registry.reverseCases.update({
-      id: caseRecord.id,
-      payload: {
-        ...caseRecord.payload,
-        status: nextCandidates.length === 0 ? "attention" : "ready",
-        observationClusters: mergeObservationClusters(
-          caseRecord.payload.observationClusters,
-          analyzedClusters,
-        ),
-        observedRecords: nextObservedRecords,
-        candidates: nextCandidates,
-      },
-    });
-
-    return {
-      case: updatedCase,
-      analyzedObservationIds: targetObservationIds,
-      candidateCount: nextCandidates.length,
-    };
-  }
-
-  private queryReverseCaseInternal(input: ReverseQueryExecutionInput): ReverseQueryExecutionResult {
-    const view = input.view;
-    const sort = normalizeReverseQuerySort(input.sort);
-    const limit = normalizeReverseQueryLimit(input.limit);
-    const offset = parseReverseQueryCursor(input.cursor);
-
-    if (view === "records") {
-      const rankedRecords = input.caseRecord.payload.observedRecords
-        .filter((record) =>
-          matchesReverseRecordFilters(record, input.caseRecord.payload.candidates, input.filters),
-        )
-        .sort((left, right) =>
-          compareReverseObservedRecords(left, right, input.caseRecord.payload.candidates, sort),
-        );
-      const page = rankedRecords.slice(offset, offset + limit).map((record) => ({
-        record,
-        candidateIds: input.caseRecord.payload.candidates
-          .filter((candidate) => candidate.recordId === record.recordId)
-          .map((candidate) => candidate.id),
-      }));
-      const query = buildReverseQuerySnapshot({
-        view,
-        ...(input.filters === undefined ? {} : { filters: input.filters }),
-        sort,
-        limit,
-        totalCount: rankedRecords.length,
-        offset,
-        resultIds: page.map((item) => item.record.recordId),
-      });
-      return {
-        query,
-        output: {
-          caseId: input.caseRecord.id,
-          view,
-          query,
-          totalCount: rankedRecords.length,
-          ...(query.nextCursor === undefined ? {} : { nextCursor: query.nextCursor }),
-          records: page,
-        },
-      };
-    }
-
-    if (view === "clusters") {
-      const rankedClusters = input.caseRecord.payload.observationClusters
-        .filter((cluster) =>
-          matchesReverseClusterFilters(cluster, input.caseRecord.payload.candidates, input.filters),
-        )
-        .sort((left, right) =>
-          compareReverseClusters(left, right, input.caseRecord.payload.candidates, sort),
-        );
-      const page = rankedClusters.slice(offset, offset + limit).map((cluster) => ({
-        cluster,
-        candidateIds: input.caseRecord.payload.candidates
-          .filter((candidate) => candidate.clusterId === cluster.id)
-          .map((candidate) => candidate.id),
-      }));
-      const query = buildReverseQuerySnapshot({
-        view,
-        ...(input.filters === undefined ? {} : { filters: input.filters }),
-        sort,
-        limit,
-        totalCount: rankedClusters.length,
-        offset,
-        resultIds: page.map((item) => item.cluster.id),
-      });
-      return {
-        query,
-        output: {
-          caseId: input.caseRecord.id,
-          view,
-          query,
-          totalCount: rankedClusters.length,
-          ...(query.nextCursor === undefined ? {} : { nextCursor: query.nextCursor }),
-          clusters: page,
-        },
-      };
-    }
-
-    const rankedCandidates = input.caseRecord.payload.candidates
-      .filter((candidate) =>
-        matchesReverseCandidateFilters(candidate, input.filters, {
-          ...(input.caseRecord.payload.observedRecords.find(
-            (entry) => entry.recordId === candidate.recordId,
-          ) === undefined
-            ? {}
-            : {
-                observedRecord: input.caseRecord.payload.observedRecords.find(
-                  (entry) => entry.recordId === candidate.recordId,
-                )!,
-              }),
-          ...(input.caseRecord.payload.observations.find(
-            (entry) => entry.id === candidate.observationId,
-          ) === undefined
-            ? {}
-            : {
-                observation: input.caseRecord.payload.observations.find(
-                  (entry) => entry.id === candidate.observationId,
-                )!,
-              }),
-        }),
-      )
-      .sort((left, right) => compareReverseCandidates(left, right, sort));
-    const page = rankedCandidates.slice(offset, offset + limit).map((candidate) => ({
-      candidate,
-      reasons: buildReverseCandidateRankingReasons(candidate),
-    }));
-    const query = buildReverseQuerySnapshot({
-      view,
-      ...(input.filters === undefined ? {} : { filters: input.filters }),
-      sort,
-      limit,
-      totalCount: rankedCandidates.length,
-      offset,
-      resultIds: page.map((item) => item.candidate.id),
-    });
-    return {
-      query,
-      output: {
-        caseId: input.caseRecord.id,
-        view,
-        query,
-        totalCount: rankedCandidates.length,
-        ...(query.nextCursor === undefined ? {} : { nextCursor: query.nextCursor }),
-        candidates: page,
-      },
-    };
-  }
-
-  private async resolveReversePackageSource(
-    caseRecord: ReverseCaseRecord,
-    source: OpensteerReversePackageCreateInput["source"],
-    timeout: TimeoutExecutionContext,
-  ): Promise<{
-    readonly sourceRecordId: string;
-    readonly observedRecord: OpensteerReverseObservedRecord;
-    readonly candidate?: OpensteerReverseCandidateRecord;
-  }> {
-    if (source.kind === "candidate") {
-      const candidate = resolveReverseCandidate(caseRecord, source.id);
-      const observedRecord = resolveReverseObservedRecord(caseRecord, candidate.recordId);
-      return {
-        sourceRecordId: candidate.recordId,
-        observedRecord,
-        candidate,
-      };
-    }
-
-    const observedRecord = resolveReverseObservedRecord(caseRecord, source.id);
-    const existingCandidate = caseRecord.payload.candidates.find(
-      (entry) => entry.recordId === observedRecord.recordId,
-    );
-    if (existingCandidate !== undefined) {
-      return {
-        sourceRecordId: existingCandidate.recordId,
-        observedRecord,
-        candidate: existingCandidate,
-      };
-    }
-
-    const observation = caseRecord.payload.observations.find(
-      (entry) => entry.id === observedRecord.observationId,
-    );
-    const record = await this.resolveNetworkRecordByRecordId(observedRecord.recordId, timeout, {
-      includeBodies: true,
-      redactSecretHeaders: false,
-    });
-    const analysis = analyzeReverseCandidate({
-      observationId: observedRecord.observationId,
-      record,
-      ...(observation?.url === undefined ? {} : { observationUrl: observation.url }),
-      stateSource: caseRecord.payload.stateSource,
-      guards: caseRecord.payload.guards,
-      scriptArtifactIds: observation?.scriptArtifactIds ?? [],
-    });
-    return {
-      sourceRecordId: observedRecord.recordId,
-      observedRecord,
-      candidate: {
-        id: `candidate:${observedRecord.recordId}`,
-        observationId: observedRecord.observationId,
-        clusterId: observedRecord.clusterId,
-        recordId: observedRecord.recordId,
-        channel: analysis.channel,
-        bodyCodec: analysis.bodyCodec,
-        boundary: analysis.boundary,
-        summary: analysis.summary,
-        matchedTargetHints: analysis.matchedTargetHints,
-        advisoryTags: analysis.advisoryTags,
-        constraints: analysis.constraints,
-        signals: analysis.signals,
-        inputs: analysis.inputs,
-        resolvers: analysis.resolvers,
-        guardIds: Array.from(
-          new Set(analysis.advisoryTemplates.flatMap((entry) => entry.guardIds)),
-        ).sort((left, right) => left.localeCompare(right)),
-        scriptArtifactIds: observation?.scriptArtifactIds ?? [],
-        advisoryTemplates: analysis.advisoryTemplates,
-      },
-    };
-  }
-
-  private async replayReversePackageInternal(
-    packageRecord: ReversePackageRecord,
-    timeout: TimeoutExecutionContext,
-    explicitPageRef: PageRef | undefined,
-  ): Promise<{
-    readonly candidate?: OpensteerReverseCandidateRecord;
-    readonly template?: OpensteerReverseAdvisoryTemplate;
-    readonly run: OpensteerReverseReplayRunRecord;
-  }> {
-    const candidate = packageRecord.payload.candidate;
-    const template = packageRecord.payload.template;
-
-    if (candidate !== undefined && packageRecord.payload.stateSnapshots.length > 0) {
-      await this.restoreReverseStateSnapshots(
-        packageRecord.payload.stateSnapshots,
-        candidate,
-        timeout,
-        explicitPageRef,
-      );
-    }
-    const replayResult = await this.executeReversePackageWorkflow(
-      packageRecord,
-      timeout,
-      explicitPageRef,
-    );
-
-    return {
-      ...(candidate === undefined ? {} : { candidate }),
-      ...(template === undefined ? {} : { template }),
-      run: {
-        id: `reverse-replay:${randomUUID()}`,
-        createdAt: Date.now(),
-        ...(candidate === undefined ? {} : { candidateId: candidate.id }),
-        ...(template === undefined ? {} : { templateId: template.id }),
-        packageId: packageRecord.id,
-        success: replayResult.success,
-        ...(candidate === undefined ? {} : { channel: candidate.channel.kind }),
-        kind: packageRecord.payload.kind,
-        readiness: packageRecord.payload.readiness,
-        ...(packageRecord.payload.stateSource === undefined
-          ? {}
-          : { stateSource: packageRecord.payload.stateSource }),
-        ...(template?.transport === undefined ? {} : { transport: template.transport }),
-        executedStepIds: replayResult.executedStepIds,
-        ...(replayResult.failedStepId === undefined
-          ? {}
-          : { failedStepId: replayResult.failedStepId }),
-        ...(replayResult.bindings === undefined ? {} : { bindings: replayResult.bindings }),
-        ...(replayResult.recordId === undefined ? {} : { recordId: replayResult.recordId }),
-        ...(replayResult.status === undefined ? {} : { status: replayResult.status }),
-        validation: replayResult.validation,
-        ...(replayResult.error === undefined ? {} : { error: replayResult.error }),
-      },
-    };
-  }
-
-  private async executeReversePackageWorkflow(
-    packageRecord: ReversePackageRecord,
-    timeout: TimeoutExecutionContext,
-    explicitPageRef: PageRef | undefined,
-  ): Promise<{
-    readonly success: boolean;
-    readonly executedStepIds: readonly string[];
-    readonly failedStepId?: string;
-    readonly bindings?: Readonly<Record<string, JsonValue>>;
-    readonly recordId?: string;
-    readonly status?: number;
-    readonly validation: OpensteerReversePackageRunOutput["validation"];
-    readonly error?: string;
-  }> {
-    const caseRecord = await this.tryResolveReverseCaseById(packageRecord.payload.caseId);
-    if (packageRecord.payload.workflow.length === 0) {
-      return {
-        success: false,
-        executedStepIds: [],
-        bindings: {},
-        validation: {},
-        error: "package workflow is empty",
-      };
-    }
-    const bindings = new Map<string, unknown>();
-    const baselineRequestIds = await this.readLiveRequestIds(timeout, {
-      includeCurrentPageOnly: true,
-    });
-    const pageRef = explicitPageRef ?? (await this.ensurePageRef());
-    const validatorMap = new Map(
-      packageRecord.payload.validators.map((validator) => [validator.id, validator]),
-    );
-    let lastAssertable: unknown;
-    let lastRecordId: string | undefined;
-    let lastStatus: number | undefined;
-    const executedStepIds: string[] = [];
-
-    for (const step of packageRecord.payload.workflow) {
-      const resolverValues = await this.resolveReversePackageResolverValues(
-        packageRecord,
-        caseRecord,
-        bindings,
-        pageRef,
-        timeout,
-      );
-      switch (step.kind) {
-        case "operation": {
-          const result = await this.executeReversePackageOperationStep(
-            step,
-            packageRecord,
-            caseRecord,
-            timeout,
-            pageRef,
-            bindings,
-            resolverValues,
-          );
-          if (step.bindAs !== undefined) {
-            bindings.set(step.bindAs, result);
-          }
-          executedStepIds.push(step.id);
-          lastAssertable = result;
-          lastRecordId = extractReverseRecordId(result);
-          lastStatus = extractReverseStatus(result);
-          break;
-        }
-        case "await-record": {
-          const matchedRecord = await this.waitForReversePackageRecord(
-            step,
-            baselineRequestIds,
-            timeout,
-            pageRef,
-          );
-          if (matchedRecord === undefined) {
-            return {
-              success: false,
-              executedStepIds,
-              failedStepId: step.id,
-              bindings: serializeReverseBindings(bindings),
-              validation: {},
-              error: "package workflow did not emit the expected observed record",
-            };
-          }
-          const bindingName = step.bindAs ?? `record:${step.id}`;
-          bindings.set(bindingName, matchedRecord);
-          executedStepIds.push(step.id);
-          lastAssertable = matchedRecord;
-          lastRecordId = matchedRecord.recordId;
-          lastStatus = matchedRecord.record.status;
-          break;
-        }
-        case "assert": {
-          const validators = step.validationRuleIds
-            .map((validatorId) => validatorMap.get(validatorId))
-            .filter((validator): validator is OpensteerValidationRule => validator !== undefined);
-          const boundValue =
-            step.binding === undefined ? lastAssertable : bindings.get(step.binding);
-          if (boundValue === undefined) {
-            return {
-              success: false,
-              executedStepIds,
-              failedStepId: step.id,
-              bindings: serializeReverseBindings(bindings),
-              validation: {},
-              error: `assert step ${step.id} did not find a bound result`,
-            };
-          }
-          executedStepIds.push(step.id);
-          return evaluateReversePackageAssertion(
-            boundValue,
-            packageRecord.payload.channel?.kind ?? "http",
-            validators,
-            lastRecordId,
-            lastStatus,
-            executedStepIds,
-            serializeReverseBindings(bindings),
-            step.id,
-          );
-        }
-      }
-    }
-
-    return {
-      success: true,
-      executedStepIds,
-      bindings: serializeReverseBindings(bindings),
-      ...(lastRecordId === undefined ? {} : { recordId: lastRecordId }),
-      ...(lastStatus === undefined ? {} : { status: lastStatus }),
-      validation: {},
-    };
-  }
-
-  private async executeReversePackageOperationStep(
-    step: Extract<OpensteerReverseWorkflowStep, { readonly kind: "operation" }>,
-    packageRecord: ReversePackageRecord,
-    caseRecord: ReverseCaseRecord | undefined,
-    timeout: TimeoutExecutionContext,
-    pageRef: PageRef,
-    bindings: ReadonlyMap<string, unknown>,
-    resolverValues: ReadonlyMap<string, unknown>,
-  ): Promise<unknown> {
-    const operationName = step.operation as OpensteerSemanticOperationName;
-    const spec = opensteerSemanticOperationSpecificationMap[operationName];
-    if (spec === undefined || spec.packageRunnable !== true) {
-      throw new OpensteerProtocolError(
-        "invalid-argument",
-        `reverse package operation ${step.operation} is not runnable inside packages`,
-      );
-    }
-    const input = await this.resolveReverseValueTemplate(
-      step.input,
-      packageRecord,
-      caseRecord,
-      bindings,
-      resolverValues,
-      pageRef,
-      timeout,
-    );
-    assertValidSemanticOperationInput(operationName, input);
-    return dispatchSemanticOperation(this, operationName, input, { signal: timeout.signal });
-  }
-
-  private async resolveReversePackageResolverValues(
-    packageRecord: ReversePackageRecord,
-    caseRecord: ReverseCaseRecord | undefined,
-    bindings: ReadonlyMap<string, unknown>,
-    pageRef: PageRef,
-    timeout: TimeoutExecutionContext,
-  ): Promise<ReadonlyMap<string, unknown>> {
-    const values = new Map<string, unknown>();
-    for (const resolver of packageRecord.payload.resolvers) {
-      const value = await this.resolveReversePackageResolverValue(
-        resolver,
-        packageRecord,
-        caseRecord,
-        bindings,
-        pageRef,
-        timeout,
-      );
-      if (value !== undefined) {
-        values.set(resolver.id, value);
-      }
-    }
-    return values;
-  }
-
-  private async resolveReversePackageResolverValue(
-    resolver: OpensteerExecutableResolver,
-    packageRecord: ReversePackageRecord,
-    caseRecord: ReverseCaseRecord | undefined,
-    bindings: ReadonlyMap<string, unknown>,
-    pageRef: PageRef,
-    timeout: TimeoutExecutionContext,
-  ): Promise<unknown> {
-    switch (resolver.kind) {
-      case "manual":
-      case "runtime-managed":
-        return undefined;
-      case "cookie":
-        return resolveReverseCookieResolverValue(packageRecord.payload.stateSnapshots, resolver);
-      case "storage":
-      case "state-snapshot":
-        return resolveReverseStorageResolverValue(packageRecord.payload.stateSnapshots, resolver);
-      case "prior-record":
-      case "literal":
-      case "binding":
-      case "candidate":
-      case "case":
-      case "artifact":
-        return this.resolveReverseValueReference(
-          resolver.valueRef,
-          packageRecord,
-          caseRecord,
-          bindings,
-          pageRef,
-          timeout,
-        );
-    }
-  }
-
-  private async resolveReverseValueTemplate(
-    template: OpensteerValueTemplate,
-    packageRecord: ReversePackageRecord,
-    caseRecord: ReverseCaseRecord | undefined,
-    bindings: ReadonlyMap<string, unknown>,
-    resolverValues: ReadonlyMap<string, unknown>,
-    pageRef: PageRef,
-    timeout: TimeoutExecutionContext,
-  ): Promise<unknown> {
-    if (Array.isArray(template)) {
-      return Promise.all(
-        template.map((entry) =>
-          this.resolveReverseValueTemplate(
-            entry,
-            packageRecord,
-            caseRecord,
-            bindings,
-            resolverValues,
-            pageRef,
-            timeout,
-          ),
-        ),
-      );
-    }
-    if (template === null || typeof template !== "object") {
-      return template;
-    }
-    if (
-      "$ref" in (template as Record<string, unknown>) &&
-      (template as { readonly $ref?: unknown }).$ref !== undefined
-    ) {
-      return this.resolveReverseValueReference(
-        (template as { readonly $ref: OpensteerValueReference }).$ref,
-        packageRecord,
-        caseRecord,
-        bindings,
-        pageRef,
-        timeout,
-        resolverValues,
-      );
-    }
-    const entries = await Promise.all(
-      Object.entries(template as Record<string, OpensteerValueTemplate>).map(
-        async ([key, value]) => [
-          key,
-          await this.resolveReverseValueTemplate(
-            value,
-            packageRecord,
-            caseRecord,
-            bindings,
-            resolverValues,
-            pageRef,
-            timeout,
-          ),
-        ],
-      ),
-    );
-    return Object.fromEntries(entries);
-  }
-
-  private async resolveReverseValueReference(
-    valueRef: OpensteerValueReference | undefined,
-    packageRecord: ReversePackageRecord,
-    caseRecord: ReverseCaseRecord | undefined,
-    bindings: ReadonlyMap<string, unknown>,
-    pageRef: PageRef,
-    timeout: TimeoutExecutionContext,
-    resolverValues?: ReadonlyMap<string, unknown>,
-  ): Promise<unknown> {
-    if (valueRef === undefined) {
-      return undefined;
-    }
-    switch (valueRef.kind) {
-      case "literal":
-        return valueRef.value;
-      case "resolver":
-        return extractReverseRuntimeValue(
-          resolverValues?.get(valueRef.resolverId ?? ""),
-          valueRef.pointer,
-        );
-      case "binding":
-        return extractReverseRuntimeValue(bindings.get(valueRef.binding ?? ""), valueRef.pointer);
-      case "candidate":
-        return extractReverseRuntimeValue(packageRecord.payload.candidate, valueRef.pointer);
-      case "case":
-        return extractReverseRuntimeValue(caseRecord, valueRef.pointer);
-      case "record":
-        if (valueRef.recordId === undefined) {
-          return undefined;
-        }
-        return extractReverseRuntimeValue(
-          await this.resolveNetworkRecordByRecordId(valueRef.recordId, timeout, {
-            includeBodies: true,
-            redactSecretHeaders: false,
-          }),
-          valueRef.pointer,
-        );
-      case "artifact":
-        if (valueRef.artifactId === undefined) {
-          return undefined;
-        }
-        return extractReverseRuntimeValue(
-          await this.readArtifact({ artifactId: valueRef.artifactId }, { signal: timeout.signal }),
-          valueRef.pointer,
-        );
-      case "state-snapshot": {
-        const snapshots = packageRecord.payload.stateSnapshots;
-        const snapshot =
-          valueRef.stateSnapshotId === undefined
-            ? snapshots.length === 1
-              ? snapshots[0]
-              : snapshots.at(-1)
-            : snapshots.find((entry) => entry.id === valueRef.stateSnapshotId);
-        return extractReverseRuntimeValue(snapshot, valueRef.pointer);
-      }
-      case "runtime":
-        return extractReverseRuntimeValue(
-          resolveReversePackageRuntimeValue(packageRecord, pageRef, valueRef.runtimeKey),
-          valueRef.pointer,
-        );
-      case "manual":
-        return undefined;
-    }
-  }
-
-  private async waitForReversePackageRecord(
-    step: Extract<OpensteerReverseWorkflowStep, { readonly kind: "await-record" }>,
-    baselineRequestIds: ReadonlySet<string>,
-    timeout: TimeoutExecutionContext,
-    pageRef: PageRef,
-  ): Promise<NetworkQueryRecord | undefined> {
-    let expectedRecord: NetworkQueryRecord | undefined;
-    if (step.recordId !== undefined || step.match?.recordId !== undefined) {
-      expectedRecord = await this.resolveNetworkRecordByRecordId(
-        step.recordId ?? step.match!.recordId!,
-        timeout,
-        {
-          includeBodies: true,
-          redactSecretHeaders: false,
-        },
-      );
-    }
-    if (expectedRecord !== undefined && step.match === undefined) {
-      return this.waitForObservedReplayRecord(expectedRecord, baselineRequestIds, timeout, pageRef);
-    }
-    if (expectedRecord === undefined && step.match === undefined) {
-      throw new OpensteerProtocolError(
-        "invalid-argument",
-        `await-record step ${step.id} requires a recordId or match filter`,
-      );
-    }
-    const method = step.match?.method ?? expectedRecord?.record.method;
-    const filter = {
-      channel: step.channel.kind,
-      ...(method === undefined ? {} : { method }),
-      ...(expectedRecord?.record.url === undefined ? {} : { url: expectedRecord.record.url }),
-      ...(step.match?.host === undefined ? {} : { host: step.match.host }),
-      ...(step.match?.path === undefined ? {} : { path: step.match.path }),
-      ...(step.match?.status === undefined ? {} : { status: step.match.status }),
-      ...(step.match?.text === undefined ? {} : { text: step.match.text }),
-    };
-    return this.waitForMatchingReplayRecord(filter, baselineRequestIds, timeout, pageRef);
-  }
-
-  private async buildReverseTransportOperationInput(
-    candidate: OpensteerReverseCandidateRecord,
-    template: OpensteerReverseAdvisoryTemplate,
-    timeout: TimeoutExecutionContext,
-  ): Promise<OpensteerRawRequestInput> {
-    if (template.transport === undefined) {
-      throw new OpensteerProtocolError(
-        "invalid-argument",
-        `reverse template ${template.id} is missing a transport`,
-      );
-    }
-    const record = await this.resolveNetworkRecordByRecordId(candidate.recordId, timeout, {
-      includeBodies: true,
-      redactSecretHeaders: false,
-    });
-    const headers = stripManagedRequestHeaders(record.record.requestHeaders, template.transport);
-    const body = toReverseRawRequestBodyInput(
-      record.record.requestBody,
-      record.record.requestHeaders,
-    );
-    return {
-      transport: template.transport,
-      url: record.record.url,
-      method: record.record.method,
-      ...(headers === undefined ? {} : { headers }),
-      ...(body === undefined ? {} : { body }),
-    };
-  }
-
-  private async writePortableReverseRequestPlan(
-    caseRecord: ReverseCaseRecord,
-    candidate: OpensteerReverseCandidateRecord,
-    template: OpensteerReverseAdvisoryTemplate,
-    timeout: TimeoutExecutionContext,
-    input: {
-      readonly key: string;
-      readonly version: string;
-      readonly provenanceSource: "reverse.package.create" | "reverse.export";
-    },
-  ): Promise<RequestPlanRecord> {
-    const root = await this.ensureRoot();
-    const record = await this.resolveNetworkRecordByRecordId(candidate.recordId, timeout, {
-      includeBodies: true,
-      redactSecretHeaders: false,
-    });
-    const inferred = inferRequestPlanFromNetworkRecord(record, {
-      recordId: candidate.recordId,
-      key: input.key,
-      version: input.version,
-    });
-    const defaultHeaders =
-      inferred.payload.endpoint.defaultHeaders === undefined
-        ? undefined
-        : stripManagedRequestHeaders(
-            inferred.payload.endpoint.defaultHeaders,
-            template.transport ?? "direct-http",
-          );
-    const payload = normalizeRequestPlanPayload({
-      ...inferred.payload,
-      transport: {
-        kind: template.transport ?? "direct-http",
-        ...(template.transport === "page-http" ? { requireSameOrigin: false } : {}),
-      },
-      endpoint: {
-        ...inferred.payload.endpoint,
-        ...(defaultHeaders === undefined ? {} : { defaultHeaders }),
-      },
-    });
-    return root.registry.requestPlans.write({
-      ...inferred,
-      key: input.key,
-      version: input.version,
-      tags: caseRecord.tags,
-      provenance: {
-        source: input.provenanceSource,
-        sourceId: candidate.recordId,
-      },
-      payload,
-    });
-  }
-
-  private async writeReversePackage(
-    input: ReversePackageWriteInput,
-  ): Promise<ReversePackageRecord> {
-    const root = await this.ensureRoot();
-    const candidate = input.candidate;
-    const requirements = buildReversePackageRequirements({
-      stateSource: input.caseRecord.payload.stateSource,
-      ...(input.template === undefined ? {} : { template: input.template }),
-      ...(candidate === undefined ? {} : { candidate }),
-      ...(input.manualCalibration === undefined
-        ? {}
-        : { manualCalibration: input.manualCalibration }),
-    });
-    return root.registry.reversePackages.write({
-      key: input.key ?? `${input.caseRecord.key}:package:${candidate?.id ?? "draft"}:${Date.now()}`,
-      version: input.version ?? "1.0.0",
-      tags: input.caseRecord.tags,
-      provenance: {
-        source: input.provenanceSource,
-        sourceId: input.source.id,
-      },
-      payload: {
-        kind: input.kind,
-        readiness: input.readiness,
-        caseId: input.caseRecord.id,
-        objective: input.caseRecord.payload.objective,
-        source: input.source,
-        sourceRecordId: input.sourceRecordId,
-        ...(candidate === undefined ? {} : { candidateId: candidate.id }),
-        ...(candidate === undefined ? {} : { candidate }),
-        ...(input.template === undefined ? {} : { templateId: input.template.id }),
-        ...(input.template === undefined ? {} : { template: input.template }),
-        ...(candidate === undefined ? {} : { channel: candidate.channel }),
-        ...(input.template === undefined
-          ? { stateSource: input.caseRecord.payload.stateSource }
-          : { stateSource: input.template.stateSource }),
-        ...(candidate === undefined ? {} : { observationId: candidate.observationId }),
-        ...(input.template?.transport === undefined ? {} : { transport: input.template.transport }),
-        guardIds: input.template?.guardIds ?? candidate?.guardIds ?? ([] as readonly string[]),
-        workflow: input.workflow,
-        resolvers: cloneReversePackageResolvers(input.resolvers ?? []),
-        validators: input.validators,
-        stateSnapshots: input.stateSnapshots,
-        requirements,
-        ...(input.requestPlan === undefined ? {} : { requestPlanId: input.requestPlan.id }),
-        unresolvedRequirements: input.unresolvedRequirements,
-        suggestedEdits: input.suggestedEdits,
-        attachedTraceIds: input.attachedTraceIds,
-        attachedArtifactIds: input.attachedArtifactIds,
-        attachedRecordIds: input.attachedRecordIds,
-        ...(input.notes === undefined ? {} : { notes: input.notes }),
-        ...(input.parentPackageId === undefined ? {} : { parentPackageId: input.parentPackageId }),
-      },
-    });
-  }
-
-  private async buildReversePackageDraft(
-    input: {
-      readonly caseRecord: ReverseCaseRecord;
-      readonly candidate?: OpensteerReverseCandidateRecord;
-      readonly template?: OpensteerReverseAdvisoryTemplate;
-      readonly validators: readonly OpensteerValidationRule[];
-      readonly workflow?: readonly OpensteerReverseWorkflowStep[];
-      readonly resolvers?: readonly OpensteerExecutableResolver[];
-      readonly attachedTraceIds?: readonly string[];
-      readonly attachedArtifactIds?: readonly string[];
-      readonly attachedRecordIds?: readonly string[];
-      readonly stateSnapshotIds?: readonly string[];
-      readonly manualCalibration?: OpensteerReverseManualCalibrationMode;
-      readonly notes?: string;
-    },
-    timeout: TimeoutExecutionContext,
-  ): Promise<{
-    readonly kind: OpensteerReversePackageKind;
-    readonly readiness: OpensteerReversePackageReadiness;
-    readonly workflow: readonly OpensteerReverseWorkflowStep[];
-    readonly resolvers: readonly OpensteerExecutableResolver[];
-    readonly unresolvedRequirements: readonly OpensteerReverseRequirement[];
-    readonly suggestedEdits: readonly OpensteerReverseSuggestedEdit[];
-    readonly attachedTraceIds: readonly string[];
-    readonly attachedArtifactIds: readonly string[];
-    readonly attachedRecordIds: readonly string[];
-    readonly stateSnapshots: readonly OpensteerStateSnapshot[];
-    readonly notes?: string;
-  }> {
-    const candidate = input.candidate;
-    const template = input.template;
-    const observation =
-      candidate === undefined
-        ? undefined
-        : input.caseRecord.payload.observations.find(
-            (entry) => entry.id === candidate.observationId,
-          );
-    const guards =
-      template === undefined
-        ? []
-        : input.caseRecord.payload.guards.filter((guard) => template.guardIds.includes(guard.id));
-    const resolvers = input.resolvers ?? candidate?.resolvers ?? [];
-    const stateSnapshots =
-      input.stateSnapshotIds === undefined
-        ? candidate === undefined
-          ? []
-          : collectReverseReplayStateSnapshotsFromCase(input.caseRecord, candidate)
-        : input.stateSnapshotIds.map((snapshotId) => {
-            const snapshot = input.caseRecord.payload.stateSnapshots.find(
-              (entry) => entry.id === snapshotId,
-            );
-            if (snapshot === undefined) {
-              throw new OpensteerProtocolError(
-                "not-found",
-                `reverse state snapshot ${snapshotId} was not found`,
-              );
-            }
-            return snapshot;
-          });
-    const executeStepInput =
-      candidate === undefined || template === undefined || template.execution === "page-observation"
-        ? undefined
-        : await this.buildReverseTransportOperationInput(candidate, template, timeout);
-    const executeStepValue =
-      executeStepInput === undefined ? undefined : toCanonicalJsonValue(executeStepInput);
-    const workflow =
-      input.workflow ??
-      (candidate === undefined
-        ? []
-        : buildReversePackageWorkflow({
-            candidate,
-            ...(template === undefined ? {} : { template }),
-            ...(observation === undefined ? {} : { observation }),
-            guards,
-            validators: input.validators,
-            ...(executeStepValue === undefined ? {} : { executeStepInput: executeStepValue }),
-          }));
-    const attachedTraceIds = dedupeStringList([
-      ...(observation?.interactionTraceIds ?? []),
-      ...guards.flatMap((guard) =>
-        guard.interactionTraceId === undefined ? [] : [guard.interactionTraceId],
-      ),
-      ...(input.attachedTraceIds ?? []),
-    ]);
-    const attachedArtifactIds = dedupeStringList([
-      ...(observation?.scriptArtifactIds ?? []),
-      ...(candidate?.scriptArtifactIds ?? []),
-      ...resolvers.flatMap((resolver) => {
-        const artifactId = extractReverseResolverArtifactId(resolver);
-        return artifactId === undefined ? [] : [artifactId];
-      }),
-      ...(input.attachedArtifactIds ?? []),
-    ]);
-    const attachedRecordIds = dedupeStringList([
-      ...(observation?.networkRecordIds ?? []),
-      ...(candidate === undefined ? [] : [candidate.recordId]),
-      ...(input.attachedRecordIds ?? []),
-    ]);
-    const kind = deriveReversePackageKind({
-      ...(candidate === undefined ? {} : { candidate }),
-      ...(template === undefined ? {} : { template }),
-      workflow,
-      resolvers,
-      stateSnapshots,
-    });
-    const unresolvedRequirements = deriveReversePackageUnresolvedRequirements({
-      ...(candidate === undefined ? {} : { candidate }),
-      ...(template === undefined ? {} : { template }),
-      workflow,
-      resolvers,
-      guards,
-      stateSource: input.caseRecord.payload.stateSource,
-    });
-    const readiness = deriveReversePackageReadiness({
-      kind,
-      unresolvedRequirements,
-    });
-    const suggestedEdits = buildReversePackageSuggestedEdits(unresolvedRequirements);
-    return {
-      kind,
-      readiness,
-      workflow,
-      resolvers,
-      unresolvedRequirements,
-      suggestedEdits,
-      attachedTraceIds,
-      attachedArtifactIds,
-      attachedRecordIds,
-      stateSnapshots,
-      ...(input.notes === undefined ? {} : { notes: input.notes }),
-    };
-  }
-
-  private async writeReverseReportRecord(input: {
-    readonly kind: OpensteerReverseReportKind;
-    readonly caseRecord: ReverseCaseRecord;
-    readonly packageRecord?: ReversePackageRecord;
-    readonly query?: OpensteerReverseQuerySnapshot;
-  }): Promise<ReverseReportRecord> {
-    const root = await this.ensureRoot();
-    return root.registry.reverseReports.write({
-      key: `${input.caseRecord.key}:${input.kind}-report:${Date.now()}`,
-      version: "1.0.0",
-      tags: input.caseRecord.tags,
-      provenance: {
-        source: input.kind === "discovery" ? "reverse.discover" : "reverse.package.create",
-        sourceId: input.packageRecord?.id ?? input.caseRecord.id,
-      },
-      payload: {
-        kind: input.kind,
-        caseId: input.caseRecord.id,
-        objective: input.caseRecord.payload.objective,
-        ...(input.packageRecord === undefined ? {} : { packageId: input.packageRecord.id }),
-        ...(input.packageRecord === undefined
-          ? {}
-          : { packageKind: input.packageRecord.payload.kind }),
-        ...(input.packageRecord === undefined
-          ? {}
-          : { packageReadiness: input.packageRecord.payload.readiness }),
-        observations: input.caseRecord.payload.observations,
-        observationClusters: input.caseRecord.payload.observationClusters,
-        observedRecords: input.caseRecord.payload.observedRecords,
-        guards: input.caseRecord.payload.guards,
-        stateDeltas: input.caseRecord.payload.stateDeltas,
-        summaryCounts: buildReverseSummaryCounts(input.caseRecord),
-        ...(input.query === undefined ? {} : { query: input.query }),
-        candidateAdvisories: input.caseRecord.payload.candidates.map((candidate) => ({
-          candidateId: candidate.id,
-          clusterId: candidate.clusterId,
-          advisoryRank: candidate.signals.advisoryRank,
-          bodyCodec: candidate.bodyCodec,
-          summary: candidate.summary,
-          advisoryTags: candidate.advisoryTags,
-          constraints: candidate.constraints,
-          signals: candidate.signals,
-          reasons: buildReverseCandidateRankingReasons(candidate),
-        })),
-        experiments: input.caseRecord.payload.experiments,
-        replayRuns: input.caseRecord.payload.replayRuns,
-        ...(input.packageRecord === undefined
-          ? {}
-          : { unresolvedRequirements: input.packageRecord.payload.unresolvedRequirements }),
-        ...(input.packageRecord === undefined
-          ? {}
-          : { suggestedEdits: input.packageRecord.payload.suggestedEdits }),
-        linkedNetworkRecordIds:
-          input.packageRecord?.payload.attachedRecordIds ??
-          input.caseRecord.payload.observedRecords.map((record) => record.recordId),
-        linkedInteractionTraceIds:
-          input.packageRecord?.payload.attachedTraceIds ??
-          input.caseRecord.payload.observations.flatMap((entry) => entry.interactionTraceIds),
-        linkedArtifactIds:
-          input.packageRecord?.payload.attachedArtifactIds ??
-          input.caseRecord.payload.observations.flatMap((entry) => entry.scriptArtifactIds),
-        linkedStateSnapshotIds:
-          input.packageRecord?.payload.stateSnapshots.map((entry) => entry.id) ??
-          input.caseRecord.payload.stateSnapshots.map((entry) => entry.id),
-        ...(input.packageRecord === undefined ? {} : { package: input.packageRecord }),
-      },
-    });
-  }
 
   async captureInteraction(
     input: OpensteerInteractionCaptureInput,
@@ -4231,507 +1974,30 @@ export class OpensteerSessionRuntime {
     }
   }
 
-  async inferRequestPlan(
-    input: OpensteerInferRequestPlanInput,
-    options: RuntimeOperationOptions = {},
-  ): Promise<RequestPlanRecord> {
-    assertValidSemanticOperationInput("request-plan.infer", input);
-
-    const root = await this.ensureRoot();
-    const startedAt = Date.now();
-    try {
-      const record = await this.runWithOperationTimeout(
-        "request-plan.infer",
-        async (timeout) => {
-          const source = await this.resolveNetworkRecordByRecordId(input.recordId, timeout, {
-            includeBodies: true,
-          });
-          const inferred = inferRequestPlanFromNetworkRecord(source, input, {
-            ...(this.networkHistory.getObservedAt(source.recordId) === undefined
-              ? {}
-              : { observedAt: this.networkHistory.getObservedAt(source.recordId)! }),
-          });
-          return timeout.runStep(() =>
-            root.registry.requestPlans.write({
-              ...inferred,
-              payload: normalizeRequestPlanPayload(inferred.payload),
-            }),
-          );
-        },
-        options,
-      );
-
-      await this.appendTrace({
-        operation: "request-plan.infer",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "ok",
-        data: {
-          recordId: input.recordId,
-          id: record.id,
-          key: record.key,
-          version: record.version,
-        },
-      });
-      return record;
-    } catch (error) {
-      await this.appendTrace({
-        operation: "request-plan.infer",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "error",
-        error,
-      });
-      throw error;
-    }
-  }
-
-  async writeRequestPlan(
-    input: OpensteerWriteRequestPlanInput,
-    options: RuntimeOperationOptions = {},
-  ): Promise<RequestPlanRecord> {
-    assertValidSemanticOperationInput("request-plan.write", input);
-
-    const root = await this.ensureRoot();
-    const startedAt = Date.now();
-    try {
-      const record = await this.runWithOperationTimeout(
-        "request-plan.write",
-        async (timeout) => {
-          const payload = normalizeRequestPlanPayload(input.payload);
-          return timeout.runStep(() =>
-            root.registry.requestPlans.write({
-              ...input,
-              payload,
-            }),
-          );
-        },
-        options,
-      );
-
-      await this.appendTrace({
-        operation: "request-plan.write",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "ok",
-        data: {
-          id: record.id,
-          key: record.key,
-          version: record.version,
-        },
-      });
-
-      return record;
-    } catch (error) {
-      await this.appendTrace({
-        operation: "request-plan.write",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "error",
-        error,
-      });
-      throw error;
-    }
-  }
-
-  async getRequestPlan(
-    input: OpensteerGetRequestPlanInput,
-    options: RuntimeOperationOptions = {},
-  ): Promise<RequestPlanRecord> {
-    assertValidSemanticOperationInput("request-plan.get", input);
-
-    const root = await this.ensureRoot();
-    const startedAt = Date.now();
-    try {
-      const record = await this.runWithOperationTimeout(
-        "request-plan.get",
-        async (timeout) => timeout.runStep(() => root.registry.requestPlans.resolve(input)),
-        options,
-      );
-      if (record === undefined) {
-        throw new OpensteerProtocolError(
-          "not-found",
-          input.version === undefined
-            ? `no request plan found for "${input.key}"`
-            : `no request plan found for "${input.key}" version "${input.version}"`,
-          {
-            details: {
-              key: input.key,
-              ...(input.version === undefined ? {} : { version: input.version }),
-              kind: "request-plan",
-            },
-          },
-        );
-      }
-
-      await this.appendTrace({
-        operation: "request-plan.get",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "ok",
-        data: {
-          id: record.id,
-          key: record.key,
-          version: record.version,
-        },
-      });
-
-      return record;
-    } catch (error) {
-      await this.appendTrace({
-        operation: "request-plan.get",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "error",
-        error,
-      });
-      throw error;
-    }
-  }
-
-  async listRequestPlans(
-    input: OpensteerListRequestPlansInput = {},
-    options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerListRequestPlansOutput> {
-    assertValidSemanticOperationInput("request-plan.list", input);
-
-    const root = await this.ensureRoot();
-    const startedAt = Date.now();
-    try {
-      const output = await this.runWithOperationTimeout(
-        "request-plan.list",
-        async (timeout) => ({
-          plans: await timeout.runStep(() => root.registry.requestPlans.list(input)),
-        }),
-        options,
-      );
-
-      await this.appendTrace({
-        operation: "request-plan.list",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "ok",
-        data: {
-          ...(input.key === undefined ? {} : { key: input.key }),
-          count: output.plans.length,
-        },
-      });
-
-      return output;
-    } catch (error) {
-      await this.appendTrace({
-        operation: "request-plan.list",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "error",
-        error,
-      });
-      throw error;
-    }
-  }
-
-  async writeAuthRecipe(
-    input: OpensteerWriteAuthRecipeInput,
-    options: RuntimeOperationOptions = {},
-  ): Promise<AuthRecipeRecord> {
-    assertValidSemanticOperationInput("auth-recipe.write", input);
-
-    const root = await this.ensureRoot();
-    const startedAt = Date.now();
-    try {
-      const record = await this.runWithOperationTimeout(
-        "auth-recipe.write",
-        async (timeout) => timeout.runStep(() => root.registry.authRecipes.write(input)),
-        options,
-      );
-
-      await this.appendTrace({
-        operation: "auth-recipe.write",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "ok",
-        data: {
-          id: record.id,
-          key: record.key,
-          version: record.version,
-        },
-      });
-
-      return record;
-    } catch (error) {
-      await this.appendTrace({
-        operation: "auth-recipe.write",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "error",
-        error,
-      });
-      throw error;
-    }
-  }
-
-  async writeRecipe(
-    input: OpensteerWriteRecipeInput,
-    options: RuntimeOperationOptions = {},
-  ): Promise<RecipeRecord> {
-    assertValidSemanticOperationInput("recipe.write", input);
-
-    const root = await this.ensureRoot();
-    const startedAt = Date.now();
-    try {
-      const record = await this.runWithOperationTimeout(
-        "recipe.write",
-        async (timeout) => timeout.runStep(() => root.registry.recipes.write(input)),
-        options,
-      );
-
-      await this.appendTrace({
-        operation: "recipe.write",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "ok",
-        data: {
-          id: record.id,
-          key: record.key,
-          version: record.version,
-        },
-      });
-
-      return record;
-    } catch (error) {
-      await this.appendTrace({
-        operation: "recipe.write",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "error",
-        error,
-      });
-      throw error;
-    }
-  }
-
-  async getAuthRecipe(
-    input: OpensteerGetAuthRecipeInput,
-    options: RuntimeOperationOptions = {},
-  ): Promise<AuthRecipeRecord> {
-    assertValidSemanticOperationInput("auth-recipe.get", input);
-
-    const root = await this.ensureRoot();
-    const startedAt = Date.now();
-    try {
-      const record = await this.runWithOperationTimeout(
-        "auth-recipe.get",
-        async (timeout) => timeout.runStep(() => root.registry.authRecipes.resolve(input)),
-        options,
-      );
-      if (record === undefined) {
-        throw new OpensteerProtocolError(
-          "not-found",
-          input.version === undefined
-            ? `no auth recipe found for "${input.key}"`
-            : `no auth recipe found for "${input.key}" version "${input.version}"`,
-          {
-            details: {
-              key: input.key,
-              ...(input.version === undefined ? {} : { version: input.version }),
-              kind: "auth-recipe",
-            },
-          },
-        );
-      }
-
-      await this.appendTrace({
-        operation: "auth-recipe.get",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "ok",
-        data: {
-          id: record.id,
-          key: record.key,
-          version: record.version,
-        },
-      });
-
-      return record;
-    } catch (error) {
-      await this.appendTrace({
-        operation: "auth-recipe.get",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "error",
-        error,
-      });
-      throw error;
-    }
-  }
-
-  async getRecipe(
-    input: OpensteerGetRecipeInput,
-    options: RuntimeOperationOptions = {},
-  ): Promise<RecipeRecord> {
-    assertValidSemanticOperationInput("recipe.get", input);
-
-    const root = await this.ensureRoot();
-    const startedAt = Date.now();
-    try {
-      const record = await this.runWithOperationTimeout(
-        "recipe.get",
-        async (timeout) => timeout.runStep(() => root.registry.recipes.resolve(input)),
-        options,
-      );
-      if (record === undefined) {
-        throw new OpensteerProtocolError(
-          "not-found",
-          input.version === undefined
-            ? `no recipe found for "${input.key}"`
-            : `no recipe found for "${input.key}" version "${input.version}"`,
-          {
-            details: {
-              key: input.key,
-              ...(input.version === undefined ? {} : { version: input.version }),
-              kind: "recipe",
-            },
-          },
-        );
-      }
-
-      await this.appendTrace({
-        operation: "recipe.get",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "ok",
-        data: {
-          id: record.id,
-          key: record.key,
-          version: record.version,
-        },
-      });
-
-      return record;
-    } catch (error) {
-      await this.appendTrace({
-        operation: "recipe.get",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "error",
-        error,
-      });
-      throw error;
-    }
-  }
-
-  async listAuthRecipes(
-    input: OpensteerListAuthRecipesInput = {},
-    options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerListAuthRecipesOutput> {
-    assertValidSemanticOperationInput("auth-recipe.list", input);
-
-    const root = await this.ensureRoot();
-    const startedAt = Date.now();
-    try {
-      const output = await this.runWithOperationTimeout(
-        "auth-recipe.list",
-        async (timeout) => ({
-          recipes: await timeout.runStep(() => root.registry.authRecipes.list(input)),
-        }),
-        options,
-      );
-
-      await this.appendTrace({
-        operation: "auth-recipe.list",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "ok",
-        data: {
-          ...(input.key === undefined ? {} : { key: input.key }),
-          count: output.recipes.length,
-        },
-      });
-
-      return output;
-    } catch (error) {
-      await this.appendTrace({
-        operation: "auth-recipe.list",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "error",
-        error,
-      });
-      throw error;
-    }
-  }
-
-  async listRecipes(
-    input: OpensteerListRecipesInput = {},
-    options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerListRecipesOutput> {
-    assertValidSemanticOperationInput("recipe.list", input);
-
-    const root = await this.ensureRoot();
-    const startedAt = Date.now();
-    try {
-      const output = await this.runWithOperationTimeout(
-        "recipe.list",
-        async (timeout) => ({
-          recipes: await timeout.runStep(() => root.registry.recipes.list(input)),
-        }),
-        options,
-      );
-
-      await this.appendTrace({
-        operation: "recipe.list",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "ok",
-        data: {
-          ...(input.key === undefined ? {} : { key: input.key }),
-          count: output.recipes.length,
-        },
-      });
-
-      return output;
-    } catch (error) {
-      await this.appendTrace({
-        operation: "recipe.list",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "error",
-        error,
-      });
-      throw error;
-    }
-  }
-
   async getCookies(
-    input: { readonly urls?: readonly string[] } = {},
+    input: OpensteerCookieQueryInput = {},
     options: RuntimeOperationOptions = {},
-  ): Promise<readonly CookieRecord[]> {
-    assertValidSemanticOperationInput("inspect.cookies", input);
+  ): Promise<OpensteerCookieQueryOutput> {
+    assertValidSemanticOperationInput("session.cookies", input);
 
     const pageRef = await this.ensurePageRef();
     const sessionRef = this.requireSessionRef();
     const startedAt = Date.now();
     try {
-      const cookies = await this.runWithOperationTimeout(
-        "inspect.cookies",
-        async (timeout) =>
-          timeout.runStep(() =>
-            this.requireEngine().getCookies({
-              sessionRef,
-              ...(input.urls === undefined ? {} : { urls: input.urls }),
-            }),
-          ),
+      const output = await this.runWithOperationTimeout(
+        "session.cookies",
+        async (timeout) => this.readCookieQueryOutput(sessionRef, pageRef, input.domain, timeout),
         options,
       );
 
       await this.appendTrace({
-        operation: "inspect.cookies",
+        operation: "session.cookies",
         startedAt,
         completedAt: Date.now(),
         outcome: "ok",
         data: {
-          count: cookies.length,
-          ...(input.urls === undefined ? {} : { urls: input.urls }),
+          count: output.cookies.length,
+          ...(input.domain === undefined ? {} : { domain: input.domain }),
         },
         context: buildRuntimeTraceContext({
           sessionRef,
@@ -4739,10 +2005,10 @@ export class OpensteerSessionRuntime {
         }),
       });
 
-      return cookies;
+      return output;
     } catch (error) {
       await this.appendTrace({
-        operation: "inspect.cookies",
+        operation: "session.cookies",
         startedAt,
         completedAt: Date.now(),
         outcome: "error",
@@ -4757,43 +2023,29 @@ export class OpensteerSessionRuntime {
   }
 
   async getStorageSnapshot(
-    input: {
-      readonly includeSessionStorage?: boolean;
-      readonly includeIndexedDb?: boolean;
-    } = {},
+    input: OpensteerStorageQueryInput = {},
     options: RuntimeOperationOptions = {},
-  ): Promise<StorageSnapshot> {
-    assertValidSemanticOperationInput("inspect.storage", input);
+  ): Promise<OpensteerStorageQueryOutput> {
+    assertValidSemanticOperationInput("session.storage", input);
 
     const pageRef = await this.ensurePageRef();
     const sessionRef = this.requireSessionRef();
     const startedAt = Date.now();
     try {
-      const snapshot = await this.runWithOperationTimeout(
-        "inspect.storage",
-        async (timeout) =>
-          timeout.runStep(() =>
-            this.requireEngine().getStorageSnapshot({
-              sessionRef,
-              ...(input.includeSessionStorage === undefined
-                ? {}
-                : { includeSessionStorage: input.includeSessionStorage }),
-              ...(input.includeIndexedDb === undefined
-                ? {}
-                : { includeIndexedDb: input.includeIndexedDb }),
-            }),
-          ),
+      const output = await this.runWithOperationTimeout(
+        "session.storage",
+        async (timeout) => this.readStorageQueryOutput(sessionRef, pageRef, input.domain, timeout),
         options,
       );
 
       await this.appendTrace({
-        operation: "inspect.storage",
+        operation: "session.storage",
         startedAt,
         completedAt: Date.now(),
         outcome: "ok",
         data: {
-          origins: snapshot.origins.length,
-          sessionStorage: snapshot.sessionStorage?.length ?? 0,
+          domains: output.domains.length,
+          ...(input.domain === undefined ? {} : { domain: input.domain }),
         },
         context: buildRuntimeTraceContext({
           sessionRef,
@@ -4801,10 +2053,10 @@ export class OpensteerSessionRuntime {
         }),
       });
 
-      return snapshot;
+      return output;
     } catch (error) {
       await this.appendTrace({
-        operation: "inspect.storage",
+        operation: "session.storage",
         startedAt,
         completedAt: Date.now(),
         outcome: "error",
@@ -4818,78 +2070,81 @@ export class OpensteerSessionRuntime {
     }
   }
 
-  async runAuthRecipe(
-    input: OpensteerRunAuthRecipeInput,
+  async getBrowserState(
+    input: OpensteerStateQueryInput = {},
     options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerRunAuthRecipeOutput> {
-    assertValidSemanticOperationInput("auth-recipe.run", input);
+  ): Promise<OpensteerStateQueryOutput> {
+    assertValidSemanticOperationInput("session.state", input);
 
-    await this.ensureRoot();
+    const pageRef = await this.ensurePageRef();
+    const sessionRef = this.requireSessionRef();
     const startedAt = Date.now();
     try {
       const output = await this.runWithOperationTimeout(
-        "auth-recipe.run",
-        async (timeout) => this.runResolvedRecipe("auth-recipe", input, timeout),
+        "session.state",
+        async (timeout) => this.readBrowserStateOutput(sessionRef, pageRef, input.domain, timeout),
         options,
       );
 
       await this.appendTrace({
-        operation: "auth-recipe.run",
+        operation: "session.state",
         startedAt,
         completedAt: Date.now(),
         outcome: "ok",
         data: {
-          recipe: output.recipe,
-          variables: Object.keys(output.variables).sort(),
-          ...(output.overrides === undefined ? {} : { overrides: output.overrides }),
+          domains: output.domains.length,
+          ...(input.domain === undefined ? {} : { domain: input.domain }),
         },
         context: buildRuntimeTraceContext({
-          sessionRef: this.sessionRef,
-          pageRef: this.pageRef,
+          sessionRef,
+          pageRef,
         }),
       });
 
       return output;
     } catch (error) {
       await this.appendTrace({
-        operation: "auth-recipe.run",
+        operation: "session.state",
         startedAt,
         completedAt: Date.now(),
         outcome: "error",
         error,
         context: buildRuntimeTraceContext({
-          sessionRef: this.sessionRef,
-          pageRef: this.pageRef,
+          sessionRef,
+          pageRef,
         }),
       });
       throw error;
     }
   }
 
-  async runRecipe(
-    input: OpensteerRunRecipeInput,
+  async fetch(
+    input: OpensteerSessionFetchInput,
     options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerRunRecipeOutput> {
-    assertValidSemanticOperationInput("recipe.run", input);
+  ): Promise<OpensteerSessionFetchOutput> {
+    assertValidSemanticOperationInput("session.fetch", input);
 
-    await this.ensureRoot();
     const startedAt = Date.now();
     try {
       const output = await this.runWithOperationTimeout(
-        "recipe.run",
-        async (timeout) => this.runResolvedRecipe("recipe", input, timeout),
+        "session.fetch",
+        async (timeout) => {
+          const request = buildSessionFetchTransportRequest(input);
+          return this.executeSessionFetch(request, input, timeout);
+        },
         options,
       );
 
       await this.appendTrace({
-        operation: "recipe.run",
+        operation: "session.fetch",
         startedAt,
         completedAt: Date.now(),
         outcome: "ok",
         data: {
-          recipe: output.recipe,
-          variables: Object.keys(output.variables).sort(),
-          ...(output.overrides === undefined ? {} : { overrides: output.overrides }),
+          transport: output.transport,
+          attempts: output.attempts.length,
+          ...(output.response === undefined ? {} : { status: output.response.status }),
+          url: input.url,
         },
         context: buildRuntimeTraceContext({
           sessionRef: this.sessionRef,
@@ -4900,7 +2155,7 @@ export class OpensteerSessionRuntime {
       return output;
     } catch (error) {
       await this.appendTrace({
-        operation: "recipe.run",
+        operation: "session.fetch",
         startedAt,
         completedAt: Date.now(),
         outcome: "error",
@@ -4908,65 +2163,6 @@ export class OpensteerSessionRuntime {
         context: buildRuntimeTraceContext({
           sessionRef: this.sessionRef,
           pageRef: this.pageRef,
-        }),
-      });
-      throw error;
-    }
-  }
-
-  async rawRequest(
-    input: OpensteerRawRequestInput,
-    options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerRawRequestOutput> {
-    assertValidSemanticOperationInput("request.raw", input);
-
-    const transport = normalizeTransportKind(input.transport ?? "context-http");
-    const binding = transportRequiresBrowserBinding(transport)
-      ? await this.ensureBrowserTransportBinding()
-      : this.currentBinding();
-    const startedAt = Date.now();
-
-    try {
-      const output = await this.runWithOperationTimeout(
-        "request.raw",
-        async (timeout) => this.executeRawTransportRequest(input, timeout, binding),
-        options,
-      );
-
-      await this.appendTrace({
-        operation: "request.raw",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "ok",
-        data: {
-          recordId: output.recordId,
-          request: {
-            method: output.request.method,
-            url: output.request.url,
-          },
-          response: {
-            url: output.response.url,
-            status: output.response.status,
-            redirected: output.response.redirected,
-          },
-        },
-        context: buildRuntimeTraceContext({
-          sessionRef: binding?.sessionRef,
-          pageRef: binding?.pageRef,
-        }),
-      });
-
-      return output;
-    } catch (error) {
-      await this.appendTrace({
-        operation: "request.raw",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "error",
-        error,
-        context: buildRuntimeTraceContext({
-          sessionRef: binding?.sessionRef,
-          pageRef: binding?.pageRef,
         }),
       });
       throw error;
@@ -5044,87 +2240,6 @@ export class OpensteerSessionRuntime {
         };
       },
     });
-  }
-
-  async request(
-    input: OpensteerRequestExecuteInput,
-    options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerRequestExecuteOutput> {
-    assertValidSemanticOperationInput("request.execute", input);
-
-    const root = await this.ensureRoot();
-    const plan = await root.registry.requestPlans.resolve({
-      key: input.key,
-      ...(input.version === undefined ? {} : { version: input.version }),
-    });
-    if (plan === undefined) {
-      throw new OpensteerProtocolError(
-        "not-found",
-        input.version === undefined
-          ? `no request plan found for "${input.key}"`
-          : `no request plan found for "${input.key}" version "${input.version}"`,
-        {
-          details: {
-            key: input.key,
-            ...(input.version === undefined ? {} : { version: input.version }),
-            kind: "request-plan",
-          },
-        },
-      );
-    }
-    const binding = transportRequiresBrowserBinding(
-      normalizeTransportKind(plan.payload.transport.kind),
-    )
-      ? await this.ensureBrowserTransportBinding()
-      : this.currentBinding();
-    const startedAt = Date.now();
-
-    try {
-      const output = await this.runWithOperationTimeout(
-        "request.execute",
-        async (timeout) => this.executeResolvedRequestPlan(plan, input, timeout, binding),
-        options,
-      );
-
-      await this.appendTrace({
-        operation: "request.execute",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "ok",
-        data: {
-          plan: output.plan,
-          request: {
-            method: output.request.method,
-            url: output.request.url,
-          },
-          response: {
-            url: output.response.url,
-            status: output.response.status,
-            redirected: output.response.redirected,
-          },
-          ...(output.recovery === undefined ? {} : { recovery: output.recovery }),
-        },
-        context: buildRuntimeTraceContext({
-          sessionRef: binding?.sessionRef,
-          pageRef: binding?.pageRef,
-        }),
-      });
-
-      return output;
-    } catch (error) {
-      await this.appendTrace({
-        operation: "request.execute",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "error",
-        error,
-        context: buildRuntimeTraceContext({
-          sessionRef: binding?.sessionRef,
-          pageRef: binding?.pageRef,
-        }),
-      });
-      throw error;
-    }
   }
 
   async computerExecute(
@@ -5320,7 +2435,7 @@ export class OpensteerSessionRuntime {
   private async runDomAction<
     TInput extends {
       readonly target: OpensteerTargetInput;
-      readonly persistAsDescription?: string;
+      readonly persist?: string;
       readonly captureNetwork?: string;
     },
   >(
@@ -5357,7 +2472,7 @@ export class OpensteerSessionRuntime {
             pageRef,
             operation,
             input.target,
-            input.persistAsDescription,
+            input.persist,
             timeout,
           );
           try {
@@ -5376,9 +2491,8 @@ export class OpensteerSessionRuntime {
           mutationCaptureDiagnostics = diagnostics;
         },
       );
-      const output = toOpensteerActionResult(executed.result, preparedTarget.persistedDescription);
-      const actionEvents =
-        "events" in executed.result ? executed.result.events : undefined;
+      const output = toOpensteerActionResult(executed.result, preparedTarget.persisted);
+      const actionEvents = "events" in executed.result ? executed.result.events : undefined;
 
       await this.appendTrace({
         operation,
@@ -5389,9 +2503,9 @@ export class OpensteerSessionRuntime {
         data: {
           target: output.target,
           ...(output.point === undefined ? {} : { point: output.point }),
-          ...(output.persistedDescription === undefined
+          ...(output.persisted === undefined
             ? {}
-            : { persistedDescription: output.persistedDescription }),
+            : { persisted: output.persisted }),
           ...(boundaryDiagnostics === undefined ? {} : { settle: boundaryDiagnostics }),
           ...buildMutationCaptureTraceData(mutationCaptureDiagnostics),
         },
@@ -5429,20 +2543,20 @@ export class OpensteerSessionRuntime {
     pageRef: PageRef,
     method: string,
     target: OpensteerTargetInput,
-    persistAsDescription: string | undefined,
+    persist: string | undefined,
     timeout: TimeoutExecutionContext,
   ): Promise<{
     readonly target: DomTargetRef;
-    readonly persistedDescription?: string;
+    readonly persisted?: string;
   }> {
     const domTarget = this.toDomTargetRef(target);
-    if (target.kind === "description") {
+    if (target.kind === "persist") {
       return {
         target: domTarget,
       };
     }
 
-    if (persistAsDescription === undefined) {
+    if (persist === undefined) {
       return {
         target: domTarget,
       };
@@ -5472,7 +2586,7 @@ export class OpensteerSessionRuntime {
       await timeout.runStep(() =>
         this.requireDom().writeDescriptor({
           method,
-          description: persistAsDescription,
+          name: persist,
           path: stablePath,
           sourceUrl: resolved.snapshot.url,
         }),
@@ -5480,9 +2594,9 @@ export class OpensteerSessionRuntime {
       return {
         target: {
           kind: "descriptor",
-          description: persistAsDescription,
+          name: persist,
         },
-        persistedDescription: persistAsDescription,
+        persisted: persist,
       };
     }
 
@@ -5502,14 +2616,14 @@ export class OpensteerSessionRuntime {
       ));
     if (!stablePath) {
       throw new Error(
-        `unable to persist "${persistAsDescription}" because no stable DOM path could be built for ${method}`,
+        `unable to persist "${persist}" because no stable DOM path could be built for ${method}`,
       );
     }
 
     await timeout.runStep(() =>
       this.requireDom().writeDescriptor({
         method,
-        description: persistAsDescription,
+        name: persist,
         path: stablePath,
         sourceUrl: resolved.snapshot.url,
       }),
@@ -5518,9 +2632,9 @@ export class OpensteerSessionRuntime {
     return {
       target: {
         kind: "descriptor",
-        description: persistAsDescription,
+        name: persist,
       },
-      persistedDescription: persistAsDescription,
+      persisted: persist,
     };
   }
 
@@ -5946,105 +3060,423 @@ export class OpensteerSessionRuntime {
     });
   }
 
-  private resolveCurrentStateSource(): OpensteerStateSourceKind {
-    const ownership = this.sessionInfoBase.provider?.ownership;
-    if (ownership === "attached") {
-      return "attach";
+  private async buildNetworkSummaryRecords(
+    records: readonly NetworkQueryRecord[],
+    timeout: TimeoutExecutionContext,
+  ): Promise<readonly OpensteerNetworkSummaryRecord[]> {
+    const summaries: OpensteerNetworkSummaryRecord[] = [];
+    for (const record of records) {
+      let hydrated = record;
+      if (looksLikeGraphqlRecord(record)) {
+        hydrated = await this.resolveNetworkRecordByRecordId(record.recordId, timeout, {
+          includeBodies: true,
+          redactSecretHeaders: false,
+        }).catch(() => record);
+      }
+      summaries.push(buildNetworkSummaryRecord(hydrated));
     }
-    if (this.workspaceName !== undefined || this.cleanupRootOnClose === false) {
-      return "persistent";
-    }
-    return "temporary";
+    return summaries;
   }
 
-  private async resolveReverseCaseById(caseId: string): Promise<ReverseCaseRecord> {
-    const record = await (await this.ensureRoot()).registry.reverseCases.getById(caseId);
-    if (record === undefined) {
-      throw new OpensteerProtocolError("not-found", `reverse case ${caseId} was not found`, {
-        details: {
-          caseId,
-          kind: "reverse-case",
-        },
-      });
+  private async buildNetworkDetail(
+    record: NetworkQueryRecord,
+    timeout: TimeoutExecutionContext,
+  ): Promise<OpensteerNetworkDetailOutput> {
+    const requestCookieHeader = headerValue(record.record.requestHeaders, "cookie");
+    const graphql = extractGraphqlMetadata(record);
+    const graphqlVariables =
+      graphql?.variables === undefined ? undefined : truncateStructuredValue(graphql.variables);
+    const graphqlSummary =
+      graphql === undefined
+        ? undefined
+        : {
+            ...(graphql.operationType === undefined
+              ? {}
+              : { operationType: graphql.operationType }),
+            ...(graphql.operationName === undefined
+              ? {}
+              : { operationName: graphql.operationName }),
+            ...(graphql.persisted === undefined ? {} : { persisted: graphql.persisted }),
+            ...(graphqlVariables === undefined ? {} : { variables: graphqlVariables }),
+          };
+    const requestBody =
+      shouldShowRequestBody(record.record.method) && record.record.requestBody !== undefined
+        ? buildStructuredBodyPreview(record.record.requestBody, record.record.requestHeaders)
+        : undefined;
+    const responseBody =
+      record.record.responseBody === undefined
+        ? undefined
+        : buildStructuredBodyPreview(record.record.responseBody, record.record.responseHeaders);
+    const notes = detectNetworkRecordNotes(record);
+
+    return {
+      recordId: record.recordId,
+      ...(record.capture === undefined ? {} : { capture: record.capture }),
+      ...(record.savedAt === undefined ? {} : { savedAt: record.savedAt }),
+      summary: buildNetworkSummaryRecord(record),
+      requestHeaders: record.record.requestHeaders.filter(
+        (header) => normalizeHeaderName(header.name) !== "cookie",
+      ),
+      responseHeaders: record.record.responseHeaders,
+      ...(requestCookieHeader === undefined
+        ? {}
+        : { cookiesSent: parseCookieHeaderEntries(requestCookieHeader) }),
+      ...(requestBody === undefined ? {} : { requestBody }),
+      ...(responseBody === undefined ? {} : { responseBody }),
+      ...(graphqlSummary === undefined ? {} : { graphql: graphqlSummary }),
+      ...(await this.buildRedirectChain(record, timeout)),
+      ...(notes.length === 0 ? {} : { notes }),
+    };
+  }
+
+  private async buildRedirectChain(
+    record: NetworkQueryRecord,
+    timeout: TimeoutExecutionContext,
+  ): Promise<{
+    readonly redirectChain?: readonly OpensteerNetworkRedirectHop[];
+  }> {
+    if (
+      record.record.redirectFromRequestId === undefined &&
+      record.record.redirectToRequestId === undefined
+    ) {
+      return {};
     }
-    return record;
-  }
 
-  private async tryResolveReverseCaseById(caseId: string): Promise<ReverseCaseRecord | undefined> {
-    return (await this.ensureRoot()).registry.reverseCases.getById(caseId);
-  }
-
-  private async resolveReversePackageById(packageId: string): Promise<ReversePackageRecord> {
-    const record = await (await this.ensureRoot()).registry.reversePackages.getById(packageId);
-    if (record === undefined) {
-      throw new OpensteerProtocolError("not-found", `reverse package ${packageId} was not found`, {
-        details: {
-          packageId,
-          kind: "reverse-package",
-        },
-      });
-    }
-    return record;
-  }
-
-  private async resolveReverseReportById(reportId: string): Promise<ReverseReportRecord> {
-    const record = await (await this.ensureRoot()).registry.reverseReports.getById(reportId);
-    if (record === undefined) {
-      throw new OpensteerProtocolError("not-found", `reverse report ${reportId} was not found`, {
-        details: {
-          reportId,
-          kind: "reverse-report",
-        },
-      });
-    }
-    return record;
-  }
-
-  private async resolveReverseReportByPackageId(packageId: string): Promise<ReverseReportRecord> {
-    const reports = await (await this.ensureRoot()).registry.reverseReports.list();
-    const report = reports
-      .filter((entry) => entry.payload.packageId === packageId)
-      .sort(
-        (left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id),
-      )[0];
-    if (report === undefined) {
-      throw new OpensteerProtocolError(
-        "not-found",
-        `reverse report for package ${packageId} was not found`,
-        {
-          details: {
-            packageId,
-            kind: "reverse-report",
-          },
-        },
+    const root = await this.ensureRoot();
+    const byRequestId = new Map<string, NetworkQueryRecord>();
+    const seen = new Set<string>();
+    const queue = [record.record.requestId];
+    while (queue.length > 0) {
+      const requestId = queue.shift()!;
+      if (seen.has(requestId)) {
+        continue;
+      }
+      seen.add(requestId);
+      const [match] = await timeout.runStep(() =>
+        root.registry.savedNetwork.query({
+          requestId,
+          includeBodies: false,
+          limit: 1,
+        }),
       );
+      if (match === undefined) {
+        continue;
+      }
+      byRequestId.set(requestId, match);
+      if (match.record.redirectFromRequestId !== undefined) {
+        queue.push(match.record.redirectFromRequestId);
+      }
+      if (match.record.redirectToRequestId !== undefined) {
+        queue.push(match.record.redirectToRequestId);
+      }
     }
-    return report;
+
+    const chain = [...byRequestId.values()].sort((left, right) => {
+      const leftTime = left.savedAt ?? 0;
+      const rightTime = right.savedAt ?? 0;
+      if (leftTime !== rightTime) {
+        return leftTime - rightTime;
+      }
+      return left.recordId.localeCompare(right.recordId);
+    });
+    if (chain.length <= 1) {
+      return {};
+    }
+    return {
+      redirectChain: chain.map((entry) => ({
+        method: entry.record.method,
+        ...(entry.record.status === undefined ? {} : { status: entry.record.status }),
+        url: entry.record.url,
+        ...(headerValue(entry.record.responseHeaders, "location") === undefined
+          ? {}
+          : { location: headerValue(entry.record.responseHeaders, "location")! }),
+        ...(collectSetCookieHeaders(entry.record.responseHeaders).length === 0
+          ? {}
+          : { setCookie: collectSetCookieHeaders(entry.record.responseHeaders) }),
+      })),
+    };
   }
 
-  private async resolveReverseReportByCaseId(
-    caseId: string,
-    kind: OpensteerReverseReportKind,
-  ): Promise<ReverseReportRecord> {
-    const reports = await (await this.ensureRoot()).registry.reverseReports.list();
-    const report = reports
-      .filter((entry) => entry.payload.caseId === caseId && entry.payload.kind === kind)
-      .sort(
-        (left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id),
-      )[0];
-    if (report === undefined) {
-      throw new OpensteerProtocolError(
-        "not-found",
-        `reverse ${kind} report for case ${caseId} was not found`,
-        {
-          details: {
-            caseId,
-            kind: "reverse-report",
+  private async readCookieQueryOutput(
+    sessionRef: SessionRef,
+    pageRef: PageRef,
+    domain: string | undefined,
+    timeout: TimeoutExecutionContext,
+  ): Promise<OpensteerCookieQueryOutput> {
+    const pageInfo = await timeout.runStep(() => this.requireEngine().getPageInfo({ pageRef }));
+    const effectiveDomain = domain ?? hostnameFromUrl(pageInfo.url);
+    const cookies = await timeout.runStep(() =>
+      this.requireEngine().getCookies({
+        sessionRef,
+      }),
+    );
+    const filtered = filterCookieRecordsByDomain(cookies, effectiveDomain);
+    return {
+      ...(effectiveDomain === undefined ? {} : { domain: effectiveDomain }),
+      cookies: [...filtered].sort(compareCookieRecords),
+    };
+  }
+
+  private async readStorageQueryOutput(
+    sessionRef: SessionRef,
+    pageRef: PageRef,
+    domain: string | undefined,
+    timeout: TimeoutExecutionContext,
+  ): Promise<OpensteerStorageQueryOutput> {
+    const pageInfo = await timeout.runStep(() => this.requireEngine().getPageInfo({ pageRef }));
+    const effectiveDomain = domain ?? hostnameFromUrl(pageInfo.url);
+    const snapshot = await timeout.runStep(() =>
+      this.requireEngine().getStorageSnapshot({
+        sessionRef,
+        includeSessionStorage: true,
+        includeIndexedDb: false,
+      }),
+    );
+    return {
+      domains: collapseStorageSnapshot(snapshot, effectiveDomain),
+    };
+  }
+
+  private async readBrowserStateOutput(
+    sessionRef: SessionRef,
+    pageRef: PageRef,
+    domain: string | undefined,
+    timeout: TimeoutExecutionContext,
+  ): Promise<OpensteerStateQueryOutput> {
+    const pageInfo = await timeout.runStep(() => this.requireEngine().getPageInfo({ pageRef }));
+    const effectiveDomain = domain ?? hostnameFromUrl(pageInfo.url);
+    const cookies = await timeout.runStep(() =>
+      this.requireEngine().getCookies({
+        sessionRef,
+      }),
+    );
+    const storage = await timeout.runStep(() =>
+      this.requireEngine().getStorageSnapshot({
+        sessionRef,
+        includeSessionStorage: true,
+        includeIndexedDb: false,
+      }),
+    );
+    const pageState = await timeout.runStep(() =>
+      this.requireEngine().evaluatePage({
+        pageRef,
+        script: CAPTURE_PAGE_STATE_SCRIPT,
+        args: [
+          {
+            globalNames: DEFAULT_STATE_GLOBAL_NAMES,
           },
-        },
-      );
+        ],
+      }),
+    );
+
+    const currentPageDomain = hostnameFromUrl(pageInfo.url);
+    return {
+      domains: buildBrowserStateDomains({
+        ...(effectiveDomain === undefined ? {} : { effectiveDomain }),
+        ...(currentPageDomain === undefined ? {} : { currentPageDomain }),
+        cookies,
+        storage,
+        pageState: pageState.data,
+      }),
+    };
+  }
+
+  private async executeNetworkReplay(
+    source: NetworkQueryRecord,
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly followRedirects?: boolean;
+    },
+    timeout: TimeoutExecutionContext,
+    options: {
+      readonly pageRef?: PageRef;
+    },
+  ): Promise<OpensteerNetworkReplayOutput> {
+    const fingerprint = buildCapturedRecordSuccessFingerprint(source);
+    const attempts: OpensteerReplayAttempt[] = [];
+    let lastOutput: OpensteerRawRequestOutput | undefined;
+
+    for (const transport of REPLAY_TRANSPORT_LADDER) {
+      const attemptStartedAt = Date.now();
+      try {
+        const output = await this.executeReplayTransportAttempt(
+          transport,
+          request,
+          timeout,
+          options.pageRef,
+        );
+        lastOutput = output;
+        const ok = matchesSuccessFingerprintFromProtocolResponse(output.response, fingerprint);
+        attempts.push({
+          transport,
+          status: output.response.status,
+          ok,
+          durationMs: Date.now() - attemptStartedAt,
+        });
+        if (ok) {
+          const fallbackNote =
+            attempts.length > 1 ? buildReplayFallbackNote(attempts, transport) : undefined;
+          const previewData = toStructuredPreviewData(output.data);
+          return {
+            recordId: source.recordId,
+            transport,
+            attempts,
+            response: output.response,
+            ...(previewData === undefined ? {} : { data: previewData }),
+            ...(fallbackNote === undefined ? {} : { note: fallbackNote }),
+          };
+        }
+      } catch (error) {
+        attempts.push({
+          transport,
+          ok: false,
+          durationMs: Date.now() - attemptStartedAt,
+          error: normalizeRuntimeErrorMessage(error),
+        });
+      }
     }
-    return report;
+
+    const previewData = toStructuredPreviewData(lastOutput?.data);
+    return {
+      recordId: source.recordId,
+      attempts,
+      ...(lastOutput?.response === undefined ? {} : { response: lastOutput.response }),
+      ...(previewData === undefined ? {} : { data: previewData }),
+      note: "all replay transports failed to reproduce the captured response",
+    };
+  }
+
+  private async executeSessionFetch(
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly followRedirects?: boolean;
+    },
+    input: OpensteerSessionFetchInput,
+    timeout: TimeoutExecutionContext,
+  ): Promise<OpensteerSessionFetchOutput> {
+    const attempts: OpensteerReplayAttempt[] = [];
+    let lastOutput: OpensteerRawRequestOutput | undefined;
+    const ladder = resolveSessionFetchTransportLadder(input.transport);
+
+    for (const transport of ladder) {
+      const attemptStartedAt = Date.now();
+      try {
+        const output = await this.executeFetchTransportAttempt(transport, request, timeout, input);
+        lastOutput = output;
+        const note = detectChallengeNoteFromResponse(output.response);
+        const ok = shouldAcceptFetchResponse(output.response, transport, note);
+        attempts.push({
+          transport,
+          status: output.response.status,
+          ok,
+          durationMs: Date.now() - attemptStartedAt,
+          ...(note === undefined ? {} : { note }),
+        });
+        if (ok) {
+          const fallbackNote =
+            attempts.length > 1 ? buildReplayFallbackNote(attempts, transport) : undefined;
+          const previewData = toStructuredPreviewData(output.data);
+          return {
+            transport,
+            attempts,
+            response: output.response,
+            ...(previewData === undefined ? {} : { data: previewData }),
+            ...(fallbackNote === undefined ? {} : { note: fallbackNote }),
+          };
+        }
+      } catch (error) {
+        attempts.push({
+          transport,
+          ok: false,
+          durationMs: Date.now() - attemptStartedAt,
+          error: normalizeRuntimeErrorMessage(error),
+        });
+      }
+    }
+
+    const previewData = toStructuredPreviewData(lastOutput?.data);
+    return {
+      attempts,
+      ...(lastOutput?.response === undefined ? {} : { response: lastOutput.response }),
+      ...(previewData === undefined ? {} : { data: previewData }),
+      note: "no transport completed successfully",
+    };
+  }
+
+  private async executeReplayTransportAttempt(
+    transport: TransportKind,
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly followRedirects?: boolean;
+    },
+    timeout: TimeoutExecutionContext,
+    explicitPageRef?: PageRef,
+  ): Promise<OpensteerRawRequestOutput> {
+    const normalized = finalizeMaterializedTransportRequest(request, transport);
+    switch (transport) {
+      case "direct-http":
+        return this.executeDirectTransportRequestWithPersistence(normalized, timeout);
+      case "matched-tls":
+        return this.executeMatchedTlsTransportRequestWithPersistence(
+          normalized,
+          timeout,
+          this.currentBinding(),
+        );
+      case "context-http":
+        return this.executeContextTransportRequestWithPersistence(
+          normalized,
+          timeout,
+          this.currentBinding(),
+        );
+      case "page-http": {
+        const binding = await this.resolvePageHttpBinding(
+          normalized.url,
+          explicitPageRef ?? this.currentBinding()?.pageRef,
+          false,
+        );
+        return this.executePageHttpTransportRequestWithPersistence(normalized, timeout, binding);
+      }
+      case "session-http": {
+        const binding = this.currentBinding() ?? (await this.ensureBrowserTransportBinding());
+        return this.executeTransportRequestWithJournal(normalized, timeout, binding.sessionRef);
+      }
+    }
+  }
+
+  private async executeFetchTransportAttempt(
+    transport: TransportKind,
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly followRedirects?: boolean;
+    },
+    timeout: TimeoutExecutionContext,
+    input: OpensteerSessionFetchInput,
+  ): Promise<OpensteerRawRequestOutput> {
+    let prepared = finalizeMaterializedTransportRequest(request, transport);
+    if (
+      input.cookies !== false &&
+      transport === "direct-http" &&
+      this.currentBinding() !== undefined
+    ) {
+      const cookies = await this.requireEngine().getCookies({
+        sessionRef: this.currentBinding()!.sessionRef,
+        urls: [prepared.url],
+      });
+      prepared = applyBrowserCookiesToTransportRequest(prepared, cookies);
+    }
+    return this.executeReplayTransportAttempt(transport, prepared, timeout, input.pageRef);
   }
 
   private async resolveInteractionTraceById(traceId: string): Promise<InteractionTraceRecord> {
@@ -6137,213 +3569,6 @@ export class OpensteerSessionRuntime {
     };
   }
 
-  private async restoreReverseStateSnapshots(
-    snapshots: readonly OpensteerStateSnapshot[],
-    candidate: OpensteerReverseCandidateRecord,
-    timeout: TimeoutExecutionContext,
-    explicitPageRef: PageRef | undefined,
-  ): Promise<void> {
-    if (snapshots.length === 0) {
-      return;
-    }
-
-    const pageRef = explicitPageRef ?? (await this.ensurePageRef());
-    const engine = this.requireEngine();
-    const pageInfo = await timeout.runStep(() => engine.getPageInfo({ pageRef }));
-    const cookies = mergeReverseStateSnapshotCookies(snapshots, pageInfo.sessionRef);
-    if (cookies.length > 0) {
-      await timeout.runStep(() =>
-        engine.setCookies({
-          sessionRef: pageInfo.sessionRef,
-          cookies,
-        }),
-      );
-    }
-
-    const currentPageOrigin = originFromUrl(pageInfo.url);
-    const targetUrl = resolveReverseReplayStateRestoreUrl(candidate, snapshots, pageInfo.url);
-    const targetOrigin = originFromUrl(targetUrl);
-    const localStorageByOrigin = mergeReverseStateSnapshotLocalStorage(snapshots);
-    const sessionStorageByOrigin = mergeReverseStateSnapshotSessionStorage(snapshots);
-
-    if (
-      targetOrigin !== undefined &&
-      (localStorageByOrigin.has(targetOrigin) || sessionStorageByOrigin.has(targetOrigin))
-    ) {
-      if (currentPageOrigin !== targetOrigin) {
-        await this.navigatePage(
-          {
-            operation: "page.goto",
-            pageRef,
-            url: buildReverseStateRestoreNavigationUrl(targetUrl, targetOrigin),
-          },
-          timeout,
-        );
-      }
-      await timeout.runStep(() =>
-        engine.evaluatePage({
-          pageRef,
-          script: RESTORE_PAGE_STORAGE_SCRIPT,
-          args: [
-            {
-              ...(localStorageByOrigin.has(targetOrigin)
-                ? { localStorageEntries: localStorageByOrigin.get(targetOrigin) ?? [] }
-                : {}),
-              ...(sessionStorageByOrigin.has(targetOrigin)
-                ? { sessionStorageEntries: sessionStorageByOrigin.get(targetOrigin) ?? [] }
-                : {}),
-            },
-          ],
-        }),
-      );
-      localStorageByOrigin.delete(targetOrigin);
-      sessionStorageByOrigin.delete(targetOrigin);
-    }
-
-    for (const [origin, localStorageEntries] of localStorageByOrigin.entries()) {
-      const createdPage = await timeout.runStep(() =>
-        engine.createPage({
-          sessionRef: pageInfo.sessionRef,
-        }),
-      );
-      const restorePageRef = createdPage.data.pageRef;
-      try {
-        await this.navigatePage(
-          {
-            operation: "page.goto",
-            pageRef: restorePageRef,
-            url: buildReverseStateRestoreNavigationUrl(undefined, origin),
-          },
-          timeout,
-        );
-        await timeout.runStep(() =>
-          engine.evaluatePage({
-            pageRef: restorePageRef,
-            script: RESTORE_PAGE_STORAGE_SCRIPT,
-            args: [
-              {
-                localStorageEntries,
-              },
-            ],
-          }),
-        );
-      } finally {
-        await engine.closePage({ pageRef: restorePageRef }).catch(() => undefined);
-      }
-    }
-  }
-
-  private async waitForObservedReplayRecord(
-    capturedRecord: NetworkQueryRecord,
-    baselineRequestIds: ReadonlySet<string>,
-    timeout: TimeoutExecutionContext,
-    pageRef: PageRef,
-  ): Promise<NetworkQueryRecord | undefined> {
-    const method = capturedRecord.record.method;
-    const url = capturedRecord.record.url;
-    while (true) {
-      timeout.throwIfAborted();
-      const records = await this.queryLiveNetwork(
-        {
-          pageRef,
-          url,
-          method,
-          includeBodies: true,
-          limit: 50,
-        },
-        timeout,
-        {
-          ignoreLimit: true,
-          redactSecretHeaders: false,
-        },
-      );
-      const match = [...records]
-        .reverse()
-        .find(
-          (record) =>
-            !baselineRequestIds.has(record.record.requestId) &&
-            this.isObservedReplayRecordSettled(record),
-        );
-      if (match !== undefined) {
-        return match;
-      }
-      const remainingMs = timeout.remainingMs();
-      if (remainingMs !== undefined && remainingMs <= 0) {
-        return undefined;
-      }
-      await runtimeDelay(Math.min(200, remainingMs ?? 200));
-    }
-  }
-
-  private async waitForMatchingReplayRecord(
-    filter: {
-      readonly channel?: OpensteerReverseCandidateRecord["channel"]["kind"];
-      readonly method?: string;
-      readonly url?: string;
-      readonly host?: string;
-      readonly path?: string;
-      readonly status?: number;
-      readonly text?: string;
-    },
-    baselineRequestIds: ReadonlySet<string>,
-    timeout: TimeoutExecutionContext,
-    pageRef: PageRef,
-  ): Promise<NetworkQueryRecord | undefined> {
-    while (true) {
-      timeout.throwIfAborted();
-      const records = await this.queryLiveNetwork(
-        {
-          pageRef,
-          ...(filter.url === undefined ? {} : { url: filter.url }),
-          ...(filter.host === undefined ? {} : { hostname: filter.host }),
-          ...(filter.path === undefined ? {} : { path: filter.path }),
-          ...(filter.method === undefined ? {} : { method: filter.method }),
-          includeBodies: true,
-          limit: 100,
-        },
-        timeout,
-        {
-          ignoreLimit: true,
-          redactSecretHeaders: false,
-        },
-      );
-      const match = [...records]
-        .reverse()
-        .find(
-          (record) =>
-            !baselineRequestIds.has(record.record.requestId) &&
-            this.isObservedReplayRecordSettled(record) &&
-            matchesReverseAwaitRecordFilter(record, filter),
-        );
-      if (match !== undefined) {
-        return match;
-      }
-      const remainingMs = timeout.remainingMs();
-      if (remainingMs !== undefined && remainingMs <= 0) {
-        return undefined;
-      }
-      await runtimeDelay(Math.min(200, remainingMs ?? 200));
-    }
-  }
-
-  private isObservedReplayRecordSettled(record: NetworkQueryRecord): boolean {
-    if (record.record.captureState !== "complete") {
-      return false;
-    }
-    switch (record.record.kind) {
-      case "http":
-      case "event-stream":
-        return (
-          record.record.status !== undefined ||
-          record.record.responseBodyState === "complete" ||
-          record.record.responseBodyState === "failed" ||
-          record.record.responseBodyState === "skipped"
-        );
-      case "websocket":
-        return true;
-    }
-  }
-
   private async replayInteractionTraceById(
     traceId: string,
     explicitPageRef: PageRef | undefined,
@@ -6386,7 +3611,7 @@ export class OpensteerSessionRuntime {
       readonly hostname?: string;
       readonly path?: string;
       readonly method?: string;
-      readonly status?: string;
+      readonly status?: string | number;
       readonly resourceType?: NetworkQueryRecord["record"]["resourceType"];
       readonly includeBodies: boolean;
       readonly includeCurrentPageOnly?: boolean;
@@ -6412,7 +3637,7 @@ export class OpensteerSessionRuntime {
       ...(input.hostname === undefined ? {} : { hostname: input.hostname }),
       ...(input.path === undefined ? {} : { path: input.path }),
       ...(input.method === undefined ? {} : { method: input.method }),
-      ...(input.status === undefined ? {} : { status: input.status }),
+      ...(input.status === undefined ? {} : { status: normalizeNetworkStatusFilter(input.status) }),
       ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
       includeBodies: input.includeBodies,
       signal,
@@ -6427,7 +3652,7 @@ export class OpensteerSessionRuntime {
       readonly hostname?: string;
       readonly path?: string;
       readonly method?: string;
-      readonly status?: string;
+      readonly status?: string | number;
       readonly resourceType?: NetworkQueryRecord["record"]["resourceType"];
       readonly includeBodies: boolean;
       readonly includeCurrentPageOnly?: boolean;
@@ -6556,21 +3781,6 @@ export class OpensteerSessionRuntime {
     };
   }
 
-  private toQueryInputFromTagInput(input: OpensteerNetworkTagInput): OpensteerNetworkQueryInput {
-    return {
-      ...(input.pageRef === undefined ? {} : { pageRef: input.pageRef }),
-      ...(input.recordId === undefined ? {} : { recordId: input.recordId }),
-      ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
-      ...(input.capture === undefined ? {} : { capture: input.capture }),
-      ...(input.url === undefined ? {} : { url: input.url }),
-      ...(input.hostname === undefined ? {} : { hostname: input.hostname }),
-      ...(input.path === undefined ? {} : { path: input.path }),
-      ...(input.method === undefined ? {} : { method: input.method }),
-      ...(input.status === undefined ? {} : { status: input.status }),
-      ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
-    };
-  }
-
   private async readLiveRequestIds(
     timeout: TimeoutExecutionContext,
     options: {
@@ -6652,7 +3862,7 @@ export class OpensteerSessionRuntime {
     if (recordId === undefined) {
       throw new OpensteerProtocolError(
         "operation-failed",
-        "request.raw completed but no live network record was journaled for the transport request",
+        "browser transport completed but no live network record was journaled for the request",
       );
     }
     return {
@@ -6689,79 +3899,6 @@ export class OpensteerSessionRuntime {
     };
   }
 
-  private requireExistingBrowserBindingForRecovery(): RuntimeBrowserBinding {
-    const binding = this.currentBinding();
-    if (binding !== undefined) {
-      return binding;
-    }
-
-    throw new OpensteerProtocolError(
-      "browser-required",
-      "auth recovery requires a live browser session, but none is currently attached or open",
-      {
-        details: {
-          kind: "auth-recovery",
-        },
-      },
-    );
-  }
-
-  private async executeRawTransportRequest(
-    input: OpensteerRawRequestInput,
-    timeout: TimeoutExecutionContext,
-    binding: RuntimeBrowserBinding | undefined,
-  ): Promise<OpensteerRawRequestOutput> {
-    const transport = normalizeTransportKind(input.transport ?? "context-http");
-    const request = finalizeMaterializedTransportRequest(
-      this.applyCookieJarToTransportRequest(buildRawTransportRequest(input), input.cookieJar),
-      transport,
-    );
-
-    if (transport === "direct-http") {
-      return this.executeDirectTransportRequestWithPersistence(request, timeout, input.cookieJar);
-    }
-
-    if (transport === "matched-tls") {
-      return this.executeMatchedTlsTransportRequestWithPersistence(
-        request,
-        timeout,
-        binding,
-        input.cookieJar,
-      );
-    }
-
-    if (transport === "context-http") {
-      return this.executeContextTransportRequestWithPersistence(
-        request,
-        timeout,
-        binding,
-        input.cookieJar,
-      );
-    }
-
-    if (transport === "page-http") {
-      const pageBinding = await this.resolvePageHttpBinding(request.url, input.pageRef, false);
-      return this.executePageHttpTransportRequestWithPersistence(
-        request,
-        timeout,
-        pageBinding,
-        input.cookieJar,
-      );
-    }
-
-    if (binding === undefined) {
-      throw new Error("Opensteer session is not initialized");
-    }
-
-    const output = await this.executeTransportRequestWithJournal(
-      request,
-      timeout,
-      binding.sessionRef,
-    );
-    this.updateCookieJarFromResponse(input.cookieJar, output.response, request.url);
-    return output;
-  }
-
   private async executeDirectTransportRequestWithPersistence(
     request: {
       readonly method: string;
@@ -6771,15 +3908,9 @@ export class OpensteerSessionRuntime {
       readonly followRedirects?: boolean;
     },
     timeout: TimeoutExecutionContext,
-    cookieJarName?: string,
   ): Promise<OpensteerRawRequestOutput> {
     const response = await timeout.runStep(() =>
       executeDirectTransportRequest(request, timeout.signal),
-    );
-    this.updateCookieJarFromResponse(
-      cookieJarName,
-      toProtocolRequestResponseResult(response),
-      request.url,
     );
     const recordId = await this.persistDirectTransportRecord(request, response, undefined);
     return {
@@ -6802,14 +3933,8 @@ export class OpensteerSessionRuntime {
     },
     timeout: TimeoutExecutionContext,
     binding: RuntimeBrowserBinding,
-    cookieJarName?: string,
   ): Promise<OpensteerRawRequestOutput> {
     const response = await this.executePageHttpTransportRequest(request, timeout, binding);
-    this.updateCookieJarFromResponse(
-      cookieJarName,
-      toProtocolRequestResponseResult(response),
-      request.url,
-    );
     const recordId = await this.persistDirectTransportRecord(
       request,
       response,
@@ -6837,14 +3962,8 @@ export class OpensteerSessionRuntime {
     },
     timeout: TimeoutExecutionContext,
     binding: RuntimeBrowserBinding | undefined,
-    cookieJarName?: string,
   ): Promise<OpensteerRawRequestOutput> {
     const response = await this.executeContextTransportRequest(request, timeout, binding);
-    this.updateCookieJarFromResponse(
-      cookieJarName,
-      toProtocolRequestResponseResult(response),
-      request.url,
-    );
     const recordId = await this.persistDirectTransportRecord(
       request,
       response,
@@ -6872,14 +3991,8 @@ export class OpensteerSessionRuntime {
     },
     timeout: TimeoutExecutionContext,
     binding: RuntimeBrowserBinding | undefined,
-    cookieJarName?: string,
   ): Promise<OpensteerRawRequestOutput> {
     const response = await this.executeMatchedTlsTransportRequest(request, timeout, binding);
-    this.updateCookieJarFromResponse(
-      cookieJarName,
-      toProtocolRequestResponseResult(response),
-      request.url,
-    );
     const recordId = await this.persistDirectTransportRecord(
       request,
       response,
@@ -6936,75 +4049,6 @@ export class OpensteerSessionRuntime {
       }),
     );
     return toPageHttpTransportResponse(result.data);
-  }
-
-  private async executePageHttpEventStreamRequest(
-    request: {
-      readonly method: string;
-      readonly url: string;
-      readonly headers?: readonly HeaderEntry[];
-      readonly body?: BrowserBodyPayload;
-      readonly followRedirects?: boolean;
-    },
-    timeout: TimeoutExecutionContext,
-    binding: RuntimeBrowserBinding,
-  ): Promise<{
-    readonly status: number;
-    readonly firstChunkPreview?: string;
-  }> {
-    const remainingMs = timeout.remainingMs();
-    const result = await timeout.runStep(() =>
-      this.requireEngine().evaluatePage({
-        pageRef: binding.pageRef,
-        script: PAGE_HTTP_EVENT_STREAM_SCRIPT,
-        args: [
-          {
-            url: request.url,
-            method: request.method,
-            headers: request.headers ?? [],
-            bodyBase64:
-              request.body === undefined
-                ? undefined
-                : Buffer.from(request.body.bytes).toString("base64"),
-            followRedirects: request.followRedirects !== false,
-            readTimeoutMs: computeStreamReadTimeoutMs(timeout),
-          },
-        ],
-        ...(remainingMs === undefined ? {} : { timeoutMs: remainingMs }),
-      }),
-    );
-    return toPageHttpEventStreamResponse(result.data);
-  }
-
-  private async executePageHttpWebSocketRequest(
-    request: {
-      readonly method: string;
-      readonly url: string;
-      readonly headers?: readonly HeaderEntry[];
-    },
-    timeout: TimeoutExecutionContext,
-    binding: RuntimeBrowserBinding,
-  ): Promise<{
-    readonly opened: boolean;
-    readonly messageCount: number;
-    readonly error?: string;
-  }> {
-    const remainingMs = timeout.remainingMs();
-    const result = await timeout.runStep(() =>
-      this.requireEngine().evaluatePage({
-        pageRef: binding.pageRef,
-        script: PAGE_HTTP_WEBSOCKET_SCRIPT,
-        args: [
-          {
-            url: request.url,
-            protocols: parseWebSocketProtocols(request.headers),
-            waitMs: computeStreamReadTimeoutMs(timeout),
-          },
-        ],
-        ...(remainingMs === undefined ? {} : { timeoutMs: remainingMs }),
-      }),
-    );
-    return toPageHttpWebSocketResponse(result.data);
   }
 
   private async executeContextTransportRequest(
@@ -7126,803 +4170,6 @@ export class OpensteerSessionRuntime {
     return recordId;
   }
 
-  private async executeResolvedRequestPlan(
-    plan: RequestPlanRecord,
-    input: OpensteerRequestExecuteInput,
-    timeout: TimeoutExecutionContext,
-    binding: RuntimeBrowserBinding | undefined,
-  ): Promise<OpensteerRequestExecuteOutput> {
-    const prepareBinding =
-      plan.payload.recipes?.prepare === undefined
-        ? undefined
-        : {
-            source: "recipe" as const,
-            ...plan.payload.recipes.prepare,
-          };
-    let resolvedInput = input;
-    let executionOverrides: OpensteerAuthRecipeRetryOverrides | undefined;
-    if (prepareBinding !== undefined) {
-      const prepareOutput = await this.executeConfiguredRecipeBinding(prepareBinding, timeout);
-      resolvedInput = mergeExecutionInputOverrides(resolvedInput, prepareOutput.overrides);
-      executionOverrides = mergeAuthRecipeOverrides(executionOverrides, prepareOutput.overrides);
-    }
-
-    const cookieJarName = resolvedInput.cookieJar ?? plan.payload.transport.cookieJar;
-    const transportKind = normalizeTransportKind(plan.payload.transport.kind);
-    let transportRequest = this.applyCookieJarToTransportRequest(
-      applyTransportRequestOverrides(
-        buildTransportRequestFromPlan(plan, resolvedInput),
-        executionOverrides,
-      ),
-      cookieJarName,
-    );
-    transportRequest = finalizeMaterializedTransportRequest(transportRequest, transportKind);
-    let current = await this.executePlanTransportRequest(
-      plan,
-      transportRequest,
-      timeout,
-      binding,
-      cookieJarName,
-    );
-    const validateResponse = input.validateResponse ?? true;
-    const recoverBinding = resolveRecoverRecipeBinding(plan);
-    const matchedFailurePolicy =
-      recoverBinding !== undefined &&
-      matchesFailurePolicy(recoverBinding.failurePolicy, current.output.response);
-
-    let recoveryOutput: OpensteerRunRecipeOutput | undefined;
-    if (matchedFailurePolicy) {
-      if (prepareBinding?.cachePolicy === "untilFailure") {
-        this.clearRecipeBindingCache(prepareBinding);
-      }
-
-      try {
-        recoveryOutput = await this.executeConfiguredRecipeBinding(recoverBinding, timeout);
-      } catch (error) {
-        if (error instanceof OpensteerProtocolError && error.code === "browser-required") {
-          throw error;
-        }
-        throw new OpensteerProtocolError(
-          "auth-recovery-failed",
-          `request plan ${plan.key}@${plan.version} failed during deterministic recovery`,
-          {
-            cause: error,
-            details: {
-              key: plan.key,
-              version: plan.version,
-              recipe: recoverBinding.recipe,
-            },
-          },
-        );
-      }
-
-      resolvedInput = mergeExecutionInputOverrides(resolvedInput, recoveryOutput.overrides);
-      executionOverrides = mergeAuthRecipeOverrides(executionOverrides, recoveryOutput.overrides);
-      transportRequest = this.applyCookieJarToTransportRequest(
-        applyTransportRequestOverrides(
-          buildTransportRequestFromPlan(plan, resolvedInput),
-          executionOverrides,
-        ),
-        cookieJarName,
-      );
-      transportRequest = finalizeMaterializedTransportRequest(transportRequest, transportKind);
-      current = await this.executePlanTransportRequest(
-        plan,
-        transportRequest,
-        timeout,
-        binding,
-        cookieJarName,
-      );
-      if (matchesFailurePolicy(recoverBinding.failurePolicy, current.output.response)) {
-        throw new OpensteerProtocolError(
-          "auth-recovery-failed",
-          `request plan ${plan.key}@${plan.version} still matched its recovery failure policy after deterministic recovery`,
-          {
-            details: {
-              key: plan.key,
-              version: plan.version,
-              recipe: {
-                key: recoveryOutput.recipe.key,
-                version: recoveryOutput.recipe.version,
-              },
-            },
-          },
-        );
-      }
-    }
-
-    if (plan.payload.retryPolicy !== undefined) {
-      current = await this.retryResolvedRequestPlan(
-        plan,
-        plan.payload.retryPolicy,
-        current,
-        transportRequest,
-        timeout,
-        binding,
-        cookieJarName,
-      );
-    }
-
-    if (validateResponse) {
-      assertResponseMatchesPlan(plan, current.transportResponse);
-      await this.touchRequestPlanFreshness(plan);
-    }
-
-    return {
-      ...current.output,
-      ...(recoverBinding === undefined
-        ? {}
-        : {
-            recovery: {
-              attempted: matchedFailurePolicy,
-              succeeded: matchedFailurePolicy,
-              matchedFailurePolicy,
-              ...(recoveryOutput === undefined
-                ? {}
-                : {
-                    recipe: {
-                      key: recoveryOutput.recipe.key,
-                      version: recoveryOutput.recipe.version,
-                    },
-                  }),
-            },
-          }),
-    };
-  }
-
-  private async executePlanTransportRequest(
-    plan: RequestPlanRecord,
-    request: {
-      readonly method: string;
-      readonly url: string;
-      readonly headers?: readonly HeaderEntry[];
-      readonly body?: BrowserBodyPayload;
-      readonly followRedirects?: boolean;
-    },
-    timeout: TimeoutExecutionContext,
-    binding: RuntimeBrowserBinding | undefined,
-    cookieJarName: string | undefined,
-  ): Promise<{
-    readonly output: OpensteerRequestExecuteOutput;
-    readonly transportResponse: {
-      readonly url: string;
-      readonly status: number;
-      readonly statusText: string;
-      readonly headers: readonly HeaderEntry[];
-      readonly body?: BrowserBodyPayload;
-      readonly redirected: boolean;
-    };
-  }> {
-    const transportKind = normalizeTransportKind(plan.payload.transport.kind);
-    if (transportKind === "session-http") {
-      const liveBinding = binding ?? (await this.ensureBrowserTransportBinding());
-      const baselineRequestIds = await this.readLiveRequestIds(timeout, {
-        includeCurrentPageOnly: false,
-      });
-      const response = await timeout.runStep(() =>
-        this.requireEngine().executeRequest({
-          sessionRef: liveBinding.sessionRef,
-          request,
-          signal: timeout.signal,
-        }),
-      );
-      await this.observeLiveTransportDelta(timeout, baselineRequestIds, {
-        includeCurrentPageOnly: false,
-      });
-      this.updateCookieJarFromResponse(
-        cookieJarName,
-        toProtocolRequestResponseResult(response.data),
-        request.url,
-      );
-      return {
-        output: buildPlanExecuteOutput(plan, request, response.data),
-        transportResponse: response.data,
-      };
-    }
-
-    if (transportKind === "context-http") {
-      const response = await this.executeContextTransportRequest(request, timeout, binding);
-      this.updateCookieJarFromResponse(
-        cookieJarName,
-        toProtocolRequestResponseResult(response),
-        request.url,
-      );
-      return {
-        output: buildPlanExecuteOutput(plan, request, response),
-        transportResponse: response,
-      };
-    }
-
-    if (transportKind === "matched-tls") {
-      const response = await this.executeMatchedTlsTransportRequest(request, timeout, binding);
-      this.updateCookieJarFromResponse(
-        cookieJarName,
-        toProtocolRequestResponseResult(response),
-        request.url,
-      );
-      return {
-        output: buildPlanExecuteOutput(plan, request, response),
-        transportResponse: response,
-      };
-    }
-
-    if (transportKind === "page-http") {
-      const pageBinding = await this.resolvePageHttpBinding(
-        request.url,
-        binding?.pageRef,
-        plan.payload.transport.requireSameOrigin ?? false,
-      );
-      const response = await this.executePageHttpTransportRequest(request, timeout, pageBinding);
-      this.updateCookieJarFromResponse(
-        cookieJarName,
-        toProtocolRequestResponseResult(response),
-        request.url,
-      );
-      return {
-        output: buildPlanExecuteOutput(plan, request, response),
-        transportResponse: response,
-      };
-    }
-
-    const response = await timeout.runStep(() =>
-      executeDirectTransportRequest(request, timeout.signal),
-    );
-    this.updateCookieJarFromResponse(
-      cookieJarName,
-      toProtocolRequestResponseResult(response),
-      request.url,
-    );
-    return {
-      output: buildPlanExecuteOutput(plan, request, response),
-      transportResponse: response,
-    };
-  }
-
-  private async touchRequestPlanFreshness(plan: RequestPlanRecord): Promise<void> {
-    const freshness = touchFreshness(plan.freshness);
-    await this.requireRoot().registry.requestPlans.updateFreshness({
-      id: plan.id,
-      ...(freshness === undefined ? {} : { freshness }),
-    });
-  }
-
-  private async executeConfiguredRecipeBinding(
-    binding: ResolvedRecipeBinding,
-    timeout: TimeoutExecutionContext,
-  ): Promise<OpensteerRunRecipeOutput> {
-    const cacheKey = `${binding.source}:${binding.recipe.key}@${binding.recipe.version ?? "latest"}`;
-    if (binding.cachePolicy === "untilFailure") {
-      const cached = this.recipeCache.get(cacheKey);
-      if (cached !== undefined) {
-        return cached;
-      }
-    }
-
-    const output = await this.executeRecipeRecord(
-      await this.resolveRecipeRecord(binding.source, binding.recipe.key, binding.recipe.version),
-      timeout,
-      {},
-      binding.source,
-    );
-    if (binding.cachePolicy === "untilFailure") {
-      this.recipeCache.set(cacheKey, output);
-    }
-    return output;
-  }
-
-  private clearRecipeBindingCache(binding: ResolvedRecipeBinding): void {
-    const cacheKey = `${binding.source}:${binding.recipe.key}@${binding.recipe.version ?? "latest"}`;
-    this.recipeCache.delete(cacheKey);
-  }
-
-  private async retryResolvedRequestPlan(
-    plan: RequestPlanRecord,
-    retryPolicy: NonNullable<RequestPlanRecord["payload"]["retryPolicy"]>,
-    current: {
-      readonly output: OpensteerRequestExecuteOutput;
-      readonly transportResponse: {
-        readonly url: string;
-        readonly status: number;
-        readonly statusText: string;
-        readonly headers: readonly HeaderEntry[];
-        readonly body?: BrowserBodyPayload;
-        readonly redirected: boolean;
-      };
-    },
-    request: {
-      readonly method: string;
-      readonly url: string;
-      readonly headers?: readonly HeaderEntry[];
-      readonly body?: BrowserBodyPayload;
-      readonly followRedirects?: boolean;
-    },
-    timeout: TimeoutExecutionContext,
-    binding: RuntimeBrowserBinding | undefined,
-    cookieJarName: string | undefined,
-  ) {
-    if (
-      retryPolicy.failurePolicy === undefined ||
-      retryPolicy.maxRetries <= 0 ||
-      !matchesFailurePolicy(retryPolicy.failurePolicy, current.output.response)
-    ) {
-      return current;
-    }
-
-    let latest = current;
-    for (let attempt = 0; attempt < retryPolicy.maxRetries; attempt += 1) {
-      const delayMs = resolveRetryDelayMs(retryPolicy, latest.output.response, attempt);
-      if (delayMs > 0) {
-        await delayWithSignal(delayMs, timeout.signal);
-      }
-      latest = await this.executePlanTransportRequest(
-        plan,
-        request,
-        timeout,
-        binding,
-        cookieJarName,
-      );
-      if (!matchesFailurePolicy(retryPolicy.failurePolicy, latest.output.response)) {
-        break;
-      }
-    }
-
-    return latest;
-  }
-
-  private async resolveRecipeRecord(
-    kind: RecipeRegistryKind,
-    key: string,
-    version: string | undefined,
-  ): Promise<RecipeRecord | AuthRecipeRecord> {
-    const registry =
-      kind === "auth-recipe"
-        ? this.requireRoot().registry.authRecipes
-        : this.requireRoot().registry.recipes;
-    const recipe = await registry.resolve({
-      key,
-      ...(version === undefined ? {} : { version }),
-    });
-    if (recipe === undefined) {
-      const label = kind === "auth-recipe" ? "auth recipe" : "recipe";
-      throw new OpensteerProtocolError(
-        "not-found",
-        version === undefined
-          ? `${label} ${key} was not found`
-          : `${label} ${key}@${version} was not found`,
-        {
-          details: {
-            key,
-            ...(version === undefined ? {} : { version }),
-            kind,
-          },
-        },
-      );
-    }
-    return recipe;
-  }
-
-  private async runResolvedRecipe(
-    kind: RecipeRegistryKind,
-    input: OpensteerRunRecipeInput | OpensteerRunAuthRecipeInput,
-    timeout: TimeoutExecutionContext,
-  ): Promise<OpensteerRunRecipeOutput> {
-    const recipe = await this.resolveRecipeRecord(kind, input.key, input.version);
-    return this.executeRecipeRecord(recipe, timeout, input.variables ?? {}, kind);
-  }
-
-  private async executeRecipeRecord(
-    recipe: RecipeRecord | AuthRecipeRecord,
-    timeout: TimeoutExecutionContext,
-    initialVariables: Readonly<Record<string, string>>,
-    kind: RecipeRegistryKind,
-  ): Promise<OpensteerRunRecipeOutput> {
-    const variables = new Map<string, string>(Object.entries(initialVariables));
-    let overrides: OpensteerAuthRecipeRetryOverrides | undefined;
-
-    for (const [index, step] of recipe.payload.steps.entries()) {
-      const stepResult = await this.executeRecipeStep(step, variables, timeout);
-      mergeVariables(variables, stepResult.variables);
-      overrides = mergeAuthRecipeOverrides(overrides, stepResult.overrides);
-
-      await this.appendTrace({
-        operation: `${kind}.step`,
-        startedAt: Date.now(),
-        completedAt: Date.now(),
-        outcome: "ok",
-        data: {
-          recipe: {
-            key: recipe.key,
-            version: recipe.version,
-          },
-          index,
-          kind: step.kind,
-        },
-        context: buildRuntimeTraceContext({
-          sessionRef: this.sessionRef,
-          pageRef: this.pageRef,
-        }),
-      });
-    }
-
-    const outputOverrides = renderOverrides(recipe.payload.outputs, variables);
-    const renderedOverrides = mergeAuthRecipeOverrides(overrides, outputOverrides);
-
-    return {
-      recipe: {
-        id: recipe.id,
-        key: recipe.key,
-        version: recipe.version,
-      },
-      variables: Object.fromEntries(
-        [...variables.entries()].sort(([left], [right]) => left.localeCompare(right)),
-      ),
-      ...(renderedOverrides === undefined ? {} : { overrides: renderedOverrides }),
-    };
-  }
-
-  private async executeRecipeStep(
-    step: OpensteerAuthRecipeStep,
-    variables: ReadonlyMap<string, string>,
-    timeout: TimeoutExecutionContext,
-  ): Promise<{
-    readonly variables?: Readonly<Record<string, string>>;
-    readonly overrides?: OpensteerAuthRecipeRetryOverrides;
-  }> {
-    switch (step.kind) {
-      case "goto": {
-        const binding = this.requireExistingBrowserBindingForRecovery();
-        await this.navigatePage(
-          {
-            operation: "page.goto",
-            pageRef: binding.pageRef,
-            url: interpolateTemplate(step.url, variables),
-          },
-          timeout,
-        );
-        return {};
-      }
-      case "reload": {
-        const binding = this.requireExistingBrowserBindingForRecovery();
-        const remainingMs = timeout.remainingMs();
-        await timeout.runStep(() =>
-          this.requireEngine().reload({
-            pageRef: binding.pageRef,
-            ...(remainingMs === undefined ? {} : { timeoutMs: remainingMs }),
-          }),
-        );
-        await timeout.runStep(() =>
-          settleWithPolicy(this.policy.settle, {
-            operation: "page.goto",
-            trigger: "navigation",
-            engine: this.requireEngine(),
-            pageRef: binding.pageRef,
-            signal: timeout.signal,
-            remainingMs: timeout.remainingMs(),
-          }),
-        );
-        return {};
-      }
-      case "waitForUrl": {
-        const binding = this.requireExistingBrowserBindingForRecovery();
-        await pollUntil(timeout, async () => {
-          const page = await this.requireEngine().getPageInfo({ pageRef: binding.pageRef });
-          return page.url.includes(interpolateTemplate(step.includes, variables));
-        });
-        return {};
-      }
-      case "waitForNetwork": {
-        this.requireExistingBrowserBindingForRecovery();
-        const record = await pollUntilResult(timeout, async () => {
-          const matches = await this.queryLiveNetwork(
-            {
-              ...(step.url === undefined ? {} : { url: interpolateTemplate(step.url, variables) }),
-              ...(step.hostname === undefined
-                ? {}
-                : { hostname: interpolateTemplate(step.hostname, variables) }),
-              ...(step.path === undefined
-                ? {}
-                : { path: interpolateTemplate(step.path, variables) }),
-              ...(step.method === undefined
-                ? {}
-                : { method: interpolateTemplate(step.method, variables) }),
-              ...(step.status === undefined
-                ? {}
-                : { status: interpolateTemplate(step.status, variables) }),
-              includeBodies: step.includeBodies ?? false,
-              limit: 1,
-            },
-            timeout,
-          );
-          return matches[0];
-        });
-        return step.saveAs === undefined ? {} : { variables: { [step.saveAs]: record.recordId } };
-      }
-      case "waitForCookie": {
-        const value = await pollUntilResult(timeout, async () =>
-          this.readCookieValue(interpolateTemplate(step.name, variables), step.url, variables),
-        );
-        return step.saveAs === undefined ? {} : { variables: { [step.saveAs]: value } };
-      }
-      case "waitForStorage": {
-        const value = await pollUntilResult(timeout, async () =>
-          this.readStorageValue(
-            {
-              area: step.area,
-              origin: step.origin,
-              key: step.key,
-            },
-            variables,
-          ),
-        );
-        return step.saveAs === undefined ? {} : { variables: { [step.saveAs]: value } };
-      }
-      case "readCookie": {
-        const value = await this.readCookieValue(step.name, step.url, variables);
-        if (value === undefined) {
-          throw new OpensteerProtocolError(
-            "not-found",
-            `auth recipe cookie ${step.name} was not found`,
-          );
-        }
-        return {
-          variables: {
-            [step.saveAs]: value,
-          },
-        };
-      }
-      case "readStorage": {
-        const value = await this.readStorageValue(step, variables);
-        if (value === undefined) {
-          throw new OpensteerProtocolError(
-            "not-found",
-            `auth recipe storage key ${step.origin}:${step.key} was not found`,
-          );
-        }
-        return {
-          variables: {
-            [step.saveAs]: value,
-          },
-        };
-      }
-      case "evaluate": {
-        const pageRef = step.pageRef ?? this.requireExistingBrowserBindingForRecovery().pageRef;
-        const remainingMs = timeout.remainingMs();
-        const evaluated = await timeout.runStep(() =>
-          this.requireEngine().evaluatePage({
-            pageRef,
-            script: interpolateTemplate(step.script, variables),
-            ...(step.args === undefined
-              ? {}
-              : { args: step.args.map((entry) => interpolateJsonValue(entry, variables)) }),
-            ...(remainingMs === undefined ? {} : { timeoutMs: remainingMs }),
-          }),
-        );
-        if (step.saveAs === undefined) {
-          return {};
-        }
-        return {
-          variables: {
-            [step.saveAs]: stringifyRecipeVariableValue(evaluated.data),
-          },
-        };
-      }
-      case "syncCookiesToJar": {
-        await this.syncBrowserCookiesToJar(step.jar, step.urls, variables);
-        return {};
-      }
-      case "request": {
-        const output = await this.executeRecipeRequest(step.request, variables, timeout);
-        return captureRecipeResponse(step, output.response, output.data);
-      }
-      case "sessionRequest": {
-        const output = await this.executeRecipeRequest(
-          {
-            ...step.request,
-            transport: "session-http",
-          },
-          variables,
-          timeout,
-        );
-        return captureRecipeResponse(step, output.response, output.data);
-      }
-      case "directRequest": {
-        const output = await this.executeRecipeRequest(
-          {
-            ...step.request,
-            transport: "direct-http",
-          },
-          variables,
-          timeout,
-        );
-        return captureRecipeResponse(step, output.response, output.data);
-      }
-      case "solveCaptcha": {
-        const output = await this.solveCaptcha(
-          {
-            provider: step.provider,
-            apiKey: interpolateTemplate(step.apiKey, variables),
-            ...(step.pageRef === undefined ? {} : { pageRef: step.pageRef }),
-            ...(step.timeoutMs === undefined ? {} : { timeoutMs: step.timeoutMs }),
-            ...(step.type === undefined ? {} : { type: step.type }),
-            ...(step.siteKey === undefined
-              ? {}
-              : { siteKey: interpolateTemplate(step.siteKey, variables) }),
-            ...(step.pageUrl === undefined
-              ? {}
-              : { pageUrl: interpolateTemplate(step.pageUrl, variables) }),
-          },
-          {
-            signal: timeout.signal,
-          },
-        );
-        return step.saveAs === undefined ? {} : { variables: { [step.saveAs]: output.token } };
-      }
-      case "hook":
-        return this.executeAuthRecipeHook(step, variables);
-    }
-  }
-
-  private async executeAuthRecipeHook(
-    step: Extract<OpensteerAuthRecipeStep, { readonly kind: "hook" }>,
-    variables: ReadonlyMap<string, string>,
-  ): Promise<{
-    readonly variables?: Readonly<Record<string, string>>;
-    readonly overrides?: OpensteerAuthRecipeRetryOverrides;
-  }> {
-    const resolved = requireForAuthRecipeHook.resolve(step.hook.specifier, {
-      paths: [path.dirname(this.rootPath)],
-    });
-    const module = await import(pathToFileURL(resolved).href);
-    const handler = module[step.hook.export] as
-      | ((input: {
-          readonly variables: Readonly<Record<string, string>>;
-          readonly context: {
-            goto: (input: { readonly url: string }) => Promise<unknown>;
-            reload: () => Promise<unknown>;
-            queryNetwork: (
-              input?: OpensteerNetworkQueryInput,
-            ) => Promise<OpensteerNetworkQueryOutput>;
-            rawRequest: (input: OpensteerRawRequestInput) => Promise<OpensteerRawRequestOutput>;
-            getCookies: (input?: {
-              readonly urls?: readonly string[];
-            }) => Promise<readonly CookieRecord[]>;
-            getStorageSnapshot: (input?: {
-              readonly includeSessionStorage?: boolean;
-              readonly includeIndexedDb?: boolean;
-            }) => Promise<StorageSnapshot>;
-            extract: (input: OpensteerDomExtractInput) => Promise<OpensteerDomExtractOutput>;
-          };
-        }) => Promise<{
-          readonly variables?: Readonly<Record<string, string>>;
-          readonly overrides?: OpensteerAuthRecipeRetryOverrides;
-        } | void>)
-      | undefined;
-    if (typeof handler !== "function") {
-      throw new OpensteerProtocolError(
-        "invalid-request",
-        `auth recipe hook ${step.hook.specifier}#${step.hook.export} is not a function`,
-      );
-    }
-
-    const result = await handler({
-      variables: Object.fromEntries(variables),
-      context: {
-        goto: async (input) => {
-          const binding = this.requireExistingBrowserBindingForRecovery();
-          await this.runWithOperationTimeout("page.goto", (timeout) =>
-            this.navigatePage(
-              {
-                operation: "page.goto",
-                pageRef: binding.pageRef,
-                url: input.url,
-              },
-              timeout,
-            ),
-          );
-          return undefined;
-        },
-        reload: async () => {
-          const binding = this.requireExistingBrowserBindingForRecovery();
-          await this.requireEngine().reload({
-            pageRef: binding.pageRef,
-          });
-          return undefined;
-        },
-        queryNetwork: (input = {}) => this.queryNetwork(input),
-        rawRequest: (input) => this.rawRequest(input),
-        getCookies: async (input = {}) => {
-          const binding = this.requireExistingBrowserBindingForRecovery();
-          return this.requireEngine().getCookies({
-            sessionRef: binding.sessionRef,
-            ...(input.urls === undefined ? {} : { urls: input.urls }),
-          });
-        },
-        getStorageSnapshot: async (input = {}) => {
-          const binding = this.requireExistingBrowserBindingForRecovery();
-          return this.requireEngine().getStorageSnapshot({
-            sessionRef: binding.sessionRef,
-            ...(input.includeSessionStorage === undefined
-              ? {}
-              : { includeSessionStorage: input.includeSessionStorage }),
-            ...(input.includeIndexedDb === undefined
-              ? {}
-              : { includeIndexedDb: input.includeIndexedDb }),
-          });
-        },
-        extract: async (input) => {
-          this.requireExistingBrowserBindingForRecovery();
-          return this.extract(input);
-        },
-      },
-    });
-    return result ?? {};
-  }
-
-  private async executeRecipeRequest(
-    requestInput: {
-      readonly url: string;
-      readonly transport?: TransportKind;
-      readonly pageRef?: PageRef;
-      readonly cookieJar?: string;
-      readonly method?: string;
-      readonly headers?: Readonly<Record<string, string>>;
-      readonly query?: Readonly<Record<string, string>>;
-      readonly body?: OpensteerRawRequestInput["body"];
-      readonly followRedirects?: boolean;
-    },
-    variables: ReadonlyMap<string, string>,
-    timeout: TimeoutExecutionContext,
-  ): Promise<OpensteerRawRequestOutput> {
-    const transport = normalizeTransportKind(requestInput.transport ?? "context-http");
-    const cookieJar =
-      requestInput.cookieJar === undefined
-        ? undefined
-        : interpolateTemplate(requestInput.cookieJar, variables);
-    const request = finalizeMaterializedTransportRequest(
-      this.applyCookieJarToTransportRequest(buildRecipeRequest(requestInput, variables), cookieJar),
-      transport,
-    );
-
-    switch (transport) {
-      case "direct-http":
-        return this.executeDirectTransportRequestWithPersistence(request, timeout, cookieJar);
-      case "matched-tls":
-        return this.executeMatchedTlsTransportRequestWithPersistence(
-          request,
-          timeout,
-          this.requireExistingBrowserBindingForRecovery(),
-          cookieJar,
-        );
-      case "page-http": {
-        const binding = await this.resolvePageHttpBinding(request.url, requestInput.pageRef, false);
-        return this.executePageHttpTransportRequestWithPersistence(
-          request,
-          timeout,
-          binding,
-          cookieJar,
-        );
-      }
-      case "context-http": {
-        return this.executeContextTransportRequestWithPersistence(
-          request,
-          timeout,
-          this.requireExistingBrowserBindingForRecovery(),
-          cookieJar,
-        );
-      }
-      case "session-http": {
-        const binding = this.requireExistingBrowserBindingForRecovery();
-        const output = await this.executeTransportRequestWithJournal(
-          request,
-          timeout,
-          binding.sessionRef,
-        );
-        this.updateCookieJarFromResponse(cookieJar, output.response, request.url);
-        return output;
-      }
-    }
-  }
-
   private async resolvePageHttpBinding(
     requestUrl: string,
     explicitPageRef: PageRef | undefined,
@@ -7947,117 +4194,6 @@ export class OpensteerSessionRuntime {
       sessionRef: pageInfo.sessionRef,
       pageRef,
     };
-  }
-
-  private async syncBrowserCookiesToJar(
-    jarName: string,
-    urls: readonly string[] | undefined,
-    variables: ReadonlyMap<string, string>,
-  ): Promise<void> {
-    const binding = this.requireExistingBrowserBindingForRecovery();
-    const cookies = await this.requireEngine().getCookies({
-      sessionRef: binding.sessionRef,
-      ...(urls === undefined
-        ? {}
-        : { urls: urls.map((url) => interpolateTemplate(url, variables)) }),
-    });
-    this.cookieJars.set(
-      interpolateTemplate(jarName, variables),
-      cookies.map((cookie) => ({
-        name: cookie.name,
-        value: cookie.value,
-        domain: cookie.domain,
-        path: cookie.path,
-        secure: cookie.secure,
-        ...(cookie.expiresAt === undefined || cookie.expiresAt === null || cookie.expiresAt <= 0
-          ? {}
-          : { expiresAt: cookie.expiresAt }),
-      })),
-    );
-  }
-
-  private async executeAnalysisTransportRequest(
-    transport: TransportKind,
-    request: {
-      readonly method: string;
-      readonly url: string;
-      readonly headers?: readonly HeaderEntry[];
-      readonly body?: BrowserBodyPayload;
-      readonly followRedirects?: boolean;
-    },
-    timeout: TimeoutExecutionContext,
-  ): Promise<{
-    readonly url: string;
-    readonly status: number;
-    readonly statusText: string;
-    readonly headers: readonly HeaderEntry[];
-    readonly body?: BrowserBodyPayload;
-    readonly redirected: boolean;
-  }> {
-    const normalizedRequest = finalizeMaterializedTransportRequest(request, transport);
-    switch (transport) {
-      case "direct-http":
-        return timeout.runStep(() =>
-          executeDirectTransportRequest(normalizedRequest, timeout.signal),
-        );
-      case "matched-tls":
-        return this.executeMatchedTlsTransportRequest(
-          normalizedRequest,
-          timeout,
-          this.currentBinding(),
-        );
-      case "context-http":
-        return this.executeContextTransportRequest(
-          normalizedRequest,
-          timeout,
-          this.currentBinding(),
-        );
-      case "page-http":
-        return this.executePageHttpTransportRequest(
-          normalizedRequest,
-          timeout,
-          await this.resolvePageHttpBinding(
-            normalizedRequest.url,
-            this.currentBinding()?.pageRef,
-            false,
-          ),
-        );
-      case "session-http": {
-        const binding = this.currentBinding() ?? (await this.ensureBrowserTransportBinding());
-        const output = await this.executeTransportRequestWithJournal(
-          normalizedRequest,
-          timeout,
-          binding.sessionRef,
-        );
-        return {
-          url: output.response.url,
-          status: output.response.status,
-          statusText: output.response.statusText,
-          headers: output.response.headers,
-          ...(output.response.body === undefined
-            ? {}
-            : {
-                body: createBodyPayload(
-                  new Uint8Array(Buffer.from(output.response.body.data, "base64")),
-                  {
-                    encoding: output.response.body.encoding,
-                    ...(output.response.body.mimeType === undefined
-                      ? {}
-                      : { mimeType: output.response.body.mimeType }),
-                    ...(output.response.body.charset === undefined
-                      ? {}
-                      : { charset: output.response.body.charset }),
-                    truncated: output.response.body.truncated,
-                    ...(output.response.body.originalByteLength === undefined
-                      ? {}
-                      : { originalByteLength: output.response.body.originalByteLength }),
-                  },
-                ),
-              }),
-          redirected: output.response.redirected,
-        };
-      }
-    }
   }
 
   private async resolveScriptTransformSource(input: {
@@ -8147,98 +4283,12 @@ export class OpensteerSessionRuntime {
     };
   }
 
-  private applyCookieJarToTransportRequest(
-    request: {
-      readonly method: string;
-      readonly url: string;
-      readonly headers?: readonly HeaderEntry[];
-      readonly body?: BrowserBodyPayload;
-      readonly followRedirects?: boolean;
-    },
-    jarName: string | undefined,
-  ) {
-    if (jarName === undefined) {
-      return request;
-    }
-
-    const cookieHeader = serializeCookieJarHeader(this.cookieJars.get(jarName) ?? [], request.url);
-    if (cookieHeader === undefined) {
-      return request;
-    }
-
-    const headers = [...(request.headers ?? [])];
-    setHeaderValue(headers, "cookie", cookieHeader);
-    return {
-      ...request,
-      headers,
-    };
-  }
-
-  private updateCookieJarFromResponse(
-    jarName: string | undefined,
-    response: OpensteerRequestResponseResult,
-    requestUrl: string,
-  ): void {
-    if (jarName === undefined) {
+  private async flushPersistedNetworkHistory(): Promise<void> {
+    if (this.sessionRef === undefined) {
       return;
     }
 
-    const current = this.cookieJars.get(jarName) ?? [];
-    const merged = mergeCookieJarEntries(
-      current,
-      response.headers
-        .filter((header) => header.name.toLowerCase() === "set-cookie")
-        .flatMap((header) => parseSetCookieHeader(header.value, requestUrl)),
-    );
-    this.cookieJars.set(jarName, merged);
-  }
-
-  private async readCookieValue(
-    name: string,
-    url: string | undefined,
-    variables: ReadonlyMap<string, string>,
-  ): Promise<string | undefined> {
-    const binding = this.requireExistingBrowserBindingForRecovery();
-    const cookies = await this.requireEngine().getCookies({
-      sessionRef: binding.sessionRef,
-      ...(url === undefined ? {} : { urls: [interpolateTemplate(url, variables)] }),
-    });
-    return cookies.find((cookie) => cookie.name === interpolateTemplate(name, variables))?.value;
-  }
-
-  private async readStorageValue(
-    step: {
-      readonly area: "local" | "session";
-      readonly origin: string;
-      readonly key: string;
-      readonly pageUrl?: string;
-    },
-    variables: ReadonlyMap<string, string>,
-  ): Promise<string | undefined> {
-    const binding = this.requireExistingBrowserBindingForRecovery();
-    const snapshot = await this.requireEngine().getStorageSnapshot({
-      sessionRef: binding.sessionRef,
-      includeSessionStorage: step.area === "session",
-      includeIndexedDb: false,
-    });
-    const origin = interpolateTemplate(step.origin, variables);
-    const key = interpolateTemplate(step.key, variables);
-    if (step.area === "local") {
-      return snapshot.origins
-        .find((entry) => entry.origin === origin)
-        ?.localStorage.find((entry) => entry.key === key)?.value;
-    }
-
-    const pageUrl =
-      step.pageUrl === undefined ? undefined : interpolateTemplate(step.pageUrl, variables);
-    return snapshot.sessionStorage
-      ?.filter((entry) => entry.origin === origin)
-      .find((entry) => pageUrl === undefined || entry.origin === new URL(pageUrl).origin)
-      ?.entries.find((entry) => entry.key === key)?.value;
-  }
-
-  private async flushPersistedNetworkHistory(): Promise<void> {
-    if (this.sessionRef === undefined) {
+    if (this.networkHistory.getKnownRequestIds().size === 0) {
       return;
     }
 
@@ -8266,10 +4316,10 @@ export class OpensteerSessionRuntime {
   }
 
   private toDomTargetRef(target: OpensteerTargetInput): DomTargetRef {
-    if (target.kind === "description") {
+    if (target.kind === "persist") {
       return {
         kind: "descriptor",
-        description: target.description,
+        name: target.name,
       };
     }
 
@@ -8288,34 +4338,11 @@ export class OpensteerSessionRuntime {
 
   private async ensureRoot(): Promise<OpensteerRuntimeWorkspace> {
     if (!this.root) {
-      const workspace = await createFilesystemOpensteerWorkspace({
+      this.root = await createFilesystemOpensteerWorkspace({
         rootPath: this.rootPath,
         ...(this.workspaceName === undefined ? {} : { workspace: this.workspaceName }),
         scope: this.workspaceName === undefined ? "temporary" : "workspace",
       });
-
-      if (this.registryOverrides) {
-        const overrides = this.registryOverrides;
-        this.root = {
-          ...workspace,
-          registry: {
-            ...workspace.registry,
-            ...(overrides.requestPlans === undefined
-              ? {}
-              : { requestPlans: overrides.requestPlans }),
-            ...(overrides.authRecipes === undefined ? {} : { authRecipes: overrides.authRecipes }),
-            ...(overrides.recipes === undefined ? {} : { recipes: overrides.recipes }),
-            ...(overrides.reverseCases === undefined
-              ? {}
-              : { reverseCases: overrides.reverseCases }),
-            ...(overrides.reversePackages === undefined
-              ? {}
-              : { reversePackages: overrides.reversePackages }),
-          },
-        };
-      } else {
-        this.root = workspace;
-      }
     }
 
     return this.root;
@@ -8585,11 +4612,7 @@ export class OpensteerSessionRuntime {
     const root = await this.ensureRoot();
     const capturedStepEvents =
       input.events ??
-      this.consumePendingOperationEventCapture(
-        input.operation,
-        input.startedAt,
-        input.completedAt,
-      );
+      this.consumePendingOperationEventCapture(input.operation, input.startedAt, input.completedAt);
     const drainedStepEvents =
       input.events === undefined ? await this.drainPendingEngineEvents(input.context) : undefined;
     const stepEvents = mergeObservedStepEvents(capturedStepEvents, drainedStepEvents);
@@ -8653,8 +4676,7 @@ export class OpensteerSessionRuntime {
                 return artifact.artifactId;
               }),
             )
-          )
-            .flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+          ).flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
 
     const observationEvents = buildObservationEventsFromTrace({
       traceId: traceEntry.traceId,
@@ -8957,9 +4979,7 @@ function mergeObservedStepEvents(
   for (const event of secondary) {
     merged.set(event.eventId, event);
   }
-  return [...merged.values()].sort(
-    (left, right) => (left.timestamp ?? 0) - (right.timestamp ?? 0),
-  );
+  return [...merged.values()].sort((left, right) => (left.timestamp ?? 0) - (right.timestamp ?? 0));
 }
 
 function selectLiveQueryPageRef(
@@ -8993,9 +5013,13 @@ function buildEngineNetworkRecordFilters(
     ...(input.hostname === undefined ? {} : { hostname: input.hostname }),
     ...(input.path === undefined ? {} : { path: input.path }),
     ...(input.method === undefined ? {} : { method: input.method }),
-    ...(input.status === undefined ? {} : { status: input.status }),
+    ...(input.status === undefined ? {} : { status: normalizeNetworkStatusFilter(input.status) }),
     ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
   };
+}
+
+function normalizeNetworkStatusFilter(status: string | number): string {
+  return String(status);
 }
 
 function resolveLiveQueryRequestIds(
@@ -9079,7 +5103,7 @@ function filterNetworkQueryRecords(
     readonly hostname?: string;
     readonly path?: string;
     readonly method?: string;
-    readonly status?: string;
+    readonly status?: string | number;
     readonly resourceType?: NetworkQueryRecord["record"]["resourceType"];
   },
 ): readonly NetworkQueryRecord[] {
@@ -9118,35 +5142,7 @@ function sortLiveNetworkRecords(
   });
 }
 
-function buildRawTransportRequest(input: OpensteerRawRequestInput): {
-  readonly method: string;
-  readonly url: string;
-  readonly headers?: readonly HeaderEntry[];
-  readonly body?: BrowserBodyPayload;
-  readonly followRedirects?: boolean;
-} {
-  const body = input.body === undefined ? undefined : toBrowserRequestBody(input.body);
-  const headers = [...(input.headers ?? [])];
-  if (
-    body?.contentType !== undefined &&
-    !headers.some((header) => header.name.toLowerCase() === "content-type")
-  ) {
-    headers.push({
-      name: "content-type",
-      value: body.contentType,
-    });
-  }
-
-  return {
-    method: input.method ?? "GET",
-    url: input.url,
-    ...(headers.length === 0 ? {} : { headers }),
-    ...(body === undefined ? {} : { body: body.payload }),
-    ...(input.followRedirects === undefined ? {} : { followRedirects: input.followRedirects }),
-  };
-}
-
-function toBrowserRequestBody(input: OpensteerRawRequestInput["body"]): {
+function toBrowserRequestBody(input: OpensteerRequestBodyInput): {
   readonly payload: BrowserBodyPayload;
   readonly contentType?: string;
 } {
@@ -9206,19 +5202,6 @@ function toJsonValueOrNull(value: unknown) {
     OpensteerPageEvaluateOutput["value"],
     undefined
   >;
-}
-
-function stringifyRecipeVariableValue(value: unknown): string {
-  if (value === undefined || value === null) {
-    return "";
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-  return JSON.stringify(toCanonicalJsonValue(value));
 }
 
 function normalizePageScriptScan(value: unknown): {
@@ -9300,39 +5283,13 @@ function normalizePageScriptScan(value: unknown): {
   };
 }
 
-function normalizeTransportKind(value: TransportKind): TransportKind {
-  return value;
-}
-
-function transportRequiresBrowserBinding(value: TransportKind): boolean {
-  return value !== "direct-http";
-}
-
-function createFullMinimizationKeepState(
-  prepared: PreparedMinimizationRequest,
-): Parameters<typeof materializePreparedMinimizationRequest>[1] {
-  return {
-    headers: new Set(
-      prepared.headerGroups.map((header) => `header:${header.name.trim().toLowerCase()}`),
-    ),
-    cookies: new Set(
-      prepared.cookies.map((cookie) => `cookie:${cookie.name.trim().toLowerCase()}`),
-    ),
-    query: new Set(prepared.queryEntries.map((entry) => `query:${entry.name}`)),
-    bodyFields: new Set(prepared.bodyJsonEntries.map(([name]) => `body-field:${name}`)),
-  };
-}
-
-function buildSuccessFingerprint(response: {
-  readonly status: number;
-  readonly body?: BrowserBodyPayload;
-}): {
+function buildCapturedRecordSuccessFingerprint(record: NetworkQueryRecord): {
   readonly status: number;
   readonly structureHash?: string;
 } {
-  const bodyText = decodeBrowserBody(response.body);
+  const bodyText = decodeProtocolBody(record.record.responseBody);
   return {
-    status: response.status,
+    status: record.record.status ?? 0,
     ...(bodyText === undefined
       ? {}
       : (() => {
@@ -9342,32 +5299,22 @@ function buildSuccessFingerprint(response: {
   };
 }
 
-function matchesSuccessFingerprint(
-  response: {
-    readonly status: number;
-    readonly body?: BrowserBodyPayload;
-  },
+function matchesSuccessFingerprintFromProtocolResponse(
+  response: OpensteerRequestResponseResult,
   fingerprint: {
     readonly status: number;
     readonly structureHash?: string;
   },
-  policy?: OpensteerNetworkMinimizeInput["successPolicy"],
 ): boolean {
-  const expectedStatuses = policy?.statusCodes ?? [fingerprint.status];
-  if (!expectedStatuses.includes(response.status)) {
+  if (response.status !== fingerprint.status) {
     return false;
   }
 
-  const bodyText = decodeBrowserBody(response.body);
-  if (policy?.responseBodyIncludes?.some((value) => !(bodyText?.includes(value) ?? false))) {
-    return false;
-  }
-
-  const mustMatchStructure =
-    policy?.responseStructureMatch ?? fingerprint.structureHash !== undefined;
-  if (!mustMatchStructure) {
+  if (fingerprint.structureHash === undefined) {
     return true;
   }
+
+  const bodyText = decodeProtocolBody(response.body);
   return jsonStructureHash(bodyText) === fingerprint.structureHash;
 }
 
@@ -9398,1401 +5345,669 @@ function jsonStructureShape(value: unknown): unknown {
   return typeof value;
 }
 
-function decodeBrowserBody(body: BrowserBodyPayload | undefined): string | undefined {
-  if (body === undefined) {
-    return undefined;
-  }
-  return Buffer.from(body.bytes).toString(resolveBrowserBodyEncoding(body.charset));
+const DEFAULT_STATE_GLOBAL_NAMES = [
+  "__NEXT_DATA__",
+  "__NUXT__",
+  "__APOLLO_STATE__",
+  "__INITIAL_STATE__",
+  "__PRELOADED_STATE__",
+  "__STATE__",
+  "__data__",
+] as const;
+
+const REPLAY_TRANSPORT_LADDER: readonly TransportKind[] = [
+  "direct-http",
+  "matched-tls",
+  "context-http",
+  "page-http",
+] as const;
+
+function filterNetworkSummaryRecords(
+  records: readonly NetworkQueryRecord[],
+  input: OpensteerNetworkQueryInput,
+): readonly NetworkQueryRecord[] {
+  return records.filter((record) => {
+    if (record.record.resourceType === "preflight" || record.record.method === "OPTIONS") {
+      return false;
+    }
+    if (input.json !== true) {
+      return true;
+    }
+    const contentType =
+      headerValue(record.record.responseHeaders, "content-type") ??
+      headerValue(record.record.requestHeaders, "content-type");
+    const normalized = contentType?.toLowerCase();
+    return (
+      normalized?.includes("json") === true ||
+      normalized?.includes("+json") === true ||
+      looksLikeGraphqlRecord(record)
+    );
+  });
 }
 
-function resolveBrowserBodyEncoding(charset: string | undefined): BufferEncoding {
-  switch (charset?.trim().toLowerCase()) {
-    case "ascii":
-    case "latin1":
-    case "utf16le":
-    case "utf-16le":
-      return charset.replace("-", "").toLowerCase() as BufferEncoding;
-    case "utf8":
-    case "utf-8":
-    default:
-      return "utf8";
-  }
+function sortPersistedNetworkRecordsChronologically(
+  records: readonly NetworkQueryRecord[],
+): NetworkQueryRecord[] {
+  return [...records].sort((left, right) => {
+    const leftTime = left.savedAt ?? 0;
+    const rightTime = right.savedAt ?? 0;
+    if (leftTime !== rightTime) {
+      return leftTime - rightTime;
+    }
+    return left.recordId.localeCompare(right.recordId);
+  });
 }
 
-function buildMinimizedRequestPlan(input: {
-  readonly record: NetworkQueryRecord;
-  readonly request: {
-    readonly method: string;
-    readonly url: string;
-    readonly headers?: readonly HeaderEntry[];
-    readonly body?: BrowserBodyPayload;
-  };
-  readonly transport: TransportKind;
-  readonly kept: {
-    readonly headers: readonly string[];
-    readonly cookies: readonly string[];
-    readonly query: readonly string[];
-    readonly bodyFields: readonly string[];
-  };
-}): OpensteerWriteRequestPlanInput {
-  const url = new URL(input.request.url);
-  const headers = input.request.headers ?? [];
-  const validHeaders = filterValidHttpHeaders(headers);
-  const requestContentType =
-    headerValue(validHeaders, "content-type") ?? input.request.body?.mimeType;
-  const body = buildMinimizedRequestPlanBody(input.request.body, requestContentType);
-  const responseContentType = headerValue(input.record.record.responseHeaders, "content-type");
+function sliceNetworkSummaryWindow(
+  records: readonly NetworkQueryRecord[],
+  input: OpensteerNetworkQueryInput,
+): readonly NetworkQueryRecord[] {
+  let start = 0;
+  let end = records.length;
+  if (input.after !== undefined) {
+    const index = records.findIndex((record) => record.recordId === input.after);
+    if (index >= 0) {
+      start = index + 1;
+    }
+  }
+  if (input.before !== undefined) {
+    const index = records.findIndex((record) => record.recordId === input.before);
+    if (index >= 0) {
+      end = index;
+    }
+  }
+  return records.slice(start, end);
+}
+
+function buildReplayTransportRequest(
+  source: NetworkQueryRecord,
+  input: OpensteerNetworkReplayInput,
+): {
+  readonly method: string;
+  readonly url: string;
+  readonly headers?: readonly HeaderEntry[];
+  readonly body?: BrowserBodyPayload;
+  readonly followRedirects?: boolean;
+} {
+  const url = new URL(source.record.url);
+  for (const [name, value] of Object.entries(input.query ?? {})) {
+    url.searchParams.set(name, String(value));
+  }
+
+  const headers = [...source.record.requestHeaders];
+  for (const [name, value] of Object.entries(input.headers ?? {})) {
+    setHeaderValue(headers, name, String(value));
+  }
+
+  let body =
+    source.record.requestBody === undefined
+      ? undefined
+      : toBrowserBodyPayload(source.record.requestBody);
+  if (input.body !== undefined) {
+    body = toBrowserRequestBody(input.body).payload;
+  } else if (input.variables !== undefined) {
+    const graphql = extractGraphqlMetadata(source);
+    if (graphql?.rawBody !== undefined) {
+      const nextBody = {
+        ...graphql.rawBody,
+        variables:
+          graphql.rawBody.variables !== null && typeof graphql.rawBody.variables === "object"
+            ? {
+                ...(graphql.rawBody.variables as Record<string, unknown>),
+                ...(input.variables as Record<string, unknown>),
+              }
+            : input.variables,
+      };
+      body = toBrowserRequestBody({ json: toCanonicalJsonValue(nextBody) }).payload;
+    }
+  }
 
   return {
-    key: buildMinimizedRequestPlanKey(input.record),
-    version: "1.0.0",
-    ...(input.record.tags === undefined || input.record.tags.length === 0
-      ? {}
-      : { tags: input.record.tags }),
-    provenance: {
-      source: "network-minimize",
-      sourceId: input.record.recordId,
-      ...(input.record.savedAt === undefined ? {} : { capturedAt: input.record.savedAt }),
-    },
-    payload: normalizeRequestPlanPayload({
-      transport: {
-        kind: input.transport,
-      },
-      endpoint: {
-        method: input.request.method,
-        urlTemplate: `${url.origin}${url.pathname}`,
-        ...(url.searchParams.size === 0
-          ? {}
-          : {
-              defaultQuery: Array.from(url.searchParams.entries()).map(([name, value]) => ({
-                name,
-                value,
-              })),
-            }),
-        ...(validHeaders.length === 0
-          ? {}
-          : {
-              defaultHeaders: validHeaders.map((header) => ({
-                name: header.name,
-                value: header.value,
-              })),
-            }),
-      },
-      ...(body === undefined ? {} : { body }),
-      ...(typeof input.record.record.status !== "number"
-        ? {}
-        : {
-            response: {
-              status: input.record.record.status,
-              ...(responseContentType === undefined ? {} : { contentType: responseContentType }),
-            },
-          }),
-      ...(inferMinimizedPlanAuth(validHeaders) === undefined
-        ? {}
-        : { auth: inferMinimizedPlanAuth(validHeaders)! }),
-    }),
+    method: source.record.method,
+    url: url.toString(),
+    ...(headers.length === 0 ? {} : { headers }),
+    ...(body === undefined ? {} : { body }),
   };
 }
 
-function buildMinimizedRequestPlanBody(
-  body: BrowserBodyPayload | undefined,
-  contentType: string | undefined,
-): OpensteerWriteRequestPlanInput["payload"]["body"] | undefined {
-  if (body === undefined) {
-    return undefined;
+function buildSessionFetchTransportRequest(input: OpensteerSessionFetchInput): {
+  readonly method: string;
+  readonly url: string;
+  readonly headers?: readonly HeaderEntry[];
+  readonly body?: BrowserBodyPayload;
+  readonly followRedirects?: boolean;
+} {
+  const url = new URL(input.url);
+  for (const [name, value] of Object.entries(input.query ?? {})) {
+    url.searchParams.set(name, String(value));
   }
-  const bodyText = decodeBrowserBody(body) ?? "";
-  const normalizedContentType = contentType?.toLowerCase();
+  const headers = Object.entries(input.headers ?? {}).map(([name, value]) => ({
+    name,
+    value: String(value),
+  }));
+  const body = input.body === undefined ? undefined : toBrowserRequestBody(input.body);
   if (
-    normalizedContentType?.includes("application/json") === true ||
-    normalizedContentType?.includes("+json") === true
+    body?.contentType !== undefined &&
+    !headers.some((header) => normalizeHeaderName(header.name) === "content-type")
   ) {
+    headers.push({
+      name: "content-type",
+      value: body.contentType,
+    });
+  }
+  return {
+    method: input.method ?? (body === undefined ? "GET" : "POST"),
+    url: url.toString(),
+    ...(headers.length === 0 ? {} : { headers }),
+    ...(body === undefined ? {} : { body: body.payload }),
+    ...(input.followRedirects === undefined ? {} : { followRedirects: input.followRedirects }),
+  };
+}
+
+function looksLikeGraphqlRecord(record: NetworkQueryRecord): boolean {
+  return extractGraphqlMetadata(record) !== undefined;
+}
+
+function buildNetworkSummaryRecord(record: NetworkQueryRecord): OpensteerNetworkSummaryRecord {
+  const request = summarizeBody(record.record.requestBody, record.record.requestHeaders);
+  const response =
+    record.record.kind === "event-stream"
+      ? {
+          ...(summarizeBody(record.record.responseBody, record.record.responseHeaders) ?? {}),
+          streaming: true,
+        }
+      : summarizeBody(record.record.responseBody, record.record.responseHeaders);
+  const graphql = extractGraphqlMetadata(record);
+  const websocketProtocols = parseWebSocketProtocols(record.record.requestHeaders);
+  const websocketSubprotocol = websocketProtocols[0];
+
+  return {
+    recordId: record.recordId,
+    ...(record.capture === undefined ? {} : { capture: record.capture }),
+    ...(record.savedAt === undefined ? {} : { savedAt: record.savedAt }),
+    kind: record.record.kind,
+    method: record.record.method,
+    ...(record.record.status === undefined ? {} : { status: record.record.status }),
+    resourceType: record.record.resourceType,
+    url: record.record.url,
+    ...(request === undefined ? {} : { request }),
+    ...(response === undefined ? {} : { response }),
+    ...(graphql === undefined
+      ? {}
+      : {
+          graphql: {
+            ...(graphql.operationType === undefined
+              ? {}
+              : { operationType: graphql.operationType }),
+            ...(graphql.operationName === undefined
+              ? {}
+              : { operationName: graphql.operationName }),
+            ...(graphql.persisted === undefined ? {} : { persisted: graphql.persisted }),
+          },
+        }),
+    ...(websocketSubprotocol === undefined
+      ? {}
+      : { websocket: { subprotocol: websocketSubprotocol } }),
+  };
+}
+
+function extractGraphqlMetadata(record: NetworkQueryRecord):
+  | (OpensteerNetworkSummaryRecord["graphql"] & {
+      readonly variables?: JsonValue;
+      readonly rawBody?: Record<string, unknown>;
+    })
+  | undefined {
+  const url = record.record.url.toLowerCase();
+  const requestContentType = headerValue(
+    record.record.requestHeaders,
+    "content-type",
+  )?.toLowerCase();
+  const text = decodeProtocolBody(record.record.requestBody);
+  let payload: Record<string, unknown> | undefined;
+  if (text !== undefined && requestContentType?.includes("json")) {
     try {
-      return {
-        kind: "json",
-        required: true,
-        ...(contentType === undefined ? {} : { contentType }),
-        template: toCanonicalJsonValue(JSON.parse(bodyText)),
-      };
+      const parsed = JSON.parse(text) as unknown;
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        payload = parsed as Record<string, unknown>;
+      }
     } catch {}
   }
-  if (normalizedContentType?.includes("application/x-www-form-urlencoded") === true) {
-    const params = new URLSearchParams(bodyText);
-    return {
-      kind: "form",
-      required: true,
-      ...(contentType === undefined ? {} : { contentType }),
-      fields: Array.from(params.entries()).map(([name, value]) => ({
-        name,
-        value,
-      })),
-    };
+
+  if (payload === undefined && !url.includes("graphql")) {
+    return undefined;
   }
+
+  const queryText =
+    typeof payload?.query === "string"
+      ? payload.query
+      : typeof payload?.operationName === "string"
+        ? payload.operationName
+        : undefined;
+  const operationType =
+    queryText === undefined
+      ? undefined
+      : queryText.trim().startsWith("mutation")
+        ? "mutation"
+        : queryText.trim().startsWith("subscription")
+          ? "subscription"
+          : queryText.trim().startsWith("query")
+            ? "query"
+            : "unknown";
+  const operationName =
+    typeof payload?.operationName === "string"
+      ? payload.operationName
+      : extractGraphqlOperationName(queryText);
+  const variables =
+    payload?.variables === undefined ? undefined : toCanonicalJsonValue(payload.variables);
+  const persisted =
+    payload?.extensions !== undefined &&
+    typeof payload.extensions === "object" &&
+    payload.extensions !== null &&
+    "persistedQuery" in payload.extensions
+      ? true
+      : undefined;
+
   return {
-    kind: "text",
-    required: true,
-    ...(contentType === undefined ? {} : { contentType }),
-    template: bodyText,
+    ...(operationType === undefined ? {} : { operationType }),
+    ...(operationName === undefined ? {} : { operationName }),
+    ...(persisted === undefined ? {} : { persisted }),
+    ...(variables === undefined ? {} : { variables }),
+    ...(payload === undefined ? {} : { rawBody: payload }),
   };
 }
 
-function inferMinimizedPlanAuth(
+function extractGraphqlOperationName(queryText: string | undefined): string | undefined {
+  if (queryText === undefined) {
+    return undefined;
+  }
+  const match = queryText.match(/\b(query|mutation|subscription)\s+([A-Za-z0-9_]+)/u);
+  return match?.[2];
+}
+
+function shouldShowRequestBody(method: string): boolean {
+  return !["GET", "HEAD", "DELETE", "OPTIONS"].includes(method.trim().toUpperCase());
+}
+
+function buildStructuredBodyPreview(
+  body: NetworkQueryRecord["record"]["requestBody"] | NetworkQueryRecord["record"]["responseBody"],
   headers: readonly HeaderEntry[],
-): OpensteerWriteRequestPlanInput["payload"]["auth"] | undefined {
-  const headerNames = new Set(headers.map((header) => header.name.trim().toLowerCase()));
-  if (headerNames.has("authorization")) {
-    return {
-      strategy: "bearer-token",
-      description: "Inferred from a required Authorization header in the minimized request.",
-    };
+): OpensteerNetworkDetailOutput["requestBody"] {
+  const contentType = headerValue(headers, "content-type") ?? body?.mimeType;
+  const parsed = parseStructuredPayload(body, contentType);
+  const data =
+    parsed === undefined
+      ? undefined
+      : typeof parsed === "string"
+        ? truncateInlineText(parsed)
+        : truncateStructuredValue(parsed);
+  return {
+    bytes: body?.originalByteLength ?? body?.capturedByteLength ?? 0,
+    ...(contentType === undefined ? {} : { contentType }),
+    truncated: body?.truncated ?? false,
+    ...(data === undefined ? {} : { data }),
+  };
+}
+
+function parseStructuredPayload(
+  body: NetworkQueryRecord["record"]["requestBody"] | NetworkQueryRecord["record"]["responseBody"],
+  contentType: string | undefined,
+): JsonValue | string | undefined {
+  const text = decodeProtocolBody(body);
+  if (text === undefined) {
+    return undefined;
   }
-  if (headerNames.has("cookie")) {
-    return {
-      strategy: "session-cookie",
-      description: "Inferred from required cookies in the minimized request.",
-    };
+  const mimeType = parseContentType(contentType).mimeType?.toLowerCase();
+  if (mimeType === "application/json" || mimeType?.endsWith("+json") === true) {
+    try {
+      return toCanonicalJsonValue(JSON.parse(text));
+    } catch {
+      return truncateInlineText(text);
+    }
   }
-  if (
-    headerNames.has("api-key") ||
-    headerNames.has("x-api-key") ||
-    headerNames.has("x-auth-token")
-  ) {
-    return {
-      strategy: "api-key",
-      description: "Inferred from a required API key style header in the minimized request.",
-    };
+  if (mimeType?.startsWith("text/") === true || mimeType === undefined) {
+    return truncateInlineText(text);
   }
   return undefined;
 }
 
-function buildMinimizedRequestPlanKey(record: NetworkQueryRecord): string {
-  const url = new URL(record.record.url);
-  const slug = `${record.record.method}-${url.hostname}${url.pathname}`
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80);
-  return `minimized-${slug || "request"}`;
+function detectNetworkRecordNotes(record: NetworkQueryRecord): readonly string[] {
+  const challenge = detectChallengeNoteFromRecord(record);
+  return challenge === undefined ? [] : [challenge];
 }
 
-function buildReverseCaseKey(objective: string | undefined, pageUrl: string): string {
-  const seed = objective ?? pageUrl;
-  return (
-    seed
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 80) || `reverse-${Date.now()}`
-  );
+function normalizeHeaderName(name: string): string {
+  return name.trim().toLowerCase();
 }
 
-function buildInteractionTraceKey(pageUrl: string): string {
-  return `interaction-${buildReverseCaseKey(undefined, pageUrl)}`;
+function parseCookieHeaderEntries(
+  value: string,
+): readonly { readonly name: string; readonly value: string }[] {
+  return parseCookiePairs(value).map(([name, cookieValue]) => ({
+    name,
+    value: cookieValue,
+  }));
 }
 
-function mergeStringArrays(left: readonly string[], right: readonly string[]): readonly string[] {
-  return [...new Set([...left, ...right])];
-}
-
-function mergeReverseGuards(
-  existing: readonly OpensteerReverseGuardRecord[],
-  incoming: readonly OpensteerReverseGuardRecord[],
-): readonly OpensteerReverseGuardRecord[] {
-  const merged = new Map(existing.map((guard) => [guard.id, guard]));
-  for (const guard of incoming) {
-    merged.set(guard.id, guard);
+function truncateStructuredValue(
+  value: JsonValue | undefined,
+  depth = 0,
+): JsonValue | string | undefined {
+  if (value === undefined) {
+    return undefined;
   }
-  return [...merged.values()];
-}
-
-function mergeObservationClusters(
-  existing: readonly OpensteerObservationCluster[],
-  incoming: readonly OpensteerObservationCluster[],
-): readonly OpensteerObservationCluster[] {
-  const merged = new Map(existing.map((cluster) => [cluster.id, cluster]));
-  for (const cluster of incoming) {
-    merged.set(cluster.id, cluster);
+  if (value === null || typeof value === "number" || typeof value === "boolean") {
+    return value;
   }
-  return [...merged.values()].sort((left, right) => left.id.localeCompare(right.id));
-}
-
-function collectReverseReplayStateSnapshotsFromCase(
-  caseRecord: ReverseCaseRecord,
-  candidate: OpensteerReverseCandidateRecord,
-): readonly OpensteerStateSnapshot[] {
-  const snapshotIds = new Set<string>();
-  const observation = caseRecord.payload.observations.find(
-    (entry) => entry.id === candidate.observationId,
-  );
-  for (const snapshotId of observation?.stateSnapshotIds ?? []) {
-    snapshotIds.add(snapshotId);
+  if (typeof value === "string") {
+    return truncateInlineText(value);
   }
-  for (const resolver of candidate.resolvers) {
-    if (
-      resolver.valueRef?.kind === "state-snapshot" &&
-      resolver.valueRef.stateSnapshotId !== undefined
-    ) {
-      snapshotIds.add(resolver.valueRef.stateSnapshotId);
+  if (Array.isArray(value)) {
+    if (value.length <= 3) {
+      return value.map(
+        (entry) => truncateStructuredValue(entry as JsonValue, depth + 1) as JsonValue,
+      );
     }
+    return [
+      `... ${value.length} items, first 2 shown`,
+      truncateStructuredValue(value[0] as JsonValue, depth + 1) as JsonValue,
+      truncateStructuredValue(value[1] as JsonValue, depth + 1) as JsonValue,
+    ];
   }
-  return caseRecord.payload.stateSnapshots.filter((snapshot) => snapshotIds.has(snapshot.id));
-}
-
-function mergeReverseStateSnapshotCookies(
-  snapshots: readonly OpensteerStateSnapshot[],
-  sessionRef: SessionRef,
-): readonly CookieRecord[] {
-  const merged = new Map<string, CookieRecord>();
-  for (const snapshot of [...snapshots].sort((left, right) => left.capturedAt - right.capturedAt)) {
-    for (const cookie of snapshot.cookies ?? []) {
-      merged.set(`${cookie.name}\u0000${cookie.domain}\u0000${cookie.path}`, {
-        sessionRef,
-        name: cookie.name,
-        value: cookie.value,
-        domain: cookie.domain,
-        path: cookie.path,
-        secure: cookie.secure,
-        httpOnly: cookie.httpOnly,
-        ...(cookie.sameSite === undefined ? {} : { sameSite: cookie.sameSite }),
-        ...(cookie.priority === undefined ? {} : { priority: cookie.priority }),
-        ...(cookie.partitionKey === undefined ? {} : { partitionKey: cookie.partitionKey }),
-        session: cookie.session,
-        ...(cookie.expiresAt === undefined ? {} : { expiresAt: cookie.expiresAt }),
-      });
-    }
+  const entries = Object.entries(value);
+  if (depth >= 4) {
+    return `... ${entries.length} keys`;
   }
-  return [...merged.values()];
-}
-
-function mergeReverseStateSnapshotLocalStorage(
-  snapshots: readonly OpensteerStateSnapshot[],
-): Map<string, readonly { readonly key: string; readonly value: string }[]> {
-  const merged = new Map<string, Map<string, string>>();
-  for (const snapshot of [...snapshots].sort((left, right) => left.capturedAt - right.capturedAt)) {
-    for (const origin of snapshot.storage?.origins ?? []) {
-      const entries = merged.get(origin.origin) ?? new Map<string, string>();
-      entries.clear();
-      for (const entry of origin.localStorage) {
-        entries.set(entry.key, entry.value);
-      }
-      merged.set(origin.origin, entries);
-    }
+  const truncated = Object.fromEntries(
+    entries.map(([key, entry]) => [key, truncateStructuredValue(entry as JsonValue, depth + 1)]),
+  ) as JsonValue;
+  const serialized = JSON.stringify(truncated);
+  if (serialized !== undefined && serialized.length > 4096) {
+    return `${serialized.slice(0, 4000)}... use network.detail for the full structure`;
   }
-  return new Map(
-    [...merged.entries()].map(([origin, entries]) => [
-      origin,
-      [...entries.entries()].map(([key, value]) => ({ key, value })),
-    ]),
-  );
+  return truncated;
 }
 
-function mergeReverseStateSnapshotSessionStorage(
-  snapshots: readonly OpensteerStateSnapshot[],
-): Map<string, readonly { readonly key: string; readonly value: string }[]> {
-  const merged = new Map<string, Map<string, string>>();
-  for (const snapshot of [...snapshots].sort((left, right) => left.capturedAt - right.capturedAt)) {
-    for (const sessionStorage of snapshot.storage?.sessionStorage ?? []) {
-      const entries = merged.get(sessionStorage.origin) ?? new Map<string, string>();
-      entries.clear();
-      for (const entry of sessionStorage.entries) {
-        entries.set(entry.key, entry.value);
-      }
-      merged.set(sessionStorage.origin, entries);
-    }
-  }
-  return new Map(
-    [...merged.entries()].map(([origin, entries]) => [
-      origin,
-      [...entries.entries()].map(([key, value]) => ({ key, value })),
-    ]),
-  );
+function truncateInlineText(value: string, limit = 200): string {
+  return value.length <= limit ? value : `${value.slice(0, limit)}...${value.length} chars total`;
 }
 
-function resolveReverseReplayStateRestoreUrl(
-  candidate: OpensteerReverseCandidateRecord,
-  snapshots: readonly OpensteerStateSnapshot[],
-  currentUrl: string,
-): string {
-  const navigationUrl = candidate.channel.kind === "http" ? candidate.channel.url : undefined;
-  const preferredSnapshotUrl = [...snapshots]
-    .sort((left, right) => right.capturedAt - left.capturedAt)
-    .find((snapshot) => typeof snapshot.url === "string" && snapshot.url.length > 0)?.url;
-  return preferredSnapshotUrl ?? navigationUrl ?? currentUrl;
+function collectSetCookieHeaders(headers: readonly HeaderEntry[]): readonly string[] {
+  return headers
+    .filter((header) => normalizeHeaderName(header.name) === "set-cookie")
+    .map((header) => header.value);
 }
 
-function buildReverseStateRestoreNavigationUrl(
-  preferredUrl: string | undefined,
-  origin: string,
-): string {
-  if (preferredUrl !== undefined) {
-    const preferredOrigin = originFromUrl(preferredUrl);
-    if (preferredOrigin === origin) {
-      return preferredUrl;
-    }
-  }
-  return origin.endsWith("/") ? origin : `${origin}/`;
-}
-
-function originFromUrl(url: string | undefined): string | undefined {
+function hostnameFromUrl(url: string | undefined): string | undefined {
   if (url === undefined) {
     return undefined;
   }
   try {
-    return new URL(url).origin;
+    return new URL(url).hostname;
   } catch {
     return undefined;
   }
 }
 
-function filterReverseObservationWindow(
-  records: readonly NetworkQueryRecord[],
-  history: NetworkHistory,
-  captureWindowMs: number | undefined,
-): readonly NetworkQueryRecord[] {
-  if (captureWindowMs === undefined) {
-    return records;
+function filterCookieRecordsByDomain(
+  cookies: readonly CookieRecord[],
+  domain: string | undefined,
+): readonly CookieRecord[] {
+  if (domain === undefined) {
+    return cookies;
   }
-  const observedAfter = Date.now() - captureWindowMs;
-  return records.filter((record) => (history.getObservedAt(record.recordId) ?? 0) >= observedAfter);
+  return cookies.filter((cookie) => cookieDomainMatches(cookie.domain, domain));
 }
 
-function isReverseRelevantNetworkRecord(record: NetworkQueryRecord): boolean {
-  return (
-    record.record.resourceType === "document" ||
-    record.record.resourceType === "fetch" ||
-    record.record.resourceType === "xhr" ||
-    record.record.resourceType === "websocket" ||
-    record.record.resourceType === "event-stream"
-  );
-}
-
-function resolveReverseCandidate(
-  caseRecord: ReverseCaseRecord,
-  candidateId: string,
-): OpensteerReverseCandidateRecord {
-  const candidate = caseRecord.payload.candidates.find((entry) => entry.id === candidateId);
-  if (candidate === undefined) {
-    throw new OpensteerProtocolError(
-      "not-found",
-      `reverse candidate ${candidateId} was not found in case ${caseRecord.id}`,
-    );
+function compareCookieRecords(left: CookieRecord, right: CookieRecord): number {
+  const byDomain = left.domain.localeCompare(right.domain);
+  if (byDomain !== 0) {
+    return byDomain;
   }
-  return candidate;
-}
-
-function resolveReverseTemplate(
-  candidate: OpensteerReverseCandidateRecord,
-  templateId: string | undefined,
-): OpensteerReverseAdvisoryTemplate | undefined {
-  if (templateId === undefined) {
-    return undefined;
+  const byName = left.name.localeCompare(right.name);
+  if (byName !== 0) {
+    return byName;
   }
-  const template = candidate.advisoryTemplates.find((entry) => entry.id === templateId);
-  if (template === undefined) {
-    throw new OpensteerProtocolError(
-      "not-found",
-      `reverse template ${templateId} was not found for ${candidate.id}`,
-    );
-  }
-  return template;
+  return left.path.localeCompare(right.path);
 }
 
-function dedupeStringList(values: readonly string[]): readonly string[] {
-  return [...new Set(values)].sort((left, right) => left.localeCompare(right));
-}
-
-function resolveReverseObservedRecord(
-  caseRecord: ReverseCaseRecord,
-  recordId: string,
-): OpensteerReverseObservedRecord {
-  const record = caseRecord.payload.observedRecords.find((entry) => entry.recordId === recordId);
-  if (record === undefined) {
-    throw new OpensteerProtocolError(
-      "not-found",
-      `reverse observed record ${recordId} was not found in case ${caseRecord.id}`,
-    );
-  }
-  return record;
-}
-
-function buildReverseDiscoveryIndex(
-  caseRecord: ReverseCaseRecord,
-): OpensteerReverseDiscoverOutput["index"] {
-  return {
-    views: ["records", "clusters", "candidates"],
-    sortableKeys: [
-      "observed-at",
-      "advisory-rank",
-      "target-hint-matches",
-      "response-richness",
-      "portability",
-      "boundary",
-      "success",
-    ],
-    channels: dedupeStringList(
-      caseRecord.payload.observedRecords.map((entry) => entry.channel.kind),
-    ) as OpensteerReverseDiscoverOutput["index"]["channels"],
-    hosts: dedupeStringList(
-      caseRecord.payload.observedRecords.map((entry) => new URL(entry.channel.url).hostname),
-    ),
-    relationKinds: dedupeStringList(
-      caseRecord.payload.observedRecords.flatMap((entry) => entry.relationKinds),
-    ) as OpensteerReverseDiscoverOutput["index"]["relationKinds"],
-  };
-}
-
-function buildReverseSummaryCounts(
-  caseRecord: ReverseCaseRecord,
-): ReverseReportRecord["payload"]["summaryCounts"] {
-  const hosts: Record<string, number> = {};
-  const channels: Record<string, number> = {};
-  const resourceTypes: Record<string, number> = {};
-  const advisoryTags: Record<string, number> = {};
-  const constraints: Record<string, number> = {};
-  const relationKinds: Record<string, number> = {};
-
-  for (const record of caseRecord.payload.observedRecords) {
-    const host = new URL(record.channel.url).hostname;
-    hosts[host] = (hosts[host] ?? 0) + 1;
-    channels[record.channel.kind] = (channels[record.channel.kind] ?? 0) + 1;
-    if (record.resourceType !== undefined) {
-      resourceTypes[record.resourceType] = (resourceTypes[record.resourceType] ?? 0) + 1;
+function collapseStorageSnapshot(
+  snapshot: StorageSnapshot,
+  domain: string | undefined,
+): readonly OpensteerStorageDomainSnapshot[] {
+  const grouped = new Map<string, OpensteerStorageDomainSnapshot>();
+  for (const origin of snapshot.origins) {
+    const hostname = hostnameFromUrl(origin.origin);
+    if (hostname === undefined || (domain !== undefined && hostname !== domain)) {
+      continue;
     }
-    for (const relationKind of record.relationKinds) {
-      relationKinds[relationKind] = (relationKinds[relationKind] ?? 0) + 1;
-    }
+    grouped.set(hostname, {
+      domain: hostname,
+      localStorage: origin.localStorage,
+      sessionStorage: grouped.get(hostname)?.sessionStorage ?? [],
+    });
   }
-
-  for (const candidate of caseRecord.payload.candidates) {
-    for (const tag of candidate.advisoryTags) {
-      advisoryTags[tag] = (advisoryTags[tag] ?? 0) + 1;
+  for (const entry of snapshot.sessionStorage ?? []) {
+    const hostname = hostnameFromUrl(entry.origin);
+    if (hostname === undefined || (domain !== undefined && hostname !== domain)) {
+      continue;
     }
-    for (const constraint of candidate.constraints) {
-      constraints[constraint] = (constraints[constraint] ?? 0) + 1;
-    }
+    const current = grouped.get(hostname);
+    grouped.set(hostname, {
+      domain: hostname,
+      localStorage: current?.localStorage ?? [],
+      sessionStorage: entry.entries,
+    });
   }
-
-  return {
-    hosts,
-    channels,
-    resourceTypes,
-    advisoryTags,
-    constraints,
-    relationKinds,
-  };
+  return [...grouped.values()].sort((left, right) => left.domain.localeCompare(right.domain));
 }
 
-function buildReverseCandidateRankingReasons(
-  candidate: OpensteerReverseCandidateRecord,
-): readonly string[] {
-  const reasons = [
-    candidate.summary,
-    `${candidate.boundary} candidate advisory rank ${candidate.signals.advisoryRank}`,
-    `${candidate.bodyCodec.kind} body codec`,
+function buildBrowserStateDomains(input: {
+  readonly effectiveDomain?: string;
+  readonly currentPageDomain?: string;
+  readonly cookies: readonly CookieRecord[];
+  readonly storage: StorageSnapshot;
+  readonly pageState: unknown;
+}): readonly OpensteerStateDomainSnapshot[] {
+  const domains = collapseStorageSnapshot(input.storage, input.effectiveDomain);
+  const pageState = normalizeCapturedPageState(input.pageState);
+  const selectedDomain =
+    input.effectiveDomain ?? input.currentPageDomain ?? domains[0]?.domain ?? undefined;
+  if (selectedDomain === undefined) {
+    return [];
+  }
+  const storage = domains.find((entry) => entry.domain === selectedDomain);
+  return [
+    {
+      domain: selectedDomain,
+      cookies: [...filterCookieRecordsByDomain(input.cookies, selectedDomain)].sort(
+        compareCookieRecords,
+      ),
+      hiddenFields: pageState.hiddenFields,
+      localStorage: storage?.localStorage ?? [],
+      sessionStorage: storage?.sessionStorage ?? [],
+      ...(Object.keys(pageState.globals).length === 0 ? {} : { globals: pageState.globals }),
+    },
   ];
-  if (candidate.advisoryTags.length > 0) {
-    reasons.push(`advisory tags: ${candidate.advisoryTags.join(", ")}`);
-  }
-  if (candidate.constraints.length > 0) {
-    reasons.push(`constraints: ${candidate.constraints.join(", ")}`);
-  }
-  if (candidate.matchedTargetHints.length > 0) {
-    reasons.push(`matched target hints: ${candidate.matchedTargetHints.join(", ")}`);
-  }
-  if (candidate.guardIds.length > 0) {
-    reasons.push(`depends on ${candidate.guardIds.length} guard(s)`);
-  }
-  if (candidate.resolvers.length > 0) {
-    reasons.push(`tracks ${candidate.resolvers.length} resolver(s)`);
-  }
-  return reasons;
 }
 
-function normalizeReverseQuerySort(sort: OpensteerReverseQuerySort | undefined): {
-  readonly preset?: OpensteerReverseQuerySort["preset"];
-  readonly keys: readonly {
-    readonly key: OpensteerReverseSortKey;
-    readonly direction: "asc" | "desc";
-  }[];
+function normalizeCapturedPageState(value: unknown): {
+  readonly hiddenFields: readonly OpensteerHiddenField[];
+  readonly globals: Readonly<Record<string, JsonValue>>;
 } {
-  const normalizedKeys =
-    sort?.keys?.map((entry) => ({
-      key: entry.key,
-      direction: entry.direction ?? "desc",
-    })) ?? [];
-  if (normalizedKeys.length > 0) {
+  if (value === null || typeof value !== "object") {
     return {
-      ...(sort?.preset === undefined ? {} : { preset: sort.preset }),
-      keys: normalizedKeys,
+      hiddenFields: [],
+      globals: {},
     };
   }
-  const preset = sort?.preset ?? "observed-at";
+  const source = value as {
+    readonly hiddenFields?: readonly {
+      readonly path?: unknown;
+      readonly name?: unknown;
+      readonly value?: unknown;
+    }[];
+    readonly globals?: Record<string, unknown>;
+  };
   return {
-    ...(preset === undefined ? {} : { preset }),
-    keys: presetToReverseSortKeys(preset),
+    hiddenFields: (source.hiddenFields ?? [])
+      .filter(
+        (
+          field,
+        ): field is { readonly path: string; readonly name: string; readonly value: string } =>
+          typeof field?.path === "string" &&
+          typeof field.name === "string" &&
+          typeof field.value === "string",
+      )
+      .map((field) => ({
+        path: field.path,
+        name: field.name,
+        value: field.value,
+      })),
+    globals: Object.fromEntries(
+      Object.entries(source.globals ?? {})
+        .map(([key, entry]) => [key, toCanonicalJsonValue(entry)])
+        .filter((entry): entry is [string, JsonValue] => entry[1] !== undefined),
+    ),
   };
 }
 
-function normalizeReverseQueryLimit(limit: number | undefined): number {
-  if (limit === undefined) {
-    return 20;
+function toBrowserBodyPayload(body: ProtocolBodyPayload): BrowserBodyPayload {
+  return createBodyPayload(new Uint8Array(Buffer.from(body.data, "base64")), {
+    encoding: body.encoding,
+    ...(body.mimeType === undefined ? {} : { mimeType: body.mimeType }),
+    ...(body.charset === undefined ? {} : { charset: body.charset }),
+    truncated: body.truncated,
+    ...(body.originalByteLength === undefined
+      ? {}
+      : { originalByteLength: body.originalByteLength }),
+  });
+}
+
+function toStructuredPreviewData(value: unknown): JsonValue | string | undefined {
+  if (value === undefined) {
+    return undefined;
   }
-  return Math.max(1, Math.min(200, Math.trunc(limit)));
-}
-
-function presetToReverseSortKeys(
-  preset: NonNullable<OpensteerReverseQuerySort["preset"]>,
-): readonly {
-  readonly key: OpensteerReverseSortKey;
-  readonly direction: "asc" | "desc";
-}[] {
-  switch (preset) {
-    case "advisory-rank":
-      return [{ key: "advisory-rank", direction: "desc" }];
-    case "portability":
-      return [{ key: "portability", direction: "desc" }];
-    case "first-party":
-      return [{ key: "boundary", direction: "desc" }];
-    case "hint-match":
-      return [{ key: "target-hint-matches", direction: "desc" }];
-    case "response-richness":
-      return [{ key: "response-richness", direction: "desc" }];
-    case "observed-at":
-    default:
-      return [{ key: "observed-at", direction: "desc" }];
+  if (typeof value === "string") {
+    return truncateInlineText(value);
   }
+  return truncateStructuredValue(toCanonicalJsonValue(value));
 }
 
-function primaryReverseSortDirection(
-  sort: ReturnType<typeof normalizeReverseQuerySort>,
-): "asc" | "desc" {
-  return sort.keys[0]?.direction ?? "desc";
+function buildReplayFallbackNote(
+  attempts: readonly OpensteerReplayAttempt[],
+  transport: TransportKind,
+): string | undefined {
+  const previous = attempts.at(-2);
+  if (previous === undefined) {
+    return undefined;
+  }
+  if (previous.status !== undefined) {
+    return `${previous.transport} returned ${previous.status}, fell back to ${transport}`;
+  }
+  if (previous.error !== undefined) {
+    return `${previous.transport} failed (${previous.error}), fell back to ${transport}`;
+  }
+  return undefined;
 }
 
-function reverseCandidateSortValue(
-  candidate: OpensteerReverseCandidateRecord,
-  key: OpensteerReverseSortKey,
-): number {
-  switch (key) {
-    case "observed-at":
-      return candidate.signals.observedAt ?? 0;
-    case "advisory-rank":
-      return candidate.signals.advisoryRank;
-    case "target-hint-matches":
-      return candidate.signals.targetHintMatches;
-    case "response-richness":
-      return candidate.signals.responseRichness;
-    case "portability":
-      return candidate.signals.portabilityWeight;
-    case "boundary":
-      return candidate.signals.boundaryWeight;
-    case "success":
-      return candidate.signals.successfulStatus ? 1 : 0;
+function resolveSessionFetchTransportLadder(
+  transport: OpensteerSessionFetchInput["transport"],
+): readonly TransportKind[] {
+  switch (transport ?? "auto") {
+    case "direct":
+      return ["direct-http"];
+    case "matched-tls":
+      return ["matched-tls"];
+    case "page":
+      return ["page-http"];
+    case "auto":
+      return ["direct-http", "matched-tls", "page-http"];
   }
 }
 
-function parseReverseQueryCursor(cursor: string | undefined): number {
-  if (cursor === undefined) {
-    return 0;
+function detectChallengeNoteFromRecord(record: NetworkQueryRecord): string | undefined {
+  if (record.record.responseBody === undefined) {
+    return undefined;
   }
-  const value = Number.parseInt(cursor, 10);
-  return Number.isFinite(value) && value >= 0 ? value : 0;
-}
-
-function buildReverseQuerySnapshot(input: {
-  readonly view: OpensteerReverseQueryView;
-  readonly filters?: OpensteerReverseQueryFilters;
-  readonly sort: ReturnType<typeof normalizeReverseQuerySort>;
-  readonly limit: number;
-  readonly totalCount: number;
-  readonly offset: number;
-  readonly resultIds: readonly string[];
-}): OpensteerReverseQuerySnapshot {
-  const nextOffset = input.offset + input.resultIds.length;
-  return {
-    view: input.view,
-    ...(input.filters === undefined ? {} : { filters: input.filters }),
-    sort:
-      input.sort.preset === undefined
-        ? { keys: input.sort.keys }
-        : { preset: input.sort.preset, keys: input.sort.keys },
-    limit: input.limit,
-    totalCount: input.totalCount,
-    ...(nextOffset >= input.totalCount ? {} : { nextCursor: String(nextOffset) }),
-    resultIds: input.resultIds,
-  };
-}
-
-function compareReverseCandidates(
-  left: OpensteerReverseCandidateRecord,
-  right: OpensteerReverseCandidateRecord,
-  sort: ReturnType<typeof normalizeReverseQuerySort>,
-): number {
-  for (const entry of sort.keys) {
-    const compare = compareNumbers(
-      reverseCandidateSortValue(left, entry.key),
-      reverseCandidateSortValue(right, entry.key),
-      entry.direction === "asc" ? 1 : -1,
-    );
-    if (compare !== 0) {
-      return compare;
-    }
-  }
-  return left.id.localeCompare(right.id);
-}
-
-function compareReverseObservedRecords(
-  left: OpensteerReverseObservedRecord,
-  right: OpensteerReverseObservedRecord,
-  candidates: readonly OpensteerReverseCandidateRecord[],
-  sort: ReturnType<typeof normalizeReverseQuerySort>,
-): number {
-  const leftCandidate = bestReverseCandidateForRecord(left.recordId, candidates, sort);
-  const rightCandidate = bestReverseCandidateForRecord(right.recordId, candidates, sort);
-  return (
-    compareReverseCandidatesProxy(leftCandidate, rightCandidate, sort) ||
-    compareNumbers(
-      left.observedAt ?? 0,
-      right.observedAt ?? 0,
-      primaryReverseSortDirection(sort) === "asc" ? 1 : -1,
-    ) ||
-    left.recordId.localeCompare(right.recordId)
+  return detectChallengeNoteFromText(
+    decodeProtocolBody(record.record.responseBody),
+    headerValue(record.record.responseHeaders, "content-type"),
   );
 }
 
-function compareReverseClusters(
-  left: OpensteerObservationCluster,
-  right: OpensteerObservationCluster,
-  candidates: readonly OpensteerReverseCandidateRecord[],
-  sort: ReturnType<typeof normalizeReverseQuerySort>,
-): number {
-  const leftCandidate = bestReverseCandidateForCluster(left.id, candidates, sort);
-  const rightCandidate = bestReverseCandidateForCluster(right.id, candidates, sort);
-  return (
-    compareReverseCandidatesProxy(leftCandidate, rightCandidate, sort) ||
-    left.id.localeCompare(right.id)
+function detectChallengeNoteFromResponse(
+  response: OpensteerRequestResponseResult,
+): string | undefined {
+  return detectChallengeNoteFromText(
+    decodeProtocolBody(response.body),
+    headerValue(response.headers, "content-type"),
   );
 }
 
-function compareReverseCandidatesProxy(
-  left: OpensteerReverseCandidateRecord | undefined,
-  right: OpensteerReverseCandidateRecord | undefined,
-  sort: ReturnType<typeof normalizeReverseQuerySort>,
-): number {
-  if (left === undefined && right === undefined) {
-    return 0;
+function detectChallengeNoteFromText(
+  text: string | undefined,
+  contentType: string | undefined,
+): string | undefined {
+  if (text === undefined || contentType?.toLowerCase().includes("html") !== true) {
+    return undefined;
   }
-  if (left === undefined) {
-    return 1;
+  const normalized = text.toLowerCase();
+  if (normalized.includes("cloudflare")) {
+    return "response appears to be a Cloudflare challenge page";
   }
-  if (right === undefined) {
-    return -1;
+  if (normalized.includes("akamai")) {
+    return "response appears to be an Akamai challenge page";
   }
-  return compareReverseCandidates(left, right, sort);
+  if (normalized.includes("datadome")) {
+    return "response appears to be a DataDome challenge page";
+  }
+  if (normalized.includes("perimeterx")) {
+    return "response appears to be a PerimeterX challenge page";
+  }
+  if (normalized.includes("attention required") || normalized.includes("verify you are human")) {
+    return "response appears to be a bot challenge page";
+  }
+  return undefined;
 }
 
-function compareNumbers(left: number, right: number, direction: 1 | -1): number {
-  return direction === 1 ? left - right : right - left;
-}
-
-function bestReverseCandidateForRecord(
-  recordId: string,
-  candidates: readonly OpensteerReverseCandidateRecord[],
-  sort: ReturnType<typeof normalizeReverseQuerySort>,
-): OpensteerReverseCandidateRecord | undefined {
-  return [...candidates]
-    .filter((candidate) => candidate.recordId === recordId)
-    .sort((left, right) => compareReverseCandidates(left, right, sort))[0];
-}
-
-function bestReverseCandidateForCluster(
-  clusterId: string,
-  candidates: readonly OpensteerReverseCandidateRecord[],
-  sort: ReturnType<typeof normalizeReverseQuerySort>,
-): OpensteerReverseCandidateRecord | undefined {
-  return [...candidates]
-    .filter((candidate) => candidate.clusterId === clusterId)
-    .sort((left, right) => compareReverseCandidates(left, right, sort))[0];
-}
-
-function matchesReverseCandidateFilters(
-  candidate: OpensteerReverseCandidateRecord,
-  filters: OpensteerReverseQueryFilters | undefined,
-  context: {
-    readonly observedRecord?: OpensteerReverseObservedRecord;
-    readonly observation?: OpensteerReverseObservationRecord;
-  } = {},
+function shouldAcceptFetchResponse(
+  response: OpensteerRequestResponseResult,
+  transport: TransportKind,
+  challengeNote: string | undefined,
 ): boolean {
-  if (filters === undefined) {
+  if (challengeNote !== undefined) {
+    return false;
+  }
+  if (response.status >= 200 && response.status < 400) {
     return true;
   }
-  if (filters.candidateId !== undefined && candidate.id !== filters.candidateId) {
-    return false;
-  }
-  if (filters.clusterId !== undefined && candidate.clusterId !== filters.clusterId) {
-    return false;
-  }
-  if (filters.recordId !== undefined && candidate.recordId !== filters.recordId) {
-    return false;
-  }
-  if (filters.channel !== undefined && candidate.channel.kind !== filters.channel) {
-    return false;
-  }
-  if (filters.boundary !== undefined && candidate.boundary !== filters.boundary) {
-    return false;
-  }
-  if (filters.advisoryTag !== undefined && !candidate.advisoryTags.includes(filters.advisoryTag)) {
-    return false;
-  }
-  if (filters.constraint !== undefined && !candidate.constraints.includes(filters.constraint)) {
-    return false;
-  }
-  if (filters.bodyCodec !== undefined && candidate.bodyCodec.kind !== filters.bodyCodec) {
-    return false;
-  }
-  if (
-    filters.relationKind !== undefined &&
-    context.observedRecord !== undefined &&
-    !context.observedRecord.relationKinds.includes(filters.relationKind)
-  ) {
-    return false;
-  }
-  if (filters.hasGuards !== undefined && candidate.guardIds.length > 0 !== filters.hasGuards) {
-    return false;
-  }
-  if (
-    filters.hasResolvers !== undefined &&
-    candidate.resolvers.length > 0 !== filters.hasResolvers
-  ) {
-    return false;
-  }
-  const url = new URL(candidate.channel.url);
-  if (filters.host !== undefined && url.hostname !== filters.host) {
-    return false;
-  }
-  if (filters.path !== undefined && !url.pathname.includes(filters.path)) {
-    return false;
-  }
-  if (filters.method !== undefined && candidate.channel.method !== filters.method) {
-    return false;
-  }
-  if (filters.status !== undefined) {
-    const matchesStatus = candidate.signals.successfulStatus
-      ? filters.status === "2xx" || filters.status === "200"
-      : true;
-    if (!matchesStatus) {
-      return false;
-    }
-  }
-  if (
-    filters.artifactId !== undefined &&
-    !candidate.scriptArtifactIds.includes(filters.artifactId) &&
-    !candidate.resolvers.some(
-      (resolver) => extractReverseResolverArtifactId(resolver) === filters.artifactId,
-    )
-  ) {
-    return false;
-  }
-  if (
-    filters.stateSnapshotId !== undefined &&
-    !candidate.resolvers.some(
-      (resolver) =>
-        resolver.valueRef?.kind === "state-snapshot" &&
-        resolver.valueRef.stateSnapshotId === filters.stateSnapshotId,
-    ) &&
-    !(context.observation?.stateSnapshotIds.includes(filters.stateSnapshotId) === true)
-  ) {
-    return false;
-  }
-  if (
-    filters.traceId !== undefined &&
-    !candidate.resolvers.some((resolver) => resolver.traceId === filters.traceId) &&
-    !(context.observation?.interactionTraceIds.includes(filters.traceId) === true)
-  ) {
-    return false;
-  }
-  if (filters.evidenceRef !== undefined) {
-    const matchesEvidence =
-      candidate.id === filters.evidenceRef ||
-      candidate.clusterId === filters.evidenceRef ||
-      candidate.recordId === filters.evidenceRef ||
-      candidate.scriptArtifactIds.includes(filters.evidenceRef) ||
-      candidate.guardIds.includes(filters.evidenceRef) ||
-      candidate.resolvers.some(
-        (resolver) =>
-          resolver.id === filters.evidenceRef ||
-          resolver.traceId === filters.evidenceRef ||
-          extractReverseResolverArtifactId(resolver) === filters.evidenceRef ||
-          extractReverseResolverRecordId(resolver) === filters.evidenceRef,
-      );
-    if (!matchesEvidence) {
-      return false;
-    }
-  }
-  if (filters.text !== undefined) {
-    const haystack = [
-      candidate.summary,
-      candidate.channel.url,
-      candidate.bodyCodec.operationName,
-      ...candidate.matchedTargetHints,
-    ]
-      .filter((value): value is string => typeof value === "string" && value.length > 0)
-      .join("\n")
-      .toLowerCase();
-    if (!haystack.includes(filters.text.toLowerCase())) {
-      return false;
-    }
-  }
-  return true;
+  return transport === "page-http" && response.status >= 200 && response.status < 500;
 }
 
-function matchesReverseRecordFilters(
-  record: OpensteerReverseObservedRecord,
-  candidates: readonly OpensteerReverseCandidateRecord[],
-  filters: OpensteerReverseQueryFilters | undefined,
-): boolean {
-  if (filters === undefined) {
-    return true;
-  }
-  if (filters.recordId !== undefined && record.recordId !== filters.recordId) {
-    return false;
-  }
-  if (filters.clusterId !== undefined && record.clusterId !== filters.clusterId) {
-    return false;
-  }
-  if (filters.channel !== undefined && record.channel.kind !== filters.channel) {
-    return false;
-  }
-  if (filters.resourceType !== undefined && record.resourceType !== filters.resourceType) {
-    return false;
-  }
-  if (filters.bodyCodec !== undefined && record.bodyCodec.kind !== filters.bodyCodec) {
-    return false;
-  }
-  const url = new URL(record.channel.url);
-  if (filters.host !== undefined && url.hostname !== filters.host) {
-    return false;
-  }
-  if (filters.path !== undefined && !url.pathname.includes(filters.path)) {
-    return false;
-  }
-  if (filters.method !== undefined && record.channel.method !== filters.method) {
-    return false;
-  }
-  if (filters.status !== undefined && String(record.status ?? "") !== filters.status) {
-    return false;
-  }
-  const relatedCandidates = candidates.filter(
-    (candidate) => candidate.recordId === record.recordId,
-  );
-  return relatedCandidates.length === 0
-    ? true
-    : relatedCandidates.some((candidate) => matchesReverseCandidateFilters(candidate, filters));
-}
-
-function matchesReverseClusterFilters(
-  cluster: OpensteerObservationCluster,
-  candidates: readonly OpensteerReverseCandidateRecord[],
-  filters: OpensteerReverseQueryFilters | undefined,
-): boolean {
-  if (filters === undefined) {
-    return true;
-  }
-  if (filters.clusterId !== undefined && cluster.id !== filters.clusterId) {
-    return false;
-  }
-  if (filters.channel !== undefined && cluster.channel !== filters.channel) {
-    return false;
-  }
-  const url = new URL(cluster.url);
-  if (filters.host !== undefined && url.hostname !== filters.host) {
-    return false;
-  }
-  if (filters.path !== undefined && !url.pathname.includes(filters.path)) {
-    return false;
-  }
-  if (filters.method !== undefined && cluster.method !== filters.method) {
-    return false;
-  }
-  const relatedCandidates = candidates.filter((candidate) => candidate.clusterId === cluster.id);
-  return relatedCandidates.length === 0
-    ? true
-    : relatedCandidates.some((candidate) => matchesReverseCandidateFilters(candidate, filters));
-}
-
-function toReverseRawRequestBodyInput(
-  body: NetworkQueryRecord["record"]["requestBody"] | undefined,
+function summarizeBody(
+  body:
+    | NetworkQueryRecord["record"]["requestBody"]
+    | NetworkQueryRecord["record"]["responseBody"]
+    | undefined,
   headers: readonly HeaderEntry[],
-): OpensteerRawRequestInput["body"] | undefined {
+): OpensteerNetworkSummaryRecord["request"] | undefined {
   if (body === undefined) {
     return undefined;
   }
   const contentType = headerValue(headers, "content-type") ?? body.mimeType;
-  const text = decodeProtocolBody(body);
-  if (text !== undefined) {
-    const normalizedContentType = contentType?.toLowerCase();
-    if (
-      normalizedContentType?.includes("application/json") === true ||
-      normalizedContentType?.includes("+json") === true
-    ) {
-      try {
-        return {
-          json: JSON.parse(text),
-          ...(contentType === undefined ? {} : { contentType }),
-        };
-      } catch {
-        return {
-          text,
-          ...(contentType === undefined ? {} : { contentType }),
-        };
-      }
-    }
-    return {
-      text,
-      ...(contentType === undefined ? {} : { contentType }),
-    };
-  }
   return {
-    base64: body.data,
+    bytes: body.originalByteLength ?? body.capturedByteLength,
     ...(contentType === undefined ? {} : { contentType }),
   };
 }
 
-function extractReverseRuntimeValue(value: unknown, pointer: string | undefined): unknown {
-  if (pointer === undefined || pointer.length === 0) {
-    return value;
-  }
-  if (pointer.startsWith("/")) {
-    return readJsonPointer(value, pointer);
-  }
-  return readDotPath(value, pointer);
-}
-
-function readDotPath(value: unknown, path: string): unknown {
-  if (path.length === 0) {
-    return value;
-  }
-  let current = value;
-  for (const segment of path.split(".").filter((entry) => entry.length > 0)) {
-    if (current === null || current === undefined) {
-      return undefined;
-    }
-    if (Array.isArray(current)) {
-      const index = Number(segment);
-      if (!Number.isInteger(index)) {
-        return undefined;
-      }
-      current = current[index];
-      continue;
-    }
-    if (typeof current !== "object") {
-      return undefined;
-    }
-    current = (current as Record<string, unknown>)[segment];
-  }
-  return current;
-}
-
-function resolveReversePackageRuntimeValue(
-  packageRecord: ReversePackageRecord,
-  pageRef: PageRef,
-  runtimeKey: OpensteerValueReference["runtimeKey"] | undefined,
-): unknown {
-  switch (runtimeKey) {
-    case "pageRef":
-      return pageRef;
-    case "packageId":
-      return packageRecord.id;
-    case "caseId":
-      return packageRecord.payload.caseId;
-    case "candidateId":
-      return packageRecord.payload.candidateId;
-    case "objective":
-      return packageRecord.payload.objective;
-    case undefined:
-      return undefined;
-  }
-}
-
-function matchesReverseAwaitRecordFilter(
-  record: NetworkQueryRecord,
-  filter: {
-    readonly channel?: OpensteerReverseCandidateRecord["channel"]["kind"];
-    readonly method?: string;
-    readonly url?: string;
-    readonly host?: string;
-    readonly path?: string;
-    readonly status?: number;
-    readonly text?: string;
-  },
-): boolean {
-  if (filter.channel !== undefined && buildChannelDescriptor(record).kind !== filter.channel) {
-    return false;
-  }
-  if (filter.method !== undefined && record.record.method !== filter.method) {
-    return false;
-  }
-  if (filter.url !== undefined && record.record.url !== filter.url) {
-    return false;
-  }
-  const parsedUrl = new URL(record.record.url);
-  if (filter.host !== undefined && parsedUrl.hostname !== filter.host) {
-    return false;
-  }
-  if (filter.path !== undefined && !parsedUrl.pathname.includes(filter.path)) {
-    return false;
-  }
-  if (filter.status !== undefined && record.record.status !== filter.status) {
-    return false;
-  }
-  if (filter.text !== undefined) {
-    const haystack = [
-      record.record.url,
-      decodeProtocolBody(record.record.requestBody) ?? "",
-      decodeProtocolBody(record.record.responseBody) ?? "",
-    ]
-      .join("\n")
-      .toLowerCase();
-    if (!haystack.includes(filter.text.toLowerCase())) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function resolveReverseCookieResolverValue(
-  snapshots: readonly OpensteerStateSnapshot[],
-  resolver: OpensteerExecutableResolver,
-): string | undefined {
-  const scopedSnapshots = filterSnapshotsForResolver(snapshots, resolver);
-  const cookieName = resolver.inputNames?.[0];
-  if (cookieName === undefined) {
-    return undefined;
-  }
-  for (const snapshot of [...scopedSnapshots].sort(
-    (left, right) => right.capturedAt - left.capturedAt,
-  )) {
-    const match = snapshot.cookies?.find((cookie) => cookie.name === cookieName);
-    if (match !== undefined) {
-      return match.value;
-    }
-  }
-  return undefined;
-}
-
-function resolveReverseStorageResolverValue(
-  snapshots: readonly OpensteerStateSnapshot[],
-  resolver: OpensteerExecutableResolver,
-): unknown {
-  const scopedSnapshots = filterSnapshotsForResolver(snapshots, resolver);
-  const storageView = {
-    origins: scopedSnapshots.flatMap((snapshot) => snapshot.storage?.origins ?? []),
-    sessionStorage: scopedSnapshots.flatMap((snapshot) => snapshot.storage?.sessionStorage ?? []),
-    hiddenFields: scopedSnapshots.flatMap((snapshot) => snapshot.hiddenFields ?? []),
-    globals: scopedSnapshots
-      .map((snapshot) => snapshot.globals)
-      .filter((value): value is Record<string, unknown> => value !== undefined),
-  };
-  if (resolver.valueRef?.pointer !== undefined) {
-    return extractReverseRuntimeValue(storageView, resolver.valueRef.pointer);
-  }
-  const inputName = resolver.inputNames?.[0];
-  if (inputName === undefined) {
-    return undefined;
-  }
-  for (const snapshot of [...scopedSnapshots].sort(
-    (left, right) => right.capturedAt - left.capturedAt,
-  )) {
-    for (const origin of snapshot.storage?.origins ?? []) {
-      const entry = origin.localStorage.find((item) => item.key === inputName);
-      if (entry !== undefined) {
-        return entry.value;
-      }
-    }
-    for (const origin of snapshot.storage?.sessionStorage ?? []) {
-      const entry = origin.entries.find((item) => item.key === inputName);
-      if (entry !== undefined) {
-        return entry.value;
-      }
-    }
-  }
-  return undefined;
-}
-
-function filterSnapshotsForResolver(
-  snapshots: readonly OpensteerStateSnapshot[],
-  resolver: OpensteerExecutableResolver,
-): readonly OpensteerStateSnapshot[] {
-  if (resolver.valueRef?.stateSnapshotId === undefined) {
-    return snapshots;
-  }
-  return snapshots.filter((snapshot) => snapshot.id === resolver.valueRef?.stateSnapshotId);
-}
-
-function extractReverseResolverArtifactId(
-  resolver: OpensteerExecutableResolver,
-): string | undefined {
-  return resolver.valueRef?.kind === "artifact" ? resolver.valueRef.artifactId : undefined;
-}
-
-function extractReverseResolverRecordId(resolver: OpensteerExecutableResolver): string | undefined {
-  return resolver.valueRef?.kind === "record" ? resolver.valueRef.recordId : undefined;
-}
-
-function extractReverseRecordId(value: unknown): string | undefined {
-  if (
-    value !== null &&
-    typeof value === "object" &&
-    typeof (value as { readonly recordId?: unknown }).recordId === "string"
-  ) {
-    return (value as { readonly recordId: string }).recordId;
-  }
-  return undefined;
-}
-
-function extractReverseStatus(value: unknown): number | undefined {
-  if (
-    value !== null &&
-    typeof value === "object" &&
-    typeof (value as { readonly response?: { readonly status?: unknown } }).response?.status ===
-      "number"
-  ) {
-    return (value as { readonly response: { readonly status: number } }).response.status;
-  }
-  if (
-    value !== null &&
-    typeof value === "object" &&
-    typeof (value as { readonly record?: { readonly status?: unknown } }).record?.status ===
-      "number"
-  ) {
-    return (value as { readonly record: { readonly status: number } }).record.status;
-  }
-  return undefined;
-}
-
-function serializeReverseBindings(
-  bindings: ReadonlyMap<string, unknown>,
-): Readonly<Record<string, JsonValue>> {
-  const entries = [...bindings.entries()].map(([key, value]) => [key, toCanonicalJsonValue(value)]);
-  return Object.fromEntries(entries);
-}
-
-function evaluateReversePackageAssertion(
-  boundValue: unknown,
-  channelKind: NonNullable<OpensteerReversePackageRunOutput["channel"]>,
-  validators: readonly OpensteerValidationRule[],
-  fallbackRecordId?: string,
-  fallbackStatus?: number,
-  executedStepIds: readonly string[] = [],
-  bindings: Readonly<Record<string, JsonValue>> = {},
-  failedStepId?: string,
-): {
-  readonly success: boolean;
-  readonly executedStepIds: readonly string[];
-  readonly failedStepId?: string;
-  readonly bindings?: Readonly<Record<string, JsonValue>>;
-  readonly recordId?: string;
-  readonly status?: number;
-  readonly validation: OpensteerReversePackageRunOutput["validation"];
-  readonly error?: string;
-} {
-  if (isNetworkQueryRecordValue(boundValue)) {
-    switch (channelKind) {
-      case "http": {
-        const evaluation = evaluateValidationRulesForObservedRecord(boundValue, validators);
-        return {
-          ...evaluation,
-          executedStepIds,
-          bindings,
-          recordId: boundValue.recordId,
-          ...(boundValue.record.status === undefined ? {} : { status: boundValue.record.status }),
-        };
-      }
-      case "event-stream": {
-        const firstChunkPreview = firstTextPreview(
-          decodeProtocolBody(boundValue.record.responseBody),
-        );
-        const evaluation = evaluateValidationRulesForEventStreamReplay(
-          firstChunkPreview === undefined
-            ? { status: boundValue.record.status ?? 0 }
-            : {
-                status: boundValue.record.status ?? 0,
-                firstChunkPreview,
-              },
-          validators,
-        );
-        return {
-          ...evaluation,
-          executedStepIds,
-          bindings,
-          recordId: boundValue.recordId,
-          ...(boundValue.record.status === undefined ? {} : { status: boundValue.record.status }),
-        };
-      }
-      case "websocket": {
-        const evaluation = evaluateValidationRulesForWebSocketReplay(
-          {
-            opened: true,
-            messageCount: boundValue.record.responseBody === undefined ? 0 : 1,
-          },
-          validators,
-        );
-        return {
-          ...evaluation,
-          executedStepIds,
-          bindings,
-          recordId: boundValue.recordId,
-          ...(boundValue.record.status === undefined ? {} : { status: boundValue.record.status }),
-        };
-      }
-    }
-  }
-
-  if (isRawRequestOutputValue(boundValue)) {
-    switch (channelKind) {
-      case "http": {
-        const evaluation = evaluateValidationRulesForHttpResponse(boundValue.response, validators);
-        return {
-          ...evaluation,
-          executedStepIds,
-          bindings,
-          recordId: boundValue.recordId,
-          status: boundValue.response.status,
-        };
-      }
-      case "event-stream": {
-        const firstChunkPreview = firstTextPreview(decodeProtocolBody(boundValue.response.body));
-        const evaluation = evaluateValidationRulesForEventStreamReplay(
-          firstChunkPreview === undefined
-            ? { status: boundValue.response.status }
-            : {
-                status: boundValue.response.status,
-                firstChunkPreview,
-              },
-          validators,
-        );
-        return {
-          ...evaluation,
-          executedStepIds,
-          bindings,
-          recordId: boundValue.recordId,
-          status: boundValue.response.status,
-        };
-      }
-      case "websocket":
-        return {
-          success: false,
-          executedStepIds,
-          ...(failedStepId === undefined ? {} : { failedStepId }),
-          bindings,
-          ...(fallbackRecordId === undefined ? {} : { recordId: fallbackRecordId }),
-          ...(fallbackStatus === undefined ? {} : { status: fallbackStatus }),
-          validation: {},
-          error:
-            "request.raw cannot validate websocket replay directly; await the observed websocket record instead",
-        };
-    }
-  }
-
-  if (
-    channelKind === "websocket" &&
-    boundValue !== null &&
-    typeof boundValue === "object" &&
-    typeof (boundValue as { readonly opened?: unknown }).opened === "boolean"
-  ) {
-    const evaluation = evaluateValidationRulesForWebSocketReplay(
-      {
-        opened: (boundValue as { readonly opened: boolean }).opened,
-        messageCount:
-          typeof (boundValue as { readonly messageCount?: unknown }).messageCount === "number"
-            ? (boundValue as { readonly messageCount: number }).messageCount
-            : 0,
-      },
-      validators,
-    );
-    return {
-      ...evaluation,
-      executedStepIds,
-      bindings,
-      ...(fallbackRecordId === undefined ? {} : { recordId: fallbackRecordId }),
-      ...(fallbackStatus === undefined ? {} : { status: fallbackStatus }),
-    };
-  }
-
-  return {
-    success: false,
-    executedStepIds,
-    ...(failedStepId === undefined ? {} : { failedStepId }),
-    bindings,
-    ...(fallbackRecordId === undefined ? {} : { recordId: fallbackRecordId }),
-    ...(fallbackStatus === undefined ? {} : { status: fallbackStatus }),
-    validation: {},
-    error: "assert step received an unsupported replay result binding",
-  };
-}
-
-function isNetworkQueryRecordValue(value: unknown): value is NetworkQueryRecord {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    typeof (value as { readonly recordId?: unknown }).recordId === "string" &&
-    value !== null &&
-    typeof (value as { readonly record?: unknown }).record === "object"
-  );
-}
-
-function isRawRequestOutputValue(value: unknown): value is OpensteerRawRequestOutput {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    typeof (value as { readonly recordId?: unknown }).recordId === "string" &&
-    value !== null &&
-    typeof (value as { readonly request?: unknown }).request === "object" &&
-    typeof (value as { readonly response?: unknown }).response === "object"
-  );
-}
-
-function buildCapturedRecordSuccessFingerprint(record: NetworkQueryRecord): {
-  readonly status: number;
-  readonly structureHash?: string;
-} {
-  const structureHash =
-    record.record.responseBody === undefined
-      ? undefined
-      : protocolJsonStructureHash(record.record.responseBody);
-  return {
-    status: record.record.status ?? 0,
-    ...(structureHash === undefined ? {} : { structureHash }),
-  };
-}
-
-function matchesSuccessFingerprintFromProtocolResponse(
-  response: OpensteerRequestResponseResult,
-  fingerprint: {
-    readonly status: number;
-    readonly structureHash?: string;
-  },
-): boolean {
-  if (response.status !== fingerprint.status) {
-    return false;
-  }
-  if (fingerprint.structureHash === undefined) {
-    return true;
-  }
-  return protocolJsonStructureHash(response.body) === fingerprint.structureHash;
-}
-
-function protocolJsonStructureHash(
-  body:
-    | OpensteerRequestResponseResult["body"]
-    | NetworkQueryRecord["record"]["responseBody"]
-    | undefined,
-): string | undefined {
-  const text = decodeProtocolBody(body);
-  if (text === undefined) {
-    return undefined;
-  }
-  return jsonStructureHash(text);
+function buildInteractionTraceKey(pageUrl: string): string {
+  const slug = pageUrl
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  return `interaction-${slug || `trace-${Date.now()}`}`;
 }
 
 function normalizeInteractionEvents(
@@ -10904,10 +6119,6 @@ function diffStorageSnapshot(
 
 function normalizeRuntimeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function runtimeDelay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function applyBrowserCookiesToTransportRequest(
@@ -11027,93 +6238,9 @@ function resolveExplicitCaptchaInput(
   };
 }
 
-function serializeCookieJarHeader(
-  entries: readonly CookieJarEntry[],
-  requestUrl: string,
-): string | undefined {
-  const validEntries = entries.filter((entry) => cookieAppliesToUrl(entry, requestUrl));
-  if (validEntries.length === 0) {
-    return undefined;
-  }
-  return validEntries.map((entry) => `${entry.name}=${entry.value}`).join("; ");
-}
-
-function cookieAppliesToUrl(entry: CookieJarEntry, requestUrl: string): boolean {
-  if (entry.expiresAt !== undefined && entry.expiresAt <= Date.now()) {
-    return false;
-  }
-
-  const url = new URL(requestUrl);
-  if (entry.secure && url.protocol !== "https:") {
-    return false;
-  }
-  if (!cookieDomainMatches(entry.domain, url.hostname)) {
-    return false;
-  }
-  return url.pathname.startsWith(entry.path);
-}
-
 function cookieDomainMatches(domain: string, hostname: string): boolean {
   const normalizedDomain = domain.startsWith(".") ? domain.slice(1) : domain;
   return hostname === normalizedDomain || hostname.endsWith(`.${normalizedDomain}`);
-}
-
-function parseSetCookieHeader(value: string, requestUrl: string): readonly CookieJarEntry[] {
-  const [nameValue, ...attributeParts] = value.split(";");
-  const [rawName, ...rawValueParts] = (nameValue ?? "").split("=");
-  const name = rawName?.trim();
-  if (!name) {
-    return [];
-  }
-
-  const url = new URL(requestUrl);
-  let domain = url.hostname;
-  let path = defaultCookiePath(url.pathname);
-  let secure = url.protocol === "https:";
-  let expiresAt: number | undefined;
-  const cookieValue = rawValueParts.join("=").trim();
-
-  for (const attribute of attributeParts) {
-    const [rawKey, ...rawAttributeValueParts] = attribute.split("=");
-    const key = rawKey?.trim().toLowerCase();
-    const attributeValue = rawAttributeValueParts.join("=").trim();
-    if (key === "domain" && attributeValue.length > 0) {
-      domain = attributeValue.startsWith(".") ? attributeValue : `.${attributeValue}`;
-      continue;
-    }
-    if (key === "path" && attributeValue.length > 0) {
-      path = attributeValue;
-      continue;
-    }
-    if (key === "secure") {
-      secure = true;
-      continue;
-    }
-    if (key === "expires") {
-      const timestamp = Date.parse(attributeValue);
-      if (Number.isFinite(timestamp)) {
-        expiresAt = timestamp;
-      }
-      continue;
-    }
-    if (key === "max-age") {
-      const maxAge = Number.parseInt(attributeValue, 10);
-      if (Number.isFinite(maxAge)) {
-        expiresAt = Date.now() + maxAge * 1000;
-      }
-    }
-  }
-
-  return [
-    {
-      name,
-      value: cookieValue,
-      domain,
-      path,
-      secure,
-      ...(expiresAt === undefined ? {} : { expiresAt }),
-    },
-  ];
 }
 
 function defaultCookiePath(pathname: string): string {
@@ -11123,53 +6250,6 @@ function defaultCookiePath(pathname: string): string {
   const index = pathname.lastIndexOf("/");
   return index <= 0 ? "/" : pathname.slice(0, index);
 }
-
-function mergeCookieJarEntries(
-  current: readonly CookieJarEntry[],
-  updates: readonly CookieJarEntry[],
-): CookieJarEntry[] {
-  const merged = new Map<string, CookieJarEntry>();
-  for (const entry of current) {
-    merged.set(cookieJarKey(entry), entry);
-  }
-  for (const entry of updates) {
-    merged.set(cookieJarKey(entry), entry);
-  }
-  return [...merged.values()].filter(
-    (entry) => entry.expiresAt === undefined || entry.expiresAt > Date.now(),
-  );
-}
-
-function cookieJarKey(entry: CookieJarEntry): string {
-  return `${entry.domain}\u0000${entry.path}\u0000${entry.name}`;
-}
-
-const RESTORE_PAGE_STORAGE_SCRIPT = `(input => {
-  if (Array.isArray(input.localStorageEntries)) {
-    window.localStorage.clear();
-    for (const entry of input.localStorageEntries) {
-      if (!entry || typeof entry.key !== "string") {
-        continue;
-      }
-      window.localStorage.setItem(entry.key, typeof entry.value === "string" ? entry.value : "");
-    }
-  }
-
-  if (Array.isArray(input.sessionStorageEntries)) {
-    window.sessionStorage.clear();
-    for (const entry of input.sessionStorageEntries) {
-      if (!entry || typeof entry.key !== "string") {
-        continue;
-      }
-      window.sessionStorage.setItem(entry.key, typeof entry.value === "string" ? entry.value : "");
-    }
-  }
-
-  return {
-    localStorageSize: window.localStorage.length,
-    sessionStorageSize: window.sessionStorage.length,
-  };
-})`;
 
 const CAPTURE_PAGE_STATE_SCRIPT = `(input => {
   const cssPath = element => {
@@ -11223,14 +6303,6 @@ const CAPTURE_PAGE_STATE_SCRIPT = `(input => {
   }
 
   return { hiddenFields, globals };
-})`;
-
-const PAGE_EVAL_RESOLVER_SCRIPT = `(input => {
-  const expression = typeof input?.expression === "string" ? input.expression.trim() : "";
-  if (expression.length === 0) {
-    return undefined;
-  }
-  return Function(\`return (\${expression});\`)();
 })`;
 
 const INTERACTION_RECORDER_INSTALL_SCRIPT = `(() => {
@@ -11427,93 +6499,6 @@ const PAGE_HTTP_REQUEST_SCRIPT = `(async (input) => {
   };
 })`;
 
-const PAGE_HTTP_EVENT_STREAM_SCRIPT = `(async (input) => {
-  const decodeBase64 = (value) => {
-    if (typeof value !== "string" || value.length === 0) {
-      return undefined;
-    }
-    const binary = atob(value);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) {
-      bytes[index] = binary.charCodeAt(index);
-    }
-    return bytes;
-  };
-
-  const headers = new Headers();
-  for (const header of input.headers ?? []) {
-    headers.set(header.name, header.value);
-  }
-
-  const response = await fetch(input.url, {
-    method: input.method,
-    headers,
-    ...(input.bodyBase64 === undefined ? {} : { body: decodeBase64(input.bodyBase64) }),
-    redirect: input.followRedirects === false ? "manual" : "follow",
-  });
-
-  let firstChunkPreview;
-  if (response.body) {
-    const reader = response.body.getReader();
-    const readPromise = reader.read();
-    const timerPromise = new Promise(resolve => setTimeout(() => resolve(null), input.readTimeoutMs ?? 1500));
-    const readResult = await Promise.race([readPromise, timerPromise]);
-    if (readResult && !readResult.done && readResult.value) {
-      firstChunkPreview = new TextDecoder().decode(readResult.value).slice(0, 256);
-    }
-    try {
-      await reader.cancel();
-    } catch {}
-  }
-
-  return {
-    status: response.status,
-    firstChunkPreview,
-  };
-})`;
-
-const PAGE_HTTP_WEBSOCKET_SCRIPT = `(async (input) => {
-  return await new Promise(resolve => {
-    let settled = false;
-    let messageCount = 0;
-    let opened = false;
-    const finish = (payload) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      try {
-        socket.close();
-      } catch {}
-      resolve(payload);
-    };
-    const socket = Array.isArray(input.protocols) && input.protocols.length > 0
-      ? new WebSocket(input.url, input.protocols)
-      : new WebSocket(input.url);
-    const timer = setTimeout(() => {
-      finish({ opened, messageCount, ...(opened ? {} : { error: "timed out before websocket opened" }) });
-    }, input.waitMs ?? 1500);
-
-    socket.addEventListener("open", () => {
-      opened = true;
-      if ((input.waitMs ?? 1500) <= 0) {
-        finish({ opened, messageCount });
-      }
-    });
-    socket.addEventListener("message", () => {
-      messageCount += 1;
-      finish({ opened: true, messageCount });
-    });
-    socket.addEventListener("error", () => {
-      finish({ opened, messageCount, error: "websocket error" });
-    });
-    socket.addEventListener("close", () => {
-      finish({ opened, messageCount, ...(opened ? {} : { error: "websocket closed before open" }) });
-    });
-  });
-})`;
-
 function toPageHttpTransportResponse(value: unknown): {
   readonly url: string;
   readonly status: number;
@@ -11562,239 +6547,6 @@ function toPageHttpTransportResponse(value: unknown): {
   };
 }
 
-function toPageHttpEventStreamResponse(value: unknown): {
-  readonly status: number;
-  readonly firstChunkPreview?: string;
-} {
-  if (value === null || typeof value !== "object") {
-    throw new OpensteerProtocolError(
-      "operation-failed",
-      "page-http event-stream replay returned an invalid payload",
-    );
-  }
-  const response = value as {
-    readonly status?: unknown;
-    readonly firstChunkPreview?: unknown;
-  };
-  return {
-    status: typeof response.status === "number" ? response.status : 0,
-    ...(typeof response.firstChunkPreview === "string"
-      ? { firstChunkPreview: response.firstChunkPreview }
-      : {}),
-  };
-}
-
-function toPageHttpWebSocketResponse(value: unknown): {
-  readonly opened: boolean;
-  readonly messageCount: number;
-  readonly error?: string;
-} {
-  if (value === null || typeof value !== "object") {
-    throw new OpensteerProtocolError(
-      "operation-failed",
-      "page-http websocket replay returned an invalid payload",
-    );
-  }
-  const response = value as {
-    readonly opened?: unknown;
-    readonly messageCount?: unknown;
-    readonly error?: unknown;
-  };
-  return {
-    opened: response.opened === true,
-    messageCount: typeof response.messageCount === "number" ? response.messageCount : 0,
-    ...(typeof response.error === "string" ? { error: response.error } : {}),
-  };
-}
-
-function buildTransportRequestFromPlan(
-  plan: RequestPlanRecord,
-  input: OpensteerRequestExecuteInput,
-): {
-  readonly method: string;
-  readonly url: string;
-  readonly headers?: readonly HeaderEntry[];
-  readonly body?: BrowserBodyPayload;
-} {
-  const payload = plan.payload;
-  const parameters = payload.parameters ?? [];
-  const pathParameters = parameters.filter((parameter) => parameter.in === "path");
-  const queryParameters = parameters.filter((parameter) => parameter.in === "query");
-  const headerParameters = parameters.filter((parameter) => parameter.in === "header");
-
-  const resolvedPath = resolvePlanParameterValues(plan, pathParameters, input.params, "params");
-  const resolvedQuery = resolvePlanParameterValues(plan, queryParameters, input.query);
-  const resolvedHeaders = resolvePlanParameterValues(plan, headerParameters, input.headers);
-  const extraQuery = resolveUnmappedExecutionValues(queryParameters, input.query);
-  const extraHeaders = resolveUnmappedExecutionValues(headerParameters, input.headers);
-
-  let url = payload.endpoint.urlTemplate;
-  for (const [name, value] of resolvedPath.entries()) {
-    url = url.replaceAll(`{${name}}`, encodeURIComponent(value));
-  }
-
-  const targetUrl = new URL(url);
-  for (const entry of payload.endpoint.defaultQuery ?? []) {
-    targetUrl.searchParams.set(entry.name, entry.value);
-  }
-  for (const parameter of queryParameters) {
-    const value = resolvedQuery.get(parameter.name);
-    if (value !== undefined) {
-      targetUrl.searchParams.set(parameter.wireName ?? parameter.name, value);
-    }
-  }
-  for (const [name, value] of extraQuery.entries()) {
-    targetUrl.searchParams.set(name, value);
-  }
-
-  const headers = [...(payload.endpoint.defaultHeaders ?? [])];
-  for (const parameter of headerParameters) {
-    const value = resolvedHeaders.get(parameter.name);
-    if (value !== undefined) {
-      setHeaderValue(headers, parameter.wireName ?? parameter.name, value);
-    }
-  }
-  for (const [name, value] of extraHeaders.entries()) {
-    setHeaderValue(headers, name, value);
-  }
-
-  const planBodyInput = buildPlanBodyInput(payload.body, input.body, input.bodyVars);
-  const body = planBodyInput === undefined ? undefined : toBrowserRequestBody(planBodyInput);
-  if (
-    body?.contentType !== undefined &&
-    !headers.some((header) => header.name.toLowerCase() === "content-type")
-  ) {
-    headers.push({
-      name: "content-type",
-      value: body.contentType,
-    });
-  }
-
-  return {
-    method: payload.endpoint.method,
-    url: targetUrl.toString(),
-    ...(headers.length === 0 ? {} : { headers }),
-    ...(body === undefined ? {} : { body: body.payload }),
-  };
-}
-
-function buildPlanBodyInput(
-  planBody: RequestPlanRecord["payload"]["body"],
-  overrideBody: OpensteerRequestExecuteInput["body"],
-  bodyVariables: OpensteerRequestExecuteInput["bodyVars"],
-): OpensteerRawRequestInput["body"] | undefined {
-  if (overrideBody !== undefined) {
-    return overrideBody;
-  }
-  if (planBody === undefined || planBody.kind === undefined) {
-    return undefined;
-  }
-
-  const variables = new Map(
-    Object.entries(bodyVariables ?? {}).map(([name, value]) => [name, String(value)]),
-  );
-  switch (planBody.kind) {
-    case "json":
-      return {
-        json: toCanonicalJsonValue(interpolateJsonValue(planBody.template ?? null, variables)),
-        ...(planBody.contentType === undefined ? {} : { contentType: planBody.contentType }),
-      };
-    case "text":
-      return {
-        text: interpolateTemplate(String(planBody.template ?? ""), variables),
-        ...(planBody.contentType === undefined ? {} : { contentType: planBody.contentType }),
-      };
-    case "form": {
-      const fields = Object.fromEntries(
-        (planBody.fields ?? []).map((entry) => [
-          entry.name,
-          interpolateTemplate(entry.value, variables),
-        ]),
-      );
-      return {
-        text: new URLSearchParams(fields).toString(),
-        contentType: planBody.contentType ?? "application/x-www-form-urlencoded; charset=utf-8",
-      };
-    }
-  }
-}
-
-function resolvePlanParameterValues(
-  plan: RequestPlanRecord,
-  parameters: readonly {
-    readonly name: string;
-    readonly in: "path" | "query" | "header";
-    readonly wireName?: string;
-    readonly required?: boolean;
-    readonly defaultValue?: string;
-  }[],
-  values: Readonly<Record<string, string | number | boolean>> | undefined,
-  fieldName?: "params",
-): ReadonlyMap<string, string> {
-  const normalizedValues = new Map(
-    Object.entries(values ?? {}).map(([name, value]) => [name, String(value)]),
-  );
-  if (fieldName === "params") {
-    const knownParameters = new Set(parameters.map((parameter) => parameter.name));
-    for (const name of normalizedValues.keys()) {
-      if (!knownParameters.has(name)) {
-        throw new OpensteerProtocolError(
-          "invalid-request",
-          `unknown ${fieldName} input "${name}" for request plan ${plan.key}@${plan.version}`,
-          {
-            details: {
-              key: plan.key,
-              version: plan.version,
-              field: fieldName,
-              name,
-            },
-          },
-        );
-      }
-    }
-  }
-
-  const resolved = new Map<string, string>();
-  for (const parameter of parameters) {
-    const value = normalizedValues.get(parameter.name) ?? parameter.defaultValue;
-    if (value === undefined) {
-      if (parameter.required ?? parameter.in === "path") {
-        throw new OpensteerProtocolError(
-          "invalid-request",
-          `missing required ${parameter.in} parameter "${parameter.name}" for request plan ${plan.key}@${plan.version}`,
-          {
-            details: {
-              key: plan.key,
-              version: plan.version,
-              field: fieldName,
-              parameter: parameter.name,
-              location: parameter.in,
-            },
-          },
-        );
-      }
-      continue;
-    }
-
-    resolved.set(parameter.name, value);
-  }
-  return resolved;
-}
-
-function resolveUnmappedExecutionValues(
-  parameters: readonly {
-    readonly name: string;
-  }[],
-  values: Readonly<Record<string, string | number | boolean>> | undefined,
-): ReadonlyMap<string, string> {
-  const knownParameters = new Set(parameters.map((parameter) => parameter.name));
-  return new Map(
-    Object.entries(values ?? {})
-      .filter(([name]) => !knownParameters.has(name))
-      .map(([name, value]) => [name, String(value)]),
-  );
-}
-
 function setHeaderValue(
   headers: { name: string; value: string }[],
   name: string,
@@ -11807,97 +6559,6 @@ function setHeaderValue(
     return;
   }
   headers.push({ name, value });
-}
-
-function buildPlanExecuteOutput(
-  plan: RequestPlanRecord,
-  request: {
-    readonly method: string;
-    readonly url: string;
-    readonly headers?: readonly HeaderEntry[];
-    readonly body?: BrowserBodyPayload;
-  },
-  response: {
-    readonly url: string;
-    readonly status: number;
-    readonly statusText: string;
-    readonly headers: readonly HeaderEntry[];
-    readonly body?: BrowserBodyPayload;
-    readonly redirected: boolean;
-  },
-): OpensteerRequestExecuteOutput {
-  const data = parseStructuredResponseData(response);
-  return {
-    plan: {
-      id: plan.id,
-      key: plan.key,
-      version: plan.version,
-    },
-    request: toProtocolRequestTransportResult(request),
-    response: toProtocolRequestResponseResult(response),
-    ...(data === undefined ? {} : { data }),
-  };
-}
-
-function assertResponseMatchesPlan(
-  plan: RequestPlanRecord,
-  response: {
-    readonly status: number;
-    readonly headers: readonly HeaderEntry[];
-  },
-): void {
-  const expectation = plan.payload.response;
-  if (expectation === undefined) {
-    return;
-  }
-
-  const expectedStatuses = Array.isArray(expectation.status)
-    ? expectation.status
-    : [expectation.status];
-  if (!expectedStatuses.includes(response.status)) {
-    throw new OpensteerProtocolError(
-      "conflict",
-      `request plan ${plan.key}@${plan.version} expected status ${expectedStatuses.join(", ")} but received ${String(response.status)}`,
-      {
-        details: {
-          key: plan.key,
-          version: plan.version,
-          expectedStatus: expectedStatuses,
-          actualStatus: response.status,
-        },
-      },
-    );
-  }
-
-  if (expectation.contentType !== undefined) {
-    const actualContentType = response.headers.find(
-      (header) => header.name.toLowerCase() === "content-type",
-    )?.value;
-    if (
-      actualContentType === undefined ||
-      !actualContentType.toLowerCase().includes(expectation.contentType.toLowerCase())
-    ) {
-      throw new OpensteerProtocolError(
-        "conflict",
-        `request plan ${plan.key}@${plan.version} expected content-type ${expectation.contentType} but received ${actualContentType ?? "none"}`,
-        {
-          details: {
-            key: plan.key,
-            version: plan.version,
-            expectedContentType: expectation.contentType,
-            actualContentType: actualContentType ?? null,
-          },
-        },
-      );
-    }
-  }
-}
-
-function touchFreshness(freshness: RequestPlanRecord["freshness"]): RequestPlanRecord["freshness"] {
-  return {
-    ...(freshness ?? {}),
-    lastValidatedAt: Date.now(),
-  };
 }
 
 async function executeDirectTransportRequest(
@@ -11942,79 +6603,6 @@ async function executeDirectTransportRequest(
   };
 }
 
-async function executeDirectEventStreamRequest(
-  request: {
-    readonly method: string;
-    readonly url: string;
-    readonly headers?: readonly HeaderEntry[];
-    readonly body?: BrowserBodyPayload;
-    readonly followRedirects?: boolean;
-  },
-  signal: AbortSignal,
-  readTimeoutMs: number,
-): Promise<{
-  readonly status: number;
-  readonly firstChunkPreview?: string;
-}> {
-  const response = await fetch(request.url, {
-    method: request.method,
-    headers: Object.fromEntries(
-      filterValidHttpHeaders(request.headers ?? []).map((header) => [header.name, header.value]),
-    ),
-    ...(request.body === undefined ? {} : { body: Buffer.from(request.body.bytes) }),
-    redirect: request.followRedirects === false ? "manual" : "follow",
-    signal,
-  });
-
-  const firstChunkPreview = await readFirstResponseChunk(response.body, signal, readTimeoutMs);
-  return {
-    status: response.status,
-    ...(firstChunkPreview === undefined ? {} : { firstChunkPreview }),
-  };
-}
-
-async function readFirstResponseChunk(
-  body: ReadableStream<Uint8Array> | null,
-  signal: AbortSignal,
-  readTimeoutMs: number,
-): Promise<string | undefined> {
-  if (body === null) {
-    return undefined;
-  }
-  const reader = body.getReader();
-  try {
-    const timeoutPromise = new Promise<null>((resolve) => {
-      const timer = setTimeout(() => resolve(null), readTimeoutMs);
-      signal.addEventListener(
-        "abort",
-        () => {
-          clearTimeout(timer);
-          resolve(null);
-        },
-        { once: true },
-      );
-    });
-    const readResult = await Promise.race([reader.read(), timeoutPromise]);
-    if (readResult === null || readResult.done || readResult.value === undefined) {
-      return undefined;
-    }
-    return firstTextPreview(new TextDecoder().decode(readResult.value));
-  } finally {
-    await reader.cancel().catch(() => undefined);
-  }
-}
-
-function computeStreamReadTimeoutMs(timeout: TimeoutExecutionContext): number {
-  return Math.max(250, Math.min(timeout.remainingMs() ?? 1_500, 1_500));
-}
-
-function firstTextPreview(value: string | undefined, limit = 256): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  return value.slice(0, limit);
-}
-
 function parseWebSocketProtocols(headers: readonly HeaderEntry[] | undefined): readonly string[] {
   const protocols = headerValue(headers ?? [], "sec-websocket-protocol");
   if (protocols === undefined) {
@@ -12026,429 +6614,11 @@ function parseWebSocketProtocols(headers: readonly HeaderEntry[] | undefined): r
     .filter((entry) => entry.length > 0);
 }
 
-function matchesFailurePolicy(
-  policy: OpensteerRequestFailurePolicy,
-  response: OpensteerRequestExecuteOutput["response"],
-): boolean {
-  if (policy.statusCodes?.includes(response.status)) {
-    return true;
-  }
-
-  if (policy.finalUrlIncludes?.some((value) => response.url.includes(value))) {
-    return true;
-  }
-
-  if (
-    policy.responseHeaders?.some((match) =>
-      response.headers.some(
-        (header) =>
-          header.name.toLowerCase() === match.name.toLowerCase() &&
-          header.value.includes(match.valueIncludes),
-      ),
-    )
-  ) {
-    return true;
-  }
-
-  const responseText = decodeProtocolBody(response.body);
-  if (
-    responseText !== undefined &&
-    policy.responseBodyIncludes?.some((value) => responseText.includes(value))
-  ) {
-    return true;
-  }
-
-  return false;
-}
-
-function applyTransportRequestOverrides(
-  request: {
-    readonly method: string;
-    readonly url: string;
-    readonly headers?: readonly HeaderEntry[];
-    readonly body?: BrowserBodyPayload;
-    readonly followRedirects?: boolean;
-  },
-  overrides: OpensteerAuthRecipeRetryOverrides | undefined,
-): {
-  readonly method: string;
-  readonly url: string;
-  readonly headers?: readonly HeaderEntry[];
-  readonly body?: BrowserBodyPayload;
-  readonly followRedirects?: boolean;
-} {
-  if (overrides === undefined) {
-    return request;
-  }
-
-  const url = new URL(request.url);
-  for (const [name, value] of Object.entries(overrides.query ?? {})) {
-    url.searchParams.set(name, value);
-  }
-  const headers = [...(request.headers ?? [])];
-  for (const [name, value] of Object.entries(overrides.headers ?? {})) {
-    setHeaderValue(headers, name, value);
-  }
-  return {
-    ...request,
-    url: url.toString(),
-    ...(headers.length === 0 ? {} : { headers }),
-  };
-}
-
-function interpolateTemplate(value: string, variables: ReadonlyMap<string, string>): string {
-  return value.replace(
-    /\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g,
-    (_match, name: string) => variables.get(name) ?? "",
-  );
-}
-
-function interpolateRecord(
-  value: Readonly<Record<string, string>> | undefined,
-  variables: ReadonlyMap<string, string>,
-): Readonly<Record<string, string>> | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  return Object.fromEntries(
-    Object.entries(value).map(([key, entry]) => [key, interpolateTemplate(entry, variables)]),
-  );
-}
-
-function buildRecipeRequest(
-  request: {
-    readonly url: string;
-    readonly method?: string;
-    readonly headers?: Readonly<Record<string, string>>;
-    readonly query?: Readonly<Record<string, string>>;
-    readonly body?: OpensteerRawRequestInput["body"];
-    readonly followRedirects?: boolean;
-  },
-  variables: ReadonlyMap<string, string>,
-): {
-  readonly method: string;
-  readonly url: string;
-  readonly headers?: readonly HeaderEntry[];
-  readonly body?: BrowserBodyPayload;
-  readonly followRedirects?: boolean;
-} {
-  const url = new URL(interpolateTemplate(request.url, variables));
-  for (const [name, value] of Object.entries(interpolateRecord(request.query, variables) ?? {})) {
-    url.searchParams.set(name, value);
-  }
-
-  const headers = Object.entries(interpolateRecord(request.headers, variables) ?? {}).map(
-    ([name, value]) => ({ name, value }),
-  );
-  const body =
-    request.body === undefined
-      ? undefined
-      : toBrowserRequestBody(interpolateRequestBody(request.body, variables));
-  if (
-    body?.contentType !== undefined &&
-    !headers.some((header) => header.name.toLowerCase() === "content-type")
-  ) {
-    headers.push({
-      name: "content-type",
-      value: body.contentType,
-    });
-  }
-
-  return {
-    method: request.method === undefined ? "GET" : interpolateTemplate(request.method, variables),
-    url: url.toString(),
-    ...(headers.length === 0 ? {} : { headers }),
-    ...(body === undefined ? {} : { body: body.payload }),
-    ...(request.followRedirects === undefined ? {} : { followRedirects: request.followRedirects }),
-  };
-}
-
-function interpolateRequestBody(
-  body: OpensteerRawRequestInput["body"],
-  variables: ReadonlyMap<string, string>,
-): OpensteerRawRequestInput["body"] {
-  if (body === undefined) {
-    return undefined;
-  }
-  if ("json" in body) {
-    return {
-      json: toCanonicalJsonValue(interpolateJsonValue(body.json, variables)),
-      ...(body.contentType === undefined
-        ? {}
-        : { contentType: interpolateTemplate(body.contentType, variables) }),
-    };
-  }
-  if ("text" in body) {
-    return {
-      text: interpolateTemplate(body.text, variables),
-      ...(body.contentType === undefined
-        ? {}
-        : { contentType: interpolateTemplate(body.contentType, variables) }),
-    };
-  }
-  return {
-    base64: interpolateTemplate(body.base64, variables),
-    ...(body.contentType === undefined
-      ? {}
-      : { contentType: interpolateTemplate(body.contentType, variables) }),
-  };
-}
-
-function interpolateJsonValue(value: unknown, variables: ReadonlyMap<string, string>): unknown {
-  if (typeof value === "string") {
-    return interpolateTemplate(value, variables);
-  }
-  if (Array.isArray(value)) {
-    return value.map((entry) => interpolateJsonValue(entry, variables));
-  }
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
-        key,
-        interpolateJsonValue(entry, variables),
-      ]),
-    );
-  }
-  return value;
-}
-
-function captureRecipeResponse(
-  step:
-    | Extract<OpensteerAuthRecipeStep, { readonly kind: "request" }>
-    | Extract<OpensteerAuthRecipeStep, { readonly kind: "sessionRequest" }>
-    | Extract<OpensteerAuthRecipeStep, { readonly kind: "directRequest" }>,
-  response: OpensteerRequestResponseResult,
-  data: unknown,
-): {
-  readonly variables?: Readonly<Record<string, string>>;
-} {
-  if (step.capture === undefined) {
-    return {};
-  }
-
-  const variables: Record<string, string> = {};
-  if (step.capture.header !== undefined) {
-    const value = response.headers.find(
-      (header) => header.name.toLowerCase() === step.capture!.header!.name.toLowerCase(),
-    )?.value;
-    if (value !== undefined) {
-      variables[step.capture.header.saveAs] = value;
-    }
-  }
-  if (step.capture.bodyText !== undefined) {
-    const text = decodeProtocolBody(response.body);
-    if (text !== undefined) {
-      variables[step.capture.bodyText.saveAs] = text;
-    }
-  }
-  if (step.capture.bodyJsonPointer !== undefined && data !== undefined) {
-    const value = readJsonPointer(data, step.capture.bodyJsonPointer.pointer);
-    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-      variables[step.capture.bodyJsonPointer.saveAs] = String(value);
-    }
-  }
-  return Object.keys(variables).length === 0 ? {} : { variables };
-}
-
 function decodeProtocolBody(body: OpensteerRequestResponseResult["body"]): string | undefined {
   if (body === undefined) {
     return undefined;
   }
   return Buffer.from(body.data, "base64").toString("utf8");
-}
-
-function readJsonPointer(value: unknown, pointer: string): unknown {
-  if (pointer === "" || pointer === "/") {
-    return value;
-  }
-  const parts = pointer
-    .split("/")
-    .slice(1)
-    .map((part) => part.replaceAll("~1", "/").replaceAll("~0", "~"));
-  let current = value;
-  for (const part of parts) {
-    if (current === null || typeof current !== "object") {
-      return undefined;
-    }
-    current = (current as Record<string, unknown>)[part];
-  }
-  return current;
-}
-
-function renderOverrides(
-  overrides: OpensteerAuthRecipeRetryOverrides | undefined,
-  variables: ReadonlyMap<string, string>,
-): OpensteerAuthRecipeRetryOverrides | undefined {
-  if (overrides === undefined) {
-    return undefined;
-  }
-  const params =
-    overrides.params === undefined ? undefined : interpolateRecord(overrides.params, variables);
-  const headers =
-    overrides.headers === undefined ? undefined : interpolateRecord(overrides.headers, variables);
-  const query =
-    overrides.query === undefined ? undefined : interpolateRecord(overrides.query, variables);
-  const body =
-    overrides.body === undefined ? undefined : interpolateRecord(overrides.body, variables);
-  return {
-    ...(params === undefined ? {} : { params }),
-    ...(headers === undefined ? {} : { headers }),
-    ...(query === undefined ? {} : { query }),
-    ...(body === undefined ? {} : { body }),
-  };
-}
-
-function mergeVariables(
-  target: Map<string, string>,
-  source: Readonly<Record<string, string>> | undefined,
-): void {
-  if (source === undefined) {
-    return;
-  }
-  for (const [key, value] of Object.entries(source)) {
-    target.set(key, value);
-  }
-}
-
-function mergeAuthRecipeOverrides(
-  base: OpensteerAuthRecipeRetryOverrides | undefined,
-  next: OpensteerAuthRecipeRetryOverrides | undefined,
-): OpensteerAuthRecipeRetryOverrides | undefined {
-  if (base === undefined) {
-    return next;
-  }
-  if (next === undefined) {
-    return base;
-  }
-  return {
-    ...(base.params === undefined && next.params === undefined
-      ? {}
-      : { params: { ...(base.params ?? {}), ...(next.params ?? {}) } }),
-    ...(base.headers === undefined && next.headers === undefined
-      ? {}
-      : { headers: { ...(base.headers ?? {}), ...(next.headers ?? {}) } }),
-    ...(base.query === undefined && next.query === undefined
-      ? {}
-      : { query: { ...(base.query ?? {}), ...(next.query ?? {}) } }),
-    ...(base.body === undefined && next.body === undefined
-      ? {}
-      : { body: { ...(base.body ?? {}), ...(next.body ?? {}) } }),
-  };
-}
-
-function mergeExecutionInputOverrides(
-  input: OpensteerRequestExecuteInput,
-  overrides: OpensteerAuthRecipeRetryOverrides | undefined,
-): OpensteerRequestExecuteInput {
-  if (overrides === undefined) {
-    return input;
-  }
-
-  return {
-    ...input,
-    ...(overrides.params === undefined
-      ? {}
-      : { params: { ...(input.params ?? {}), ...overrides.params } }),
-    ...(overrides.query === undefined
-      ? {}
-      : { query: { ...(input.query ?? {}), ...overrides.query } }),
-    ...(overrides.headers === undefined
-      ? {}
-      : { headers: { ...(input.headers ?? {}), ...overrides.headers } }),
-    ...(overrides.body === undefined
-      ? {}
-      : { bodyVars: { ...(input.bodyVars ?? {}), ...overrides.body } }),
-  };
-}
-
-function resolveRecoverRecipeBinding(plan: RequestPlanRecord):
-  | (ResolvedRecipeBinding & {
-      readonly failurePolicy: OpensteerRequestFailurePolicy;
-    })
-  | undefined {
-  if (plan.payload.recipes?.recover !== undefined) {
-    return {
-      source: "recipe",
-      ...plan.payload.recipes.recover,
-    };
-  }
-  if (plan.payload.auth?.recipe !== undefined && plan.payload.auth.failurePolicy !== undefined) {
-    return {
-      source: "auth-recipe",
-      recipe: plan.payload.auth.recipe,
-      failurePolicy: plan.payload.auth.failurePolicy,
-      cachePolicy: "none",
-    };
-  }
-  return undefined;
-}
-
-function resolveRetryDelayMs(
-  retryPolicy: NonNullable<RequestPlanRecord["payload"]["retryPolicy"]>,
-  response: OpensteerRequestExecuteOutput["response"],
-  attempt: number,
-): number {
-  if (retryPolicy.respectRetryAfter) {
-    const retryAfter = response.headers.find(
-      (header) => header.name.toLowerCase() === "retry-after",
-    )?.value;
-    const retryAfterMs = parseRetryAfterDelayMs(retryAfter);
-    if (retryAfterMs !== undefined) {
-      return retryAfterMs;
-    }
-  }
-
-  const baseDelayMs = retryPolicy.backoff?.delayMs ?? 0;
-  if (baseDelayMs <= 0) {
-    return 0;
-  }
-
-  if (retryPolicy.backoff?.strategy === "exponential") {
-    const value = baseDelayMs * 2 ** attempt;
-    return retryPolicy.backoff.maxDelayMs === undefined
-      ? value
-      : Math.min(value, retryPolicy.backoff.maxDelayMs);
-  }
-
-  return retryPolicy.backoff?.maxDelayMs === undefined
-    ? baseDelayMs
-    : Math.min(baseDelayMs, retryPolicy.backoff.maxDelayMs);
-}
-
-function parseRetryAfterDelayMs(value: string | undefined): number | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  const seconds = Number(value);
-  if (Number.isFinite(seconds)) {
-    return Math.max(0, seconds * 1000);
-  }
-  const timestamp = Date.parse(value);
-  if (Number.isFinite(timestamp)) {
-    return Math.max(0, timestamp - Date.now());
-  }
-  return undefined;
-}
-
-async function pollUntil(
-  timeout: TimeoutExecutionContext,
-  predicate: () => Promise<boolean>,
-): Promise<void> {
-  await pollUntilResult(timeout, async () => ((await predicate()) ? true : undefined));
-}
-
-async function pollUntilResult<T>(
-  timeout: TimeoutExecutionContext,
-  producer: () => Promise<T | undefined>,
-): Promise<T> {
-  while (true) {
-    timeout.throwIfAborted();
-    const produced = await producer();
-    if (produced !== undefined) {
-      return produced;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
 }
 
 async function getMainFrame(engine: BrowserCoreEngine, pageRef: PageRef) {
@@ -12492,7 +6662,7 @@ function toOpensteerActionResult(
         readonly resolved: ResolvedDomTarget;
         readonly point?: undefined;
       },
-  persistedDescription: string | undefined,
+  persisted: string | undefined,
 ): OpensteerActionResult {
   return {
     target: toOpensteerResolvedTarget(result.resolved),
@@ -12504,7 +6674,7 @@ function toOpensteerActionResult(
             y: result.point.y,
           },
         }),
-    ...(persistedDescription === undefined ? {} : { persistedDescription }),
+    ...(persisted === undefined ? {} : { persisted }),
   };
 }
 
@@ -12517,7 +6687,7 @@ function toOpensteerResolvedTarget(target: ResolvedDomTarget): OpensteerResolved
     nodeRef: target.nodeRef,
     tagName: target.node.nodeName.toUpperCase(),
     pathHint: buildPathSelectorHint(target.replayPath ?? target.anchor),
-    ...(target.description === undefined ? {} : { description: target.description }),
+    ...(target.persist === undefined ? {} : { persist: target.persist }),
     ...(target.selectorUsed === undefined ? {} : { selectorUsed: target.selectorUsed }),
   };
 }

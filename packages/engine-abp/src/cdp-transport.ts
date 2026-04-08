@@ -32,6 +32,7 @@ export const PAGE_CDP_METHOD_ALLOWLIST = new Set<string>([
   "IndexedDB.requestDatabase",
   "IndexedDB.requestDatabaseNames",
   "Page.addScriptToEvaluateOnNewDocument",
+  "Page.createIsolatedWorld",
   "Page.enable",
   "Page.getFrameTree",
   "Page.getLayoutMetrics",

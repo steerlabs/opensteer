@@ -12,7 +12,7 @@ const execFile = promisify(execFileCallback);
 const CLI_SCRIPT = path.resolve(process.cwd(), "packages/opensteer/dist/cli/bin.js");
 
 describe("recorder CLI", () => {
-  test("prints record in help output", async () => {
+  test("keeps record hidden from the primary help surface", async () => {
     await ensureCliArtifactsBuilt();
 
     const result = await execFile("node", [CLI_SCRIPT, "--help"], {
@@ -20,7 +20,7 @@ describe("recorder CLI", () => {
       maxBuffer: 1024 * 1024 * 4,
     });
 
-    expect(result.stdout).toContain("opensteer record --workspace <id> --url <url> [--output <path>]");
+    expect(result.stdout).not.toContain("record <url> [--output <path>]");
   }, 60_000);
 
   test("requires a workspace id", async () => {

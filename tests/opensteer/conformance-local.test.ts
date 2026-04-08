@@ -58,7 +58,7 @@ async function createHarness(): Promise<OpensteerConformanceHarness> {
   const rootDir = await mkdtemp(path.join(tmpdir(), "opensteer-conformance-"));
   temporaryRoots.push(rootDir);
   const target = new Opensteer({
-    name: "opensteer-local-conformance",
+    workspace: "opensteer-local-conformance",
     rootDir,
     browser: "temporary",
     launch: {
