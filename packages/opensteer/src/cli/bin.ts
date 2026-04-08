@@ -43,47 +43,11 @@ const OPERATION_ALIASES = new Map<string, OpensteerSemanticOperationName>([
   ["scroll", "dom.scroll"],
   ["extract", "dom.extract"],
   ["network query", "network.query"],
-  ["network tag", "network.tag"],
-  ["network clear", "network.clear"],
-  ["network minimize", "network.minimize"],
-  ["network diff", "network.diff"],
-  ["network probe", "network.probe"],
-  ["reverse discover", "reverse.discover"],
-  ["reverse query", "reverse.query"],
-  ["reverse package create", "reverse.package.create"],
-  ["reverse package run", "reverse.package.run"],
-  ["reverse export", "reverse.export"],
-  ["reverse report", "reverse.report"],
-  ["reverse package get", "reverse.package.get"],
-  ["reverse package list", "reverse.package.list"],
-  ["reverse package patch", "reverse.package.patch"],
-  ["interaction capture", "interaction.capture"],
-  ["interaction get", "interaction.get"],
-  ["interaction diff", "interaction.diff"],
-  ["interaction replay", "interaction.replay"],
-  ["artifact read", "artifact.read"],
-  ["scripts capture", "scripts.capture"],
-  ["scripts beautify", "scripts.beautify"],
-  ["scripts deobfuscate", "scripts.deobfuscate"],
-  ["scripts sandbox", "scripts.sandbox"],
-  ["captcha solve", "captcha.solve"],
-  ["inspect cookies", "inspect.cookies"],
-  ["inspect storage", "inspect.storage"],
-  ["request raw", "request.raw"],
-  ["request-plan infer", "request-plan.infer"],
-  ["request-plan write", "request-plan.write"],
-  ["request-plan get", "request-plan.get"],
-  ["request-plan list", "request-plan.list"],
-  ["recipe write", "recipe.write"],
-  ["recipe get", "recipe.get"],
-  ["recipe list", "recipe.list"],
-  ["recipe run", "recipe.run"],
-  ["auth-recipe write", "auth-recipe.write"],
-  ["auth-recipe get", "auth-recipe.get"],
-  ["auth-recipe list", "auth-recipe.list"],
-  ["auth-recipe run", "auth-recipe.run"],
-  ["request execute", "request.execute"],
-  ["computer execute", "computer.execute"],
+  ["network detail", "network.detail"],
+  ["replay", "network.replay"],
+  ["cookies", "session.cookies"],
+  ["storage", "session.storage"],
+  ["state", "session.state"],
   ["close", "session.close"],
 ]);
 
@@ -165,7 +129,9 @@ async function main(): Promise<void> {
         },
       });
       const result = await runtime.close();
-      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      process.stdout.write(
+        renderOperationOutput(operation, result, parsed.command[0] === "run"),
+      );
       return;
     }
 
@@ -178,7 +144,7 @@ async function main(): Promise<void> {
       ...(parsed.options.context === undefined ? {} : { context: parsed.options.context }),
     });
     await manager.close();
-    process.stdout.write(`${JSON.stringify({ closed: true }, null, 2)}\n`);
+    process.stdout.write(renderOperationOutput(operation, { closed: true }, parsed.command[0] === "run"));
     return;
   }
 
@@ -208,7 +174,7 @@ async function main(): Promise<void> {
     await runtime.disconnect().catch(() => undefined);
   }
 
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  process.stdout.write(renderOperationOutput(operation, result, parsed.command[0] === "run"));
 }
 
 async function handleBrowserCommand(parsed: ParsedCommandLine): Promise<void> {
@@ -339,8 +305,8 @@ async function handleRecordCommandEntry(parsed: ParsedCommandLine): Promise<void
     throw new Error('record requires a headed browser. Remove "--headless true".');
   }
 
-  if (recordBrowser !== undefined && recordBrowser !== "persistent") {
-    throw new Error('record only supports "--browser persistent".');
+  if (typeof recordBrowser === "object") {
+    throw new Error('record does not support browser.mode="attach".');
   }
 
   const launch = {
@@ -425,18 +391,29 @@ function buildOperationInput(
       }
       return {
         url: parsed.rest[0],
+        ...(parsed.options.captureNetwork === undefined
+          ? {}
+          : { captureNetwork: parsed.options.captureNetwork }),
       };
     case "page.snapshot":
       return parsed.rest[0] === undefined ? {} : { mode: parsed.rest[0] };
     case "dom.click":
     case "dom.hover":
-      return normalizeTargetInput(parsed, {});
+      return normalizeTargetInput(parsed, {
+        ...(parsed.options.captureNetwork === undefined
+          ? {}
+          : { captureNetwork: parsed.options.captureNetwork }),
+      });
     case "dom.input":
       if (parsed.options.text === undefined) {
         throw new Error('input requires "--text <value>".');
       }
       return {
-        ...normalizeTargetInput(parsed, {}),
+        ...normalizeTargetInput(parsed, {
+          ...(parsed.options.captureNetwork === undefined
+            ? {}
+            : { captureNetwork: parsed.options.captureNetwork }),
+        }),
         text: parsed.options.text,
         ...(parsed.options.pressEnter === undefined
           ? {}
@@ -447,7 +424,11 @@ function buildOperationInput(
         throw new Error('scroll requires "--direction" and "--amount".');
       }
       return {
-        ...normalizeTargetInput(parsed, {}),
+        ...normalizeTargetInput(parsed, {
+          ...(parsed.options.captureNetwork === undefined
+            ? {}
+            : { captureNetwork: parsed.options.captureNetwork }),
+        }),
         direction: parsed.options.direction,
         amount: parsed.options.amount,
       };
@@ -459,6 +440,46 @@ function buildOperationInput(
         description: parsed.options.description,
         ...(parsed.options.schemaJson === undefined ? {} : { schema: parsed.options.schemaJson }),
       };
+    case "network.query":
+      return {
+        ...(parsed.options.capture === undefined ? {} : { capture: parsed.options.capture }),
+        ...(parsed.options.urlFilter === undefined ? {} : { url: parsed.options.urlFilter }),
+        ...(parsed.options.hostname === undefined ? {} : { hostname: parsed.options.hostname }),
+        ...(parsed.options.path === undefined ? {} : { path: parsed.options.path }),
+        ...(parsed.options.method === undefined ? {} : { method: parsed.options.method }),
+        ...(parsed.options.status === undefined ? {} : { status: parsed.options.status }),
+        ...(parsed.options.resourceType === undefined
+          ? {}
+          : { resourceType: parsed.options.resourceType }),
+        ...(parsed.options.json === true ? { json: true } : {}),
+        ...(parsed.options.before === undefined ? {} : { before: parsed.options.before }),
+        ...(parsed.options.after === undefined ? {} : { after: parsed.options.after }),
+        ...(parsed.options.limit === undefined ? {} : { limit: parsed.options.limit }),
+      };
+    case "network.detail": {
+      const recordId = parsed.rest[0];
+      if (recordId === undefined) {
+        throw new Error("network detail requires a record id.");
+      }
+      return { recordId };
+    }
+    case "network.replay": {
+      const recordId = parsed.rest[0];
+      if (recordId === undefined) {
+        throw new Error("replay requires a record id.");
+      }
+      return {
+        recordId,
+        ...(parsed.options.query === undefined ? {} : { query: parsed.options.query }),
+        ...(parsed.options.header === undefined ? {} : { headers: parsed.options.header }),
+        ...(parsed.options.bodyJson === undefined ? {} : { body: { json: parsed.options.bodyJson } }),
+        ...(parsed.options.variables === undefined ? {} : { variables: parsed.options.variables }),
+      };
+    }
+    case "session.cookies":
+    case "session.storage":
+    case "session.state":
+      return parsed.options.domain === undefined ? {} : { domain: parsed.options.domain };
     case "session.close":
       return {};
     default:
@@ -547,6 +568,22 @@ interface ParsedCliOptions {
   readonly element?: number;
   readonly text?: string;
   readonly pressEnter?: boolean;
+  readonly captureNetwork?: string;
+  readonly capture?: string;
+  readonly urlFilter?: string;
+  readonly hostname?: string;
+  readonly path?: string;
+  readonly method?: string;
+  readonly status?: number;
+  readonly resourceType?: string;
+  readonly before?: string;
+  readonly after?: string;
+  readonly limit?: number;
+  readonly query?: Readonly<Record<string, string>>;
+  readonly header?: Readonly<Record<string, string>>;
+  readonly bodyJson?: Record<string, unknown>;
+  readonly variables?: Record<string, unknown>;
+  readonly domain?: string;
   readonly direction?: "up" | "down" | "left" | "right";
   readonly amount?: number;
 }
@@ -576,7 +613,6 @@ const CLI_OPTION_SPECS = {
   copy: { kind: "boolean" },
   all: { kind: "boolean" },
   list: { kind: "boolean" },
-  browser: { kind: "value" },
   "attach-endpoint": { kind: "value" },
   "attach-header": { kind: "value", multiple: true },
   "fresh-tab": { kind: "boolean" },
@@ -594,6 +630,21 @@ const CLI_OPTION_SPECS = {
   element: { kind: "value" },
   text: { kind: "value" },
   "press-enter": { kind: "boolean" },
+  "capture-network": { kind: "value" },
+  capture: { kind: "value" },
+  hostname: { kind: "value" },
+  path: { kind: "value" },
+  method: { kind: "value" },
+  status: { kind: "value" },
+  type: { kind: "value" },
+  before: { kind: "value" },
+  after: { kind: "value" },
+  limit: { kind: "value" },
+  query: { kind: "value", multiple: true },
+  header: { kind: "value", multiple: true },
+  "body-json": { kind: "value" },
+  variables: { kind: "value" },
+  domain: { kind: "value" },
   direction: { kind: "value" },
   amount: { kind: "value" },
 } as const satisfies Record<string, { readonly kind: "boolean" | "value"; readonly multiple?: true }>;
@@ -661,7 +712,6 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
     index += 2;
   }
 
-  const browserKind = readSingle(rawOptions, "browser");
   const requestedEngineName = readSingle(rawOptions, "engine");
   const attachEndpoint = readSingle(rawOptions, "attach-endpoint");
   const attachHeaders = parseKeyValueList(rawOptions.get("attach-header"));
@@ -671,23 +721,14 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
   const launchArgs = rawOptions.get("arg");
   const timeoutMs = readOptionalNumber(rawOptions, "timeout-ms");
   const browser =
-    browserKind === undefined
-      ? attachEndpoint === undefined
-        ? undefined
-        : ({
-            mode: "attach",
-            endpoint: attachEndpoint,
-            ...(attachHeaders === undefined ? {} : { headers: attachHeaders }),
-            ...(freshTab === undefined ? {} : { freshTab }),
-          } satisfies OpensteerBrowserOptions)
-      : browserKind === "temporary" || browserKind === "persistent"
-        ? browserKind
-        : ({
-            mode: "attach",
-            ...(attachEndpoint === undefined ? {} : { endpoint: attachEndpoint }),
-            ...(attachHeaders === undefined ? {} : { headers: attachHeaders }),
-            ...(freshTab === undefined ? {} : { freshTab }),
-          } satisfies OpensteerBrowserOptions);
+    attachEndpoint === undefined
+      ? undefined
+      : ({
+          mode: "attach",
+          endpoint: attachEndpoint,
+          ...(attachHeaders === undefined ? {} : { headers: attachHeaders }),
+          ...(freshTab === undefined ? {} : { freshTab }),
+        } satisfies OpensteerBrowserOptions);
 
   const launch = {
     ...(headless === undefined ? {} : { headless }),
@@ -706,6 +747,22 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
   const element = readOptionalNumber(rawOptions, "element");
   const text = readSingle(rawOptions, "text");
   const pressEnter = readOptionalBoolean(rawOptions, "press-enter");
+  const captureNetwork = readSingle(rawOptions, "capture-network");
+  const capture = readSingle(rawOptions, "capture");
+  const urlFilter = readSingle(rawOptions, "url");
+  const hostname = readSingle(rawOptions, "hostname");
+  const pathValue = readSingle(rawOptions, "path");
+  const method = readSingle(rawOptions, "method");
+  const status = readOptionalNumber(rawOptions, "status");
+  const resourceType = readSingle(rawOptions, "type");
+  const before = readSingle(rawOptions, "before");
+  const after = readSingle(rawOptions, "after");
+  const limit = readOptionalNumber(rawOptions, "limit");
+  const query = parseKeyValueList(rawOptions.get("query"));
+  const header = parseKeyValueList(rawOptions.get("header"));
+  const bodyJson = readJsonObject(rawOptions, "body-json");
+  const variables = readJsonObject(rawOptions, "variables");
+  const domain = readSingle(rawOptions, "domain");
   const direction = readSingle(rawOptions, "direction") as
     | ParsedCliOptions["direction"]
     | undefined;
@@ -768,6 +825,22 @@ function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
     ...(element === undefined ? {} : { element }),
     ...(text === undefined ? {} : { text }),
     ...(pressEnter === undefined ? {} : { pressEnter }),
+    ...(captureNetwork === undefined ? {} : { captureNetwork }),
+    ...(capture === undefined ? {} : { capture }),
+    ...(urlFilter === undefined ? {} : { urlFilter }),
+    ...(hostname === undefined ? {} : { hostname }),
+    ...(pathValue === undefined ? {} : { path: pathValue }),
+    ...(method === undefined ? {} : { method }),
+    ...(status === undefined ? {} : { status }),
+    ...(resourceType === undefined ? {} : { resourceType }),
+    ...(before === undefined ? {} : { before }),
+    ...(after === undefined ? {} : { after }),
+    ...(limit === undefined ? {} : { limit }),
+    ...(query === undefined ? {} : { query }),
+    ...(header === undefined ? {} : { header }),
+    ...(bodyJson === undefined ? {} : { bodyJson }),
+    ...(variables === undefined ? {} : { variables }),
+    ...(domain === undefined ? {} : { domain }),
     ...(direction === undefined ? {} : { direction }),
     ...(amount === undefined ? {} : { amount }),
   };
@@ -1009,28 +1082,462 @@ function resolveCommandLength(tokens: readonly string[]): number {
   return Math.min(tokens.length, 1);
 }
 
+function renderOperationOutput(
+  operation: OpensteerSemanticOperationName,
+  result: unknown,
+  asJson: boolean,
+): string {
+  if (asJson) {
+    return `${JSON.stringify(result, null, 2)}\n`;
+  }
+
+  switch (operation) {
+    case "page.snapshot":
+      return formatSnapshotOutput(result);
+    case "network.query":
+      return formatNetworkQueryOutput(result);
+    case "network.detail":
+      return formatNetworkDetailOutput(result);
+    case "network.replay":
+      return formatReplayOutput(result);
+    case "session.cookies":
+      return formatCookiesOutput(result);
+    case "session.storage":
+      return formatStorageOutput(result);
+    case "session.state":
+      return formatStateOutput(result);
+    default:
+      return `${JSON.stringify(result, null, 2)}\n`;
+  }
+}
+
+function formatSnapshotOutput(result: unknown): string {
+  if (
+    result !== null &&
+    typeof result === "object" &&
+    typeof (result as { readonly html?: unknown }).html === "string"
+  ) {
+    return `${(result as { readonly html: string }).html}\n`;
+  }
+  return `${JSON.stringify(result, null, 2)}\n`;
+}
+
+function formatNetworkQueryOutput(result: unknown): string {
+  const records = readArrayField(result, "records");
+  const capture = summarizeCapture(records);
+  const lines = [`[network.query] ${records.length} record${records.length === 1 ? "" : "s"}${capture === undefined ? "" : ` from capture "${capture}"`}`];
+  for (const record of records) {
+    const graphql = readObjectField(record, "graphql");
+    const operationName = readStringField(graphql, "operationName");
+    lines.push(
+      `${readStringField(record, "recordId") ?? "rec:unknown"}  ${readStringField(record, "method") ?? "GET"} ${readStatus(record)}  ${readStringField(record, "resourceType") ?? "unknown"}  ${readStringField(record, "url") ?? ""}${operationName === undefined ? "" : `  [query: ${operationName}]`}`,
+    );
+    const request = readObjectField(record, "request");
+    const response = readObjectField(record, "response");
+    const websocket = readObjectField(record, "websocket");
+    if (request !== undefined) {
+      lines.push(`  request: ${formatBodySummary(request)}`);
+    }
+    if (response !== undefined) {
+      lines.push(`  response: ${formatBodySummary(response)}`);
+    }
+    const subprotocol = readStringField(websocket, "subprotocol");
+    if (subprotocol !== undefined) {
+      lines.push(`  subprotocol: ${subprotocol}`);
+    }
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function formatNetworkDetailOutput(result: unknown): string {
+  if (result === null || typeof result !== "object") {
+    return `${JSON.stringify(result, null, 2)}\n`;
+  }
+
+  const lines = [`[network.detail] ${readStringField(result, "recordId") ?? "unknown"}`, ""];
+  const summary = readObjectField(result, "summary");
+  if (summary !== undefined) {
+    lines.push(
+      `${readStringField(summary, "method") ?? "GET"} ${readStatus(summary)} ${readStringField(summary, "url") ?? ""}`,
+    );
+  }
+
+  const graphql = readObjectField(result, "graphql");
+  if (graphql !== undefined) {
+    const operationType = readStringField(graphql, "operationType");
+    const operationName = readStringField(graphql, "operationName");
+    lines.push(
+      `${["GraphQL:", operationType, operationName].filter((value) => value !== undefined).join(" ")}`,
+    );
+    const variables = (graphql as { readonly variables?: unknown }).variables;
+    if (variables !== undefined) {
+      lines.push("Variables:");
+      lines.push(indentLines(stringifyValue(variables)));
+    }
+  }
+
+  const requestHeaders = readArrayField(result, "requestHeaders");
+  if (requestHeaders.length > 0) {
+    lines.push("", "Request headers:");
+    lines.push(...requestHeaders.map((header) => formatHeaderLine(header)));
+  }
+
+  const responseHeaders = readArrayField(result, "responseHeaders");
+  if (responseHeaders.length > 0) {
+    lines.push("", "Response headers:");
+    lines.push(...responseHeaders.map((header) => formatHeaderLine(header)));
+  }
+
+  const cookiesSent = readArrayField(result, "cookiesSent");
+  if (cookiesSent.length > 0) {
+    lines.push("", "Cookies sent:");
+    lines.push(
+      ...cookiesSent.map((cookie) => {
+        const name = readStringField(cookie, "name") ?? "cookie";
+        const value = readStringField(cookie, "value") ?? "";
+        return `  ${name}: ${truncateInline(value, 80)}`;
+      }),
+    );
+  }
+
+  const requestBody = readObjectField(result, "requestBody");
+  if (requestBody !== undefined) {
+    lines.push("", formatBodyPreview("Request body", requestBody));
+  }
+
+  const responseBody = readObjectField(result, "responseBody");
+  if (responseBody !== undefined) {
+    lines.push("", formatBodyPreview("Response body", responseBody));
+  }
+
+  const redirectChain = readArrayField(result, "redirectChain");
+  if (redirectChain.length > 0) {
+    lines.push("", `Redirect chain (${redirectChain.length} hop${redirectChain.length === 1 ? "" : "s"}):`);
+    redirectChain.forEach((hop, index) => {
+      const location = readStringField(hop, "location");
+      lines.push(
+        `  ${index + 1}. ${readStringField(hop, "method") ?? "GET"} ${readStatus(hop)} ${readStringField(hop, "url") ?? ""}${location === undefined ? "" : `  ->  Location: ${location}`}`,
+      );
+    });
+  }
+
+  const notes = readArrayField(result, "notes")
+    .map((entry) => (typeof entry === "string" ? entry : undefined))
+    .filter((entry): entry is string => entry !== undefined);
+  if (notes.length > 0) {
+    lines.push("", ...notes.map((note) => `Note: ${note}`));
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
+function formatReplayOutput(result: unknown): string {
+  if (result === null || typeof result !== "object") {
+    return `${JSON.stringify(result, null, 2)}\n`;
+  }
+
+  const attempts = readArrayField(result, "attempts");
+  const transport = readStringField(result, "transport");
+  const response = readObjectField(result, "response");
+  const status = response === undefined ? "FAILED" : String(readNumberField(response, "status") ?? "FAILED");
+  const lines = [
+    transport === undefined
+      ? `[replay] ${readStringField(result, "recordId") ?? "unknown"} -> ${status}`
+      : `[replay] ${readStringField(result, "recordId") ?? "unknown"} -> ${status} (${transport})`,
+  ];
+
+  const note = readStringField(result, "note");
+  if (note !== undefined) {
+    lines.push(`  note: ${note}`);
+  }
+
+  if (response !== undefined) {
+    const contentType = findHeaderValue(readArrayField(response, "headers"), "content-type");
+    lines.push(
+      "",
+      ...(contentType === undefined ? [] : [`content-type: ${contentType}`]),
+      ...(readObjectField(response, "body") === undefined
+        ? []
+        : [`body: ${formatBodyBytes(readObjectField(response, "body"))}`]),
+    );
+    const data = (result as { readonly data?: unknown }).data;
+    if (data !== undefined) {
+      lines.push("", stringifyValue(data));
+    }
+  }
+
+  if (attempts.length > 0) {
+    lines.push("", "Attempts:");
+    lines.push(
+      ...attempts.map((attempt) => {
+        const attemptNote = readStringField(attempt, "note");
+        const error = readStringField(attempt, "error");
+        return `  ${readStringField(attempt, "transport") ?? "unknown"}: ${readNumberField(attempt, "status") ?? "error"}${attemptNote === undefined ? "" : ` (${attemptNote})`}${error === undefined ? "" : ` ${error}`}`;
+      }),
+    );
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
+function formatCookiesOutput(result: unknown): string {
+  if (result === null || typeof result !== "object") {
+    return `${JSON.stringify(result, null, 2)}\n`;
+  }
+  const cookies = readArrayField(result, "cookies");
+  const domain = readStringField(result, "domain");
+  const lines = [`[cookies] ${cookies.length} cookie${cookies.length === 1 ? "" : "s"}${domain === undefined ? "" : ` for ${domain}`}`];
+  for (const cookie of cookies) {
+    const flags = [
+      readBooleanField(cookie, "session") === true ? "session" : undefined,
+      readBooleanField(cookie, "httpOnly") === true ? "httpOnly" : undefined,
+      readBooleanField(cookie, "secure") === true ? "secure" : undefined,
+      readStringField(cookie, "expiresAt"),
+    ].filter((value) => value !== undefined);
+    lines.push(
+      `  ${padRight(readStringField(cookie, "name") ?? "cookie", 20)} ${truncateInline(readStringField(cookie, "value") ?? "", 48)}${flags.length === 0 ? "" : `  ${flags.join("  ")}`}`,
+    );
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function formatStorageOutput(result: unknown): string {
+  if (result === null || typeof result !== "object") {
+    return `${JSON.stringify(result, null, 2)}\n`;
+  }
+  const domains = readArrayField(result, "domains");
+  const lines: string[] = [];
+  for (const domain of domains) {
+    const domainName = readStringField(domain, "domain") ?? "unknown";
+    const localStorage = readArrayField(domain, "localStorage");
+    const sessionStorage = readArrayField(domain, "sessionStorage");
+    lines.push(`[storage] localStorage for ${domainName} (${localStorage.length} key${localStorage.length === 1 ? "" : "s"})`, "");
+    lines.push(...localStorage.map((entry) => formatStorageEntry(entry)));
+    lines.push("", `[storage] sessionStorage for ${domainName} (${sessionStorage.length} key${sessionStorage.length === 1 ? "" : "s"})`, "");
+    lines.push(...sessionStorage.map((entry) => formatStorageEntry(entry)), "");
+  }
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
+function formatStateOutput(result: unknown): string {
+  if (result === null || typeof result !== "object") {
+    return `${JSON.stringify(result, null, 2)}\n`;
+  }
+  const domains = readArrayField(result, "domains");
+  const lines: string[] = [];
+  for (const domain of domains) {
+    const name = readStringField(domain, "domain") ?? "unknown";
+    lines.push(`[state] ${name}`, "");
+    const cookies = readArrayField(domain, "cookies");
+    lines.push(`Cookies (${cookies.length}):`);
+    lines.push(
+      ...cookies.map(
+        (cookie) =>
+          `  ${padRight(readStringField(cookie, "name") ?? "cookie", 16)} ${truncateInline(readStringField(cookie, "value") ?? "", 36)}`,
+      ),
+    );
+    const hiddenFields = readArrayField(domain, "hiddenFields");
+    lines.push("", `Hidden fields (${hiddenFields.length}):`);
+    lines.push(
+      ...hiddenFields.map(
+        (field) =>
+          `  ${readStringField(field, "path") ?? "input"}  = ${JSON.stringify(readStringField(field, "value") ?? "")}`,
+      ),
+    );
+    const localStorage = readArrayField(domain, "localStorage");
+    lines.push("", `localStorage (${localStorage.length} key${localStorage.length === 1 ? "" : "s"}):`);
+    lines.push(...localStorage.map((entry) => formatStorageEntry(entry)));
+    const sessionStorage = readArrayField(domain, "sessionStorage");
+    lines.push("", `sessionStorage (${sessionStorage.length} key${sessionStorage.length === 1 ? "" : "s"}):`);
+    lines.push(...sessionStorage.map((entry) => formatStorageEntry(entry)));
+    const globals = readObjectField(domain, "globals");
+    if (globals !== undefined) {
+      lines.push("", "Globals:");
+      for (const [key, value] of Object.entries(globals)) {
+        lines.push(`  ${key} = ${truncateInline(stringifyScalarLike(value), 80)}`);
+      }
+    }
+    lines.push("");
+  }
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
+function formatBodySummary(body: unknown): string {
+  if (body === null || typeof body !== "object") {
+    return "unknown";
+  }
+  if (readBooleanField(body, "streaming") === true) {
+    return `streaming (${readStringField(body, "contentType") ?? "unknown"})`;
+  }
+  return `${formatBytes(readNumberField(body, "bytes"))} (${readStringField(body, "contentType") ?? "unknown"})`;
+}
+
+function formatBodyPreview(label: string, preview: unknown): string {
+  const header = `${label} (${formatBytes(readNumberField(preview, "bytes"))}${readStringField(preview, "contentType") === undefined ? "" : `, ${readStringField(preview, "contentType")}`}${readBooleanField(preview, "truncated") === true ? ", truncated" : ""}):`;
+  const data = readUnknownField(preview, "data");
+  if (data === undefined) {
+    return header;
+  }
+  return `${header}\n${indentLines(stringifyValue(data))}`;
+}
+
+function formatStorageEntry(entry: unknown): string {
+  return `  ${padRight(readStringField(entry, "key") ?? "key", 18)} ${truncateInline(readStringField(entry, "value") ?? "", 80)}`;
+}
+
+function formatHeaderLine(header: unknown): string {
+  return `  ${readStringField(header, "name") ?? "header"}: ${readStringField(header, "value") ?? ""}`;
+}
+
+function readArrayField(value: unknown, key: string): readonly unknown[] {
+  if (value === null || typeof value !== "object") {
+    return [];
+  }
+  const field = (value as Record<string, unknown>)[key];
+  return Array.isArray(field) ? field : [];
+}
+
+function readObjectField(value: unknown, key: string): Record<string, unknown> | undefined {
+  if (value === null || typeof value !== "object") {
+    return undefined;
+  }
+  const field = (value as Record<string, unknown>)[key];
+  return field !== null && typeof field === "object" && !Array.isArray(field)
+    ? (field as Record<string, unknown>)
+    : undefined;
+}
+
+function readUnknownField(value: unknown, key: string): unknown {
+  if (value === null || typeof value !== "object") {
+    return undefined;
+  }
+  return (value as Record<string, unknown>)[key];
+}
+
+function readStringField(value: unknown, key: string): string | undefined {
+  if (value === null || typeof value !== "object") {
+    return undefined;
+  }
+  const field = (value as Record<string, unknown>)[key];
+  return typeof field === "string" ? field : undefined;
+}
+
+function readNumberField(value: unknown, key: string): number | undefined {
+  if (value === null || typeof value !== "object") {
+    return undefined;
+  }
+  const field = (value as Record<string, unknown>)[key];
+  return typeof field === "number" ? field : undefined;
+}
+
+function readBooleanField(value: unknown, key: string): boolean | undefined {
+  if (value === null || typeof value !== "object") {
+    return undefined;
+  }
+  const field = (value as Record<string, unknown>)[key];
+  return typeof field === "boolean" ? field : undefined;
+}
+
+function readStatus(value: unknown): string {
+  const status = readNumberField(value, "status");
+  return status === undefined ? "-" : String(status);
+}
+
+function findHeaderValue(headers: readonly unknown[], name: string): string | undefined {
+  const normalized = name.toLowerCase();
+  for (const header of headers) {
+    if (readStringField(header, "name")?.toLowerCase() === normalized) {
+      return readStringField(header, "value");
+    }
+  }
+  return undefined;
+}
+
+function formatBodyBytes(body: Record<string, unknown> | undefined): string {
+  if (body === undefined) {
+    return "0 bytes";
+  }
+  return formatBytes(readNumberField(body, "bytes"));
+}
+
+function formatBytes(bytes: number | undefined): string {
+  if (bytes === undefined) {
+    return "unknown";
+  }
+  return `${bytes.toLocaleString("en-US")} bytes`;
+}
+
+function summarizeCapture(records: readonly unknown[]): string | undefined {
+  const captures = new Set(
+    records
+      .map((record) => readStringField(record, "capture"))
+      .filter((capture): capture is string => capture !== undefined),
+  );
+  return captures.size === 1 ? [...captures][0] : undefined;
+}
+
+function padRight(value: string, width: number): string {
+  return value.length >= width ? value : `${value}${" ".repeat(width - value.length)}`;
+}
+
+function truncateInline(value: string, limit: number): string {
+  return value.length <= limit ? value : `${value.slice(0, Math.max(0, limit - 18))}...${value.length} chars`;
+}
+
+function stringifyValue(value: unknown): string {
+  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
+
+function stringifyScalarLike(value: unknown): string {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function indentLines(value: string): string {
+  return value
+    .split("\n")
+    .map((line) => `  ${line}`)
+    .join("\n");
+}
+
 function printHelp(): void {
   process.stdout.write(`Opensteer v2 CLI
 
-Usage:
-  opensteer open <url> --workspace <id> [--browser persistent|temporary|attach]
-  opensteer goto <url> --workspace <id>
-  opensteer snapshot [action|extraction] --workspace <id>
-  opensteer click --workspace <id> (--element <n> | --selector <css> | --description <text>) [--description <text>]
-  opensteer input --workspace <id> --text <value> (--element <n> | --selector <css> | --description <text>) [--description <text>]
-  opensteer extract --workspace <id> --description <text> [--schema-json <json>]
-  opensteer record --workspace <id> --url <url> [--output <path>]
+Browser lifecycle:
+  opensteer open <url> [--workspace <id>] [--attach-endpoint <url>]
   opensteer close --workspace <id>
   opensteer status [--workspace <id>] [--json]
-
   opensteer browser status --workspace <id>
-  opensteer browser clone --workspace <id> --source-user-data-dir <path> [--source-profile-directory <name>]
+  opensteer browser clone --workspace <id> --source-user-data-dir <path>
   opensteer browser reset --workspace <id>
   opensteer browser delete --workspace <id>
-  opensteer browser discover
-  opensteer browser inspect --attach-endpoint <url>
-  opensteer skills install [--skill <name>] [--agent <name>] [--global] [--yes]
 
+Navigation:
+  opensteer goto <url> --workspace <id> [--capture-network <label>]
+
+DOM inspection:
+  opensteer snapshot [action|extraction] --workspace <id>
+
+DOM interaction (all support --capture-network <label>):
+  opensteer click --workspace <id> (--element <n> | --selector <css> | --description <text>)
+  opensteer input --workspace <id> --text <value> (--element <n> | --selector <css> | --description <text>)
+  When used with --element or --selector, --description persists a reusable descriptor.
+  opensteer extract --workspace <id> --description <text> [--schema-json <json>]
+
+Network inspection:
+  opensteer network query --workspace <id> [--json] [--url <pattern>] [--capture <label>] [filters...]
+  opensteer network detail <recordId> --workspace <id>
+
+Replay:
+  opensteer replay <recordId> --workspace <id> [--query key=value] [--header key=value]
+
+Browser state:
+  opensteer cookies --workspace <id> [--domain <domain>]
+  opensteer storage --workspace <id> [--domain <domain>]
+  opensteer state --workspace <id> [--domain <domain>]
+
+Advanced:
+  opensteer record --workspace <id> --url <url> [--output <path>]
+  opensteer skills install [--skill <name>] [--agent <name>] [--global] [--yes]
   opensteer run <semantic-operation> --workspace <id> --input-json <json>
 
 Common options:
@@ -1047,7 +1554,6 @@ Common options:
   --cloud-profile-reuse-if-active <true|false>
   --json <true|false>
   --engine playwright|abp
-  --browser temporary|persistent|attach
   --attach-endpoint <url>
   --fresh-tab <true|false>
   --headless <true|false>
@@ -1056,6 +1562,22 @@ Common options:
   --timeout-ms <ms>
   --context-json <json>
   --input-json <json>
+  --capture-network <label>
+  --capture <label>
+  --url <pattern>
+  --hostname <host>
+  --path <pattern>
+  --method <verb>
+  --status <code>
+  --type <resource-type>
+  --before <recordId>
+  --after <recordId>
+  --limit <n>
+  --query <key=value>  repeatable
+  --header <key=value> repeatable
+  --body-json <json>
+  --variables <json>
+  --domain <domain>
   --skill <name>      repeatable
   --agent <name>      repeatable
 `);

@@ -32,9 +32,7 @@ import {
 let baseUrl = "";
 let closeServer: (() => Promise<void>) | undefined;
 
-function createLocalOpensteer(
-  options: ConstructorParameters<typeof Opensteer>[0] = {},
-): Opensteer {
+function createLocalOpensteer(options: ConstructorParameters<typeof Opensteer>[0] = {}): Opensteer {
   return new Opensteer({
     provider: {
       mode: "local",
@@ -317,7 +315,7 @@ describe.sequential("cross-document action boundary", () => {
 
   test("captures named hydration requests after pressEnter navigation", async () => {
     const opensteer = createLocalOpensteer({
-      name: "navigation-network-capture",
+      workspace: "navigation-network-capture",
       browser: "temporary",
       launch: {
         headless: true,
@@ -350,9 +348,7 @@ describe.sequential("cross-document action boundary", () => {
         capture: "hydration-enter",
         limit: 20,
       });
-      expect(
-        records.find((entry) => entry.record.url.includes("/sdk/api/hydration"))?.record.status,
-      ).toBe(200);
+      expect(records.find((entry) => entry.url.includes("/sdk/api/hydration"))?.status).toBe(200);
     } finally {
       await opensteer.close().catch(() => undefined);
     }
@@ -360,7 +356,7 @@ describe.sequential("cross-document action boundary", () => {
 
   test("pressEnter submits even when typing keeps bootstrap trackers noisy", async () => {
     const opensteer = createLocalOpensteer({
-      name: "navigation-network-noisy-enter",
+      workspace: "navigation-network-noisy-enter",
       browser: "temporary",
       launch: {
         headless: true,
@@ -398,9 +394,7 @@ describe.sequential("cross-document action boundary", () => {
         capture: "noisy-enter",
         limit: 20,
       });
-      expect(
-        records.find((entry) => entry.record.url.includes("/sdk/api/hydration"))?.record.status,
-      ).toBe(200);
+      expect(records.find((entry) => entry.url.includes("/sdk/api/hydration"))?.status).toBe(200);
     } finally {
       await opensteer.close().catch(() => undefined);
     }
@@ -408,7 +402,7 @@ describe.sequential("cross-document action boundary", () => {
 
   test("click navigations succeed even when the destination page keeps scheduling timers", async () => {
     const opensteer = createLocalOpensteer({
-      name: "navigation-network-noisy-click",
+      workspace: "navigation-network-noisy-click",
       browser: "temporary",
       launch: {
         headless: true,
@@ -444,9 +438,7 @@ describe.sequential("cross-document action boundary", () => {
         capture: "noisy-click",
         limit: 20,
       });
-      expect(
-        records.find((entry) => entry.record.url.includes("/sdk/api/hydration"))?.record.status,
-      ).toBe(200);
+      expect(records.find((entry) => entry.url.includes("/sdk/api/hydration"))?.status).toBe(200);
     } finally {
       await opensteer.close().catch(() => undefined);
     }
@@ -455,7 +447,7 @@ describe.sequential("cross-document action boundary", () => {
   test("does not persist action-triggered network without captureNetwork", async () => {
     const rootPath = await mkdtemp(path.join(os.tmpdir(), "opensteer-no-capture-"));
     const opensteer = createLocalOpensteer({
-      name: "navigation-network-no-capture",
+      workspace: "navigation-network-no-capture",
       rootPath,
       cleanupRootOnClose: false,
       browser: "temporary",
@@ -501,7 +493,7 @@ describe.sequential("cross-document action boundary", () => {
 
   test("waits for same-tab navigation hydration before returning computer-use clicks", async () => {
     const opensteer = createLocalOpensteer({
-      name: "computer-action-boundary",
+      workspace: "computer-action-boundary",
       browser: "temporary",
       launch: {
         headless: true,
@@ -537,15 +529,24 @@ describe.sequential("cross-document action boundary", () => {
         status: "hydrated",
       });
 
-      const snapshot = await opensteer.snapshot("action");
-      expect(snapshot.url).toBe(`${baseUrl}/computer/hydration-results?mode=click`);
+      await expect(
+        opensteer.extract({
+          description: "computer current page",
+          schema: {
+            url: {
+              source: "current_url",
+            },
+          },
+        }),
+      ).resolves.toEqual({
+        url: `${baseUrl}/computer/hydration-results?mode=click`,
+      });
       expect(
         (
           await opensteer.queryNetwork({
             limit: 20,
           })
-        ).records.find((entry) => entry.record.url.includes("/computer/api/hydration"))?.record
-          .status,
+        ).records.find((entry) => entry.url.includes("/computer/api/hydration"))?.status,
       ).toBe(200);
     } finally {
       await opensteer.close().catch(() => undefined);
@@ -555,7 +556,7 @@ describe.sequential("cross-document action boundary", () => {
   test("returns success and records degraded visual settle traces", async () => {
     const rootPath = await mkdtemp(path.join(os.tmpdir(), "opensteer-soft-settle-"));
     const opensteer = createLocalOpensteer({
-      name: "soft-settle-boundary",
+      workspace: "soft-settle-boundary",
       rootPath,
       cleanupRootOnClose: false,
       browser: "temporary",
@@ -586,11 +587,10 @@ describe.sequential("cross-document action boundary", () => {
 
       const { records } = await opensteer.queryNetwork({
         capture: "soft-settle",
+        url: "/sdk/api/hydration",
         limit: 20,
       });
-      expect(
-        records.find((entry) => entry.record.url.includes("/sdk/api/hydration"))?.record.status,
-      ).toBe(200);
+      expect(records.find((entry) => entry.url.includes("/sdk/api/hydration"))?.status).toBe(200);
 
       const traces = await readTraceEntries(rootPath);
       const clickTrace = [...traces]
@@ -617,7 +617,7 @@ describe.sequential("cross-document action boundary", () => {
 
   test("throws when DOMContentLoaded is missed before the hard interaction deadline", async () => {
     const opensteer = createLocalOpensteer({
-      name: "hard-boundary-timeout",
+      workspace: "hard-boundary-timeout",
       browser: "temporary",
       launch: {
         headless: true,
@@ -644,7 +644,7 @@ describe.sequential("cross-document action boundary", () => {
   test("persists observed network deltas when a captureNetwork operation times out", async () => {
     const rootPath = await mkdtemp(path.join(os.tmpdir(), "opensteer-timeout-persist-"));
     const opensteer = createLocalOpensteer({
-      name: "timeout-persist",
+      workspace: "timeout-persist",
       rootPath,
       cleanupRootOnClose: false,
       browser: "temporary",

@@ -44,12 +44,13 @@ const readOnlyOperations = new Set<OpensteerSemanticOperationName>([
   "page.snapshot",
   "dom.extract",
   "network.query",
-  "request-plan.get",
-  "request-plan.list",
+  "network.detail",
+  "session.cookies",
+  "session.storage",
+  "session.state",
 ]);
 
 const destructiveOperations = new Set<OpensteerSemanticOperationName>([
-  "network.clear",
   "session.close",
 ]);
 

@@ -25,8 +25,9 @@ import {
   assertValidSemanticOperationInput,
   createNetworkRequestId,
   createSessionRef,
-  opensteerSemanticOperationNames,
+  opensteerExposedSemanticOperationNames,
   opensteerSemanticOperationSpecificationMap,
+  type BodyPayload as ProtocolBodyPayload,
   type OpensteerArtifactReadInput,
   type OpensteerArtifactReadOutput,
   type CaptchaDetectionResult,
@@ -69,6 +70,23 @@ import {
   type OpensteerNetworkMinimizeOutput,
   type OpensteerNetworkQueryInput,
   type OpensteerNetworkQueryOutput,
+  type OpensteerNetworkDetailOutput,
+  type OpensteerNetworkReplayInput,
+  type OpensteerNetworkReplayOutput,
+  type OpensteerNetworkRedirectHop,
+  type OpensteerCookieQueryInput,
+  type OpensteerCookieQueryOutput,
+  type OpensteerStorageQueryInput,
+  type OpensteerStorageQueryOutput,
+  type OpensteerStateQueryInput,
+  type OpensteerStateQueryOutput,
+  type OpensteerSessionFetchInput,
+  type OpensteerSessionFetchOutput,
+  type OpensteerNetworkSummaryRecord,
+  type OpensteerReplayAttempt,
+  type OpensteerStorageDomainSnapshot,
+  type OpensteerStateDomainSnapshot,
+  type OpensteerHiddenField,
   type OpensteerNetworkTagInput,
   type OpensteerNetworkTagOutput,
   type OpensteerPageActivateInput,
@@ -594,7 +612,7 @@ export class OpensteerSessionRuntime {
       ...(this.pageRef === undefined ? {} : { activePageRef: this.pageRef }),
       reconnectable: base.reconnectable ?? !this.cleanupRootOnClose,
       capabilities: base.capabilities ?? {
-        semanticOperations: opensteerSemanticOperationNames,
+        semanticOperations: opensteerExposedSemanticOperationNames,
         instrumentation: {
           route: true,
           interceptScript: true,
@@ -1511,12 +1529,21 @@ export class OpensteerSessionRuntime {
         "network.query",
         async (timeout) => {
           await this.syncPersistedNetworkSelection(timeout, input, {
-            includeBodies: input.includeBodies ?? false,
+            includeBodies: false,
           });
+          const rawRecords = await timeout.runStep(() =>
+            root.registry.savedNetwork.query({
+              ...this.toSavedNetworkQueryInput(input),
+              limit: Math.max(input.limit ?? 50, 1000),
+            }),
+          );
+          const filtered = filterNetworkSummaryRecords(rawRecords, input);
+          const sorted = sortPersistedNetworkRecordsChronologically(filtered);
+          const sliced = sliceNetworkSummaryWindow(sorted, input);
+          const limited = sliced.slice(0, Math.max(1, Math.min(input.limit ?? 50, 200)));
+          const summaries = await this.buildNetworkSummaryRecords(limited, timeout);
           return {
-            records: await timeout.runStep(() =>
-              root.registry.savedNetwork.query(this.toSavedNetworkQueryInput(input)),
-            ),
+            records: summaries,
           } satisfies OpensteerNetworkQueryOutput;
         },
         options,
@@ -1528,8 +1555,9 @@ export class OpensteerSessionRuntime {
         completedAt: Date.now(),
         outcome: "ok",
         data: {
-          includeBodies: input.includeBodies ?? false,
           limit: input.limit ?? 50,
+          ...(input.capture === undefined ? {} : { capture: input.capture }),
+          ...(input.json === true ? { json: true } : {}),
           count: output.records.length,
         },
         context: buildRuntimeTraceContext({
@@ -1541,6 +1569,111 @@ export class OpensteerSessionRuntime {
     } catch (error) {
       await this.appendTrace({
         operation: "network.query",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+      throw error;
+    }
+  }
+
+  async getNetworkDetail(
+    input: {
+      readonly recordId: string;
+    },
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerNetworkDetailOutput> {
+    const startedAt = Date.now();
+    try {
+      const output = await this.runWithOperationTimeout(
+        "network.detail",
+        async (timeout) => {
+          const record = await this.resolveNetworkRecordByRecordId(input.recordId, timeout, {
+            includeBodies: true,
+            redactSecretHeaders: false,
+          });
+          return this.buildNetworkDetail(record, timeout);
+        },
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "network.detail",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          recordId: input.recordId,
+          status: output.summary.status,
+          url: output.summary.url,
+        },
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "network.detail",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+      throw error;
+    }
+  }
+
+  async replayNetwork(
+    input: OpensteerNetworkReplayInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerNetworkReplayOutput> {
+    const startedAt = Date.now();
+    try {
+      const output = await this.runWithOperationTimeout(
+        "network.replay",
+        async (timeout) => {
+          const source = await this.resolveNetworkRecordByRecordId(input.recordId, timeout, {
+            includeBodies: true,
+            redactSecretHeaders: false,
+          });
+          const replayRequest = buildReplayTransportRequest(source, input);
+          return this.executeNetworkReplay(source, replayRequest, timeout, {
+            ...(input.pageRef === undefined ? {} : { pageRef: input.pageRef }),
+          });
+        },
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "network.replay",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          recordId: input.recordId,
+          transport: output.transport,
+          attempts: output.attempts.length,
+        },
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "network.replay",
         startedAt,
         completedAt: Date.now(),
         outcome: "error",
@@ -4703,35 +4836,29 @@ export class OpensteerSessionRuntime {
   }
 
   async getCookies(
-    input: { readonly urls?: readonly string[] } = {},
+    input: OpensteerCookieQueryInput = {},
     options: RuntimeOperationOptions = {},
-  ): Promise<readonly CookieRecord[]> {
-    assertValidSemanticOperationInput("inspect.cookies", input);
+  ): Promise<OpensteerCookieQueryOutput> {
+    assertValidSemanticOperationInput("session.cookies", input);
 
     const pageRef = await this.ensurePageRef();
     const sessionRef = this.requireSessionRef();
     const startedAt = Date.now();
     try {
-      const cookies = await this.runWithOperationTimeout(
-        "inspect.cookies",
-        async (timeout) =>
-          timeout.runStep(() =>
-            this.requireEngine().getCookies({
-              sessionRef,
-              ...(input.urls === undefined ? {} : { urls: input.urls }),
-            }),
-          ),
+      const output = await this.runWithOperationTimeout(
+        "session.cookies",
+        async (timeout) => this.readCookieQueryOutput(sessionRef, pageRef, input.domain, timeout),
         options,
       );
 
       await this.appendTrace({
-        operation: "inspect.cookies",
+        operation: "session.cookies",
         startedAt,
         completedAt: Date.now(),
         outcome: "ok",
         data: {
-          count: cookies.length,
-          ...(input.urls === undefined ? {} : { urls: input.urls }),
+          count: output.cookies.length,
+          ...(input.domain === undefined ? {} : { domain: input.domain }),
         },
         context: buildRuntimeTraceContext({
           sessionRef,
@@ -4739,10 +4866,10 @@ export class OpensteerSessionRuntime {
         }),
       });
 
-      return cookies;
+      return output;
     } catch (error) {
       await this.appendTrace({
-        operation: "inspect.cookies",
+        operation: "session.cookies",
         startedAt,
         completedAt: Date.now(),
         outcome: "error",
@@ -4757,43 +4884,29 @@ export class OpensteerSessionRuntime {
   }
 
   async getStorageSnapshot(
-    input: {
-      readonly includeSessionStorage?: boolean;
-      readonly includeIndexedDb?: boolean;
-    } = {},
+    input: OpensteerStorageQueryInput = {},
     options: RuntimeOperationOptions = {},
-  ): Promise<StorageSnapshot> {
-    assertValidSemanticOperationInput("inspect.storage", input);
+  ): Promise<OpensteerStorageQueryOutput> {
+    assertValidSemanticOperationInput("session.storage", input);
 
     const pageRef = await this.ensurePageRef();
     const sessionRef = this.requireSessionRef();
     const startedAt = Date.now();
     try {
-      const snapshot = await this.runWithOperationTimeout(
-        "inspect.storage",
-        async (timeout) =>
-          timeout.runStep(() =>
-            this.requireEngine().getStorageSnapshot({
-              sessionRef,
-              ...(input.includeSessionStorage === undefined
-                ? {}
-                : { includeSessionStorage: input.includeSessionStorage }),
-              ...(input.includeIndexedDb === undefined
-                ? {}
-                : { includeIndexedDb: input.includeIndexedDb }),
-            }),
-          ),
+      const output = await this.runWithOperationTimeout(
+        "session.storage",
+        async (timeout) => this.readStorageQueryOutput(sessionRef, pageRef, input.domain, timeout),
         options,
       );
 
       await this.appendTrace({
-        operation: "inspect.storage",
+        operation: "session.storage",
         startedAt,
         completedAt: Date.now(),
         outcome: "ok",
         data: {
-          origins: snapshot.origins.length,
-          sessionStorage: snapshot.sessionStorage?.length ?? 0,
+          domains: output.domains.length,
+          ...(input.domain === undefined ? {} : { domain: input.domain }),
         },
         context: buildRuntimeTraceContext({
           sessionRef,
@@ -4801,10 +4914,10 @@ export class OpensteerSessionRuntime {
         }),
       });
 
-      return snapshot;
+      return output;
     } catch (error) {
       await this.appendTrace({
-        operation: "inspect.storage",
+        operation: "session.storage",
         startedAt,
         completedAt: Date.now(),
         outcome: "error",
@@ -4812,6 +4925,105 @@ export class OpensteerSessionRuntime {
         context: buildRuntimeTraceContext({
           sessionRef,
           pageRef,
+        }),
+      });
+      throw error;
+    }
+  }
+
+  async getBrowserState(
+    input: OpensteerStateQueryInput = {},
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerStateQueryOutput> {
+    assertValidSemanticOperationInput("session.state", input);
+
+    const pageRef = await this.ensurePageRef();
+    const sessionRef = this.requireSessionRef();
+    const startedAt = Date.now();
+    try {
+      const output = await this.runWithOperationTimeout(
+        "session.state",
+        async (timeout) => this.readBrowserStateOutput(sessionRef, pageRef, input.domain, timeout),
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "session.state",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          domains: output.domains.length,
+          ...(input.domain === undefined ? {} : { domain: input.domain }),
+        },
+        context: buildRuntimeTraceContext({
+          sessionRef,
+          pageRef,
+        }),
+      });
+
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "session.state",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+        context: buildRuntimeTraceContext({
+          sessionRef,
+          pageRef,
+        }),
+      });
+      throw error;
+    }
+  }
+
+  async fetch(
+    input: OpensteerSessionFetchInput,
+    options: RuntimeOperationOptions = {},
+  ): Promise<OpensteerSessionFetchOutput> {
+    assertValidSemanticOperationInput("session.fetch", input);
+
+    const startedAt = Date.now();
+    try {
+      const output = await this.runWithOperationTimeout(
+        "session.fetch",
+        async (timeout) => {
+          const request = buildSessionFetchTransportRequest(input);
+          return this.executeSessionFetch(request, input, timeout);
+        },
+        options,
+      );
+
+      await this.appendTrace({
+        operation: "session.fetch",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "ok",
+        data: {
+          transport: output.transport,
+          attempts: output.attempts.length,
+          ...(output.response === undefined ? {} : { status: output.response.status }),
+          url: input.url,
+        },
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
+        }),
+      });
+
+      return output;
+    } catch (error) {
+      await this.appendTrace({
+        operation: "session.fetch",
+        startedAt,
+        completedAt: Date.now(),
+        outcome: "error",
+        error,
+        context: buildRuntimeTraceContext({
+          sessionRef: this.sessionRef,
+          pageRef: this.pageRef,
         }),
       });
       throw error;
@@ -5377,8 +5589,7 @@ export class OpensteerSessionRuntime {
         },
       );
       const output = toOpensteerActionResult(executed.result, preparedTarget.persistedDescription);
-      const actionEvents =
-        "events" in executed.result ? executed.result.events : undefined;
+      const actionEvents = "events" in executed.result ? executed.result.events : undefined;
 
       await this.appendTrace({
         operation,
@@ -5946,6 +6157,425 @@ export class OpensteerSessionRuntime {
     });
   }
 
+  private async buildNetworkSummaryRecords(
+    records: readonly NetworkQueryRecord[],
+    timeout: TimeoutExecutionContext,
+  ): Promise<readonly OpensteerNetworkSummaryRecord[]> {
+    const summaries: OpensteerNetworkSummaryRecord[] = [];
+    for (const record of records) {
+      let hydrated = record;
+      if (looksLikeGraphqlRecord(record)) {
+        hydrated = await this.resolveNetworkRecordByRecordId(record.recordId, timeout, {
+          includeBodies: true,
+          redactSecretHeaders: false,
+        }).catch(() => record);
+      }
+      summaries.push(buildNetworkSummaryRecord(hydrated));
+    }
+    return summaries;
+  }
+
+  private async buildNetworkDetail(
+    record: NetworkQueryRecord,
+    timeout: TimeoutExecutionContext,
+  ): Promise<OpensteerNetworkDetailOutput> {
+    const requestCookieHeader = headerValue(record.record.requestHeaders, "cookie");
+    const graphql = extractGraphqlMetadata(record);
+    const graphqlVariables =
+      graphql?.variables === undefined ? undefined : truncateStructuredValue(graphql.variables);
+    const graphqlSummary =
+      graphql === undefined
+        ? undefined
+        : {
+            ...(graphql.operationType === undefined
+              ? {}
+              : { operationType: graphql.operationType }),
+            ...(graphql.operationName === undefined
+              ? {}
+              : { operationName: graphql.operationName }),
+            ...(graphql.persisted === undefined ? {} : { persisted: graphql.persisted }),
+            ...(graphqlVariables === undefined ? {} : { variables: graphqlVariables }),
+          };
+    const requestBody =
+      shouldShowRequestBody(record.record.method) && record.record.requestBody !== undefined
+        ? buildStructuredBodyPreview(record.record.requestBody, record.record.requestHeaders)
+        : undefined;
+    const responseBody =
+      record.record.responseBody === undefined
+        ? undefined
+        : buildStructuredBodyPreview(record.record.responseBody, record.record.responseHeaders);
+    const notes = detectNetworkRecordNotes(record);
+
+    return {
+      recordId: record.recordId,
+      ...(record.capture === undefined ? {} : { capture: record.capture }),
+      ...(record.savedAt === undefined ? {} : { savedAt: record.savedAt }),
+      summary: buildNetworkSummaryRecord(record),
+      requestHeaders: record.record.requestHeaders.filter(
+        (header) => normalizeHeaderName(header.name) !== "cookie",
+      ),
+      responseHeaders: record.record.responseHeaders,
+      ...(requestCookieHeader === undefined
+        ? {}
+        : { cookiesSent: parseCookieHeaderEntries(requestCookieHeader) }),
+      ...(requestBody === undefined ? {} : { requestBody }),
+      ...(responseBody === undefined ? {} : { responseBody }),
+      ...(graphqlSummary === undefined ? {} : { graphql: graphqlSummary }),
+      ...(await this.buildRedirectChain(record, timeout)),
+      ...(notes.length === 0 ? {} : { notes }),
+    };
+  }
+
+  private async buildRedirectChain(
+    record: NetworkQueryRecord,
+    timeout: TimeoutExecutionContext,
+  ): Promise<{
+    readonly redirectChain?: readonly OpensteerNetworkRedirectHop[];
+  }> {
+    if (
+      record.record.redirectFromRequestId === undefined &&
+      record.record.redirectToRequestId === undefined
+    ) {
+      return {};
+    }
+
+    const root = await this.ensureRoot();
+    const byRequestId = new Map<string, NetworkQueryRecord>();
+    const seen = new Set<string>();
+    const queue = [record.record.requestId];
+    while (queue.length > 0) {
+      const requestId = queue.shift()!;
+      if (seen.has(requestId)) {
+        continue;
+      }
+      seen.add(requestId);
+      const [match] = await timeout.runStep(() =>
+        root.registry.savedNetwork.query({
+          requestId,
+          includeBodies: false,
+          limit: 1,
+        }),
+      );
+      if (match === undefined) {
+        continue;
+      }
+      byRequestId.set(requestId, match);
+      if (match.record.redirectFromRequestId !== undefined) {
+        queue.push(match.record.redirectFromRequestId);
+      }
+      if (match.record.redirectToRequestId !== undefined) {
+        queue.push(match.record.redirectToRequestId);
+      }
+    }
+
+    const chain = [...byRequestId.values()].sort((left, right) => {
+      const leftTime = left.savedAt ?? 0;
+      const rightTime = right.savedAt ?? 0;
+      if (leftTime !== rightTime) {
+        return leftTime - rightTime;
+      }
+      return left.recordId.localeCompare(right.recordId);
+    });
+    if (chain.length <= 1) {
+      return {};
+    }
+    return {
+      redirectChain: chain.map((entry) => ({
+        method: entry.record.method,
+        ...(entry.record.status === undefined ? {} : { status: entry.record.status }),
+        url: entry.record.url,
+        ...(headerValue(entry.record.responseHeaders, "location") === undefined
+          ? {}
+          : { location: headerValue(entry.record.responseHeaders, "location")! }),
+        ...(collectSetCookieHeaders(entry.record.responseHeaders).length === 0
+          ? {}
+          : { setCookie: collectSetCookieHeaders(entry.record.responseHeaders) }),
+      })),
+    };
+  }
+
+  private async readCookieQueryOutput(
+    sessionRef: SessionRef,
+    pageRef: PageRef,
+    domain: string | undefined,
+    timeout: TimeoutExecutionContext,
+  ): Promise<OpensteerCookieQueryOutput> {
+    const pageInfo = await timeout.runStep(() => this.requireEngine().getPageInfo({ pageRef }));
+    const effectiveDomain = domain ?? hostnameFromUrl(pageInfo.url);
+    const cookies = await timeout.runStep(() =>
+      this.requireEngine().getCookies({
+        sessionRef,
+      }),
+    );
+    const filtered = filterCookieRecordsByDomain(cookies, effectiveDomain);
+    return {
+      ...(effectiveDomain === undefined ? {} : { domain: effectiveDomain }),
+      cookies: [...filtered].sort(compareCookieRecords),
+    };
+  }
+
+  private async readStorageQueryOutput(
+    sessionRef: SessionRef,
+    pageRef: PageRef,
+    domain: string | undefined,
+    timeout: TimeoutExecutionContext,
+  ): Promise<OpensteerStorageQueryOutput> {
+    const pageInfo = await timeout.runStep(() => this.requireEngine().getPageInfo({ pageRef }));
+    const effectiveDomain = domain ?? hostnameFromUrl(pageInfo.url);
+    const snapshot = await timeout.runStep(() =>
+      this.requireEngine().getStorageSnapshot({
+        sessionRef,
+        includeSessionStorage: true,
+        includeIndexedDb: false,
+      }),
+    );
+    return {
+      domains: collapseStorageSnapshot(snapshot, effectiveDomain),
+    };
+  }
+
+  private async readBrowserStateOutput(
+    sessionRef: SessionRef,
+    pageRef: PageRef,
+    domain: string | undefined,
+    timeout: TimeoutExecutionContext,
+  ): Promise<OpensteerStateQueryOutput> {
+    const pageInfo = await timeout.runStep(() => this.requireEngine().getPageInfo({ pageRef }));
+    const effectiveDomain = domain ?? hostnameFromUrl(pageInfo.url);
+    const cookies = await timeout.runStep(() =>
+      this.requireEngine().getCookies({
+        sessionRef,
+      }),
+    );
+    const storage = await timeout.runStep(() =>
+      this.requireEngine().getStorageSnapshot({
+        sessionRef,
+        includeSessionStorage: true,
+        includeIndexedDb: false,
+      }),
+    );
+    const pageState = await timeout.runStep(() =>
+      this.requireEngine().evaluatePage({
+        pageRef,
+        script: CAPTURE_PAGE_STATE_SCRIPT,
+        args: [
+          {
+            globalNames: DEFAULT_STATE_GLOBAL_NAMES,
+          },
+        ],
+      }),
+    );
+
+    const currentPageDomain = hostnameFromUrl(pageInfo.url);
+    return {
+      domains: buildBrowserStateDomains({
+        ...(effectiveDomain === undefined ? {} : { effectiveDomain }),
+        ...(currentPageDomain === undefined ? {} : { currentPageDomain }),
+        cookies,
+        storage,
+        pageState: pageState.data,
+      }),
+    };
+  }
+
+  private async executeNetworkReplay(
+    source: NetworkQueryRecord,
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly followRedirects?: boolean;
+    },
+    timeout: TimeoutExecutionContext,
+    options: {
+      readonly pageRef?: PageRef;
+    },
+  ): Promise<OpensteerNetworkReplayOutput> {
+    const fingerprint = buildCapturedRecordSuccessFingerprint(source);
+    const attempts: OpensteerReplayAttempt[] = [];
+    let lastOutput: OpensteerRawRequestOutput | undefined;
+
+    for (const transport of REPLAY_TRANSPORT_LADDER) {
+      const attemptStartedAt = Date.now();
+      try {
+        const output = await this.executeReplayTransportAttempt(
+          transport,
+          request,
+          timeout,
+          options.pageRef,
+        );
+        lastOutput = output;
+        const ok = matchesSuccessFingerprintFromProtocolResponse(output.response, fingerprint);
+        attempts.push({
+          transport,
+          status: output.response.status,
+          ok,
+          durationMs: Date.now() - attemptStartedAt,
+        });
+        if (ok) {
+          const fallbackNote =
+            attempts.length > 1 ? buildReplayFallbackNote(attempts, transport) : undefined;
+          const previewData = toStructuredPreviewData(output.data);
+          return {
+            recordId: source.recordId,
+            transport,
+            attempts,
+            response: output.response,
+            ...(previewData === undefined ? {} : { data: previewData }),
+            ...(fallbackNote === undefined ? {} : { note: fallbackNote }),
+          };
+        }
+      } catch (error) {
+        attempts.push({
+          transport,
+          ok: false,
+          durationMs: Date.now() - attemptStartedAt,
+          error: normalizeRuntimeErrorMessage(error),
+        });
+      }
+    }
+
+    const previewData = toStructuredPreviewData(lastOutput?.data);
+    return {
+      recordId: source.recordId,
+      attempts,
+      ...(lastOutput?.response === undefined ? {} : { response: lastOutput.response }),
+      ...(previewData === undefined ? {} : { data: previewData }),
+      note: "all replay transports failed to reproduce the captured response",
+    };
+  }
+
+  private async executeSessionFetch(
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly followRedirects?: boolean;
+    },
+    input: OpensteerSessionFetchInput,
+    timeout: TimeoutExecutionContext,
+  ): Promise<OpensteerSessionFetchOutput> {
+    const attempts: OpensteerReplayAttempt[] = [];
+    let lastOutput: OpensteerRawRequestOutput | undefined;
+    const ladder = resolveSessionFetchTransportLadder(input.transport);
+
+    for (const transport of ladder) {
+      const attemptStartedAt = Date.now();
+      try {
+        const output = await this.executeFetchTransportAttempt(transport, request, timeout, input);
+        lastOutput = output;
+        const note = detectChallengeNoteFromResponse(output.response);
+        const ok = shouldAcceptFetchResponse(output.response, transport, note);
+        attempts.push({
+          transport,
+          status: output.response.status,
+          ok,
+          durationMs: Date.now() - attemptStartedAt,
+          ...(note === undefined ? {} : { note }),
+        });
+        if (ok) {
+          const fallbackNote =
+            attempts.length > 1 ? buildReplayFallbackNote(attempts, transport) : undefined;
+          const previewData = toStructuredPreviewData(output.data);
+          return {
+            transport,
+            attempts,
+            response: output.response,
+            ...(previewData === undefined ? {} : { data: previewData }),
+            ...(fallbackNote === undefined ? {} : { note: fallbackNote }),
+          };
+        }
+      } catch (error) {
+        attempts.push({
+          transport,
+          ok: false,
+          durationMs: Date.now() - attemptStartedAt,
+          error: normalizeRuntimeErrorMessage(error),
+        });
+      }
+    }
+
+    const previewData = toStructuredPreviewData(lastOutput?.data);
+    return {
+      attempts,
+      ...(lastOutput?.response === undefined ? {} : { response: lastOutput.response }),
+      ...(previewData === undefined ? {} : { data: previewData }),
+      note: "no transport completed successfully",
+    };
+  }
+
+  private async executeReplayTransportAttempt(
+    transport: TransportKind,
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly followRedirects?: boolean;
+    },
+    timeout: TimeoutExecutionContext,
+    explicitPageRef?: PageRef,
+  ): Promise<OpensteerRawRequestOutput> {
+    const normalized = finalizeMaterializedTransportRequest(request, transport);
+    switch (transport) {
+      case "direct-http":
+        return this.executeDirectTransportRequestWithPersistence(normalized, timeout);
+      case "matched-tls":
+        return this.executeMatchedTlsTransportRequestWithPersistence(
+          normalized,
+          timeout,
+          this.currentBinding(),
+        );
+      case "context-http":
+        return this.executeContextTransportRequestWithPersistence(
+          normalized,
+          timeout,
+          this.currentBinding(),
+        );
+      case "page-http": {
+        const binding = await this.resolvePageHttpBinding(
+          normalized.url,
+          explicitPageRef ?? this.currentBinding()?.pageRef,
+          false,
+        );
+        return this.executePageHttpTransportRequestWithPersistence(normalized, timeout, binding);
+      }
+      case "session-http": {
+        const binding = this.currentBinding() ?? (await this.ensureBrowserTransportBinding());
+        return this.executeTransportRequestWithJournal(normalized, timeout, binding.sessionRef);
+      }
+    }
+  }
+
+  private async executeFetchTransportAttempt(
+    transport: TransportKind,
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly followRedirects?: boolean;
+    },
+    timeout: TimeoutExecutionContext,
+    input: OpensteerSessionFetchInput,
+  ): Promise<OpensteerRawRequestOutput> {
+    let prepared = finalizeMaterializedTransportRequest(request, transport);
+    if (
+      input.cookies !== false &&
+      transport === "direct-http" &&
+      this.currentBinding() !== undefined
+    ) {
+      const cookies = await this.requireEngine().getCookies({
+        sessionRef: this.currentBinding()!.sessionRef,
+        urls: [prepared.url],
+      });
+      prepared = applyBrowserCookiesToTransportRequest(prepared, cookies);
+    }
+    return this.executeReplayTransportAttempt(transport, prepared, timeout, input.pageRef);
+  }
+
   private resolveCurrentStateSource(): OpensteerStateSourceKind {
     const ownership = this.sessionInfoBase.provider?.ownership;
     if (ownership === "attached") {
@@ -6386,7 +7016,7 @@ export class OpensteerSessionRuntime {
       readonly hostname?: string;
       readonly path?: string;
       readonly method?: string;
-      readonly status?: string;
+      readonly status?: string | number;
       readonly resourceType?: NetworkQueryRecord["record"]["resourceType"];
       readonly includeBodies: boolean;
       readonly includeCurrentPageOnly?: boolean;
@@ -6412,7 +7042,7 @@ export class OpensteerSessionRuntime {
       ...(input.hostname === undefined ? {} : { hostname: input.hostname }),
       ...(input.path === undefined ? {} : { path: input.path }),
       ...(input.method === undefined ? {} : { method: input.method }),
-      ...(input.status === undefined ? {} : { status: input.status }),
+      ...(input.status === undefined ? {} : { status: normalizeNetworkStatusFilter(input.status) }),
       ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
       includeBodies: input.includeBodies,
       signal,
@@ -6427,7 +7057,7 @@ export class OpensteerSessionRuntime {
       readonly hostname?: string;
       readonly path?: string;
       readonly method?: string;
-      readonly status?: string;
+      readonly status?: string | number;
       readonly resourceType?: NetworkQueryRecord["record"]["resourceType"];
       readonly includeBodies: boolean;
       readonly includeCurrentPageOnly?: boolean;
@@ -8585,11 +9215,7 @@ export class OpensteerSessionRuntime {
     const root = await this.ensureRoot();
     const capturedStepEvents =
       input.events ??
-      this.consumePendingOperationEventCapture(
-        input.operation,
-        input.startedAt,
-        input.completedAt,
-      );
+      this.consumePendingOperationEventCapture(input.operation, input.startedAt, input.completedAt);
     const drainedStepEvents =
       input.events === undefined ? await this.drainPendingEngineEvents(input.context) : undefined;
     const stepEvents = mergeObservedStepEvents(capturedStepEvents, drainedStepEvents);
@@ -8653,8 +9279,7 @@ export class OpensteerSessionRuntime {
                 return artifact.artifactId;
               }),
             )
-          )
-            .flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+          ).flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
 
     const observationEvents = buildObservationEventsFromTrace({
       traceId: traceEntry.traceId,
@@ -8957,9 +9582,7 @@ function mergeObservedStepEvents(
   for (const event of secondary) {
     merged.set(event.eventId, event);
   }
-  return [...merged.values()].sort(
-    (left, right) => (left.timestamp ?? 0) - (right.timestamp ?? 0),
-  );
+  return [...merged.values()].sort((left, right) => (left.timestamp ?? 0) - (right.timestamp ?? 0));
 }
 
 function selectLiveQueryPageRef(
@@ -8993,9 +9616,13 @@ function buildEngineNetworkRecordFilters(
     ...(input.hostname === undefined ? {} : { hostname: input.hostname }),
     ...(input.path === undefined ? {} : { path: input.path }),
     ...(input.method === undefined ? {} : { method: input.method }),
-    ...(input.status === undefined ? {} : { status: input.status }),
+    ...(input.status === undefined ? {} : { status: normalizeNetworkStatusFilter(input.status) }),
     ...(input.resourceType === undefined ? {} : { resourceType: input.resourceType }),
   };
+}
+
+function normalizeNetworkStatusFilter(status: string | number): string {
+  return String(status);
 }
 
 function resolveLiveQueryRequestIds(
@@ -9079,7 +9706,7 @@ function filterNetworkQueryRecords(
     readonly hostname?: string;
     readonly path?: string;
     readonly method?: string;
-    readonly status?: string;
+    readonly status?: string | number;
     readonly resourceType?: NetworkQueryRecord["record"]["resourceType"];
   },
 ): readonly NetworkQueryRecord[] {
@@ -9417,6 +10044,662 @@ function resolveBrowserBodyEncoding(charset: string | undefined): BufferEncoding
     default:
       return "utf8";
   }
+}
+
+const DEFAULT_STATE_GLOBAL_NAMES = [
+  "__NEXT_DATA__",
+  "__NUXT__",
+  "__APOLLO_STATE__",
+  "__INITIAL_STATE__",
+  "__PRELOADED_STATE__",
+  "__STATE__",
+  "__data__",
+] as const;
+
+const REPLAY_TRANSPORT_LADDER: readonly TransportKind[] = [
+  "direct-http",
+  "matched-tls",
+  "context-http",
+  "page-http",
+] as const;
+
+function filterNetworkSummaryRecords(
+  records: readonly NetworkQueryRecord[],
+  input: OpensteerNetworkQueryInput,
+): readonly NetworkQueryRecord[] {
+  return records.filter((record) => {
+    if (record.record.resourceType === "preflight" || record.record.method === "OPTIONS") {
+      return false;
+    }
+    if (input.json !== true) {
+      return true;
+    }
+    const contentType =
+      headerValue(record.record.responseHeaders, "content-type") ??
+      headerValue(record.record.requestHeaders, "content-type");
+    const normalized = contentType?.toLowerCase();
+    return (
+      normalized?.includes("json") === true ||
+      normalized?.includes("+json") === true ||
+      looksLikeGraphqlRecord(record)
+    );
+  });
+}
+
+function sortPersistedNetworkRecordsChronologically(
+  records: readonly NetworkQueryRecord[],
+): NetworkQueryRecord[] {
+  return [...records].sort((left, right) => {
+    const leftTime = left.savedAt ?? 0;
+    const rightTime = right.savedAt ?? 0;
+    if (leftTime !== rightTime) {
+      return leftTime - rightTime;
+    }
+    return left.recordId.localeCompare(right.recordId);
+  });
+}
+
+function sliceNetworkSummaryWindow(
+  records: readonly NetworkQueryRecord[],
+  input: OpensteerNetworkQueryInput,
+): readonly NetworkQueryRecord[] {
+  let start = 0;
+  let end = records.length;
+  if (input.after !== undefined) {
+    const index = records.findIndex((record) => record.recordId === input.after);
+    if (index >= 0) {
+      start = index + 1;
+    }
+  }
+  if (input.before !== undefined) {
+    const index = records.findIndex((record) => record.recordId === input.before);
+    if (index >= 0) {
+      end = index;
+    }
+  }
+  return records.slice(start, end);
+}
+
+function buildReplayTransportRequest(
+  source: NetworkQueryRecord,
+  input: OpensteerNetworkReplayInput,
+): {
+  readonly method: string;
+  readonly url: string;
+  readonly headers?: readonly HeaderEntry[];
+  readonly body?: BrowserBodyPayload;
+  readonly followRedirects?: boolean;
+} {
+  const url = new URL(source.record.url);
+  for (const [name, value] of Object.entries(input.query ?? {})) {
+    url.searchParams.set(name, String(value));
+  }
+
+  const headers = [...source.record.requestHeaders];
+  for (const [name, value] of Object.entries(input.headers ?? {})) {
+    setHeaderValue(headers, name, String(value));
+  }
+
+  let body =
+    source.record.requestBody === undefined
+      ? undefined
+      : toBrowserBodyPayload(source.record.requestBody);
+  if (input.body !== undefined) {
+    body = toBrowserRequestBody(input.body).payload;
+  } else if (input.variables !== undefined) {
+    const graphql = extractGraphqlMetadata(source);
+    if (graphql?.rawBody !== undefined) {
+      const nextBody = {
+        ...graphql.rawBody,
+        variables:
+          graphql.rawBody.variables !== null && typeof graphql.rawBody.variables === "object"
+            ? {
+                ...(graphql.rawBody.variables as Record<string, unknown>),
+                ...(input.variables as Record<string, unknown>),
+              }
+            : input.variables,
+      };
+      body = toBrowserRequestBody({ json: toCanonicalJsonValue(nextBody) }).payload;
+    }
+  }
+
+  return {
+    method: source.record.method,
+    url: url.toString(),
+    ...(headers.length === 0 ? {} : { headers }),
+    ...(body === undefined ? {} : { body }),
+  };
+}
+
+function buildSessionFetchTransportRequest(input: OpensteerSessionFetchInput): {
+  readonly method: string;
+  readonly url: string;
+  readonly headers?: readonly HeaderEntry[];
+  readonly body?: BrowserBodyPayload;
+  readonly followRedirects?: boolean;
+} {
+  const url = new URL(input.url);
+  for (const [name, value] of Object.entries(input.query ?? {})) {
+    url.searchParams.set(name, String(value));
+  }
+  const headers = Object.entries(input.headers ?? {}).map(([name, value]) => ({
+    name,
+    value: String(value),
+  }));
+  const body = input.body === undefined ? undefined : toBrowserRequestBody(input.body);
+  if (
+    body?.contentType !== undefined &&
+    !headers.some((header) => normalizeHeaderName(header.name) === "content-type")
+  ) {
+    headers.push({
+      name: "content-type",
+      value: body.contentType,
+    });
+  }
+  return {
+    method: input.method ?? (body === undefined ? "GET" : "POST"),
+    url: url.toString(),
+    ...(headers.length === 0 ? {} : { headers }),
+    ...(body === undefined ? {} : { body: body.payload }),
+    ...(input.followRedirects === undefined ? {} : { followRedirects: input.followRedirects }),
+  };
+}
+
+function looksLikeGraphqlRecord(record: NetworkQueryRecord): boolean {
+  return extractGraphqlMetadata(record) !== undefined;
+}
+
+function buildNetworkSummaryRecord(record: NetworkQueryRecord): OpensteerNetworkSummaryRecord {
+  const request = summarizeBody(record.record.requestBody, record.record.requestHeaders);
+  const response =
+    record.record.kind === "event-stream"
+      ? {
+          ...(summarizeBody(record.record.responseBody, record.record.responseHeaders) ?? {}),
+          streaming: true,
+        }
+      : summarizeBody(record.record.responseBody, record.record.responseHeaders);
+  const graphql = extractGraphqlMetadata(record);
+  const websocketProtocols = parseWebSocketProtocols(record.record.requestHeaders);
+  const websocketSubprotocol = websocketProtocols[0];
+
+  return {
+    recordId: record.recordId,
+    ...(record.capture === undefined ? {} : { capture: record.capture }),
+    ...(record.savedAt === undefined ? {} : { savedAt: record.savedAt }),
+    kind: record.record.kind,
+    method: record.record.method,
+    ...(record.record.status === undefined ? {} : { status: record.record.status }),
+    resourceType: record.record.resourceType,
+    url: record.record.url,
+    ...(request === undefined ? {} : { request }),
+    ...(response === undefined ? {} : { response }),
+    ...(graphql === undefined
+      ? {}
+      : {
+          graphql: {
+            ...(graphql.operationType === undefined
+              ? {}
+              : { operationType: graphql.operationType }),
+            ...(graphql.operationName === undefined
+              ? {}
+              : { operationName: graphql.operationName }),
+            ...(graphql.persisted === undefined ? {} : { persisted: graphql.persisted }),
+          },
+        }),
+    ...(websocketSubprotocol === undefined
+      ? {}
+      : { websocket: { subprotocol: websocketSubprotocol } }),
+  };
+}
+
+function extractGraphqlMetadata(record: NetworkQueryRecord):
+  | (OpensteerNetworkSummaryRecord["graphql"] & {
+      readonly variables?: JsonValue;
+      readonly rawBody?: Record<string, unknown>;
+    })
+  | undefined {
+  const url = record.record.url.toLowerCase();
+  const requestContentType = headerValue(
+    record.record.requestHeaders,
+    "content-type",
+  )?.toLowerCase();
+  const text = decodeProtocolBody(record.record.requestBody);
+  let payload: Record<string, unknown> | undefined;
+  if (text !== undefined && requestContentType?.includes("json")) {
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        payload = parsed as Record<string, unknown>;
+      }
+    } catch {}
+  }
+
+  if (payload === undefined && !url.includes("graphql")) {
+    return undefined;
+  }
+
+  const queryText =
+    typeof payload?.query === "string"
+      ? payload.query
+      : typeof payload?.operationName === "string"
+        ? payload.operationName
+        : undefined;
+  const operationType =
+    queryText === undefined
+      ? undefined
+      : queryText.trim().startsWith("mutation")
+        ? "mutation"
+        : queryText.trim().startsWith("subscription")
+          ? "subscription"
+          : queryText.trim().startsWith("query")
+            ? "query"
+            : "unknown";
+  const operationName =
+    typeof payload?.operationName === "string"
+      ? payload.operationName
+      : extractGraphqlOperationName(queryText);
+  const variables =
+    payload?.variables === undefined ? undefined : toCanonicalJsonValue(payload.variables);
+  const persisted =
+    payload?.extensions !== undefined &&
+    typeof payload.extensions === "object" &&
+    payload.extensions !== null &&
+    "persistedQuery" in payload.extensions
+      ? true
+      : undefined;
+
+  return {
+    ...(operationType === undefined ? {} : { operationType }),
+    ...(operationName === undefined ? {} : { operationName }),
+    ...(persisted === undefined ? {} : { persisted }),
+    ...(variables === undefined ? {} : { variables }),
+    ...(payload === undefined ? {} : { rawBody: payload }),
+  };
+}
+
+function extractGraphqlOperationName(queryText: string | undefined): string | undefined {
+  if (queryText === undefined) {
+    return undefined;
+  }
+  const match = queryText.match(/\b(query|mutation|subscription)\s+([A-Za-z0-9_]+)/u);
+  return match?.[2];
+}
+
+function shouldShowRequestBody(method: string): boolean {
+  return !["GET", "HEAD", "DELETE", "OPTIONS"].includes(method.trim().toUpperCase());
+}
+
+function buildStructuredBodyPreview(
+  body: NetworkQueryRecord["record"]["requestBody"] | NetworkQueryRecord["record"]["responseBody"],
+  headers: readonly HeaderEntry[],
+): OpensteerNetworkDetailOutput["requestBody"] {
+  const contentType = headerValue(headers, "content-type") ?? body?.mimeType;
+  const parsed = parseStructuredPayload(body, contentType);
+  const data =
+    parsed === undefined
+      ? undefined
+      : typeof parsed === "string"
+        ? truncateInlineText(parsed)
+        : truncateStructuredValue(parsed);
+  return {
+    bytes: body?.originalByteLength ?? body?.capturedByteLength ?? 0,
+    ...(contentType === undefined ? {} : { contentType }),
+    truncated: body?.truncated ?? false,
+    ...(data === undefined ? {} : { data }),
+  };
+}
+
+function parseStructuredPayload(
+  body: NetworkQueryRecord["record"]["requestBody"] | NetworkQueryRecord["record"]["responseBody"],
+  contentType: string | undefined,
+): JsonValue | string | undefined {
+  const text = decodeProtocolBody(body);
+  if (text === undefined) {
+    return undefined;
+  }
+  const mimeType = parseContentType(contentType).mimeType?.toLowerCase();
+  if (mimeType === "application/json" || mimeType?.endsWith("+json") === true) {
+    try {
+      return toCanonicalJsonValue(JSON.parse(text));
+    } catch {
+      return truncateInlineText(text);
+    }
+  }
+  if (mimeType?.startsWith("text/") === true || mimeType === undefined) {
+    return truncateInlineText(text);
+  }
+  return undefined;
+}
+
+function detectNetworkRecordNotes(record: NetworkQueryRecord): readonly string[] {
+  const challenge = detectChallengeNoteFromRecord(record);
+  return challenge === undefined ? [] : [challenge];
+}
+
+function normalizeHeaderName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+function parseCookieHeaderEntries(
+  value: string,
+): readonly { readonly name: string; readonly value: string }[] {
+  return parseCookiePairs(value).map(([name, cookieValue]) => ({
+    name,
+    value: cookieValue,
+  }));
+}
+
+function truncateStructuredValue(
+  value: JsonValue | undefined,
+  depth = 0,
+): JsonValue | string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null || typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    return truncateInlineText(value);
+  }
+  if (Array.isArray(value)) {
+    if (value.length <= 3) {
+      return value.map(
+        (entry) => truncateStructuredValue(entry as JsonValue, depth + 1) as JsonValue,
+      );
+    }
+    return [
+      `... ${value.length} items, first 2 shown`,
+      truncateStructuredValue(value[0] as JsonValue, depth + 1) as JsonValue,
+      truncateStructuredValue(value[1] as JsonValue, depth + 1) as JsonValue,
+    ];
+  }
+  const entries = Object.entries(value);
+  if (depth >= 4) {
+    return `... ${entries.length} keys`;
+  }
+  const truncated = Object.fromEntries(
+    entries.map(([key, entry]) => [key, truncateStructuredValue(entry as JsonValue, depth + 1)]),
+  ) as JsonValue;
+  const serialized = JSON.stringify(truncated);
+  if (serialized !== undefined && serialized.length > 4096) {
+    return `${serialized.slice(0, 4000)}... use network.detail for the full structure`;
+  }
+  return truncated;
+}
+
+function truncateInlineText(value: string, limit = 200): string {
+  return value.length <= limit ? value : `${value.slice(0, limit)}...${value.length} chars total`;
+}
+
+function collectSetCookieHeaders(headers: readonly HeaderEntry[]): readonly string[] {
+  return headers
+    .filter((header) => normalizeHeaderName(header.name) === "set-cookie")
+    .map((header) => header.value);
+}
+
+function hostnameFromUrl(url: string | undefined): string | undefined {
+  if (url === undefined) {
+    return undefined;
+  }
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return undefined;
+  }
+}
+
+function filterCookieRecordsByDomain(
+  cookies: readonly CookieRecord[],
+  domain: string | undefined,
+): readonly CookieRecord[] {
+  if (domain === undefined) {
+    return cookies;
+  }
+  return cookies.filter((cookie) => cookieDomainMatches(cookie.domain, domain));
+}
+
+function compareCookieRecords(left: CookieRecord, right: CookieRecord): number {
+  const byDomain = left.domain.localeCompare(right.domain);
+  if (byDomain !== 0) {
+    return byDomain;
+  }
+  const byName = left.name.localeCompare(right.name);
+  if (byName !== 0) {
+    return byName;
+  }
+  return left.path.localeCompare(right.path);
+}
+
+function collapseStorageSnapshot(
+  snapshot: StorageSnapshot,
+  domain: string | undefined,
+): readonly OpensteerStorageDomainSnapshot[] {
+  const grouped = new Map<string, OpensteerStorageDomainSnapshot>();
+  for (const origin of snapshot.origins) {
+    const hostname = hostnameFromUrl(origin.origin);
+    if (hostname === undefined || (domain !== undefined && hostname !== domain)) {
+      continue;
+    }
+    grouped.set(hostname, {
+      domain: hostname,
+      localStorage: origin.localStorage,
+      sessionStorage: grouped.get(hostname)?.sessionStorage ?? [],
+    });
+  }
+  for (const entry of snapshot.sessionStorage ?? []) {
+    const hostname = hostnameFromUrl(entry.origin);
+    if (hostname === undefined || (domain !== undefined && hostname !== domain)) {
+      continue;
+    }
+    const current = grouped.get(hostname);
+    grouped.set(hostname, {
+      domain: hostname,
+      localStorage: current?.localStorage ?? [],
+      sessionStorage: entry.entries,
+    });
+  }
+  return [...grouped.values()].sort((left, right) => left.domain.localeCompare(right.domain));
+}
+
+function buildBrowserStateDomains(input: {
+  readonly effectiveDomain?: string;
+  readonly currentPageDomain?: string;
+  readonly cookies: readonly CookieRecord[];
+  readonly storage: StorageSnapshot;
+  readonly pageState: unknown;
+}): readonly OpensteerStateDomainSnapshot[] {
+  const domains = collapseStorageSnapshot(input.storage, input.effectiveDomain);
+  const pageState = normalizeCapturedPageState(input.pageState);
+  const selectedDomain =
+    input.effectiveDomain ?? input.currentPageDomain ?? domains[0]?.domain ?? undefined;
+  if (selectedDomain === undefined) {
+    return [];
+  }
+  const storage = domains.find((entry) => entry.domain === selectedDomain);
+  return [
+    {
+      domain: selectedDomain,
+      cookies: [...filterCookieRecordsByDomain(input.cookies, selectedDomain)].sort(
+        compareCookieRecords,
+      ),
+      hiddenFields: pageState.hiddenFields,
+      localStorage: storage?.localStorage ?? [],
+      sessionStorage: storage?.sessionStorage ?? [],
+      ...(Object.keys(pageState.globals).length === 0 ? {} : { globals: pageState.globals }),
+    },
+  ];
+}
+
+function normalizeCapturedPageState(value: unknown): {
+  readonly hiddenFields: readonly OpensteerHiddenField[];
+  readonly globals: Readonly<Record<string, JsonValue>>;
+} {
+  if (value === null || typeof value !== "object") {
+    return {
+      hiddenFields: [],
+      globals: {},
+    };
+  }
+  const source = value as {
+    readonly hiddenFields?: readonly {
+      readonly path?: unknown;
+      readonly name?: unknown;
+      readonly value?: unknown;
+    }[];
+    readonly globals?: Record<string, unknown>;
+  };
+  return {
+    hiddenFields: (source.hiddenFields ?? [])
+      .filter(
+        (
+          field,
+        ): field is { readonly path: string; readonly name: string; readonly value: string } =>
+          typeof field?.path === "string" &&
+          typeof field.name === "string" &&
+          typeof field.value === "string",
+      )
+      .map((field) => ({
+        path: field.path,
+        name: field.name,
+        value: field.value,
+      })),
+    globals: Object.fromEntries(
+      Object.entries(source.globals ?? {})
+        .map(([key, entry]) => [key, toCanonicalJsonValue(entry)])
+        .filter((entry): entry is [string, JsonValue] => entry[1] !== undefined),
+    ),
+  };
+}
+
+function toBrowserBodyPayload(body: ProtocolBodyPayload): BrowserBodyPayload {
+  return createBodyPayload(new Uint8Array(Buffer.from(body.data, "base64")), {
+    encoding: body.encoding,
+    ...(body.mimeType === undefined ? {} : { mimeType: body.mimeType }),
+    ...(body.charset === undefined ? {} : { charset: body.charset }),
+    truncated: body.truncated,
+    ...(body.originalByteLength === undefined
+      ? {}
+      : { originalByteLength: body.originalByteLength }),
+  });
+}
+
+function toStructuredPreviewData(value: unknown): JsonValue | string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    return truncateInlineText(value);
+  }
+  return truncateStructuredValue(toCanonicalJsonValue(value));
+}
+
+function buildReplayFallbackNote(
+  attempts: readonly OpensteerReplayAttempt[],
+  transport: TransportKind,
+): string | undefined {
+  const previous = attempts.at(-2);
+  if (previous === undefined) {
+    return undefined;
+  }
+  if (previous.status !== undefined) {
+    return `${previous.transport} returned ${previous.status}, fell back to ${transport}`;
+  }
+  if (previous.error !== undefined) {
+    return `${previous.transport} failed (${previous.error}), fell back to ${transport}`;
+  }
+  return undefined;
+}
+
+function resolveSessionFetchTransportLadder(
+  transport: OpensteerSessionFetchInput["transport"],
+): readonly TransportKind[] {
+  switch (transport ?? "auto") {
+    case "direct":
+      return ["direct-http"];
+    case "matched-tls":
+      return ["matched-tls"];
+    case "page":
+      return ["page-http"];
+    case "auto":
+      return ["direct-http", "matched-tls", "page-http"];
+  }
+}
+
+function detectChallengeNoteFromRecord(record: NetworkQueryRecord): string | undefined {
+  if (record.record.responseBody === undefined) {
+    return undefined;
+  }
+  return detectChallengeNoteFromText(
+    decodeProtocolBody(record.record.responseBody),
+    headerValue(record.record.responseHeaders, "content-type"),
+  );
+}
+
+function detectChallengeNoteFromResponse(
+  response: OpensteerRequestResponseResult,
+): string | undefined {
+  return detectChallengeNoteFromText(
+    decodeProtocolBody(response.body),
+    headerValue(response.headers, "content-type"),
+  );
+}
+
+function detectChallengeNoteFromText(
+  text: string | undefined,
+  contentType: string | undefined,
+): string | undefined {
+  if (text === undefined || contentType?.toLowerCase().includes("html") !== true) {
+    return undefined;
+  }
+  const normalized = text.toLowerCase();
+  if (normalized.includes("cloudflare")) {
+    return "response appears to be a Cloudflare challenge page";
+  }
+  if (normalized.includes("akamai")) {
+    return "response appears to be an Akamai challenge page";
+  }
+  if (normalized.includes("datadome")) {
+    return "response appears to be a DataDome challenge page";
+  }
+  if (normalized.includes("perimeterx")) {
+    return "response appears to be a PerimeterX challenge page";
+  }
+  if (normalized.includes("attention required") || normalized.includes("verify you are human")) {
+    return "response appears to be a bot challenge page";
+  }
+  return undefined;
+}
+
+function shouldAcceptFetchResponse(
+  response: OpensteerRequestResponseResult,
+  transport: TransportKind,
+  challengeNote: string | undefined,
+): boolean {
+  if (challengeNote !== undefined) {
+    return false;
+  }
+  if (response.status >= 200 && response.status < 400) {
+    return true;
+  }
+  return transport === "page-http" && response.status >= 200 && response.status < 500;
+}
+
+function summarizeBody(
+  body:
+    | NetworkQueryRecord["record"]["requestBody"]
+    | NetworkQueryRecord["record"]["responseBody"]
+    | undefined,
+  headers: readonly HeaderEntry[],
+): OpensteerNetworkSummaryRecord["request"] | undefined {
+  if (body === undefined) {
+    return undefined;
+  }
+  const contentType = headerValue(headers, "content-type") ?? body.mimeType;
+  return {
+    bytes: body.originalByteLength ?? body.capturedByteLength,
+    ...(contentType === undefined ? {} : { contentType }),
+  };
 }
 
 function buildMinimizedRequestPlan(input: {

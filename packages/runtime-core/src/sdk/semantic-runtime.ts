@@ -1,7 +1,6 @@
 import type {
   OpensteerArtifactReadInput,
   OpensteerArtifactReadOutput,
-  CookieRecord,
   OpensteerCaptchaSolveInput,
   OpensteerCaptchaSolveOutput,
   OpensteerActionResult,
@@ -31,6 +30,17 @@ import type {
   OpensteerNetworkMinimizeOutput,
   OpensteerNetworkQueryInput,
   OpensteerNetworkQueryOutput,
+  OpensteerNetworkDetailOutput,
+  OpensteerNetworkReplayInput,
+  OpensteerNetworkReplayOutput,
+  OpensteerCookieQueryInput,
+  OpensteerCookieQueryOutput,
+  OpensteerStorageQueryInput,
+  OpensteerStorageQueryOutput,
+  OpensteerStateQueryInput,
+  OpensteerStateQueryOutput,
+  OpensteerSessionFetchInput,
+  OpensteerSessionFetchOutput,
   OpensteerNetworkTagInput,
   OpensteerNetworkTagOutput,
   OpensteerInteractionCaptureInput,
@@ -100,7 +110,6 @@ import type {
   OpensteerWriteRecipeInput,
   OpensteerWriteAuthRecipeInput,
   OpensteerWriteRequestPlanInput,
-  StorageSnapshot,
 } from "@opensteer/protocol";
 
 import type { AuthRecipeRecord, RecipeRecord, RequestPlanRecord } from "../registry.js";
@@ -171,6 +180,16 @@ export interface OpensteerSemanticRuntime {
     input?: OpensteerNetworkQueryInput,
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerNetworkQueryOutput>;
+  getNetworkDetail(
+    input: {
+      readonly recordId: string;
+    },
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerNetworkDetailOutput>;
+  replayNetwork(
+    input: OpensteerNetworkReplayInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerNetworkReplayOutput>;
   tagNetwork(
     input: OpensteerNetworkTagInput,
     options?: OpensteerRuntimeOperationOptions,
@@ -268,22 +287,21 @@ export interface OpensteerSemanticRuntime {
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerCaptchaSolveOutput>;
   getCookies(
-    input?: {
-      readonly urls?: readonly string[];
-    },
+    input?: OpensteerCookieQueryInput,
     options?: OpensteerRuntimeOperationOptions,
-  ): Promise<readonly CookieRecord[]>;
+  ): Promise<OpensteerCookieQueryOutput>;
   getStorageSnapshot(
-    input?: {
-      readonly includeSessionStorage?: boolean;
-      readonly includeIndexedDb?: boolean;
-    },
+    input?: OpensteerStorageQueryInput,
     options?: OpensteerRuntimeOperationOptions,
-  ): Promise<StorageSnapshot>;
-  rawRequest(
-    input: OpensteerRawRequestInput,
+  ): Promise<OpensteerStorageQueryOutput>;
+  getBrowserState(
+    input?: OpensteerStateQueryInput,
     options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerRawRequestOutput>;
+  ): Promise<OpensteerStateQueryOutput>;
+  fetch(
+    input: OpensteerSessionFetchInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerSessionFetchOutput>;
   inferRequestPlan(
     input: OpensteerInferRequestPlanInput,
     options?: OpensteerRuntimeOperationOptions,
@@ -336,6 +354,10 @@ export interface OpensteerSemanticRuntime {
     input: OpensteerRequestExecuteInput,
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerRequestExecuteOutput>;
+  rawRequest(
+    input: OpensteerRawRequestInput,
+    options?: OpensteerRuntimeOperationOptions,
+  ): Promise<OpensteerRawRequestOutput>;
   computerExecute(
     input: OpensteerComputerExecuteInput,
     options?: OpensteerRuntimeOperationOptions,

@@ -1,400 +1,170 @@
-# Request Plan Pipeline
+# Network Discovery Workflow
 
-If you haven't decided whether this workflow applies, see the task triage in SKILL.md.
+Use this workflow when the task is to understand, reverse-engineer, or reuse a site API.
 
-## The Deliverable
+The deliverable is not a request-plan registry entry. The deliverable is working TypeScript that uses `session.fetch()` or other session primitives.
 
-The deliverable is a **persisted request plan** that works via `request.execute`. `rawRequest()` is a diagnostic probe — its output is never the final answer. You are not done until `request.execute` returns valid data from a stored plan.
+## Core Principles
 
-## Critical Rules
+1. Capture real browser traffic instead of guessing request shapes.
+2. Give the agent clean summaries, not huge raw dumps.
+3. Let the agent reason about URLs, params, auth chains, and code.
+4. Use Opensteer only for the pieces normal code cannot reproduce reliably: browser traffic, browser state, and browser-grade transports.
 
-1. Action capture is opt-in. `goto()`, `click()`, `input()`, `scroll()`, and `hover()` only persist network records when you pass `captureNetwork`.
-2. `queryNetwork()` always reads from the persisted store. There is no `source` parameter. Do NOT pass `source: "saved"` or `source: "live"`.
-3. `tagNetwork()` labels already-persisted records. It does NOT save anything. Use it to organize captures for later lookup by tag.
-4. `clearNetwork()` permanently removes records with tombstoning. Cleared records cannot be resurrected by late-arriving browser events.
-5. `waitForNetwork()` watches for NEW records only. It snapshots existing records and polls for ones that were not present at the start. It does NOT return historical matches.
+## Workflow
 
-## Transport Selection
+### 1. Capture
 
-- `direct-http`: the request is replayable without a browser.
-- `context-http`: browser session state matters, but the request does not need to execute inside page JavaScript.
-- `page-http`: the request must execute inside the live page JavaScript world.
-- `session-http`: use a stored request plan that still depends on a live browser session.
-
-When in doubt, start with browser-backed capture first. Opensteer treats browser-backed replay as a first-class path, not a fallback.
-
-## Pipeline Phases
-
-Work through each phase in order. Do NOT skip phases. Each phase has exit criteria — verify them before proceeding.
-
-### Phase 1: Capture
-
-Trigger the real browser action that causes the request. Name the capture.
+Open the site and perform the real browser action that triggers the request.
 
 ```bash
-opensteer open https://example.com/app --workspace demo
-opensteer run page.goto --workspace demo \
-  --input-json '{"url":"https://example.com/app","captureNetwork":"page-load"}'
+opensteer open https://example.com --workspace demo
+opensteer goto https://example.com/search --workspace demo --capture-network page-load
+opensteer input --workspace demo --description "search input" --text "laptop" --capture-network search
+opensteer click --workspace demo --description "search button" --capture-network search
 ```
 
-For interactions that trigger API calls (search, filter, load-more):
+Use a meaningful capture label. It becomes the easiest way to narrow the request set later.
+
+### 2. Discover
+
+Scan the capture with `network query`.
 
 ```bash
-opensteer run dom.click --workspace demo \
-  --input-json '{"target":{"kind":"description","description":"load products"},"captureNetwork":"products-load"}'
+opensteer network query --workspace demo --capture search --json
+opensteer network query --workspace demo --capture search --hostname api.example.com
+opensteer network query --workspace demo --capture search --url search --limit 20
 ```
 
-**EXIT CRITERIA:** You have at least one named capture. If `queryNetwork` returns empty after capture, see Error Recovery.
+Look for first-party requests that carry the data you want. Ignore static assets, analytics, and most third-party noise.
 
-### Phase 2: Discover
+Useful filters:
 
-Query captured traffic to isolate the API calls worth replaying. Ignore static assets, analytics, and third-party scripts.
+- `--capture <label>`
+- `--json`
+- `--url <substring>`
+- `--hostname <host>`
+- `--path <substring>`
+- `--method GET|POST|...`
+- `--status <code>`
+- `--before <recordId>`
+- `--after <recordId>`
+
+### 3. Inspect
+
+Pick a candidate record and inspect it deeply.
 
 ```bash
-opensteer run network.query --workspace demo \
-  --input-json '{"capture":"products-load","includeBodies":true,"limit":20}'
+opensteer network detail rec_123 --workspace demo
 ```
 
-Examine the results. Look for first-party JSON APIs — requests returning `application/json` with data relevant to the task.
+Read:
 
-If the first query is too broad, filter by hostname, path, or method:
+- request URL and method
+- request headers
+- cookies sent
+- request body preview
+- response headers
+- response body preview
+- GraphQL metadata when present
+- redirect chains when present
+
+### 4. Test
+
+Replay the captured request.
 
 ```bash
-opensteer run network.query --workspace demo \
-  --input-json '{"capture":"products-load","hostname":"api.example.com","method":"GET","includeBodies":true,"limit":10}'
+opensteer replay rec_123 --workspace demo
+opensteer replay rec_123 --workspace demo --query keyword=headphones --query count=10
+opensteer replay rec_123 --workspace demo --variables '{"keyword":"headphones"}'
 ```
 
-**EXIT CRITERIA:** You have identified at least one candidate API URL with its method, recordId, and response shape.
+`replay` automatically tries transports in order and tells you which one worked. That answer should directly inform SDK code:
 
-### Phase 3: Probe (Diagnostic Only)
+- `direct-http` -> likely `session.fetch()` default is enough
+- `matched-tls` -> likely needs TLS fingerprint matching
+- `page-http` -> may need a live page context
 
-`rawRequest()` is a diagnostic tool. Use it to determine:
-1. Which transport works (`direct-http` vs `context-http`)
-2. Whether the API returns the expected data shape
-3. Whether auth headers are actually required
+### 5. Trace Dependencies
 
-`rawRequest()` output is NOT the deliverable. Do NOT return rawRequest results to the user as the final answer. Always proceed to Phase 4.
-
-Test portability — try `direct-http` first:
+If replay fails or returns 401/403, trace what the request depends on.
 
 ```bash
-opensteer run request.raw --workspace demo \
-  --input-json '{"transport":"direct-http","url":"https://api.example.com/products","method":"GET"}'
+opensteer network query --workspace demo --before rec_123 --limit 50
+opensteer cookies --workspace demo --domain example.com
+opensteer storage --workspace demo --domain example.com
+opensteer state --workspace demo --domain example.com
 ```
 
-If `direct-http` returns 200, the API is portable. If it fails (403/401), try `context-http`:
+Use these tools to answer:
 
-```bash
-opensteer run request.raw --workspace demo \
-  --input-json '{"transport":"context-http","url":"https://api.example.com/products","method":"GET"}'
+- which cookies are present in the browser
+- which tokens live in localStorage or sessionStorage
+- whether hidden form fields or globals expose CSRF/nonces
+- which earlier requests set the relevant cookies or tokens
+
+### 6. Write Code
+
+Translate what you learned into plain TypeScript.
+
+```ts
+import { Opensteer } from "opensteer";
+
+const opensteer = new Opensteer({
+  workspace: "demo",
+  rootDir: process.cwd(),
+});
+
+async function ensureSession() {
+  const cookies = await opensteer.cookies("example.com");
+  if (cookies.has("session")) {
+    return;
+  }
+  await opensteer.goto("https://example.com");
+}
+
+export async function searchProducts(keyword: string) {
+  await ensureSession();
+
+  const response = await opensteer.fetch("https://api.example.com/search", {
+    query: { keyword, count: 24 },
+  });
+
+  return response.json();
+}
 ```
 
-**EXIT CRITERIA:** You know which transport works and have a successful response. Note the `recordId` from the probe response — you will use it in Phase 4.
+If `replay` showed a transport fallback was needed, carry that into `session.fetch()`:
 
-### Phase 4: Infer Plan
-
-Create a request plan from the probed record. Pass the `transport` you proved works.
-
-```bash
-opensteer run request-plan.infer --workspace demo \
-  --input-json '{"recordId":"<recordId-from-phase-3>","key":"products.search","version":"v1","transport":"direct-http"}'
+```ts
+const response = await opensteer.fetch("https://api.example.com/search", {
+  query: { keyword },
+  transport: "matched-tls",
+});
 ```
 
-If you proved `direct-http` works, always pass `transport: "direct-http"` so the plan is portable.
+## Common Cases
 
-If `inferRequestPlan` throws "registry record already exists", bump the version (e.g., `v2`).
+### GraphQL
 
-**EXIT CRITERIA:** Plan is persisted. You can verify with `request-plan.get`.
+- `network query` should surface the operation name next to the URL.
+- `network detail` should show operation type, name, variables, and whether the request looks persisted.
+- `replay --variables '{...}'` is the quickest way to test the same operation with new inputs.
 
-### Phase 5: Validate Auth Classification
+### Redirect / Auth Chains
 
-`inferRequestPlan` records auth metadata by observing headers on the captured request. This is **often wrong**. If the browser sent an `Authorization` header, the plan records `auth.strategy: "bearer-token"` even if the API works without auth.
+Use `network detail` on the failing request first. If it shows redirects or challenge notes, inspect the earlier chain with `--before`.
 
-**MANDATORY VALIDATION:**
+### Hidden Form Tokens
 
-1. Read the inferred plan:
+Use `state --domain example.com` when the request depends on hidden inputs or JS globals that do not show up cleanly in cookies/storage alone.
 
-```bash
-opensteer run request-plan.get --workspace demo \
-  --input-json '{"key":"products.search","version":"v1"}'
-```
+### Anti-Bot Protection
 
-2. Check the `auth` field in `payload`. If `auth` is absent or `undefined`, auth is not detected — skip to Phase 6.
+If `replay` says `direct-http` failed but a browser-grade transport succeeded, do not fight that with custom proxy code. Use the working transport in `session.fetch()`.
 
-3. If `auth.strategy` is set, test whether the API actually needs it. Run a raw request to the same URL with NO auth headers:
+## What Not To Do
 
-```bash
-opensteer run request.raw --workspace demo \
-  --input-json '{"transport":"direct-http","url":"<the-api-url>","method":"GET"}'
-```
-
-4. If it returns 200 without auth headers, auth is **spurious** — the browser attached a token the API doesn't enforce. Rewrite the plan with corrected auth:
-
-```bash
-opensteer run request-plan.write --workspace demo \
-  --input-json '{
-    "key":"products.search",
-    "version":"v1",
-    "tags":["products","search"],
-    "provenance":{"source":"manual","notes":"Auth removed — API is public, bearer token was incidental."},
-    "payload":{
-      ...existing payload with auth field removed...
-    }
-  }'
-```
-
-Copy the full existing `payload` from `request-plan.get`, remove or null out the `auth` field, and write it back.
-
-5. If the no-auth probe returns 401/403, auth IS required. Keep the auth classification and proceed. You will create an auth recipe in Phase 8 after testing the plan.
-
-**EXIT CRITERIA:** The plan's `auth` field accurately reflects whether auth is required.
-
-### Phase 6: Annotate Parameters
-
-`inferRequestPlan` dumps all query and body parameters into `defaultQuery`/`defaultBody` without distinguishing variable from fixed.
-
-1. Read the plan with `request-plan.get`.
-
-2. Examine each parameter in `defaultQuery`:
-   - **Variable:** values that change per invocation — search terms, page numbers, offsets, dates, user-specific IDs
-   - **Fixed:** values constant for this API — site keys, platform identifiers, API versions, channel strings
-
-3. Rewrite the plan with the `parameters` field annotating variable inputs:
-
-```bash
-opensteer run request-plan.write --workspace demo \
-  --input-json '{
-    "key":"products.search",
-    "version":"v1",
-    "payload":{
-      ...existing payload...,
-      "parameters":[
-        {"name":"keyword","in":"query","required":true,"description":"Search term"},
-        {"name":"count","in":"query","defaultValue":"24","description":"Results per page"},
-        {"name":"offset","in":"query","defaultValue":"0","description":"Pagination offset"}
-      ]
-    }
-  }'
-```
-
-Variable params remain in `defaultQuery` as initial values. The `parameters` field documents which ones a caller should override via `request.execute` input.
-
-**EXIT CRITERIA:** The plan's `parameters` field lists all variable inputs with descriptions.
-
-### Phase 7: Test Plan
-
-Execute the plan through `request.execute`, NOT `rawRequest`:
-
-```bash
-opensteer run request.execute --workspace demo \
-  --input-json '{"key":"products.search","version":"v1","query":{"keyword":"laptop","count":"10"}}'
-```
-
-**GATE:**
-- If `request.execute` returns valid data → proceed to Phase 9 (Done).
-- If `request.execute` returns 401/403 and Phase 5 confirmed auth is required → proceed to Phase 8 (Auth Recipe).
-- If `request.execute` fails with another error → see Error Recovery.
-
-### Phase 8: Auth Recipe (Conditional)
-
-Enter this phase ONLY if Phase 5 confirmed auth is genuinely required AND Phase 7 failed with 401/403.
-
-#### Step 8a: Discover Auth Endpoint
-
-Search captured traffic for OAuth, token, or login endpoints:
-
-```bash
-opensteer run network.query --workspace demo \
-  --input-json '{"path":"/oauth","includeBodies":true,"limit":10}'
-opensteer run network.query --workspace demo \
-  --input-json '{"path":"/token","includeBodies":true,"limit":10}'
-opensteer run network.query --workspace demo \
-  --input-json '{"path":"/auth","includeBodies":true,"limit":10}'
-```
-
-Examine responses to find the endpoint that returns an access token.
-
-#### Step 8b: Probe Auth Endpoint
-
-Test the auth endpoint with `request.raw`:
-
-```bash
-opensteer run request.raw --workspace demo \
-  --input-json '{
-    "transport":"direct-http",
-    "url":"https://example.com/api/oauth/token",
-    "method":"POST",
-    "body":{"json":{"grant_type":"client_credentials"}}
-  }'
-```
-
-Verify it returns a token. Note the response shape (e.g., `{ "access_token": "..." }`).
-
-#### Step 8c: Create Auth Recipe
-
-Write an auth recipe that acquires a fresh token and maps it to request headers:
-
-```bash
-opensteer run auth-recipe.write --workspace demo \
-  --input-json '{
-    "key":"example.auth",
-    "version":"v1",
-    "payload":{
-      "description":"Acquire bearer token for example.com API",
-      "steps":[
-        {
-          "kind":"directRequest",
-          "request":{
-            "url":"https://example.com/api/oauth/token",
-            "transport":"direct-http",
-            "method":"POST",
-            "body":{"json":{"grant_type":"client_credentials"}}
-          },
-          "capture":{
-            "bodyJsonPointer":{"pointer":"/access_token","saveAs":"token"}
-          }
-        }
-      ],
-      "outputs":{
-        "headers":{"Authorization":"Bearer {{token}}"}
-      }
-    }
-  }'
-```
-
-**Recipe step types you can use:**
-- `directRequest` — HTTP request outside the browser (portable, no session needed)
-- `sessionRequest` — HTTP request using browser session state (cookies, etc.)
-- `request` — generic request step
-- `readCookie` — read a browser cookie value, `saveAs` a variable
-- `readStorage` — read localStorage/sessionStorage, `saveAs` a variable
-- `evaluate` — run JavaScript in the page, `saveAs` a variable
-- `waitForNetwork` — wait for a network request matching filters
-- `waitForCookie` — wait for a cookie to appear
-- `goto` — navigate to a URL (e.g., trigger a login page)
-- `solveCaptcha` — solve a CAPTCHA challenge
-
-Each step can have a `capture` field to extract values from the response. The `outputs` field maps captured variables to `headers`, `query`, `params`, or `body` overrides applied to the request plan at execution time.
-
-#### Step 8d: Bind Auth Recipe to Plan
-
-Update the plan to reference the auth recipe:
-
-```bash
-opensteer run request-plan.get --workspace demo \
-  --input-json '{"key":"products.search","version":"v1"}'
-```
-
-Read the current payload, then write it back with the `auth.recipe` binding:
-
-```bash
-opensteer run request-plan.write --workspace demo \
-  --input-json '{
-    "key":"products.search",
-    "version":"v1",
-    "payload":{
-      ...existing payload...,
-      "auth":{
-        "strategy":"bearer-token",
-        "recipe":{"key":"example.auth","version":"v1"},
-        "failurePolicy":{"on":"status","status":"401","action":"recover"}
-      }
-    }
-  }'
-```
-
-The `failurePolicy` tells the plan to automatically re-run the auth recipe when a 401 is received.
-
-#### Step 8e: Test Authenticated Plan
-
-```bash
-opensteer run request.execute --workspace demo \
-  --input-json '{"key":"products.search","version":"v1","query":{"keyword":"laptop"}}'
-```
-
-The auth recipe fires automatically before the request. If it still fails, inspect the token response shape and fix the recipe.
-
-**EXIT CRITERIA:** `request.execute` returns valid data with the auth recipe attached.
-
-### Phase 9: Done
-
-Close the browser session:
-
-```bash
-opensteer close --workspace demo
-```
-
-The plan persists in the workspace registry and (if cloud mode) in Convex. Future callers can replay it with `request.execute` without opening a browser.
-
-## Error Recovery
-
-### `request.execute` returns 400 Bad Request
-
-1. Read the plan: `request-plan.get`
-2. Compare the plan's `defaultQuery`, `defaultBody`, and `defaultHeaders` against the original captured request from Phase 2
-3. Identify the discrepancy — missing required parameter, wrong content-type, malformed body
-4. Fix the plan with `request-plan.write`
-5. Re-test with `request.execute`
-6. If still failing after 2 fix attempts, use `request.raw` to isolate which specific parameter causes the 400 — remove params one at a time
-
-### `request.execute` returns 401/403 Unauthorized
-
-1. Was auth classification validated in Phase 5? If not, go back to Phase 5.
-2. If auth is confirmed needed, enter Phase 8 (Auth Recipe).
-3. If an auth recipe exists but fails, inspect the token response — the token may have expired, the scope may be wrong, or the grant type may differ.
-
-### `request.execute` returns 404 Not Found
-
-1. The API path may have changed since capture. Re-capture traffic (Phase 1) and re-discover (Phase 2).
-2. Check if the URL uses path parameters that were hardcoded during inference. These may need to be templated.
-
-### `request.execute` returns 500 Server Error
-
-This is the API server's problem, not a plan problem. Retry once. If persistent, document and report to the user.
-
-### `inferRequestPlan` throws "registry record already exists"
-
-The key+version combination is already registered. Bump the version string (e.g., `v1` → `v2`).
-
-### `queryNetwork()` returns empty records
-
-- Verify `captureNetwork` was set on the action that triggered the request (not on `open()`).
-- Re-trigger the action with `captureNetwork`. Records are auto-persisted on actions that opt in.
-- Broaden filters: try removing `tag` and querying by `hostname` or `path` instead.
-- Check that the request actually fired — some SPAs lazy-load data or use WebSocket instead of HTTP.
-
-### `rawRequest()` returns non-200
-
-This is diagnostic information. Use it to decide transport and debug, not as a final answer.
-- If `direct-http` fails with 403/401: the API requires session state. Try `context-http`.
-- If `context-http` fails: the API may require specific cookies or tokens. Check for auth endpoints in captured traffic.
-- If the response body is empty: decode `response.body.data` with `Buffer.from(data, "base64").toString("utf8")` — the parsed `data` field may not be populated.
-
-### `waitForNetwork()` times out
-
-- `waitForNetwork()` only matches records that appear AFTER the call starts. If the request already fired, use `queryNetwork()` instead.
-- Ensure the triggering action happens AFTER calling `waitForNetwork()`.
-
-## Input Formats
-
-`rawRequest` and recipe steps expect specific shapes:
-
-- `headers`: array of `[{ name, value }]`, not `{ key: value }`. Exception: recipe step `request` fields accept `{ key: value }` objects.
-- `body`: one of `{ json: { ... } }`, `{ text: "..." }`, or `{ base64: "..." }`. Not raw strings.
-- `request.execute` input includes `key` inside the JSON object. The SDK convenience wrapper `opensteer.request(key, input)` adds that for you.
-
-## Practical Guidance
-
-Mandatory steps:
-- MUST use `goto({ url, captureNetwork })` to name navigation capture. `captureNetwork` is NOT supported on `open()`.
-- MUST query by capture first, then query all traffic to catch async requests.
-- MUST probe every discovered first-party API with transport tests. Do NOT just log URLs.
-- The deliverable is a persisted plan. `rawRequest()` output is never the final answer.
-
-Common mistakes:
-- Stopping at `rawRequest` output and returning it to the user. Always proceed to `inferRequestPlan` and `request.execute`.
-- Trusting inferred auth metadata without validation. Always run Phase 5.
-- Passing headers as `{key: value}` to `rawRequest`. MUST use `[{name, value}]` arrays.
-- Passing body as a raw string to `rawRequest`. MUST wrap in `{json: {...}}`, `{text: "..."}`, or `{base64: "..."}`.
-- Skipping parameter annotation. Variable params should be documented in the plan's `parameters` field.
-- Not closing the browser after completing the pipeline. Always run `opensteer close` when done.
+- Do not stop at a captured record summary when the user asked for reusable code.
+- Do not build a custom browser bridge or raw Playwright CDP client if Opensteer already captured the request.
+- Do not force a rigid request-plan abstraction on top of code the agent can already write.

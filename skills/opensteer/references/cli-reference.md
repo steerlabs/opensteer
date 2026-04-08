@@ -125,14 +125,17 @@ opensteer browser delete --workspace github-sync
 ## Browser Modes
 
 - `persistent`: default with `--workspace`. Browser state lives in the workspace.
-- `temporary`: isolated browser state for the current run.
-- `attach`: connect to a running Chromium browser.
+- `temporary`: default without `--workspace`. Browser state is isolated to the current run.
+- `attach`: connect to a running Chromium browser with `--attach-endpoint`.
+
+The CLI does not expose a browser-mode flag. `--workspace` determines persistent vs temporary mode, and `--attach-endpoint` switches to attach mode.
 
 ```bash
-opensteer open https://example.com --workspace demo --browser temporary
+opensteer open https://example.com
+opensteer open https://example.com --workspace demo
 opensteer browser discover
 opensteer browser inspect --attach-endpoint ws://127.0.0.1:9222/devtools/browser/abc
-opensteer open https://example.com --workspace demo --browser attach --attach-endpoint ws://127.0.0.1:9222/devtools/browser/abc
+opensteer open https://example.com --workspace demo --attach-endpoint ws://127.0.0.1:9222/devtools/browser/abc
 ```
 
 Common options:
@@ -142,7 +145,7 @@ Common options:
 - `--arg <value>` repeatable
 - `--timeout-ms <ms>`
 - `--context-json <json>`
-- `--fresh-tab true|false` for `--browser attach`
+- `--fresh-tab true|false` for attach mode
 
 ## Advanced Semantic Operations
 

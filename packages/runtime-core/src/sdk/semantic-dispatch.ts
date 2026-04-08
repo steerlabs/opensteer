@@ -62,6 +62,16 @@ export async function dispatchSemanticOperation(
         input as Parameters<OpensteerSemanticRuntime["queryNetwork"]>[0],
         options,
       );
+    case "network.detail":
+      return runtime.getNetworkDetail(
+        input as Parameters<OpensteerSemanticRuntime["getNetworkDetail"]>[0],
+        options,
+      );
+    case "network.replay":
+      return runtime.replayNetwork(
+        input as Parameters<OpensteerSemanticRuntime["replayNetwork"]>[0],
+        options,
+      );
     case "network.tag":
       return runtime.tagNetwork(
         input as Parameters<OpensteerSemanticRuntime["tagNetwork"]>[0],
@@ -167,6 +177,23 @@ export async function dispatchSemanticOperation(
         input as Parameters<OpensteerSemanticRuntime["getStorageSnapshot"]>[0],
         options,
       );
+    case "session.cookies":
+      return runtime.getCookies(
+        input as Parameters<OpensteerSemanticRuntime["getCookies"]>[0],
+        options,
+      );
+    case "session.storage":
+      return runtime.getStorageSnapshot(
+        input as Parameters<OpensteerSemanticRuntime["getStorageSnapshot"]>[0],
+        options,
+      );
+    case "session.state":
+      return runtime.getBrowserState(
+        input as Parameters<OpensteerSemanticRuntime["getBrowserState"]>[0],
+        options,
+      );
+    case "session.fetch":
+      return runtime.fetch(input as Parameters<OpensteerSemanticRuntime["fetch"]>[0], options);
     case "scripts.capture":
       return runtime.captureScripts(
         input as Parameters<OpensteerSemanticRuntime["captureScripts"]>[0],

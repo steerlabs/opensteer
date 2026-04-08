@@ -1,7 +1,9 @@
 import type { DocumentRef, PageRef } from "./identity.js";
 import {
   DEFAULT_ACTION_BOUNDARY_POLL_INTERVAL_MS,
+  DEFAULT_POST_LOAD_TRACKER_QUIET_WINDOW_MS,
   postLoadTrackerHasTrackedNetworkActivitySince,
+  postLoadTrackerIsSettled,
   type PostLoadTrackerSnapshot,
   type PostLoadTrackerState,
 } from "./post-load-tracker.js";
@@ -146,6 +148,15 @@ export async function waitForActionBoundary(
     }
 
     if (crossDocument) {
+      if (
+        !postLoadTrackerIsSettled(
+          await input.readTrackerState(),
+          DEFAULT_POST_LOAD_TRACKER_QUIET_WINDOW_MS,
+        )
+      ) {
+        await delay(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
+        continue;
+      }
       return {
         trigger,
         crossDocument,
