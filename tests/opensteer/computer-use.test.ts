@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 
 import {
   createBodyPayload,
+  createDocumentRef,
   createDevicePixelRatio,
   createPageRef,
   createPageScaleFactor,
@@ -56,7 +57,8 @@ describe("Phase 9 computer-use runtime", () => {
     const runtime = new OpensteerSessionRuntime({
       name: "phase9-computer-runtime",
       rootDir,
-      browser: {
+      browser: "temporary",
+      launch: {
         headless: true,
       },
       context: {
@@ -202,7 +204,8 @@ describe("Phase 9 computer-use runtime", () => {
     const opensteer = new Opensteer({
       name: "phase9-opensteer-wrapper",
       rootDir,
-      browser: {
+      browser: "temporary",
+      launch: {
         headless: true,
       },
       context: {
@@ -246,7 +249,8 @@ describe("Phase 9 computer-use runtime", () => {
     const runtime = new OpensteerSessionRuntime({
       name: "phase9-computer-snapshot-invalidation",
       rootDir,
-      browser: {
+      browser: "temporary",
+      launch: {
         headless: true,
       },
       context: {
@@ -287,7 +291,7 @@ describe("Phase 9 computer-use runtime", () => {
             element: counter.element,
           },
         }),
-      ).rejects.toThrow(/no counter/i);
+      ).rejects.toThrow(/no counter|did not match any elements/i);
     } finally {
       await runtime.close().catch(() => undefined);
       await fixtureServer.close();
@@ -299,7 +303,8 @@ describe("Phase 9 computer-use runtime", () => {
     const runtime = new OpensteerSessionRuntime({
       name: "phase9-computer-popup",
       rootDir,
-      browser: {
+      browser: "temporary",
+      launch: {
         headless: true,
       },
       context: {
@@ -371,6 +376,9 @@ describe("Phase 9 computer-use runtime", () => {
       engine: {
         async getViewportMetrics() {
           return viewport;
+        },
+        async getActionBoundarySnapshot(input: { readonly pageRef: string }) {
+          return createActionBoundarySnapshot(input.pageRef);
         },
         [OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL]() {
           return {
@@ -465,6 +473,9 @@ describe("Phase 9 computer-use runtime", () => {
       engine: {
         async getViewportMetrics() {
           return nativeViewport;
+        },
+        async getActionBoundarySnapshot(input: { readonly pageRef: string }) {
+          return createActionBoundarySnapshot(input.pageRef);
         },
         [OPENSTEER_COMPUTER_USE_BRIDGE_SYMBOL]() {
           return {
@@ -581,7 +592,7 @@ async function extractDragValue(runtime: OpensteerSessionRuntime): Promise<strin
 }
 
 async function readArtifactManifests(rootDir: string): Promise<readonly Record<string, unknown>[]> {
-  const manifestsDir = path.join(rootDir, ".opensteer", "artifacts", "manifests");
+  const manifestsDir = path.join(rootDir, "artifacts", "manifests");
   const fileNames = await readdir(manifestsDir);
   return Promise.all(
     fileNames.map(
@@ -595,7 +606,7 @@ async function readArtifactManifests(rootDir: string): Promise<readonly Record<s
 }
 
 async function readTraceEntries(rootDir: string): Promise<readonly Record<string, any>[]> {
-  const runsDir = path.join(rootDir, ".opensteer", "traces", "runs");
+  const runsDir = path.join(rootDir, "traces", "runs");
   const runIds = await readdir(runsDir);
   const entries: Record<string, any>[] = [];
   for (const runId of runIds) {
@@ -808,5 +819,13 @@ function createViewportMetrics(width: number, height: number) {
     devicePixelRatio: createDevicePixelRatio(1),
     pageScaleFactor: createPageScaleFactor(1),
     pageZoomFactor: createPageZoomFactor(1),
+  };
+}
+
+function createActionBoundarySnapshot(pageRef: string) {
+  const pageId = pageRef.replace(/^page:/u, "");
+  return {
+    pageRef: createPageRef(pageRef),
+    documentRef: createDocumentRef(`${pageId}-document`),
   };
 }

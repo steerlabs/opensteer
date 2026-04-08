@@ -488,7 +488,7 @@ describe("Phase 5 snapshot integration", () => {
 
         await dom.writeDescriptor({
           method: "dom.click",
-          name: "child shadow counter descriptor",
+          persist: "child shadow counter descriptor",
           path: replayPath,
           sourceUrl: resolved.snapshot.url,
         });
@@ -497,7 +497,7 @@ describe("Phase 5 snapshot integration", () => {
           pageRef: created.data.pageRef,
           target: {
             kind: "descriptor",
-            name: "child shadow counter descriptor",
+            persist: "child shadow counter descriptor",
           },
         });
 
@@ -1169,9 +1169,9 @@ describe("Phase 5 DOM runtime integration", () => {
         });
         const stored = await runtime.readDescriptor({
           method: "click",
-          name: "descriptor button",
+          persist: "descriptor button",
         });
-        expect(stored?.payload.name).toBe("descriptor button");
+        expect(stored?.payload.persist).toBe("descriptor button");
 
         await runtime.click({
           pageRef: created.data.pageRef,
@@ -1181,7 +1181,7 @@ describe("Phase 5 DOM runtime integration", () => {
 
         await runtime.click({
           pageRef: created.data.pageRef,
-          target: { kind: "descriptor", name: "descriptor button" },
+          target: { kind: "descriptor", persist: "descriptor button" },
         });
 
         const snapshot = await engine.getDomSnapshot({
@@ -1265,7 +1265,7 @@ describe("Phase 5 DOM runtime integration", () => {
 
         await retryRuntime.click({
           pageRef: created.data.pageRef,
-          target: { kind: "descriptor", name: "descriptor button" },
+          target: { kind: "descriptor", persist: "descriptor button" },
         });
 
         expect(inspectAttempts).toBeGreaterThan(1);
@@ -1404,7 +1404,7 @@ describe("Phase 5 DOM runtime integration", () => {
         const replayed = await runtime.resolveTarget({
           pageRef: created.data.pageRef,
           method: "click",
-          target: { kind: "descriptor", name: "shared button" },
+          target: { kind: "descriptor", persist: "shared button" },
         });
 
         expect(first.node.attributes.find((attribute) => attribute.name === "id")?.value).toBe(

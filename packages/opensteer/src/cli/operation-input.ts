@@ -113,7 +113,7 @@ export async function buildOperationInput(
       const direction = readSingleDirection(parsed.rest[0]);
       const amount = readRequiredPositiveInteger(parsed.rest[1], "scroll requires an amount.");
       const element = readOptionalNumber(parsed.rawOptions, "element");
-      const persist = readPersistName(parsed, "scroll");
+      const persist = readPersistKey(parsed, "scroll");
       const captureNetwork = readSingle(parsed.rawOptions, "capture-network");
       return {
         target:
@@ -136,7 +136,7 @@ export async function buildOperationInput(
       if (parsed.rest[0] === undefined) {
         throw new Error("extract requires a schema.");
       }
-      const persist = readExtractPersistName(parsed);
+      const persist = readExtractPersistKey(parsed);
       return {
         schema: parseRequiredJsonObjectArgument(joinRest(parsed.rest, 0), "extract schema"),
         ...(persist === undefined ? {} : { persist }),
@@ -363,7 +363,7 @@ function buildElementTargetInput(
     parsed.rest[0],
     `${verb} requires an element number.`,
   );
-  const persist = readPersistName(parsed, verb);
+  const persist = readPersistKey(parsed, verb);
   const captureNetwork = readSingle(parsed.rawOptions, "capture-network");
   return {
     target: {
@@ -597,7 +597,7 @@ function readKeyModifiers(
   return [...new Set(modifiers)] as readonly ("Shift" | "Control" | "Alt" | "Meta")[];
 }
 
-function readPersistName(
+function readPersistKey(
   parsed: ParsedCommandLine,
   verb: "click" | "hover" | "input" | "scroll",
 ): string | undefined {
@@ -606,21 +606,21 @@ function readPersistName(
     return undefined;
   }
   if (value === "true" || value === "false") {
-    throw new Error(`${verb} requires "--persist <name>" when using --persist.`);
+    throw new Error(`${verb} requires "--persist <key>" when using --persist.`);
   }
   if (verb === "scroll" && readOptionalNumber(parsed.rawOptions, "element") === undefined) {
-    throw new Error('scroll requires "--element <n>" when using "--persist <name>".');
+    throw new Error('scroll requires "--element <n>" when using "--persist <key>".');
   }
   return value;
 }
 
-function readExtractPersistName(parsed: ParsedCommandLine): string | undefined {
+function readExtractPersistKey(parsed: ParsedCommandLine): string | undefined {
   const value = readSingle(parsed.rawOptions, "persist");
   if (value === undefined) {
     return undefined;
   }
   if (value === "true" || value === "false") {
-    throw new Error('extract requires "--persist <name>" when using --persist.');
+    throw new Error('extract requires "--persist <key>" when using --persist.');
   }
   return value;
 }

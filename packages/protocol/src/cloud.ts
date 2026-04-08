@@ -233,8 +233,8 @@ export interface CloudSessionRecordingState {
 export interface CloudSelectorCacheImportEntry {
   readonly workspace: string;
   readonly method: string;
-  readonly nameHash: string;
-  readonly name?: string;
+  readonly persistHash: string;
+  readonly persist?: string;
   readonly path: unknown;
   readonly schemaHash?: string;
   readonly createdAt: number;

@@ -10,8 +10,8 @@ opensteer snapshot action --workspace demo
 opensteer input 5 laptop --workspace demo --persist "search input" --capture-network search
 opensteer click 7 --workspace demo --persist "search button" --capture-network search
 opensteer snapshot extraction --workspace demo
-opensteer extract "search results" --workspace demo \
-  --schema '{"items":[{"name":{"element":13},"price":{"element":14}},{"name":{"element":22},"price":{"element":23}}]}'
+opensteer extract '{"items":[{"name":{"element":13},"price":{"element":14}},{"name":{"element":22},"price":{"element":23}}]}' \
+  --workspace demo --persist "search results"
 opensteer close --workspace demo
 ```
 
@@ -47,13 +47,14 @@ opensteer hover 7 --workspace demo --persist "primary button"
 opensteer input 5 "search term" --workspace demo --persist "search input" --press-enter
 opensteer scroll down 400 --workspace demo
 opensteer scroll down 400 --workspace demo --element 12 --persist "results list"
-opensteer extract "page summary" --workspace demo --schema '{"title":{"element":3},"url":{"source":"current_url"}}'
+opensteer extract '{"title":{"element":3},"url":{"source":"current_url"}}' --workspace demo \
+  --persist "page summary"
 ```
 
 Rules:
 
-- `--persist` caches DOM action targets by name.
-- `extract <description>` uses `description` because extraction descriptors are named by description.
+- `--persist` caches reusable DOM targets and extraction descriptors by persist key.
+- `extract <schema> [--persist <key>]` accepts the schema positionally and optionally saves it for replay.
 - There is no CLI `--selector`, `--description` target flag, `--text`, or `--input-json`.
 
 ### Network Discovery
