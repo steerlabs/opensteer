@@ -119,9 +119,7 @@ export async function runOpensteerSkillsInstaller(
   };
 
   const useGitHub = await deps.checkGitHubReachable();
-  const skillSourcePath = useGitHub
-    ? OPENSTEER_GITHUB_SOURCE
-    : deps.resolveLocalSkillSourcePath();
+  const skillSourcePath = useGitHub ? OPENSTEER_GITHUB_SOURCE : deps.resolveLocalSkillSourcePath();
 
   const invocation = createOpensteerSkillsInvocation({
     options,

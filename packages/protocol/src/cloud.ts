@@ -79,12 +79,7 @@ export const cloudSessionStatuses = [
 
 export type CloudSessionStatus = (typeof cloudSessionStatuses)[number];
 
-export const cloudSessionRecordingStatuses = [
-  "idle",
-  "recording",
-  "completed",
-  "failed",
-] as const;
+export const cloudSessionRecordingStatuses = ["idle", "recording", "completed", "failed"] as const;
 
 export type CloudSessionRecordingStatus = (typeof cloudSessionRecordingStatuses)[number];
 

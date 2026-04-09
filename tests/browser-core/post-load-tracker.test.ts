@@ -148,7 +148,9 @@ describe("post-load tracker", () => {
         }
         set.add(listener);
       },
-      setTimeout: (_callback: (...args: unknown[]) => unknown, _delay?: number) => ({ callback: _callback }),
+      setTimeout: (_callback: (...args: unknown[]) => unknown, _delay?: number) => ({
+        callback: _callback,
+      }),
       clearTimeout: () => undefined,
       globalThis: undefined as unknown,
     });

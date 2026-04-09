@@ -37,11 +37,7 @@ const emitProcessWarning = process.emitWarning.bind(process);
 
 process.emitWarning = ((warning: string | Error, ...args: unknown[]) => {
   const name =
-    warning instanceof Error
-      ? warning.name
-      : typeof args[0] === "string"
-        ? args[0]
-        : undefined;
+    warning instanceof Error ? warning.name : typeof args[0] === "string" ? args[0] : undefined;
   const message = warning instanceof Error ? warning.message : warning;
   if (
     name === "ExperimentalWarning" &&
@@ -110,9 +106,7 @@ async function main(): Promise<void> {
   }
 
   if (parsed.options.workspace === undefined) {
-    throw new Error(
-      'Stateful commands require "--workspace <id>" or OPENSTEER_WORKSPACE.',
-    );
+    throw new Error('Stateful commands require "--workspace <id>" or OPENSTEER_WORKSPACE.');
   }
 
   const { engineName, provider, runtimeProvider } = resolveCliRuntimeSelection(parsed);
@@ -157,7 +151,9 @@ async function handleExecCommand(parsed: ParsedCommandLine): Promise<void> {
   }
   const expression = parsed.rest.join(" ");
   if (!expression) {
-    throw new Error("exec requires an expression. Example: exec \"await this.evaluate('document.title')\"");
+    throw new Error(
+      "exec requires an expression. Example: exec \"await this.evaluate('document.title')\"",
+    );
   }
 
   const { engineName, runtimeProvider } = resolveCliRuntimeSelection(parsed);

@@ -50,9 +50,7 @@ const readOnlyOperations = new Set<OpensteerSemanticOperationName>([
   "session.state",
 ]);
 
-const destructiveOperations = new Set<OpensteerSemanticOperationName>([
-  "session.close",
-]);
+const destructiveOperations = new Set<OpensteerSemanticOperationName>(["session.close"]);
 
 function toolNameFromOperation(operation: OpensteerSemanticOperationName): string {
   return `opensteer_${operation.replaceAll(".", "_").replaceAll("-", "_")}`;

@@ -139,7 +139,9 @@ describe.sequential("recorder browser script", () => {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
       response.setHeader("content-type", "text/html; charset=utf-8");
       if (url.pathname === "/" || url.pathname === "/next" || url.pathname === "/popup") {
-        response.end(`<!doctype html><html lang="en"><body><main>${url.pathname}</main></body></html>`);
+        response.end(
+          `<!doctype html><html lang="en"><body><main>${url.pathname}</main></body></html>`,
+        );
         return;
       }
       response.statusCode = 404;
@@ -206,7 +208,9 @@ describe.sequential("recorder browser script", () => {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
       response.setHeader("content-type", "text/html; charset=utf-8");
       if (url.pathname === "/" || url.pathname === "/step1" || url.pathname === "/step2") {
-        response.end(`<!doctype html><html lang="en"><body><main>${url.pathname}</main></body></html>`);
+        response.end(
+          `<!doctype html><html lang="en"><body><main>${url.pathname}</main></body></html>`,
+        );
         return;
       }
       response.statusCode = 404;
@@ -277,8 +281,9 @@ describe.sequential("recorder browser script", () => {
       } | null;
 
       expect(drained?.url).toBe(`${baseUrl}/`);
-      expect(drained?.events.some((event) => event.kind === "go-back" && event.url === `${baseUrl}/`))
-        .toBe(true);
+      expect(
+        drained?.events.some((event) => event.kind === "go-back" && event.url === `${baseUrl}/`),
+      ).toBe(true);
     } finally {
       await opensteer.close().catch(() => undefined);
       server.close();
