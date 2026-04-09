@@ -40,6 +40,45 @@ describe("package manifest utils", () => {
     });
   });
 
+  test("preserves explicit workspace semver ranges during rewrite", () => {
+    const manifest = {
+      dependencies: {
+        "@opensteer/runtime-core": "workspace:^0.1.7",
+        "@opensteer/browser-core": "workspace:~0.7.7",
+        "@opensteer/protocol": "workspace:0.7.7",
+      },
+    };
+
+    const rewritten = rewriteWorkspaceProtocolSpecifiers(manifest, {
+      "@opensteer/runtime-core": "0.1.7",
+      "@opensteer/browser-core": "0.7.7",
+      "@opensteer/protocol": "0.7.7",
+    });
+
+    expect(rewritten).toEqual({
+      dependencies: {
+        "@opensteer/runtime-core": "^0.1.7",
+        "@opensteer/browser-core": "~0.7.7",
+        "@opensteer/protocol": "0.7.7",
+      },
+    });
+  });
+
+  test("rejects unsupported alias workspace specifiers", () => {
+    expect(() =>
+      rewriteWorkspaceProtocolSpecifiers(
+        {
+          dependencies: {
+            "@opensteer/runtime-core": "workspace:@opensteer/runtime-core@*",
+          },
+        },
+        {
+          "@opensteer/runtime-core": "0.1.7",
+        },
+      ),
+    ).toThrow('Unsupported workspace protocol specifier "workspace:@opensteer/runtime-core@*".');
+  });
+
   test("collects workspace protocol specifiers across dependency sections", () => {
     expect(
       collectWorkspaceProtocolSpecifiers({

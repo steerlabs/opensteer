@@ -106,6 +106,9 @@ function isDependencyMap(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+// Mirrors pnpm publish/pack rewriting for direct version and semver-range forms.
+// We intentionally reject alias and relative-path workspace specs here because
+// the runtime artifact builder only rewrites direct installable registry ranges.
 function resolveWorkspaceProtocolSpecifier(specifier, packageVersion) {
   const workspaceRange = specifier.slice("workspace:".length).trim();
   if (workspaceRange === "" || workspaceRange === "*") {
@@ -114,12 +117,18 @@ function resolveWorkspaceProtocolSpecifier(specifier, packageVersion) {
   if (workspaceRange === "^" || workspaceRange === "~") {
     return `${workspaceRange}${packageVersion}`;
   }
-  if (workspaceRange === packageVersion) {
-    return packageVersion;
-  }
-  if (workspaceRange === `^${packageVersion}` || workspaceRange === `~${packageVersion}`) {
+
+  if (isWorkspacePublishRange(workspaceRange)) {
     return workspaceRange;
   }
 
   throw new Error(`Unsupported workspace protocol specifier "${specifier}".`);
+}
+
+function isWorkspacePublishRange(workspaceRange) {
+  if (workspaceRange.includes("/") || workspaceRange.includes("@")) {
+    return false;
+  }
+
+  return /^(?:<=|>=|[~^<>=])?\d/.test(workspaceRange);
 }
