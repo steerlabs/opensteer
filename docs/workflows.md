@@ -14,10 +14,10 @@ Opensteer’s default workflow is discovery first, then plain code.
 2. Check `cookies()`, `storage()`, or `state()` when auth or browser state matters.
 3. Use `network.query({ before, after })` to trace dependencies.
 
-## 3. Replay
+## 3. Probe
 
-1. Use `network.replay(recordId)` to confirm the captured request is reproducible.
-2. Let replay auto-select the transport and inspect which transport succeeded.
+1. Use `network.detail(recordId, { probe: true })` to inspect transport viability for the captured request.
+2. Let the transport probe show which runtime transport is recommended before you write final code.
 
 ## 4. Codify
 

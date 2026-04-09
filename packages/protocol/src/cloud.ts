@@ -1,5 +1,7 @@
 import type { CookieRecord } from "@opensteer/browser-core";
 
+import type { NetworkQueryRecord } from "./network.js";
+
 export const cloudActionMethods = [
   "goto",
   "snapshot",
@@ -225,28 +227,6 @@ export interface CloudSessionRecordingState {
   readonly result?: CloudSessionRecordingResult;
 }
 
-export interface CloudSelectorCacheImportEntry {
-  readonly workspace: string;
-  readonly method: string;
-  readonly persistHash: string;
-  readonly persist?: string;
-  readonly path: unknown;
-  readonly schemaHash?: string;
-  readonly createdAt: number;
-  readonly updatedAt: number;
-}
-
-export interface CloudSelectorCacheImportRequest {
-  readonly entries: readonly CloudSelectorCacheImportEntry[];
-}
-
-export interface CloudSelectorCacheImportResponse {
-  readonly imported: number;
-  readonly inserted: number;
-  readonly updated: number;
-  readonly skipped: number;
-}
-
 export interface CloudRegistryImportEntry {
   readonly workspace: string;
   readonly recordId: string;
@@ -273,6 +253,18 @@ export interface CloudRequestPlanImportRequest {
 }
 
 export interface CloudRegistryImportResponse {
+  readonly imported: number;
+  readonly inserted: number;
+  readonly updated: number;
+  readonly skipped: number;
+}
+
+export interface CloudSavedNetworkImportRequest {
+  readonly workspace: string;
+  readonly entries: readonly NetworkQueryRecord[];
+}
+
+export interface CloudSavedNetworkImportResponse {
   readonly imported: number;
   readonly inserted: number;
   readonly updated: number;

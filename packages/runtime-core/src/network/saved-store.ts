@@ -47,6 +47,11 @@ export interface SavedNetworkStore {
   clear(input?: { readonly capture?: string; readonly tag?: string }): Promise<number>;
 }
 
+export interface IterateSavedNetworkRecordBatchesOptions {
+  readonly batchSize?: number;
+  readonly includeBodies?: boolean;
+}
+
 type SavedNetworkRow = {
   readonly record_id: string;
   readonly request_id: string;
@@ -104,13 +109,6 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
     options: SavedNetworkSaveOptions,
   ): Promise<number> {
     const database = await this.requireDatabase();
-    const readExisting = database.prepare(`
-        SELECT record_id
-        FROM saved_network_records
-        WHERE session_ref = @session_ref
-          AND page_ref_key = @page_ref_key
-          AND request_id = @request_id
-      `);
     const upsertRecord = database.prepare(buildSavedNetworkUpsertSql(options.bodyWriteMode));
     const insertTag = database.prepare(`
       INSERT OR IGNORE INTO saved_network_tags (record_id, tag)
@@ -122,16 +120,8 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
       for (const entry of records) {
         const url = new URL(entry.record.url);
         const pageRefKey = entry.record.pageRef ?? "";
-        const existing =
-          (readExisting.get({
-            session_ref: entry.record.sessionRef,
-            page_ref_key: pageRefKey,
-            request_id: entry.record.requestId,
-          }) as { readonly record_id: string } | undefined) ?? undefined;
-        const recordId = existing?.record_id ?? entry.recordId;
-
         upsertRecord.run({
-          record_id: recordId,
+          record_id: entry.recordId,
           request_id: entry.record.requestId,
           session_ref: entry.record.sessionRef,
           page_ref: entry.record.pageRef ?? null,
@@ -181,7 +171,7 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
         }
         for (const currentTag of tags) {
           const result = insertTag.run({
-            record_id: recordId,
+            record_id: entry.recordId,
             tag: currentTag,
           }) as { readonly changes?: number };
           savedCount += result.changes ?? 0;
@@ -297,6 +287,70 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
     });
   }
 
+  async *iterateBatches(
+    options: IterateSavedNetworkRecordBatchesOptions = {},
+  ): AsyncGenerator<readonly NetworkQueryRecord[]> {
+    const database = await this.requireDatabase();
+    const batchSize = Math.max(1, Math.min(options.batchSize ?? 500, 1000));
+    let cursor:
+      | {
+          readonly savedAt: number;
+          readonly recordId: string;
+        }
+      | undefined;
+
+    while (true) {
+      const rows = database
+        .prepare(
+          `
+      SELECT
+        r.*,
+        GROUP_CONCAT(t.tag, '${TAG_DELIMITER}') AS tags
+      FROM saved_network_records r
+      LEFT JOIN saved_network_tags t
+        ON t.record_id = r.record_id
+      ${
+        cursor === undefined
+          ? ""
+          : "WHERE r.saved_at > ? OR (r.saved_at = ? AND r.record_id > ?)"
+      }
+      GROUP BY r.record_id
+      ORDER BY r.saved_at ASC, r.record_id ASC
+      LIMIT ?
+    `,
+        )
+        .all(
+          ...(cursor === undefined
+            ? []
+            : [cursor.savedAt, cursor.savedAt, cursor.recordId]),
+          batchSize,
+        ) as SavedNetworkRow[];
+
+      if (rows.length === 0) {
+        return;
+      }
+
+      yield rows.map((row) => inflateSavedNetworkRow(row, options.includeBodies ?? true));
+
+      const lastRow = rows.at(-1);
+      if (lastRow === undefined) {
+        return;
+      }
+      cursor = {
+        savedAt: lastRow.saved_at,
+        recordId: lastRow.record_id,
+      };
+    }
+  }
+
+  close(): void {
+    if (this.database !== undefined) {
+      closeSqliteDatabase(this.database);
+      this.database = undefined;
+      this.databaseInitialization = undefined;
+    }
+  }
+
   private async requireDatabase(): Promise<NodeSqliteDatabaseSync> {
     if (this.database) {
       return this.database;
@@ -386,15 +440,6 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
         saved_at INTEGER NOT NULL
       );
 
-      CREATE UNIQUE INDEX IF NOT EXISTS saved_network_records_scope_request
-        ON saved_network_records (session_ref, page_ref_key, request_id);
-
-      CREATE INDEX IF NOT EXISTS saved_network_records_saved_at
-        ON saved_network_records (saved_at DESC);
-
-      CREATE INDEX IF NOT EXISTS saved_network_records_capture
-        ON saved_network_records (capture);
-
       CREATE TABLE IF NOT EXISTS saved_network_tags (
         record_id TEXT NOT NULL REFERENCES saved_network_records(record_id) ON DELETE CASCADE,
         tag TEXT NOT NULL,
@@ -403,6 +448,19 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
 
       CREATE INDEX IF NOT EXISTS saved_network_tags_tag
         ON saved_network_tags (tag);
+    `);
+    database.exec(`DROP INDEX IF EXISTS saved_network_records_scope_request`);
+    database.exec(`
+      CREATE INDEX IF NOT EXISTS saved_network_records_scope_request
+        ON saved_network_records (session_ref, page_ref_key, request_id)
+    `);
+    database.exec(`
+      CREATE INDEX IF NOT EXISTS saved_network_records_saved_at
+        ON saved_network_records (saved_at DESC)
+    `);
+    database.exec(`
+      CREATE INDEX IF NOT EXISTS saved_network_records_capture
+        ON saved_network_records (capture)
     `);
     this.ensureColumn(
       database,
@@ -767,4 +825,16 @@ function withSqliteTransaction<T>(database: NodeSqliteDatabaseSync, task: () => 
 
 export function createSavedNetworkStore(rootPath: string): SavedNetworkStore {
   return new SqliteSavedNetworkStore(rootPath);
+}
+
+export async function* iterateSavedNetworkRecordBatches(
+  rootPath: string,
+  options: IterateSavedNetworkRecordBatchesOptions = {},
+): AsyncGenerator<readonly NetworkQueryRecord[]> {
+  const store = new SqliteSavedNetworkStore(rootPath);
+  try {
+    yield* store.iterateBatches(options);
+  } finally {
+    store.close();
+  }
 }

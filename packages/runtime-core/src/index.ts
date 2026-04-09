@@ -126,3 +126,11 @@ export {
   FlowRecorderCollector,
   generateReplayScript,
 } from "./recorder/index.js";
+export type {
+  IterateSavedNetworkRecordBatchesOptions,
+  SavedNetworkBodyWriteMode,
+  SavedNetworkQueryInput,
+  SavedNetworkSaveOptions,
+  SavedNetworkStore,
+} from "./network/saved-store.js";
+export { createSavedNetworkStore, iterateSavedNetworkRecordBatches } from "./network/saved-store.js";

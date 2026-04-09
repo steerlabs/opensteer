@@ -63,6 +63,7 @@ import type {
   OpensteerCookieQueryInput,
   OpensteerCookieQueryOutput,
   OpensteerSessionGrant,
+  OpensteerSemanticOperationName,
   OpensteerStateQueryInput,
   OpensteerStateQueryOutput,
   OpensteerStorageQueryInput,
@@ -86,6 +87,12 @@ import {
   resolveFilesystemWorkspacePath,
   type FilesystemOpensteerWorkspace,
 } from "../root.js";
+import {
+  defaultPolicy,
+  runWithPolicyTimeout,
+  type OpensteerPolicy,
+  type TimeoutExecutionContext,
+} from "../policy/index.js";
 import type {
   OpensteerInterceptScriptOptions,
   OpensteerRouteOptions,
@@ -99,7 +106,7 @@ import type { OpensteerDisconnectableRuntime } from "../sdk/semantic-runtime.js"
 import { OpensteerCloudAutomationClient } from "./automation-client.js";
 import type { OpensteerCloudSessionCreateInput } from "./client.js";
 import { OpensteerCloudClient } from "./client.js";
-import { syncLocalRegistryToCloud } from "./registry-sync.js";
+import { syncLocalWorkspaceToCloud } from "./workspace-sync.js";
 
 const TEMPORARY_CLOUD_WORKSPACE_PREFIX = "opensteer-cloud-workspace-";
 
@@ -107,6 +114,7 @@ export interface CloudSessionProxyOptions {
   readonly rootDir?: string;
   readonly rootPath?: string;
   readonly workspace?: string;
+  readonly policy?: OpensteerPolicy;
   readonly cleanupRootOnClose?: boolean;
   readonly observability?: Partial<ObservabilityConfig>;
 }
@@ -128,15 +136,18 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
   private readonly cleanupRootOnClose: boolean;
   private readonly cloud: OpensteerCloudClient;
   private readonly observability: Partial<ObservabilityConfig> | undefined;
+  private readonly policy: OpensteerPolicy;
   private sessionId: string | undefined;
   private semanticGrant: OpensteerSessionGrant | undefined;
   private client: OpensteerSemanticRestClient | undefined;
   private automation: OpensteerCloudAutomationClient | undefined;
   private workspaceStore: FilesystemOpensteerWorkspace | undefined;
+  private syncWorkspaceOnClose = false;
 
   constructor(cloud: OpensteerCloudClient, options: CloudSessionProxyOptions = {}) {
     this.cloud = cloud;
     this.workspace = options.workspace;
+    this.policy = options.policy ?? defaultPolicy();
     this.observability = options.observability;
     this.rootPath =
       options.rootPath ??
@@ -150,14 +161,17 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
   }
 
   async open(input: OpensteerOpenInput = {}): Promise<OpensteerOpenOutput> {
-    await this.ensureSession({
-      ...(input.browser === undefined ? {} : { browser: input.browser }),
-      ...(input.launch === undefined ? {} : { launch: input.launch }),
-      ...(input.context === undefined ? {} : { context: input.context }),
-    });
-    return this.requireClient().invoke("session.open", {
+    return this.invokeSemanticOperation(
+      "session.open",
+      {
       ...(input.url === undefined ? {} : { url: input.url }),
-    });
+      },
+      {
+        ...(input.browser === undefined ? {} : { browser: input.browser }),
+        ...(input.launch === undefined ? {} : { launch: input.launch }),
+        ...(input.context === undefined ? {} : { context: input.context }),
+      },
+    );
   }
 
   async info(): Promise<OpensteerSessionInfo> {
@@ -219,149 +233,127 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
   }
 
   async listPages(input: OpensteerPageListInput = {}): Promise<OpensteerPageListOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("page.list", input);
+    return this.invokeSemanticOperation("page.list", input);
   }
 
   async newPage(input: OpensteerPageNewInput = {}): Promise<OpensteerPageNewOutput> {
-    await this.ensureSession();
-    return this.requireAutomation().invoke("page.new", input);
+    return this.invokeAutomationOperation("page.new", (automation) =>
+      automation.invoke("page.new", input),
+    );
   }
 
   async activatePage(input: OpensteerPageActivateInput): Promise<OpensteerPageActivateOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("page.activate", input);
+    return this.invokeSemanticOperation("page.activate", input);
   }
 
   async closePage(input: OpensteerPageCloseInput = {}): Promise<OpensteerPageCloseOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("page.close", input);
+    return this.invokeSemanticOperation("page.close", input);
   }
 
   async goto(input: OpensteerPageGotoInput): Promise<OpensteerPageGotoOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("page.goto", input);
+    return this.invokeSemanticOperation("page.goto", input);
   }
 
   async evaluate(input: OpensteerPageEvaluateInput): Promise<OpensteerPageEvaluateOutput> {
-    await this.ensureSession();
-    return this.requireAutomation().invoke("page.evaluate", input);
+    return this.invokeAutomationOperation("page.evaluate", (automation) =>
+      automation.invoke("page.evaluate", input),
+    );
   }
 
   async addInitScript(input: OpensteerAddInitScriptInput): Promise<OpensteerAddInitScriptOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("page.add-init-script", input);
+    return this.invokeSemanticOperation("page.add-init-script", input);
   }
 
   async snapshot(input: OpensteerPageSnapshotInput = {}): Promise<OpensteerPageSnapshotOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("page.snapshot", input);
+    return this.invokeSemanticOperation("page.snapshot", input);
   }
 
   async click(input: OpensteerDomClickInput): Promise<OpensteerActionResult> {
-    await this.ensureSession();
-    return this.requireClient().invoke("dom.click", input);
+    return this.invokeSemanticOperation("dom.click", input);
   }
 
   async hover(input: OpensteerDomHoverInput): Promise<OpensteerActionResult> {
-    await this.ensureSession();
-    return this.requireClient().invoke("dom.hover", input);
+    return this.invokeSemanticOperation("dom.hover", input);
   }
 
   async input(input: OpensteerDomInputInput): Promise<OpensteerActionResult> {
-    await this.ensureSession();
-    return this.requireClient().invoke("dom.input", input);
+    return this.invokeSemanticOperation("dom.input", input);
   }
 
   async scroll(input: OpensteerDomScrollInput): Promise<OpensteerActionResult> {
-    await this.ensureSession();
-    return this.requireClient().invoke("dom.scroll", input);
+    return this.invokeSemanticOperation("dom.scroll", input);
   }
 
   async extract(input: OpensteerDomExtractInput): Promise<OpensteerDomExtractOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("dom.extract", input);
+    return this.invokeSemanticOperation("dom.extract", input);
   }
 
   async queryNetwork(input: OpensteerNetworkQueryInput = {}): Promise<OpensteerNetworkQueryOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("network.query", input);
+    return this.invokeSemanticOperation("network.query", input);
   }
 
   async getNetworkDetail(
     input: OpensteerNetworkDetailInput,
   ): Promise<OpensteerNetworkDetailOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("network.detail", input);
+    return this.invokeSemanticOperation("network.detail", input);
   }
 
   async captureInteraction(
     input: OpensteerInteractionCaptureInput,
   ): Promise<OpensteerInteractionCaptureOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("interaction.capture", input);
+    return this.invokeSemanticOperation("interaction.capture", input);
   }
 
   async getInteraction(
     input: OpensteerInteractionGetInput,
   ): Promise<OpensteerInteractionGetOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("interaction.get", input);
+    return this.invokeSemanticOperation("interaction.get", input);
   }
 
   async diffInteraction(
     input: OpensteerInteractionDiffInput,
   ): Promise<OpensteerInteractionDiffOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("interaction.diff", input);
+    return this.invokeSemanticOperation("interaction.diff", input);
   }
 
   async replayInteraction(
     input: OpensteerInteractionReplayInput,
   ): Promise<OpensteerInteractionReplayOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("interaction.replay", input);
+    return this.invokeSemanticOperation("interaction.replay", input);
   }
 
   async captureScripts(
     input: OpensteerCaptureScriptsInput = {},
   ): Promise<OpensteerCaptureScriptsOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("scripts.capture", input);
+    return this.invokeSemanticOperation("scripts.capture", input);
   }
 
   async readArtifact(input: OpensteerArtifactReadInput): Promise<OpensteerArtifactReadOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("artifact.read", input);
+    return this.invokeSemanticOperation("artifact.read", input);
   }
 
   async beautifyScript(
     input: OpensteerScriptBeautifyInput,
   ): Promise<OpensteerScriptBeautifyOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("scripts.beautify", input);
+    return this.invokeSemanticOperation("scripts.beautify", input);
   }
 
   async deobfuscateScript(
     input: OpensteerScriptDeobfuscateInput,
   ): Promise<OpensteerScriptDeobfuscateOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("scripts.deobfuscate", input);
+    return this.invokeSemanticOperation("scripts.deobfuscate", input);
   }
 
   async sandboxScript(input: OpensteerScriptSandboxInput): Promise<OpensteerScriptSandboxOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("scripts.sandbox", input);
+    return this.invokeSemanticOperation("scripts.sandbox", input);
   }
 
   async solveCaptcha(input: OpensteerCaptchaSolveInput): Promise<OpensteerCaptchaSolveOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("captcha.solve", input);
+    return this.invokeSemanticOperation("captcha.solve", input);
   }
 
   async getCookies(input: OpensteerCookieQueryInput = {}): Promise<OpensteerCookieQueryOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("session.cookies", input);
+    return this.invokeSemanticOperation("session.cookies", input);
   }
 
   async route(input: OpensteerRouteOptions): Promise<OpensteerRouteRegistration> {
@@ -379,25 +371,21 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
   async getStorageSnapshot(
     input: OpensteerStorageQueryInput = {},
   ): Promise<OpensteerStorageQueryOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("session.storage", input);
+    return this.invokeSemanticOperation("session.storage", input);
   }
 
   async getBrowserState(input: OpensteerStateQueryInput = {}): Promise<OpensteerStateQueryOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("session.state", input);
+    return this.invokeSemanticOperation("session.state", input);
   }
 
   async fetch(input: OpensteerSessionFetchInput): Promise<OpensteerSessionFetchOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("session.fetch", input);
+    return this.invokeSemanticOperation("session.fetch", input);
   }
 
   async computerExecute(
     input: OpensteerComputerExecuteInput,
   ): Promise<OpensteerComputerExecuteOutput> {
-    await this.ensureSession();
-    return this.requireClient().invoke("computer.execute", input);
+    return this.invokeSemanticOperation("computer.execute", input);
   }
 
   async close(): Promise<OpensteerSessionCloseOutput> {
@@ -414,6 +402,15 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
             startedAt: Date.now(),
             updatedAt: Date.now(),
           });
+
+    let syncError: unknown;
+    if (this.syncWorkspaceOnClose) {
+      try {
+        await this.syncWorkspaceToCloud();
+      } catch (error) {
+        syncError = error;
+      }
+    }
 
     try {
       if (session !== undefined) {
@@ -436,6 +433,10 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
       }
     }
 
+    if (syncError !== undefined) {
+      throw syncError;
+    }
+
     return { closed: true };
   }
 
@@ -445,38 +446,50 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
       return;
     }
 
+    let syncError: unknown;
+    if (this.syncWorkspaceOnClose) {
+      try {
+        await this.syncWorkspaceToCloud();
+      } catch (error) {
+        syncError = error;
+      }
+    }
+
     this.client = undefined;
     await this.automation?.close().catch(() => undefined);
     this.automation = undefined;
     this.sessionId = undefined;
     this.semanticGrant = undefined;
+
+    if (syncError !== undefined) {
+      throw syncError;
+    }
   }
 
-  private async ensureSession(input: CloudSessionInitInput = {}): Promise<void> {
+  private async ensureSession(
+    input: CloudSessionInitInput = {},
+    timeout?: TimeoutExecutionContext,
+  ): Promise<void> {
     if (this.client) {
       return;
     }
 
     assertSupportedCloudBrowserMode(input.browser);
     const localCloud = this.shouldUseLocalCloudTransport();
+    this.syncWorkspaceOnClose = localCloud && this.workspace !== undefined;
     const browserProfile = resolveCloudBrowserProfile(this.cloud, input);
 
     const persisted = await this.loadPersistedSession();
-    if (persisted !== undefined && (await this.isReusableCloudSession(persisted.sessionId))) {
-      if (localCloud) {
-        void this.syncRegistryToCloud();
-      } else {
-        await this.syncRegistryToCloud();
-      }
+    if (
+      persisted !== undefined &&
+      (await this.isReusableCloudSession(persisted.sessionId, timeout))
+    ) {
+      await this.syncWorkspaceToCloud();
       this.bindClient(persisted);
       return;
     }
 
-    if (localCloud) {
-      void this.syncRegistryToCloud();
-    } else {
-      await this.syncRegistryToCloud();
-    }
+    await this.syncWorkspaceToCloud();
 
     const baseCreateInput: OpensteerCloudSessionCreateInput = {
       ...(this.workspace === undefined ? {} : { name: this.workspace }),
@@ -492,10 +505,12 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
             sourceType: "local-cloud",
             sourceRef: this.workspace,
             localWorkspaceRootPath: this.rootPath,
-            locality: "auto",
           }
         : baseCreateInput;
-    const session = await this.cloud.createSession(createInput);
+    const session = await this.cloud.createSession(createInput, {
+      signal: timeout?.signal,
+      timeoutMs: timeout?.remainingMs(),
+    });
     const record: PersistedCloudSessionRecord = {
       layout: "opensteer-session",
       version: 1,
@@ -509,15 +524,13 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     this.bindClient(record, session.initialGrants?.semantic);
   }
 
-  private async syncRegistryToCloud(): Promise<void> {
+  private async syncWorkspaceToCloud(): Promise<void> {
     if (this.workspace === undefined) {
       return;
     }
 
-    try {
-      const workspaceStore = await this.ensureWorkspaceStore();
-      await syncLocalRegistryToCloud(this.cloud, this.workspace, workspaceStore);
-    } catch {}
+    const workspaceStore = await this.ensureWorkspaceStore();
+    await syncLocalWorkspaceToCloud(this.cloud, this.workspace, workspaceStore);
   }
 
   private bindClient(
@@ -562,9 +575,15 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     await clearPersistedSessionRecord(this.rootPath, "cloud").catch(() => undefined);
   }
 
-  private async isReusableCloudSession(sessionId: string): Promise<boolean> {
+  private async isReusableCloudSession(
+    sessionId: string,
+    timeout?: TimeoutExecutionContext,
+  ): Promise<boolean> {
     try {
-      const session = await this.cloud.getSession(sessionId);
+      const session = await this.cloud.getSession(sessionId, {
+        signal: timeout?.signal,
+        timeoutMs: timeout?.remainingMs(),
+      });
       return session.status !== "closed" && session.status !== "failed";
     } catch (error) {
       if (isMissingCloudSessionError(error)) {
@@ -588,7 +607,10 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     return this.automation;
   }
 
-  private async ensureSemanticGrant(forceRefresh = false): Promise<OpensteerSessionGrant> {
+  private async ensureSemanticGrant(
+    forceRefresh = false,
+    timeout?: TimeoutExecutionContext,
+  ): Promise<OpensteerSessionGrant> {
     if (
       !forceRefresh &&
       this.semanticGrant?.kind === "semantic" &&
@@ -601,7 +623,10 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
       throw new Error("Cloud session has not been initialized.");
     }
 
-    const issued = await this.cloud.issueAccess(this.sessionId, ["semantic"]);
+    const issued = await this.cloud.issueAccess(this.sessionId, ["semantic"], {
+      signal: timeout?.signal,
+      timeoutMs: timeout?.remainingMs(),
+    });
     const grant = issued.grants.semantic;
     if (!grant || grant.transport !== "http") {
       throw new Error("cloud did not issue a valid semantic grant");
@@ -627,6 +652,39 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     } catch {
       return false;
     }
+  }
+
+  private async invokeSemanticOperation<TInput, TOutput>(
+    operation: OpensteerSemanticOperationName,
+    input: TInput,
+    sessionInit: CloudSessionInitInput = {},
+  ): Promise<TOutput> {
+    return this.runOperationWithPolicy(operation, async (timeout) => {
+      await this.ensureSession(sessionInit, timeout);
+      await this.ensureSemanticGrant(false, timeout);
+      return this.requireClient().invoke(operation, input, {
+        signal: timeout.signal,
+        timeoutMs: timeout.remainingMs(),
+      });
+    });
+  }
+
+  private async invokeAutomationOperation<TOutput>(
+    operation: OpensteerSemanticOperationName,
+    invoke: (automation: OpensteerCloudAutomationClient) => Promise<TOutput>,
+    sessionInit: CloudSessionInitInput = {},
+  ): Promise<TOutput> {
+    return this.runOperationWithPolicy(operation, async (timeout) => {
+      await this.ensureSession(sessionInit, timeout);
+      return invoke(this.requireAutomation());
+    });
+  }
+
+  private async runOperationWithPolicy<T>(
+    operation: OpensteerSemanticOperationName,
+    invoke: (timeout: TimeoutExecutionContext) => Promise<T>,
+  ): Promise<T> {
+    return runWithPolicyTimeout(this.policy.timeout, { operation }, invoke);
   }
 
   private shouldUseLocalCloudTransport(): boolean {

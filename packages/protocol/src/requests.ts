@@ -497,7 +497,12 @@ export interface OpensteerNetworkReplayOutput {
   readonly note?: string;
 }
 
-export type OpensteerSessionFetchTransport = "auto" | "direct" | "matched-tls" | "page";
+export type OpensteerSessionFetchTransport =
+  | "auto"
+  | "direct"
+  | "matched-tls"
+  | "context"
+  | "page";
 
 export interface OpensteerSessionFetchInput {
   readonly pageRef?: PageRef;
@@ -1652,7 +1657,7 @@ export const opensteerNetworkReplayInputSchema: JsonSchema = objectSchema(
 export let opensteerNetworkReplayOutputSchema: JsonSchema;
 
 const opensteerSessionFetchTransportSchema: JsonSchema = enumSchema(
-  ["auto", "direct", "matched-tls", "page"] as const,
+  ["auto", "direct", "matched-tls", "context", "page"] as const,
   {
     title: "OpensteerSessionFetchTransport",
   },

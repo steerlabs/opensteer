@@ -68,6 +68,7 @@ export function createOpensteerSemanticRuntime(
       ...(runtimeOptions.rootDir === undefined ? {} : { rootDir: runtimeOptions.rootDir }),
       ...(runtimeOptions.rootPath === undefined ? {} : { rootPath: runtimeOptions.rootPath }),
       ...(runtimeOptions.workspace === undefined ? {} : { workspace: runtimeOptions.workspace }),
+      ...(runtimeOptions.policy === undefined ? {} : { policy: runtimeOptions.policy }),
       ...(runtimeOptions.cleanupRootOnClose === undefined
         ? {}
         : { cleanupRootOnClose: runtimeOptions.cleanupRootOnClose }),

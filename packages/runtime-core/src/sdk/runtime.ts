@@ -262,6 +262,7 @@ interface PendingOperationEventCapture {
 
 interface RuntimeOperationOptions {
   readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
 }
 
 interface RuntimeBrowserBinding {
@@ -282,6 +283,9 @@ const MUTATION_CAPTURE_FINALIZE_TIMEOUT_MS = 5_000;
 const PERSISTED_NETWORK_FLUSH_TIMEOUT_MS = 5_000;
 const PENDING_OPERATION_EVENT_CAPTURE_LIMIT = 64;
 const PENDING_OPERATION_EVENT_CAPTURE_SKEW_MS = 1_000;
+const REPLAY_PROBE_MIN_ATTEMPT_TIMEOUT_MS = 3_000;
+const REPLAY_PROBE_MAX_ATTEMPT_TIMEOUT_MS = 15_000;
+const REPLAY_PROBE_POST_SUCCESS_ATTEMPT_TIMEOUT_MS = 5_000;
 
 interface ScriptTransformSource {
   readonly content: string;
@@ -1277,7 +1281,8 @@ export class OpensteerSessionRuntime {
     input: OpensteerNetworkQueryInput = {},
     options: RuntimeOperationOptions = {},
   ): Promise<OpensteerNetworkQueryOutput> {
-    assertValidSemanticOperationInput("network.query", input);
+    const normalizedInput = normalizeNetworkQueryInput(input);
+    assertValidSemanticOperationInput("network.query", normalizedInput);
 
     const root = await this.ensureRoot();
     const startedAt = Date.now();
@@ -1285,19 +1290,22 @@ export class OpensteerSessionRuntime {
       const output = await this.runWithOperationTimeout(
         "network.query",
         async (timeout) => {
-          await this.syncPersistedNetworkSelection(timeout, input, {
+          await this.syncPersistedNetworkSelection(timeout, normalizedInput, {
             includeBodies: false,
           });
           const rawRecords = await timeout.runStep(() =>
             root.registry.savedNetwork.query({
-              ...this.toSavedNetworkQueryInput(input),
-              limit: Math.max(input.limit ?? 50, 1000),
+              ...this.toSavedNetworkQueryInput(normalizedInput),
+              limit: Math.max(normalizedInput.limit ?? 50, 1000),
             }),
           );
-          const filtered = filterNetworkSummaryRecords(rawRecords, input);
+          const filtered = filterNetworkSummaryRecords(rawRecords, normalizedInput);
           const sorted = sortPersistedNetworkRecordsChronologically(filtered);
-          const sliced = sliceNetworkSummaryWindow(sorted, input);
-          const limited = sliced.slice(0, Math.max(1, Math.min(input.limit ?? 50, 200)));
+          const sliced = sliceNetworkSummaryWindow(sorted, normalizedInput);
+          const limited = sliced.slice(
+            0,
+            Math.max(1, Math.min(normalizedInput.limit ?? 50, 200)),
+          );
           const summaries = await this.buildNetworkSummaryRecords(limited, timeout);
           return {
             records: summaries,
@@ -1312,9 +1320,9 @@ export class OpensteerSessionRuntime {
         completedAt: Date.now(),
         outcome: "ok",
         data: {
-          limit: input.limit ?? 50,
-          ...(input.capture === undefined ? {} : { capture: input.capture }),
-          ...(input.json === true ? { json: true } : {}),
+          limit: normalizedInput.limit ?? 50,
+          ...(normalizedInput.capture === undefined ? {} : { capture: normalizedInput.capture }),
+          ...(normalizedInput.json === true ? { json: true } : {}),
           count: output.records.length,
         },
         context: buildRuntimeTraceContext({
@@ -1343,12 +1351,13 @@ export class OpensteerSessionRuntime {
     input: OpensteerNetworkDetailInput,
     options: RuntimeOperationOptions = {},
   ): Promise<OpensteerNetworkDetailOutput> {
+    const normalizedRecordId = normalizeNetworkRecordId(input.recordId);
     const startedAt = Date.now();
     try {
       const output = await this.runWithOperationTimeout(
         "network.detail",
         async (timeout) => {
-          const record = await this.resolveNetworkRecordByRecordId(input.recordId, timeout, {
+          const record = await this.resolveNetworkRecordByRecordId(normalizedRecordId, timeout, {
             includeBodies: true,
             redactSecretHeaders: false,
           });
@@ -1368,8 +1377,8 @@ export class OpensteerSessionRuntime {
         completedAt: Date.now(),
         outcome: "ok",
         data: {
-          recordId: input.recordId,
-          status: output.summary.status,
+          recordId: normalizedRecordId,
+          ...(output.summary.status === undefined ? {} : { status: output.summary.status }),
           url: output.summary.url,
         },
         context: buildRuntimeTraceContext({
@@ -3062,7 +3071,9 @@ export class OpensteerSessionRuntime {
           };
     const requestBody =
       shouldShowRequestBody(record.record.method) && record.record.requestBody !== undefined
-        ? buildStructuredBodyPreview(record.record.requestBody, record.record.requestHeaders)
+        ? buildStructuredBodyPreview(record.record.requestBody, record.record.requestHeaders, {
+            truncateData: false,
+          })
         : undefined;
     const responseBody =
       record.record.responseBody === undefined
@@ -3107,8 +3118,18 @@ export class OpensteerSessionRuntime {
 
     for (const transport of REPLAY_TRANSPORT_LADDER) {
       const attemptStartedAt = Date.now();
+      const attemptTimeoutMs = resolveReplayProbeAttemptTimeoutMs({
+        remainingMs: timeout.remainingMs(),
+        transportsRemaining: REPLAY_TRANSPORT_LADDER.length - attempts.length,
+        recommendedFound: recommended !== undefined,
+      });
       try {
-        const output = await this.executeReplayTransportAttempt(transport, request, timeout);
+        const output = await this.executeReplayTransportAttemptWithinBudget(
+          transport,
+          request,
+          timeout,
+          attemptTimeoutMs,
+        );
         const ok = matchesSuccessFingerprintFromProtocolResponse(output.response, fingerprint);
         attempts.push({
           transport,
@@ -3124,7 +3145,7 @@ export class OpensteerSessionRuntime {
           transport,
           ok: false,
           durationMs: Date.now() - attemptStartedAt,
-          error: normalizeRuntimeErrorMessage(error),
+          error: normalizeProbeTransportAttemptError(transport, error, attemptTimeoutMs),
         });
       }
     }
@@ -3388,6 +3409,35 @@ export class OpensteerSessionRuntime {
         return this.executeTransportRequestWithJournal(normalized, timeout, binding.sessionRef);
       }
     }
+  }
+
+  private async executeReplayTransportAttemptWithinBudget(
+    transport: TransportKind,
+    request: {
+      readonly method: string;
+      readonly url: string;
+      readonly headers?: readonly HeaderEntry[];
+      readonly body?: BrowserBodyPayload;
+      readonly followRedirects?: boolean;
+    },
+    timeout: TimeoutExecutionContext,
+    attemptTimeoutMs: number | undefined,
+  ): Promise<OpensteerRawRequestOutput> {
+    if (attemptTimeoutMs === undefined) {
+      return this.executeReplayTransportAttempt(transport, request, timeout);
+    }
+    return runWithPolicyTimeout(
+      {
+        resolveTimeoutMs() {
+          return attemptTimeoutMs;
+        },
+      },
+      {
+        operation: timeout.operation,
+        signal: timeout.signal,
+      },
+      (attemptTimeout) => this.executeReplayTransportAttempt(transport, request, attemptTimeout),
+    );
   }
 
   private async executeFetchTransportAttempt(
@@ -4700,10 +4750,18 @@ export class OpensteerSessionRuntime {
     callback: (context: TimeoutExecutionContext) => Promise<T>,
     options: RuntimeOperationOptions = {},
   ): Promise<T> {
+    const timeoutPolicy =
+      options.timeoutMs === undefined
+        ? this.policy.timeout
+        : {
+            resolveTimeoutMs() {
+              return options.timeoutMs;
+            },
+          };
     const existingCollector = this.operationEventStorage.getStore();
     if (existingCollector !== undefined) {
       return runWithPolicyTimeout(
-        this.policy.timeout,
+        timeoutPolicy,
         {
           operation,
           ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -4717,7 +4775,7 @@ export class OpensteerSessionRuntime {
     return this.operationEventStorage.run(collector, async () => {
       try {
         return await runWithPolicyTimeout(
-          this.policy.timeout,
+          timeoutPolicy,
           {
             operation,
             ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -4958,6 +5016,25 @@ function buildEngineNetworkRecordFilters(
 
 function normalizeNetworkStatusFilter(status: string | number): string {
   return String(status);
+}
+
+function normalizeNetworkQueryInput(
+  input: OpensteerNetworkQueryInput,
+): OpensteerNetworkQueryInput {
+  return {
+    ...input,
+    ...(input.recordId === undefined ? {} : { recordId: normalizeNetworkRecordId(input.recordId) }),
+    ...(input.before === undefined ? {} : { before: normalizeNetworkRecordId(input.before) }),
+    ...(input.after === undefined ? {} : { after: normalizeNetworkRecordId(input.after) }),
+  };
+}
+
+function normalizeNetworkRecordId(recordId: string): string {
+  const trimmed = recordId.trim();
+  if (trimmed.length === 0 || trimmed.startsWith("record:")) {
+    return trimmed;
+  }
+  return `record:${trimmed}`;
 }
 
 function resolveLiveQueryRequestIds(
@@ -5300,6 +5377,35 @@ const REPLAY_TRANSPORT_LADDER: readonly TransportKind[] = [
   "page-http",
 ] as const;
 
+function resolveReplayProbeAttemptTimeoutMs(input: {
+  readonly remainingMs: number | undefined;
+  readonly transportsRemaining: number;
+  readonly recommendedFound: boolean;
+}): number | undefined {
+  const attemptCapMs = input.recommendedFound
+    ? REPLAY_PROBE_POST_SUCCESS_ATTEMPT_TIMEOUT_MS
+    : REPLAY_PROBE_MAX_ATTEMPT_TIMEOUT_MS;
+  const clampedRemaining =
+    input.remainingMs === undefined ? undefined : Math.max(0, input.remainingMs);
+  if (clampedRemaining === 0) {
+    return 0;
+  }
+  if (clampedRemaining === undefined) {
+    return attemptCapMs;
+  }
+  const sliceMs = Math.floor(clampedRemaining / Math.max(1, input.transportsRemaining));
+  const minimumBudgetAffordable =
+    clampedRemaining >= REPLAY_PROBE_MIN_ATTEMPT_TIMEOUT_MS * input.transportsRemaining;
+  const attemptBudgetMs = minimumBudgetAffordable
+    ? Math.max(REPLAY_PROBE_MIN_ATTEMPT_TIMEOUT_MS, sliceMs)
+    : sliceMs;
+  return Math.min(
+    clampedRemaining,
+    attemptCapMs,
+    Math.max(1, attemptBudgetMs),
+  );
+}
+
 function filterNetworkSummaryRecords(
   records: readonly NetworkQueryRecord[],
   input: OpensteerNetworkQueryInput,
@@ -5569,15 +5675,20 @@ function shouldShowRequestBody(method: string): boolean {
 function buildStructuredBodyPreview(
   body: NetworkQueryRecord["record"]["requestBody"] | NetworkQueryRecord["record"]["responseBody"],
   headers: readonly HeaderEntry[],
+  options: {
+    readonly truncateData?: boolean;
+  } = {},
 ): OpensteerNetworkDetailOutput["requestBody"] {
   const contentType = headerValue(headers, "content-type") ?? body?.mimeType;
   const parsed = parseStructuredPayload(body, contentType);
   const data =
     parsed === undefined
       ? undefined
-      : typeof parsed === "string"
-        ? truncateInlineText(parsed)
-        : truncateStructuredValue(parsed);
+      : options.truncateData === false
+        ? parsed
+        : typeof parsed === "string"
+          ? truncateInlineText(parsed)
+          : truncateStructuredValue(parsed);
   return {
     bytes: body?.originalByteLength ?? body?.capturedByteLength ?? 0,
     ...(contentType === undefined ? {} : { contentType }),
@@ -5856,10 +5967,12 @@ function resolveSessionFetchTransportLadder(
       return ["direct-http"];
     case "matched-tls":
       return ["matched-tls"];
+    case "context":
+      return ["context-http"];
     case "page":
       return ["page-http"];
     case "auto":
-      return ["direct-http", "matched-tls", "page-http"];
+      return ["direct-http", "matched-tls", "context-http", "page-http"];
   }
 }
 
@@ -6057,6 +6170,21 @@ function diffStorageSnapshot(
 
 function normalizeRuntimeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function normalizeProbeTransportAttemptError(
+  transport: TransportKind,
+  error: unknown,
+  attemptTimeoutMs: number | undefined,
+): string {
+  if (
+    attemptTimeoutMs !== undefined &&
+    error instanceof OpensteerProtocolError &&
+    error.code === "timeout"
+  ) {
+    return `${transport} probe exceeded ${String(attemptTimeoutMs)}ms`;
+  }
+  return normalizeRuntimeErrorMessage(error);
 }
 
 function applyBrowserCookiesToTransportRequest(

@@ -1,0 +1,15 @@
+{
+  "createdAt": 1775717379702,
+  "layout": "opensteer-workspace",
+  "paths": {
+    "artifacts": "artifacts",
+    "browser": "browser",
+    "live": "live",
+    "observations": "observations",
+    "registry": "registry",
+    "traces": "traces"
+  },
+  "scope": "temporary",
+  "updatedAt": 1775717379702,
+  "version": 2
+}
