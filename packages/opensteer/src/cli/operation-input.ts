@@ -537,13 +537,9 @@ function readCaptchaProvider(value: string | undefined): "2captcha" | "capsolver
   return value as "2captcha" | "capsolver";
 }
 
-function readCaptchaType(
-  value: string | undefined,
-): "recaptcha-v2" | "hcaptcha" | "turnstile" {
+function readCaptchaType(value: string | undefined): "recaptcha-v2" | "hcaptcha" | "turnstile" {
   if (value === undefined || !CAPTCHA_TYPES.has(value)) {
-    throw new Error(
-      'Expected "--type" to be one of: recaptcha-v2, hcaptcha, turnstile.',
-    );
+    throw new Error('Expected "--type" to be one of: recaptcha-v2, hcaptcha, turnstile.');
   }
   return value as "recaptcha-v2" | "hcaptcha" | "turnstile";
 }
@@ -612,10 +608,7 @@ function readExtractPersistKey(parsed: ParsedCommandLine): string | undefined {
   return value;
 }
 
-function parseRequiredJsonObjectArgument(
-  value: string,
-  label: string,
-): Record<string, unknown> {
+function parseRequiredJsonObjectArgument(value: string, label: string): Record<string, unknown> {
   const parsed = JSON.parse(value);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`${label} must be a JSON object.`);

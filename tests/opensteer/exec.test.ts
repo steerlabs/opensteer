@@ -30,10 +30,7 @@ describe("exec command", () => {
         return { status: 200, items: [1, 2, 3] };
       },
     };
-    const result = await runExecExpression(
-      context,
-      "await this.fetchData()",
-    );
+    const result = await runExecExpression(context, "await this.fetchData()");
     expect(result).toEqual({ status: 200, items: [1, 2, 3] });
   });
 

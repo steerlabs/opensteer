@@ -69,9 +69,7 @@ export interface OpensteerCloudRecordCommandInput {
   readonly openUrl?: BrowserUrlOpener;
 }
 
-export async function runOpensteerRecordCommand(
-  input: OpensteerRecordCommandInput,
-): Promise<void> {
+export async function runOpensteerRecordCommand(input: OpensteerRecordCommandInput): Promise<void> {
   const stdout = input.stdout ?? process.stdout;
   const stderr = input.stderr ?? process.stderr;
   const outputPath = resolveRecordOutputPath({
@@ -237,10 +235,7 @@ export function createRecorderRuntimeAdapter(
   };
 }
 
-function buildCloudRecordingSessionUrl(
-  appBaseUrl: string,
-  sessionId: string,
-): string {
+function buildCloudRecordingSessionUrl(appBaseUrl: string, sessionId: string): string {
   return `${appBaseUrl}/browsers/${encodeURIComponent(sessionId)}`;
 }
 

@@ -24,7 +24,6 @@ import {
   joinDataPath,
 } from "./extraction-data-path.js";
 
-
 interface OpensteerSchemaFieldByElement {
   readonly element: number;
   readonly attribute?: string;

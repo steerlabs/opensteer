@@ -45,10 +45,12 @@ describe("runtime stale page recovery", () => {
         activePageRef: secondPage.pageRef,
         pages: [expect.objectContaining({ pageRef: secondPage.pageRef })],
       });
-      await expect(runtime.evaluate({
-        pageRef: secondPage.pageRef,
-        script: "() => null",
-      })).resolves.toMatchObject({
+      await expect(
+        runtime.evaluate({
+          pageRef: secondPage.pageRef,
+          script: "() => null",
+        }),
+      ).resolves.toMatchObject({
         pageRef: secondPage.pageRef,
         value: null,
       });

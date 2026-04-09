@@ -244,8 +244,7 @@ export class Opensteer {
 
     this.network = {
       query: (input = {}) => this.queryNetwork(input),
-      detail: (recordId, options) =>
-        this.runtime.getNetworkDetail({ recordId, ...options }),
+      detail: (recordId, options) => this.runtime.getNetworkDetail({ recordId, ...options }),
     };
   }
 

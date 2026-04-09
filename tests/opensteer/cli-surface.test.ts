@@ -75,7 +75,7 @@ describe("CLI surface parsing", () => {
   test("builds extract input from positional schema and optional persist", async () => {
     const parsed = parseCommandLine([
       "extract",
-      "{\"title\":{\"element\":3}}",
+      '{"title":{"element":3}}',
       "--persist",
       "page summary",
     ]);
@@ -97,7 +97,7 @@ describe("CLI surface parsing", () => {
       "--method",
       "POST",
       "--body",
-      "{\"keyword\":\"laptop\"}",
+      '{"keyword":"laptop"}',
       "--header",
       "accept=application/json",
       "--cookies",
@@ -126,7 +126,7 @@ describe("CLI surface parsing", () => {
       "open",
       "https://example.com",
       "--context",
-      "{\"locale\":\"en-US\"}",
+      '{"locale":"en-US"}',
     ]);
 
     expect(parsed.options.context).toEqual({

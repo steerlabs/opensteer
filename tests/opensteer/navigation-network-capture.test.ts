@@ -555,7 +555,9 @@ describe.sequential("cross-document action boundary", () => {
         opensteer.fetch("http://127.0.0.1:1/unreachable", {
           transport: "direct",
         }),
-      ).rejects.toThrow(/no transport completed successfully|session\.fetch did not produce a response/i);
+      ).rejects.toThrow(
+        /no transport completed successfully|session\.fetch did not produce a response/i,
+      );
 
       const traces = await readTraceEntries(rootPath);
       const fetchTrace = [...traces]

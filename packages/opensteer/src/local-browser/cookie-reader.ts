@@ -5,10 +5,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
-import type {
-  DatabaseSync as NodeSqliteDatabaseSync,
-  SQLOutputValue,
-} from "node:sqlite";
+import type { DatabaseSync as NodeSqliteDatabaseSync, SQLOutputValue } from "node:sqlite";
 
 import {
   type BrowserBrandId,
@@ -220,12 +217,7 @@ const BRAND_KEYCHAIN_SERVICE: Record<BrowserBrandId, string> = {
 async function resolveKeychainPassword(brandId: BrowserBrandId): Promise<string> {
   const service = BRAND_KEYCHAIN_SERVICE[brandId];
   try {
-    const { stdout } = await execFile("security", [
-      "find-generic-password",
-      "-s",
-      service,
-      "-w",
-    ]);
+    const { stdout } = await execFile("security", ["find-generic-password", "-s", service, "-w"]);
     return stdout.trim();
   } catch {
     throw new Error(
