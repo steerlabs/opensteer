@@ -137,4 +137,7 @@ export type {
   SavedNetworkSaveOptions,
   SavedNetworkStore,
 } from "./network/saved-store.js";
-export { createSavedNetworkStore, iterateSavedNetworkRecordBatches } from "./network/saved-store.js";
+export {
+  createSavedNetworkStore,
+  iterateSavedNetworkRecordBatches,
+} from "./network/saved-store.js";

@@ -309,20 +309,14 @@ class SqliteSavedNetworkStore implements SavedNetworkStore {
       FROM saved_network_records r
       LEFT JOIN saved_network_tags t
         ON t.record_id = r.record_id
-      ${
-        cursor === undefined
-          ? ""
-          : "WHERE r.saved_at > ? OR (r.saved_at = ? AND r.record_id > ?)"
-      }
+      ${cursor === undefined ? "" : "WHERE r.saved_at > ? OR (r.saved_at = ? AND r.record_id > ?)"}
       GROUP BY r.record_id
       ORDER BY r.saved_at ASC, r.record_id ASC
       LIMIT ?
     `,
         )
         .all(
-          ...(cursor === undefined
-            ? []
-            : [cursor.savedAt, cursor.savedAt, cursor.recordId]),
+          ...(cursor === undefined ? [] : [cursor.savedAt, cursor.savedAt, cursor.recordId]),
           batchSize,
         ) as SavedNetworkRow[];
 

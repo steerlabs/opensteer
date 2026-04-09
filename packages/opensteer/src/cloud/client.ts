@@ -65,21 +65,25 @@ export class OpensteerCloudClient {
     input: OpensteerCloudSessionCreateInput = {},
     options: CloudRequestOptions = {},
   ): Promise<OpensteerCloudSessionDescriptor> {
-    const response = await this.request("/v1/sessions", {
-      method: "POST",
-      body: {
-        ...(input.name === undefined ? {} : { name: input.name }),
-        ...(input.browser === undefined ? {} : { browser: input.browser }),
-        ...(input.context === undefined ? {} : { context: input.context }),
-        ...(input.browserProfile === undefined ? {} : { browserProfile: input.browserProfile }),
-        ...(input.observability === undefined ? {} : { observability: input.observability }),
-        ...(input.sourceType === undefined ? {} : { sourceType: input.sourceType }),
-        ...(input.sourceRef === undefined ? {} : { sourceRef: input.sourceRef }),
-        ...(input.localWorkspaceRootPath === undefined
-          ? {}
-          : { localWorkspaceRootPath: input.localWorkspaceRootPath }),
+    const response = await this.request(
+      "/v1/sessions",
+      {
+        method: "POST",
+        body: {
+          ...(input.name === undefined ? {} : { name: input.name }),
+          ...(input.browser === undefined ? {} : { browser: input.browser }),
+          ...(input.context === undefined ? {} : { context: input.context }),
+          ...(input.browserProfile === undefined ? {} : { browserProfile: input.browserProfile }),
+          ...(input.observability === undefined ? {} : { observability: input.observability }),
+          ...(input.sourceType === undefined ? {} : { sourceType: input.sourceType }),
+          ...(input.sourceRef === undefined ? {} : { sourceRef: input.sourceRef }),
+          ...(input.localWorkspaceRootPath === undefined
+            ? {}
+            : { localWorkspaceRootPath: input.localWorkspaceRootPath }),
+        },
       },
-    }, options);
+      options,
+    );
 
     return (await response.json()) as OpensteerCloudSessionDescriptor;
   }
@@ -95,9 +99,13 @@ export class OpensteerCloudClient {
     sessionId: string,
     options: CloudRequestOptions = {},
   ): Promise<OpensteerCloudSessionState> {
-    const response = await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}`, {
-      method: "GET",
-    }, options);
+    const response = await this.request(
+      `/v1/sessions/${encodeURIComponent(sessionId)}`,
+      {
+        method: "GET",
+      },
+      options,
+    );
     return (await response.json()) as OpensteerCloudSessionState;
   }
 
@@ -106,12 +114,16 @@ export class OpensteerCloudClient {
     capabilities: readonly OpensteerSessionGrantKind[],
     options: CloudRequestOptions = {},
   ): Promise<OpensteerSessionAccessGrantResponse> {
-    const response = await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/access`, {
-      method: "POST",
-      body: {
-        capabilities,
+    const response = await this.request(
+      `/v1/sessions/${encodeURIComponent(sessionId)}/access`,
+      {
+        method: "POST",
+        body: {
+          capabilities,
+        },
       },
-    }, options);
+      options,
+    );
     return (await response.json()) as OpensteerSessionAccessGrantResponse;
   }
 

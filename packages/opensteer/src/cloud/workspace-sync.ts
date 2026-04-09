@@ -10,10 +10,7 @@ import type { OpensteerCloudClient } from "./client.js";
 export const WORKSPACE_SYNC_MAX_PAYLOAD_BYTES = 1_500_000;
 export const WORKSPACE_SYNC_MAX_ENTRIES_PER_BATCH = 100;
 
-type WorkspaceSyncClient = Pick<
-  OpensteerCloudClient,
-  "importDescriptors" | "importRequestPlans"
->;
+type WorkspaceSyncClient = Pick<OpensteerCloudClient, "importDescriptors" | "importRequestPlans">;
 
 export async function syncLocalWorkspaceToCloud(
   client: WorkspaceSyncClient,

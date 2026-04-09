@@ -773,9 +773,7 @@ describe("cloud browser-profile integration", () => {
     });
 
     const lastFetch = fetchMock.mock.calls.at(-1);
-    expect(lastFetch?.[0]).toBe(
-      `${semanticBaseUrl}/api/v2/semantic/operations/network/detail`,
-    );
+    expect(lastFetch?.[0]).toBe(`${semanticBaseUrl}/api/v2/semantic/operations/network/detail`);
     expect(lastFetch?.[1]).toEqual(
       expect.objectContaining({
         headers: expect.objectContaining({

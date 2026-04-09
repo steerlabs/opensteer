@@ -1302,10 +1302,7 @@ export class OpensteerSessionRuntime {
           const filtered = filterNetworkSummaryRecords(rawRecords, normalizedInput);
           const sorted = sortPersistedNetworkRecordsChronologically(filtered);
           const sliced = sliceNetworkSummaryWindow(sorted, normalizedInput);
-          const limited = sliced.slice(
-            0,
-            Math.max(1, Math.min(normalizedInput.limit ?? 50, 200)),
-          );
+          const limited = sliced.slice(0, Math.max(1, Math.min(normalizedInput.limit ?? 50, 200)));
           const summaries = await this.buildNetworkSummaryRecords(limited, timeout);
           return {
             records: summaries,
@@ -5018,9 +5015,7 @@ function normalizeNetworkStatusFilter(status: string | number): string {
   return String(status);
 }
 
-function normalizeNetworkQueryInput(
-  input: OpensteerNetworkQueryInput,
-): OpensteerNetworkQueryInput {
+function normalizeNetworkQueryInput(input: OpensteerNetworkQueryInput): OpensteerNetworkQueryInput {
   return {
     ...input,
     ...(input.recordId === undefined ? {} : { recordId: normalizeNetworkRecordId(input.recordId) }),
@@ -5399,11 +5394,7 @@ function resolveReplayProbeAttemptTimeoutMs(input: {
   const attemptBudgetMs = minimumBudgetAffordable
     ? Math.max(REPLAY_PROBE_MIN_ATTEMPT_TIMEOUT_MS, sliceMs)
     : sliceMs;
-  return Math.min(
-    clampedRemaining,
-    attemptCapMs,
-    Math.max(1, attemptBudgetMs),
-  );
+  return Math.min(clampedRemaining, attemptCapMs, Math.max(1, attemptBudgetMs));
 }
 
 function filterNetworkSummaryRecords(

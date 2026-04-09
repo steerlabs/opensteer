@@ -758,8 +758,14 @@ async function launchOwnedBrowser(input: {
   await clearChromeSingletonEntries(input.userDataDir);
   await sanitizeChromeProfile(input.userDataDir);
 
+  const requestedRemoteDebuggingPort = readRequestedRemoteDebuggingPort(input.launch?.args);
   const executablePath = resolveChromeExecutablePath(input.launch?.executablePath);
-  const args = buildChromeArgs(input.userDataDir, input.launch, input.viewport);
+  const args = buildChromeArgs(
+    input.userDataDir,
+    input.launch,
+    input.viewport,
+    requestedRemoteDebuggingPort,
+  );
   const child = spawn(executablePath, args, {
     stdio: ["ignore", "ignore", "pipe"],
     detached: process.platform !== "win32",
@@ -784,6 +790,9 @@ async function launchOwnedBrowser(input: {
     timeoutMs: input.launch?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     childExited: async () => child.exitCode,
     stderrLines,
+    ...(requestedRemoteDebuggingPort !== undefined && requestedRemoteDebuggingPort > 0
+      ? { requestedRemoteDebuggingPort }
+      : {}),
   }).catch(async (error) => {
     child.kill("SIGKILL");
     throw error;
@@ -800,10 +809,11 @@ function buildChromeArgs(
   userDataDir: string,
   launch: OpensteerBrowserLaunchOptions | undefined,
   viewport?: { readonly width: number; readonly height: number } | null,
+  requestedRemoteDebuggingPort?: number,
 ): readonly string[] {
   const isHeadless = launch?.headless ?? true;
   const args = [
-    "--remote-debugging-port=0",
+    ...(requestedRemoteDebuggingPort === undefined ? ["--remote-debugging-port=0"] : []),
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-blink-features=AutomationControlled",
@@ -853,6 +863,7 @@ async function waitForDevToolsEndpoint(input: {
   readonly timeoutMs: number;
   readonly childExited: () => Promise<number | null>;
   readonly stderrLines: readonly string[];
+  readonly requestedRemoteDebuggingPort?: number;
 }): Promise<string> {
   const deadline = Date.now() + input.timeoutMs;
   while (Date.now() < deadline) {
@@ -869,6 +880,16 @@ async function waitForDevToolsEndpoint(input: {
       }
     }
 
+    if (input.requestedRemoteDebuggingPort !== undefined) {
+      const endpoint = await tryInspectRemoteDebuggingPort(
+        input.requestedRemoteDebuggingPort,
+        input.timeoutMs,
+      );
+      if (endpoint !== undefined) {
+        return endpoint;
+      }
+    }
+
     const exitCode = await input.childExited();
     if (exitCode !== null) {
       throw new Error(formatChromeLaunchError(input.stderrLines));
@@ -878,6 +899,62 @@ async function waitForDevToolsEndpoint(input: {
   }
 
   throw new Error(formatChromeLaunchError(input.stderrLines));
+}
+
+function readRequestedRemoteDebuggingPort(args: readonly string[] | undefined): number | undefined {
+  if (args === undefined || args.length === 0) {
+    return undefined;
+  }
+
+  let explicitFlagFound = false;
+  let port: number | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const entry = args[index]!;
+    if (entry === "--remote-debugging-port") {
+      explicitFlagFound = true;
+      const next = args[index + 1];
+      if (next !== undefined) {
+        port = parseRemoteDebuggingPort(next);
+        index += 1;
+      }
+      continue;
+    }
+
+    if (entry.startsWith("--remote-debugging-port=")) {
+      explicitFlagFound = true;
+      port = parseRemoteDebuggingPort(entry.slice("--remote-debugging-port=".length));
+    }
+  }
+
+  return explicitFlagFound ? port : undefined;
+}
+
+function parseRemoteDebuggingPort(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    return undefined;
+  }
+  return parsed;
+}
+
+async function tryInspectRemoteDebuggingPort(
+  port: number,
+  timeoutMs: number,
+): Promise<string | undefined> {
+  try {
+    const inspected = await inspectCdpEndpoint({
+      endpoint: `http://127.0.0.1:${String(port)}`,
+      timeoutMs: Math.min(2_000, timeoutMs),
+    });
+    return inspected.endpoint;
+  } catch {
+    return undefined;
+  }
 }
 
 function formatChromeLaunchError(stderrLines: readonly string[]): string {

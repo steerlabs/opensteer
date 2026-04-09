@@ -54,14 +54,17 @@ type NetworkProbeRuntime = OpensteerSessionRuntime & {
   probeTransportsForRecord: (
     record: ReturnType<typeof createCapturedRecord>,
     timeout: RuntimeProbeTimeout,
-  ) => Promise<{
-    readonly recommended?: string;
-    readonly attempts: readonly {
-      readonly transport: string;
-      readonly ok: boolean;
-      readonly error?: string;
-    }[];
-  } | undefined>;
+  ) => Promise<
+    | {
+        readonly recommended?: string;
+        readonly attempts: readonly {
+          readonly transport: string;
+          readonly ok: boolean;
+          readonly error?: string;
+        }[];
+      }
+    | undefined
+  >;
 };
 
 describe("network detail probe", () => {
@@ -150,29 +153,32 @@ describe("network detail probe", () => {
     temporaryRoots.push(rootDir);
 
     const workspace = await createFilesystemOpensteerWorkspace({ rootPath: rootDir });
-    await workspace.registry.savedNetwork.save([
-      {
-        recordId: "record:statusless",
-        savedAt: Date.now(),
-        record: {
-          kind: "http",
-          requestId: "request:statusless",
-          sessionRef: "session:statusless",
-          pageRef: "page:statusless",
-          method: "GET",
-          url: "https://example.com/api/stream",
-          requestHeaders: [],
-          responseHeaders: [],
-          resourceType: "fetch",
-          navigationRequest: false,
-          captureState: "complete",
-          requestBodyState: "skipped",
-          responseBodyState: "skipped",
+    await workspace.registry.savedNetwork.save(
+      [
+        {
+          recordId: "record:statusless",
+          savedAt: Date.now(),
+          record: {
+            kind: "http",
+            requestId: "request:statusless",
+            sessionRef: "session:statusless",
+            pageRef: "page:statusless",
+            method: "GET",
+            url: "https://example.com/api/stream",
+            requestHeaders: [],
+            responseHeaders: [],
+            resourceType: "fetch",
+            navigationRequest: false,
+            captureState: "complete",
+            requestBodyState: "skipped",
+            responseBodyState: "skipped",
+          },
         },
+      ],
+      {
+        bodyWriteMode: "authoritative",
       },
-    ], {
-      bodyWriteMode: "authoritative",
-    });
+    );
 
     const runtime = new OpensteerSessionRuntime({
       name: "statusless-detail",

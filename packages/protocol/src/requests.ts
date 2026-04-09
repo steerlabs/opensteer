@@ -497,12 +497,7 @@ export interface OpensteerNetworkReplayOutput {
   readonly note?: string;
 }
 
-export type OpensteerSessionFetchTransport =
-  | "auto"
-  | "direct"
-  | "matched-tls"
-  | "context"
-  | "page";
+export type OpensteerSessionFetchTransport = "auto" | "direct" | "matched-tls" | "context" | "page";
 
 export interface OpensteerSessionFetchInput {
   readonly pageRef?: PageRef;

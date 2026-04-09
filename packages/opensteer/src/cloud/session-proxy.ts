@@ -164,7 +164,7 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     return this.invokeSemanticOperation(
       "session.open",
       {
-      ...(input.url === undefined ? {} : { url: input.url }),
+        ...(input.url === undefined ? {} : { url: input.url }),
       },
       {
         ...(input.browser === undefined ? {} : { browser: input.browser }),
