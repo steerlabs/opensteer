@@ -105,6 +105,7 @@ const CLI_OPTION_SPECS = {
   transport: { kind: "value" },
   cookies: { kind: "optional-value" },
   "follow-redirects": { kind: "boolean" },
+  probe: { kind: "boolean" },
   "api-key": { kind: "value" },
   "site-key": { kind: "value" },
   "page-url": { kind: "value" },

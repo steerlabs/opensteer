@@ -136,7 +136,7 @@ export interface OpensteerDomController {
 
 export interface OpensteerNetworkController {
   query(input?: OpensteerNetworkQueryOptions): Promise<OpensteerNetworkQueryResult>;
-  detail(recordId: string): Promise<OpensteerNetworkDetailResult>;
+  detail(recordId: string, options?: { probe?: boolean }): Promise<OpensteerNetworkDetailResult>;
 }
 
 export interface OpensteerOptions extends OpensteerRuntimeOptions {
@@ -244,7 +244,8 @@ export class Opensteer {
 
     this.network = {
       query: (input = {}) => this.queryNetwork(input),
-      detail: (recordId) => this.runtime.getNetworkDetail({ recordId }),
+      detail: (recordId, options) =>
+        this.runtime.getNetworkDetail({ recordId, ...options }),
     };
   }
 
