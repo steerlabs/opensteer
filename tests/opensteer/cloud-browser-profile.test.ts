@@ -150,7 +150,7 @@ describe("cloud browser-profile integration", () => {
     );
   });
 
-  test("OpensteerCloudClient imports saved-network batches through the public endpoint", async () => {
+  test("OpensteerCloudClient imports request-plan batches through the public endpoint", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       json: async () => ({
@@ -167,30 +167,33 @@ describe("cloud browser-profile integration", () => {
       baseUrl: "https://api.opensteer.dev",
     });
 
-    await client.importSavedNetwork({
-      workspace: "work",
+    await client.importRequestPlans({
       entries: [
         {
-          recordId: "record:1",
-          savedAt: 10,
-          record: {
-            kind: "http",
-            requestId: "request-1",
-            sessionRef: "session-1",
-            method: "GET",
-            url: "https://example.com/data",
-            requestHeaders: [],
-            responseHeaders: [],
-            resourceType: "xhr",
-            navigationRequest: false,
+          workspace: "work",
+          recordId: "request-plan:1",
+          key: "bestbuy.search",
+          version: "v1",
+          contentHash: "c".repeat(64),
+          tags: ["reverse"],
+          payload: {
+            transport: {
+              kind: "direct-http",
+            },
+            endpoint: {
+              method: "GET",
+              urlTemplate: "https://example.com/data",
+            },
           },
+          createdAt: 10,
+          updatedAt: 10,
         },
       ],
     });
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "https://api.opensteer.dev/registry/saved-network/import",
+      "https://api.opensteer.dev/registry/request-plans/import",
       expect.objectContaining({
         method: "POST",
       }),

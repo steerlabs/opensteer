@@ -5,8 +5,7 @@ import type {
   BrowserProfileImportDescriptor,
   CloudSessionRecordingState,
   CloudBrowserProfilePreference,
-  CloudSavedNetworkImportRequest,
-  CloudSavedNetworkImportResponse,
+  CloudRequestPlanImportRequest,
   CloudRegistryImportEntry,
   CloudRegistryImportResponse,
   OpensteerSessionAccessGrantResponse,
@@ -223,14 +222,14 @@ export class OpensteerCloudClient {
     return (await response.json()) as CloudRegistryImportResponse;
   }
 
-  async importSavedNetwork(
-    input: CloudSavedNetworkImportRequest,
-  ): Promise<CloudSavedNetworkImportResponse> {
-    const response = await this.request("/registry/saved-network/import", {
+  async importRequestPlans(
+    input: CloudRequestPlanImportRequest,
+  ): Promise<CloudRegistryImportResponse> {
+    const response = await this.request("/registry/request-plans/import", {
       method: "POST",
       body: input,
     });
-    return (await response.json()) as CloudSavedNetworkImportResponse;
+    return (await response.json()) as CloudRegistryImportResponse;
   }
 
   buildAuthorizationHeader(): string {

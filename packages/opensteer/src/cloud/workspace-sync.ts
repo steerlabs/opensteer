@@ -1,19 +1,18 @@
 import {
-  iterateSavedNetworkRecordBatches,
   type DescriptorRecord,
   type FilesystemOpensteerWorkspace,
+  type RequestPlanRecord,
 } from "@opensteer/runtime-core";
-import type { CloudRegistryImportEntry, NetworkQueryRecord } from "@opensteer/protocol";
+import type { CloudRegistryImportEntry, CloudRequestPlanImportEntry } from "@opensteer/protocol";
 
 import type { OpensteerCloudClient } from "./client.js";
 
 export const WORKSPACE_SYNC_MAX_PAYLOAD_BYTES = 1_500_000;
 export const WORKSPACE_SYNC_MAX_ENTRIES_PER_BATCH = 100;
-export const WORKSPACE_SYNC_SOURCE_BATCH_SIZE = 500;
 
 type WorkspaceSyncClient = Pick<
   OpensteerCloudClient,
-  "importDescriptors" | "importSavedNetwork"
+  "importDescriptors" | "importRequestPlans"
 >;
 
 export async function syncLocalWorkspaceToCloud(
@@ -22,7 +21,7 @@ export async function syncLocalWorkspaceToCloud(
   store: FilesystemOpensteerWorkspace,
 ): Promise<void> {
   await syncDescriptorRegistryToCloud(client, workspace, store);
-  await syncSavedNetworkToCloud(client, workspace, store);
+  await syncRequestPlansToCloud(client, workspace, store);
 }
 
 async function syncDescriptorRegistryToCloud(
@@ -39,47 +38,42 @@ async function syncDescriptorRegistryToCloud(
   });
 }
 
-async function syncSavedNetworkToCloud(
+async function syncRequestPlansToCloud(
   client: WorkspaceSyncClient,
   workspace: string,
   store: FilesystemOpensteerWorkspace,
 ): Promise<void> {
-  for await (const batch of iterateSavedNetworkRecordBatches(store.rootPath, {
-    batchSize: WORKSPACE_SYNC_SOURCE_BATCH_SIZE,
-    includeBodies: true,
-  })) {
-    const prepared = batch
-      .map((record) => prepareSavedNetworkImportEntry(workspace, record))
-      .filter((record): record is NetworkQueryRecord => record !== undefined);
+  const requestPlans = await store.registry.requestPlans.list();
+  const entries = requestPlans
+    .map((record) => toRequestPlanImportEntry(workspace, record))
+    .filter((entry): entry is CloudRequestPlanImportEntry => entry !== undefined);
 
-    await importInBatches(prepared, {
-      getPayloadByteLength: (entries) => payloadByteLength({ workspace, entries }),
-      importBatch: (entries) => client.importSavedNetwork({ workspace, entries }),
-    });
-  }
+  await importInBatches(entries, {
+    getPayloadByteLength: (batch) => payloadByteLength({ entries: batch }),
+    importBatch: (batch) => client.importRequestPlans({ entries: batch }),
+  });
 }
 
-function prepareSavedNetworkImportEntry(
+function toRequestPlanImportEntry(
   workspace: string,
-  record: NetworkQueryRecord,
-): NetworkQueryRecord | undefined {
-  if (payloadByteLength({ workspace, entries: [record] }) <= WORKSPACE_SYNC_MAX_PAYLOAD_BYTES) {
-    return record;
-  }
-
-  const stripped = stripSavedNetworkBodies(record);
-  return payloadByteLength({ workspace, entries: [stripped] }) <=
-    WORKSPACE_SYNC_MAX_PAYLOAD_BYTES
-    ? stripped
-    : undefined;
-}
-
-function stripSavedNetworkBodies(record: NetworkQueryRecord): NetworkQueryRecord {
-  const { requestBody: _requestBody, responseBody: _responseBody, ...nextRecord } = record.record;
-  return {
-    ...record,
-    record: nextRecord,
+  record: RequestPlanRecord,
+): CloudRequestPlanImportEntry | undefined {
+  const entry: CloudRequestPlanImportEntry = {
+    workspace,
+    recordId: record.id,
+    key: record.key,
+    version: record.version,
+    contentHash: record.contentHash,
+    tags: [...record.tags],
+    ...(record.provenance === undefined ? {} : { provenance: record.provenance }),
+    ...(record.freshness === undefined ? {} : { freshness: record.freshness }),
+    payload: record.payload,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
   };
+  return payloadByteLength({ entries: [entry] }) <= WORKSPACE_SYNC_MAX_PAYLOAD_BYTES
+    ? entry
+    : undefined;
 }
 
 function toDescriptorImportEntry(

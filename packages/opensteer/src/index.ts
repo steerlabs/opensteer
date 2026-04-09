@@ -35,11 +35,15 @@ export type {
   InteractionTraceRegistryStore,
   DescriptorRecord,
   DescriptorRegistryStore,
+  RequestPlanRecord,
+  RequestPlanRegistryStore,
   RegistryProvenance,
   RegistryRecord,
   ResolveRegistryRecordInput,
+  UpdateRequestPlanFreshnessInput,
   WriteDescriptorInput,
   WriteInteractionTraceInput,
+  WriteRequestPlanInput,
 } from "./registry.js";
 export type { SavedNetworkStore, SavedNetworkQueryInput } from "./network/saved-store.js";
 export type { JsonArray, JsonObject, JsonPrimitive, JsonValue } from "./json.js";

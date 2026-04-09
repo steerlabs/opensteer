@@ -75,10 +75,14 @@ export type {
   InteractionTraceRecord,
   InteractionTraceRegistryStore,
   ListRegistryRecordsInput,
+  RequestPlanRecord,
+  RequestPlanRegistryStore,
   RegistryProvenance,
   ResolveRegistryRecordInput,
+  UpdateRequestPlanFreshnessInput,
   WriteDescriptorInput,
   WriteInteractionTraceInput,
+  WriteRequestPlanInput,
 } from "./registry.js";
 export type {
   ClickRecordedActionDetail,
