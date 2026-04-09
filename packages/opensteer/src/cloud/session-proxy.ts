@@ -21,6 +21,7 @@ import type {
   OpensteerDomHoverInput,
   OpensteerDomInputInput,
   OpensteerDomScrollInput,
+  OpensteerNetworkDetailInput,
   OpensteerNetworkQueryInput,
   OpensteerNetworkQueryOutput,
   OpensteerNetworkDetailOutput,
@@ -287,10 +288,9 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     return this.requireClient().invoke("network.query", input);
   }
 
-  async getNetworkDetail(input: {
-    readonly recordId: string;
-    readonly probe?: boolean;
-  }): Promise<OpensteerNetworkDetailOutput> {
+  async getNetworkDetail(
+    input: OpensteerNetworkDetailInput,
+  ): Promise<OpensteerNetworkDetailOutput> {
     await this.ensureSession();
     return this.requireClient().invoke("network.detail", input);
   }

@@ -53,6 +53,7 @@ import {
 import {
   opensteerCookieQueryInputSchema,
   opensteerCookieQueryOutputSchema,
+  opensteerNetworkDetailInputSchema,
   opensteerNetworkDetailOutputSchema,
   opensteerNetworkQueryInputSchema,
   opensteerNetworkQueryOutputSchema,
@@ -66,6 +67,7 @@ import {
   opensteerStorageQueryOutputSchema,
   type OpensteerCookieQueryInput,
   type OpensteerCookieQueryOutput,
+  type OpensteerNetworkDetailInput,
   type OpensteerNetworkDetailOutput,
   type OpensteerNetworkQueryInput,
   type OpensteerNetworkQueryOutput,
@@ -1094,16 +1096,6 @@ const opensteerPageSnapshotOutputSchema: JsonSchema = objectSchema(
   },
 );
 
-const opensteerNetworkDetailInputSchema: JsonSchema = objectSchema(
-  {
-    recordId: stringSchema({ minLength: 1 }),
-  },
-  {
-    title: "OpensteerNetworkDetailInput",
-    required: ["recordId"],
-  },
-);
-
 const opensteerComputerMouseButtonSchema: JsonSchema = enumSchema(
   ["left", "middle", "right"] as const,
   {
@@ -1610,12 +1602,7 @@ const opensteerSemanticOperationSpecificationsBase = [
     outputSchema: opensteerNetworkQueryOutputSchema,
     requiredCapabilities: ["inspect.network"],
   }),
-  defineSemanticOperationSpec<
-    {
-      readonly recordId: string;
-    },
-    OpensteerNetworkDetailOutput
-  >({
+  defineSemanticOperationSpec<OpensteerNetworkDetailInput, OpensteerNetworkDetailOutput>({
     name: "network.detail",
     description:
       "Inspect one captured network record with parsed headers, cookies, redirects, and truncated bodies.",

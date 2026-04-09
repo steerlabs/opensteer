@@ -12,6 +12,7 @@ import type {
   OpensteerDomHoverInput,
   OpensteerDomInputInput,
   OpensteerDomScrollInput,
+  OpensteerNetworkDetailInput,
   OpensteerNetworkQueryInput,
   OpensteerNetworkQueryOutput,
   OpensteerNetworkDetailOutput,
@@ -128,10 +129,7 @@ export interface OpensteerSemanticRuntime {
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerNetworkQueryOutput>;
   getNetworkDetail(
-    input: {
-      readonly recordId: string;
-      readonly probe?: boolean;
-    },
+    input: OpensteerNetworkDetailInput,
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerNetworkDetailOutput>;
   captureInteraction(

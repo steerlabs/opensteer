@@ -217,6 +217,15 @@ describe("semantic protocol validation", () => {
     ).not.toThrow();
   });
 
+  test("accepts transport probing on network.detail", () => {
+    expect(() =>
+      assertValidSemanticOperationInput("network.detail", {
+        recordId: "rec_1",
+        probe: true,
+      }),
+    ).not.toThrow();
+  });
+
   test("accepts dom.extract with schema-only and named replay inputs", () => {
     expect(() =>
       assertValidSemanticOperationInput("dom.extract", {
