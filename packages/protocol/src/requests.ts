@@ -462,6 +462,11 @@ export interface OpensteerNetworkDetailOutput {
   };
 }
 
+export interface OpensteerNetworkDetailInput {
+  readonly recordId: string;
+  readonly probe?: boolean;
+}
+
 export interface OpensteerReplayAttempt {
   readonly transport: TransportKind;
   readonly status?: number;
@@ -1520,6 +1525,17 @@ export const opensteerNetworkQueryOutputSchema: JsonSchema = objectSchema(
   {
     title: "OpensteerNetworkQueryOutput",
     required: ["records"],
+  },
+);
+
+export const opensteerNetworkDetailInputSchema: JsonSchema = objectSchema(
+  {
+    recordId: stringSchema({ minLength: 1 }),
+    probe: { type: "boolean" },
+  },
+  {
+    title: "OpensteerNetworkDetailInput",
+    required: ["recordId"],
   },
 );
 

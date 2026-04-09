@@ -49,6 +49,7 @@ import {
   type OpensteerDomInputInput,
   type OpensteerDomScrollInput,
   type OpensteerError,
+  type OpensteerNetworkDetailInput,
   type OpensteerNetworkQueryInput,
   type OpensteerNetworkQueryOutput,
   type OpensteerNetworkDetailOutput,
@@ -1339,10 +1340,7 @@ export class OpensteerSessionRuntime {
   }
 
   async getNetworkDetail(
-    input: {
-      readonly recordId: string;
-      readonly probe?: boolean;
-    },
+    input: OpensteerNetworkDetailInput,
     options: RuntimeOperationOptions = {},
   ): Promise<OpensteerNetworkDetailOutput> {
     const startedAt = Date.now();

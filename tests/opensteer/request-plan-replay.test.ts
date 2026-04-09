@@ -72,6 +72,55 @@ describe.sequential("network capture and fetch", () => {
       await opensteer.close().catch(() => undefined);
     }
   }, 60_000);
+
+  test("preserves plain string fetch bodies as text payloads", async () => {
+    const opensteer = new Opensteer({
+      workspace: "sdk-fetch-string-body",
+    });
+
+    try {
+      const response = await opensteer.fetch(`${baseUrl}/api/echo-body`, {
+        method: "POST",
+        transport: "direct",
+        cookies: false,
+        body: "42",
+      });
+
+      await expect(response.json()).resolves.toMatchObject({
+        method: "POST",
+        contentType: "text/plain; charset=utf-8",
+        body: "42",
+      });
+    } finally {
+      await opensteer.disconnect().catch(() => undefined);
+    }
+  }, 60_000);
+
+  test("accepts structured runtime request bodies through SDK fetch", async () => {
+    const opensteer = new Opensteer({
+      workspace: "sdk-fetch-structured-body",
+    });
+
+    try {
+      const response = await opensteer.fetch(`${baseUrl}/api/echo-body`, {
+        method: "POST",
+        transport: "direct",
+        cookies: false,
+        body: {
+          text: "query=opensteer&limit=10",
+          contentType: "application/x-www-form-urlencoded",
+        },
+      });
+
+      await expect(response.json()).resolves.toMatchObject({
+        method: "POST",
+        contentType: "application/x-www-form-urlencoded",
+        body: "query=opensteer&limit=10",
+      });
+    } finally {
+      await opensteer.disconnect().catch(() => undefined);
+    }
+  }, 60_000);
 });
 
 async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -113,6 +162,19 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
         echoedQuery: parsed.query ?? null,
         echoedLimit: parsed.limit ?? null,
         contentType: request.headers["content-type"] ?? null,
+      }),
+    );
+    return;
+  }
+
+  if (url.pathname === "/api/echo-body") {
+    const body = await readBody(request);
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    response.end(
+      JSON.stringify({
+        method: request.method ?? "GET",
+        contentType: request.headers["content-type"] ?? null,
+        body,
       }),
     );
     return;
