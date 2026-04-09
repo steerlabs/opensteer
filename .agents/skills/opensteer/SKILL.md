@@ -1,6 +1,6 @@
 ---
 name: opensteer
-description: "Handles Opensteer browser automation, structured DOM extraction, and browser-backed API reverse engineering. Use when the user mentions Opensteer, browser automation, real Chromium sessions, DOM extraction, network capture, replay, cookies, reverse-engineering a site API, or browser-grade fetch."
+description: "Handles Opensteer browser automation, structured DOM extraction, and browser-backed API reverse engineering. Use when the user mentions Opensteer, browser automation, real Chromium sessions, DOM extraction, network capture, reverse-engineering a site API, or browser-grade fetch."
 argument-hint: "[goal]"
 ---
 
@@ -9,7 +9,7 @@ argument-hint: "[goal]"
 Opensteer gives agents a real Chromium browser for two jobs normal code cannot do:
 
 1. **DOM automation** — interact with pages and extract structured data via snapshot-based element targeting.
-2. **API reverse engineering** — capture real browser traffic, identify APIs, test transport portability, and write replay code.
+2. **API reverse engineering** — capture real browser traffic, identify APIs, test transport portability, and write reusable code.
 
 The workflow is always: **explore with CLI, then write reusable code with SDK.**
 
@@ -126,11 +126,12 @@ opensteer network query --workspace demo --capture search --hostname api.example
 
 ```bash
 opensteer network detail rec_123 --workspace demo
+opensteer network detail rec_123 --probe --workspace demo
 ```
 
-Shows: URL, method, request headers, cookies sent, request/response body preview, GraphQL metadata, redirect chain, and **transport probe results**.
+The first command shows: URL, method, request headers, cookies sent, request/response body preview, GraphQL metadata, redirect chain.
 
-The transport probe automatically tests which transport works for this API:
+Add `--probe` to also test which transport works for this API:
 
 | Transport | Meaning | SDK usage |
 |---|---|---|
@@ -153,7 +154,7 @@ Use `exec` to test the API call with the SDK. The code you write here is the sam
 ```bash
 opensteer exec "
   const r = await this.fetch('https://api.example.com/search', {
-    method: 'GET',
+    method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ keyword: 'laptop', count: 24 }),
   });
@@ -240,6 +241,14 @@ opensteer tab close 2 --workspace demo
 
 ## Run JavaScript
 
+Use `exec` for API calls and SDK operations (runs in Node.js, avoids bot detection):
+
+```bash
+opensteer exec "await this.fetch('https://api.example.com/data').then(r => r.json())" --workspace demo
+```
+
+Use `evaluate` only for DOM inspection (runs inside the browser page):
+
 ```bash
 opensteer evaluate "document.title" --workspace demo
 ```
@@ -274,7 +283,7 @@ opensteer computer screenshot --workspace demo
 | `extract <schema>` | JSON schema | `--persist` |
 | `evaluate <script>` | JS expression | — |
 | `network query` | — | `--capture`, `--url`, `--hostname`, `--json`, `--limit`, +6 filters |
-| `network detail <id>` | recordId | `--probe` (default: on) |
+| `network detail <id>` | recordId | `--probe` |
 | `fetch <url>` | url | `--method`, `--header`, `--query`, `--body`, `--transport`, `--cookies` |
 | `state [domain]` | domain (optional) | — |
 | `exec <expression>` | JS expression | — |
