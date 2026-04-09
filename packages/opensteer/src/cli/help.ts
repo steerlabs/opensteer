@@ -28,14 +28,14 @@ Tabs:
 Network:
   network query [--capture <label>] [--url <pattern>] [--hostname <host>] [--path <path>] [--method <m>] [--status <code>] [--type <resourceType>] [--json] [--before <id>] [--after <id>] [--limit <n>]
     --json filters to JSON and GraphQL responses only
-  network detail <recordId>
-  replay <recordId> [--query key=value ...] [--header key=value ...] [--body <json>] [--variables <json>]
+  network detail <recordId> [--probe]
   fetch <url> [--method <m>] [--header key=value ...] [--query key=value ...] [--body <json>] [--body-text <text>] [--transport auto|direct|matched-tls|page] [--cookies] [--follow-redirects]
 
 Browser State:
-  cookies [domain]
-  storage [domain]
   state [domain]
+
+SDK:
+  exec <expression>   Run JS with the Opensteer SDK as 'this'. Supports await.
 
 Computer:
   computer click <x> <y> [--button left|right|middle] [--count <n>] [--modifiers Shift,Control,Alt,Meta] [--capture-network <label>]

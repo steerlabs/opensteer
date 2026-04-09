@@ -18,10 +18,7 @@ const OPERATION_ALIASES = new Map<string, OpensteerSemanticOperationName>([
   ["tab close", "page.close"],
   ["network query", "network.query"],
   ["network detail", "network.detail"],
-  ["replay", "network.replay"],
   ["fetch", "session.fetch"],
-  ["cookies", "session.cookies"],
-  ["storage", "session.storage"],
   ["state", "session.state"],
   ["computer click", "computer.execute"],
   ["computer type", "computer.execute"],
@@ -66,7 +63,7 @@ export function resolveCommandLength(tokens: readonly string[]): number {
   if (tokens[0] === "skills") {
     return Math.min(tokens.length, 2);
   }
-  if (tokens[0] === "status" || tokens[0] === "record") {
+  if (tokens[0] === "status" || tokens[0] === "record" || tokens[0] === "exec") {
     return 1;
   }
   for (let length = Math.min(3, tokens.length); length >= 1; length -= 1) {

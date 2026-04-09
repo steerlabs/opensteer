@@ -168,27 +168,14 @@ export async function buildOperationInput(
         ...(limit === undefined ? {} : { limit }),
       };
     }
-    case "network.detail":
+    case "network.detail": {
       if (parsed.rest[0] === undefined) {
         throw new Error("network detail requires a record id.");
       }
+      const probeFlag = readOptionalBoolean(parsed.rawOptions, "probe");
       return {
         recordId: parsed.rest[0],
-      };
-    case "network.replay": {
-      if (parsed.rest[0] === undefined) {
-        throw new Error("replay requires a record id.");
-      }
-      const query = parseKeyValueList(parsed.rawOptions.get("query"));
-      const headers = parseKeyValueList(parsed.rawOptions.get("header"));
-      const bodyJson = readJsonValue(parsed.rawOptions, "body");
-      const variables = readJsonObject(parsed.rawOptions, "variables");
-      return {
-        recordId: parsed.rest[0],
-        ...(query === undefined ? {} : { query }),
-        ...(headers === undefined ? {} : { headers }),
-        ...(bodyJson === undefined ? {} : { body: { json: bodyJson } }),
-        ...(variables === undefined ? {} : { variables }),
+        ...(probeFlag === undefined ? {} : { probe: probeFlag }),
       };
     }
     case "session.fetch": {

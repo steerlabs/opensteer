@@ -8,7 +8,7 @@ import { Opensteer } from "../../packages/opensteer/src/index.js";
 let baseUrl = "";
 let closeServer: (() => Promise<void>) | undefined;
 
-describe.sequential("network replay", () => {
+describe.sequential("network capture and fetch", () => {
   beforeAll(async () => {
     const server = createServer((request, response) => {
       void handleRequest(request, response);
@@ -30,7 +30,7 @@ describe.sequential("network replay", () => {
     await closeServer?.();
   });
 
-  test("replays captured POST bodies even when the content-type is misleading", async () => {
+  test("captures POST traffic and replays via fetch", async () => {
     const opensteer = new Opensteer({
       workspace: "network-replay-local",
       browser: "temporary",
@@ -53,15 +53,21 @@ describe.sequential("network replay", () => {
       }
 
       const detail = await opensteer.network.detail(target.recordId);
-      const replay = await opensteer.network.replay(target.recordId);
-      expect(replay.response.status).toBe(200);
-      expect(replay.data).toMatchObject({
+      expect(detail.summary.method).toBe("POST");
+      expect(detail.requestBody?.contentType).toBe("application/x-www-form-urlencoded");
+
+      const fetchResponse = await opensteer.fetch(`${baseUrl}/api/replayable`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: JSON.stringify({ query: "opensteer", limit: 10 }),
+      });
+      const fetchData = await fetchResponse.json();
+      expect(fetchResponse.status).toBe(200);
+      expect(fetchData).toMatchObject({
         ok: true,
         echoedQuery: "opensteer",
         echoedLimit: 10,
       });
-      expect(detail.summary.method).toBe("POST");
-      expect(detail.requestBody?.contentType).toBe("application/x-www-form-urlencoded");
     } finally {
       await opensteer.close().catch(() => undefined);
     }

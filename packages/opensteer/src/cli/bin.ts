@@ -31,6 +31,7 @@ import { runOpensteerCloudRecordCommand, runOpensteerRecordCommand } from "./rec
 import { runOpensteerSkillsInstaller } from "./skills-installer.js";
 import { collectOpensteerStatus, renderOpensteerStatus } from "./status.js";
 import { resolveOperation } from "./commands.js";
+import { runExecExpression } from "./exec.js";
 
 const emitProcessWarning = process.emitWarning.bind(process);
 
@@ -98,6 +99,11 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (parsed.command[0] === "exec") {
+    await handleExecCommand(parsed);
+    return;
+  }
+
   const operation = resolveOperation(parsed.command);
   if (!operation) {
     throw new Error(`Unknown command: ${parsed.command.join(" ")}`);
@@ -146,6 +152,34 @@ async function main(): Promise<void> {
     process.stdout.write(renderOperationOutput(renderOperation, result, input));
   } finally {
     await runtime.disconnect().catch(() => undefined);
+  }
+}
+
+async function handleExecCommand(parsed: ParsedCommandLine): Promise<void> {
+  if (parsed.options.workspace === undefined) {
+    throw new Error('exec requires "--workspace <id>" or OPENSTEER_WORKSPACE.');
+  }
+  const expression = parsed.rest.join(" ");
+  if (!expression) {
+    throw new Error("exec requires an expression. Example: exec \"await this.evaluate('document.title')\"");
+  }
+
+  const { Opensteer } = await import("../sdk/opensteer.js");
+  const opensteer = new Opensteer({
+    workspace: parsed.options.workspace,
+    rootDir: process.cwd(),
+    ...(parsed.options.browser === undefined ? {} : { browser: parsed.options.browser }),
+    ...(parsed.options.launch === undefined ? {} : { launch: parsed.options.launch }),
+    ...(parsed.options.context === undefined ? {} : { context: parsed.options.context }),
+  });
+
+  try {
+    const result = await runExecExpression(opensteer, expression);
+    if (result !== undefined) {
+      process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+    }
+  } finally {
+    await opensteer.disconnect().catch(() => undefined);
   }
 }
 

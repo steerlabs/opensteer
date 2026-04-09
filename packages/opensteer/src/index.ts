@@ -171,8 +171,6 @@ export type {
   OpensteerNetworkDetailResult,
   OpensteerNetworkQueryOptions,
   OpensteerNetworkQueryResult,
-  OpensteerNetworkReplayOptions,
-  OpensteerNetworkReplayResult,
   OpensteerStorageMap,
   OpensteerBrowserState,
   OpensteerOptions,
