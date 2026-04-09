@@ -11,8 +11,6 @@ import type {
   OpensteerNetworkDetailOutput,
   OpensteerNetworkQueryInput,
   OpensteerNetworkQueryOutput,
-  OpensteerNetworkReplayInput,
-  OpensteerNetworkReplayOutput,
   OpensteerOpenInput,
   OpensteerOpenOutput,
   OpensteerPageActivateInput,
@@ -108,9 +106,15 @@ export type OpensteerGotoOptions = Omit<OpensteerPageGotoInput, "url">;
 export type OpensteerNetworkQueryOptions = OpensteerNetworkQueryInput;
 export type OpensteerNetworkQueryResult = OpensteerNetworkQueryOutput;
 export type OpensteerNetworkDetailResult = OpensteerNetworkDetailOutput;
-export type OpensteerNetworkReplayOptions = Omit<OpensteerNetworkReplayInput, "recordId">;
-export type OpensteerNetworkReplayResult = OpensteerNetworkReplayOutput;
-export type OpensteerFetchOptions = Omit<OpensteerSessionFetchInput, "url">;
+export interface OpensteerFetchOptions {
+  readonly method?: string;
+  readonly headers?: Record<string, string>;
+  readonly body?: string;
+  readonly query?: Record<string, string | number | boolean>;
+  readonly transport?: "auto" | "direct" | "matched-tls" | "page";
+  readonly cookies?: boolean;
+  readonly followRedirects?: boolean;
+}
 export type OpensteerComputerExecuteOptions = OpensteerComputerExecuteInput;
 export type OpensteerStorageMap = Readonly<Record<string, string>>;
 export type OpensteerBrowserState = OpensteerStateQueryOutput;
@@ -132,11 +136,7 @@ export interface OpensteerDomController {
 
 export interface OpensteerNetworkController {
   query(input?: OpensteerNetworkQueryOptions): Promise<OpensteerNetworkQueryResult>;
-  detail(recordId: string): Promise<OpensteerNetworkDetailResult>;
-  replay(
-    recordId: string,
-    overrides?: OpensteerNetworkReplayOptions,
-  ): Promise<OpensteerNetworkReplayResult>;
+  detail(recordId: string, options?: { probe?: boolean }): Promise<OpensteerNetworkDetailResult>;
 }
 
 export interface OpensteerOptions extends OpensteerRuntimeOptions {
@@ -244,12 +244,8 @@ export class Opensteer {
 
     this.network = {
       query: (input = {}) => this.queryNetwork(input),
-      detail: (recordId) => this.runtime.getNetworkDetail({ recordId }),
-      replay: (recordId, overrides = {}) =>
-        this.runtime.replayNetwork({
-          recordId,
-          ...overrides,
-        }),
+      detail: (recordId, options) =>
+        this.runtime.getNetworkDetail({ recordId, ...options }),
     };
   }
 
@@ -444,10 +440,8 @@ export class Opensteer {
   }
 
   async fetch(url: string, options: OpensteerFetchOptions = {}): Promise<Response> {
-    const result = await this.runtime.fetch({
-      url,
-      ...options,
-    });
+    const input = buildFetchInput(url, options);
+    const result = await this.runtime.fetch(input);
     if (result.response === undefined) {
       throw new Error(result.note ?? `session.fetch did not produce a response for ${url}`);
     }
@@ -570,6 +564,30 @@ function pickStorageDomainSnapshot(
     return snapshot.domains[0];
   }
   return snapshot.domains.find((entry) => entry.domain === domain);
+}
+
+function buildFetchInput(url: string, options: OpensteerFetchOptions): OpensteerSessionFetchInput {
+  return {
+    url,
+    ...(options.method !== undefined && { method: options.method }),
+    ...(options.headers !== undefined && { headers: options.headers }),
+    ...(options.query !== undefined && { query: options.query }),
+    ...(options.transport !== undefined && { transport: options.transport }),
+    ...(options.cookies !== undefined && { cookies: options.cookies }),
+    ...(options.followRedirects !== undefined && { followRedirects: options.followRedirects }),
+    ...(options.body !== undefined && { body: toRuntimeBody(options.body) }),
+  } as OpensteerSessionFetchInput;
+}
+
+// The runtime transport layer needs structured body input ({json} or {text})
+// to set content-type and encoding correctly. We sniff JSON here so callers
+// can pass standard fetch-style string bodies without knowing about the internal format.
+function toRuntimeBody(body: string): { json: unknown } | { text: string } {
+  try {
+    return { json: JSON.parse(body) };
+  } catch {
+    return { text: body };
+  }
 }
 
 function toResponse(response: OpensteerRequestResponseResult): Response {

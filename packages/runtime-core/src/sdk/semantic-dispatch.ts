@@ -67,11 +67,6 @@ export async function dispatchSemanticOperation(
         input as Parameters<OpensteerSemanticRuntime["getNetworkDetail"]>[0],
         options,
       );
-    case "network.replay":
-      return runtime.replayNetwork(
-        input as Parameters<OpensteerSemanticRuntime["replayNetwork"]>[0],
-        options,
-      );
     case "interaction.capture":
       return runtime.captureInteraction(
         input as Parameters<OpensteerSemanticRuntime["captureInteraction"]>[0],

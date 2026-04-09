@@ -538,7 +538,6 @@ export const opensteerSemanticOperationNames = [
   "dom.extract",
   "network.query",
   "network.detail",
-  "network.replay",
   "interaction.capture",
   "interaction.get",
   "interaction.diff",
@@ -576,7 +575,6 @@ export const opensteerExposedSemanticOperationNames = [
   "dom.extract",
   "network.query",
   "network.detail",
-  "network.replay",
   "interaction.capture",
   "interaction.get",
   "interaction.diff",
@@ -636,7 +634,6 @@ const opensteerPackageRunnableSemanticOperationNames = new Set<OpensteerSemantic
   "dom.extract",
   "network.query",
   "network.detail",
-  "network.replay",
   "interaction.capture",
   "interaction.get",
   "interaction.diff",
@@ -1625,14 +1622,6 @@ const opensteerSemanticOperationSpecificationsBase = [
     inputSchema: opensteerNetworkDetailInputSchema,
     outputSchema: opensteerNetworkDetailOutputSchema,
     requiredCapabilities: ["inspect.network", "inspect.networkBodies"],
-  }),
-  defineSemanticOperationSpec<OpensteerNetworkReplayInput, OpensteerNetworkReplayOutput>({
-    name: "network.replay",
-    description:
-      "Replay a captured request through the transport ladder and report the transport that worked.",
-    inputSchema: opensteerNetworkReplayInputSchema,
-    outputSchema: opensteerNetworkReplayOutputSchema,
-    requiredCapabilities: ["inspect.network", "inspect.cookies", "pages.manage"],
   }),
   defineSemanticOperationSpec<OpensteerInteractionCaptureInput, OpensteerInteractionCaptureOutput>({
     name: "interaction.capture",

@@ -354,6 +354,52 @@ describe.sequential("cross-document action boundary", () => {
     }
   }, 60_000);
 
+  test("reuses persisted input descriptors through the SDK wrapper", async () => {
+    const opensteer = createLocalOpensteer({
+      workspace: "navigation-network-persisted-input",
+      browser: "temporary",
+      launch: {
+        headless: true,
+      },
+    });
+
+    try {
+      await opensteer.open(`${baseUrl}/sdk/same-document-enter`);
+      await opensteer.input({
+        selector: "#search-input",
+        text: "airpods",
+        persist: "search input descriptor",
+      });
+      await opensteer.input({
+        persist: "search input descriptor",
+        text: "airpods",
+        pressEnter: true,
+        captureNetwork: "persisted-input",
+      });
+
+      await expect(
+        opensteer.extract({
+          persist: "persisted input hydration status",
+          schema: {
+            status: {
+              selector: "#hydration-status",
+            },
+          },
+        }),
+      ).resolves.toEqual({
+        status: "hydrated",
+      });
+
+      const { records } = await opensteer.queryNetwork({
+        capture: "persisted-input",
+        limit: 20,
+      });
+      expect(records.find((entry) => entry.url.includes("/sdk/api/hydration"))?.status).toBe(200);
+    } finally {
+      await opensteer.close().catch(() => undefined);
+    }
+  }, 60_000);
+
   test("pressEnter submits even when typing keeps bootstrap trackers noisy", async () => {
     const opensteer = createLocalOpensteer({
       workspace: "navigation-network-noisy-enter",
@@ -485,6 +531,45 @@ describe.sequential("cross-document action boundary", () => {
           url: `${baseUrl}/sdk/api/hydration`,
         }),
       ).toEqual([]);
+    } finally {
+      await opensteer.close().catch(() => undefined);
+      await rm(rootPath, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test("records session.fetch failures without crashing trace logging when no transport succeeds", async () => {
+    const rootPath = await mkdtemp(path.join(os.tmpdir(), "opensteer-fetch-trace-"));
+    const opensteer = createLocalOpensteer({
+      workspace: "session-fetch-trace-failure",
+      rootPath,
+      cleanupRootOnClose: false,
+      browser: "temporary",
+      launch: {
+        headless: true,
+      },
+    });
+
+    try {
+      await opensteer.open(`${baseUrl}/sdk/hydration-enter`);
+      await expect(
+        opensteer.fetch("http://127.0.0.1:1/unreachable", {
+          transport: "direct",
+        }),
+      ).rejects.toThrow(/no transport completed successfully|session\.fetch did not produce a response/i);
+
+      const traces = await readTraceEntries(rootPath);
+      const fetchTrace = [...traces]
+        .reverse()
+        .find((entry) => entry.operation === "session.fetch" && entry.outcome === "ok") as
+        | {
+            readonly data?: Record<string, unknown>;
+          }
+        | undefined;
+      expect(fetchTrace?.data).toMatchObject({
+        attempts: 1,
+        url: "http://127.0.0.1:1/unreachable",
+      });
+      expect(fetchTrace?.data && "transport" in fetchTrace.data).toBe(false);
     } finally {
       await opensteer.close().catch(() => undefined);
       await rm(rootPath, { recursive: true, force: true });

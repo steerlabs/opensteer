@@ -27,13 +27,8 @@ export function renderOperationOutput(
       return formatNetworkQueryOutput(result, input);
     case "network.detail":
       return formatNetworkDetailOutput(result);
-    case "network.replay":
     case "session.fetch":
       return renderJson(formatTransportOutput(result, operation));
-    case "session.cookies":
-      return formatCookiesOutput(result);
-    case "session.storage":
-      return formatStorageOutput(result);
     case "session.state":
       return formatStateOutput(result);
     case "computer.execute":
@@ -242,6 +237,36 @@ function formatNetworkDetailOutput(result: unknown): string {
     });
   }
 
+  const transportProbe = readObjectField(result, "transportProbe");
+  if (transportProbe !== undefined) {
+    const recommended = readStringField(transportProbe, "recommended");
+    const probeAttempts = readArrayField(transportProbe, "attempts");
+    lines.push(
+      "",
+      `Transport probe${recommended === undefined ? "" : ` (recommended: ${recommended})`}:`,
+    );
+    for (const attempt of probeAttempts) {
+      const transport = readStringField(attempt, "transport") ?? "?";
+      const ok = readBooleanField(attempt, "ok") === true;
+      const status = readNumberField(attempt, "status");
+      const durationMs = readNumberField(attempt, "durationMs");
+      const error = readStringField(attempt, "error");
+      const marker = ok ? "ok" : "fail";
+      lines.push(
+        `  ${transport}: ${marker}${status === undefined ? "" : ` ${String(status)}`}${durationMs === undefined ? "" : ` (${String(durationMs)}ms)`}${error === undefined ? "" : ` - ${error}`}`,
+      );
+    }
+    if (recommended !== undefined) {
+      const summary = readObjectField(result, "summary");
+      const method = readStringField(summary, "method") ?? "GET";
+      const url = readStringField(summary, "url") ?? "";
+      lines.push(
+        "",
+        `-> SDK: await this.fetch("${url}", { method: "${method}" })`,
+      );
+    }
+  }
+
   const notes = readArrayField(result, "notes")
     .map((entry) => (typeof entry === "string" ? entry : undefined))
     .filter((entry): entry is string => entry !== undefined);
@@ -254,7 +279,7 @@ function formatNetworkDetailOutput(result: unknown): string {
 
 function formatTransportOutput(
   result: unknown,
-  operation: "network.replay" | "session.fetch",
+  operation: "session.fetch",
 ): Record<string, unknown> {
   if (result === null || typeof result !== "object") {
     return { result };
@@ -282,9 +307,6 @@ function formatTransportOutput(
       ? undefined
       : readNumberField(body, "originalByteLength") ?? readNumberField(body, "capturedByteLength");
   const output: Record<string, unknown> = {
-    ...(operation === "network.replay" && readStringField(result, "recordId") !== undefined
-      ? { recordId: readStringField(result, "recordId") }
-      : {}),
     ...(readStringField(result, "transport") === undefined
       ? {}
       : { transport: readStringField(result, "transport") }),
