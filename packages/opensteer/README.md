@@ -69,11 +69,12 @@ const records = await opensteer.network.query({
   json: true,
 });
 
-const detail = await opensteer.network.detail(records.records[0]!.recordId);
-const replay = await opensteer.network.replay(records.records[0]!.recordId);
+const detail = await opensteer.network.detail(records.records[0]!.recordId, {
+  probe: true,
+});
 
 console.log(detail.summary.url);
-console.log(replay.transport);
+console.log(detail.transportProbe?.recommended);
 ```
 
 ## `session.fetch()`
@@ -187,8 +188,7 @@ Use `snapshot("action")` or `snapshot("extraction")` during exploration. The sna
 - `scroll({ direction, amount, element? | selector? | persist?, captureNetwork? })`
 - `extract({ schema } | { persist, schema? })`
 - `network.query(input?)`
-- `network.detail(recordId)`
-- `network.replay(recordId, overrides?)`
+- `network.detail(recordId, { probe?: boolean })`
 - `waitForNetwork(input?)`
 - `waitForResponse(input?)`
 - `waitForPage(input?)`

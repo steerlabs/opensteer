@@ -5,8 +5,8 @@ import {
   isErrorEnvelope,
   opensteerSemanticRestEndpoints,
   type OpensteerError,
-  type OpensteerResponseEnvelope,
   type OpensteerSemanticOperationName,
+  type OpensteerResponseEnvelope,
   type OpensteerSessionCloseOutput,
 } from "@opensteer/protocol";
 
@@ -33,20 +33,27 @@ export class OpensteerSemanticRestError extends Error {
   }
 }
 
+export interface OpensteerSemanticRestInvokeOptions {
+  readonly signal?: AbortSignal | undefined;
+  readonly timeoutMs?: number | undefined;
+}
+
 export class OpensteerSemanticRestClient {
   constructor(private readonly connection: OpensteerSemanticRestConnection) {}
 
   async invoke<TInput, TOutput>(
     operation: OpensteerSemanticOperationName,
     input: TInput,
+    options: OpensteerSemanticRestInvokeOptions = {},
   ): Promise<TOutput> {
-    return this.invokeInternal(operation, input, false);
+    return this.invokeInternal(operation, input, false, options);
   }
 
   private async invokeInternal<TInput, TOutput>(
     operation: OpensteerSemanticOperationName,
     input: TInput,
     hasRetried: boolean,
+    options: OpensteerSemanticRestInvokeOptions,
   ): Promise<TOutput> {
     const endpoint = opensteerSemanticRestEndpoints.find((entry) => entry.name === operation);
     if (!endpoint) {
@@ -64,9 +71,12 @@ export class OpensteerSemanticRestClient {
         headers: {
           authorization: await this.connection.getAuthorizationHeader(),
           "content-type": "application/json; charset=utf-8",
+          ...(options.timeoutMs === undefined
+            ? {}
+            : { "x-opensteer-timeout-ms": String(options.timeoutMs) }),
         },
         body: JSON.stringify(request),
-        signal: AbortSignal.timeout(30_000),
+        signal: createRequestSignal(options),
       });
     } catch (error) {
       if (operation === "session.close" && isFetchFailure(error)) {
@@ -87,7 +97,7 @@ export class OpensteerSemanticRestClient {
         this.connection.handleError &&
         (await this.connection.handleError(error, { operation }))
       ) {
-        return this.invokeInternal(operation, input, true);
+        return this.invokeInternal(operation, input, true, options);
       }
       if (operation === "session.close" && isFetchFailure(error)) {
         return { closed: true } as TOutput;
@@ -99,6 +109,14 @@ export class OpensteerSemanticRestClient {
   async closeSession(): Promise<OpensteerSessionCloseOutput> {
     return this.invoke("session.close", {});
   }
+}
+
+function createRequestSignal(options: OpensteerSemanticRestInvokeOptions): AbortSignal {
+  const timeoutSignal = AbortSignal.timeout(options.timeoutMs ?? 30_000);
+  if (options.signal === undefined) {
+    return timeoutSignal;
+  }
+  return AbortSignal.any([options.signal, timeoutSignal]);
 }
 
 function isFetchFailure(error: unknown): boolean {

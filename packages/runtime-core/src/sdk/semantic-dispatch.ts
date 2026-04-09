@@ -8,6 +8,7 @@ export async function dispatchSemanticOperation(
   input: unknown,
   options: {
     readonly signal?: AbortSignal;
+    readonly timeoutMs?: number;
   } = {},
 ): Promise<unknown> {
   switch (operation) {

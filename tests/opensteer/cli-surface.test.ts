@@ -121,6 +121,20 @@ describe("CLI surface parsing", () => {
     });
   });
 
+  test("accepts context transport on fetch", async () => {
+    const parsed = parseCommandLine([
+      "fetch",
+      "https://example.com/api/search",
+      "--transport",
+      "context",
+    ]);
+
+    await expect(buildOperationInput("session.fetch", parsed, DUMMY_RUNTIME)).resolves.toEqual({
+      url: "https://example.com/api/search",
+      transport: "context",
+    });
+  });
+
   test("reads open context from --context", () => {
     const parsed = parseCommandLine([
       "open",

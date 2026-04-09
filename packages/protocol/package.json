@@ -6,6 +6,21 @@
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/steerlabs/opensteer.git",
+    "directory": "packages/protocol"
+  },
+  "bugs": {
+    "url": "https://github.com/steerlabs/opensteer/issues"
+  },
+  "homepage": "https://github.com/steerlabs/opensteer/tree/main/packages/protocol#readme",
+  "keywords": [
+    "opensteer",
+    "protocol",
+    "schemas",
+    "browser-automation"
+  ],
   "engines": {
     "node": ">=22"
   },

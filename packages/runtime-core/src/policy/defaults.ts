@@ -28,7 +28,6 @@ const DEFAULT_TIMEOUTS: Readonly<Record<string, number>> = {
   "dom.extract": 15_000,
   "network.query": 15_000,
   "network.detail": 15_000,
-  "network.replay": 30_000,
   "scripts.capture": 15_000,
   "session.cookies": 10_000,
   "session.storage": 10_000,

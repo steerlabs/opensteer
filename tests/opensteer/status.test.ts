@@ -94,6 +94,7 @@ describe("opensteer status", () => {
       const rendered = renderOpensteerStatus(status);
       expect(rendered).toContain("Provider resolution");
       expect(rendered).toContain("current: cloud");
+      expect(rendered).toMatch(/session_123\s+https:\/\/api\.opensteer\.dev/u);
       expect(rendered).toMatch(/\* cloud\s+connected/u);
       expect(rendered).toMatch(/\s local\s+active/u);
     } finally {

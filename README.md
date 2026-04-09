@@ -67,17 +67,23 @@ try {
 
 ## Skills
 
-Opensteer ships a first-party skill pack at [skills/opensteer/SKILL.md](./skills/opensteer/SKILL.md). Install it through the upstream [`skills`](https://skills.sh) CLI for Claude Code, Codex, and other compatible agents.
+Opensteer ships first-party skills from [skills/opensteer/SKILL.md](./skills/opensteer/SKILL.md). They install through the upstream [`skills`](https://skills.sh) CLI into Codex, Cursor, Claude Code, and other compatible agents.
 
 ```bash
 npx --yes opensteer@latest skills install
 ```
 
-For Claude Code specifically:
+Install explicitly into the three agents supported in this repo today:
 
 ```bash
-npx --yes opensteer@latest skills install --agent claude-code
+npx --yes opensteer@latest skills install --agent codex --agent cursor --agent claude-code
 ```
+
+Project-local install paths from the current `skills` CLI are:
+
+- Codex: `.agents/skills/`
+- Cursor: `.agents/skills/`
+- Claude Code: `.claude/skills/`
 
 List the skills available in this repository without installing them:
 
@@ -105,7 +111,7 @@ docs/
 - `packages/engine-playwright`: default Playwright-backed engine
 - `packages/engine-abp`: optional Agent Browser Protocol engine
 - `packages/browser-core`, `packages/protocol`: shared contracts and core primitives
-- `skills/opensteer`: first-party Opensteer skill pack for `skills.sh`-compatible agents
+- `skills/opensteer`: canonical first-party Opensteer skill pack
 
 This repository includes cloud client code and shared cloud contracts. The managed Opensteer Cloud service is operated separately.
 
