@@ -44,6 +44,7 @@ If the user wants to manually drive a browser and record the flow, use the `reco
 6. Use `exec` for SDK code and API experiments. Use `evaluate` only for page-context JavaScript.
 7. If `fetch()` fails with auth errors, inspect `state()`, `cookies()`, and `storage()` before changing transport.
 8. Keep the final output simple. Prefer ordinary TypeScript with `Opensteer`, not extra abstraction unless the user asks for it.
+9. Close the browser when you are done. Do not leave headed browser windows running on the user's machine. Use `opensteer browser delete --workspace <id>` or the matching SDK cleanup when the session does not need to stay open.
 
 ## Choose A Path
 
