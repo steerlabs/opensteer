@@ -104,12 +104,6 @@ export interface OpensteerConformanceTarget {
         readonly data?: unknown;
       };
     }>;
-    replay(recordId: string): Promise<{
-      readonly attempts: readonly unknown[];
-      readonly response?: {
-        readonly status: number;
-      };
-    }>;
   };
   queryNetwork(input?: OpensteerNetworkQueryInput): Promise<OpensteerNetworkQueryOutput>;
   route?(input: {
@@ -366,7 +360,7 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
   {
     id: "network-capture",
     family: "network-capture",
-    description: "queries captured traffic, inspects details, and replays a captured request",
+    description: "queries captured traffic and inspects request details",
     async run({ target, urls }) {
       await target.open(urls.main);
       const networkUrl = new URL("/api/network?kind=live", urls.baseUrl).href;
@@ -398,12 +392,6 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
       assert(
         detail.requestHeaders.length > 0 || detail.responseHeaders.length > 0,
         "expected network.detail to expose request or response headers",
-      );
-
-      const replay = await target.network.replay(record.recordId);
-      assert(
-        replay.attempts.length > 0 && (replay.response?.status ?? 0) >= 200,
-        "expected network.replay to attempt at least one transport and return a successful response",
       );
     },
   },

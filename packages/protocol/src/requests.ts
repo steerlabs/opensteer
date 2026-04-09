@@ -456,6 +456,10 @@ export interface OpensteerNetworkDetailOutput {
   };
   readonly redirectChain?: readonly OpensteerNetworkRedirectHop[];
   readonly notes?: readonly string[];
+  readonly transportProbe?: {
+    readonly recommended?: TransportKind;
+    readonly attempts: readonly OpensteerReplayAttempt[];
+  };
 }
 
 export interface OpensteerReplayAttempt {
@@ -1558,6 +1562,21 @@ const opensteerNetworkRedirectHopSchema: JsonSchema = objectSchema(
   },
 );
 
+const opensteerReplayAttemptSchema: JsonSchema = objectSchema(
+  {
+    transport: transportKindSchema,
+    status: integerSchema({ minimum: 100, maximum: 599 }),
+    ok: { type: "boolean" },
+    durationMs: integerSchema({ minimum: 0 }),
+    note: stringSchema(),
+    error: stringSchema(),
+  },
+  {
+    title: "OpensteerReplayAttempt",
+    required: ["transport", "ok", "durationMs"],
+  },
+);
+
 export const opensteerNetworkDetailOutputSchema: JsonSchema = objectSchema(
   {
     recordId: stringSchema({ minLength: 1 }),
@@ -1582,25 +1601,20 @@ export const opensteerNetworkDetailOutputSchema: JsonSchema = objectSchema(
     ),
     redirectChain: arraySchema(opensteerNetworkRedirectHopSchema),
     notes: arraySchema(stringSchema()),
+    transportProbe: objectSchema(
+      {
+        recommended: transportKindSchema,
+        attempts: arraySchema(opensteerReplayAttemptSchema),
+      },
+      {
+        title: "OpensteerTransportProbeResult",
+        required: ["attempts"],
+      },
+    ),
   },
   {
     title: "OpensteerNetworkDetailOutput",
     required: ["recordId", "summary", "requestHeaders", "responseHeaders"],
-  },
-);
-
-const opensteerReplayAttemptSchema: JsonSchema = objectSchema(
-  {
-    transport: transportKindSchema,
-    status: integerSchema({ minimum: 100, maximum: 599 }),
-    ok: { type: "boolean" },
-    durationMs: integerSchema({ minimum: 0 }),
-    note: stringSchema(),
-    error: stringSchema(),
-  },
-  {
-    title: "OpensteerReplayAttempt",
-    required: ["transport", "ok", "durationMs"],
   },
 );
 

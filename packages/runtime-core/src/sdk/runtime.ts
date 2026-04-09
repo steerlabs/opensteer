@@ -1341,6 +1341,7 @@ export class OpensteerSessionRuntime {
   async getNetworkDetail(
     input: {
       readonly recordId: string;
+      readonly probe?: boolean;
     },
     options: RuntimeOperationOptions = {},
   ): Promise<OpensteerNetworkDetailOutput> {
@@ -1353,7 +1354,12 @@ export class OpensteerSessionRuntime {
             includeBodies: true,
             redactSecretHeaders: false,
           });
-          return this.buildNetworkDetail(record, timeout);
+          const detail = await this.buildNetworkDetail(record, timeout);
+          if (input.probe !== true) {
+            return detail;
+          }
+          const transportProbe = await this.probeTransportsForRecord(record, timeout);
+          return transportProbe === undefined ? detail : { ...detail, transportProbe };
         },
         options,
       );
@@ -1377,59 +1383,6 @@ export class OpensteerSessionRuntime {
     } catch (error) {
       await this.appendTrace({
         operation: "network.detail",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "error",
-        error,
-        context: buildRuntimeTraceContext({
-          sessionRef: this.sessionRef,
-          pageRef: this.pageRef,
-        }),
-      });
-      throw error;
-    }
-  }
-
-  async replayNetwork(
-    input: OpensteerNetworkReplayInput,
-    options: RuntimeOperationOptions = {},
-  ): Promise<OpensteerNetworkReplayOutput> {
-    const startedAt = Date.now();
-    try {
-      const output = await this.runWithOperationTimeout(
-        "network.replay",
-        async (timeout) => {
-          const source = await this.resolveNetworkRecordByRecordId(input.recordId, timeout, {
-            includeBodies: true,
-            redactSecretHeaders: false,
-          });
-          const replayRequest = buildReplayTransportRequest(source, input);
-          return this.executeNetworkReplay(source, replayRequest, timeout, {
-            ...(input.pageRef === undefined ? {} : { pageRef: input.pageRef }),
-          });
-        },
-        options,
-      );
-
-      await this.appendTrace({
-        operation: "network.replay",
-        startedAt,
-        completedAt: Date.now(),
-        outcome: "ok",
-        data: {
-          recordId: input.recordId,
-          transport: output.transport,
-          attempts: output.attempts.length,
-        },
-        context: buildRuntimeTraceContext({
-          sessionRef: this.sessionRef,
-          pageRef: this.pageRef,
-        }),
-      });
-      return output;
-    } catch (error) {
-      await this.appendTrace({
-        operation: "network.replay",
         startedAt,
         completedAt: Date.now(),
         outcome: "error",
@@ -2141,7 +2094,7 @@ export class OpensteerSessionRuntime {
         completedAt: Date.now(),
         outcome: "ok",
         data: {
-          transport: output.transport,
+          ...(output.transport === undefined ? {} : { transport: output.transport }),
           attempts: output.attempts.length,
           ...(output.response === undefined ? {} : { status: output.response.status }),
           url: input.url,
@@ -3140,6 +3093,55 @@ export class OpensteerSessionRuntime {
     };
   }
 
+  private async probeTransportsForRecord(
+    record: NetworkQueryRecord,
+    timeout: TimeoutExecutionContext,
+  ): Promise<
+    | { readonly recommended?: TransportKind; readonly attempts: readonly OpensteerReplayAttempt[] }
+    | undefined
+  > {
+    if (record.record.status === undefined) {
+      return undefined;
+    }
+    const request = buildReplayTransportRequest(record, { recordId: record.recordId });
+    const fingerprint = buildCapturedRecordSuccessFingerprint(record);
+    const attempts: OpensteerReplayAttempt[] = [];
+    let recommended: TransportKind | undefined;
+
+    for (const transport of REPLAY_TRANSPORT_LADDER) {
+      const attemptStartedAt = Date.now();
+      try {
+        const output = await this.executeReplayTransportAttempt(
+          transport,
+          request,
+          timeout,
+        );
+        const ok = matchesSuccessFingerprintFromProtocolResponse(output.response, fingerprint);
+        attempts.push({
+          transport,
+          status: output.response.status,
+          ok,
+          durationMs: Date.now() - attemptStartedAt,
+        });
+        if (ok && recommended === undefined) {
+          recommended = transport;
+        }
+      } catch (error) {
+        attempts.push({
+          transport,
+          ok: false,
+          durationMs: Date.now() - attemptStartedAt,
+          error: normalizeRuntimeErrorMessage(error),
+        });
+      }
+    }
+
+    return {
+      ...(recommended === undefined ? {} : { recommended }),
+      attempts,
+    };
+  }
+
   private async buildRedirectChain(
     record: NetworkQueryRecord,
     timeout: TimeoutExecutionContext,
@@ -3292,73 +3294,6 @@ export class OpensteerSessionRuntime {
     };
   }
 
-  private async executeNetworkReplay(
-    source: NetworkQueryRecord,
-    request: {
-      readonly method: string;
-      readonly url: string;
-      readonly headers?: readonly HeaderEntry[];
-      readonly body?: BrowserBodyPayload;
-      readonly followRedirects?: boolean;
-    },
-    timeout: TimeoutExecutionContext,
-    options: {
-      readonly pageRef?: PageRef;
-    },
-  ): Promise<OpensteerNetworkReplayOutput> {
-    const fingerprint = buildCapturedRecordSuccessFingerprint(source);
-    const attempts: OpensteerReplayAttempt[] = [];
-    let lastOutput: OpensteerRawRequestOutput | undefined;
-
-    for (const transport of REPLAY_TRANSPORT_LADDER) {
-      const attemptStartedAt = Date.now();
-      try {
-        const output = await this.executeReplayTransportAttempt(
-          transport,
-          request,
-          timeout,
-          options.pageRef,
-        );
-        lastOutput = output;
-        const ok = matchesSuccessFingerprintFromProtocolResponse(output.response, fingerprint);
-        attempts.push({
-          transport,
-          status: output.response.status,
-          ok,
-          durationMs: Date.now() - attemptStartedAt,
-        });
-        if (ok) {
-          const fallbackNote =
-            attempts.length > 1 ? buildReplayFallbackNote(attempts, transport) : undefined;
-          const previewData = toStructuredPreviewData(output.data);
-          return {
-            recordId: source.recordId,
-            transport,
-            attempts,
-            response: output.response,
-            ...(previewData === undefined ? {} : { data: previewData }),
-            ...(fallbackNote === undefined ? {} : { note: fallbackNote }),
-          };
-        }
-      } catch (error) {
-        attempts.push({
-          transport,
-          ok: false,
-          durationMs: Date.now() - attemptStartedAt,
-          error: normalizeRuntimeErrorMessage(error),
-        });
-      }
-    }
-
-    const previewData = toStructuredPreviewData(lastOutput?.data);
-    return {
-      recordId: source.recordId,
-      attempts,
-      ...(lastOutput?.response === undefined ? {} : { response: lastOutput.response }),
-      ...(previewData === undefined ? {} : { data: previewData }),
-      note: "all replay transports failed to reproduce the captured response",
-    };
-  }
 
   private async executeSessionFetch(
     request: {

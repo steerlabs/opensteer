@@ -286,4 +286,68 @@ describe("Opensteer v2 CLI", () => {
       await rm(cwd, { recursive: true, force: true });
     }
   }, 60_000);
+
+  test("exec validates provider and engine compatibility like other workspace commands", async () => {
+    await ensureCliArtifactsBuilt();
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "opensteer-cli-exec-provider-engine-"));
+
+    try {
+      const execution = execFile(
+        "node",
+        [
+          CLI_SCRIPT,
+          "exec",
+          "--workspace",
+          "exec-provider-engine",
+          "--provider",
+          "cloud",
+          "--engine",
+          "abp",
+          "1",
+        ],
+        {
+          cwd,
+          maxBuffer: 1024 * 1024 * 4,
+        },
+      );
+
+      await expect(execution).rejects.toMatchObject({
+        stderr: expect.stringContaining(
+          "ABP is not supported for provider=cloud. Cloud provider currently requires Playwright.",
+        ),
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test("exec rejects cloud-only overrides unless cloud provider is selected", async () => {
+    await ensureCliArtifactsBuilt();
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "opensteer-cli-exec-cloud-overrides-"));
+
+    try {
+      const execution = execFile(
+        "node",
+        [
+          CLI_SCRIPT,
+          "exec",
+          "--workspace",
+          "exec-cloud-overrides",
+          "--cloud-base-url",
+          "https://api.opensteer.dev",
+          "1",
+        ],
+        {
+          cwd,
+          maxBuffer: 1024 * 1024 * 4,
+        },
+      );
+
+      await expect(execution).rejects.toMatchObject({
+        stderr: expect.stringContaining("Cloud-specific options require provider=cloud."),
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

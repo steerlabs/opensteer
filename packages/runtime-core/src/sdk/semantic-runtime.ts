@@ -15,8 +15,6 @@ import type {
   OpensteerNetworkQueryInput,
   OpensteerNetworkQueryOutput,
   OpensteerNetworkDetailOutput,
-  OpensteerNetworkReplayInput,
-  OpensteerNetworkReplayOutput,
   OpensteerCookieQueryInput,
   OpensteerCookieQueryOutput,
   OpensteerStorageQueryInput,
@@ -132,13 +130,10 @@ export interface OpensteerSemanticRuntime {
   getNetworkDetail(
     input: {
       readonly recordId: string;
+      readonly probe?: boolean;
     },
     options?: OpensteerRuntimeOperationOptions,
   ): Promise<OpensteerNetworkDetailOutput>;
-  replayNetwork(
-    input: OpensteerNetworkReplayInput,
-    options?: OpensteerRuntimeOperationOptions,
-  ): Promise<OpensteerNetworkReplayOutput>;
   captureInteraction(
     input: OpensteerInteractionCaptureInput,
     options?: OpensteerRuntimeOperationOptions,
