@@ -14,7 +14,7 @@ import {
 } from "./parse.js";
 
 const CLICK_BUTTONS = new Set(["left", "middle", "right"]);
-const FETCH_TRANSPORTS = new Set(["auto", "direct", "matched-tls", "page"]);
+const FETCH_TRANSPORTS = new Set(["auto", "direct", "matched-tls", "context", "page"]);
 const CAPTCHA_PROVIDERS = new Set(["2captcha", "capsolver"]);
 const CAPTCHA_TYPES = new Set(["recaptcha-v2", "hcaptcha", "turnstile"]);
 const SANDBOX_FIDELITIES = new Set(["minimal", "standard", "full"]);
@@ -523,11 +523,15 @@ function readClickButton(value: string | undefined): "left" | "middle" | "right"
   return value as "left" | "middle" | "right";
 }
 
-function readFetchTransport(value: string | undefined): "auto" | "direct" | "matched-tls" | "page" {
+function readFetchTransport(
+  value: string | undefined,
+): "auto" | "direct" | "matched-tls" | "context" | "page" {
   if (value === undefined || !FETCH_TRANSPORTS.has(value)) {
-    throw new Error('Expected "--transport" to be one of: auto, direct, matched-tls, page.');
+    throw new Error(
+      'Expected "--transport" to be one of: auto, direct, matched-tls, context, page.',
+    );
   }
-  return value as "auto" | "direct" | "matched-tls" | "page";
+  return value as "auto" | "direct" | "matched-tls" | "context" | "page";
 }
 
 function readCaptchaProvider(value: string | undefined): "2captcha" | "capsolver" {

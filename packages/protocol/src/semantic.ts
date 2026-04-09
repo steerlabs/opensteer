@@ -1730,6 +1730,7 @@ const opensteerSemanticOperationSpecificationsBase = [
         case "direct":
           return [];
         case "matched-tls":
+        case "context":
           return ["inspect.cookies"];
         case "page":
           return ["pages.manage"];

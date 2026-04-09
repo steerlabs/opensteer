@@ -270,7 +270,7 @@ describe("Phase 3 filesystem root", () => {
     await root.registry.savedNetwork.save(
       [
         {
-          recordId: "record:body-preserve-refresh",
+          recordId: "record:body-preserve",
           savedAt: 200,
           record: {
             kind: "http",
@@ -316,6 +316,79 @@ describe("Phase 3 filesystem root", () => {
           requestId: "request:body-preserve",
           responseBodyState: "complete",
           responseBody,
+        },
+      },
+    ]);
+  });
+
+  test("keeps distinct saved-network rows when separate records reuse the same scope request ids", async () => {
+    const rootPath = await createTemporaryRoot();
+    const root = await createFilesystemOpensteerWorkspace({ rootPath });
+
+    await root.registry.savedNetwork.save(
+      [
+        {
+          recordId: "record:network-collision-1",
+          savedAt: 100,
+          record: {
+            kind: "http",
+            requestId: "request:shared",
+            sessionRef: "session:shared",
+            pageRef: "page:shared",
+            method: "GET",
+            url: "https://example.com/a",
+            requestHeaders: [],
+            responseHeaders: [],
+            status: 200,
+            resourceType: "fetch",
+            navigationRequest: false,
+            captureState: "complete",
+            requestBodyState: "skipped",
+            responseBodyState: "skipped",
+          },
+        },
+        {
+          recordId: "record:network-collision-2",
+          savedAt: 200,
+          record: {
+            kind: "http",
+            requestId: "request:shared",
+            sessionRef: "session:shared",
+            pageRef: "page:shared",
+            method: "GET",
+            url: "https://example.com/b",
+            requestHeaders: [],
+            responseHeaders: [],
+            status: 200,
+            resourceType: "fetch",
+            navigationRequest: false,
+            captureState: "complete",
+            requestBodyState: "skipped",
+            responseBodyState: "skipped",
+          },
+        },
+      ],
+      {
+        bodyWriteMode: "authoritative",
+      },
+    );
+
+    await expect(
+      root.registry.savedNetwork.query({
+        requestId: "request:shared",
+        limit: 10,
+      }),
+    ).resolves.toMatchObject([
+      {
+        recordId: "record:network-collision-2",
+        record: {
+          url: "https://example.com/b",
+        },
+      },
+      {
+        recordId: "record:network-collision-1",
+        record: {
+          url: "https://example.com/a",
         },
       },
     ]);

@@ -29,7 +29,7 @@ Network:
   network query [--capture <label>] [--url <pattern>] [--hostname <host>] [--path <path>] [--method <m>] [--status <code>] [--type <resourceType>] [--json] [--before <id>] [--after <id>] [--limit <n>]
     --json filters to JSON and GraphQL responses only
   network detail <recordId> [--probe]
-  fetch <url> [--method <m>] [--header key=value ...] [--query key=value ...] [--body <json>] [--body-text <text>] [--transport auto|direct|matched-tls|page] [--cookies] [--follow-redirects]
+  fetch <url> [--method <m>] [--header key=value ...] [--query key=value ...] [--body <json>] [--body-text <text>] [--transport auto|direct|matched-tls|context|page] [--cookies] [--follow-redirects]
 
 Browser State:
   state [domain]

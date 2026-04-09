@@ -5,10 +5,9 @@ import type {
   BrowserProfileImportDescriptor,
   CloudSessionRecordingState,
   CloudBrowserProfilePreference,
+  CloudRequestPlanImportRequest,
   CloudRegistryImportEntry,
   CloudRegistryImportResponse,
-  CloudSelectorCacheImportEntry,
-  CloudSelectorCacheImportResponse,
   OpensteerSessionAccessGrantResponse,
   OpensteerSessionGrant,
   OpensteerSessionGrantKind,
@@ -27,7 +26,6 @@ export interface OpensteerCloudSessionCreateInput {
   readonly sourceType?: "manual" | "local-cloud";
   readonly sourceRef?: string;
   readonly localWorkspaceRootPath?: string;
-  readonly locality?: "auto" | "off";
 }
 
 export interface OpensteerCloudSessionDescriptor {
@@ -46,6 +44,11 @@ interface OpensteerCloudSessionCloseDescriptor {
   readonly status?: string;
 }
 
+interface CloudRequestOptions {
+  readonly signal?: AbortSignal | undefined;
+  readonly timeoutMs?: number | undefined;
+}
+
 const CLOUD_CLOSE_TIMEOUT_MS = 60_000;
 const CLOUD_CLOSE_POLL_INTERVAL_MS = 250;
 
@@ -60,23 +63,27 @@ export class OpensteerCloudClient {
 
   async createSession(
     input: OpensteerCloudSessionCreateInput = {},
+    options: CloudRequestOptions = {},
   ): Promise<OpensteerCloudSessionDescriptor> {
-    const response = await this.request("/v1/sessions", {
-      method: "POST",
-      body: {
-        ...(input.name === undefined ? {} : { name: input.name }),
-        ...(input.browser === undefined ? {} : { browser: input.browser }),
-        ...(input.context === undefined ? {} : { context: input.context }),
-        ...(input.browserProfile === undefined ? {} : { browserProfile: input.browserProfile }),
-        ...(input.observability === undefined ? {} : { observability: input.observability }),
-        ...(input.sourceType === undefined ? {} : { sourceType: input.sourceType }),
-        ...(input.sourceRef === undefined ? {} : { sourceRef: input.sourceRef }),
-        ...(input.localWorkspaceRootPath === undefined
-          ? {}
-          : { localWorkspaceRootPath: input.localWorkspaceRootPath }),
-        ...(input.locality === undefined ? {} : { locality: input.locality }),
+    const response = await this.request(
+      "/v1/sessions",
+      {
+        method: "POST",
+        body: {
+          ...(input.name === undefined ? {} : { name: input.name }),
+          ...(input.browser === undefined ? {} : { browser: input.browser }),
+          ...(input.context === undefined ? {} : { context: input.context }),
+          ...(input.browserProfile === undefined ? {} : { browserProfile: input.browserProfile }),
+          ...(input.observability === undefined ? {} : { observability: input.observability }),
+          ...(input.sourceType === undefined ? {} : { sourceType: input.sourceType }),
+          ...(input.sourceRef === undefined ? {} : { sourceRef: input.sourceRef }),
+          ...(input.localWorkspaceRootPath === undefined
+            ? {}
+            : { localWorkspaceRootPath: input.localWorkspaceRootPath }),
+        },
       },
-    });
+      options,
+    );
 
     return (await response.json()) as OpensteerCloudSessionDescriptor;
   }
@@ -88,23 +95,35 @@ export class OpensteerCloudClient {
     return response.json();
   }
 
-  async getSession(sessionId: string): Promise<OpensteerCloudSessionState> {
-    const response = await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}`, {
-      method: "GET",
-    });
+  async getSession(
+    sessionId: string,
+    options: CloudRequestOptions = {},
+  ): Promise<OpensteerCloudSessionState> {
+    const response = await this.request(
+      `/v1/sessions/${encodeURIComponent(sessionId)}`,
+      {
+        method: "GET",
+      },
+      options,
+    );
     return (await response.json()) as OpensteerCloudSessionState;
   }
 
   async issueAccess(
     sessionId: string,
     capabilities: readonly OpensteerSessionGrantKind[],
+    options: CloudRequestOptions = {},
   ): Promise<OpensteerSessionAccessGrantResponse> {
-    const response = await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/access`, {
-      method: "POST",
-      body: {
-        capabilities,
+    const response = await this.request(
+      `/v1/sessions/${encodeURIComponent(sessionId)}/access`,
+      {
+        method: "POST",
+        body: {
+          capabilities,
+        },
       },
-    });
+      options,
+    );
     return (await response.json()) as OpensteerSessionAccessGrantResponse;
   }
 
@@ -205,33 +224,22 @@ export class OpensteerCloudClient {
     return syncBrowserProfileCookies(this, input);
   }
 
-  async importSelectorCache(
-    entries: readonly CloudSelectorCacheImportEntry[],
-  ): Promise<CloudSelectorCacheImportResponse> {
-    const response = await this.request("/selector-cache/import", {
-      method: "POST",
-      body: {
-        entries: entries.map((entry) => ({
-          workspace: entry.workspace,
-          method: entry.method,
-          persistHash: entry.persistHash,
-          ...(entry.persist === undefined ? {} : { persist: entry.persist }),
-          path: entry.path,
-          ...(entry.schemaHash === undefined ? {} : { schemaHash: entry.schemaHash }),
-          createdAt: entry.createdAt,
-          updatedAt: entry.updatedAt,
-        })),
-      },
-    });
-    return (await response.json()) as CloudSelectorCacheImportResponse;
-  }
-
   async importDescriptors(
     entries: readonly CloudRegistryImportEntry[],
   ): Promise<CloudRegistryImportResponse> {
     const response = await this.request("/registry/descriptors/import", {
       method: "POST",
       body: { entries },
+    });
+    return (await response.json()) as CloudRegistryImportResponse;
+  }
+
+  async importRequestPlans(
+    input: CloudRequestPlanImportRequest,
+  ): Promise<CloudRegistryImportResponse> {
+    const response = await this.request("/registry/request-plans/import", {
+      method: "POST",
+      body: input,
     });
     return (await response.json()) as CloudRegistryImportResponse;
   }
@@ -253,6 +261,7 @@ export class OpensteerCloudClient {
       readonly method: "GET" | "POST" | "DELETE";
       readonly body?: unknown;
     },
+    options: CloudRequestOptions = {},
   ): Promise<Response> {
     const url = `${this.config.baseUrl}${pathname}`;
     let response: Response;
@@ -261,7 +270,7 @@ export class OpensteerCloudClient {
         method: init.method,
         headers: this.buildHeaders(),
         ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
-        signal: AbortSignal.timeout(30_000),
+        signal: createRequestSignal(options),
       });
     } catch (error) {
       throw wrapCloudFetchError(error, {
@@ -293,6 +302,14 @@ export class OpensteerCloudClient {
 
     throw new Error(`Timed out waiting for cloud session ${sessionId} to close.`);
   }
+}
+
+function createRequestSignal(options: CloudRequestOptions): AbortSignal {
+  const timeoutSignal = AbortSignal.timeout(options.timeoutMs ?? 30_000);
+  if (options.signal === undefined) {
+    return timeoutSignal;
+  }
+  return AbortSignal.any([options.signal, timeoutSignal]);
 }
 
 function delay(ms: number): Promise<void> {

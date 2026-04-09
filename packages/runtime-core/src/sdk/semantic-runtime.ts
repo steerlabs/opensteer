@@ -64,6 +64,7 @@ import type {
 
 export interface OpensteerRuntimeOperationOptions {
   readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
 }
 
 export interface OpensteerSemanticRuntime {

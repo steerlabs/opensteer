@@ -75,10 +75,14 @@ export type {
   InteractionTraceRecord,
   InteractionTraceRegistryStore,
   ListRegistryRecordsInput,
+  RequestPlanRecord,
+  RequestPlanRegistryStore,
   RegistryProvenance,
   ResolveRegistryRecordInput,
+  UpdateRequestPlanFreshnessInput,
   WriteDescriptorInput,
   WriteInteractionTraceInput,
+  WriteRequestPlanInput,
 } from "./registry.js";
 export type {
   ClickRecordedActionDetail,
@@ -126,3 +130,14 @@ export {
   FlowRecorderCollector,
   generateReplayScript,
 } from "./recorder/index.js";
+export type {
+  IterateSavedNetworkRecordBatchesOptions,
+  SavedNetworkBodyWriteMode,
+  SavedNetworkQueryInput,
+  SavedNetworkSaveOptions,
+  SavedNetworkStore,
+} from "./network/saved-store.js";
+export {
+  createSavedNetworkStore,
+  iterateSavedNetworkRecordBatches,
+} from "./network/saved-store.js";

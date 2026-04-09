@@ -29,6 +29,27 @@ const state = vi.hoisted(() => {
     dispose: abpEngineDispose,
   };
 
+  const createMockStderr = () => {
+    const dataListeners: Array<(chunk: string) => void> = [];
+    return {
+      setEncoding: vi.fn(),
+      on: vi.fn((event: string, listener: (chunk: string) => void) => {
+        if (event === "data") {
+          dataListeners.push(listener);
+        }
+      }),
+      unref: vi.fn(),
+    };
+  };
+
+  const createMockChild = () => ({
+    pid: 4242,
+    exitCode: null as number | null,
+    stderr: createMockStderr(),
+    unref: vi.fn(),
+    kill: vi.fn(() => true),
+  });
+
   return {
     page,
     context,
@@ -46,6 +67,21 @@ const state = vi.hoisted(() => {
       remoteDebuggingUrl: "http://127.0.0.1:9223",
     })),
     createAbpBrowserCoreEngine: vi.fn(async () => abpEngine),
+    createMockChild,
+    spawn: vi.fn(() => createMockChild()),
+    resolveChromeExecutablePath: vi.fn(() => "/mock/chromium"),
+    readDevToolsActivePort: vi.fn(() => null),
+    inspectCdpEndpoint: vi.fn(async () => {
+      throw new Error("inspectCdpEndpoint was not stubbed for this test.");
+    }),
+  };
+});
+
+vi.mock("node:child_process", async () => {
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  return {
+    ...actual,
+    spawn: state.spawn,
   };
 });
 
@@ -66,11 +102,46 @@ vi.mock("@opensteer/engine-abp", () => ({
   createAbpBrowserCoreEngine: state.createAbpBrowserCoreEngine,
 }));
 
+vi.mock("../../packages/opensteer/src/local-browser/chrome-discovery.js", async () => {
+  const actual = await vi.importActual<
+    typeof import("../../packages/opensteer/src/local-browser/chrome-discovery.js")
+  >("../../packages/opensteer/src/local-browser/chrome-discovery.js");
+  return {
+    ...actual,
+    readDevToolsActivePort: state.readDevToolsActivePort,
+    resolveChromeExecutablePath: state.resolveChromeExecutablePath,
+  };
+});
+
+vi.mock("../../packages/opensteer/src/local-browser/cdp-discovery.js", async () => {
+  const actual = await vi.importActual<
+    typeof import("../../packages/opensteer/src/local-browser/cdp-discovery.js")
+  >("../../packages/opensteer/src/local-browser/cdp-discovery.js");
+  return {
+    ...actual,
+    inspectCdpEndpoint: state.inspectCdpEndpoint,
+  };
+});
+
 import { OpensteerBrowserManager } from "../../packages/opensteer/src/browser-manager.js";
+
+function createInspectedEndpoint(port: number, label: string) {
+  return {
+    endpoint: `ws://127.0.0.1:${String(port)}/devtools/browser/${label}`,
+    httpUrl: `http://127.0.0.1:${String(port)}/`,
+    port,
+  };
+}
 
 describe("OpensteerBrowserManager", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    state.spawn.mockImplementation(() => state.createMockChild());
+    state.resolveChromeExecutablePath.mockReturnValue("/mock/chromium");
+    state.readDevToolsActivePort.mockReturnValue(null);
+    state.inspectCdpEndpoint.mockImplementation(async () => {
+      throw new Error("inspectCdpEndpoint was not stubbed for this test.");
+    });
   });
 
   test("starts Playwright detach on attached CDP browsers during disposal", async () => {
@@ -91,6 +162,119 @@ describe("OpensteerBrowserManager", () => {
     expect(state.createPlaywrightBrowserCoreEngine).toHaveBeenCalledTimes(1);
     expect(state.engineDispose).toHaveBeenCalledTimes(1);
     expect(state.browser.close).toHaveBeenCalledTimes(1);
+  });
+
+  test("launches persistent browsers with a caller-supplied fixed remote debugging port", async () => {
+    const rootPath = await mkdtemp(path.join(tmpdir(), "opensteer-browser-manager-fixed-port-"));
+
+    try {
+      state.inspectCdpEndpoint.mockImplementation(async ({ endpoint, timeoutMs }) => {
+        expect(timeoutMs).toBe(250);
+        if (endpoint === "http://127.0.0.1:9223") {
+          return createInspectedEndpoint(9223, "fixed-port");
+        }
+        throw new Error(`Unexpected CDP endpoint: ${endpoint}`);
+      });
+
+      const manager = new OpensteerBrowserManager({
+        rootPath,
+        workspace: "fixed-port",
+        launch: {
+          args: ["--remote-debugging-port=9223"],
+          timeoutMs: 250,
+        },
+      });
+
+      const engine = await manager.createEngine();
+      await engine.dispose?.();
+
+      const spawnedArgs = state.spawn.mock.calls[0]?.[1] as readonly string[] | undefined;
+      expect(spawnedArgs).toContain("--remote-debugging-port=9223");
+      expect(spawnedArgs).not.toContain("--remote-debugging-port=0");
+      expect(state.inspectCdpEndpoint).toHaveBeenCalledWith({
+        endpoint: "http://127.0.0.1:9223",
+        timeoutMs: 250,
+      });
+    } finally {
+      await rm(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  test("launches persistent browsers with split fixed-port launch args", async () => {
+    const rootPath = await mkdtemp(
+      path.join(tmpdir(), "opensteer-browser-manager-fixed-port-split-"),
+    );
+
+    try {
+      state.inspectCdpEndpoint.mockImplementation(async ({ endpoint, timeoutMs }) => {
+        expect(timeoutMs).toBe(400);
+        if (endpoint === "http://127.0.0.1:9333") {
+          return createInspectedEndpoint(9333, "split-port");
+        }
+        throw new Error(`Unexpected CDP endpoint: ${endpoint}`);
+      });
+
+      const manager = new OpensteerBrowserManager({
+        rootPath,
+        workspace: "split-port",
+        launch: {
+          args: ["--remote-debugging-port", "9333"],
+          timeoutMs: 400,
+        },
+      });
+
+      const engine = await manager.createEngine();
+      await engine.dispose?.();
+
+      const spawnedArgs = state.spawn.mock.calls[0]?.[1] as readonly string[] | undefined;
+      expect(spawnedArgs).toContain("--remote-debugging-port");
+      expect(spawnedArgs).toContain("9333");
+      expect(spawnedArgs).not.toContain("--remote-debugging-port=0");
+      expect(state.inspectCdpEndpoint).toHaveBeenCalledWith({
+        endpoint: "http://127.0.0.1:9333",
+        timeoutMs: 400,
+      });
+    } finally {
+      await rm(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps the existing auto-port flow when no fixed remote debugging port is supplied", async () => {
+    const rootPath = await mkdtemp(path.join(tmpdir(), "opensteer-browser-manager-auto-port-"));
+
+    try {
+      state.readDevToolsActivePort.mockReturnValue({
+        port: 54513,
+        webSocketPath: "/devtools/browser/auto-port",
+      });
+      state.inspectCdpEndpoint.mockImplementation(async ({ endpoint, timeoutMs }) => {
+        expect(timeoutMs).toBe(300);
+        if (endpoint === "http://127.0.0.1:54513") {
+          return createInspectedEndpoint(54513, "auto-port");
+        }
+        throw new Error(`Unexpected CDP endpoint: ${endpoint}`);
+      });
+
+      const manager = new OpensteerBrowserManager({
+        rootPath,
+        workspace: "auto-port",
+        launch: {
+          timeoutMs: 300,
+        },
+      });
+
+      const engine = await manager.createEngine();
+      await engine.dispose?.();
+
+      const spawnedArgs = state.spawn.mock.calls[0]?.[1] as readonly string[] | undefined;
+      expect(spawnedArgs).toContain("--remote-debugging-port=0");
+      expect(state.inspectCdpEndpoint).toHaveBeenCalledWith({
+        endpoint: "http://127.0.0.1:54513",
+        timeoutMs: 300,
+      });
+    } finally {
+      await rm(rootPath, { recursive: true, force: true });
+    }
   });
 
   test("reuses a persistent ABP workspace browser across manager instances", async () => {

@@ -25,6 +25,12 @@ packages/opensteer/skills/
 .opensteer/
 **/.opensteer/
 $HOME/
+/workspace.json
+/browser/
+/live/
+/observations/
+/registry/
+/traces/
 
 # Local editor and agent state
 .codex/

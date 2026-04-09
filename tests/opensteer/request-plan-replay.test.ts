@@ -32,6 +32,9 @@ describe.sequential("network capture and fetch", () => {
 
   test("captures POST traffic and replays via fetch", async () => {
     const opensteer = new Opensteer({
+      provider: {
+        mode: "local",
+      },
       workspace: "network-replay-local",
       browser: "temporary",
       launch: {
@@ -75,6 +78,9 @@ describe.sequential("network capture and fetch", () => {
 
   test("preserves plain string fetch bodies as text payloads", async () => {
     const opensteer = new Opensteer({
+      provider: {
+        mode: "local",
+      },
       workspace: "sdk-fetch-string-body",
     });
 
@@ -98,6 +104,9 @@ describe.sequential("network capture and fetch", () => {
 
   test("accepts structured runtime request bodies through SDK fetch", async () => {
     const opensteer = new Opensteer({
+      provider: {
+        mode: "local",
+      },
       workspace: "sdk-fetch-structured-body",
     });
 
@@ -119,6 +128,72 @@ describe.sequential("network capture and fetch", () => {
       });
     } finally {
       await opensteer.disconnect().catch(() => undefined);
+    }
+  }, 60_000);
+
+  test("preserves full request bodies in network detail for replay", async () => {
+    const opensteer = new Opensteer({
+      provider: {
+        mode: "local",
+      },
+      workspace: "network-detail-full-request-body",
+      browser: "temporary",
+      launch: {
+        headless: true,
+      },
+    });
+
+    try {
+      await opensteer.open(`${baseUrl}/request-plan-large`);
+      await opensteer.evaluate("async () => window.runLargeReplayablePost()");
+
+      const { records } = await opensteer.queryNetwork({
+        limit: 20,
+        includeBodies: true,
+      });
+      const target = records.find((entry) => entry.url.includes("/api/replayable-large"));
+      if (target === undefined) {
+        throw new Error("expected to capture the large replayable POST request");
+      }
+
+      const detail = await opensteer.network.detail(target.recordId);
+      expect(detail.requestBody?.contentType).toBe("application/json");
+      const requestBodyData = detail.requestBody?.data;
+      expect(requestBodyData).toMatchObject({
+        operationName: "LargeSearchQuery",
+        variables: {
+          limit: 5,
+        },
+      });
+      if (
+        requestBodyData === undefined ||
+        typeof requestBodyData !== "object" ||
+        requestBodyData === null ||
+        !("query" in requestBodyData) ||
+        typeof requestBodyData.query !== "string"
+      ) {
+        throw new Error("expected a replayable JSON request body");
+      }
+      expect(requestBodyData.query.length).toBeGreaterThan(6_000);
+
+      const replayResponse = await opensteer.fetch(`${baseUrl}/api/replayable-large`, {
+        method: "POST",
+        headers: Object.fromEntries(
+          detail.requestHeaders.map((header) => [header.name, header.value]),
+        ),
+        body: {
+          json: requestBodyData,
+          contentType: detail.requestBody.contentType,
+        },
+      });
+
+      await expect(replayResponse.json()).resolves.toMatchObject({
+        ok: true,
+        operationName: "LargeSearchQuery",
+        queryLength: expect.any(Number),
+      });
+    } finally {
+      await opensteer.close().catch(() => undefined);
     }
   }, 60_000);
 });
@@ -149,6 +224,33 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
+  if (url.pathname === "/request-plan-large") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(`<!doctype html>
+<html lang="en">
+  <body>
+    <script>
+      const largeQuery = "query LargeSearchQuery { " + "x".repeat(7000) + " }";
+      window.runLargeReplayablePost = () =>
+        fetch("/api/replayable-large", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            operationName: "LargeSearchQuery",
+            query: largeQuery,
+            variables: {
+              limit: 5,
+            },
+          }),
+        }).then((result) => result.json());
+    </script>
+  </body>
+</html>`);
+    return;
+  }
+
   if (url.pathname === "/api/replayable") {
     const body = await readBody(request);
     const parsed = JSON.parse(body) as {
@@ -162,6 +264,27 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
         echoedQuery: parsed.query ?? null,
         echoedLimit: parsed.limit ?? null,
         contentType: request.headers["content-type"] ?? null,
+      }),
+    );
+    return;
+  }
+
+  if (url.pathname === "/api/replayable-large") {
+    const body = await readBody(request);
+    const parsed = JSON.parse(body) as {
+      readonly operationName?: string;
+      readonly query?: string;
+      readonly variables?: {
+        readonly limit?: number;
+      };
+    };
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    response.end(
+      JSON.stringify({
+        ok: true,
+        operationName: parsed.operationName ?? null,
+        queryLength: parsed.query?.length ?? 0,
+        limit: parsed.variables?.limit ?? null,
       }),
     );
     return;

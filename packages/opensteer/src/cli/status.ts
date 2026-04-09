@@ -248,5 +248,7 @@ function formatLaneRow(input: {
   const provider = input.provider.padEnd(7, " ");
   const status = input.status.padEnd(9, " ");
   const summary = input.summary.padEnd(16, " ");
-  return `${input.marker} ${provider} ${status} ${summary}${input.detail ?? ""}`.trimEnd();
+  return `${input.marker} ${provider} ${status} ${summary}${
+    input.detail === undefined ? "" : ` ${input.detail}`
+  }`.trimEnd();
 }

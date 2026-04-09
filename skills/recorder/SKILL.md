@@ -81,4 +81,4 @@ Cloud recording requires:
 ## References
 
 - [Recorder Reference](references/recorder-reference.md)
-- [Opensteer SDK Reference](../opensteer/references/sdk-reference.md)
+- [Opensteer Skill](../opensteer/SKILL.md)

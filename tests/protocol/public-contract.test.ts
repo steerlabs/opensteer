@@ -226,6 +226,15 @@ describe("semantic protocol validation", () => {
     ).not.toThrow();
   });
 
+  test("accepts context transport on session.fetch", () => {
+    expect(() =>
+      assertValidSemanticOperationInput("session.fetch", {
+        url: "https://example.com/api/search",
+        transport: "context",
+      }),
+    ).not.toThrow();
+  });
+
   test("accepts dom.extract with schema-only and named replay inputs", () => {
     expect(() =>
       assertValidSemanticOperationInput("dom.extract", {
