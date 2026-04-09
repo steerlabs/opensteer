@@ -115,11 +115,7 @@ async function main(): Promise<void> {
     );
   }
 
-  const engineName = resolveCliEngineName(parsed);
-  const provider = resolveCliProvider(parsed);
-  assertProviderSupportsEngine(provider.mode, engineName);
-  assertCloudCliOptionsMatchProvider(parsed, provider.mode);
-  const runtimeProvider = buildCliRuntimeProvider(parsed, provider.mode);
+  const { engineName, provider, runtimeProvider } = resolveCliRuntimeSelection(parsed);
 
   if (operation === "session.close") {
     await handleCloseCommand(parsed, engineName, provider.mode, runtimeProvider);
@@ -164,10 +160,13 @@ async function handleExecCommand(parsed: ParsedCommandLine): Promise<void> {
     throw new Error("exec requires an expression. Example: exec \"await this.evaluate('document.title')\"");
   }
 
+  const { engineName, runtimeProvider } = resolveCliRuntimeSelection(parsed);
   const { Opensteer } = await import("../sdk/opensteer.js");
   const opensteer = new Opensteer({
     workspace: parsed.options.workspace,
     rootDir: process.cwd(),
+    ...(runtimeProvider === undefined ? {} : { provider: runtimeProvider }),
+    engineName,
     ...(parsed.options.browser === undefined ? {} : { browser: parsed.options.browser }),
     ...(parsed.options.launch === undefined ? {} : { launch: parsed.options.launch }),
     ...(parsed.options.context === undefined ? {} : { context: parsed.options.context }),
@@ -454,6 +453,23 @@ function buildCliExplicitProvider(parsed: ParsedCommandLine): OpensteerProviderO
     return { mode: "cloud" };
   }
   return undefined;
+}
+
+function resolveCliRuntimeSelection(parsed: ParsedCommandLine): {
+  readonly engineName: OpensteerEngineName;
+  readonly provider: OpensteerResolvedProvider;
+  readonly runtimeProvider: OpensteerProviderOptions | undefined;
+} {
+  const engineName = resolveCliEngineName(parsed);
+  const provider = resolveCliProvider(parsed);
+  assertProviderSupportsEngine(provider.mode, engineName);
+  assertCloudCliOptionsMatchProvider(parsed, provider.mode);
+  const runtimeProvider = buildCliRuntimeProvider(parsed, provider.mode);
+  return {
+    engineName,
+    provider,
+    runtimeProvider,
+  };
 }
 
 function resolveCliEngineName(parsed: ParsedCommandLine): OpensteerEngineName {
