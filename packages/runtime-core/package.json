@@ -1,6 +1,6 @@
 {
   "name": "@opensteer/runtime-core",
-  "version": "0.1.7",
+  "version": "0.2.0",
   "description": "Shared semantic runtime for Opensteer local and cloud execution.",
   "license": "MIT",
   "type": "module",
