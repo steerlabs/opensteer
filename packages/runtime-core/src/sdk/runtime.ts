@@ -1472,7 +1472,6 @@ export class OpensteerSessionRuntime {
     );
   }
 
-
   async captureInteraction(
     input: OpensteerInteractionCaptureInput,
     options: RuntimeOperationOptions = {},
@@ -3111,11 +3110,7 @@ export class OpensteerSessionRuntime {
     for (const transport of REPLAY_TRANSPORT_LADDER) {
       const attemptStartedAt = Date.now();
       try {
-        const output = await this.executeReplayTransportAttempt(
-          transport,
-          request,
-          timeout,
-        );
+        const output = await this.executeReplayTransportAttempt(transport, request, timeout);
         const ok = matchesSuccessFingerprintFromProtocolResponse(output.response, fingerprint);
         attempts.push({
           transport,
@@ -3293,7 +3288,6 @@ export class OpensteerSessionRuntime {
       }),
     };
   }
-
 
   private async executeSessionFetch(
     request: {

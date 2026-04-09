@@ -6,7 +6,12 @@ import { promisify } from "node:util";
 const execFile = promisify(execFileCallback);
 const CLI_SCRIPT = path.resolve(process.cwd(), "packages/opensteer/dist/cli/bin.js");
 const CLI_BUILD_LOCK = path.resolve(process.cwd(), ".opensteer", "test-locks", "cli-build");
-const CLI_BUILD_STAMP = path.resolve(process.cwd(), ".opensteer", "test-locks", "cli-build-ready.json");
+const CLI_BUILD_STAMP = path.resolve(
+  process.cwd(),
+  ".opensteer",
+  "test-locks",
+  "cli-build-ready.json",
+);
 const CLI_BUILD_TIMEOUT_MS = 120_000;
 const CLI_BUILD_POLL_INTERVAL_MS = 100;
 const CLI_BUILD_INPUTS = [
@@ -112,7 +117,10 @@ async function isCliBuildReady(sourceMtimeMs: number): Promise<boolean> {
 async function getLatestCliInputMtimeMs(): Promise<number> {
   let latestMtimeMs = 0;
   for (const relativePath of CLI_BUILD_INPUTS) {
-    latestMtimeMs = Math.max(latestMtimeMs, await getLatestPathMtimeMs(path.resolve(process.cwd(), relativePath)));
+    latestMtimeMs = Math.max(
+      latestMtimeMs,
+      await getLatestPathMtimeMs(path.resolve(process.cwd(), relativePath)),
+    );
   }
   return latestMtimeMs;
 }

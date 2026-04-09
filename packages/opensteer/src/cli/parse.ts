@@ -2,10 +2,7 @@ import process from "node:process";
 
 import type { OpensteerBrowserOptions } from "@opensteer/protocol";
 
-import {
-  normalizeOpensteerProviderMode,
-  type OpensteerProviderMode,
-} from "../provider/config.js";
+import { normalizeOpensteerProviderMode, type OpensteerProviderMode } from "../provider/config.js";
 import { resolveCommandLength } from "./commands.js";
 
 export interface ParsedCliOptions {
@@ -246,7 +243,10 @@ export function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
   const cloudApiKey = readSingle(rawOptions, "cloud-api-key");
   const cloudAppBaseUrl = readSingle(rawOptions, "cloud-app-base-url");
   const cloudProfileId = readSingle(rawOptions, "cloud-profile-id");
-  const cloudProfileReuseIfActive = readOptionalBoolean(rawOptions, "cloud-profile-reuse-if-active");
+  const cloudProfileReuseIfActive = readOptionalBoolean(
+    rawOptions,
+    "cloud-profile-reuse-if-active",
+  );
   const json = readOptionalBoolean(rawOptions, "json");
   const agents = rawOptions.get("agent");
   const skills = rawOptions.get("skill");

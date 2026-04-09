@@ -186,9 +186,9 @@ const temporaryRoots: string[] = [];
 describe("runOpensteerRecordCommand", () => {
   afterEach(async () => {
     await Promise.all(
-      temporaryRoots.splice(0).map((rootPath) =>
-        rm(rootPath, { recursive: true, force: true }).catch(() => undefined),
-      ),
+      temporaryRoots
+        .splice(0)
+        .map((rootPath) => rm(rootPath, { recursive: true, force: true }).catch(() => undefined)),
     );
   });
 

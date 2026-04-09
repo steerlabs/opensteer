@@ -1104,9 +1104,12 @@ const opensteerNetworkDetailInputSchema: JsonSchema = objectSchema(
   },
 );
 
-const opensteerComputerMouseButtonSchema: JsonSchema = enumSchema(["left", "middle", "right"] as const, {
-  title: "OpensteerComputerMouseButton",
-});
+const opensteerComputerMouseButtonSchema: JsonSchema = enumSchema(
+  ["left", "middle", "right"] as const,
+  {
+    title: "OpensteerComputerMouseButton",
+  },
+);
 
 const opensteerComputerKeyModifierSchema: JsonSchema = enumSchema(
   ["Shift", "Control", "Alt", "Meta"] as const,
@@ -1190,10 +1193,7 @@ const opensteerDomExtractInputSchema: JsonSchema = defineSchema({
       title: "OpensteerDomExtractInput",
     },
   ),
-  anyOf: [
-    defineSchema({ required: ["persist"] }),
-    defineSchema({ required: ["schema"] }),
-  ],
+  anyOf: [defineSchema({ required: ["persist"] }), defineSchema({ required: ["schema"] })],
 });
 
 const jsonValueSchema: JsonSchema = recordSchema({}, { title: "JsonValueRecord" });
@@ -1704,7 +1704,8 @@ const opensteerSemanticOperationSpecificationsBase = [
   }),
   defineSemanticOperationSpec<OpensteerCookieQueryInput, OpensteerCookieQueryOutput>({
     name: "session.cookies",
-    description: "Read browser cookies for the active page domain or an explicitly selected domain.",
+    description:
+      "Read browser cookies for the active page domain or an explicitly selected domain.",
     inputSchema: opensteerCookieQueryInputSchema,
     outputSchema: opensteerCookieQueryOutputSchema,
     requiredCapabilities: ["inspect.cookies"],

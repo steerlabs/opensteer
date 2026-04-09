@@ -57,8 +57,12 @@ export function renderOperationOutput(
 
 function formatNavigationOutput(result: unknown): Record<string, unknown> {
   return {
-    ...(readStringField(result, "url") === undefined ? {} : { url: readStringField(result, "url") }),
-    ...(readStringField(result, "title") === undefined ? {} : { title: readStringField(result, "title") }),
+    ...(readStringField(result, "url") === undefined
+      ? {}
+      : { url: readStringField(result, "url") }),
+    ...(readStringField(result, "title") === undefined
+      ? {}
+      : { title: readStringField(result, "title") }),
   };
 }
 
@@ -79,8 +83,12 @@ function formatActionOutput(
 ): Record<string, unknown> {
   const target = readObjectField(result, "target");
   const output: Record<string, unknown> = {
-    ...(readStringField(target, "tagName") === undefined ? {} : { tagName: readStringField(target, "tagName") }),
-    ...(readStringField(target, "pathHint") === undefined ? {} : { pathHint: readStringField(target, "pathHint") }),
+    ...(readStringField(target, "tagName") === undefined
+      ? {}
+      : { tagName: readStringField(target, "tagName") }),
+    ...(readStringField(target, "pathHint") === undefined
+      ? {}
+      : { pathHint: readStringField(target, "pathHint") }),
   };
 
   const point = readObjectField(result, "point");
@@ -228,7 +236,10 @@ function formatNetworkDetailOutput(result: unknown): string {
 
   const redirectChain = readArrayField(result, "redirectChain");
   if (redirectChain.length > 0) {
-    lines.push("", `Redirect chain (${redirectChain.length} hop${redirectChain.length === 1 ? "" : "s"}):`);
+    lines.push(
+      "",
+      `Redirect chain (${redirectChain.length} hop${redirectChain.length === 1 ? "" : "s"}):`,
+    );
     redirectChain.forEach((hop, index) => {
       const location = readStringField(hop, "location");
       lines.push(
@@ -260,10 +271,7 @@ function formatNetworkDetailOutput(result: unknown): string {
       const summary = readObjectField(result, "summary");
       const method = readStringField(summary, "method") ?? "GET";
       const url = readStringField(summary, "url") ?? "";
-      lines.push(
-        "",
-        `-> SDK: await this.fetch("${url}", { method: "${method}" })`,
-      );
+      lines.push("", `-> SDK: await this.fetch("${url}", { method: "${method}" })`);
     }
   }
 
@@ -293,19 +301,24 @@ function formatTransportOutput(
     ...(readNumberField(attempt, "status") === undefined
       ? {}
       : { status: readNumberField(attempt, "status") }),
-    ...(readStringField(attempt, "note") === undefined ? {} : { note: readStringField(attempt, "note") }),
-    ...(readStringField(attempt, "error") === undefined ? {} : { error: readStringField(attempt, "error") }),
+    ...(readStringField(attempt, "note") === undefined
+      ? {}
+      : { note: readStringField(attempt, "note") }),
+    ...(readStringField(attempt, "error") === undefined
+      ? {}
+      : { error: readStringField(attempt, "error") }),
   }));
   const contentType =
     response === undefined
       ? undefined
-      : findHeaderValue(readArrayField(response, "headers"), "content-type") ??
-        readStringField(readObjectField(response, "body"), "mimeType");
+      : (findHeaderValue(readArrayField(response, "headers"), "content-type") ??
+        readStringField(readObjectField(response, "body"), "mimeType"));
   const body = readObjectField(response, "body");
   const bodySize =
     body === undefined
       ? undefined
-      : readNumberField(body, "originalByteLength") ?? readNumberField(body, "capturedByteLength");
+      : (readNumberField(body, "originalByteLength") ??
+        readNumberField(body, "capturedByteLength"));
   const output: Record<string, unknown> = {
     ...(readStringField(result, "transport") === undefined
       ? {}
@@ -342,7 +355,9 @@ function formatCookiesOutput(result: unknown): string {
   }
   const cookies = readArrayField(result, "cookies");
   const domain = readStringField(result, "domain");
-  const lines = [`[cookies] ${cookies.length} cookie${cookies.length === 1 ? "" : "s"}${domain === undefined ? "" : ` for ${domain}`}`];
+  const lines = [
+    `[cookies] ${cookies.length} cookie${cookies.length === 1 ? "" : "s"}${domain === undefined ? "" : ` for ${domain}`}`,
+  ];
   for (const cookie of cookies) {
     const flags = [
       readBooleanField(cookie, "session") === true ? "session" : undefined,
@@ -367,9 +382,16 @@ function formatStorageOutput(result: unknown): string {
     const domainName = readStringField(domain, "domain") ?? "unknown";
     const localStorage = readArrayField(domain, "localStorage");
     const sessionStorage = readArrayField(domain, "sessionStorage");
-    lines.push(`[storage] localStorage for ${domainName} (${localStorage.length} key${localStorage.length === 1 ? "" : "s"})`, "");
+    lines.push(
+      `[storage] localStorage for ${domainName} (${localStorage.length} key${localStorage.length === 1 ? "" : "s"})`,
+      "",
+    );
     lines.push(...localStorage.map((entry) => formatStorageEntry(entry)));
-    lines.push("", `[storage] sessionStorage for ${domainName} (${sessionStorage.length} key${sessionStorage.length === 1 ? "" : "s"})`, "");
+    lines.push(
+      "",
+      `[storage] sessionStorage for ${domainName} (${sessionStorage.length} key${sessionStorage.length === 1 ? "" : "s"})`,
+      "",
+    );
     lines.push(...sessionStorage.map((entry) => formatStorageEntry(entry)), "");
   }
   return `${lines.join("\n").trimEnd()}\n`;
@@ -401,10 +423,16 @@ function formatStateOutput(result: unknown): string {
       ),
     );
     const localStorage = readArrayField(domain, "localStorage");
-    lines.push("", `localStorage (${localStorage.length} key${localStorage.length === 1 ? "" : "s"}):`);
+    lines.push(
+      "",
+      `localStorage (${localStorage.length} key${localStorage.length === 1 ? "" : "s"}):`,
+    );
     lines.push(...localStorage.map((entry) => formatStorageEntry(entry)));
     const sessionStorage = readArrayField(domain, "sessionStorage");
-    lines.push("", `sessionStorage (${sessionStorage.length} key${sessionStorage.length === 1 ? "" : "s"}):`);
+    lines.push(
+      "",
+      `sessionStorage (${sessionStorage.length} key${sessionStorage.length === 1 ? "" : "s"}):`,
+    );
     lines.push(...sessionStorage.map((entry) => formatStorageEntry(entry)));
     const globals = readObjectField(domain, "globals");
     if (globals !== undefined) {
@@ -429,9 +457,15 @@ function formatComputerOutput(result: unknown): Record<string, unknown> {
       ? {}
       : {
           screenshot: {
-            ...(readStringField(payload, "uri") === undefined ? {} : { uri: readStringField(payload, "uri") }),
-            ...(readStringField(screenshot, "format") === undefined ? {} : { format: readStringField(screenshot, "format") }),
-            ...(readObjectField(screenshot, "size") === undefined ? {} : { size: readObjectField(screenshot, "size") }),
+            ...(readStringField(payload, "uri") === undefined
+              ? {}
+              : { uri: readStringField(payload, "uri") }),
+            ...(readStringField(screenshot, "format") === undefined
+              ? {}
+              : { format: readStringField(screenshot, "format") }),
+            ...(readObjectField(screenshot, "size") === undefined
+              ? {}
+              : { size: readObjectField(screenshot, "size") }),
           },
         }),
     ...(timing === undefined ? {} : { timingMs: timing }),
@@ -495,8 +529,12 @@ function formatInteractionTraceOutput(result: unknown): Record<string, unknown> 
     ...(readStringField(trace, "version") === undefined
       ? {}
       : { version: readStringField(trace, "version") }),
-    ...(readStringField(payload, "mode") === undefined ? {} : { mode: readStringField(payload, "mode") }),
-    ...(readStringField(payload, "url") === undefined ? {} : { url: readStringField(payload, "url") }),
+    ...(readStringField(payload, "mode") === undefined
+      ? {}
+      : { mode: readStringField(payload, "mode") }),
+    ...(readStringField(payload, "url") === undefined
+      ? {}
+      : { url: readStringField(payload, "url") }),
     ...(readArrayField(payload, "events").length === 0
       ? {}
       : { eventCount: readArrayField(payload, "events").length }),
@@ -557,7 +595,9 @@ function formatCaptchaSolveOutput(result: unknown): Record<string, unknown> {
               : { pageUrl: readStringField(captcha, "pageUrl") }),
           },
         }),
-    ...(readStringField(result, "token") === undefined ? {} : { token: readStringField(result, "token") }),
+    ...(readStringField(result, "token") === undefined
+      ? {}
+      : { token: readStringField(result, "token") }),
     ...(readBooleanField(result, "injected") === undefined
       ? {}
       : { injected: readBooleanField(result, "injected") }),
@@ -586,14 +626,18 @@ function formatInteractionDiffOutput(result: unknown): Record<string, unknown> {
 
 function formatInteractionReplayOutput(result: unknown): Record<string, unknown> {
   return {
-    ...(readStringField(result, "traceId") === undefined ? {} : { traceId: readStringField(result, "traceId") }),
+    ...(readStringField(result, "traceId") === undefined
+      ? {}
+      : { traceId: readStringField(result, "traceId") }),
     ...(readNumberField(result, "replayedEventCount") === undefined
       ? {}
       : { replayedEventCount: readNumberField(result, "replayedEventCount") }),
     ...(readBooleanField(result, "success") === undefined
       ? {}
       : { success: readBooleanField(result, "success") }),
-    ...(readStringField(result, "error") === undefined ? {} : { error: readStringField(result, "error") }),
+    ...(readStringField(result, "error") === undefined
+      ? {}
+      : { error: readStringField(result, "error") }),
   };
 }
 
@@ -746,7 +790,9 @@ function padRight(value: string, width: number): string {
 }
 
 function truncateInline(value: string, limit: number): string {
-  return value.length <= limit ? value : `${value.slice(0, Math.max(0, limit - 18))}...${value.length} chars`;
+  return value.length <= limit
+    ? value
+    : `${value.slice(0, Math.max(0, limit - 18))}...${value.length} chars`;
 }
 
 function stringifyValue(value: unknown): string {

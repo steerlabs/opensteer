@@ -48,8 +48,10 @@ describe("Opensteer v2 CLI", () => {
     });
 
     expect(result.stdout).toContain("Opensteer CLI");
-    expect(result.stdout).toContain("open <url> [--workspace <id>] [--headless] [--provider local|cloud]");
-    expect(result.stdout).toContain('extract <schema> [--persist <key>]');
+    expect(result.stdout).toContain(
+      "open <url> [--workspace <id>] [--headless] [--provider local|cloud]",
+    );
+    expect(result.stdout).toContain("extract <schema> [--persist <key>]");
     expect(result.stdout).toContain("--body <json>");
     expect(result.stdout).toContain("--workspace <id>");
     expect(result.stdout).toContain("--json filters to JSON and GraphQL responses only");

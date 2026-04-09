@@ -46,7 +46,6 @@ function resolveOpenBrowserCommand(url: string): {
 function isWsl(): boolean {
   return (
     process.platform === "linux" &&
-    (process.env.WSL_DISTRO_NAME !== undefined ||
-      os.release().toLowerCase().includes("microsoft"))
+    (process.env.WSL_DISTRO_NAME !== undefined || os.release().toLowerCase().includes("microsoft"))
   );
 }

@@ -41,8 +41,7 @@ export function resolveCloudConfig(
   if (!baseUrl || baseUrl.trim().length === 0) {
     throw new Error("provider=cloud requires OPENSTEER_BASE_URL or provider.baseUrl.");
   }
-  const appBaseUrl =
-    cloudProvider?.appBaseUrl ?? input.environment?.OPENSTEER_CLOUD_APP_BASE_URL;
+  const appBaseUrl = cloudProvider?.appBaseUrl ?? input.environment?.OPENSTEER_CLOUD_APP_BASE_URL;
 
   return {
     apiKey: apiKey.trim(),

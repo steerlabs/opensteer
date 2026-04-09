@@ -133,11 +133,11 @@ The first command shows: URL, method, request headers, cookies sent, request/res
 
 Add `--probe` to also test which transport works for this API:
 
-| Transport | Meaning | SDK usage |
-|---|---|---|
-| `direct-http` | Plain HTTP works | `this.fetch(url)` (default) |
+| Transport     | Meaning                        | SDK usage                                       |
+| ------------- | ------------------------------ | ----------------------------------------------- |
+| `direct-http` | Plain HTTP works               | `this.fetch(url)` (default)                     |
 | `matched-tls` | Needs TLS fingerprint matching | `this.fetch(url, { transport: "matched-tls" })` |
-| `page-http` | Needs a live browser page | `this.fetch(url, { transport: "page" })` |
+| `page-http`   | Needs a live browser page      | `this.fetch(url, { transport: "page" })`        |
 
 ### Step 4: Check browser state (if 401/403)
 
@@ -269,26 +269,26 @@ opensteer computer screenshot --workspace demo
 
 ## CLI Quick Reference
 
-| Command | Positional args | Key flags |
-|---|---|---|
-| `open <url>` | url | `--headless`, `--provider`, `--attach-endpoint`, `--attach-header` |
-| `close` | — | — |
-| `status` | — | — |
-| `goto <url>` | url | `--capture-network` |
-| `snapshot [mode]` | action \| extraction | — |
-| `click <element>` | element number | `--persist`, `--capture-network`, `--button` |
-| `hover <element>` | element number | `--persist`, `--capture-network` |
-| `input <element> <text>` | element, text | `--persist`, `--press-enter`, `--capture-network` |
-| `scroll <dir> <amount>` | direction, amount | `--element`, `--persist`, `--capture-network` |
-| `extract <schema>` | JSON schema | `--persist` |
-| `evaluate <script>` | JS expression | — |
-| `network query` | — | `--capture`, `--url`, `--hostname`, `--json`, `--limit`, +6 filters |
-| `network detail <id>` | recordId | `--probe` |
-| `fetch <url>` | url | `--method`, `--header`, `--query`, `--body`, `--transport`, `--cookies` |
-| `state [domain]` | domain (optional) | — |
-| `exec <expression>` | JS expression | — |
-| `tab list / new / <n> / close` | varies | — |
-| `computer click/type/key/scroll/move/drag/screenshot/wait` | varies | `--capture-network` |
+| Command                                                    | Positional args      | Key flags                                                               |
+| ---------------------------------------------------------- | -------------------- | ----------------------------------------------------------------------- |
+| `open <url>`                                               | url                  | `--headless`, `--provider`, `--attach-endpoint`, `--attach-header`      |
+| `close`                                                    | —                    | —                                                                       |
+| `status`                                                   | —                    | —                                                                       |
+| `goto <url>`                                               | url                  | `--capture-network`                                                     |
+| `snapshot [mode]`                                          | action \| extraction | —                                                                       |
+| `click <element>`                                          | element number       | `--persist`, `--capture-network`, `--button`                            |
+| `hover <element>`                                          | element number       | `--persist`, `--capture-network`                                        |
+| `input <element> <text>`                                   | element, text        | `--persist`, `--press-enter`, `--capture-network`                       |
+| `scroll <dir> <amount>`                                    | direction, amount    | `--element`, `--persist`, `--capture-network`                           |
+| `extract <schema>`                                         | JSON schema          | `--persist`                                                             |
+| `evaluate <script>`                                        | JS expression        | —                                                                       |
+| `network query`                                            | —                    | `--capture`, `--url`, `--hostname`, `--json`, `--limit`, +6 filters     |
+| `network detail <id>`                                      | recordId             | `--probe`                                                               |
+| `fetch <url>`                                              | url                  | `--method`, `--header`, `--query`, `--body`, `--transport`, `--cookies` |
+| `state [domain]`                                           | domain (optional)    | —                                                                       |
+| `exec <expression>`                                        | JS expression        | —                                                                       |
+| `tab list / new / <n> / close`                             | varies               | —                                                                       |
+| `computer click/type/key/scroll/move/drag/screenshot/wait` | varies               | `--capture-network`                                                     |
 
 ## SDK Quick Reference
 
@@ -336,11 +336,11 @@ const html = await opensteer.snapshot("extraction");
 
 ## Common Issues
 
-| Symptom | Fix |
-|---|---|
-| Element numbers wrong after navigation | Re-snapshot before using element numbers |
-| `fetch()` returns 401/403 | Check `state` — request depends on session cookies or tokens |
-| Direct HTTP blocked, browser transport works | Site uses TLS fingerprinting — use `transport: "matched-tls"` |
-| Extract returns empty data | Element numbers changed — re-snapshot and rebuild the schema |
-| `fetch()` fails with no session | Call `opensteer.goto(url)` first to establish cookies, then `fetch()` |
-| Using `evaluate` for API calls | Use `exec` instead — `evaluate` runs inside the page where anti-bot scripts can intercept requests |
+| Symptom                                      | Fix                                                                                                |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Element numbers wrong after navigation       | Re-snapshot before using element numbers                                                           |
+| `fetch()` returns 401/403                    | Check `state` — request depends on session cookies or tokens                                       |
+| Direct HTTP blocked, browser transport works | Site uses TLS fingerprinting — use `transport: "matched-tls"`                                      |
+| Extract returns empty data                   | Element numbers changed — re-snapshot and rebuild the schema                                       |
+| `fetch()` fails with no session              | Call `opensteer.goto(url)` first to establish cookies, then `fetch()`                              |
+| Using `evaluate` for API calls               | Use `exec` instead — `evaluate` runs inside the page where anti-bot scripts can intercept requests |

@@ -51,12 +51,14 @@ class FakeRecorderRuntimeAdapter implements RecorderRuntimeAdapter {
     if (input.pageRef === undefined) {
       throw new Error("Drain snapshots require an explicit pageRef.");
     }
-    return this.currentSnapshots[input.pageRef] ?? {
-      url: "about:blank",
-      focused: false,
-      visibilityState: "hidden",
-      events: [],
-    };
+    return (
+      this.currentSnapshots[input.pageRef] ?? {
+        url: "about:blank",
+        focused: false,
+        visibilityState: "hidden",
+        events: [],
+      }
+    );
   }
 
   async listPages(): Promise<{
