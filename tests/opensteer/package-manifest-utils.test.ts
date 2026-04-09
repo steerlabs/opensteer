@@ -10,7 +10,7 @@ describe("package manifest utils", () => {
     const manifest = {
       dependencies: {
         "@opensteer/runtime-core": "workspace:*",
-        "sharp": "^0.34.5",
+        sharp: "^0.34.5",
       },
       peerDependencies: {
         "@opensteer/engine-abp": "workspace:*",
@@ -29,7 +29,7 @@ describe("package manifest utils", () => {
     expect(rewritten).toEqual({
       dependencies: {
         "@opensteer/runtime-core": "0.1.7",
-        "sharp": "^0.34.5",
+        sharp: "^0.34.5",
       },
       peerDependencies: {
         "@opensteer/engine-abp": "0.8.7",

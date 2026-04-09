@@ -65,7 +65,10 @@ export function rewriteWorkspaceProtocolSpecifiers(manifest, workspacePackageVer
       if (!updatedDependencies) {
         updatedDependencies = { ...sourceDependencies };
       }
-      updatedDependencies[packageName] = resolveWorkspaceProtocolSpecifier(specifier, packageVersion);
+      updatedDependencies[packageName] = resolveWorkspaceProtocolSpecifier(
+        specifier,
+        packageVersion,
+      );
     }
 
     if (updatedDependencies) {

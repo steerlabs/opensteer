@@ -47,9 +47,13 @@ async function packPackage(packageDir, outDir) {
 }
 
 async function buildRuntimeArtifact(outDir) {
-  const { stdout } = await runCommand("node", ["scripts/build-runtime-artifact.mjs", "--out", outDir], {
-    cwd: repoRoot,
-  });
+  const { stdout } = await runCommand(
+    "node",
+    ["scripts/build-runtime-artifact.mjs", "--out", outDir],
+    {
+      cwd: repoRoot,
+    },
+  );
   const tarballPath = stdout
     .trim()
     .split("\n")
@@ -72,7 +76,9 @@ async function assertTarballHasNoWorkspaceSpecifiers(label, tarballPath) {
   const formattedSpecifiers = workspaceSpecifiers
     .map(({ section, packageName, specifier }) => `${section}.${packageName}=${specifier}`)
     .join(", ");
-  throw new Error(`${label} tarball still contains workspace protocol specifiers: ${formattedSpecifiers}`);
+  throw new Error(
+    `${label} tarball still contains workspace protocol specifiers: ${formattedSpecifiers}`,
+  );
 }
 
 async function readTarballManifest(tarballPath) {
