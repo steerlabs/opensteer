@@ -22,7 +22,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "opensteer:local": "node scripts/opensteer-local.mjs",
-    "package:check": "publint packages/browser-core && publint packages/engine-abp && publint packages/engine-playwright && publint packages/opensteer && publint packages/protocol && publint packages/runtime-core",
+    "package:check": "publint packages/browser-core && publint packages/engine-abp && publint packages/engine-playwright && publint packages/opensteer && publint packages/protocol && publint packages/runtime-core && node scripts/check-packed-manifests.mjs",
     "release:publish": "node scripts/publish-npm.mjs",
     "skills:check": "skills add . --list",
     "test": "vitest run --config vitest.config.ts --passWithNoTests",

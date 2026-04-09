@@ -3,6 +3,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 
+import {
+  readWorkspacePackageVersions,
+  rewriteWorkspaceProtocolSpecifiers,
+} from "./package-manifest-utils.mjs";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
 const packageDir = path.join(repoRoot, "packages", "opensteer");
@@ -49,7 +54,10 @@ if (!tarballName) {
 process.stdout.write(`${path.join(outDir, tarballName)}\n`);
 
 async function createRuntimePackageManifest() {
-  const packageJson = JSON.parse(await readFile(path.join(packageDir, "package.json"), "utf8"));
+  const packageJson = rewriteWorkspaceProtocolSpecifiers(
+    JSON.parse(await readFile(path.join(packageDir, "package.json"), "utf8")),
+    await readWorkspacePackageVersions(repoRoot),
+  );
 
   return {
     name: packageJson.name,

@@ -25,6 +25,7 @@ import type {
   OpensteerPageListOutput,
   OpensteerPageNewInput,
   OpensteerPageNewOutput,
+  OpensteerRequestBodyInput,
   OpensteerRequestResponseResult,
   OpensteerSessionCloseOutput,
   OpensteerSessionFetchInput,
@@ -106,15 +107,9 @@ export type OpensteerGotoOptions = Omit<OpensteerPageGotoInput, "url">;
 export type OpensteerNetworkQueryOptions = OpensteerNetworkQueryInput;
 export type OpensteerNetworkQueryResult = OpensteerNetworkQueryOutput;
 export type OpensteerNetworkDetailResult = OpensteerNetworkDetailOutput;
-export interface OpensteerFetchOptions {
-  readonly method?: string;
-  readonly headers?: Record<string, string>;
-  readonly body?: string;
-  readonly query?: Record<string, string | number | boolean>;
-  readonly transport?: "auto" | "direct" | "matched-tls" | "page";
-  readonly cookies?: boolean;
-  readonly followRedirects?: boolean;
-}
+export type OpensteerFetchOptions = Omit<OpensteerSessionFetchInput, "url" | "body"> & {
+  readonly body?: string | OpensteerRequestBodyInput;
+};
 export type OpensteerComputerExecuteOptions = OpensteerComputerExecuteInput;
 export type OpensteerStorageMap = Readonly<Record<string, string>>;
 export type OpensteerBrowserState = OpensteerStateQueryOutput;
@@ -136,7 +131,10 @@ export interface OpensteerDomController {
 
 export interface OpensteerNetworkController {
   query(input?: OpensteerNetworkQueryOptions): Promise<OpensteerNetworkQueryResult>;
-  detail(recordId: string, options?: { probe?: boolean }): Promise<OpensteerNetworkDetailResult>;
+  detail(
+    recordId: string,
+    options?: { readonly probe?: boolean },
+  ): Promise<OpensteerNetworkDetailResult>;
 }
 
 export interface OpensteerOptions extends OpensteerRuntimeOptions {
@@ -566,27 +564,38 @@ function pickStorageDomainSnapshot(
 }
 
 function buildFetchInput(url: string, options: OpensteerFetchOptions): OpensteerSessionFetchInput {
+  const { body, ...rest } = options;
   return {
     url,
-    ...(options.method !== undefined && { method: options.method }),
-    ...(options.headers !== undefined && { headers: options.headers }),
-    ...(options.query !== undefined && { query: options.query }),
-    ...(options.transport !== undefined && { transport: options.transport }),
-    ...(options.cookies !== undefined && { cookies: options.cookies }),
-    ...(options.followRedirects !== undefined && { followRedirects: options.followRedirects }),
-    ...(options.body !== undefined && { body: toRuntimeBody(options.body) }),
-  } as OpensteerSessionFetchInput;
+    ...rest,
+    ...(body === undefined ? {} : { body: normalizeFetchBody(body, rest.headers) }),
+  };
 }
 
-// The runtime transport layer needs structured body input ({json} or {text})
-// to set content-type and encoding correctly. We sniff JSON here so callers
-// can pass standard fetch-style string bodies without knowing about the internal format.
-function toRuntimeBody(body: string): { json: unknown } | { text: string } {
-  try {
-    return { json: JSON.parse(body) };
-  } catch {
-    return { text: body };
+function normalizeFetchBody(
+  body: string | OpensteerRequestBodyInput,
+  headers: OpensteerSessionFetchInput["headers"],
+): OpensteerRequestBodyInput {
+  if (typeof body !== "string") {
+    return body;
   }
+
+  const contentType = findHeaderValue(headers, "content-type");
+  return contentType === undefined ? { text: body } : { text: body, contentType };
+}
+
+function findHeaderValue(
+  headers: OpensteerSessionFetchInput["headers"],
+  headerName: string,
+): string | undefined {
+  if (headers === undefined) {
+    return undefined;
+  }
+
+  const match = Object.entries(headers).find(
+    ([name]) => name.toLowerCase() === headerName.toLowerCase(),
+  );
+  return match === undefined ? undefined : String(match[1]);
 }
 
 function toResponse(response: OpensteerRequestResponseResult): Response {
