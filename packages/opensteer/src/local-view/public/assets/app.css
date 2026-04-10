@@ -1,0 +1,770 @@
+/* ─── Design Tokens (matching Opensteer Cloud) ─── */
+
+:root {
+  color-scheme: dark;
+  --background: #000000;
+  --foreground: #ffffff;
+  --surface: #141414;
+  --surface-elevated: #1e1e1e;
+  --surface-raised: #282828;
+  --muted: rgba(255, 255, 255, 0.05);
+  --muted-foreground: #a0a0a0;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-subtle: rgba(255, 255, 255, 0.04);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --accent: #ffffff;
+  --accent-foreground: #000000;
+  --destructive: #ef4444;
+  --ring: rgba(255, 255, 255, 0.4);
+}
+
+/* ─── Reset ─── */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  min-height: 100%;
+  overflow: hidden;
+  background: var(--background);
+  color: var(--foreground);
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  min-height: 100vh;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ─── Scrollbar ─── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* ─── Animations ─── */
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* ─── App Shell ─── */
+
+.app-shell {
+  height: 100vh;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+/* ─── Sidebar ─── */
+
+.sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.brand-block {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 16px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.brand-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.brand-icon {
+  display: block;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  object-position: center;
+}
+
+.brand-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--foreground);
+  letter-spacing: -0.01em;
+}
+
+.brand-badge {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.local-view-toggle {
+  flex-shrink: 0;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--muted-foreground);
+  padding: 0 9px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition:
+    background 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease,
+    opacity 150ms ease;
+}
+
+.local-view-toggle:hover:not(:disabled) {
+  background: var(--muted);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: var(--foreground);
+}
+
+.local-view-toggle:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* ─── Sidebar Tabs ─── */
+
+.sidebar-tab-bar {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-tab-bar-inner {
+  display: flex;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--surface-elevated);
+  padding: 3px;
+}
+
+.sidebar-tab {
+  flex: 1;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  background: transparent;
+  transition: all 200ms;
+}
+
+.sidebar-tab:hover {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--foreground);
+}
+
+.sidebar-tab.is-active {
+  background: var(--surface);
+  color: var(--foreground);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* ─── Session List ─── */
+
+.sidebar-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.session-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.session-item {
+  position: relative;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: none;
+  border-bottom: 1px solid var(--border-subtle);
+  border-left: 3px solid transparent;
+  padding: 12px 16px 12px 13px;
+  text-align: left;
+  background: transparent;
+  color: inherit;
+  transition:
+    background 150ms ease,
+    border-color 150ms ease;
+}
+
+.session-item:hover {
+  background: var(--muted);
+}
+
+.session-item[data-active="true"] {
+  background: rgba(255, 255, 255, 0.03);
+  border-left-color: var(--accent);
+}
+
+.session-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.session-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.session-item[data-active="true"] .session-title {
+  color: var(--accent);
+}
+
+.session-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #28c840;
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+.session-engine {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  color: #4ade80;
+  background: rgba(74, 222, 128, 0.1);
+  border-radius: 9999px;
+  padding: 2px 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.session-info {
+  font-size: 11px;
+  color: var(--muted-foreground);
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", "Segoe UI Mono", monospace;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-path {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--muted-foreground);
+  opacity: 0.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-list-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 40px 16px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* ─── Main Shell ─── */
+
+.main-shell {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--background);
+}
+
+.viewer-area {
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 20px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ─── Browser Frame ─── */
+
+.browser-frame {
+  --browser-stream-aspect: 1.6;
+  flex: 0 1 auto;
+  width: var(--browser-frame-width, 100%);
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-elevated);
+  box-shadow:
+    0 25px 50px -12px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(255, 255, 255, 0.03);
+}
+
+/* ─── Browser Chrome ─── */
+
+.browser-chrome {
+  background: var(--surface-raised);
+  flex-shrink: 0;
+}
+
+.chrome-top-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px 6px;
+}
+
+.window-dots {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.wdot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.wdot-close {
+  background: #ff5f57;
+}
+
+.wdot-min {
+  background: #febc2e;
+}
+
+.wdot-max {
+  background: #28c840;
+}
+
+/* ─── Chrome Navigation ─── */
+
+.chrome-nav {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.chrome-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--muted-foreground);
+  padding: 0;
+  transition: all 150ms;
+}
+
+.chrome-nav-btn:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.chrome-nav-btn:active {
+  background: var(--border-strong);
+}
+
+/* ─── Chrome Tabs ─── */
+
+.chrome-tabs {
+  display: flex;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.chrome-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.chrome-tab-chip {
+  display: inline-flex;
+  align-items: center;
+  min-width: 44px;
+  max-width: 208px;
+  border-radius: 4px;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  background: transparent;
+  transition:
+    background 150ms ease,
+    color 150ms ease;
+}
+
+.chrome-tab-chip:hover {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.chrome-tab-chip[data-active="true"] {
+  background: var(--border-strong);
+  color: var(--foreground);
+}
+
+.chrome-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  border-radius: 0;
+  padding: 3px 6px 3px 10px;
+  font-size: 11px;
+  color: inherit;
+  background: transparent;
+  white-space: nowrap;
+}
+
+.chrome-tab:hover {
+  color: inherit;
+}
+
+.chrome-tab[data-active="true"] {
+  color: inherit;
+}
+
+.chrome-tab-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chrome-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+  margin-right: 2px;
+  padding: 0;
+  transition: all 150ms;
+}
+
+.chrome-tab-close:hover {
+  background: var(--border-strong);
+  color: var(--foreground);
+}
+
+/* ─── Chrome Status ─── */
+
+.chrome-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: auto;
+  padding-right: 4px;
+}
+
+.chrome-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted-foreground);
+  flex-shrink: 0;
+}
+
+.chrome-status-dot.is-live {
+  background: #28c840;
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+.chrome-status-dot.is-connecting {
+  background: #facc15;
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+.chrome-status-dot.is-error {
+  background: var(--destructive);
+}
+
+.chrome-status-dot.is-idle {
+  background: var(--muted-foreground);
+  opacity: 0.4;
+}
+
+.chrome-status-label {
+  font-size: 10px;
+  color: var(--muted-foreground);
+  text-transform: capitalize;
+  font-weight: 500;
+}
+
+.chrome-browser-action {
+  flex-shrink: 0;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid rgba(239, 68, 68, 0.34);
+  background: rgba(239, 68, 68, 0.12);
+  color: #fecaca;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition:
+    background 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease,
+    opacity 150ms ease;
+}
+
+.chrome-browser-action:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.22);
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #ffffff;
+}
+
+.chrome-browser-action:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+/* ─── Chrome URL Bar ─── */
+
+.chrome-url-row {
+  padding: 0 12px 8px;
+}
+
+.chrome-url-bar {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  border-radius: 6px;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-strong);
+  padding: 0 10px;
+  gap: 8px;
+  transition: border-color 150ms;
+}
+
+.chrome-url-bar:focus-within {
+  border-color: var(--ring);
+}
+
+.chrome-url-icon {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+  opacity: 0.6;
+}
+
+.chrome-url-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", "Segoe UI Mono", monospace;
+  outline: none;
+  padding: 0;
+}
+
+.chrome-url-input::placeholder {
+  color: var(--muted-foreground);
+  opacity: 0.5;
+}
+
+/* ─── Browser Viewport ─── */
+
+.browser-viewport {
+  flex: 0 0 auto;
+  width: 100%;
+  aspect-ratio: var(--browser-stream-aspect);
+  min-height: 0;
+  display: flex;
+}
+
+.viewer-surface {
+  position: relative;
+  flex: 0 0 auto;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface-elevated);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  outline: none;
+}
+
+.viewer-surface:focus {
+  outline: none;
+}
+
+.viewer-image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  user-select: none;
+  pointer-events: none;
+}
+
+.viewer-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 20px;
+  animation: fade-in 400ms ease-out;
+}
+
+.viewer-empty-icon {
+  color: var(--muted-foreground);
+  opacity: 0.2;
+}
+
+.viewer-empty-label {
+  font-size: 12px;
+  color: var(--muted-foreground);
+  text-align: center;
+}
+
+/* ─── Responsive ─── */
+
+@media (max-width: 768px) {
+  .app-shell {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .sidebar-scroll {
+    max-height: 200px;
+  }
+
+  .viewer-area {
+    padding: 12px;
+  }
+}

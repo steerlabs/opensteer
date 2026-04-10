@@ -63,6 +63,9 @@ export function resolveCommandLength(tokens: readonly string[]): number {
   if (tokens[0] === "skills") {
     return Math.min(tokens.length, 2);
   }
+  if (tokens[0] === "view") {
+    return Math.min(tokens.length, 2);
+  }
   if (tokens[0] === "status" || tokens[0] === "record" || tokens[0] === "exec") {
     return 1;
   }

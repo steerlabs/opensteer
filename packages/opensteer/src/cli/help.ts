@@ -5,6 +5,10 @@ Session:
   open <url> [--workspace <id>] [--headless] [--provider local|cloud]
   close
   status
+  view [--workspace <id>] [--json]
+  view stop [--json]
+  view --auto [--json]
+  view --no-auto [--json]
 
 Navigation:
   goto <url> [--capture-network <label>]

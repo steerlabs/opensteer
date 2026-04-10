@@ -153,6 +153,21 @@ describe("CLI surface parsing", () => {
     expect(parsed.command).toEqual(["run"]);
   });
 
+  test("parses local-view preference flags", () => {
+    expect(parseCommandLine(["view", "--auto"]).options.localViewMode).toBe("auto");
+    expect(parseCommandLine(["view", "--no-auto"]).options.localViewMode).toBe("manual");
+  });
+
+  test("rejects conflicting local-view preference flags", () => {
+    expect(() => parseCommandLine(["view", "--auto", "--no-auto"])).toThrow(/cannot be combined/i);
+  });
+
+  test("rejects local-view preference flags on non-view commands", () => {
+    expect(() => parseCommandLine(["open", "https://example.com", "--auto"])).toThrow(
+      /only supported with "view"/i,
+    );
+  });
+
   test("labels network query json mode as a response filter in output", () => {
     const output = renderOperationOutput(
       "network.query",

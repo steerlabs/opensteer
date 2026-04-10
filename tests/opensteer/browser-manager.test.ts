@@ -123,6 +123,11 @@ vi.mock("../../packages/opensteer/src/local-browser/cdp-discovery.js", async () 
   };
 });
 
+vi.mock("../../packages/opensteer/src/local-view/registration.js", () => ({
+  bestEffortRegisterLocalViewSession: vi.fn(async () => undefined),
+  bestEffortUnregisterLocalViewSession: vi.fn(async () => undefined),
+}));
+
 import { OpensteerBrowserManager } from "../../packages/opensteer/src/browser-manager.js";
 
 function createInspectedEndpoint(port: number, label: string) {

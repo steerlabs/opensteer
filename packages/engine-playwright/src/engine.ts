@@ -280,6 +280,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   private readonly pageByPlaywrightPage = new WeakMap<Page, PageController>();
   private readonly pendingPopupOpeners = new WeakMap<Page, PageRef>();
   private readonly preassignedPopupPageRefs = new WeakMap<Page, PageRef>();
+  private readonly queuedPopupOpenedPages = new WeakSet<Page>();
   private readonly actionSettler = createPlaywrightActionSettler({
     flushPendingPageTasks: (sessionRef) => this.flushPendingPageTasks(sessionRef),
     flushDomUpdateTask: (controller) => this.flushDomUpdateTask(controller),
@@ -1923,17 +1924,20 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     );
     page.on("popup", (popupPage) =>
       this.runControllerEvent(controller, () => {
-        const popupPageRef = createPageRef(`playwright-${++this.pageCounter}`);
-        this.preassignedPopupPageRefs.set(popupPage, popupPageRef);
-        this.pendingPopupOpeners.set(popupPage, controller.pageRef);
-        this.queueEvent(
+        const existingPopupController = this.pageByPlaywrightPage.get(popupPage);
+        const popupPageRef =
+          existingPopupController?.pageRef ?? createPageRef(`playwright-${++this.pageCounter}`);
+        if (!existingPopupController) {
+          this.preassignedPopupPageRefs.set(popupPage, popupPageRef);
+          this.pendingPopupOpeners.set(popupPage, controller.pageRef);
+        } else if (existingPopupController.openerPageRef === undefined) {
+          existingPopupController.openerPageRef = controller.pageRef;
+        }
+        this.queuePopupOpenedEvent(
           controller.pageRef,
-          this.createEvent<"popup-opened">({
-            kind: "popup-opened",
-            sessionRef: controller.sessionRef,
-            pageRef: popupPageRef,
-            openerPageRef: controller.pageRef,
-          }),
+          popupPage,
+          popupPageRef,
+          controller.sessionRef,
         );
       }),
     );
@@ -1996,10 +2000,37 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
             : undefined;
       if (openerController) {
         controller.openerPageRef = openerController.pageRef;
+        this.queuePopupOpenedEvent(
+          openerController.pageRef,
+          page,
+          controller.pageRef,
+          controller.sessionRef,
+        );
       }
     }
 
     return controller;
+  }
+
+  private queuePopupOpenedEvent(
+    openerPageRef: PageRef,
+    popupPage: Page,
+    popupPageRef: PageRef,
+    sessionRef: SessionRef,
+  ): void {
+    if (this.queuedPopupOpenedPages.has(popupPage)) {
+      return;
+    }
+    this.queuedPopupOpenedPages.add(popupPage);
+    this.queueEvent(
+      openerPageRef,
+      this.createEvent<"popup-opened">({
+        kind: "popup-opened",
+        sessionRef,
+        pageRef: popupPageRef,
+        openerPageRef,
+      }),
+    );
   }
 
   private handleFrameAttached(

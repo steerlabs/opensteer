@@ -31,18 +31,23 @@ import {
 
 let baseUrl = "";
 let closeServer: (() => Promise<void>) | undefined;
+let suiteRootDir = "";
 
 function createLocalOpensteer(options: ConstructorParameters<typeof Opensteer>[0] = {}): Opensteer {
   return new Opensteer({
     provider: {
       mode: "local",
     },
+    ...(options.rootDir === undefined && options.rootPath === undefined
+      ? { rootDir: suiteRootDir }
+      : {}),
     ...options,
   });
 }
 
 describe.sequential("cross-document action boundary", () => {
   beforeAll(async () => {
+    suiteRootDir = await mkdtemp(path.join(os.tmpdir(), "opensteer-navigation-network-"));
     const server = createServer((request, response) => {
       void handleRequest(request, response);
     });
@@ -61,6 +66,9 @@ describe.sequential("cross-document action boundary", () => {
 
   afterAll(async () => {
     await closeServer?.();
+    if (suiteRootDir.length > 0) {
+      await rm(suiteRootDir, { recursive: true, force: true });
+    }
   });
 
   test("waits for Enter-submit navigations before finalizing DOM actions", async () => {

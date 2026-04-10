@@ -19,6 +19,7 @@ export interface ParsedCliOptions {
   readonly json?: boolean;
   readonly agents?: readonly string[];
   readonly skills?: readonly string[];
+  readonly localViewMode?: "auto" | "manual";
   readonly global?: boolean;
   readonly yes?: boolean;
   readonly copy?: boolean;
@@ -64,6 +65,8 @@ const CLI_OPTION_SPECS = {
   copy: { kind: "boolean" },
   all: { kind: "boolean" },
   list: { kind: "boolean" },
+  auto: { kind: "boolean" },
+  "no-auto": { kind: "boolean" },
   "attach-endpoint": { kind: "value" },
   "attach-header": { kind: "value", multiple: true },
   "fresh-tab": { kind: "boolean" },
@@ -250,6 +253,14 @@ export function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
   const json = readOptionalBoolean(rawOptions, "json");
   const agents = rawOptions.get("agent");
   const skills = rawOptions.get("skill");
+  const autoLocalView = readOptionalBoolean(rawOptions, "auto");
+  const noAutoLocalView = readOptionalBoolean(rawOptions, "no-auto");
+  if (autoLocalView === true && noAutoLocalView === true) {
+    throw new Error('Options "--auto" and "--no-auto" cannot be combined.');
+  }
+  if (command[0] !== "view" && (autoLocalView !== undefined || noAutoLocalView !== undefined)) {
+    throw new Error('Options "--auto" and "--no-auto" are only supported with "view".');
+  }
   const global = readOptionalBoolean(rawOptions, "global");
   const yes = readOptionalBoolean(rawOptions, "yes");
   const copy = readOptionalBoolean(rawOptions, "copy");
@@ -273,6 +284,11 @@ export function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
     ...(json === undefined ? {} : { json }),
     ...(agents === undefined ? {} : { agents }),
     ...(skills === undefined ? {} : { skills }),
+    ...(autoLocalView === true
+      ? { localViewMode: "auto" as const }
+      : noAutoLocalView === true
+        ? { localViewMode: "manual" as const }
+        : {}),
     ...(global === undefined ? {} : { global }),
     ...(yes === undefined ? {} : { yes }),
     ...(copy === undefined ? {} : { copy }),

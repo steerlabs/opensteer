@@ -19,6 +19,7 @@ export * from "./traces.js";
 export * from "./observability.js";
 export * from "./envelopes.js";
 export * from "./session-info.js";
+export * from "./local-view.js";
 export * from "./automation.js";
 export * from "./operations.js";
 export * from "./rest.js";
