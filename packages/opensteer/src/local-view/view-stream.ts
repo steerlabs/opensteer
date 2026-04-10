@@ -1,10 +1,6 @@
 import type { Page, Browser, BrowserContext, CDPSession } from "playwright";
 import WebSocket, { type RawData } from "ws";
 
-import {
-  connectPlaywrightChromiumBrowser,
-  disconnectPlaywrightChromiumBrowser,
-} from "@opensteer/engine-playwright";
 import type { OpensteerViewport, OpensteerViewStreamTab } from "@opensteer/protocol";
 
 import { resolveLocalViewSession } from "./discovery.js";
@@ -94,6 +90,7 @@ class SessionViewStreamProducer {
   private activePage: Page | null = null;
   private activeViewport: OpensteerViewport | null = null;
   private activeScreencastSizeKey: string | null = null;
+  private pendingFrameAckTimer: NodeJS.Timeout | null = null;
   private starting: Promise<void> | null = null;
   private started = false;
   private rebinding: Promise<void> = Promise.resolve();
@@ -443,13 +440,7 @@ class SessionViewStreamProducer {
     readonly sessionId: number;
   }): Promise<void> {
     const cdpSession = this.cdpSession;
-    if (cdpSession) {
-      void cdpSession
-        .send("Page.screencastFrameAck", { sessionId: event.sessionId })
-        .catch(() => undefined);
-    }
-
-    if (this.stopped) {
+    if (!cdpSession || this.stopped) {
       return;
     }
 
@@ -457,12 +448,43 @@ class SessionViewStreamProducer {
     this.lastFrameBuffer = frameBuffer;
 
     const now = Date.now();
-    if (now - this.lastFrameSentAt < this.frameIntervalMs) {
+    const delayMs = Math.max(0, this.frameIntervalMs - (now - this.lastFrameSentAt));
+    if (delayMs === 0) {
+      this.flushScreencastFrame({
+        cdpSession,
+        sessionId: event.sessionId,
+        frameBuffer,
+      });
       return;
     }
-    this.lastFrameSentAt = now;
 
-    this.broadcastFrame(frameBuffer);
+    if (this.pendingFrameAckTimer !== null) {
+      return;
+    }
+
+    this.pendingFrameAckTimer = setTimeout(() => {
+      this.pendingFrameAckTimer = null;
+      if (this.stopped || this.cdpSession !== cdpSession) {
+        return;
+      }
+      this.flushScreencastFrame({
+        cdpSession,
+        sessionId: event.sessionId,
+        frameBuffer,
+      });
+    }, delayMs);
+  }
+
+  private flushScreencastFrame(args: {
+    readonly cdpSession: CDPSession;
+    readonly sessionId: number;
+    readonly frameBuffer: Buffer;
+  }): void {
+    this.lastFrameSentAt = Date.now();
+    this.broadcastFrame(args.frameBuffer);
+    void args.cdpSession
+      .send("Page.screencastFrameAck", { sessionId: args.sessionId })
+      .catch(() => undefined);
   }
 
   private broadcastFrame(frameBuffer: Buffer): void {
@@ -596,6 +618,10 @@ class SessionViewStreamProducer {
     this.screencastHandler = null;
     this.pageLifecycleCleanup = null;
     this.activeScreencastSizeKey = null;
+    if (this.pendingFrameAckTimer !== null) {
+      clearTimeout(this.pendingFrameAckTimer);
+      this.pendingFrameAckTimer = null;
+    }
 
     pageLifecycleCleanup?.();
 
@@ -817,4 +843,16 @@ function readTextFrame(raw: RawData): string {
     return Buffer.concat(raw).toString("utf8");
   }
   return raw.toString("utf8");
+}
+
+async function connectPlaywrightChromiumBrowser(input: { readonly url: string }): Promise<Browser> {
+  const { connectPlaywrightChromiumBrowser: connect } =
+    await import("@opensteer/engine-playwright");
+  return connect(input);
+}
+
+async function disconnectPlaywrightChromiumBrowser(browser: Browser): Promise<void> {
+  const { disconnectPlaywrightChromiumBrowser: disconnect } =
+    await import("@opensteer/engine-playwright");
+  await disconnect(browser);
 }

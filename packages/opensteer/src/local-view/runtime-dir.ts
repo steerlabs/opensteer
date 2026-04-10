@@ -28,6 +28,10 @@ export function resolveLocalViewRootDir(): string {
   return path.join(resolveOpensteerStateDir(), "local-view");
 }
 
+export function resolveLocalViewPreferencesPath(): string {
+  return path.join(resolveLocalViewRootDir(), "preferences.json");
+}
+
 export function resolveLocalViewServiceDir(): string {
   return path.join(resolveLocalViewRootDir(), "service");
 }

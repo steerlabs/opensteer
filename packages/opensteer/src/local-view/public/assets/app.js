@@ -942,6 +942,8 @@ class LocalViewApp {
     this.selectedSessionId = null;
     this.addressEditing = false;
     this.closingSessionId = null;
+    this.disablingView = false;
+    this.viewDisabled = false;
     this.refreshTimer = null;
     this.viewportRefreshTimer = null;
     this.inputCommandQueue = Promise.resolve();
@@ -975,6 +977,7 @@ class LocalViewApp {
     this.reloadButtonEl = document.getElementById("reload-button");
     this.newTabButtonEl = document.getElementById("new-tab-button");
     this.closeBrowserButtonEl = document.getElementById("close-browser-button");
+    this.disableViewButtonEl = document.getElementById("disable-view-button");
 
     this.stream = new LocalBrowserStream(() => this.render());
     this.cdp = new LocalCdpConnection(() => this.render());
@@ -1080,6 +1083,9 @@ class LocalViewApp {
     });
     this.closeBrowserButtonEl.addEventListener("click", () => {
       void this.closeSelectedBrowser();
+    });
+    this.disableViewButtonEl.addEventListener("click", () => {
+      void this.disableLocalView();
     });
 
     this.viewerSurfaceEl.addEventListener("contextmenu", (event) => {
@@ -1366,6 +1372,7 @@ class LocalViewApp {
     this.renderTabs(activeTab, preferredTargetId);
     this.renderAddress(activeTab);
     this.renderCloseBrowserButton(selectedSession);
+    this.renderDisableViewButton();
 
     this.viewerImageEl.src = this.stream.frameUrl ?? "";
     this.viewerImageEl.hidden = !this.stream.frameUrl;
@@ -1416,6 +1423,15 @@ class LocalViewApp {
       selectedSession && selectedSession.ownership !== "owned"
         ? "Only Opensteer-owned local browsers can be closed here."
         : "";
+  }
+
+  renderDisableViewButton() {
+    this.disableViewButtonEl.disabled = this.disablingView || this.viewDisabled;
+    this.disableViewButtonEl.textContent = this.viewDisabled
+      ? "View Off"
+      : this.disablingView
+        ? "Turning Off..."
+        : "Turn View Off";
   }
 
   renderSessions() {
@@ -1596,6 +1612,45 @@ class LocalViewApp {
     }
     this.render();
     await this.refreshSessions();
+  }
+
+  async disableLocalView() {
+    if (this.disablingView) {
+      return;
+    }
+    if (!window.confirm("Turn off local view? Browser sessions will keep running.")) {
+      return;
+    }
+
+    this.disablingView = true;
+    this.render();
+
+    let response;
+    try {
+      response = await apiFetch(`${apiBasePath}/service/disable`, {
+        method: "POST",
+      });
+    } catch {
+      this.disablingView = false;
+      this.render();
+      return;
+    }
+
+    if (!response.ok) {
+      this.disablingView = false;
+      this.render();
+      return;
+    }
+
+    this.disablingView = false;
+    this.viewDisabled = true;
+    this.stream.setAccessUrl(null);
+    this.cdp.setAccessUrl(null);
+    this.sessions = [];
+    this.selectedSessionId = null;
+    this.closingSessionId = null;
+    setSelectedSessionHash(null);
+    this.render();
   }
 
   async dispatchPointerCommand(method, payload) {

@@ -140,6 +140,10 @@ button {
 }
 
 .brand-block {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 16px 16px 14px;
   border-bottom: 1px solid var(--border);
 }
@@ -176,6 +180,35 @@ button {
   padding: 1px 6px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.local-view-toggle {
+  flex-shrink: 0;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--muted-foreground);
+  padding: 0 9px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition:
+    background 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease,
+    opacity 150ms ease;
+}
+
+.local-view-toggle:hover:not(:disabled) {
+  background: var(--muted);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: var(--foreground);
+}
+
+.local-view-toggle:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 
 /* ─── Sidebar Tabs ─── */

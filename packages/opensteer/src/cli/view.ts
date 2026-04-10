@@ -6,6 +6,7 @@ import {
   buildLocalViewSessionUrl,
   ensureLocalViewServiceRunning,
 } from "../local-view/registration.js";
+import { enableLocalViewPreference } from "../local-view/preferences.js";
 import { runLocalViewService } from "../local-view/serve.js";
 import { buildLocalViewSessionId } from "../local-view/session-manifest.js";
 import { resolveFilesystemWorkspacePath } from "../root.js";
@@ -17,6 +18,7 @@ export async function handleViewCommand(parsed: ParsedCommandLine): Promise<void
     return;
   }
 
+  await enableLocalViewPreference();
   const service = await ensureLocalViewServiceRunning();
   const sessionId =
     parsed.options.workspace === undefined

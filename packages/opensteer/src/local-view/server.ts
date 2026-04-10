@@ -14,13 +14,13 @@ import type {
 
 import { listResolvedLocalViewSessions, resolveLocalViewSession } from "./discovery.js";
 import { LocalViewCdpProxy } from "./cdp-proxy.js";
+import { disableLocalViewPreference } from "./preferences.js";
 import { LocalViewRuntimeState } from "./runtime-state.js";
 import {
   OPENSTEER_LOCAL_VIEW_SERVICE_LAYOUT,
   OPENSTEER_LOCAL_VIEW_SERVICE_VERSION,
   writeLocalViewServiceState,
 } from "./service-state.js";
-import { closeLocalViewSessionBrowser, LocalViewSessionCloseError } from "./session-control.js";
 import { LocalViewStreamHub } from "./view-stream.js";
 import { LocalViewWebSocketServer } from "./ws-types.js";
 
@@ -54,7 +54,7 @@ export async function startLocalViewServer(
   });
 
   const httpServer = createServer((request, response) => {
-    void handleHttpRequest({ request, response, token }).catch(() => {
+    void handleHttpRequest({ request, response, token, shutdown: closeServer }).catch(() => {
       if (!response.headersSent && !response.writableEnded) {
         writeJson(response, 500, { error: "Internal server error." });
         return;
@@ -104,6 +104,22 @@ export async function startLocalViewServer(
     socket.destroy();
   });
 
+  let closePromise: Promise<void> | undefined;
+  async function closeServer(): Promise<void> {
+    closePromise ??= (async () => {
+      viewWss.clients.forEach((client) => {
+        try {
+          client.close();
+        } catch {}
+      });
+      viewWss.close();
+      cdpProxy.close();
+      httpServer.close();
+      await once(httpServer, "close");
+    })();
+    await closePromise;
+  }
+
   httpServer.listen(input.port ?? 0, "127.0.0.1");
   await once(httpServer, "listening");
   const address = httpServer.address();
@@ -125,17 +141,7 @@ export async function startLocalViewServer(
   return {
     url,
     token,
-    close: async () => {
-      viewWss.clients.forEach((client) => {
-        try {
-          client.close();
-        } catch {}
-      });
-      viewWss.close();
-      cdpProxy.close();
-      httpServer.close();
-      await once(httpServer, "close");
-    },
+    close: closeServer,
   };
 }
 
@@ -143,6 +149,7 @@ async function handleHttpRequest(args: {
   readonly request: IncomingMessage;
   readonly response: ServerResponse;
   readonly token: string;
+  readonly shutdown: () => Promise<void>;
 }): Promise<void> {
   const url = new URL(args.request.url ?? "/", "http://localhost");
 
@@ -163,6 +170,24 @@ async function handleHttpRequest(args: {
     const sessions = await listResolvedLocalViewSessions();
     const payload: OpensteerLocalViewSessionsResponse = { sessions };
     writeJson(args.response, 200, payload);
+    return;
+  }
+
+  if (url.pathname === "/api/service/disable") {
+    if (!isAuthorizedApiRequest(args.request, args.token)) {
+      writeJson(args.response, 401, { error: "Unauthorized." });
+      return;
+    }
+    if (args.request.method !== "POST") {
+      writeJson(args.response, 405, { error: "Method not allowed." });
+      return;
+    }
+
+    await disableLocalViewPreference();
+    args.response.once("finish", () => {
+      void args.shutdown();
+    });
+    writeJson(args.response, 200, { disabled: true });
     return;
   }
 
@@ -213,6 +238,8 @@ async function handleHttpRequest(args: {
     }
 
     const sessionId = decodeURIComponent(closeMatch[1]!);
+    const { closeLocalViewSessionBrowser, LocalViewSessionCloseError } =
+      await import("./session-control.js");
     try {
       await closeLocalViewSessionBrowser(sessionId);
     } catch (error) {

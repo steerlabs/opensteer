@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import { acquireDirLock } from "../local-browser/dir-lock.js";
 import type { PersistedLocalBrowserSessionRecord } from "../live-session.js";
+import { resolveLocalViewMode } from "./preferences.js";
 import { isLocalViewServiceStateLive, readLocalViewServiceState } from "./service-state.js";
 import {
   createLocalViewSessionManifest,
@@ -26,10 +27,15 @@ export async function bestEffortRegisterLocalViewSession(input: {
   readonly ownership: "owned" | "attached" | "managed";
 }): Promise<PersistedLocalViewSessionManifest | undefined> {
   try {
+    const mode = await resolveLocalViewMode();
+    if (mode === "disabled") {
+      return undefined;
+    }
+
     const manifest = createLocalViewSessionManifest(input);
     await writeLocalViewSessionManifest(manifest);
-    if (shouldAutoStartLocalViewService()) {
-      await ensureLocalViewServiceRunning().catch(() => undefined);
+    if (mode === "auto") {
+      void ensureLocalViewServiceRunning().catch(() => undefined);
     }
     return manifest;
   } catch {
@@ -156,6 +162,18 @@ function resolveLocalViewSpawnCommand(): {
   readonly env?: Readonly<Record<string, string>>;
 } {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  const distServicePath = findExistingPath([
+    path.join(moduleDir, "local-view", "serve-entry.js"),
+    path.join(moduleDir, "serve-entry.js"),
+    path.join(moduleDir, "..", "local-view", "serve-entry.js"),
+  ]);
+  if (distServicePath) {
+    return {
+      executable: process.execPath,
+      args: [distServicePath],
+    };
+  }
+
   const distCliPath = findExistingPath([
     path.join(moduleDir, "cli", "bin.js"),
     path.join(moduleDir, "..", "cli", "bin.js"),
@@ -164,6 +182,22 @@ function resolveLocalViewSpawnCommand(): {
     return {
       executable: process.execPath,
       args: [distCliPath, "view", "serve"],
+    };
+  }
+
+  const srcServicePath = findExistingPath([
+    path.join(moduleDir, "serve-entry.ts"),
+    path.join(moduleDir, "..", "local-view", "serve-entry.ts"),
+    path.join(moduleDir, "..", "src", "local-view", "serve-entry.ts"),
+  ]);
+  if (srcServicePath) {
+    const require = createRequire(import.meta.url);
+    const tsxLoaderPath = require.resolve("tsx");
+    const tsconfigPath = findNearestTsconfig(path.resolve(moduleDir, "..", "..", ".."));
+    return {
+      executable: process.execPath,
+      args: ["--import", tsxLoaderPath, srcServicePath],
+      ...(tsconfigPath ? { env: { TSX_TSCONFIG_PATH: tsconfigPath } } : {}),
     };
   }
 
@@ -206,9 +240,4 @@ function findNearestTsconfig(startDir: string): string | undefined {
 
 function exists(targetPath: string): boolean {
   return existsSync(targetPath);
-}
-
-function shouldAutoStartLocalViewService(): boolean {
-  const mode = process.env.OPENSTEER_LOCAL_VIEW?.trim().toLowerCase();
-  return !(mode === "0" || mode === "false" || mode === "off" || mode === "disabled");
 }

@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import { OpensteerSessionRuntime } from "../../packages/opensteer/src/index.js";
 import { startLocalViewServer } from "../../packages/opensteer/src/local-view/server.js";
+import { resolveLocalViewMode } from "../../packages/opensteer/src/local-view/preferences.js";
 import { isProcessRunning } from "../../packages/opensteer/src/local-browser/process-owner.js";
 
 let fixtureUrl = "";
@@ -37,12 +38,50 @@ describe("local browser view", () => {
       const html = await htmlResponse.text();
       expect(html).toContain('class="brand-icon"');
       expect(html).toContain('id="opensteer-brand-fill"');
+      expect(html).toContain('data-testid="disable-view-button"');
       expect(html).not.toContain('class="brand-icon" src=');
       expect(html).not.toContain("opensteer-logo.png");
       expect(html).not.toContain("opensteer-logo.svg");
       expect(html).not.toContain("data:image/png;base64");
     } finally {
       await localViewServer.close().catch(() => undefined);
+    }
+  });
+
+  test("disables local view without requiring browser shutdown", async () => {
+    const priorOpensteerHome = process.env.OPENSTEER_HOME;
+    const stateHome = await mkdtemp(path.join(tmpdir(), "opensteer-local-view-state-"));
+    process.env.OPENSTEER_HOME = stateHome;
+    const localViewServer = await startLocalViewServer({
+      token: "local-view-disable-test-token",
+    });
+
+    try {
+      const response = await fetch(new URL("/api/service/disable", localViewServer.url), {
+        method: "POST",
+        headers: {
+          "x-opensteer-local-token": localViewServer.token,
+        },
+      });
+      expect(response.ok).toBe(true);
+      expect(await response.json()).toEqual({ disabled: true });
+      expect(await resolveLocalViewMode()).toBe("disabled");
+      await waitFor(async () => {
+        const health = await fetch(new URL("/api/health", localViewServer.url), {
+          headers: {
+            "x-opensteer-local-token": localViewServer.token,
+          },
+        }).catch(() => null);
+        return health === null ? true : null;
+      }, 5_000);
+    } finally {
+      await localViewServer.close().catch(() => undefined);
+      await rm(stateHome, { recursive: true, force: true }).catch(() => undefined);
+      if (priorOpensteerHome === undefined) {
+        delete process.env.OPENSTEER_HOME;
+      } else {
+        process.env.OPENSTEER_HOME = priorOpensteerHome;
+      }
     }
   });
 
