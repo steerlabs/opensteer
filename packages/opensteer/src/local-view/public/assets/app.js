@@ -870,10 +870,12 @@ class LocalViewApp {
 
     this.sessionListEl = document.getElementById("session-list");
     this.tabStripEl = document.getElementById("tab-strip");
-    this.statusEl = document.getElementById("status-text");
+    this.statusDotEl = document.getElementById("status-dot");
+    this.statusLabelEl = document.getElementById("status-label");
     this.viewerSurfaceEl = document.getElementById("viewer-surface");
     this.viewerImageEl = document.getElementById("viewer-image");
     this.viewerEmptyEl = document.getElementById("viewer-empty");
+    this.viewerEmptyTextEl = document.getElementById("viewer-empty-text");
     this.addressFormEl = document.getElementById("address-form");
     this.addressInputEl = document.getElementById("address-input");
     this.backButtonEl = document.getElementById("back-button");
@@ -1155,25 +1157,42 @@ class LocalViewApp {
     this.viewerImageEl.src = this.stream.frameUrl ?? "";
     this.viewerImageEl.hidden = !this.stream.frameUrl;
     this.viewerEmptyEl.hidden = Boolean(this.stream.frameUrl);
-    this.viewerEmptyEl.textContent = selectedSession
+    this.viewerEmptyTextEl.textContent = selectedSession
       ? this.stream.state === "connecting" || this.stream.state === "reconnecting"
-        ? "Connecting to browser"
-        : "Waiting for frames"
+        ? "Connecting to browser\u2026"
+        : "Waiting for frames\u2026"
       : "No live browser selected";
 
-    const sessionSummary =
-      selectedSession === null
-        ? "No session selected"
-        : `${selectedSession.label} / ${selectedSession.engine}`;
-    this.statusEl.textContent = `${sessionSummary} / stream ${this.stream.state} / cdp ${this.cdp.state}`;
+    this.statusDotEl.className = "chrome-status-dot";
+    if (this.stream.state === "live") {
+      this.statusDotEl.classList.add("is-live");
+      this.statusLabelEl.textContent = "Live";
+    } else if (
+      this.stream.state === "connecting" ||
+      this.stream.state === "reconnecting"
+    ) {
+      this.statusDotEl.classList.add("is-connecting");
+      this.statusLabelEl.textContent =
+        this.stream.state === "connecting" ? "Connecting" : "Reconnecting";
+    } else if (this.stream.state === "error") {
+      this.statusDotEl.classList.add("is-error");
+      this.statusLabelEl.textContent = "Error";
+    } else if (selectedSession) {
+      this.statusLabelEl.textContent = "Waiting";
+    } else {
+      this.statusDotEl.classList.add("is-idle");
+      this.statusLabelEl.textContent = "";
+    }
   }
 
   renderSessions() {
     this.sessionListEl.textContent = "";
     if (this.sessions.length === 0) {
       const empty = document.createElement("div");
-      empty.className = "session-meta";
-      empty.textContent = "No live local browsers";
+      empty.className = "session-list-empty";
+      empty.innerHTML =
+        '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.3"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>' +
+        "<span>No active sessions</span>";
       this.sessionListEl.append(empty);
       return;
     }
@@ -1186,30 +1205,43 @@ class LocalViewApp {
       button.dataset.active = String(session.sessionId === this.selectedSessionId);
       button.setAttribute("data-testid", `session-item-${session.sessionId}`);
 
-      const header = document.createElement("div");
-      header.className = "session-item-header";
+      const row1 = document.createElement("div");
+      row1.className = "session-row";
 
-      const label = document.createElement("div");
-      label.className = "session-label";
+      const label = document.createElement("span");
+      label.className = "session-title";
       label.textContent = session.label;
 
-      const badge = document.createElement("div");
-      badge.className = "session-badge";
+      const dot = document.createElement("span");
+      dot.className = "session-dot";
+
+      row1.append(label, dot);
+
+      const row2 = document.createElement("div");
+      row2.className = "session-row";
+
+      const badge = document.createElement("span");
+      badge.className = "session-engine";
       badge.textContent = session.browserName ?? session.engine;
 
-      header.append(label, badge);
-
-      const meta = document.createElement("div");
-      meta.className = "session-meta";
-      meta.textContent = [session.workspace, session.ownership, `pid ${session.pid}`]
+      const meta = document.createElement("span");
+      meta.className = "session-info";
+      meta.textContent = [session.workspace, `pid ${session.pid}`]
         .filter(Boolean)
-        .join(" / ");
+        .join(" \u00b7 ");
 
-      const path = document.createElement("div");
-      path.className = "session-path";
-      path.textContent = middleTrim(session.rootPath, 58);
+      row2.append(badge, meta);
 
-      button.append(header, meta, path);
+      const pathEl = document.createElement("div");
+      pathEl.className = "session-path";
+      const segments = (session.rootPath || "").split("/").filter(Boolean);
+      const dirName = segments.length > 0 ? segments[segments.length - 1] : "";
+      pathEl.textContent = dirName ? `\u2192 ${dirName}` : "";
+
+      button.append(row1, row2);
+      if (dirName) {
+        button.append(pathEl);
+      }
       this.sessionListEl.append(button);
     }
   }
@@ -1218,18 +1250,18 @@ class LocalViewApp {
     this.tabStripEl.textContent = "";
     for (const tab of this.stream.tabs) {
       const chip = document.createElement("div");
-      chip.className = "tab-chip";
+      chip.className = "chrome-tab-chip";
 
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "tab-button";
+      button.className = "chrome-tab";
       button.dataset.active = String(activeTab ? activeTab.index === tab.index : tab.active);
       if (tab.targetId) {
         button.dataset.targetId = tab.targetId;
       }
 
       const title = document.createElement("span");
-      title.className = "tab-title";
+      title.className = "chrome-tab-title";
       title.textContent = tab.title || tab.url || "Untitled";
 
       button.append(title);
@@ -1238,10 +1270,10 @@ class LocalViewApp {
       if (tab.targetId) {
         const closeButton = document.createElement("button");
         closeButton.type = "button";
-        closeButton.className = "tab-close";
+        closeButton.className = "chrome-tab-close";
         closeButton.dataset.closeTargetId = tab.targetId;
         closeButton.setAttribute("aria-label", "Close tab");
-        closeButton.textContent = "x";
+        closeButton.textContent = "\u00d7";
         chip.append(closeButton);
       }
 

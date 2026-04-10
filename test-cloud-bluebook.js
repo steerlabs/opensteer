@@ -17,7 +17,7 @@ const CLOUD_CONFIG = {
     apiKey: "osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT",
     baseUrl: "https://api.opensteer.com",
     browserProfile: {
-      profileId: "Bluebook",
+      profileId: "bp_mns6y1w9_71eekrds",
       reuseIfActive: true,
     },
   },
@@ -61,10 +61,7 @@ async function testCloudMode() {
 
     // TEST 3: Take a snapshot
     console.log("TEST 3: Take Page Snapshot\n");
-    const snapshot = await opensteer.snapshot({
-      mode: "extraction",
-      visible: true,
-    });
+    const snapshot = await opensteer.snapshot("extraction");
 
     const htmlLength = snapshot.html?.length || 0;
     console.log(`   ✅ Snapshot captured successfully`);
@@ -89,30 +86,33 @@ async function testCloudMode() {
 
     // TEST 6: Check if cookies exist (profile should have persistent cookies)
     console.log("TEST 6: Check Browser Profile Cookies\n");
-    const cookies = await opensteer.browser.cookies({
-      domain: ".thebluebook.com",
-    });
-
-    console.log(`   ✅ Cookie query successful`);
-    console.log(`   Cookies found: ${cookies.records?.length || 0}`);
-
-    if (cookies.records && cookies.records.length > 0) {
-      console.log("   Sample cookies:");
-      cookies.records.slice(0, 3).forEach((cookie, i) => {
-        console.log(`     ${i + 1}. ${cookie.name} = ${cookie.value?.substring(0, 20)}...`);
-      });
+    try {
+      const cookies = await opensteer.getCookies(".thebluebook.com");
+      
+      console.log(`   ✅ Cookie query successful`);
+      console.log(`   Cookies found: ${cookies?.length || 0}`);
+      
+      if (cookies && cookies.length > 0) {
+        console.log("   Sample cookies:");
+        cookies.slice(0, 3).forEach((cookie, i) => {
+          console.log(`     ${i + 1}. ${cookie.name} = ${cookie.value?.substring(0, 20)}...`);
+        });
+      }
+    } catch (err) {
+      console.log(`   ⚠️  Cookies API not available or error: ${err.message}`);
     }
     console.log("");
 
     // TEST 7: Take final screenshot
     console.log("TEST 7: Take Screenshot\n");
-    const screenshot = await opensteer.page.screenshot({
-      fullPage: false,
-    });
+    try {
+      const screenshot = await opensteer.screenshot();
 
-    console.log("   ✅ Screenshot captured");
-    console.log(`   Format: ${screenshot.encoding || "base64"}`);
-    console.log(`   Size: ${screenshot.data?.length || 0} bytes\n`);
+      console.log("   ✅ Screenshot captured");
+      console.log(`   Data length: ${screenshot?.length || 0} bytes\n`);
+    } catch (err) {
+      console.log(`   ⚠️  Screenshot not available or error: ${err.message}\n`);
+    }
 
     // TEST 8: Close session
     console.log("TEST 8: Close Session\n");

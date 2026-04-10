@@ -3,90 +3,89 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OpenSteer Local</title>
+    <title>Opensteer Local</title>
     <link rel="stylesheet" href="/assets/app.css" />
   </head>
   <body>
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand-block">
-          <div class="brand-eyebrow">OpenSteer Local</div>
-          <h1 class="brand-title">Local browsers</h1>
+          <div class="brand-row">
+            <img class="brand-icon" src="data:image/png;base64,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" alt="Opensteer" width="20" height="20" />
+            <span class="brand-name">Opensteer</span>
+            <span class="brand-badge">Local</span>
+          </div>
         </div>
-        <div class="sidebar-section">
-          <div class="section-title">Sessions</div>
+        <div class="sidebar-tab-bar">
+          <div class="sidebar-tab-bar-inner">
+            <button class="sidebar-tab is-active" type="button">Sessions</button>
+          </div>
+        </div>
+        <div class="sidebar-scroll">
           <div id="session-list" class="session-list" data-testid="session-list"></div>
         </div>
       </aside>
 
       <main class="main-shell">
-        <header class="topbar">
-          <div class="toolbar-row">
-            <div class="toolbar-group">
-              <button
-                id="back-button"
-                class="toolbar-button"
-                type="button"
-                data-testid="back-button"
-              >
-                Back
-              </button>
-              <button id="forward-button" class="toolbar-button" type="button">Forward</button>
-              <button
-                id="reload-button"
-                class="toolbar-button"
-                type="button"
-                data-testid="reload-button"
-              >
-                Reload
-              </button>
-              <button
-                id="new-tab-button"
-                class="toolbar-button"
-                type="button"
-                data-testid="new-tab-button"
-              >
-                New Tab
-              </button>
+        <div class="viewer-area">
+          <div class="browser-frame">
+            <div class="browser-chrome">
+              <div class="chrome-top-row">
+                <div class="window-dots">
+                  <span class="wdot wdot-close"></span>
+                  <span class="wdot wdot-min"></span>
+                  <span class="wdot wdot-max"></span>
+                </div>
+                <div class="chrome-nav">
+                  <button id="back-button" class="chrome-nav-btn" type="button" aria-label="Back" data-testid="back-button">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+                  </button>
+                  <button id="forward-button" class="chrome-nav-btn" type="button" aria-label="Forward">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                  </button>
+                  <button id="reload-button" class="chrome-nav-btn" type="button" aria-label="Reload" data-testid="reload-button">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                  </button>
+                  <button id="new-tab-button" class="chrome-nav-btn" type="button" aria-label="New tab" data-testid="new-tab-button">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                  </button>
+                </div>
+                <div id="tab-strip" class="chrome-tabs" data-testid="tab-strip"></div>
+                <div id="status-indicator" class="chrome-status">
+                  <span id="status-dot" class="chrome-status-dot"></span>
+                  <span id="status-label" class="chrome-status-label"></span>
+                </div>
+              </div>
+              <div class="chrome-url-row">
+                <form id="address-form" class="chrome-url-bar">
+                  <svg class="chrome-url-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                  <input id="address-input" class="chrome-url-input" type="text" autocomplete="off" spellcheck="false" placeholder="Search or enter URL" data-testid="address-input" />
+                </form>
+              </div>
             </div>
-
-            <form id="address-form" class="address-form">
-              <input
-                id="address-input"
-                class="address-input"
-                type="text"
-                autocomplete="off"
-                spellcheck="false"
-                placeholder="about:blank"
-                data-testid="address-input"
-              />
-            </form>
+            <div class="browser-viewport">
+              <div
+                id="viewer-surface"
+                class="viewer-surface"
+                tabindex="0"
+                aria-label="Browser viewer"
+                data-testid="viewer-surface"
+              >
+                <img
+                  id="viewer-image"
+                  class="viewer-image"
+                  alt=""
+                  draggable="false"
+                  data-testid="viewer-image"
+                />
+                <div id="viewer-empty" class="viewer-empty">
+                  <svg class="viewer-empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                  <span id="viewer-empty-text" class="viewer-empty-label">No live browser selected</span>
+                </div>
+              </div>
+            </div>
           </div>
-
-          <div class="toolbar-row toolbar-row-secondary">
-            <div id="tab-strip" class="tab-strip" data-testid="tab-strip"></div>
-            <div id="status-text" class="status-text" data-testid="status-text"></div>
-          </div>
-        </header>
-
-        <section class="viewer-panel">
-          <div
-            id="viewer-surface"
-            class="viewer-surface"
-            tabindex="0"
-            aria-label="Browser viewer"
-            data-testid="viewer-surface"
-          >
-            <img
-              id="viewer-image"
-              class="viewer-image"
-              alt=""
-              draggable="false"
-              data-testid="viewer-image"
-            />
-            <div id="viewer-empty" class="viewer-empty">No live browser selected</div>
-          </div>
-        </section>
+        </div>
       </main>
     </div>
 

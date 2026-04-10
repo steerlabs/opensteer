@@ -205,7 +205,11 @@ async function handleHttpRequest(args: {
     return;
   }
 
-  if (url.pathname === "/" || url.pathname.startsWith("/assets/")) {
+  if (
+    url.pathname === "/" ||
+    url.pathname.startsWith("/assets/") ||
+    url.pathname.startsWith("/images/")
+  ) {
     await serveStaticAsset(args.response, url.pathname, args.token);
     return;
   }
@@ -309,6 +313,12 @@ function guessContentType(assetPath: string): string {
   }
   if (assetPath.endsWith(".json")) {
     return "application/json; charset=utf-8";
+  }
+  if (assetPath.endsWith(".png")) {
+    return "image/png";
+  }
+  if (assetPath.endsWith(".ico")) {
+    return "image/x-icon";
   }
   return "application/octet-stream";
 }
