@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenSteer Local</title>
+    <link rel="stylesheet" href="/assets/app.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-block">
+          <div class="brand-eyebrow">OpenSteer Local</div>
+          <h1 class="brand-title">Local browsers</h1>
+        </div>
+        <div class="sidebar-section">
+          <div class="section-title">Sessions</div>
+          <div id="session-list" class="session-list" data-testid="session-list"></div>
+        </div>
+      </aside>
+
+      <main class="main-shell">
+        <header class="topbar">
+          <div class="toolbar-row">
+            <div class="toolbar-group">
+              <button
+                id="back-button"
+                class="toolbar-button"
+                type="button"
+                data-testid="back-button"
+              >
+                Back
+              </button>
+              <button id="forward-button" class="toolbar-button" type="button">Forward</button>
+              <button
+                id="reload-button"
+                class="toolbar-button"
+                type="button"
+                data-testid="reload-button"
+              >
+                Reload
+              </button>
+              <button
+                id="new-tab-button"
+                class="toolbar-button"
+                type="button"
+                data-testid="new-tab-button"
+              >
+                New Tab
+              </button>
+            </div>
+
+            <form id="address-form" class="address-form">
+              <input
+                id="address-input"
+                class="address-input"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="about:blank"
+                data-testid="address-input"
+              />
+            </form>
+          </div>
+
+          <div class="toolbar-row toolbar-row-secondary">
+            <div id="tab-strip" class="tab-strip" data-testid="tab-strip"></div>
+            <div id="status-text" class="status-text" data-testid="status-text"></div>
+          </div>
+        </header>
+
+        <section class="viewer-panel">
+          <div
+            id="viewer-surface"
+            class="viewer-surface"
+            tabindex="0"
+            aria-label="Browser viewer"
+            data-testid="viewer-surface"
+          >
+            <img
+              id="viewer-image"
+              class="viewer-image"
+              alt=""
+              draggable="false"
+              data-testid="viewer-image"
+            />
+            <div id="viewer-empty" class="viewer-empty">No live browser selected</div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      window.__OPENSTEER_LOCAL_BOOTSTRAP__ = __OPENSTEER_LOCAL_BOOTSTRAP_JSON__;
+    </script>
+    <script type="module" src="/assets/app.js"></script>
+  </body>
+</html>

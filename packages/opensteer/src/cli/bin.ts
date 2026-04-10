@@ -32,6 +32,7 @@ import { runOpensteerSkillsInstaller } from "./skills-installer.js";
 import { collectOpensteerStatus, renderOpensteerStatus } from "./status.js";
 import { resolveOperation } from "./commands.js";
 import { runExecExpression } from "./exec.js";
+import { handleViewCommand } from "./view.js";
 
 const emitProcessWarning = process.emitWarning.bind(process);
 
@@ -92,6 +93,11 @@ async function main(): Promise<void> {
 
   if (parsed.command[0] === "record") {
     await handleRecordCommandEntry(parsed);
+    return;
+  }
+
+  if (parsed.command[0] === "view") {
+    await handleViewCommand(parsed);
     return;
   }
 

@@ -1231,7 +1231,7 @@ test("captures network, cookies, storage, and async page events", { timeout: 60_
       return mainFrame && childFrame ? { mainFrame, childFrame } : undefined;
     }, "expected integration page frames to stabilize");
 
-    await engine.mouseClick({
+    const popupClick = await engine.mouseClick({
       pageRef: created.data.pageRef,
       point: createPoint(50, 40),
       coordinateSpace: "layout-viewport-css",
@@ -1240,12 +1240,14 @@ test("captures network, cookies, storage, and async page events", { timeout: 60_
       async () => ((await engine.listPages({ sessionRef })).length === 2 ? true : undefined),
       "expected popup page to register",
     );
-    const popupDrain = await waitForValue(async () => {
-      const activated = await engine.activatePage({ pageRef: created.data.pageRef });
-      return activated.events.some((event) => event.kind === "popup-opened")
-        ? activated
-        : undefined;
-    }, "expected popup-opened event to be queued on the opener page");
+    const popupDrain = popupClick.events.some((event) => event.kind === "popup-opened")
+      ? popupClick
+      : await waitForValue(async () => {
+          const activated = await engine.activatePage({ pageRef: created.data.pageRef });
+          return activated.events.some((event) => event.kind === "popup-opened")
+            ? activated
+            : undefined;
+        }, "expected popup-opened event to be queued on the opener page");
     expect(popupDrain.events.map((event) => event.kind)).toContain("popup-opened");
     expect((await engine.listPages({ sessionRef })).length).toBe(2);
 

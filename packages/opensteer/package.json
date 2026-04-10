@@ -76,9 +76,9 @@
     "@opensteer/protocol": "workspace:*"
   },
   "scripts": {
-    "build": "tsup && node ../../scripts/sync-package-skills.mjs",
+    "build": "tsup && node ../../scripts/copy-opensteer-local-view-assets.mjs && node ../../scripts/sync-package-skills.mjs",
     "clean": "rimraf dist skills",
-    "prepack": "node ../../scripts/sync-package-skills.mjs",
+    "prepack": "node ../../scripts/copy-opensteer-local-view-assets.mjs && node ../../scripts/sync-package-skills.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   }
 }

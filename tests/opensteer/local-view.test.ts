@@ -1,0 +1,346 @@
+import { createServer } from "node:http";
+import { once } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import { chromium, type Page } from "playwright";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
+
+import { OpensteerSessionRuntime } from "../../packages/opensteer/src/index.js";
+import { startLocalViewServer } from "../../packages/opensteer/src/local-view/server.js";
+
+let fixtureUrl = "";
+let closeFixtureServer: (() => Promise<void>) | undefined;
+
+beforeAll(async () => {
+  const started = await startFixtureServer();
+  fixtureUrl = started.url;
+  closeFixtureServer = started.close;
+});
+
+afterAll(async () => {
+  await closeFixtureServer?.();
+});
+
+describe("local browser view", () => {
+  test(
+    "streams a temporary local browser and forwards click and text input through the viewer",
+    { timeout: 90_000 },
+    async () => {
+      const priorLocalViewMode = process.env.OPENSTEER_LOCAL_VIEW;
+      process.env.OPENSTEER_LOCAL_VIEW = "off";
+
+      const rootPath = await mkdtemp(path.join(tmpdir(), "opensteer-local-view-"));
+      const runtime = new OpensteerSessionRuntime({
+        name: "local-view-runtime",
+        rootPath,
+        browser: "temporary",
+        launch: {
+          headless: true,
+        },
+        context: {
+          viewport: {
+            width: 800,
+            height: 600,
+          },
+        },
+      });
+
+      const viewerBrowser = await chromium.launch({ headless: true });
+      let localViewServer: Awaited<ReturnType<typeof startLocalViewServer>> | undefined;
+
+      try {
+        await runtime.open({ url: `${fixtureUrl}/viewer` });
+        localViewServer = await startLocalViewServer({
+          token: "local-view-test-token",
+        });
+
+        const session = await waitFor(async () => {
+          const response = await fetch(new URL("/api/sessions", localViewServer.url), {
+            headers: {
+              "x-opensteer-local-token": localViewServer.token,
+            },
+          });
+          if (!response.ok) {
+            return null;
+          }
+          const payload = await response.json();
+          const sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
+          return sessions.find((candidate) => candidate.rootPath === rootPath) ?? null;
+        });
+
+        const page = await viewerBrowser.newPage({
+          viewport: {
+            width: 1440,
+            height: 960,
+          },
+        });
+        await page.goto(`${localViewServer.url}#session=${encodeURIComponent(session.sessionId)}`, {
+          waitUntil: "networkidle",
+        });
+
+        await page.waitForFunction(() => {
+          const image = document.querySelector("[data-testid='viewer-image']");
+          return image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0;
+        });
+        await page.waitForFunction(
+          ({ sessionId, label }) => {
+            const status = document.querySelector("[data-testid='status-text']");
+            return (
+              typeof status?.textContent === "string" &&
+              status.textContent.includes(label) &&
+              status.textContent.includes("stream live") &&
+              status.textContent.includes("cdp connected") &&
+              window.location.hash.includes(encodeURIComponent(sessionId))
+            );
+          },
+          {
+            sessionId: session.sessionId,
+            label: session.label,
+          },
+        );
+
+        const clickTarget = await readRemoteElementCenterRatio(runtime, "#action");
+        const clickPosition = await readViewerPosition(
+          page,
+          clickTarget.xRatio,
+          clickTarget.yRatio,
+        );
+        await page.mouse.click(clickPosition.x, clickPosition.y);
+
+        await waitFor(async () => {
+          const result = await runtime.evaluate({
+            script: "() => document.getElementById('status')?.textContent ?? ''",
+          });
+          const status =
+            result && typeof result === "object" && "value" in result ? result.value : undefined;
+          return status === "clicked" ? status : null;
+        });
+
+        const inputTarget = await readRemoteElementCenterRatio(runtime, "#entry");
+        const inputPosition = await readViewerPosition(
+          page,
+          inputTarget.xRatio,
+          inputTarget.yRatio,
+        );
+        await page.mouse.click(inputPosition.x, inputPosition.y);
+        await page.keyboard.type("Phase9");
+
+        const mirroredText = await waitFor(async () => {
+          const result = await runtime.evaluate({
+            script: "() => document.getElementById('mirror')?.textContent ?? ''",
+          });
+          const value =
+            result && typeof result === "object" && "value" in result ? result.value : undefined;
+          return value === "Phase9" ? value : null;
+        });
+        expect(mirroredText).toBe("Phase9");
+
+        const tabs = page.locator("#tab-strip .tab-button");
+        expect(await tabs.count()).toBe(1);
+        await page.locator("[data-testid='new-tab-button']").click();
+        const tabCount = await waitFor(async () => {
+          const count = await tabs.count();
+          return count === 2 ? count : null;
+        });
+        expect(tabCount).toBe(2);
+      } finally {
+        await viewerBrowser.close().catch(() => undefined);
+        await localViewServer?.close().catch(() => undefined);
+        await runtime.close().catch(() => undefined);
+        await rm(rootPath, { recursive: true, force: true }).catch(() => undefined);
+        if (priorLocalViewMode === undefined) {
+          delete process.env.OPENSTEER_LOCAL_VIEW;
+        } else {
+          process.env.OPENSTEER_LOCAL_VIEW = priorLocalViewMode;
+        }
+      }
+    },
+  );
+});
+
+async function startFixtureServer(): Promise<{
+  readonly url: string;
+  readonly close: () => Promise<void>;
+}> {
+  const server = createServer((request, response) => {
+    if ((request.url ?? "/") !== "/viewer") {
+      response.statusCode = 404;
+      response.end("not found");
+      return;
+    }
+
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>OpenSteer Local Fixture</title>
+    <style>
+      body {
+        margin: 0;
+        background: #f4f7fb;
+        color: #132033;
+        font-family: Inter, system-ui, sans-serif;
+      }
+      main {
+        width: 800px;
+        min-height: 600px;
+        padding: 40px;
+        box-sizing: border-box;
+      }
+      #action {
+        width: 220px;
+        height: 120px;
+        border: 0;
+        border-radius: 8px;
+        background: #0f8d5f;
+        color: #fff;
+        font-size: 28px;
+        font-weight: 600;
+      }
+      #status,
+      #mirror {
+        margin-top: 24px;
+        font-size: 24px;
+      }
+      label {
+        display: block;
+        margin-top: 44px;
+        font-size: 18px;
+        font-weight: 600;
+      }
+      #entry {
+        margin-top: 12px;
+        width: 280px;
+        padding: 14px 16px;
+        font-size: 20px;
+        border: 2px solid #b9c7d8;
+        border-radius: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <button id="action" type="button">Launch</button>
+      <div id="status">ready</div>
+
+      <label for="entry">Input</label>
+      <input id="entry" type="text" autocomplete="off" />
+      <div id="mirror"></div>
+    </main>
+    <script>
+      document.getElementById("action").addEventListener("click", () => {
+        document.getElementById("status").textContent = "clicked";
+      });
+
+      document.getElementById("entry").addEventListener("input", (event) => {
+        document.getElementById("mirror").textContent = event.target.value;
+      });
+    </script>
+  </body>
+</html>`);
+  });
+
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Failed to resolve local-view fixture server address.");
+  }
+
+  return {
+    url: `http://127.0.0.1:${String(address.port)}`,
+    close: async () => {
+      server.close();
+      await once(server, "close");
+    },
+  };
+}
+
+async function readViewerPosition(
+  page: Page,
+  xRatio: number,
+  yRatio: number,
+): Promise<{
+  readonly x: number;
+  readonly y: number;
+}> {
+  const result = await page.evaluate(
+    ({ xRatio: nextXRatio, yRatio: nextYRatio }) => {
+      const image = document.querySelector("[data-testid='viewer-image']");
+      if (!(image instanceof HTMLImageElement)) {
+        return null;
+      }
+
+      const imageRect = image.getBoundingClientRect();
+      return {
+        x: imageRect.left + imageRect.width * nextXRatio,
+        y: imageRect.top + imageRect.height * nextYRatio,
+      };
+    },
+    { xRatio, yRatio },
+  );
+
+  if (!result) {
+    throw new Error("Failed to resolve a viewer click position.");
+  }
+
+  return result;
+}
+
+async function readRemoteElementCenterRatio(
+  runtime: OpensteerSessionRuntime,
+  selector: string,
+): Promise<{
+  readonly xRatio: number;
+  readonly yRatio: number;
+}> {
+  const result = await runtime.evaluate({
+    script: `() => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      if (!(element instanceof HTMLElement)) {
+        return null;
+      }
+      const rect = element.getBoundingClientRect();
+      return {
+        xRatio: (rect.left + rect.width / 2) / window.innerWidth,
+        yRatio: (rect.top + rect.height / 2) / window.innerHeight,
+      };
+    }`,
+  });
+  const value = result && typeof result === "object" && "value" in result ? result.value : null;
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !("xRatio" in value) ||
+    !("yRatio" in value) ||
+    typeof value.xRatio !== "number" ||
+    typeof value.yRatio !== "number"
+  ) {
+    throw new Error(`Failed to resolve remote element center for ${selector}.`);
+  }
+  return {
+    xRatio: value.xRatio,
+    yRatio: value.yRatio,
+  };
+}
+
+async function waitFor<T>(
+  callback: () => Promise<T | null | undefined>,
+  timeoutMs = 30_000,
+  pollMs = 100,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const result = await callback();
+    if (result !== null && result !== undefined) {
+      return result;
+    }
+    await new Promise((resolve) => {
+      setTimeout(resolve, pollMs);
+    });
+  }
+  throw new Error("Timed out while waiting for expected local-view state.");
+}

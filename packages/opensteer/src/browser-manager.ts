@@ -43,6 +43,11 @@ import {
   type PersistedLocalBrowserSessionRecord,
 } from "./live-session.js";
 import {
+  bestEffortRegisterLocalViewSession,
+  bestEffortUnregisterLocalViewSession,
+} from "./local-view/registration.js";
+import { buildLocalViewSessionId } from "./local-view/session-manifest.js";
+import {
   ensureDirectory,
   pathExists,
   readJsonFile,
@@ -291,6 +296,12 @@ export class OpensteerBrowserManager {
             `workspace "${this.workspace}" already has a live ${live.engine} browser. Close it before reopening with engine "abp".`,
           );
         }
+        await bestEffortRegisterLocalViewSession({
+          rootPath: workspace.rootPath,
+          ...(this.workspace === undefined ? {} : { workspace: this.workspace }),
+          live: toPersistedLocalBrowserSessionRecord(this.workspace, live),
+          ownership: "owned",
+        });
         return this.createAdoptedAbpEngine(live);
       }
 
@@ -328,10 +339,18 @@ export class OpensteerBrowserManager {
           : { executablePath: launch.browserExecutablePath }),
       };
       await this.writeLivePersistentBrowser(workspace, liveRecord);
+      const persistedLiveRecord = toPersistedLocalBrowserSessionRecord(this.workspace, liveRecord);
+      await bestEffortRegisterLocalViewSession({
+        rootPath: workspace.rootPath,
+        ...(this.workspace === undefined ? {} : { workspace: this.workspace }),
+        live: persistedLiveRecord,
+        ownership: "owned",
+      });
 
       try {
         return await this.createAdoptedAbpEngine(liveRecord);
       } catch (error) {
+        await this.unregisterLocalViewSessionForRecord(workspace.rootPath, persistedLiveRecord);
         await terminateProcess(launched.process.pid ?? 0).catch(() => undefined);
         await clearPersistedSessionRecord(workspace.rootPath, "local").catch(() => undefined);
         throw error;
@@ -366,16 +385,38 @@ export class OpensteerBrowserManager {
         ? {}
         : { viewport: this.contextOptions.viewport }),
     });
+    const temporaryLiveRecord: PersistedLocalBrowserSessionRecord = {
+      layout: "opensteer-session",
+      version: 1,
+      provider: "local",
+      engine: "playwright",
+      endpoint: launched.endpoint,
+      pid: launched.pid,
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+      executablePath: launched.executablePath,
+      userDataDir,
+    };
+    await writePersistedSessionRecord(this.rootPath, temporaryLiveRecord);
+    const localViewManifest = await bestEffortRegisterLocalViewSession({
+      rootPath: this.rootPath,
+      live: temporaryLiveRecord,
+      ownership: "owned",
+    });
     try {
       return await this.createAttachedEngine({
         endpoint: launched.endpoint,
         freshTab: false,
         onDispose: async () => {
+          await bestEffortUnregisterLocalViewSession(localViewManifest?.sessionId);
+          await clearPersistedSessionRecord(this.rootPath, "local").catch(() => undefined);
           await terminateProcess(launched.pid).catch(() => undefined);
           await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
         },
       });
     } catch (error) {
+      await bestEffortUnregisterLocalViewSession(localViewManifest?.sessionId);
+      await clearPersistedSessionRecord(this.rootPath, "local").catch(() => undefined);
       await terminateProcess(launched.pid).catch(() => undefined);
       await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
       throw error;
@@ -407,6 +448,12 @@ export class OpensteerBrowserManager {
         if (live.endpoint === undefined) {
           throw new Error("workspace live browser record is missing a DevTools endpoint.");
         }
+        await bestEffortRegisterLocalViewSession({
+          rootPath: workspace.rootPath,
+          ...(this.workspace === undefined ? {} : { workspace: this.workspace }),
+          live: toPersistedLocalBrowserSessionRecord(this.workspace, live),
+          ownership: "owned",
+        });
         return this.createAttachedEngine({
           endpoint: live.endpoint,
           freshTab: false,
@@ -432,6 +479,13 @@ export class OpensteerBrowserManager {
         userDataDir: workspace.browserUserDataDir,
       };
       await this.writeLivePersistentBrowser(workspace, liveRecord);
+      const persistedLiveRecord = toPersistedLocalBrowserSessionRecord(this.workspace, liveRecord);
+      await bestEffortRegisterLocalViewSession({
+        rootPath: workspace.rootPath,
+        ...(this.workspace === undefined ? {} : { workspace: this.workspace }),
+        live: persistedLiveRecord,
+        ownership: "owned",
+      });
 
       try {
         return await this.createAttachedEngine({
@@ -440,6 +494,7 @@ export class OpensteerBrowserManager {
           onDispose: async () => undefined,
         });
       } catch (error) {
+        await this.unregisterLocalViewSessionForRecord(workspace.rootPath, persistedLiveRecord);
         await terminateProcess(launched.pid).catch(() => undefined);
         await clearPersistedSessionRecord(workspace.rootPath, "local").catch(() => undefined);
         throw error;
@@ -629,6 +684,10 @@ export class OpensteerBrowserManager {
       await clearPersistedSessionRecord(workspace.rootPath, "local").catch(() => undefined);
       return;
     }
+    await this.unregisterLocalViewSessionForRecord(
+      workspace.rootPath,
+      toPersistedLocalBrowserSessionRecord(this.workspace, live),
+    );
 
     if (live.engine === "playwright") {
       if (live.endpoint !== undefined) {
@@ -661,6 +720,19 @@ export class OpensteerBrowserManager {
     if (this.mode !== "persistent" || this.workspace === undefined) {
       throw new Error(`browser.${method}() requires a persistent workspace browser.`);
     }
+  }
+
+  private async unregisterLocalViewSessionForRecord(
+    rootPath: string,
+    record: PersistedLocalBrowserSessionRecord,
+  ): Promise<void> {
+    await bestEffortUnregisterLocalViewSession(
+      buildLocalViewSessionId({
+        rootPath,
+        pid: record.pid,
+        startedAt: record.startedAt,
+      }),
+    );
   }
 }
 

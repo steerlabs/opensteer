@@ -1,0 +1,1408 @@
+const bootstrap = window.__OPENSTEER_LOCAL_BOOTSTRAP__ ?? {};
+const apiBasePath = bootstrap.apiBasePath ?? "/api";
+const apiToken = bootstrap.token ?? "";
+
+const SESSION_REFRESH_MS = 2_500;
+const STREAM_CONFIG_DEBOUNCE_MS = 120;
+const CDP_COMMAND_TIMEOUT_MS = 10_000;
+const RECONNECT_MAX_MS = 10_000;
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
+function apiFetch(pathname, options = {}) {
+  const headers = new Headers(options.headers ?? {});
+  headers.set("x-opensteer-local-token", apiToken);
+  return fetch(pathname, {
+    cache: "no-store",
+    ...options,
+    headers,
+  });
+}
+
+function middleTrim(value, maxLength) {
+  if (typeof value !== "string" || value.length <= maxLength) {
+    return value;
+  }
+  const keep = Math.max(6, Math.floor((maxLength - 1) / 2));
+  return `${value.slice(0, keep)}...${value.slice(value.length - keep)}`;
+}
+
+function resolveSelectedSessionIdFromHash() {
+  const match = window.location.hash.match(/session=([^&]+)/u);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+function setSelectedSessionHash(sessionId) {
+  if (!sessionId) {
+    history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+    return;
+  }
+  const hash = `session=${encodeURIComponent(sessionId)}`;
+  history.replaceState(null, "", `${window.location.pathname}${window.location.search}#${hash}`);
+}
+
+function normalizeBrowserStreamRenderSize(size, devicePixelRatio) {
+  if (!size) {
+    return null;
+  }
+  const width = Math.max(100, Math.min(8192, Math.floor(size.width * devicePixelRatio)));
+  const height = Math.max(100, Math.min(8192, Math.floor(size.height * devicePixelRatio)));
+  return { width, height };
+}
+
+function resolveNavigationHistoryEntryId(result, direction) {
+  if (!result || typeof result !== "object") {
+    return null;
+  }
+  const currentIndex = Number.isInteger(result.currentIndex) ? result.currentIndex : null;
+  const entries = Array.isArray(result.entries) ? result.entries : null;
+  if (currentIndex === null || !entries) {
+    return null;
+  }
+  const targetIndex = direction === "back" ? currentIndex - 1 : currentIndex + 1;
+  if (targetIndex < 0 || targetIndex >= entries.length) {
+    return null;
+  }
+  const entryId = entries[targetIndex]?.id;
+  return Number.isInteger(entryId) ? entryId : null;
+}
+
+function pickPageTargetId(targetIds, preferredTargetId, options = {}) {
+  const ids = [...targetIds];
+  if (ids.length === 0) {
+    return null;
+  }
+  if (preferredTargetId && ids.includes(preferredTargetId)) {
+    return preferredTargetId;
+  }
+  if (options.requirePreferred) {
+    return null;
+  }
+  if (options.currentTargetId && ids.includes(options.currentTargetId)) {
+    return options.currentTargetId;
+  }
+  return ids[0] ?? null;
+}
+
+class CdpPageSessionController {
+  constructor(sendRawCommand) {
+    this.sendRawCommand = sendRawCommand;
+    this.pageTargets = new Map();
+    this.attachedSessionIdByTarget = new Map();
+    this.targetIdByAttachedSession = new Map();
+    this.currentTargetId = null;
+    this.preferredTargetId = null;
+    this.generation = 0;
+    this.inFlightEnsure = null;
+  }
+
+  reset() {
+    this.generation += 1;
+    this.pageTargets.clear();
+    this.attachedSessionIdByTarget.clear();
+    this.targetIdByAttachedSession.clear();
+    this.currentTargetId = null;
+    this.preferredTargetId = null;
+    this.inFlightEnsure = null;
+  }
+
+  setPreferredPageTarget(targetId) {
+    this.preferredTargetId = typeof targetId === "string" && targetId.length > 0 ? targetId : null;
+    if (this.preferredTargetId) {
+      this.currentTargetId = this.preferredTargetId;
+    }
+  }
+
+  replacePageTargets(targets) {
+    const currentTargetId = this.currentTargetId;
+    const preferredTargetId = this.preferredTargetId;
+
+    this.pageTargets.clear();
+    for (const [targetId, targetInfo] of targets) {
+      this.pageTargets.set(targetId, targetInfo);
+    }
+
+    for (const [targetId, sessionId] of [...this.attachedSessionIdByTarget]) {
+      if (this.pageTargets.has(targetId)) {
+        continue;
+      }
+      this.attachedSessionIdByTarget.delete(targetId);
+      this.targetIdByAttachedSession.delete(sessionId);
+    }
+
+    if (currentTargetId && !this.pageTargets.has(currentTargetId)) {
+      this.currentTargetId = null;
+    }
+    if (preferredTargetId && !this.pageTargets.has(preferredTargetId)) {
+      this.preferredTargetId = null;
+    }
+  }
+
+  upsertPageTarget(targetInfo) {
+    const targetId = normalizeTargetId(targetInfo?.targetId);
+    if (!targetId || targetInfo?.type !== "page") {
+      return;
+    }
+    this.pageTargets.set(targetId, targetInfo);
+  }
+
+  removePageTarget(targetId) {
+    const normalizedTargetId = normalizeTargetId(targetId);
+    if (!normalizedTargetId) {
+      return;
+    }
+
+    this.pageTargets.delete(normalizedTargetId);
+    const attachedSessionId = this.attachedSessionIdByTarget.get(normalizedTargetId) ?? null;
+    if (attachedSessionId) {
+      this.attachedSessionIdByTarget.delete(normalizedTargetId);
+      this.targetIdByAttachedSession.delete(attachedSessionId);
+    }
+    if (this.currentTargetId === normalizedTargetId) {
+      this.currentTargetId = null;
+    }
+    if (this.preferredTargetId === normalizedTargetId) {
+      this.preferredTargetId = null;
+    }
+  }
+
+  handleAttachedToTarget(args) {
+    const sessionId = normalizeTargetId(args?.sessionId);
+    const targetId = normalizeTargetId(args?.targetInfo?.targetId);
+    if (!sessionId || !targetId || args?.targetInfo?.type !== "page") {
+      return;
+    }
+
+    this.pageTargets.set(targetId, args.targetInfo);
+    this.attachedSessionIdByTarget.set(targetId, sessionId);
+    this.targetIdByAttachedSession.set(sessionId, targetId);
+    if (
+      this.currentTargetId === null ||
+      this.currentTargetId === targetId ||
+      this.preferredTargetId === targetId
+    ) {
+      this.currentTargetId = targetId;
+    }
+  }
+
+  handleDetachedFromTarget(sessionId) {
+    const normalizedSessionId = normalizeTargetId(sessionId);
+    if (!normalizedSessionId) {
+      return;
+    }
+    const targetId = this.targetIdByAttachedSession.get(normalizedSessionId) ?? null;
+    this.targetIdByAttachedSession.delete(normalizedSessionId);
+    if (!targetId) {
+      return;
+    }
+    const attachedSessionId = this.attachedSessionIdByTarget.get(targetId);
+    if (attachedSessionId === normalizedSessionId) {
+      this.attachedSessionIdByTarget.delete(targetId);
+    }
+  }
+
+  async refreshPageTargets() {
+    const result = await this.sendRawCommand("Target.getTargets");
+    const targets = new Map();
+    const targetInfos = Array.isArray(result?.targetInfos) ? result.targetInfos : [];
+    for (const targetInfo of targetInfos) {
+      const targetId = normalizeTargetId(targetInfo?.targetId);
+      if (!targetId || targetInfo?.type !== "page") {
+        continue;
+      }
+      targets.set(targetId, targetInfo);
+    }
+    this.replacePageTargets(targets);
+    return new Map(this.pageTargets);
+  }
+
+  async ensurePageSession() {
+    const readySessionId = this.readReadySessionId();
+    if (readySessionId) {
+      return readySessionId;
+    }
+    if (this.inFlightEnsure) {
+      return this.inFlightEnsure;
+    }
+
+    const generation = this.generation;
+    const promise = this.resolvePageSession(generation);
+    this.inFlightEnsure = promise;
+    try {
+      return await promise;
+    } finally {
+      if (this.inFlightEnsure === promise) {
+        this.inFlightEnsure = null;
+      }
+    }
+  }
+
+  readReadySessionId() {
+    const targetId = pickPageTargetId(this.pageTargets.keys(), this.preferredTargetId, {
+      currentTargetId: this.currentTargetId,
+    });
+    if (!targetId) {
+      return null;
+    }
+    const sessionId = this.attachedSessionIdByTarget.get(targetId) ?? null;
+    if (sessionId) {
+      this.currentTargetId = targetId;
+    }
+    return sessionId;
+  }
+
+  async resolvePageSession(generation) {
+    const targetId = await this.resolveTargetId(generation);
+    this.assertGeneration(generation);
+    this.currentTargetId = targetId;
+
+    const existingSessionId = this.attachedSessionIdByTarget.get(targetId) ?? null;
+    if (existingSessionId) {
+      return existingSessionId;
+    }
+
+    const result = await this.sendRawCommand("Target.attachToTarget", {
+      targetId,
+      flatten: true,
+    });
+    this.assertGeneration(generation);
+
+    const sessionId = normalizeTargetId(result?.sessionId);
+    if (!sessionId) {
+      throw new Error("Failed to attach CDP page target.");
+    }
+
+    this.attachedSessionIdByTarget.set(targetId, sessionId);
+    this.targetIdByAttachedSession.set(sessionId, targetId);
+    this.currentTargetId = targetId;
+    return sessionId;
+  }
+
+  async resolveTargetId(generation) {
+    if (this.preferredTargetId) {
+      return this.preferredTargetId;
+    }
+
+    let targetId = pickPageTargetId(this.pageTargets.keys(), null, {
+      currentTargetId: this.currentTargetId,
+    });
+    if (!targetId) {
+      await this.refreshPageTargets();
+      this.assertGeneration(generation);
+      targetId = pickPageTargetId(this.pageTargets.keys(), null, {
+        currentTargetId: this.currentTargetId,
+      });
+    }
+    if (!targetId) {
+      throw new Error("No active page target is available.");
+    }
+    return targetId;
+  }
+
+  assertGeneration(generation) {
+    if (generation !== this.generation) {
+      throw new Error("CDP session state was reset.");
+    }
+  }
+}
+
+class LocalCdpConnection {
+  constructor(onUpdate) {
+    this.onUpdate = onUpdate;
+    this.accessUrl = null;
+    this.state = "idle";
+    this.ws = null;
+    this.pending = new Map();
+    this.nextCommandId = 1;
+    this.reconnectTimer = null;
+    this.refreshTimer = null;
+    this.reconnectAttempt = 0;
+    this.closed = false;
+    this.pageSessionController = new CdpPageSessionController((method, params, sessionId) =>
+      this.sendRawCommand(method, params, sessionId),
+    );
+  }
+
+  setAccessUrl(accessUrl) {
+    if (this.accessUrl === accessUrl) {
+      return;
+    }
+    this.accessUrl = accessUrl;
+    this.restart();
+  }
+
+  setPreferredPageTarget(targetId) {
+    this.pageSessionController.setPreferredPageTarget(targetId);
+  }
+
+  async sendCommand(method, params) {
+    if (method.startsWith("Input.") || method.startsWith("Page.")) {
+      const sessionId = await this.pageSessionController.ensurePageSession();
+      return this.sendRawCommand(method, params, sessionId);
+    }
+    return this.sendRawCommand(method, params);
+  }
+
+  async sendRawCommand(method, params = {}, sessionId) {
+    return new Promise((resolve, reject) => {
+      const ws = this.ws;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        reject(new Error("CDP connection is not ready."));
+        return;
+      }
+
+      const id = this.nextCommandId++;
+      const timer = window.setTimeout(() => {
+        const pending = this.pending.get(id);
+        if (!pending) {
+          return;
+        }
+        this.pending.delete(id);
+        pending.reject(new Error(`CDP command ${method} timed out.`));
+      }, CDP_COMMAND_TIMEOUT_MS);
+
+      this.pending.set(id, { resolve, reject, timer });
+      ws.send(
+        JSON.stringify({
+          id,
+          method,
+          params,
+          ...(sessionId ? { sessionId } : {}),
+        }),
+      );
+    });
+  }
+
+  async navigateHistory(direction) {
+    const sessionId = await this.pageSessionController.ensurePageSession();
+    const history = await this.sendRawCommand("Page.getNavigationHistory", {}, sessionId);
+    const entryId = resolveNavigationHistoryEntryId(history, direction);
+    if (entryId === null) {
+      return false;
+    }
+    await this.sendRawCommand("Page.navigateToHistoryEntry", { entryId }, sessionId);
+    return true;
+  }
+
+  close() {
+    this.closed = true;
+    this.clearTimers();
+    this.closeSocket();
+    this.clearPending("CDP connection closed.");
+    this.pageSessionController.reset();
+    this.setState("idle");
+  }
+
+  restart() {
+    this.clearTimers();
+    this.closeSocket();
+    this.clearPending("CDP connection reset.");
+    this.pageSessionController.reset();
+
+    if (!this.accessUrl) {
+      this.setState("idle");
+      return;
+    }
+
+    this.closed = false;
+    void this.connect();
+  }
+
+  async connect() {
+    if (!this.accessUrl || this.closed) {
+      return;
+    }
+
+    this.closeSocket();
+    this.clearPending("CDP connection reset.");
+    this.pageSessionController.reset();
+    this.setState(this.reconnectAttempt === 0 ? "connecting" : "reconnecting");
+
+    let response;
+    try {
+      response = await apiFetch(this.accessUrl);
+    } catch {
+      this.failAndReconnect();
+      return;
+    }
+
+    if (!response.ok) {
+      this.failAndReconnect();
+      return;
+    }
+
+    const payload = await response.json();
+    const cdpGrant = payload?.grants?.cdp;
+    if (!cdpGrant || cdpGrant.transport !== "ws") {
+      this.failAndReconnect();
+      return;
+    }
+
+    this.scheduleGrantRefresh(cdpGrant.expiresAt);
+
+    const ws = new WebSocket(`${cdpGrant.url}?token=${encodeURIComponent(cdpGrant.token)}`);
+    this.ws = ws;
+
+    ws.onopen = () => {
+      this.reconnectAttempt = 0;
+      this.setState("connected");
+      void this.sendRawCommand("Target.setDiscoverTargets", { discover: true }).catch(
+        () => undefined,
+      );
+      void this.pageSessionController.refreshPageTargets().catch(() => undefined);
+    };
+
+    ws.onmessage = (event) => {
+      if (typeof event.data !== "string") {
+        return;
+      }
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+
+      if (Number.isInteger(message?.id)) {
+        const pending = this.pending.get(message.id);
+        if (!pending) {
+          return;
+        }
+        this.pending.delete(message.id);
+        window.clearTimeout(pending.timer);
+        if (message.error) {
+          pending.reject(message.error);
+        } else {
+          pending.resolve(message.result);
+        }
+        return;
+      }
+
+      const method = message?.method;
+      if (typeof method !== "string") {
+        return;
+      }
+
+      const params = message?.params ?? {};
+      if (method === "Target.targetCreated" || method === "Target.targetInfoChanged") {
+        this.pageSessionController.upsertPageTarget(params.targetInfo);
+        return;
+      }
+      if (method === "Target.targetDestroyed") {
+        this.pageSessionController.removePageTarget(params.targetId);
+        return;
+      }
+      if (method === "Target.attachedToTarget") {
+        this.pageSessionController.handleAttachedToTarget({
+          sessionId: params.sessionId,
+          targetInfo: params.targetInfo,
+        });
+        return;
+      }
+      if (method === "Target.detachedFromTarget") {
+        this.pageSessionController.handleDetachedFromTarget(params.sessionId);
+      }
+    };
+
+    ws.onerror = () => {
+      this.setState("error");
+    };
+
+    ws.onclose = () => {
+      this.ws = null;
+      if (this.closed) {
+        this.setState("idle");
+        return;
+      }
+      this.failAndReconnect();
+    };
+  }
+
+  clearPending(message) {
+    for (const pending of this.pending.values()) {
+      window.clearTimeout(pending.timer);
+      pending.reject(new Error(message));
+    }
+    this.pending.clear();
+  }
+
+  closeSocket() {
+    if (!this.ws) {
+      return;
+    }
+    this.ws.onopen = null;
+    this.ws.onmessage = null;
+    this.ws.onerror = null;
+    this.ws.onclose = null;
+    this.ws.close();
+    this.ws = null;
+  }
+
+  scheduleReconnect() {
+    if (this.closed || !this.accessUrl) {
+      return;
+    }
+    const delayMs = Math.min(1000 * 2 ** this.reconnectAttempt, RECONNECT_MAX_MS);
+    this.reconnectAttempt += 1;
+    this.setState("reconnecting");
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.connect();
+    }, delayMs);
+  }
+
+  scheduleGrantRefresh(expiresAt) {
+    if (!Number.isFinite(expiresAt)) {
+      return;
+    }
+    const refreshInMs = expiresAt - Date.now() - 5000;
+    if (!Number.isFinite(refreshInMs) || refreshInMs > MAX_TIMEOUT_MS) {
+      return;
+    }
+    this.refreshTimer = window.setTimeout(
+      () => {
+        if (!this.accessUrl || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+          return;
+        }
+        void apiFetch(this.accessUrl).catch(() => undefined);
+      },
+      Math.max(1000, refreshInMs),
+    );
+  }
+
+  clearTimers() {
+    if (this.reconnectTimer !== null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.refreshTimer !== null) {
+      window.clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
+    }
+  }
+
+  failAndReconnect() {
+    this.clearTimers();
+    this.closeSocket();
+    this.clearPending("CDP connection closed.");
+    this.pageSessionController.reset();
+    this.setState("error");
+    this.scheduleReconnect();
+  }
+
+  setState(state) {
+    if (this.state === state) {
+      return;
+    }
+    this.state = state;
+    this.onUpdate();
+  }
+}
+
+class LocalBrowserStream {
+  constructor(onUpdate) {
+    this.onUpdate = onUpdate;
+    this.accessUrl = null;
+    this.state = "waiting";
+    this.viewport = null;
+    this.tabs = [];
+    this.activeTabIndex = -1;
+    this.frameUrl = null;
+    this.ws = null;
+    this.reconnectTimer = null;
+    this.reconnectAttempt = 0;
+    this.requestedRenderSize = null;
+    this.streamConfigTimer = null;
+    this.lastSentRenderSizeKey = null;
+    this.closed = false;
+  }
+
+  setAccessUrl(accessUrl) {
+    if (this.accessUrl === accessUrl) {
+      return;
+    }
+    this.accessUrl = accessUrl;
+    this.restart();
+  }
+
+  setRequestedRenderSize(size) {
+    this.requestedRenderSize = size;
+    this.lastSentRenderSizeKey = null;
+    if (!size) {
+      return;
+    }
+    this.scheduleStreamConfig(STREAM_CONFIG_DEBOUNCE_MS);
+  }
+
+  close() {
+    this.closed = true;
+    this.clearTimers();
+    this.closeSocket();
+    this.resetFrame();
+    this.viewport = null;
+    this.tabs = [];
+    this.activeTabIndex = -1;
+    this.setState("waiting");
+  }
+
+  restart() {
+    this.clearTimers();
+    this.closeSocket();
+    this.resetFrame();
+    this.viewport = null;
+    this.tabs = [];
+    this.activeTabIndex = -1;
+    if (!this.accessUrl) {
+      this.setState("waiting");
+      this.onUpdate();
+      return;
+    }
+
+    this.closed = false;
+    void this.connect();
+  }
+
+  async connect() {
+    if (!this.accessUrl || this.closed) {
+      return;
+    }
+    this.setState(this.reconnectAttempt === 0 ? "connecting" : "reconnecting");
+
+    let response;
+    try {
+      response = await apiFetch(this.accessUrl);
+    } catch {
+      this.failAndReconnect();
+      return;
+    }
+
+    if (!response.ok) {
+      this.failAndReconnect();
+      return;
+    }
+
+    const payload = await response.json();
+    const viewGrant = payload?.grants?.view;
+    if (!viewGrant || viewGrant.transport !== "ws") {
+      this.failAndReconnect();
+      return;
+    }
+
+    const ws = new WebSocket(`${viewGrant.url}?token=${encodeURIComponent(viewGrant.token)}`);
+    ws.binaryType = "arraybuffer";
+    this.ws = ws;
+
+    ws.onopen = () => {
+      this.reconnectAttempt = 0;
+      this.flushStreamConfig();
+    };
+
+    ws.onmessage = (event) => {
+      if (typeof event.data === "string") {
+        let message;
+        try {
+          message = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+        this.handleControlMessage(message);
+        return;
+      }
+
+      const blob =
+        event.data instanceof Blob ? event.data : new Blob([event.data], { type: "image/jpeg" });
+      const objectUrl = URL.createObjectURL(blob);
+      this.resetFrame();
+      this.frameUrl = objectUrl;
+      this.setState("live");
+      this.onUpdate();
+    };
+
+    ws.onerror = () => {
+      this.setState("error");
+      this.onUpdate();
+    };
+
+    ws.onclose = () => {
+      this.ws = null;
+      if (this.closed) {
+        this.setState("waiting");
+        this.onUpdate();
+        return;
+      }
+      this.failAndReconnect();
+    };
+  }
+
+  handleControlMessage(message) {
+    if (!message || typeof message !== "object") {
+      return;
+    }
+    if (message.type === "hello") {
+      this.viewport =
+        Number.isFinite(message.viewport?.width) && Number.isFinite(message.viewport?.height)
+          ? {
+              width: message.viewport.width,
+              height: message.viewport.height,
+            }
+          : null;
+      this.onUpdate();
+      return;
+    }
+    if (message.type === "tabs") {
+      this.tabs = Array.isArray(message.tabs) ? message.tabs : [];
+      this.activeTabIndex = Number.isInteger(message.activeTabIndex) ? message.activeTabIndex : -1;
+      this.onUpdate();
+      return;
+    }
+    if (message.type === "status") {
+      if (message.status === "live") {
+        this.setState("live");
+      }
+      this.onUpdate();
+      return;
+    }
+    if (message.type === "error") {
+      this.setState("error");
+      this.onUpdate();
+    }
+  }
+
+  scheduleReconnect() {
+    if (this.closed || !this.accessUrl) {
+      return;
+    }
+    const delayMs = Math.min(1000 * 2 ** this.reconnectAttempt, RECONNECT_MAX_MS);
+    this.reconnectAttempt += 1;
+    this.setState("reconnecting");
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.connect();
+    }, delayMs);
+  }
+
+  failAndReconnect() {
+    this.clearTimers();
+    this.closeSocket();
+    this.setState("error");
+    this.scheduleReconnect();
+    this.onUpdate();
+  }
+
+  scheduleStreamConfig(delayMs) {
+    if (this.streamConfigTimer !== null) {
+      window.clearTimeout(this.streamConfigTimer);
+      this.streamConfigTimer = null;
+    }
+    this.streamConfigTimer = window.setTimeout(() => {
+      this.streamConfigTimer = null;
+      this.flushStreamConfig();
+    }, delayMs);
+  }
+
+  flushStreamConfig() {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN || !this.requestedRenderSize) {
+      return;
+    }
+    const size = normalizeBrowserStreamRenderSize(
+      this.requestedRenderSize,
+      window.devicePixelRatio || 1,
+    );
+    if (!size) {
+      return;
+    }
+    const nextKey = `${size.width}x${size.height}`;
+    if (nextKey === this.lastSentRenderSizeKey) {
+      return;
+    }
+    this.lastSentRenderSizeKey = nextKey;
+    ws.send(
+      JSON.stringify({
+        type: "stream-config",
+        renderWidth: size.width,
+        renderHeight: size.height,
+      }),
+    );
+  }
+
+  clearTimers() {
+    if (this.reconnectTimer !== null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.streamConfigTimer !== null) {
+      window.clearTimeout(this.streamConfigTimer);
+      this.streamConfigTimer = null;
+    }
+  }
+
+  closeSocket() {
+    if (!this.ws) {
+      return;
+    }
+    this.ws.onopen = null;
+    this.ws.onmessage = null;
+    this.ws.onerror = null;
+    this.ws.onclose = null;
+    this.ws.close();
+    this.ws = null;
+  }
+
+  resetFrame() {
+    if (this.frameUrl && this.frameUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(this.frameUrl);
+    }
+    this.frameUrl = null;
+  }
+
+  setState(state) {
+    this.state = state;
+  }
+}
+
+class LocalViewApp {
+  constructor() {
+    this.sessions = [];
+    this.selectedSessionId = null;
+    this.addressEditing = false;
+    this.refreshTimer = null;
+    this.inputCommandQueue = Promise.resolve();
+
+    this.sessionListEl = document.getElementById("session-list");
+    this.tabStripEl = document.getElementById("tab-strip");
+    this.statusEl = document.getElementById("status-text");
+    this.viewerSurfaceEl = document.getElementById("viewer-surface");
+    this.viewerImageEl = document.getElementById("viewer-image");
+    this.viewerEmptyEl = document.getElementById("viewer-empty");
+    this.addressFormEl = document.getElementById("address-form");
+    this.addressInputEl = document.getElementById("address-input");
+    this.backButtonEl = document.getElementById("back-button");
+    this.forwardButtonEl = document.getElementById("forward-button");
+    this.reloadButtonEl = document.getElementById("reload-button");
+    this.newTabButtonEl = document.getElementById("new-tab-button");
+
+    this.stream = new LocalBrowserStream(() => this.render());
+    this.cdp = new LocalCdpConnection(() => this.render());
+
+    this.bindUi();
+    this.render();
+  }
+
+  start() {
+    void this.refreshSessions();
+    this.refreshTimer = window.setInterval(() => {
+      void this.refreshSessions();
+    }, SESSION_REFRESH_MS);
+  }
+
+  bindUi() {
+    window.addEventListener("hashchange", () => {
+      const hashSessionId = resolveSelectedSessionIdFromHash();
+      if (hashSessionId && this.sessions.some((session) => session.sessionId === hashSessionId)) {
+        this.selectSession(hashSessionId);
+      }
+    });
+
+    this.sessionListEl.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-session-id]");
+      if (!button) {
+        return;
+      }
+      this.selectSession(button.dataset.sessionId ?? null);
+    });
+
+    this.tabStripEl.addEventListener("click", (event) => {
+      const closeButton = event.target.closest("button[data-close-target-id]");
+      if (closeButton) {
+        event.stopPropagation();
+        const targetId = closeButton.dataset.closeTargetId;
+        if (targetId) {
+          void this.cdp.sendRawCommand("Target.closeTarget", { targetId }).catch(() => undefined);
+        }
+        return;
+      }
+
+      const tabButton = event.target.closest("button[data-target-id]");
+      if (!tabButton) {
+        return;
+      }
+      const targetId = tabButton.dataset.targetId;
+      if (!targetId) {
+        return;
+      }
+      this.cdp.setPreferredPageTarget(targetId);
+      void this.cdp.sendRawCommand("Target.activateTarget", { targetId }).catch(() => undefined);
+    });
+
+    this.addressInputEl.addEventListener("focus", () => {
+      this.addressEditing = true;
+    });
+    this.addressInputEl.addEventListener("blur", () => {
+      this.addressEditing = false;
+      this.renderAddress();
+    });
+    this.addressFormEl.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const value = this.normalizeSubmittedUrl(this.addressInputEl.value);
+      if (!value) {
+        return;
+      }
+      void this.cdp.sendCommand("Page.navigate", { url: value }).catch(() => undefined);
+    });
+
+    this.backButtonEl.addEventListener("click", () => {
+      void this.cdp.navigateHistory("back").catch(() => undefined);
+    });
+    this.forwardButtonEl.addEventListener("click", () => {
+      void this.cdp.navigateHistory("forward").catch(() => undefined);
+    });
+    this.reloadButtonEl.addEventListener("click", () => {
+      void this.cdp.sendCommand("Page.reload", { ignoreCache: false }).catch(() => undefined);
+    });
+    this.newTabButtonEl.addEventListener("click", () => {
+      void this.cdp
+        .sendRawCommand("Target.createTarget", { url: "about:blank" })
+        .catch(() => undefined);
+    });
+
+    this.viewerSurfaceEl.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+    });
+    this.viewerSurfaceEl.addEventListener("mousedown", (event) => {
+      this.viewerSurfaceEl.focus();
+      const point = this.eventToViewportPoint(event);
+      if (!point) {
+        return;
+      }
+      event.preventDefault();
+      void this.dispatchPointerCommand("Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        x: point.x,
+        y: point.y,
+        button: mouseButtonName(event.button),
+        buttons: event.buttons,
+        clickCount: event.detail || 1,
+        modifiers: resolveModifiers(event),
+      });
+    });
+    this.viewerSurfaceEl.addEventListener("mouseup", (event) => {
+      const point = this.eventToViewportPoint(event);
+      if (!point) {
+        return;
+      }
+      event.preventDefault();
+      void this.dispatchPointerCommand("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x: point.x,
+        y: point.y,
+        button: mouseButtonName(event.button),
+        buttons: event.buttons,
+        clickCount: event.detail || 1,
+        modifiers: resolveModifiers(event),
+      });
+    });
+    this.viewerSurfaceEl.addEventListener("mousemove", (event) => {
+      const point = this.eventToViewportPoint(event);
+      if (!point) {
+        return;
+      }
+      void this.dispatchPointerCommand("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: point.x,
+        y: point.y,
+        button: "none",
+        buttons: event.buttons,
+        modifiers: resolveModifiers(event),
+      });
+    });
+    this.viewerSurfaceEl.addEventListener(
+      "wheel",
+      (event) => {
+        const point = this.eventToViewportPoint(event);
+        if (!point) {
+          return;
+        }
+        event.preventDefault();
+        void this.dispatchPointerCommand("Input.dispatchMouseEvent", {
+          type: "mouseWheel",
+          x: point.x,
+          y: point.y,
+          deltaX: event.deltaX,
+          deltaY: event.deltaY,
+          modifiers: resolveModifiers(event),
+        });
+      },
+      { passive: false },
+    );
+
+    this.viewerSurfaceEl.addEventListener("keydown", (event) => {
+      const printable = isPrintableKey(event);
+      if (printable) {
+        event.preventDefault();
+        void this.dispatchPointerCommand("Input.insertText", { text: event.key });
+        return;
+      }
+
+      const payload = createCdpKeyPayload(event);
+      if (!payload) {
+        return;
+      }
+      event.preventDefault();
+      void this.dispatchPointerCommand("Input.dispatchKeyEvent", payload);
+    });
+
+    this.viewerSurfaceEl.addEventListener("keyup", (event) => {
+      const payload = createCdpKeyPayload(event, "keyUp");
+      if (!payload) {
+        return;
+      }
+      event.preventDefault();
+      void this.dispatchPointerCommand("Input.dispatchKeyEvent", payload);
+    });
+
+    this.viewerSurfaceEl.addEventListener("paste", (event) => {
+      const text = event.clipboardData?.getData("text/plain");
+      if (!text) {
+        return;
+      }
+      event.preventDefault();
+      void this.dispatchPointerCommand("Input.insertText", { text });
+    });
+
+    const resizeObserver = new ResizeObserver(() => {
+      const rect = this.viewerSurfaceEl.getBoundingClientRect();
+      this.stream.setRequestedRenderSize({
+        width: rect.width,
+        height: rect.height,
+      });
+    });
+    resizeObserver.observe(this.viewerSurfaceEl);
+  }
+
+  async refreshSessions() {
+    let response;
+    try {
+      response = await apiFetch(`${apiBasePath}/sessions`);
+    } catch {
+      return;
+    }
+    if (!response.ok) {
+      return;
+    }
+
+    const payload = await response.json();
+    this.sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
+
+    const hashSessionId = resolveSelectedSessionIdFromHash();
+    const activeSessionId = this.resolveActiveSessionId(hashSessionId);
+    this.selectSession(activeSessionId, {
+      force: hashSessionId !== activeSessionId,
+      updateHash: hashSessionId !== activeSessionId,
+    });
+  }
+
+  resolveActiveSessionId(hashSessionId) {
+    if (hashSessionId && this.sessions.some((session) => session.sessionId === hashSessionId)) {
+      return hashSessionId;
+    }
+
+    if (
+      this.selectedSessionId &&
+      this.sessions.some((session) => session.sessionId === this.selectedSessionId)
+    ) {
+      return this.selectedSessionId;
+    }
+
+    return this.sessions[0]?.sessionId ?? null;
+  }
+
+  selectSession(sessionId, options = {}) {
+    if (this.selectedSessionId === sessionId && !options.force) {
+      this.render();
+      return;
+    }
+
+    this.selectedSessionId = sessionId;
+    if (options.updateHash !== false) {
+      setSelectedSessionHash(sessionId);
+    }
+
+    const accessUrl = sessionId
+      ? `${apiBasePath}/sessions/${encodeURIComponent(sessionId)}/access`
+      : null;
+    this.stream.setAccessUrl(accessUrl);
+    this.cdp.setAccessUrl(accessUrl);
+    this.render();
+  }
+
+  render() {
+    const selectedSession =
+      this.sessions.find((session) => session.sessionId === this.selectedSessionId) ?? null;
+    const activeTab =
+      (this.stream.activeTabIndex >= 0
+        ? this.stream.tabs.find((tab) => tab.index === this.stream.activeTabIndex)
+        : null) ??
+      this.stream.tabs.find((tab) => tab.active) ??
+      this.stream.tabs[0] ??
+      null;
+
+    this.cdp.setPreferredPageTarget(activeTab?.targetId ?? null);
+
+    this.renderSessions();
+    this.renderTabs(activeTab);
+    this.renderAddress(activeTab);
+
+    this.viewerImageEl.src = this.stream.frameUrl ?? "";
+    this.viewerImageEl.hidden = !this.stream.frameUrl;
+    this.viewerEmptyEl.hidden = Boolean(this.stream.frameUrl);
+    this.viewerEmptyEl.textContent = selectedSession
+      ? this.stream.state === "connecting" || this.stream.state === "reconnecting"
+        ? "Connecting to browser"
+        : "Waiting for frames"
+      : "No live browser selected";
+
+    const sessionSummary =
+      selectedSession === null
+        ? "No session selected"
+        : `${selectedSession.label} / ${selectedSession.engine}`;
+    this.statusEl.textContent = `${sessionSummary} / stream ${this.stream.state} / cdp ${this.cdp.state}`;
+  }
+
+  renderSessions() {
+    this.sessionListEl.textContent = "";
+    if (this.sessions.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "session-meta";
+      empty.textContent = "No live local browsers";
+      this.sessionListEl.append(empty);
+      return;
+    }
+
+    for (const session of this.sessions) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "session-item";
+      button.dataset.sessionId = session.sessionId;
+      button.dataset.active = String(session.sessionId === this.selectedSessionId);
+      button.setAttribute("data-testid", `session-item-${session.sessionId}`);
+
+      const header = document.createElement("div");
+      header.className = "session-item-header";
+
+      const label = document.createElement("div");
+      label.className = "session-label";
+      label.textContent = session.label;
+
+      const badge = document.createElement("div");
+      badge.className = "session-badge";
+      badge.textContent = session.browserName ?? session.engine;
+
+      header.append(label, badge);
+
+      const meta = document.createElement("div");
+      meta.className = "session-meta";
+      meta.textContent = [session.workspace, session.ownership, `pid ${session.pid}`]
+        .filter(Boolean)
+        .join(" / ");
+
+      const path = document.createElement("div");
+      path.className = "session-path";
+      path.textContent = middleTrim(session.rootPath, 58);
+
+      button.append(header, meta, path);
+      this.sessionListEl.append(button);
+    }
+  }
+
+  renderTabs(activeTab) {
+    this.tabStripEl.textContent = "";
+    for (const tab of this.stream.tabs) {
+      const chip = document.createElement("div");
+      chip.className = "tab-chip";
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "tab-button";
+      button.dataset.active = String(activeTab ? activeTab.index === tab.index : tab.active);
+      if (tab.targetId) {
+        button.dataset.targetId = tab.targetId;
+      }
+
+      const title = document.createElement("span");
+      title.className = "tab-title";
+      title.textContent = tab.title || tab.url || "Untitled";
+
+      button.append(title);
+      chip.append(button);
+
+      if (tab.targetId) {
+        const closeButton = document.createElement("button");
+        closeButton.type = "button";
+        closeButton.className = "tab-close";
+        closeButton.dataset.closeTargetId = tab.targetId;
+        closeButton.setAttribute("aria-label", "Close tab");
+        closeButton.textContent = "x";
+        chip.append(closeButton);
+      }
+
+      this.tabStripEl.append(chip);
+    }
+  }
+
+  renderAddress(activeTab) {
+    if (this.addressEditing) {
+      return;
+    }
+    this.addressInputEl.value = activeTab?.url ?? "";
+  }
+
+  getActiveTab() {
+    return (
+      (this.stream.activeTabIndex >= 0
+        ? this.stream.tabs.find((tab) => tab.index === this.stream.activeTabIndex)
+        : null) ??
+      this.stream.tabs.find((tab) => tab.active) ??
+      this.stream.tabs[0] ??
+      null
+    );
+  }
+
+  activateActiveTab() {
+    const targetId = this.getActiveTab()?.targetId;
+    if (!targetId) {
+      return;
+    }
+    this.cdp.setPreferredPageTarget(targetId);
+    void this.cdp.sendRawCommand("Target.activateTarget", { targetId }).catch(() => undefined);
+  }
+
+  async dispatchPointerCommand(method, payload) {
+    this.inputCommandQueue = this.inputCommandQueue
+      .catch(() => undefined)
+      .then(async () => {
+        this.activateActiveTab();
+        await this.cdp.sendCommand(method, payload);
+      })
+      .catch(() => undefined);
+    return this.inputCommandQueue;
+  }
+
+  normalizeSubmittedUrl(value) {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    if (/^[a-z][a-z0-9+.-]*:/iu.test(trimmed)) {
+      return trimmed;
+    }
+    return `https://${trimmed}`;
+  }
+
+  eventToViewportPoint(event) {
+    const viewport = this.stream.viewport;
+    if (!viewport) {
+      return null;
+    }
+    const bounds = this.viewerSurfaceEl.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) {
+      return null;
+    }
+
+    const scale = Math.min(bounds.width / viewport.width, bounds.height / viewport.height);
+    const width = viewport.width * scale;
+    const height = viewport.height * scale;
+    const left = bounds.left + (bounds.width - width) / 2;
+    const top = bounds.top + (bounds.height - height) / 2;
+
+    if (
+      event.clientX < left ||
+      event.clientX > left + width ||
+      event.clientY < top ||
+      event.clientY > top + height
+    ) {
+      return null;
+    }
+
+    return {
+      x: Math.max(0, Math.min(viewport.width, ((event.clientX - left) / width) * viewport.width)),
+      y: Math.max(0, Math.min(viewport.height, ((event.clientY - top) / height) * viewport.height)),
+    };
+  }
+}
+
+function normalizeTargetId(value) {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function mouseButtonName(button) {
+  if (button === 1) {
+    return "middle";
+  }
+  if (button === 2) {
+    return "right";
+  }
+  return "left";
+}
+
+function resolveModifiers(event) {
+  let modifiers = 0;
+  if (event.altKey) {
+    modifiers |= 1;
+  }
+  if (event.ctrlKey) {
+    modifiers |= 2;
+  }
+  if (event.metaKey) {
+    modifiers |= 4;
+  }
+  if (event.shiftKey) {
+    modifiers |= 8;
+  }
+  return modifiers;
+}
+
+function isPrintableKey(event) {
+  return (
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey &&
+    typeof event.key === "string" &&
+    event.key.length === 1
+  );
+}
+
+function createCdpKeyPayload(event, type = "keyDown") {
+  const key = event.key;
+  const code = event.code;
+  const windowsVirtualKeyCode = KEY_CODES[key];
+  if (!code && windowsVirtualKeyCode === undefined) {
+    return null;
+  }
+  return {
+    type,
+    key,
+    code,
+    windowsVirtualKeyCode,
+    nativeVirtualKeyCode: windowsVirtualKeyCode,
+    modifiers: resolveModifiers(event),
+  };
+}
+
+const KEY_CODES = {
+  " ": 32,
+  Enter: 13,
+  Tab: 9,
+  Escape: 27,
+  Backspace: 8,
+  Delete: 46,
+  ArrowLeft: 37,
+  ArrowUp: 38,
+  ArrowRight: 39,
+  ArrowDown: 40,
+  Home: 36,
+  End: 35,
+  PageUp: 33,
+  PageDown: 34,
+};
+
+new LocalViewApp().start();
