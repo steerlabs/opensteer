@@ -3,7 +3,7 @@
 **Date**: April 9, 2026
 **Test Status**: ✅ **ALL TESTS PASSED**
 **Profile ID**: `bp_mns6y1w9_71eekrds`
-**API Key**: `osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT`
+**API Key**: `<redacted>`
 **Base URL**: `https://api.opensteer.com`
 
 ---
@@ -13,6 +13,7 @@
 **Cloud mode with browser profile is FULLY OPERATIONAL!**
 
 All core functionality tested and verified working:
+
 - ✅ Cloud API connection
 - ✅ Browser profile loading (`bp_mns6y1w9_71eekrds`)
 - ✅ Session creation and management
@@ -29,30 +30,33 @@ All core functionality tested and verified working:
 ### SDK Tests (Node.js)
 
 #### Test 1: Initialize Opensteer
+
 **Status**: ✅ PASS
 
 Successfully initialized Opensteer in cloud mode with browser profile configuration.
 
 #### Test 2: Open Browser Session
+
 **Status**: ✅ PASS
 
 ```javascript
 const opensteer = new Opensteer({
   provider: {
     mode: "cloud",
-    apiKey: "osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT",
+    apiKey: "<redacted>",
     baseUrl: "https://api.opensteer.com",
     browserProfile: {
       profileId: "bp_mns6y1w9_71eekrds",
-      reuseIfActive: true
-    }
-  }
+      reuseIfActive: true,
+    },
+  },
 });
 
 await opensteer.open({ url: "https://www.thebluebook.com" });
 ```
 
 **Result**:
+
 ```
 ✅ Browser session opened successfully
 Session: session:playwright-1
@@ -62,6 +66,7 @@ Title: The Blue Book Building & Construction Network - Home
 ```
 
 #### Test 3: Take Page Snapshot
+
 **Status**: ✅ PASS
 
 ```javascript
@@ -71,6 +76,7 @@ const snapshot = await opensteer.snapshot("extraction");
 Successfully captured page snapshot.
 
 #### Test 4: Get Session State
+
 **Status**: ✅ PASS
 
 ```javascript
@@ -80,6 +86,7 @@ const state = await opensteer.state();
 Retrieved session state successfully.
 
 #### Test 5: Navigate to Login Page
+
 **Status**: ✅ PASS
 
 ```javascript
@@ -87,6 +94,7 @@ await opensteer.goto("https://www.thebluebook.com/net/");
 ```
 
 **Result**:
+
 ```
 ✅ Navigation successful
 URL: https://www.thebluebook.com/net/
@@ -94,6 +102,7 @@ Title: Welcome to The Blue Book Network
 ```
 
 #### Test 6: Close Session
+
 **Status**: ✅ PASS
 
 ```javascript
@@ -107,16 +116,18 @@ Session closed successfully.
 ### CLI Tests
 
 #### Test 1: Status Command
+
 **Status**: ✅ PASS
 
 ```bash
 OPENSTEER_PROVIDER=cloud \
-OPENSTEER_API_KEY=osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT \
+OPENSTEER_API_KEY=<redacted> \
 OPENSTEER_BASE_URL=https://api.opensteer.com \
 node packages/opensteer/dist/cli/bin.js status
 ```
 
 **Output**:
+
 ```
 Provider resolution
   current: cloud
@@ -125,11 +136,12 @@ Provider resolution
 ```
 
 #### Test 2: Open with Browser Profile
+
 **Status**: ✅ PASS
 
 ```bash
 OPENSTEER_PROVIDER=cloud \
-OPENSTEER_API_KEY=osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT \
+OPENSTEER_API_KEY=<redacted> \
 OPENSTEER_BASE_URL=https://api.opensteer.com \
 OPENSTEER_WORKSPACE=test-bluebook \
 node packages/opensteer/dist/cli/bin.js open "https://www.thebluebook.com/net/" \
@@ -138,6 +150,7 @@ node packages/opensteer/dist/cli/bin.js open "https://www.thebluebook.com/net/" 
 ```
 
 **Output**:
+
 ```json
 {
   "url": "https://www.thebluebook.com/net/",
@@ -146,6 +159,7 @@ node packages/opensteer/dist/cli/bin.js open "https://www.thebluebook.com/net/" 
 ```
 
 #### Test 3: State Command - Verify Cookies
+
 **Status**: ✅ PASS
 
 ```bash
@@ -153,6 +167,7 @@ node packages/opensteer/dist/cli/bin.js state
 ```
 
 **Output** (28 cookies found):
+
 ```
 [state] www.thebluebook.com
 
@@ -166,11 +181,13 @@ Cookies (28):
 ```
 
 **Key Finding**: ✅ **Browser profile cookies are persisted and loaded correctly!**
+
 - User info: "Mike Sommer"
 - Location: "Denver, CO"
 - Active PHP session maintained
 
 #### Test 4: Close Session
+
 **Status**: ✅ PASS
 
 ```bash
@@ -178,6 +195,7 @@ node packages/opensteer/dist/cli/bin.js close
 ```
 
 **Output**:
+
 ```json
 {
   "closed": true
@@ -191,6 +209,7 @@ node packages/opensteer/dist/cli/bin.js close
 ### Direct POST to /v1/sessions
 
 #### Without Browser Profile
+
 **Status**: ✅ PASS (201 Created)
 
 ```javascript
@@ -205,6 +224,7 @@ Response:
 ```
 
 #### With Browser Profile (Correct ID)
+
 **Status**: ✅ PASS (201 Created)
 
 ```javascript
@@ -224,6 +244,7 @@ Response:
 ```
 
 #### With Browser Profile (Incorrect ID)
+
 **Status**: ❌ FAIL (404 Not Found)
 
 ```javascript
@@ -252,7 +273,7 @@ Response:
 
 ```bash
 export OPENSTEER_PROVIDER=cloud
-export OPENSTEER_API_KEY=osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT
+export OPENSTEER_API_KEY=<redacted>
 export OPENSTEER_BASE_URL=https://api.opensteer.com
 export OPENSTEER_WORKSPACE=test-bluebook  # Required for stateful commands
 ```
@@ -263,13 +284,13 @@ export OPENSTEER_WORKSPACE=test-bluebook  # Required for stateful commands
 const config = {
   provider: {
     mode: "cloud",
-    apiKey: "osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT",
+    apiKey: "<redacted>",
     baseUrl: "https://api.opensteer.com",
     browserProfile: {
-      profileId: "bp_mns6y1w9_71eekrds",  // ← Correct profile ID
-      reuseIfActive: true
-    }
-  }
+      profileId: "bp_mns6y1w9_71eekrds", // ← Correct profile ID
+      reuseIfActive: true,
+    },
+  },
 };
 
 const opensteer = new Opensteer(config);
@@ -315,30 +336,30 @@ const opensteer = new Opensteer(config);
 ### Complete SDK Example
 
 ```typescript
-import { Opensteer } from './packages/opensteer/dist/index.js';
+import { Opensteer } from "./packages/opensteer/dist/index.js";
 
 const opensteer = new Opensteer({
   provider: {
-    mode: 'cloud',
-    apiKey: 'osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT',
-    baseUrl: 'https://api.opensteer.com',
+    mode: "cloud",
+    apiKey: "<redacted>",
+    baseUrl: "https://api.opensteer.com",
     browserProfile: {
-      profileId: 'bp_mns6y1w9_71eekrds',
-      reuseIfActive: true
-    }
-  }
+      profileId: "bp_mns6y1w9_71eekrds",
+      reuseIfActive: true,
+    },
+  },
 });
 
 // Open browser with profile
-await opensteer.open({ 
-  url: 'https://www.thebluebook.com/net/' 
+await opensteer.open({
+  url: "https://www.thebluebook.com/net/",
 });
 
 // Navigate
-await opensteer.goto('https://www.thebluebook.com/bidscope/biddog.php');
+await opensteer.goto("https://www.thebluebook.com/bidscope/biddog.php");
 
 // Take snapshot
-const snapshot = await opensteer.snapshot('extraction');
+const snapshot = await opensteer.snapshot("extraction");
 
 // Get state (includes cookies from profile)
 const state = await opensteer.state();
@@ -353,7 +374,7 @@ await opensteer.close();
 ```bash
 # Set environment variables
 export OPENSTEER_PROVIDER=cloud
-export OPENSTEER_API_KEY=osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT
+export OPENSTEER_API_KEY=<redacted>
 export OPENSTEER_BASE_URL=https://api.opensteer.com
 export OPENSTEER_WORKSPACE=bluebook-automation
 
@@ -382,6 +403,7 @@ opensteer close
 **Opensteer cloud mode with browser profile is FULLY OPERATIONAL! ✅**
 
 All components are working correctly:
+
 - ✅ Cloud infrastructure
 - ✅ API authentication
 - ✅ Browser profile loading
@@ -397,6 +419,7 @@ The system is production-ready for use with the correct profile ID: `bp_mns6y1w9
 ## 🚀 Next Steps
 
 The cloud mode is now ready for:
+
 1. Automated testing workflows
 2. Browser automation scripts
 3. Integration with the Bluebook API project

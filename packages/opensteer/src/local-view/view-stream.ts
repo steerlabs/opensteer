@@ -89,6 +89,7 @@ class SessionViewStreamProducer {
   private screencastHandler:
     | ((event: { readonly data: string; readonly sessionId: number }) => void)
     | null = null;
+  private pageLifecycleCleanup: (() => void) | null = null;
   private activePage: Page | null = null;
   private activeViewport: OpensteerViewport | null = null;
   private activeScreencastSizeKey: string | null = null;
@@ -379,6 +380,7 @@ class SessionViewStreamProducer {
           }
         : {}),
     });
+    this.bindPageLifecycleFrameRefresh(page, cdpSession);
     void this.seedInitialFrame(cdpSession).catch(() => undefined);
   }
 
@@ -560,10 +562,14 @@ class SessionViewStreamProducer {
   private async stopScreencast(): Promise<void> {
     const cdpSession = this.cdpSession;
     const handler = this.screencastHandler;
+    const pageLifecycleCleanup = this.pageLifecycleCleanup;
 
     this.cdpSession = null;
     this.screencastHandler = null;
+    this.pageLifecycleCleanup = null;
     this.activeScreencastSizeKey = null;
+
+    pageLifecycleCleanup?.();
 
     if (!cdpSession) {
       return;
@@ -575,6 +581,47 @@ class SessionViewStreamProducer {
 
     await cdpSession.send("Page.stopScreencast").catch(() => undefined);
     await cdpSession.detach().catch(() => undefined);
+  }
+
+  private bindPageLifecycleFrameRefresh(page: Page, cdpSession: CDPSession): void {
+    this.pageLifecycleCleanup?.();
+
+    const refresh = () => {
+      void this.refreshPageFrame(page, cdpSession).catch(() => undefined);
+    };
+
+    page.on("domcontentloaded", refresh);
+    page.on("load", refresh);
+    page.on("framenavigated", refresh);
+    this.pageLifecycleCleanup = () => {
+      page.off("domcontentloaded", refresh);
+      page.off("load", refresh);
+      page.off("framenavigated", refresh);
+    };
+  }
+
+  private async refreshPageFrame(page: Page, cdpSession: CDPSession): Promise<void> {
+    if (this.stopped || this.cdpSession !== cdpSession || this.activePage !== page) {
+      return;
+    }
+
+    const viewport = await readViewportForPage(page);
+    if (viewport && this.cdpSession === cdpSession && this.activePage === page) {
+      this.activeViewport = viewport;
+      this.broadcastControl(
+        buildHelloMessage({
+          sessionId: this.deps.sessionId,
+          fps: this.deps.maxFps,
+          quality: this.deps.quality,
+          viewport,
+        }),
+      );
+    }
+
+    if (this.stopped || this.cdpSession !== cdpSession || this.activePage !== page) {
+      return;
+    }
+    await this.seedInitialFrame(cdpSession);
   }
 
   private async seedInitialFrame(cdpSession: CDPSession): Promise<void> {

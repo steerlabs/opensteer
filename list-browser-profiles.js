@@ -6,7 +6,7 @@
 async function listBrowserProfiles() {
   console.log("Listing Browser Profiles...\n");
 
-  const apiKey = "osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT";
+  const apiKey = readRequiredEnv("OPENSTEER_API_KEY");
   const baseUrl = "https://api.opensteer.com";
 
   try {
@@ -54,6 +54,14 @@ async function listBrowserProfiles() {
   } catch (error) {
     console.log(`❌ Error: ${error.message}`);
   }
+}
+
+function readRequiredEnv(name) {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`${name} is required to run this cloud test.`);
+  }
+  return value;
 }
 
 listBrowserProfiles().catch(console.error);

@@ -4,61 +4,61 @@
  */
 
 async function testDirectPost() {
-  console.log('Testing Direct POST to /v1/sessions\n');
-  
-  const apiKey = 'osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT';
-  const baseUrl = 'https://api.opensteer.com';
-  
+  console.log("Testing Direct POST to /v1/sessions\n");
+
+  const apiKey = readRequiredEnv("OPENSTEER_API_KEY");
+  const baseUrl = "https://api.opensteer.com";
+
   const testCases = [
     {
-      name: 'Minimal body',
-      body: {}
+      name: "Minimal body",
+      body: {},
     },
     {
-      name: 'With Bluebook profile',
+      name: "With Bluebook profile",
       body: {
         browserProfile: {
-          profileId: 'Bluebook',
-          reuseIfActive: true
-        }
-      }
+          profileId: "Bluebook",
+          reuseIfActive: true,
+        },
+      },
     },
     {
-      name: 'With label',
+      name: "With label",
       body: {
-        name: 'test-session'
-      }
+        name: "test-session",
+      },
     },
     {
-      name: 'With label and profile',
+      name: "With label and profile",
       body: {
-        name: 'test-bluebook-session',
+        name: "test-bluebook-session",
         browserProfile: {
-          profileId: 'Bluebook',
-          reuseIfActive: true
-        }
-      }
-    }
+          profileId: "Bluebook",
+          reuseIfActive: true,
+        },
+      },
+    },
   ];
-  
+
   for (const testCase of testCases) {
     console.log(`Test: ${testCase.name}`);
     console.log(`Body: ${JSON.stringify(testCase.body, null, 2)}`);
-    
+
     try {
       const response = await fetch(`${baseUrl}/v1/sessions`, {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'authorization': `Bearer ${apiKey}`,
-          'content-type': 'application/json; charset=utf-8',
+          authorization: `Bearer ${apiKey}`,
+          "content-type": "application/json; charset=utf-8",
         },
-        body: JSON.stringify(testCase.body)
+        body: JSON.stringify(testCase.body),
       });
-      
+
       console.log(`  Status: ${response.status} ${response.statusText}`);
-      
+
       const text = await response.text();
-      
+
       if (response.ok) {
         console.log(`  ✅ Success!`);
         const data = JSON.parse(text);
@@ -68,13 +68,20 @@ async function testDirectPost() {
         console.log(`  ❌ Failed`);
         console.log(`  Response: ${text.substring(0, 500)}`);
       }
-      
     } catch (error) {
       console.log(`  ❌ Error: ${error.message}`);
     }
-    
-    console.log('');
+
+    console.log("");
   }
+}
+
+function readRequiredEnv(name) {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`${name} is required to run this cloud test.`);
+  }
+  return value;
 }
 
 testDirectPost().catch(console.error);

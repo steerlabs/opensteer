@@ -65,3 +65,8 @@ export interface OpensteerLocalViewSessionSummary {
 export interface OpensteerLocalViewSessionsResponse {
   readonly sessions: readonly OpensteerLocalViewSessionSummary[];
 }
+
+export interface OpensteerLocalViewSessionCloseResponse {
+  readonly sessionId: string;
+  readonly closed: true;
+}

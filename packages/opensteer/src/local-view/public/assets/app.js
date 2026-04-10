@@ -7,6 +7,10 @@ const STREAM_CONFIG_DEBOUNCE_MS = 120;
 const CDP_COMMAND_TIMEOUT_MS = 10_000;
 const RECONNECT_MAX_MS = 10_000;
 const MAX_TIMEOUT_MS = 2_147_483_647;
+const PREFERRED_TARGET_RESOLVE_ATTEMPTS = 4;
+const PREFERRED_TARGET_RESOLVE_DELAY_MS = 50;
+const MOUSE_MOVE_THROTTLE_MS = 33;
+const VIEWPORT_REFRESH_MS = 1_500;
 
 function apiFetch(pathname, options = {}) {
   const headers = new Headers(options.headers ?? {});
@@ -71,21 +75,63 @@ function pickPageTargetId(targetIds, preferredTargetId, options = {}) {
   if (ids.length === 0) {
     return null;
   }
-  if (preferredTargetId && ids.includes(preferredTargetId)) {
-    return preferredTargetId;
+
+  if (preferredTargetId) {
+    const preferred = ids.find((targetId) => targetId === preferredTargetId);
+    if (preferred) {
+      return preferred;
+    }
+    if (options.requirePreferred) {
+      return null;
+    }
   }
-  if (options.requirePreferred) {
+
+  if (options.currentTargetId) {
+    const current = ids.find((targetId) => targetId === options.currentTargetId);
+    if (current) {
+      return current;
+    }
+  }
+
+  if (ids.length === 1 || options.allowArbitraryFallback) {
+    return ids[0] ?? null;
+  }
+
+  return null;
+}
+
+function resolveActiveTabKey(tabs, activeTabIndex) {
+  const active = resolveActiveTab(tabs, activeTabIndex);
+  if (!active) {
     return null;
   }
-  if (options.currentTargetId && ids.includes(options.currentTargetId)) {
-    return options.currentTargetId;
+  return active.targetId ?? `index:${String(active.index)}`;
+}
+
+function resolveActiveFrameKey(tabs, activeTabIndex) {
+  const active = resolveActiveTab(tabs, activeTabIndex);
+  if (!active) {
+    return null;
   }
-  return ids[0] ?? null;
+  return `${active.targetId ?? `index:${String(active.index)}`}:${active.url}:${active.title}`;
+}
+
+function resolveActiveTab(tabs, activeTabIndex) {
+  const byIndex = activeTabIndex >= 0 ? tabs.find((tab) => tab.index === activeTabIndex) : null;
+  return byIndex ?? tabs.find((tab) => tab.active) ?? tabs[0] ?? null;
+}
+
+function wait(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
 }
 
 class CdpPageSessionController {
   constructor(sendRawCommand) {
     this.sendRawCommand = sendRawCommand;
+    this.preferredTargetResolveAttempts = PREFERRED_TARGET_RESOLVE_ATTEMPTS;
+    this.preferredTargetResolveDelayMs = PREFERRED_TARGET_RESOLVE_DELAY_MS;
     this.pageTargets = new Map();
     this.attachedSessionIdByTarget = new Map();
     this.targetIdByAttachedSession = new Map();
@@ -237,9 +283,7 @@ class CdpPageSessionController {
   }
 
   readReadySessionId() {
-    const targetId = pickPageTargetId(this.pageTargets.keys(), this.preferredTargetId, {
-      currentTargetId: this.currentTargetId,
-    });
+    const targetId = this.resolveCurrentTargetId();
     if (!targetId) {
       return null;
     }
@@ -248,6 +292,13 @@ class CdpPageSessionController {
       this.currentTargetId = targetId;
     }
     return sessionId;
+  }
+
+  resolveCurrentTargetId() {
+    return pickPageTargetId(this.pageTargets.keys(), this.preferredTargetId, {
+      requirePreferred: Boolean(this.preferredTargetId),
+      currentTargetId: this.currentTargetId,
+    });
   }
 
   async resolvePageSession(generation) {
@@ -278,22 +329,43 @@ class CdpPageSessionController {
   }
 
   async resolveTargetId(generation) {
-    if (this.preferredTargetId) {
-      return this.preferredTargetId;
+    const preferredTargetId = this.preferredTargetId;
+
+    if (preferredTargetId) {
+      let targets =
+        this.pageTargets.size > 0 ? new Map(this.pageTargets) : await this.refreshPageTargets();
+
+      for (let attempt = 0; attempt < this.preferredTargetResolveAttempts; attempt += 1) {
+        this.assertGeneration(generation);
+
+        const targetId = pickPageTargetId(targets.keys(), preferredTargetId, {
+          requirePreferred: true,
+          currentTargetId: this.currentTargetId,
+        });
+        if (targetId) {
+          return targetId;
+        }
+
+        if (attempt === this.preferredTargetResolveAttempts - 1) {
+          break;
+        }
+
+        await wait(this.preferredTargetResolveDelayMs);
+        this.assertGeneration(generation);
+        targets = await this.refreshPageTargets();
+      }
+
+      throw new Error("Preferred page target is unavailable for CDP command.");
     }
 
-    let targetId = pickPageTargetId(this.pageTargets.keys(), null, {
-      currentTargetId: this.currentTargetId,
-    });
+    let targetId = this.resolveCurrentTargetId();
     if (!targetId) {
       await this.refreshPageTargets();
       this.assertGeneration(generation);
-      targetId = pickPageTargetId(this.pageTargets.keys(), null, {
-        currentTargetId: this.currentTargetId,
-      });
+      targetId = this.resolveCurrentTargetId();
     }
     if (!targetId) {
-      throw new Error("No active page target is available.");
+      throw new Error("No unambiguous active page target is available for CDP command.");
     }
     return targetId;
   }
@@ -606,6 +678,8 @@ class LocalBrowserStream {
     this.viewport = null;
     this.tabs = [];
     this.activeTabIndex = -1;
+    this.activeTabKey = null;
+    this.activeFrameKey = null;
     this.frameUrl = null;
     this.ws = null;
     this.reconnectTimer = null;
@@ -641,6 +715,8 @@ class LocalBrowserStream {
     this.viewport = null;
     this.tabs = [];
     this.activeTabIndex = -1;
+    this.activeTabKey = null;
+    this.activeFrameKey = null;
     this.setState("waiting");
   }
 
@@ -651,6 +727,8 @@ class LocalBrowserStream {
     this.viewport = null;
     this.tabs = [];
     this.activeTabIndex = -1;
+    this.activeTabKey = null;
+    this.activeFrameKey = null;
     if (!this.accessUrl) {
       this.setState("waiting");
       this.onUpdate();
@@ -749,8 +827,20 @@ class LocalBrowserStream {
       return;
     }
     if (message.type === "tabs") {
-      this.tabs = Array.isArray(message.tabs) ? message.tabs : [];
-      this.activeTabIndex = Number.isInteger(message.activeTabIndex) ? message.activeTabIndex : -1;
+      const tabs = Array.isArray(message.tabs) ? message.tabs : [];
+      const activeTabIndex = Number.isInteger(message.activeTabIndex) ? message.activeTabIndex : -1;
+      const nextActiveTabKey = resolveActiveTabKey(tabs, activeTabIndex);
+      const nextActiveFrameKey = resolveActiveFrameKey(tabs, activeTabIndex);
+      if (
+        (this.activeTabKey !== null && this.activeTabKey !== nextActiveTabKey) ||
+        (this.activeFrameKey !== null && this.activeFrameKey !== nextActiveFrameKey)
+      ) {
+        this.resetFrame();
+      }
+      this.activeTabKey = nextActiveTabKey;
+      this.activeFrameKey = nextActiveFrameKey;
+      this.tabs = tabs;
+      this.activeTabIndex = activeTabIndex;
       this.onUpdate();
       return;
     }
@@ -865,13 +955,22 @@ class LocalViewApp {
     this.sessions = [];
     this.selectedSessionId = null;
     this.addressEditing = false;
+    this.closingSessionId = null;
     this.refreshTimer = null;
+    this.viewportRefreshTimer = null;
     this.inputCommandQueue = Promise.resolve();
+    this.inputViewport = null;
+    this.explicitPreferredTargetId = null;
+    this.lastInputViewportTargetId = null;
+    this.lastMouseMoveAt = 0;
+    this.isMouseDragging = false;
+    this.activeMouseButton = null;
 
     this.sessionListEl = document.getElementById("session-list");
     this.tabStripEl = document.getElementById("tab-strip");
     this.statusDotEl = document.getElementById("status-dot");
     this.statusLabelEl = document.getElementById("status-label");
+    this.statusTextEl = document.getElementById("status-text");
     this.viewerSurfaceEl = document.getElementById("viewer-surface");
     this.viewerImageEl = document.getElementById("viewer-image");
     this.viewerEmptyEl = document.getElementById("viewer-empty");
@@ -882,6 +981,7 @@ class LocalViewApp {
     this.forwardButtonEl = document.getElementById("forward-button");
     this.reloadButtonEl = document.getElementById("reload-button");
     this.newTabButtonEl = document.getElementById("new-tab-button");
+    this.closeBrowserButtonEl = document.getElementById("close-browser-button");
 
     this.stream = new LocalBrowserStream(() => this.render());
     this.cdp = new LocalCdpConnection(() => this.render());
@@ -895,6 +995,9 @@ class LocalViewApp {
     this.refreshTimer = window.setInterval(() => {
       void this.refreshSessions();
     }, SESSION_REFRESH_MS);
+    this.viewportRefreshTimer = window.setInterval(() => {
+      void this.refreshInputViewport();
+    }, VIEWPORT_REFRESH_MS);
   }
 
   bindUi() {
@@ -919,6 +1022,9 @@ class LocalViewApp {
         event.stopPropagation();
         const targetId = closeButton.dataset.closeTargetId;
         if (targetId) {
+          if (this.explicitPreferredTargetId === targetId) {
+            this.explicitPreferredTargetId = null;
+          }
           void this.cdp.sendRawCommand("Target.closeTarget", { targetId }).catch(() => undefined);
         }
         return;
@@ -932,7 +1038,9 @@ class LocalViewApp {
       if (!targetId) {
         return;
       }
+      this.explicitPreferredTargetId = targetId;
       this.cdp.setPreferredPageTarget(targetId);
+      this.render();
       void this.cdp.sendRawCommand("Target.activateTarget", { targetId }).catch(() => undefined);
     });
 
@@ -950,6 +1058,7 @@ class LocalViewApp {
         return;
       }
       void this.cdp.sendCommand("Page.navigate", { url: value }).catch(() => undefined);
+      this.viewerSurfaceEl.focus();
     });
 
     this.backButtonEl.addEventListener("click", () => {
@@ -963,8 +1072,21 @@ class LocalViewApp {
     });
     this.newTabButtonEl.addEventListener("click", () => {
       void this.cdp
-        .sendRawCommand("Target.createTarget", { url: "about:blank" })
+        .sendCommand("Target.createTarget", { url: "about:blank" })
+        .then((result) => {
+          const targetId = normalizeTargetId(result?.targetId);
+          if (!targetId) {
+            return undefined;
+          }
+          this.explicitPreferredTargetId = targetId;
+          this.cdp.setPreferredPageTarget(targetId);
+          this.render();
+          return this.cdp.sendCommand("Target.activateTarget", { targetId });
+        })
         .catch(() => undefined);
+    });
+    this.closeBrowserButtonEl.addEventListener("click", () => {
+      void this.closeSelectedBrowser();
     });
 
     this.viewerSurfaceEl.addEventListener("contextmenu", (event) => {
@@ -977,13 +1099,15 @@ class LocalViewApp {
         return;
       }
       event.preventDefault();
+      this.isMouseDragging = true;
+      this.activeMouseButton = event.button;
       void this.dispatchPointerCommand("Input.dispatchMouseEvent", {
         type: "mousePressed",
         x: point.x,
         y: point.y,
         button: mouseButtonName(event.button),
-        buttons: event.buttons,
-        clickCount: event.detail || 1,
+        buttons: mouseButtonMask(event.button),
+        clickCount: readMouseClickCount("mousePressed", event.detail),
         modifiers: resolveModifiers(event),
       });
     });
@@ -993,27 +1117,37 @@ class LocalViewApp {
         return;
       }
       event.preventDefault();
+      this.isMouseDragging = false;
+      this.activeMouseButton = null;
       void this.dispatchPointerCommand("Input.dispatchMouseEvent", {
         type: "mouseReleased",
         x: point.x,
         y: point.y,
         button: mouseButtonName(event.button),
-        buttons: event.buttons,
-        clickCount: event.detail || 1,
+        buttons: 0,
+        clickCount: readMouseClickCount("mouseReleased", event.detail),
         modifiers: resolveModifiers(event),
       });
     });
     this.viewerSurfaceEl.addEventListener("mousemove", (event) => {
+      const now = Date.now();
+      if (now - this.lastMouseMoveAt < MOUSE_MOVE_THROTTLE_MS) {
+        return;
+      }
+      this.lastMouseMoveAt = now;
+
       const point = this.eventToViewportPoint(event);
       if (!point) {
         return;
       }
+      const trackedButton = this.activeMouseButton;
       void this.dispatchPointerCommand("Input.dispatchMouseEvent", {
         type: "mouseMoved",
         x: point.x,
         y: point.y,
-        button: "none",
-        buttons: event.buttons,
+        button: trackedButton === null ? "none" : mouseButtonName(trackedButton),
+        buttons: trackedButton === null ? event.buttons : mouseButtonMask(trackedButton),
+        clickCount: 0,
         modifiers: resolveModifiers(event),
       });
     });
@@ -1038,14 +1172,7 @@ class LocalViewApp {
     );
 
     this.viewerSurfaceEl.addEventListener("keydown", (event) => {
-      const printable = isPrintableKey(event);
-      if (printable) {
-        event.preventDefault();
-        void this.dispatchPointerCommand("Input.insertText", { text: event.key });
-        return;
-      }
-
-      const payload = createCdpKeyPayload(event);
+      const payload = createCdpKeyDownPayload(event);
       if (!payload) {
         return;
       }
@@ -1071,6 +1198,71 @@ class LocalViewApp {
       void this.dispatchPointerCommand("Input.insertText", { text });
     });
 
+    this.viewerImageEl.addEventListener("load", () => {
+      void this.refreshInputViewport();
+    });
+
+    window.addEventListener("mousemove", (event) => {
+      if (!this.isMouseDragging || this.cdp.state !== "connected") {
+        return;
+      }
+
+      const now = Date.now();
+      if (now - this.lastMouseMoveAt < MOUSE_MOVE_THROTTLE_MS) {
+        return;
+      }
+      this.lastMouseMoveAt = now;
+
+      const insidePoint = this.eventToViewportPoint(event);
+      if (insidePoint) {
+        return;
+      }
+
+      const point = this.eventToViewportPoint(event, { clampOutside: true });
+      if (!point || this.activeMouseButton === null) {
+        return;
+      }
+
+      void this.dispatchPointerCommand("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: point.x,
+        y: point.y,
+        button: mouseButtonName(this.activeMouseButton),
+        buttons: mouseButtonMask(this.activeMouseButton),
+        clickCount: 0,
+        modifiers: resolveModifiers(event),
+      });
+    });
+
+    window.addEventListener("mouseup", (event) => {
+      if (!this.isMouseDragging) {
+        return;
+      }
+
+      const releasedButton = this.activeMouseButton;
+      this.isMouseDragging = false;
+      this.activeMouseButton = null;
+
+      if (this.cdp.state !== "connected" || releasedButton === null) {
+        return;
+      }
+
+      const point = this.eventToViewportPoint(event, { clampOutside: true });
+      if (!point) {
+        return;
+      }
+
+      void this.dispatchPointerCommand("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x: point.x,
+        y: point.y,
+        button: mouseButtonName(releasedButton),
+        buttons: 0,
+        clickCount: readMouseClickCount("mouseReleased", event.detail),
+        modifiers: resolveModifiers(event),
+      });
+    });
+
     const resizeObserver = new ResizeObserver(() => {
       const rect = this.viewerSurfaceEl.getBoundingClientRect();
       this.stream.setRequestedRenderSize({
@@ -1094,6 +1286,12 @@ class LocalViewApp {
 
     const payload = await response.json();
     this.sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
+    if (
+      this.closingSessionId &&
+      !this.sessions.some((session) => session.sessionId === this.closingSessionId)
+    ) {
+      this.closingSessionId = null;
+    }
 
     const hashSessionId = resolveSelectedSessionIdFromHash();
     const activeSessionId = this.resolveActiveSessionId(hashSessionId);
@@ -1147,30 +1345,45 @@ class LocalViewApp {
       this.stream.tabs.find((tab) => tab.active) ??
       this.stream.tabs[0] ??
       null;
+    if (this.explicitPreferredTargetId !== null) {
+      if (activeTab?.targetId === this.explicitPreferredTargetId) {
+        this.explicitPreferredTargetId = null;
+      }
+    }
+    const preferredTargetId = this.explicitPreferredTargetId ?? activeTab?.targetId ?? null;
 
-    this.cdp.setPreferredPageTarget(activeTab?.targetId ?? null);
+    this.cdp.setPreferredPageTarget(preferredTargetId);
+
+    if (this.lastInputViewportTargetId !== preferredTargetId) {
+      this.lastInputViewportTargetId = preferredTargetId;
+      this.inputViewport = this.stream.viewport;
+      void this.refreshInputViewport();
+    }
 
     this.renderSessions();
-    this.renderTabs(activeTab);
+    this.renderTabs(activeTab, preferredTargetId);
     this.renderAddress(activeTab);
+    this.renderCloseBrowserButton(selectedSession);
 
     this.viewerImageEl.src = this.stream.frameUrl ?? "";
     this.viewerImageEl.hidden = !this.stream.frameUrl;
     this.viewerEmptyEl.hidden = Boolean(this.stream.frameUrl);
     this.viewerEmptyTextEl.textContent = selectedSession
-      ? this.stream.state === "connecting" || this.stream.state === "reconnecting"
-        ? "Connecting to browser\u2026"
-        : "Waiting for frames\u2026"
+      ? this.closingSessionId === selectedSession.sessionId
+        ? "Closing browser..."
+        : this.stream.state === "connecting" || this.stream.state === "reconnecting"
+          ? "Connecting to browser\u2026"
+          : "Waiting for frames\u2026"
       : "No live browser selected";
 
     this.statusDotEl.className = "chrome-status-dot";
-    if (this.stream.state === "live") {
+    if (selectedSession && this.closingSessionId === selectedSession.sessionId) {
+      this.statusDotEl.classList.add("is-connecting");
+      this.statusLabelEl.textContent = "Closing";
+    } else if (this.stream.state === "live") {
       this.statusDotEl.classList.add("is-live");
       this.statusLabelEl.textContent = "Live";
-    } else if (
-      this.stream.state === "connecting" ||
-      this.stream.state === "reconnecting"
-    ) {
+    } else if (this.stream.state === "connecting" || this.stream.state === "reconnecting") {
       this.statusDotEl.classList.add("is-connecting");
       this.statusLabelEl.textContent =
         this.stream.state === "connecting" ? "Connecting" : "Reconnecting";
@@ -1183,6 +1396,24 @@ class LocalViewApp {
       this.statusDotEl.classList.add("is-idle");
       this.statusLabelEl.textContent = "";
     }
+
+    const sessionSummary =
+      selectedSession === null
+        ? "No session selected"
+        : `${selectedSession.label} / ${selectedSession.engine}`;
+    this.statusTextEl.textContent = `${sessionSummary} / stream ${this.stream.state} / cdp ${this.cdp.state}`;
+  }
+
+  renderCloseBrowserButton(selectedSession) {
+    const isClosing =
+      selectedSession !== null && this.closingSessionId === selectedSession.sessionId;
+    const canClose = selectedSession !== null && selectedSession.ownership === "owned";
+    this.closeBrowserButtonEl.disabled = !canClose || isClosing;
+    this.closeBrowserButtonEl.textContent = isClosing ? "Closing..." : "Close Browser";
+    this.closeBrowserButtonEl.title =
+      selectedSession && selectedSession.ownership !== "owned"
+        ? "Only Opensteer-owned local browsers can be closed here."
+        : "";
   }
 
   renderSessions() {
@@ -1226,9 +1457,7 @@ class LocalViewApp {
 
       const meta = document.createElement("span");
       meta.className = "session-info";
-      meta.textContent = [session.workspace, `pid ${session.pid}`]
-        .filter(Boolean)
-        .join(" \u00b7 ");
+      meta.textContent = [session.workspace, `pid ${session.pid}`].filter(Boolean).join(" \u00b7 ");
 
       row2.append(badge, meta);
 
@@ -1246,7 +1475,7 @@ class LocalViewApp {
     }
   }
 
-  renderTabs(activeTab) {
+  renderTabs(activeTab, preferredTargetId = null) {
     this.tabStripEl.textContent = "";
     for (const tab of this.stream.tabs) {
       const chip = document.createElement("div");
@@ -1254,8 +1483,14 @@ class LocalViewApp {
 
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "chrome-tab";
-      button.dataset.active = String(activeTab ? activeTab.index === tab.index : tab.active);
+      button.className = "chrome-tab tab-button";
+      button.dataset.active = String(
+        preferredTargetId
+          ? tab.targetId === preferredTargetId
+          : activeTab
+            ? activeTab.index === tab.index
+            : tab.active,
+      );
       if (tab.targetId) {
         button.dataset.targetId = tab.targetId;
       }
@@ -1308,15 +1543,81 @@ class LocalViewApp {
     void this.cdp.sendRawCommand("Target.activateTarget", { targetId }).catch(() => undefined);
   }
 
+  async closeSelectedBrowser() {
+    const selectedSession =
+      this.sessions.find((session) => session.sessionId === this.selectedSessionId) ?? null;
+    if (!selectedSession || selectedSession.ownership !== "owned") {
+      return;
+    }
+    if (this.closingSessionId !== null) {
+      return;
+    }
+    if (!window.confirm(`Close browser "${selectedSession.label}"?`)) {
+      return;
+    }
+
+    const { sessionId } = selectedSession;
+    this.closingSessionId = sessionId;
+    this.render();
+
+    let response;
+    try {
+      response = await apiFetch(`${apiBasePath}/sessions/${encodeURIComponent(sessionId)}/close`, {
+        method: "POST",
+      });
+    } catch {
+      if (this.closingSessionId === sessionId) {
+        this.closingSessionId = null;
+      }
+      this.render();
+      return;
+    }
+
+    if (!response.ok) {
+      if (this.closingSessionId === sessionId) {
+        this.closingSessionId = null;
+      }
+      this.render();
+      return;
+    }
+
+    if (this.selectedSessionId === sessionId) {
+      this.selectedSessionId = null;
+      setSelectedSessionHash(null);
+      this.stream.setAccessUrl(null);
+      this.cdp.setAccessUrl(null);
+    }
+    this.sessions = this.sessions.filter((session) => session.sessionId !== sessionId);
+    if (this.closingSessionId === sessionId) {
+      this.closingSessionId = null;
+    }
+    this.render();
+    await this.refreshSessions();
+  }
+
   async dispatchPointerCommand(method, payload) {
     this.inputCommandQueue = this.inputCommandQueue
       .catch(() => undefined)
       .then(async () => {
-        this.activateActiveTab();
         await this.cdp.sendCommand(method, payload);
       })
       .catch(() => undefined);
     return this.inputCommandQueue;
+  }
+
+  async refreshInputViewport() {
+    if (this.cdp.state !== "connected") {
+      this.inputViewport = this.stream.viewport;
+      return;
+    }
+
+    try {
+      const metrics = await this.cdp.sendCommand("Page.getLayoutMetrics");
+      const viewport = readViewportFromLayoutMetrics(metrics);
+      if (viewport) {
+        this.inputViewport = viewport;
+      }
+    } catch {}
   }
 
   normalizeSubmittedUrl(value) {
@@ -1330,40 +1631,106 @@ class LocalViewApp {
     return `https://${trimmed}`;
   }
 
-  eventToViewportPoint(event) {
-    const viewport = this.stream.viewport;
+  eventToViewportPoint(event, options = {}) {
+    const viewport = this.inputViewport ?? this.stream.viewport;
     if (!viewport) {
       return null;
     }
-    const bounds = this.viewerSurfaceEl.getBoundingClientRect();
-    if (bounds.width <= 0 || bounds.height <= 0) {
+    const imageBounds = this.viewerImageEl.getBoundingClientRect();
+    if (imageBounds.width <= 0 || imageBounds.height <= 0) {
       return null;
     }
 
-    const scale = Math.min(bounds.width / viewport.width, bounds.height / viewport.height);
-    const width = viewport.width * scale;
-    const height = viewport.height * scale;
-    const left = bounds.left + (bounds.width - width) / 2;
-    const top = bounds.top + (bounds.height - height) / 2;
+    const sourceWidth =
+      this.viewerImageEl.naturalWidth > 0 ? this.viewerImageEl.naturalWidth : viewport.width;
+    const sourceHeight =
+      this.viewerImageEl.naturalHeight > 0 ? this.viewerImageEl.naturalHeight : viewport.height;
+    const imageAspect = sourceWidth / sourceHeight;
+    const elementAspect = imageBounds.width / imageBounds.height;
 
-    if (
-      event.clientX < left ||
-      event.clientX > left + width ||
-      event.clientY < top ||
-      event.clientY > top + height
-    ) {
+    let renderWidth;
+    let renderHeight;
+    let offsetX;
+    let offsetY;
+
+    if (imageAspect > elementAspect) {
+      renderWidth = imageBounds.width;
+      renderHeight = imageBounds.width / imageAspect;
+      offsetX = 0;
+      offsetY = (imageBounds.height - renderHeight) / 2;
+    } else {
+      renderHeight = imageBounds.height;
+      renderWidth = imageBounds.height * imageAspect;
+      offsetX = (imageBounds.width - renderWidth) / 2;
+      offsetY = 0;
+    }
+
+    const localX = event.clientX - imageBounds.left - offsetX;
+    const localY = event.clientY - imageBounds.top - offsetY;
+    const localXWithin = localX >= 0 && localX <= renderWidth;
+    const localYWithin = localY >= 0 && localY <= renderHeight;
+
+    if ((!localXWithin || !localYWithin) && !options.clampOutside) {
       return null;
     }
+
+    const normalizedLocalX = options.clampOutside ? clamp(localX, 0, renderWidth) : localX;
+    const normalizedLocalY = options.clampOutside ? clamp(localY, 0, renderHeight) : localY;
 
     return {
-      x: Math.max(0, Math.min(viewport.width, ((event.clientX - left) / width) * viewport.width)),
-      y: Math.max(0, Math.min(viewport.height, ((event.clientY - top) / height) * viewport.height)),
+      x: clamp(
+        Math.floor((normalizedLocalX / renderWidth) * viewport.width),
+        0,
+        viewport.width - 1,
+      ),
+      y: clamp(
+        Math.floor((normalizedLocalY / renderHeight) * viewport.height),
+        0,
+        viewport.height - 1,
+      ),
     };
   }
 }
 
 function normalizeTargetId(value) {
-  return typeof value === "string" && value.length > 0 ? value : null;
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeViewportDimension(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  const normalized = Math.floor(value);
+  if (normalized < 100) {
+    return null;
+  }
+  return Math.min(8192, normalized);
+}
+
+function readViewportFromLayoutMetrics(result) {
+  const candidates = [
+    result?.cssVisualViewport,
+    result?.cssLayoutViewport,
+    result?.visualViewport,
+    result?.layoutViewport,
+  ];
+
+  for (const candidate of candidates) {
+    const width = normalizeViewportDimension(candidate?.clientWidth);
+    const height = normalizeViewportDimension(candidate?.clientHeight);
+    if (width !== null && height !== null) {
+      return { width, height };
+    }
+  }
+  return null;
+}
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
 }
 
 function mouseButtonName(button) {
@@ -1374,6 +1741,26 @@ function mouseButtonName(button) {
     return "right";
   }
   return "left";
+}
+
+function mouseButtonMask(button) {
+  if (button === 1) {
+    return 4;
+  }
+  if (button === 2) {
+    return 2;
+  }
+  return 1;
+}
+
+function readMouseClickCount(type, detail) {
+  if (type === "mouseMoved") {
+    return 0;
+  }
+  if (!Number.isFinite(detail) || detail < 1) {
+    return 1;
+  }
+  return Math.floor(detail);
 }
 
 function resolveModifiers(event) {
@@ -1393,32 +1780,87 @@ function resolveModifiers(event) {
   return modifiers;
 }
 
-function isPrintableKey(event) {
-  return (
-    !event.ctrlKey &&
-    !event.metaKey &&
-    !event.altKey &&
+function readEditingCommands(event) {
+  if (event.altKey || event.shiftKey || (!event.metaKey && !event.ctrlKey)) {
+    return undefined;
+  }
+  const command = EDITING_COMMANDS_BY_KEY[event.key.toLowerCase()];
+  return command ? [command] : undefined;
+}
+
+function readKeyText(event) {
+  if (event.isComposing) {
+    return undefined;
+  }
+  if (event.key === "Enter") {
+    return "\r";
+  }
+  if (
     typeof event.key === "string" &&
-    event.key.length === 1
-  );
+    event.key.length === 1 &&
+    !event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey
+  ) {
+    return event.key;
+  }
+  return undefined;
+}
+
+function readVirtualKeyCode(event) {
+  if (typeof event.keyCode === "number" && Number.isFinite(event.keyCode)) {
+    return event.keyCode;
+  }
+  return KEY_CODES[event.key] ?? 0;
+}
+
+function createCdpKeyDownPayload(event) {
+  const windowsVirtualKeyCode = readVirtualKeyCode(event);
+  const text = readKeyText({
+    key: event.key,
+    altKey: event.altKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+    shiftKey: event.shiftKey,
+    isComposing: event.isComposing,
+  });
+  const commands = readEditingCommands(event);
+
+  return {
+    type: text ? "keyDown" : "rawKeyDown",
+    key: event.key,
+    code: event.code,
+    windowsVirtualKeyCode,
+    nativeVirtualKeyCode: windowsVirtualKeyCode,
+    isKeypad: event.code.startsWith("Numpad"),
+    autoRepeat: event.repeat,
+    modifiers: resolveModifiers(event),
+    ...(text ? { text, unmodifiedText: text } : {}),
+    ...(commands ? { commands } : {}),
+  };
 }
 
 function createCdpKeyPayload(event, type = "keyDown") {
   const key = event.key;
   const code = event.code;
-  const windowsVirtualKeyCode = KEY_CODES[key];
-  if (!code && windowsVirtualKeyCode === undefined) {
-    return null;
-  }
+  const windowsVirtualKeyCode = readVirtualKeyCode(event);
   return {
     type,
     key,
     code,
     windowsVirtualKeyCode,
     nativeVirtualKeyCode: windowsVirtualKeyCode,
+    isKeypad: event.code.startsWith("Numpad"),
     modifiers: resolveModifiers(event),
   };
 }
+
+const EDITING_COMMANDS_BY_KEY = {
+  a: "selectAll",
+  c: "copy",
+  v: "paste",
+  x: "cut",
+};
 
 const KEY_CODES = {
   " ": 32,

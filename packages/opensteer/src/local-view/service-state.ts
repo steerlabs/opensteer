@@ -3,7 +3,7 @@ import { isProcessRunning } from "../local-browser/process-owner.js";
 import { resolveLocalViewServiceStatePath } from "./runtime-dir.js";
 
 export const OPENSTEER_LOCAL_VIEW_SERVICE_LAYOUT = "opensteer-local-view-service";
-export const OPENSTEER_LOCAL_VIEW_SERVICE_VERSION = 1;
+export const OPENSTEER_LOCAL_VIEW_SERVICE_VERSION = 2;
 
 export interface PersistedLocalViewServiceState {
   readonly layout: typeof OPENSTEER_LOCAL_VIEW_SERVICE_LAYOUT;

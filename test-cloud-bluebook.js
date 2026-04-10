@@ -3,7 +3,7 @@
  * Test Script: Opensteer Cloud Mode with Bluebook Browser Profile
  *
  * Tests cloud mode functionality with the following configuration:
- * - API Key: osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT
+ * - API Key: OPENSTEER_API_KEY
  * - Base URL: https://api.opensteer.com
  * - Browser Profile: Bluebook
  */
@@ -14,7 +14,7 @@ import { Opensteer } from "./packages/opensteer/dist/index.js";
 const CLOUD_CONFIG = {
   provider: {
     mode: "cloud",
-    apiKey: "osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT",
+    apiKey: readRequiredEnv("OPENSTEER_API_KEY"),
     baseUrl: "https://api.opensteer.com",
     browserProfile: {
       profileId: "bp_mns6y1w9_71eekrds",
@@ -88,10 +88,10 @@ async function testCloudMode() {
     console.log("TEST 6: Check Browser Profile Cookies\n");
     try {
       const cookies = await opensteer.getCookies(".thebluebook.com");
-      
+
       console.log(`   ✅ Cookie query successful`);
       console.log(`   Cookies found: ${cookies?.length || 0}`);
-      
+
       if (cookies && cookies.length > 0) {
         console.log("   Sample cookies:");
         cookies.slice(0, 3).forEach((cookie, i) => {
@@ -158,6 +158,14 @@ async function testCloudMode() {
 
     process.exit(1);
   }
+}
+
+function readRequiredEnv(name) {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`${name} is required to run this cloud test.`);
+  }
+  return value;
 }
 
 // Run the test

@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import { OpensteerSessionRuntime } from "../../packages/opensteer/src/index.js";
 import { startLocalViewServer } from "../../packages/opensteer/src/local-view/server.js";
+import { isProcessRunning } from "../../packages/opensteer/src/local-browser/process-owner.js";
 
 let fixtureUrl = "";
 let closeFixtureServer: (() => Promise<void>) | undefined;
@@ -24,6 +25,27 @@ afterAll(async () => {
 });
 
 describe("local browser view", () => {
+  test("renders the brand logo without an external image request", async () => {
+    const localViewServer = await startLocalViewServer({
+      token: "local-view-logo-test-token",
+    });
+
+    try {
+      const htmlResponse = await fetch(localViewServer.url);
+      expect(htmlResponse.ok).toBe(true);
+      expect(htmlResponse.headers.get("cache-control")).toBe("no-store");
+      const html = await htmlResponse.text();
+      expect(html).toContain('class="brand-icon"');
+      expect(html).toContain('id="opensteer-brand-fill"');
+      expect(html).not.toContain('class="brand-icon" src=');
+      expect(html).not.toContain("opensteer-logo.png");
+      expect(html).not.toContain("opensteer-logo.svg");
+      expect(html).not.toContain("data:image/png;base64");
+    } finally {
+      await localViewServer.close().catch(() => undefined);
+    }
+  });
+
   test(
     "streams a temporary local browser and forwards click and text input through the viewer",
     { timeout: 90_000 },
@@ -145,6 +167,75 @@ describe("local browser view", () => {
           return count === 2 ? count : null;
         });
         expect(tabCount).toBe(2);
+        await waitFor(async () => {
+          const activeTabText = await readActiveTabText(page);
+          return activeTabText.includes("about:blank") || activeTabText.includes("Untitled")
+            ? activeTabText
+            : null;
+        });
+
+        const frameBeforeNavigation = await readViewerImageSrc(page);
+        await page.locator("[data-testid='address-input']").fill(`${fixtureUrl}/destination`);
+        await page.locator("[data-testid='address-input']").press("Enter");
+        await waitFor(async () => {
+          const activeTabText = await readActiveTabText(page);
+          return activeTabText.includes("Destination") ? activeTabText : null;
+        });
+        await waitFor(async () => {
+          const value = await page.locator("[data-testid='address-input']").inputValue();
+          return value === `${fixtureUrl}/destination` ? value : null;
+        }, 10_000);
+        await waitFor(async () => {
+          const nextFrame = await readViewerImageSrc(page);
+          return nextFrame && nextFrame !== frameBeforeNavigation ? nextFrame : null;
+        }, 10_000);
+
+        const destinationButton = await readViewerPosition(page, 150 / 800, 100 / 600);
+        await page.mouse.click(destinationButton.x, destinationButton.y);
+        await waitFor(async () => {
+          const activeTabText = await readActiveTabText(page);
+          return activeTabText.includes("Clicked") ? activeTabText : null;
+        });
+
+        const closeButton = page.locator("[data-testid='close-browser-button']");
+        expect(await closeButton.isEnabled()).toBe(true);
+        page.once("dialog", async (dialog) => {
+          expect(dialog.type()).toBe("confirm");
+          expect(dialog.message()).toContain(session.label);
+          await dialog.dismiss();
+        });
+        await closeButton.click();
+        expect(isProcessRunning(session.pid)).toBe(true);
+
+        page.once("dialog", async (dialog) => {
+          expect(dialog.type()).toBe("confirm");
+          await dialog.accept();
+        });
+        await closeButton.click();
+
+        await waitFor(async () => (isProcessRunning(session.pid) ? null : true), 20_000);
+        const sessionsAfterClose = await waitFor(async () => {
+          const response = await fetch(new URL("/api/sessions", localViewServer.url), {
+            headers: {
+              "x-opensteer-local-token": localViewServer.token,
+            },
+          });
+          if (!response.ok) {
+            return null;
+          }
+          const payload = await response.json();
+          const sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
+          return sessions.some((candidate) => candidate.sessionId === session.sessionId)
+            ? null
+            : sessions;
+        }, 20_000);
+        expect(
+          sessionsAfterClose.some((candidate) => candidate.sessionId === session.sessionId),
+        ).toBe(false);
+        await page.waitForFunction(
+          (sessionId) => !window.location.hash.includes(encodeURIComponent(sessionId)),
+          session.sessionId,
+        );
       } finally {
         await viewerBrowser.close().catch(() => undefined);
         await localViewServer?.close().catch(() => undefined);
@@ -165,7 +256,69 @@ async function startFixtureServer(): Promise<{
   readonly close: () => Promise<void>;
 }> {
   const server = createServer((request, response) => {
-    if ((request.url ?? "/") !== "/viewer") {
+    const url = new URL(request.url ?? "/", "http://fixture.local");
+    if (url.pathname === "/destination") {
+      response.setHeader("content-type", "text/html; charset=utf-8");
+      response.end(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Destination</title>
+    <style>
+      body {
+        margin: 0;
+        background: #fff7ed;
+        color: #172554;
+        font-family: Inter, system-ui, sans-serif;
+      }
+      main {
+        width: 800px;
+        min-height: 600px;
+        padding: 40px;
+        box-sizing: border-box;
+      }
+      #dest-action {
+        width: 220px;
+        height: 120px;
+        border: 0;
+        border-radius: 8px;
+        background: #2563eb;
+        color: #fff;
+        font-size: 28px;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <button id="dest-action" type="button">Destination</button>
+    </main>
+    <script>
+      document.getElementById("dest-action").addEventListener("click", () => {
+        window.location.href = "/clicked";
+      });
+    </script>
+  </body>
+</html>`);
+      return;
+    }
+
+    if (url.pathname === "/clicked") {
+      response.setHeader("content-type", "text/html; charset=utf-8");
+      response.end(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Clicked</title>
+  </head>
+  <body>
+    <main>Clicked</main>
+  </body>
+</html>`);
+      return;
+    }
+
+    if (url.pathname !== "/viewer") {
       response.statusCode = 404;
       response.end("not found");
       return;
@@ -257,6 +410,20 @@ async function startFixtureServer(): Promise<{
       await once(server, "close");
     },
   };
+}
+
+async function readActiveTabText(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const activeTab = document.querySelector('#tab-strip .tab-button[data-active="true"]');
+    return activeTab?.textContent ?? "";
+  });
+}
+
+async function readViewerImageSrc(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const image = document.querySelector("[data-testid='viewer-image']");
+    return image instanceof HTMLImageElement ? image.src : "";
+  });
 }
 
 async function readViewerPosition(

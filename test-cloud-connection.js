@@ -9,15 +9,16 @@ import { OpensteerCloudClient } from "./packages/opensteer/dist/index.js";
 async function testCloudConnection() {
   console.log("Testing Cloud API Connection...\n");
 
+  const apiKey = readRequiredEnv("OPENSTEER_API_KEY");
   const configs = [
     {
       name: "api.opensteer.com",
-      apiKey: "osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT",
+      apiKey,
       baseUrl: "https://api.opensteer.com",
     },
     {
       name: "api.opensteer.dev",
-      apiKey: "osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT",
+      apiKey,
       baseUrl: "https://api.opensteer.dev",
     },
   ];
@@ -43,6 +44,14 @@ async function testCloudConnection() {
 
     console.log("");
   }
+}
+
+function readRequiredEnv(name) {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`${name} is required to run this cloud test.`);
+  }
+  return value;
 }
 
 testCloudConnection().catch(console.error);

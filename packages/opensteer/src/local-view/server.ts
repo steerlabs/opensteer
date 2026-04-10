@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type {
+  OpensteerLocalViewSessionCloseResponse,
   OpensteerLocalViewSessionsResponse,
   OpensteerSessionAccessGrantResponse,
 } from "@opensteer/protocol";
@@ -19,6 +20,7 @@ import {
   OPENSTEER_LOCAL_VIEW_SERVICE_VERSION,
   writeLocalViewServiceState,
 } from "./service-state.js";
+import { closeLocalViewSessionBrowser, LocalViewSessionCloseError } from "./session-control.js";
 import { LocalViewStreamHub } from "./view-stream.js";
 import { LocalViewWebSocketServer } from "./ws-types.js";
 
@@ -199,6 +201,36 @@ async function handleHttpRequest(args: {
     return;
   }
 
+  const closeMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/close$/u);
+  if (closeMatch) {
+    if (!isAuthorizedApiRequest(args.request, args.token)) {
+      writeJson(args.response, 401, { error: "Unauthorized." });
+      return;
+    }
+    if (args.request.method !== "POST") {
+      writeJson(args.response, 405, { error: "Method not allowed." });
+      return;
+    }
+
+    const sessionId = decodeURIComponent(closeMatch[1]!);
+    try {
+      await closeLocalViewSessionBrowser(sessionId);
+    } catch (error) {
+      if (error instanceof LocalViewSessionCloseError) {
+        writeJson(args.response, error.statusCode, { error: error.message });
+        return;
+      }
+      throw error;
+    }
+
+    const payload: OpensteerLocalViewSessionCloseResponse = {
+      sessionId,
+      closed: true,
+    };
+    writeJson(args.response, 200, payload);
+    return;
+  }
+
   if (url.pathname === "/favicon.ico") {
     args.response.statusCode = 204;
     args.response.end();
@@ -240,6 +272,7 @@ async function serveStaticAsset(
   if (relativePath === "index.html") {
     const html = await readFile(assetPath, "utf8");
     response.setHeader("content-type", "text/html; charset=utf-8");
+    response.setHeader("cache-control", "no-store");
     response.end(
       html.replace(
         "__OPENSTEER_LOCAL_BOOTSTRAP_JSON__",
@@ -253,6 +286,7 @@ async function serveStaticAsset(
   }
 
   response.setHeader("content-type", guessContentType(assetPath));
+  response.setHeader("cache-control", "no-store");
   response.end(await readFile(assetPath));
 }
 

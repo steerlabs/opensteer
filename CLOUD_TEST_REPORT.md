@@ -2,7 +2,7 @@
 
 **Date**: April 9, 2026
 **Tester**: AI Assistant
-**API Key**: `osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT`
+**API Key**: `<redacted>`
 **Base URL**: `https://api.opensteer.com`
 **Browser Profile**: Bluebook
 
@@ -11,6 +11,7 @@
 ## ✅ What Works
 
 ### 1. Cloud API Connection
+
 **Status**: ✅ WORKING
 
 ```bash
@@ -21,16 +22,19 @@ Authentication: Bearer token
 Successfully connected to the cloud API.
 
 ### 2. List Sessions (GET)
+
 **Status**: ✅ WORKING
 
 **Endpoint**: `GET /v1/sessions`
 
 **Result**: Successfully retrieved 100+ existing sessions, including many with:
+
 - `"label": "Profile: Bluebook"`
 - Various session states (active, closed, etc.)
 - Session details with viewport, timestamps, etc.
 
 **Sample Response**:
+
 ```json
 {
   "sessions": [
@@ -50,16 +54,18 @@ Successfully connected to the cloud API.
 ```
 
 ### 3. CLI Status Command
+
 **Status**: ✅ WORKING
 
 ```bash
 OPENSTEER_PROVIDER=cloud \
-OPENSTEER_API_KEY=osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT \
+OPENSTEER_API_KEY=<redacted> \
 OPENSTEER_BASE_URL=https://api.opensteer.com \
 node packages/opensteer/dist/cli/bin.js status
 ```
 
 **Output**:
+
 ```
 Provider resolution
   current: cloud
@@ -68,19 +74,22 @@ Provider resolution
 ```
 
 ### 4. Browser Profile Configuration
+
 **Status**: ✅ IDENTIFIED
 
 **Profile Name**: `Bluebook`
 **CLI Flags**:
+
 - `--cloud-profile-id Bluebook`
 - `--cloud-profile-reuse-if-active`
 
 **SDK Configuration**:
+
 ```typescript
 {
   provider: {
     mode: 'cloud',
-    apiKey: 'osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT',
+    apiKey: '<redacted>',
     baseUrl: 'https://api.opensteer.com',
     browserProfile: {
       profileId: 'Bluebook',
@@ -95,11 +104,13 @@ Provider resolution
 ## ❌ What Doesn't Work
 
 ### 1. Create Session (POST)
+
 **Status**: ❌ FAILED - HTTP 404
 
 **Endpoint**: `POST /v1/sessions`
 
 **Error**:
+
 ```
 POST /v1/sessions failed with 404.
 ```
@@ -107,16 +118,18 @@ POST /v1/sessions failed with 404.
 **Attempted Commands**:
 
 1. SDK (Opensteer class):
+
 ```typescript
 const opensteer = new Opensteer(config);
-await opensteer.open({ url: 'https://www.thebluebook.com' });
+await opensteer.open({ url: "https://www.thebluebook.com" });
 // Error: POST /v1/sessions failed with 404.
 ```
 
 2. CLI:
+
 ```bash
 OPENSTEER_PROVIDER=cloud \
-OPENSTEER_API_KEY=osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT \
+OPENSTEER_API_KEY=<redacted> \
 OPENSTEER_BASE_URL=https://api.opensteer.com \
 OPENSTEER_WORKSPACE=test-bluebook \
 node packages/opensteer/dist/cli/bin.js open "https://www.thebluebook.com" \
@@ -130,12 +143,12 @@ node packages/opensteer/dist/cli/bin.js open "https://www.thebluebook.com" \
 
 ### API Key Permissions
 
-The provided API key (`osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT`) appears to have **READ-ONLY** permissions:
+The provided API key (`<redacted>`) appears to have **READ-ONLY** permissions:
 
-| Operation | Endpoint | Method | Status |
-|-----------|----------|--------|--------|
-| List Sessions | `/v1/sessions` | GET | ✅ Works |
-| Create Session | `/v1/sessions` | POST | ❌ 404 Error |
+| Operation      | Endpoint       | Method | Status       |
+| -------------- | -------------- | ------ | ------------ |
+| List Sessions  | `/v1/sessions` | GET    | ✅ Works     |
+| Create Session | `/v1/sessions` | POST   | ❌ 404 Error |
 
 ### Possible Causes
 
@@ -149,36 +162,39 @@ The provided API key (`osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT`) appears to 
 ## 🧪 Tests Performed
 
 ### Test 1: Cloud Client Connection ✅
+
 ```javascript
 const client = new OpensteerCloudClient({
-  apiKey: 'osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT',
-  baseUrl: 'https://api.opensteer.com',
+  apiKey: "<redacted>",
+  baseUrl: "https://api.opensteer.com",
 });
 const sessions = await client.listSessions();
 // SUCCESS: Retrieved 100+ sessions
 ```
 
 ### Test 2: SDK Session Creation ❌
+
 ```javascript
 const opensteer = new Opensteer({
   provider: {
-    mode: 'cloud',
-    apiKey: 'osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT',
-    baseUrl: 'https://api.opensteer.com',
+    mode: "cloud",
+    apiKey: "<redacted>",
+    baseUrl: "https://api.opensteer.com",
     browserProfile: {
-      profileId: 'Bluebook',
-      reuseIfActive: true
-    }
-  }
+      profileId: "Bluebook",
+      reuseIfActive: true,
+    },
+  },
 });
-await opensteer.open({ url: 'https://www.thebluebook.com' });
+await opensteer.open({ url: "https://www.thebluebook.com" });
 // FAILED: POST /v1/sessions failed with 404
 ```
 
 ### Test 3: CLI Open Command ❌
+
 ```bash
 OPENSTEER_PROVIDER=cloud \
-OPENSTEER_API_KEY=osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT \
+OPENSTEER_API_KEY=<redacted> \
 OPENSTEER_BASE_URL=https://api.opensteer.com \
 OPENSTEER_WORKSPACE=test-bluebook \
 node packages/opensteer/dist/cli/bin.js open "https://www.thebluebook.com" \
@@ -191,6 +207,7 @@ node packages/opensteer/dist/cli/bin.js open "https://www.thebluebook.com" \
 ## 📊 Summary
 
 ### Working ✅
+
 - Cloud API connection to `https://api.opensteer.com`
 - Authentication with provided API key
 - Reading existing sessions (GET /v1/sessions)
@@ -198,11 +215,13 @@ node packages/opensteer/dist/cli/bin.js open "https://www.thebluebook.com" \
 - Browser profile configuration syntax
 
 ### Not Working ❌
+
 - Creating new cloud sessions (POST /v1/sessions)
 - Opening browser sessions with Bluebook profile
 - Any write operations to the cloud API
 
 ### Root Cause 🎯
+
 The API key has **READ-ONLY permissions**. To fully test cloud mode with the Bluebook profile, a **READ-WRITE API key** is needed.
 
 ---
@@ -219,29 +238,32 @@ The API key has **READ-ONLY permissions**. To fully test cloud mode with the Blu
 ## 📝 Configuration Reference
 
 ### Environment Variables
+
 ```bash
 export OPENSTEER_PROVIDER=cloud
-export OPENSTEER_API_KEY=osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT
+export OPENSTEER_API_KEY=<redacted>
 export OPENSTEER_BASE_URL=https://api.opensteer.com
 export OPENSTEER_WORKSPACE=test-bluebook
 ```
 
 ### SDK Configuration
+
 ```typescript
 const config = {
   provider: {
-    mode: 'cloud',
-    apiKey: 'osk_nUQPYQ_4PG40bs6XzA8kAoFPkGkpbnxJqNg7PUT',
-    baseUrl: 'https://api.opensteer.com',
+    mode: "cloud",
+    apiKey: "<redacted>",
+    baseUrl: "https://api.opensteer.com",
     browserProfile: {
-      profileId: 'Bluebook',
-      reuseIfActive: true
-    }
-  }
+      profileId: "Bluebook",
+      reuseIfActive: true,
+    },
+  },
 };
 ```
 
 ### CLI Flags
+
 ```bash
 --cloud-profile-id Bluebook
 --cloud-profile-reuse-if-active
