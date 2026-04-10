@@ -14,8 +14,9 @@ import type {
 
 import { listResolvedLocalViewSessions, resolveLocalViewSession } from "./discovery.js";
 import { LocalViewCdpProxy } from "./cdp-proxy.js";
-import { disableLocalViewPreference } from "./preferences.js";
+import { CURRENT_PROCESS_OWNER } from "../local-browser/process-owner.js";
 import { LocalViewRuntimeState } from "./runtime-state.js";
+import { clearLocalViewServiceState } from "./service-state.js";
 import {
   OPENSTEER_LOCAL_VIEW_SERVICE_LAYOUT,
   OPENSTEER_LOCAL_VIEW_SERVICE_VERSION,
@@ -39,6 +40,7 @@ export async function startLocalViewServer(
   input: {
     readonly port?: number;
     readonly token?: string;
+    readonly onClosed?: () => void | Promise<void>;
   } = {},
 ): Promise<LocalViewServer> {
   const token = input.token ?? randomBytes(24).toString("hex");
@@ -116,6 +118,8 @@ export async function startLocalViewServer(
       cdpProxy.close();
       httpServer.close();
       await once(httpServer, "close");
+      await clearLocalViewServiceState({ pid: process.pid, token });
+      await input.onClosed?.();
     })();
     await closePromise;
   }
@@ -132,6 +136,7 @@ export async function startLocalViewServer(
     layout: OPENSTEER_LOCAL_VIEW_SERVICE_LAYOUT,
     version: OPENSTEER_LOCAL_VIEW_SERVICE_VERSION,
     pid: process.pid,
+    processStartedAtMs: CURRENT_PROCESS_OWNER.processStartedAtMs,
     startedAt: Date.now(),
     port: address.port,
     token,
@@ -173,7 +178,7 @@ async function handleHttpRequest(args: {
     return;
   }
 
-  if (url.pathname === "/api/service/disable") {
+  if (url.pathname === "/api/service/stop") {
     if (!isAuthorizedApiRequest(args.request, args.token)) {
       writeJson(args.response, 401, { error: "Unauthorized." });
       return;
@@ -183,11 +188,10 @@ async function handleHttpRequest(args: {
       return;
     }
 
-    await disableLocalViewPreference();
     args.response.once("finish", () => {
       void args.shutdown();
     });
-    writeJson(args.response, 200, { disabled: true });
+    writeJson(args.response, 200, { stopped: true });
     return;
   }
 

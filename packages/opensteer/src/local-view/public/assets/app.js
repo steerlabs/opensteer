@@ -942,8 +942,8 @@ class LocalViewApp {
     this.selectedSessionId = null;
     this.addressEditing = false;
     this.closingSessionId = null;
-    this.disablingView = false;
-    this.viewDisabled = false;
+    this.stoppingService = false;
+    this.serviceStopped = false;
     this.refreshTimer = null;
     this.viewportRefreshTimer = null;
     this.inputCommandQueue = Promise.resolve();
@@ -977,7 +977,7 @@ class LocalViewApp {
     this.reloadButtonEl = document.getElementById("reload-button");
     this.newTabButtonEl = document.getElementById("new-tab-button");
     this.closeBrowserButtonEl = document.getElementById("close-browser-button");
-    this.disableViewButtonEl = document.getElementById("disable-view-button");
+    this.stopViewButtonEl = document.getElementById("stop-view-button");
 
     this.stream = new LocalBrowserStream(() => this.render());
     this.cdp = new LocalCdpConnection(() => this.render());
@@ -994,6 +994,17 @@ class LocalViewApp {
     this.viewportRefreshTimer = window.setInterval(() => {
       void this.refreshInputViewport();
     }, VIEWPORT_REFRESH_MS);
+  }
+
+  stopBackgroundRefresh() {
+    if (this.refreshTimer !== null) {
+      window.clearInterval(this.refreshTimer);
+      this.refreshTimer = null;
+    }
+    if (this.viewportRefreshTimer !== null) {
+      window.clearInterval(this.viewportRefreshTimer);
+      this.viewportRefreshTimer = null;
+    }
   }
 
   bindUi() {
@@ -1084,8 +1095,8 @@ class LocalViewApp {
     this.closeBrowserButtonEl.addEventListener("click", () => {
       void this.closeSelectedBrowser();
     });
-    this.disableViewButtonEl.addEventListener("click", () => {
-      void this.disableLocalView();
+    this.stopViewButtonEl.addEventListener("click", () => {
+      void this.stopLocalViewService();
     });
 
     this.viewerSurfaceEl.addEventListener("contextmenu", (event) => {
@@ -1281,6 +1292,10 @@ class LocalViewApp {
   }
 
   async refreshSessions() {
+    if (this.serviceStopped) {
+      return;
+    }
+
     let response;
     try {
       response = await apiFetch(`${apiBasePath}/sessions`);
@@ -1372,21 +1387,26 @@ class LocalViewApp {
     this.renderTabs(activeTab, preferredTargetId);
     this.renderAddress(activeTab);
     this.renderCloseBrowserButton(selectedSession);
-    this.renderDisableViewButton();
+    this.renderStopViewButton();
 
     this.viewerImageEl.src = this.stream.frameUrl ?? "";
     this.viewerImageEl.hidden = !this.stream.frameUrl;
     this.viewerEmptyEl.hidden = Boolean(this.stream.frameUrl);
-    this.viewerEmptyTextEl.textContent = selectedSession
-      ? this.closingSessionId === selectedSession.sessionId
-        ? "Closing browser..."
-        : this.stream.state === "connecting" || this.stream.state === "reconnecting"
-          ? "Connecting to browser\u2026"
-          : "Waiting for frames\u2026"
-      : "No live browser selected";
+    this.viewerEmptyTextEl.textContent = this.serviceStopped
+      ? "Service stopped. Run `opensteer view` to restart."
+      : selectedSession
+        ? this.closingSessionId === selectedSession.sessionId
+          ? "Closing browser..."
+          : this.stream.state === "connecting" || this.stream.state === "reconnecting"
+            ? "Connecting to browser\u2026"
+            : "Waiting for frames\u2026"
+        : "No live browser selected";
 
     this.statusDotEl.className = "chrome-status-dot";
-    if (selectedSession && this.closingSessionId === selectedSession.sessionId) {
+    if (this.serviceStopped) {
+      this.statusDotEl.classList.add("is-idle");
+      this.statusLabelEl.textContent = "Stopped";
+    } else if (selectedSession && this.closingSessionId === selectedSession.sessionId) {
       this.statusDotEl.classList.add("is-connecting");
       this.statusLabelEl.textContent = "Closing";
     } else if (this.stream.state === "live") {
@@ -1404,6 +1424,11 @@ class LocalViewApp {
     } else {
       this.statusDotEl.classList.add("is-idle");
       this.statusLabelEl.textContent = "";
+    }
+
+    if (this.serviceStopped) {
+      this.statusTextEl.textContent = "Service stopped. Run `opensteer view` to restart.";
+      return;
     }
 
     const sessionSummary =
@@ -1425,11 +1450,11 @@ class LocalViewApp {
         : "";
   }
 
-  renderDisableViewButton() {
-    this.disableViewButtonEl.disabled = this.disablingView || this.viewDisabled;
-    this.disableViewButtonEl.textContent = this.viewDisabled
-      ? "View Off"
-      : this.disablingView
+  renderStopViewButton() {
+    this.stopViewButtonEl.disabled = this.stoppingService || this.serviceStopped;
+    this.stopViewButtonEl.textContent = this.serviceStopped
+      ? "Service Stopped"
+      : this.stoppingService
         ? "Turning Off..."
         : "Turn View Off";
   }
@@ -1441,7 +1466,7 @@ class LocalViewApp {
       empty.className = "session-list-empty";
       empty.innerHTML =
         '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.3"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>' +
-        "<span>No active sessions</span>";
+        `<span>${this.serviceStopped ? "Service stopped" : "No active sessions"}</span>`;
       this.sessionListEl.append(empty);
       return;
     }
@@ -1614,38 +1639,39 @@ class LocalViewApp {
     await this.refreshSessions();
   }
 
-  async disableLocalView() {
-    if (this.disablingView) {
+  async stopLocalViewService() {
+    if (this.stoppingService || this.serviceStopped) {
       return;
     }
-    if (!window.confirm("Turn off local view? Browser sessions will keep running.")) {
+    if (!window.confirm("Turn off local view service? Browser sessions will keep running.")) {
       return;
     }
 
-    this.disablingView = true;
+    this.stoppingService = true;
     this.render();
 
     let response;
     try {
-      response = await apiFetch(`${apiBasePath}/service/disable`, {
+      response = await apiFetch(`${apiBasePath}/service/stop`, {
         method: "POST",
       });
     } catch {
-      this.disablingView = false;
+      this.stoppingService = false;
       this.render();
       return;
     }
 
     if (!response.ok) {
-      this.disablingView = false;
+      this.stoppingService = false;
       this.render();
       return;
     }
 
-    this.disablingView = false;
-    this.viewDisabled = true;
-    this.stream.setAccessUrl(null);
-    this.cdp.setAccessUrl(null);
+    this.stoppingService = false;
+    this.serviceStopped = true;
+    this.stopBackgroundRefresh();
+    this.stream.close();
+    this.cdp.close();
     this.sessions = [];
     this.selectedSessionId = null;
     this.closingSessionId = null;

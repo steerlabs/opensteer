@@ -8,8 +8,14 @@ import { chromium, type Page } from "playwright";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import { OpensteerSessionRuntime } from "../../packages/opensteer/src/index.js";
+import { bestEffortRegisterLocalViewSession } from "../../packages/opensteer/src/local-view/registration.js";
+import {
+  resolveLocalViewMode,
+  setLocalViewMode,
+} from "../../packages/opensteer/src/local-view/preferences.js";
+import { stopLocalViewService } from "../../packages/opensteer/src/local-view/service.js";
+import { readLocalViewServiceState } from "../../packages/opensteer/src/local-view/service-state.js";
 import { startLocalViewServer } from "../../packages/opensteer/src/local-view/server.js";
-import { resolveLocalViewMode } from "../../packages/opensteer/src/local-view/preferences.js";
 import { isProcessRunning } from "../../packages/opensteer/src/local-browser/process-owner.js";
 
 let fixtureUrl = "";
@@ -38,7 +44,7 @@ describe("local browser view", () => {
       const html = await htmlResponse.text();
       expect(html).toContain('class="brand-icon"');
       expect(html).toContain('id="opensteer-brand-fill"');
-      expect(html).toContain('data-testid="disable-view-button"');
+      expect(html).toContain('data-testid="stop-view-button"');
       expect(html).not.toContain('class="brand-icon" src=');
       expect(html).not.toContain("opensteer-logo.png");
       expect(html).not.toContain("opensteer-logo.svg");
@@ -48,24 +54,112 @@ describe("local browser view", () => {
     }
   });
 
-  test("disables local view without requiring browser shutdown", async () => {
+  test("manual mode registers sessions without starting the service", async () => {
+    const priorOpensteerHome = process.env.OPENSTEER_HOME;
+    const stateHome = await mkdtemp(path.join(tmpdir(), "opensteer-local-view-manual-"));
+    process.env.OPENSTEER_HOME = stateHome;
+
+    try {
+      await setLocalViewMode("manual");
+
+      const manifest = await bestEffortRegisterLocalViewSession({
+        rootPath: path.join(stateHome, "workspace-manual"),
+        workspace: "workspace-manual",
+        ownership: "owned",
+        live: {
+          layout: "opensteer-session",
+          version: 1,
+          provider: "local",
+          engine: "playwright",
+          pid: process.pid,
+          startedAt: Date.now(),
+          updatedAt: Date.now(),
+          userDataDir: path.join(stateHome, "user-data"),
+        },
+      });
+
+      expect(manifest?.workspace).toBe("workspace-manual");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(await readLocalViewServiceState()).toBeUndefined();
+    } finally {
+      await stopLocalViewService().catch(() => undefined);
+      await rm(stateHome, { recursive: true, force: true }).catch(() => undefined);
+      if (priorOpensteerHome === undefined) {
+        delete process.env.OPENSTEER_HOME;
+      } else {
+        process.env.OPENSTEER_HOME = priorOpensteerHome;
+      }
+    }
+  });
+
+  test("auto mode starts the service when a browser session is registered", async () => {
+    const priorOpensteerHome = process.env.OPENSTEER_HOME;
+    const stateHome = await mkdtemp(path.join(tmpdir(), "opensteer-local-view-auto-"));
+    process.env.OPENSTEER_HOME = stateHome;
+
+    try {
+      await setLocalViewMode("auto");
+
+      const manifest = await bestEffortRegisterLocalViewSession({
+        rootPath: path.join(stateHome, "workspace-auto"),
+        workspace: "workspace-auto",
+        ownership: "owned",
+        live: {
+          layout: "opensteer-session",
+          version: 1,
+          provider: "local",
+          engine: "playwright",
+          pid: process.pid,
+          startedAt: Date.now(),
+          updatedAt: Date.now(),
+          userDataDir: path.join(stateHome, "user-data"),
+        },
+      });
+
+      expect(manifest?.workspace).toBe("workspace-auto");
+      const service = await waitFor(async () => {
+        const current = await readLocalViewServiceState();
+        if (!current) {
+          return null;
+        }
+        const health = await fetch(new URL("/api/health", current.url), {
+          headers: {
+            "x-opensteer-local-token": current.token,
+          },
+        }).catch(() => null);
+        return health?.ok === true ? current : null;
+      }, 10_000);
+      expect(service.url).toContain("127.0.0.1");
+    } finally {
+      await stopLocalViewService().catch(() => undefined);
+      await rm(stateHome, { recursive: true, force: true }).catch(() => undefined);
+      if (priorOpensteerHome === undefined) {
+        delete process.env.OPENSTEER_HOME;
+      } else {
+        process.env.OPENSTEER_HOME = priorOpensteerHome;
+      }
+    }
+  });
+
+  test("stops local view without changing preferences", async () => {
     const priorOpensteerHome = process.env.OPENSTEER_HOME;
     const stateHome = await mkdtemp(path.join(tmpdir(), "opensteer-local-view-state-"));
     process.env.OPENSTEER_HOME = stateHome;
+    await setLocalViewMode("manual");
     const localViewServer = await startLocalViewServer({
-      token: "local-view-disable-test-token",
+      token: "local-view-stop-test-token",
     });
 
     try {
-      const response = await fetch(new URL("/api/service/disable", localViewServer.url), {
+      const response = await fetch(new URL("/api/service/stop", localViewServer.url), {
         method: "POST",
         headers: {
           "x-opensteer-local-token": localViewServer.token,
         },
       });
       expect(response.ok).toBe(true);
-      expect(await response.json()).toEqual({ disabled: true });
-      expect(await resolveLocalViewMode()).toBe("disabled");
+      expect(await response.json()).toEqual({ stopped: true });
+      expect(await resolveLocalViewMode()).toBe("manual");
       await waitFor(async () => {
         const health = await fetch(new URL("/api/health", localViewServer.url), {
           headers: {
@@ -85,13 +179,56 @@ describe("local browser view", () => {
     }
   });
 
+  test("stops the service from the UI without changing preferences", async () => {
+    const priorOpensteerHome = process.env.OPENSTEER_HOME;
+    const stateHome = await mkdtemp(path.join(tmpdir(), "opensteer-local-view-ui-stop-"));
+    process.env.OPENSTEER_HOME = stateHome;
+    await setLocalViewMode("manual");
+    const localViewServer = await startLocalViewServer({
+      token: "local-view-ui-stop-test-token",
+    });
+    const viewerBrowser = await chromium.launch({ headless: true });
+
+    try {
+      const page = await viewerBrowser.newPage();
+      page.on("dialog", (dialog) => dialog.accept());
+      await page.goto(localViewServer.url, { waitUntil: "domcontentloaded" });
+      await page.getByTestId("stop-view-button").click();
+      await page.waitForFunction(
+        () =>
+          document.querySelector("[data-testid='status-text']")?.textContent ===
+          "Service stopped. Run `opensteer view` to restart.",
+      );
+
+      expect(await resolveLocalViewMode()).toBe("manual");
+      await waitFor(async () => {
+        const health = await fetch(new URL("/api/health", localViewServer.url), {
+          headers: {
+            "x-opensteer-local-token": localViewServer.token,
+          },
+        }).catch(() => null);
+        return health === null ? true : null;
+      }, 5_000);
+    } finally {
+      await viewerBrowser.close().catch(() => undefined);
+      await localViewServer.close().catch(() => undefined);
+      await rm(stateHome, { recursive: true, force: true }).catch(() => undefined);
+      if (priorOpensteerHome === undefined) {
+        delete process.env.OPENSTEER_HOME;
+      } else {
+        process.env.OPENSTEER_HOME = priorOpensteerHome;
+      }
+    }
+  });
+
   test(
     "streams a temporary local browser and forwards click and text input through the viewer",
     { timeout: 90_000 },
     async () => {
-      const priorLocalViewMode = process.env.OPENSTEER_LOCAL_VIEW;
-      process.env.OPENSTEER_LOCAL_VIEW = "off";
-
+      const priorOpensteerHome = process.env.OPENSTEER_HOME;
+      const stateHome = await mkdtemp(path.join(tmpdir(), "opensteer-local-view-manual-ui-"));
+      process.env.OPENSTEER_HOME = stateHome;
+      await setLocalViewMode("manual");
       const rootPath = await mkdtemp(path.join(tmpdir(), "opensteer-local-view-"));
       const runtime = new OpensteerSessionRuntime({
         name: "local-view-runtime",
@@ -320,10 +457,11 @@ describe("local browser view", () => {
         await localViewServer?.close().catch(() => undefined);
         await runtime.close().catch(() => undefined);
         await rm(rootPath, { recursive: true, force: true }).catch(() => undefined);
-        if (priorLocalViewMode === undefined) {
-          delete process.env.OPENSTEER_LOCAL_VIEW;
+        await rm(stateHome, { recursive: true, force: true }).catch(() => undefined);
+        if (priorOpensteerHome === undefined) {
+          delete process.env.OPENSTEER_HOME;
         } else {
-          process.env.OPENSTEER_LOCAL_VIEW = priorLocalViewMode;
+          process.env.OPENSTEER_HOME = priorOpensteerHome;
         }
       }
     },
