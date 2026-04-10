@@ -2,9 +2,9 @@
   "version": 1,
   "skills": {
     "opensteer": {
-      "source": "steerlabs/opensteer",
-      "sourceType": "github",
-      "computedHash": "9c95c6b61ad7dd6bc13f68d06fa817b1f24dd5fe134cbfc9d6ace5fa04d3f473"
+      "source": "/Users/timjang/Desktop/oversteer/opensteer-oss/opensteer",
+      "sourceType": "local",
+      "computedHash": "15b93ebece61103aba2ab6358d8e8bc0f850de9006038c4206393ee40117803c"
     }
   }
 }

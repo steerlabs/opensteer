@@ -1,128 +1,76 @@
 # Opensteer
 
-Open-source browser automation SDK and CLI that lets AI agents build complex scrapers and custom APIs directly in your codebase.
+Open-source browser automation for AI agents. CLI and TypeScript SDK that give agents a real Chromium browser with persistent sessions, network capture, and stealth.
 
-This repository contains the open-source SDK, CLI, engines, shared protocol types, conformance harnesses, documentation, and first-party agent skills.
-
-## Get Started
-
-```bash
-npx --yes opensteer@latest skills install
-```
-
-If Playwright browser binaries are not installed yet:
-
-```bash
-npx playwright install chromium
-```
-
-If you are importing Opensteer in application code:
+## Install
 
 ```bash
 npm install opensteer
+npx playwright install chromium
+```
+
+Give your AI agent the Opensteer skill:
+
+```bash
+npx --yes opensteer@latest skills install
 ```
 
 ## Quick Start
 
+### CLI
+
 ```bash
 opensteer open https://example.com --workspace demo
 opensteer snapshot action --workspace demo
-opensteer click 3 --workspace demo --persist "primary call to action"
-opensteer snapshot extraction --workspace demo
-opensteer extract '{"title":{"element":3},"url":{"source":"current_url"}}' \
-  --workspace demo --persist "page summary"
+opensteer click 3 --workspace demo --persist "cta"
+opensteer extract '{"title":{"element":3}}' --workspace demo
 opensteer close --workspace demo
 ```
+
+### SDK
 
 ```ts
 import { Opensteer } from "opensteer";
 
-const opensteer = new Opensteer({
-  workspace: "demo",
-  rootDir: process.cwd(),
-});
+const opensteer = new Opensteer({ workspace: "demo", rootDir: process.cwd() });
 
-try {
-  await opensteer.open("https://example.com");
-  await opensteer.snapshot("action");
-  await opensteer.click({
-    element: 3,
-    persist: "primary call to action",
-  });
-  await opensteer.snapshot("extraction");
-
-  const data = await opensteer.extract({
-    persist: "page summary",
-    schema: {
-      title: { selector: "title" },
-      url: { source: "current_url" },
-    },
-  });
-
-  console.log(data);
-} finally {
-  await opensteer.close();
-}
+await opensteer.open("https://example.com");
+await opensteer.click({ persist: "cta" });
+const data = await opensteer.extract({ persist: "page summary" });
+await opensteer.close();
 ```
+
+## Features
+
+- **Persistent sessions** -- Logins, cookies, and browser state survive across restarts. Each workspace is a full Chrome user-data directory.
+- **Profile cloning** -- Clone a real Chrome profile to start a workspace already logged in. Source browser doesn't need to close.
+- **Network capture** -- Record traffic during any action, inspect requests, and replay APIs with browser-backed `fetch()`.
+- **Script analysis** -- Capture, beautify, deobfuscate, and sandbox page JavaScript.
+- **Computer-use** -- Coordinate-based mouse and keyboard when DOM targeting isn't enough.
+- **Stealth** -- Anti-detection defaults: UA spoofing, fingerprint management, automation signal removal.
+- **Local or cloud** -- Run browsers locally or on Opensteer Cloud. Same CLI, same SDK.
+- **Local view** -- Stream live screenshots from headless sessions to a browser-based viewer.
+- **AI agent skills** -- First-party skills for [Codex](https://openai.com/index/introducing-codex/), [Claude Code](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/overview), [Cursor](https://www.cursor.com/), and other compatible agents.
 
 ## Skills
 
-Opensteer ships first-party skills from [skills/opensteer/SKILL.md](./skills/opensteer/SKILL.md). They install through the upstream [`skills`](https://skills.sh) CLI into Codex, Cursor, Claude Code, and other compatible agents.
+Opensteer ships first-party skills that teach AI agents how to use the CLI and SDK. Install into any supported agent:
 
 ```bash
 npx --yes opensteer@latest skills install
 ```
 
-Install explicitly into the three agents supported in this repo today:
+Or target specific agents:
 
 ```bash
 npx --yes opensteer@latest skills install --agent codex --agent cursor --agent claude-code
 ```
-
-Project-local install paths from the current `skills` CLI are:
-
-- Codex: `.agents/skills/`
-- Cursor: `.agents/skills/`
-- Claude Code: `.claude/skills/`
-
-List the skills available in this repository without installing them:
-
-```bash
-npx --yes opensteer@latest skills install --list
-```
-
-## Repository Layout
-
-```text
-packages/
-  opensteer/
-  conformance/
-  engine-playwright/
-  engine-abp/
-  browser-core/
-  protocol/
-skills/
-  opensteer/
-docs/
-```
-
-- `packages/opensteer`: published SDK and CLI
-- `packages/conformance`: reusable local/cloud parity harnesses and shared conformance cases
-- `packages/engine-playwright`: default Playwright-backed engine
-- `packages/engine-abp`: optional Agent Browser Protocol engine
-- `packages/browser-core`, `packages/protocol`: shared contracts and core primitives
-- `skills/opensteer`: canonical first-party Opensteer skill pack
-
-This repository includes cloud client code and shared cloud contracts. The managed Opensteer Cloud service is operated separately.
-
-Opensteer writes local runtime state under `<cwd>/.opensteer`. That directory stores local sessions, traces, artifacts, and registry data and should not be committed.
 
 ## Documentation
 
 - [Package guide](./packages/opensteer/README.md)
 - [Workflow guide](./docs/workflows.md)
 - [Instrumentation guide](./docs/instrumentation.md)
-- [Governance](./docs/governance.md)
 - [Skills guide](./skills/README.md)
 
 ## Development
@@ -132,7 +80,6 @@ pnpm install
 pnpm run typecheck
 pnpm run test
 pnpm run build
-pnpm run skills:check
 ```
 
 ## Community

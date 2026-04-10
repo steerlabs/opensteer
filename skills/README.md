@@ -2,6 +2,9 @@
 
 First-party Opensteer skills published from this repository. Install them through the upstream [`skills`](https://skills.sh) CLI into Codex, Cursor, Claude Code, and other compatible agents.
 
+From an Opensteer checkout, the installer prefers the local `skills/` directory so
+Codex, Cursor, and Claude Code see the current repo `SKILL.md` immediately.
+
 ## Install
 
 ```bash

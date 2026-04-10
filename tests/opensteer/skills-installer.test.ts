@@ -62,6 +62,7 @@ describe("Opensteer skills installer", () => {
       },
       {
         resolveSkillsCliPath: () => "/tmp/skills-cli.mjs",
+        resolveRepoSkillSourcePath: () => undefined,
         resolveLocalSkillSourcePath: () => path.join("/tmp", "packaged-skills"),
         checkGitHubReachable: async () => true,
         spawnInvocation: async (invocation) => {
@@ -92,6 +93,7 @@ describe("Opensteer skills installer", () => {
       },
       {
         resolveSkillsCliPath: () => "/tmp/skills-cli.mjs",
+        resolveRepoSkillSourcePath: () => undefined,
         resolveLocalSkillSourcePath: () => path.join("/tmp", "packaged-skills"),
         checkGitHubReachable: async () => false,
         spawnInvocation: async (invocation) => {
@@ -105,6 +107,50 @@ describe("Opensteer skills installer", () => {
     expect(receivedInvocation).toEqual({
       cliPath: "/tmp/skills-cli.mjs",
       cliArgs: ["add", "/tmp/packaged-skills", "--skill", "opensteer", "--yes"],
+    });
+  });
+
+  test("prefers repo skills from the current checkout when available", async () => {
+    let receivedInvocation:
+      | {
+          readonly cliPath: string;
+          readonly cliArgs: readonly string[];
+        }
+      | undefined;
+
+    const exitCode = await runOpensteerSkillsInstaller(
+      {
+        yes: true,
+        agents: ["codex", "cursor", "claude-code"],
+      },
+      {
+        resolveSkillsCliPath: () => "/tmp/skills-cli.mjs",
+        resolveRepoSkillSourcePath: () => path.join("/tmp", "repo-skills"),
+        resolveLocalSkillSourcePath: () => path.join("/tmp", "packaged-skills"),
+        checkGitHubReachable: async () => true,
+        spawnInvocation: async (invocation) => {
+          receivedInvocation = invocation;
+          return 0;
+        },
+      },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(receivedInvocation).toEqual({
+      cliPath: "/tmp/skills-cli.mjs",
+      cliArgs: [
+        "add",
+        "/tmp/repo-skills",
+        "--skill",
+        "opensteer",
+        "--agent",
+        "codex",
+        "--agent",
+        "cursor",
+        "--agent",
+        "claude-code",
+        "--yes",
+      ],
     });
   });
 });
