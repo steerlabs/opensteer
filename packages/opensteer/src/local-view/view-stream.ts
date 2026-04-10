@@ -84,6 +84,7 @@ class SessionViewStreamProducer {
   private readonly frameIntervalMs: number;
   private tracker: TabStateTracker | null = null;
   private browser: Browser | null = null;
+  private browserDisconnectedHandler: ((browser: Browser) => void) | null = null;
   private context: BrowserContext | null = null;
   private cdpSession: CDPSession | null = null;
   private screencastHandler:
@@ -255,9 +256,28 @@ class SessionViewStreamProducer {
     );
 
     this.browser = session.browser;
+    this.browserDisconnectedHandler = () => {
+      if (this.stopped) {
+        return;
+      }
+      this.browserDisconnectedHandler = null;
+      this.broadcastControl(
+        buildErrorMessage({
+          sessionId: this.deps.sessionId,
+          error: "Live browser stream disconnected.",
+        }),
+      );
+      this.closeAllClients(1011, "View stream failed");
+      void this.stop();
+    };
+    this.browser.once("disconnected", this.browserDisconnectedHandler);
+
     this.context = session.context;
     this.activePage = session.page;
     this.activeViewport = await readViewportForPage(session.page);
+    if (this.stopped) {
+      return;
+    }
     if (this.activeViewport) {
       this.broadcastControl(
         buildHelloMessage({
@@ -292,6 +312,9 @@ class SessionViewStreamProducer {
     this.tracker.start();
 
     await this.queueBindToPage(session.page);
+    if (this.stopped) {
+      return;
+    }
     this.broadcastControl(
       buildStatusMessage({
         sessionId: this.deps.sessionId,
@@ -550,10 +573,15 @@ class SessionViewStreamProducer {
     await this.rebinding.catch(() => undefined);
     await this.stopScreencast();
     const browser = this.browser;
+    const browserDisconnectedHandler = this.browserDisconnectedHandler;
     this.browser = null;
+    this.browserDisconnectedHandler = null;
     this.context = null;
     this.activePage = null;
     if (browser) {
+      if (browserDisconnectedHandler) {
+        browser.off("disconnected", browserDisconnectedHandler);
+      }
       await disconnectPlaywrightChromiumBrowser(browser).catch(() => undefined);
     }
     this.deps.onDrained();

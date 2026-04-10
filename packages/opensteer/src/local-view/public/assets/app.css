@@ -29,7 +29,9 @@
 html,
 body {
   margin: 0;
+  height: 100%;
   min-height: 100%;
+  overflow: hidden;
   background: var(--background);
   color: var(--foreground);
   font-family:
@@ -57,6 +59,10 @@ input {
 
 button {
   cursor: pointer;
+}
+
+[hidden] {
+  display: none !important;
 }
 
 .sr-only {
@@ -115,8 +121,10 @@ button {
 /* ─── App Shell ─── */
 
 .app-shell {
-  min-height: 100vh;
+  height: 100vh;
+  min-height: 0;
   display: flex;
+  overflow: hidden;
 }
 
 /* ─── Sidebar ─── */
@@ -331,6 +339,7 @@ button {
 .main-shell {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--background);
@@ -339,14 +348,20 @@ button {
 .viewer-area {
   flex: 1;
   display: flex;
+  align-items: flex-start;
+  justify-content: center;
   padding: 20px;
   min-height: 0;
+  overflow: hidden;
 }
 
 /* ─── Browser Frame ─── */
 
 .browser-frame {
-  flex: 1;
+  --browser-stream-aspect: 1.6;
+  flex: 0 1 auto;
+  width: var(--browser-frame-width, 100%);
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   border-radius: 12px;
@@ -447,33 +462,47 @@ button {
 .chrome-tab-chip {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  min-width: 0;
+  min-width: 44px;
+  max-width: 208px;
+  border-radius: 4px;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  background: transparent;
+  transition:
+    background 150ms ease,
+    color 150ms ease;
+}
+
+.chrome-tab-chip:hover {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.chrome-tab-chip[data-active="true"] {
+  background: var(--border-strong);
+  color: var(--foreground);
 }
 
 .chrome-tab {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  max-width: 180px;
+  flex: 1 1 auto;
   min-width: 0;
   border: none;
-  border-radius: 4px;
-  padding: 3px 10px;
+  border-radius: 0;
+  padding: 3px 6px 3px 10px;
   font-size: 11px;
-  color: var(--muted-foreground);
+  color: inherit;
   background: transparent;
-  transition: all 150ms;
   white-space: nowrap;
 }
 
 .chrome-tab:hover {
-  color: rgba(255, 255, 255, 0.8);
+  color: inherit;
 }
 
 .chrome-tab[data-active="true"] {
-  background: var(--border-strong);
-  color: var(--foreground);
+  color: inherit;
 }
 
 .chrome-tab-title {
@@ -487,16 +516,17 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
   border: none;
   border-radius: 4px;
   background: transparent;
-  color: var(--muted-foreground);
+  color: inherit;
   font-size: 14px;
   line-height: 1;
-  padding: 0;
   flex-shrink: 0;
+  margin-right: 2px;
+  padding: 0;
   transition: all 150ms;
 }
 
@@ -627,14 +657,18 @@ button {
 /* ─── Browser Viewport ─── */
 
 .browser-viewport {
-  flex: 1;
+  flex: 0 0 auto;
+  width: 100%;
+  aspect-ratio: var(--browser-stream-aspect);
   min-height: 0;
   display: flex;
 }
 
 .viewer-surface {
   position: relative;
-  flex: 1;
+  flex: 0 0 auto;
+  width: 100%;
+  height: 100%;
   min-width: 0;
   min-height: 0;
   background: var(--surface-elevated);
@@ -650,10 +684,8 @@ button {
 }
 
 .viewer-image {
-  max-width: 100%;
-  max-height: 100%;
-  width: auto;
-  height: auto;
+  width: 100%;
+  height: 100%;
   object-fit: contain;
   user-select: none;
   pointer-events: none;

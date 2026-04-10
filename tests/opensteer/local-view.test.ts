@@ -94,8 +94,8 @@ describe("local browser view", () => {
 
         const page = await viewerBrowser.newPage({
           viewport: {
-            width: 1440,
-            height: 960,
+            width: 1800,
+            height: 900,
           },
         });
         await page.goto(`${localViewServer.url}#session=${encodeURIComponent(session.sessionId)}`, {
@@ -106,6 +106,22 @@ describe("local browser view", () => {
           const image = document.querySelector("[data-testid='viewer-image']");
           return image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0;
         });
+        const browserLayout = await waitFor(async () => {
+          const layout = await readBrowserFrameLayout(page);
+          return layout.viewportWidth > 100 && layout.viewportHeight > 100 ? layout : null;
+        });
+        expect(browserLayout.frameWidth).toBeLessThanOrEqual(browserLayout.areaWidth + 1);
+        expect(browserLayout.frameHeight).toBeLessThanOrEqual(browserLayout.areaHeight + 1);
+        expect(browserLayout.areaHeight).toBeLessThanOrEqual(browserLayout.windowHeight + 1);
+        expect(browserLayout.frameBottom).toBeLessThanOrEqual(browserLayout.windowHeight + 1);
+        expect(browserLayout.viewportWidth / browserLayout.viewportHeight).toBeCloseTo(
+          800 / 600,
+          1,
+        );
+        expect(browserLayout.frameHeight).toBeCloseTo(
+          browserLayout.chromeHeight + browserLayout.viewportHeight + 2,
+          0,
+        );
         await page.waitForFunction(
           ({ sessionId, label }) => {
             const status = document.querySelector("[data-testid='status-text']");
@@ -122,6 +138,22 @@ describe("local browser view", () => {
             label: session.label,
           },
         );
+
+        const frameStateBeforeMetadataUpdate = await readViewerFrameState(page);
+        expect(frameStateBeforeMetadataUpdate.imageVisible).toBe(true);
+        expect(frameStateBeforeMetadataUpdate.emptyVisible).toBe(false);
+        await runtime.evaluate({
+          script: `() => {
+            document.title = "OpenSteer Local Fixture Metadata Updated";
+          }`,
+        });
+        await waitFor(async () => {
+          const activeTabText = await readActiveTabText(page);
+          return activeTabText.includes("Metadata Updated") ? activeTabText : null;
+        }, 5_000);
+        const frameStateAfterMetadataUpdate = await readViewerFrameState(page);
+        expect(frameStateAfterMetadataUpdate.imageVisible).toBe(true);
+        expect(frameStateAfterMetadataUpdate.emptyVisible).toBe(false);
 
         const clickTarget = await readRemoteElementCenterRatio(runtime, "#action");
         const clickPosition = await readViewerPosition(
@@ -167,6 +199,14 @@ describe("local browser view", () => {
           return count === 2 ? count : null;
         });
         expect(tabCount).toBe(2);
+        const tabCloseLayouts = await readTabCloseLayouts(page);
+        expect(tabCloseLayouts.length).toBeGreaterThanOrEqual(2);
+        for (const layout of tabCloseLayouts) {
+          expect(layout.closeLeft).toBeGreaterThanOrEqual(layout.chipLeft);
+          expect(layout.closeRight).toBeLessThanOrEqual(layout.chipRight);
+          expect(layout.closeTop).toBeGreaterThanOrEqual(layout.chipTop);
+          expect(layout.closeBottom).toBeLessThanOrEqual(layout.chipBottom);
+        }
         await waitFor(async () => {
           const activeTabText = await readActiveTabText(page);
           return activeTabText.includes("about:blank") || activeTabText.includes("Untitled")
@@ -423,6 +463,112 @@ async function readViewerImageSrc(page: Page): Promise<string> {
   return page.evaluate(() => {
     const image = document.querySelector("[data-testid='viewer-image']");
     return image instanceof HTMLImageElement ? image.src : "";
+  });
+}
+
+async function readViewerFrameState(page: Page): Promise<{
+  readonly imageVisible: boolean;
+  readonly emptyVisible: boolean;
+}> {
+  return page.evaluate(() => {
+    const image = document.querySelector("[data-testid='viewer-image']");
+    const empty = document.getElementById("viewer-empty");
+    if (!(image instanceof HTMLImageElement) || !(empty instanceof HTMLElement)) {
+      throw new Error("Viewer frame elements are unavailable.");
+    }
+    return {
+      imageVisible: isRendered(image) && image.naturalWidth > 0 && image.naturalHeight > 0,
+      emptyVisible: isRendered(empty),
+    };
+
+    function isRendered(element: HTMLElement): boolean {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return (
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        Number.parseFloat(style.opacity) > 0 &&
+        rect.width > 0 &&
+        rect.height > 0
+      );
+    }
+  });
+}
+
+async function readTabCloseLayouts(page: Page): Promise<
+  Array<{
+    readonly chipLeft: number;
+    readonly chipRight: number;
+    readonly chipTop: number;
+    readonly chipBottom: number;
+    readonly closeLeft: number;
+    readonly closeRight: number;
+    readonly closeTop: number;
+    readonly closeBottom: number;
+  }>
+> {
+  return page.evaluate(() => {
+    const layouts = [];
+    for (const chip of document.querySelectorAll(".chrome-tab-chip")) {
+      const close = chip.querySelector(".chrome-tab-close");
+      if (!(chip instanceof HTMLElement) || !(close instanceof HTMLElement)) {
+        continue;
+      }
+      const chipRect = chip.getBoundingClientRect();
+      const closeRect = close.getBoundingClientRect();
+      layouts.push({
+        chipLeft: chipRect.left,
+        chipRight: chipRect.right,
+        chipTop: chipRect.top,
+        chipBottom: chipRect.bottom,
+        closeLeft: closeRect.left,
+        closeRight: closeRect.right,
+        closeTop: closeRect.top,
+        closeBottom: closeRect.bottom,
+      });
+    }
+    return layouts;
+  });
+}
+
+async function readBrowserFrameLayout(page: Page): Promise<{
+  readonly areaWidth: number;
+  readonly areaHeight: number;
+  readonly frameWidth: number;
+  readonly frameHeight: number;
+  readonly frameBottom: number;
+  readonly chromeHeight: number;
+  readonly viewportWidth: number;
+  readonly viewportHeight: number;
+  readonly windowHeight: number;
+}> {
+  return page.evaluate(() => {
+    const area = document.querySelector(".viewer-area");
+    const frame = document.querySelector(".browser-frame");
+    const chrome = document.querySelector(".browser-chrome");
+    const viewport = document.querySelector(".browser-viewport");
+    if (!(area instanceof HTMLElement) || !(frame instanceof HTMLElement)) {
+      throw new Error("Browser layout elements are unavailable.");
+    }
+    if (!(chrome instanceof HTMLElement) || !(viewport instanceof HTMLElement)) {
+      throw new Error("Browser viewport elements are unavailable.");
+    }
+
+    const areaRect = area.getBoundingClientRect();
+    const frameRect = frame.getBoundingClientRect();
+    const chromeRect = chrome.getBoundingClientRect();
+    const viewportRect = viewport.getBoundingClientRect();
+    return {
+      areaWidth: areaRect.width,
+      areaHeight: areaRect.height,
+      frameWidth: frameRect.width,
+      frameHeight: frameRect.height,
+      frameBottom: frameRect.bottom,
+      chromeHeight: chromeRect.height,
+      viewportWidth: viewportRect.width,
+      viewportHeight: viewportRect.height,
+      windowHeight: window.innerHeight,
+    };
   });
 }
 

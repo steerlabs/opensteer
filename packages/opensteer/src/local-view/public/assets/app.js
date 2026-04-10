@@ -11,6 +11,8 @@ const PREFERRED_TARGET_RESOLVE_ATTEMPTS = 4;
 const PREFERRED_TARGET_RESOLVE_DELAY_MS = 50;
 const MOUSE_MOVE_THROTTLE_MS = 33;
 const VIEWPORT_REFRESH_MS = 1_500;
+const FALLBACK_STREAM_ASPECT = 16 / 10;
+const BROWSER_FRAME_BORDER_Y_PX = 2;
 
 function apiFetch(pathname, options = {}) {
   const headers = new Headers(options.headers ?? {});
@@ -106,14 +108,6 @@ function resolveActiveTabKey(tabs, activeTabIndex) {
     return null;
   }
   return active.targetId ?? `index:${String(active.index)}`;
-}
-
-function resolveActiveFrameKey(tabs, activeTabIndex) {
-  const active = resolveActiveTab(tabs, activeTabIndex);
-  if (!active) {
-    return null;
-  }
-  return `${active.targetId ?? `index:${String(active.index)}`}:${active.url}:${active.title}`;
 }
 
 function resolveActiveTab(tabs, activeTabIndex) {
@@ -679,7 +673,6 @@ class LocalBrowserStream {
     this.tabs = [];
     this.activeTabIndex = -1;
     this.activeTabKey = null;
-    this.activeFrameKey = null;
     this.frameUrl = null;
     this.ws = null;
     this.reconnectTimer = null;
@@ -716,7 +709,6 @@ class LocalBrowserStream {
     this.tabs = [];
     this.activeTabIndex = -1;
     this.activeTabKey = null;
-    this.activeFrameKey = null;
     this.setState("waiting");
   }
 
@@ -728,7 +720,6 @@ class LocalBrowserStream {
     this.tabs = [];
     this.activeTabIndex = -1;
     this.activeTabKey = null;
-    this.activeFrameKey = null;
     if (!this.accessUrl) {
       this.setState("waiting");
       this.onUpdate();
@@ -830,15 +821,10 @@ class LocalBrowserStream {
       const tabs = Array.isArray(message.tabs) ? message.tabs : [];
       const activeTabIndex = Number.isInteger(message.activeTabIndex) ? message.activeTabIndex : -1;
       const nextActiveTabKey = resolveActiveTabKey(tabs, activeTabIndex);
-      const nextActiveFrameKey = resolveActiveFrameKey(tabs, activeTabIndex);
-      if (
-        (this.activeTabKey !== null && this.activeTabKey !== nextActiveTabKey) ||
-        (this.activeFrameKey !== null && this.activeFrameKey !== nextActiveFrameKey)
-      ) {
+      if (this.activeTabKey !== null && this.activeTabKey !== nextActiveTabKey) {
         this.resetFrame();
       }
       this.activeTabKey = nextActiveTabKey;
-      this.activeFrameKey = nextActiveFrameKey;
       this.tabs = tabs;
       this.activeTabIndex = activeTabIndex;
       this.onUpdate();
@@ -965,7 +951,14 @@ class LocalViewApp {
     this.lastMouseMoveAt = 0;
     this.isMouseDragging = false;
     this.activeMouseButton = null;
+    this.layoutFrame = null;
+    this.lastBrowserFrameWidth = null;
+    this.lastStreamAspect = null;
 
+    this.viewerAreaEl = document.querySelector(".viewer-area");
+    this.browserFrameEl = document.querySelector(".browser-frame");
+    this.browserChromeEl = document.querySelector(".browser-chrome");
+    this.browserViewportEl = document.querySelector(".browser-viewport");
     this.sessionListEl = document.getElementById("session-list");
     this.tabStripEl = document.getElementById("tab-strip");
     this.statusDotEl = document.getElementById("status-dot");
@@ -1199,6 +1192,7 @@ class LocalViewApp {
     });
 
     this.viewerImageEl.addEventListener("load", () => {
+      this.scheduleBrowserFrameLayout();
       void this.refreshInputViewport();
     });
 
@@ -1264,13 +1258,20 @@ class LocalViewApp {
     });
 
     const resizeObserver = new ResizeObserver(() => {
-      const rect = this.viewerSurfaceEl.getBoundingClientRect();
-      this.stream.setRequestedRenderSize({
-        width: rect.width,
-        height: rect.height,
-      });
+      this.scheduleBrowserFrameLayout();
     });
-    resizeObserver.observe(this.viewerSurfaceEl);
+    if (this.viewerAreaEl) {
+      resizeObserver.observe(this.viewerAreaEl);
+    }
+    if (this.browserChromeEl) {
+      resizeObserver.observe(this.browserChromeEl);
+    }
+    if (this.browserViewportEl) {
+      resizeObserver.observe(this.browserViewportEl);
+    }
+    window.addEventListener("resize", () => {
+      this.scheduleBrowserFrameLayout();
+    });
   }
 
   async refreshSessions() {
@@ -1353,6 +1354,7 @@ class LocalViewApp {
     const preferredTargetId = this.explicitPreferredTargetId ?? activeTab?.targetId ?? null;
 
     this.cdp.setPreferredPageTarget(preferredTargetId);
+    this.scheduleBrowserFrameLayout();
 
     if (this.lastInputViewportTargetId !== preferredTargetId) {
       this.lastInputViewportTargetId = preferredTargetId;
@@ -1480,17 +1482,18 @@ class LocalViewApp {
     for (const tab of this.stream.tabs) {
       const chip = document.createElement("div");
       chip.className = "chrome-tab-chip";
-
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "chrome-tab tab-button";
-      button.dataset.active = String(
+      chip.dataset.active = String(
         preferredTargetId
           ? tab.targetId === preferredTargetId
           : activeTab
             ? activeTab.index === tab.index
             : tab.active,
       );
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "chrome-tab tab-button";
+      button.dataset.active = chip.dataset.active;
       if (tab.targetId) {
         button.dataset.targetId = tab.targetId;
       }
@@ -1620,6 +1623,88 @@ class LocalViewApp {
     } catch {}
   }
 
+  scheduleBrowserFrameLayout() {
+    if (this.layoutFrame !== null) {
+      return;
+    }
+    this.layoutFrame = window.requestAnimationFrame(() => {
+      this.layoutFrame = null;
+      this.updateBrowserFrameLayout();
+    });
+  }
+
+  updateBrowserFrameLayout() {
+    if (!this.viewerAreaEl || !this.browserFrameEl || !this.browserChromeEl) {
+      return;
+    }
+
+    const aspect = this.resolveStreamAspect();
+    if (this.lastStreamAspect !== aspect) {
+      this.lastStreamAspect = aspect;
+      this.browserFrameEl.style.setProperty("--browser-stream-aspect", String(aspect));
+    }
+
+    const areaRect = this.viewerAreaEl.getBoundingClientRect();
+    const areaStyle = window.getComputedStyle(this.viewerAreaEl);
+    const availableWidth =
+      areaRect.width -
+      readCssPixelValue(areaStyle.paddingLeft) -
+      readCssPixelValue(areaStyle.paddingRight);
+    const availableHeight =
+      areaRect.height -
+      readCssPixelValue(areaStyle.paddingTop) -
+      readCssPixelValue(areaStyle.paddingBottom);
+    const chromeHeight = this.browserChromeEl.getBoundingClientRect().height;
+    const availableViewportHeight = availableHeight - chromeHeight - BROWSER_FRAME_BORDER_Y_PX;
+
+    if (availableWidth > 0 && availableViewportHeight > 0) {
+      const width = Math.max(
+        1,
+        Math.floor(Math.min(availableWidth, availableViewportHeight * aspect)),
+      );
+      if (this.lastBrowserFrameWidth !== width) {
+        this.lastBrowserFrameWidth = width;
+        this.browserFrameEl.style.setProperty("--browser-frame-width", `${String(width)}px`);
+      }
+    } else {
+      this.lastBrowserFrameWidth = null;
+      this.browserFrameEl.style.removeProperty("--browser-frame-width");
+    }
+
+    this.updateRequestedRenderSize();
+  }
+
+  updateRequestedRenderSize() {
+    const targetEl = this.browserViewportEl ?? this.viewerSurfaceEl;
+    const rect = targetEl.getBoundingClientRect();
+    if (rect.width < 100 || rect.height < 100) {
+      return;
+    }
+    this.stream.setRequestedRenderSize({
+      width: rect.width,
+      height: rect.height,
+    });
+  }
+
+  resolveStreamAspect() {
+    if (this.viewerImageEl.naturalWidth > 0 && this.viewerImageEl.naturalHeight > 0) {
+      const imageAspect = this.viewerImageEl.naturalWidth / this.viewerImageEl.naturalHeight;
+      if (Number.isFinite(imageAspect) && imageAspect > 0) {
+        return imageAspect;
+      }
+    }
+
+    const viewport = this.inputViewport ?? this.stream.viewport;
+    if (viewport?.width > 0 && viewport?.height > 0) {
+      const viewportAspect = viewport.width / viewport.height;
+      if (Number.isFinite(viewportAspect) && viewportAspect > 0) {
+        return viewportAspect;
+      }
+    }
+
+    return FALLBACK_STREAM_ASPECT;
+  }
+
   normalizeSubmittedUrl(value) {
     const trimmed = value.trim();
     if (!trimmed) {
@@ -1731,6 +1816,11 @@ function readViewportFromLayoutMetrics(result) {
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
+}
+
+function readCssPixelValue(value) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function mouseButtonName(button) {
