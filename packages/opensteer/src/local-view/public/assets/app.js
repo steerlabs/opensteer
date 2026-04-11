@@ -956,6 +956,7 @@ class LocalViewApp {
     this.layoutFrame = null;
     this.lastBrowserFrameWidth = null;
     this.lastStreamAspect = null;
+    this.drawerOpen = false;
 
     this.viewerAreaEl = document.querySelector(".viewer-area");
     this.browserFrameEl = document.querySelector(".browser-frame");
@@ -978,6 +979,14 @@ class LocalViewApp {
     this.newTabButtonEl = document.getElementById("new-tab-button");
     this.closeBrowserButtonEl = document.getElementById("close-browser-button");
     this.stopViewButtonEl = document.getElementById("stop-view-button");
+    this.drawerToggleEl = document.getElementById("drawer-toggle");
+    this.drawerCloseEl = document.getElementById("drawer-close");
+    this.drawerBackdropEl = document.getElementById("drawer-backdrop");
+    this.sessionDrawerEl = document.getElementById("session-drawer");
+    this.activeSessionIndicatorEl = document.getElementById("active-session-indicator");
+    this.activeSessionLabelEl = document.getElementById("active-session-label");
+    this.activeSessionDotEl = document.getElementById("active-session-dot");
+    this.sessionCountBadgeEl = document.getElementById("session-count-badge");
 
     this.stream = new LocalBrowserStream(() => this.render());
     this.cdp = new LocalCdpConnection(() => this.render());
@@ -1007,11 +1016,42 @@ class LocalViewApp {
     }
   }
 
+  openDrawer() {
+    this.drawerOpen = true;
+    this.sessionDrawerEl.classList.add("is-open");
+    this.drawerBackdropEl.classList.add("is-visible");
+  }
+
+  closeDrawer() {
+    this.drawerOpen = false;
+    this.sessionDrawerEl.classList.remove("is-open");
+    this.drawerBackdropEl.classList.remove("is-visible");
+  }
+
+  toggleDrawer() {
+    if (this.drawerOpen) {
+      this.closeDrawer();
+    } else {
+      this.openDrawer();
+    }
+  }
+
   bindUi() {
     window.addEventListener("hashchange", () => {
       const hashSessionId = resolveSelectedSessionIdFromHash();
       if (hashSessionId && this.sessions.some((session) => session.sessionId === hashSessionId)) {
         this.selectSession(hashSessionId);
+      }
+    });
+
+    this.drawerToggleEl.addEventListener("click", () => this.toggleDrawer());
+    this.drawerCloseEl.addEventListener("click", () => this.closeDrawer());
+    this.drawerBackdropEl.addEventListener("click", () => this.closeDrawer());
+    this.activeSessionIndicatorEl.addEventListener("click", () => this.toggleDrawer());
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && this.drawerOpen) {
+        this.closeDrawer();
       }
     });
 
@@ -1021,6 +1061,7 @@ class LocalViewApp {
         return;
       }
       this.selectSession(button.dataset.sessionId ?? null);
+      this.closeDrawer();
     });
 
     this.tabStripEl.addEventListener("click", (event) => {
@@ -1460,6 +1501,18 @@ class LocalViewApp {
   }
 
   renderSessions() {
+    const activeSession =
+      this.sessions.find((s) => s.sessionId === this.selectedSessionId) ?? null;
+    this.activeSessionLabelEl.textContent = activeSession
+      ? activeSession.label
+      : "No session selected";
+    this.activeSessionDotEl.className = activeSession
+      ? "active-session-dot is-active"
+      : "active-session-dot";
+    const sessionCount = this.sessions.length;
+    this.sessionCountBadgeEl.textContent = String(sessionCount);
+    this.sessionCountBadgeEl.hidden = sessionCount === 0;
+
     this.sessionListEl.textContent = "";
     if (this.sessions.length === 0) {
       const empty = document.createElement("div");
