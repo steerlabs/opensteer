@@ -1,6 +1,6 @@
 {
   "name": "@opensteer/engine-playwright",
-  "version": "0.8.6",
+  "version": "0.8.7",
   "description": "Playwright-backed browser engine for Opensteer.",
   "license": "MIT",
   "type": "module",

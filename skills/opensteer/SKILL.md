@@ -251,11 +251,11 @@ Re-snapshot after switching tabs — element numbers are per-page.
 
 Each workspace has one browser. Three modes:
 
-| Mode | What it does | Data persists? |
-|---|---|---|
-| **Persistent** (default) | Browser tied to workspace, survives restarts | Yes — cookies, localStorage, logins, history, extensions all retained |
-| **Temporary** | Headless browser in `/tmp`, cleaned up on close | No |
-| **Attach** | Connects to an already-running browser via CDP | Depends on that browser |
+| Mode                     | What it does                                    | Data persists?                                                        |
+| ------------------------ | ----------------------------------------------- | --------------------------------------------------------------------- |
+| **Persistent** (default) | Browser tied to workspace, survives restarts    | Yes — cookies, localStorage, logins, history, extensions all retained |
+| **Temporary**            | Headless browser in `/tmp`, cleaned up on close | No                                                                    |
+| **Attach**               | Connects to an already-running browser via CDP  | Depends on that browser                                               |
 
 ### Headless vs headed
 
@@ -350,6 +350,7 @@ opensteer view --no-auto         # Only start viewer when manually requested
 ```
 
 The viewer is a local web UI that shows:
+
 - Live JPEG stream of the active browser tab
 - Tab bar with switching
 - Navigation controls (back, forward, reload, URL bar)
@@ -385,7 +386,7 @@ Artifacts are created by `extract --persist`, `scripts capture --persist`, `scri
 - `extract()`
 - `listPages()`, `newPage()`, `activatePage()`, `closePage()`
 - `network.query()`, `network.detail()`
-- `waitForNetwork()`, `waitForResponse()`, `waitForPage()`
+- `waitForPage()`
 - `cookies()`, `storage()`, `state()`
 - `fetch()`
 - `evaluate()`, `addInitScript()`

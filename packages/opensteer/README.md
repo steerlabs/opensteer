@@ -179,7 +179,6 @@ Use `snapshot("action")` or `snapshot("extraction")` during exploration. The sna
 - `closePage()`
 - `goto(url, { captureNetwork? })`
 - `evaluate(script | input)`
-- `evaluateJson(input)`
 - `addInitScript(input)`
 - `snapshot("action" | "extraction")`
 - `click({ element? | selector? | persist?, captureNetwork? })`
@@ -189,8 +188,6 @@ Use `snapshot("action")` or `snapshot("extraction")` during exploration. The sna
 - `extract({ schema } | { persist, schema? })`
 - `network.query(input?)`
 - `network.detail(recordId, { probe?: boolean })`
-- `waitForNetwork(input?)`
-- `waitForResponse(input?)`
 - `waitForPage(input?)`
 - `cookies(domain?)`
 - `storage(domain?, "local" | "session")`

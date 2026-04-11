@@ -96,6 +96,7 @@ export interface OpensteerConformanceTarget {
   }>;
   storage(domain?: string, type?: "local" | "session"): Promise<Readonly<Record<string, string>>>;
   readonly network: {
+    query(input?: OpensteerNetworkQueryInput): Promise<OpensteerNetworkQueryOutput>;
     detail(recordId: string): Promise<{
       readonly recordId: string;
       readonly requestHeaders: readonly { readonly name: string; readonly value: string }[];
@@ -105,7 +106,6 @@ export interface OpensteerConformanceTarget {
       };
     }>;
   };
-  queryNetwork(input?: OpensteerNetworkQueryInput): Promise<OpensteerNetworkQueryOutput>;
   route?(input: {
     readonly pageRef?: string;
     readonly urlPattern: string;
@@ -371,7 +371,7 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
 
       await poll(
         async () => {
-          const live = await target.queryNetwork({
+          const live = await target.network.query({
             url: networkUrl,
             limit: 10,
           });
@@ -381,7 +381,7 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
         "expected network.query to observe the live request",
       );
 
-      const records = await target.queryNetwork({
+      const records = await target.network.query({
         url: networkUrl,
         limit: 10,
       });

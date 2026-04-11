@@ -352,7 +352,7 @@ describe.sequential("cross-document action boundary", () => {
         status: "hydrated",
       });
 
-      const { records } = await opensteer.queryNetwork({
+      const { records } = await opensteer.network.query({
         capture: "hydration-enter",
         limit: 20,
       });
@@ -398,7 +398,7 @@ describe.sequential("cross-document action boundary", () => {
         status: "hydrated",
       });
 
-      const { records } = await opensteer.queryNetwork({
+      const { records } = await opensteer.network.query({
         capture: "persisted-input",
         limit: 20,
       });
@@ -444,7 +444,7 @@ describe.sequential("cross-document action boundary", () => {
         status: "hydrated",
       });
 
-      const { records } = await opensteer.queryNetwork({
+      const { records } = await opensteer.network.query({
         capture: "noisy-enter",
         limit: 20,
       });
@@ -488,7 +488,7 @@ describe.sequential("cross-document action boundary", () => {
         status: "hydrated",
       });
 
-      const { records } = await opensteer.queryNetwork({
+      const { records } = await opensteer.network.query({
         capture: "noisy-click",
         limit: 20,
       });
@@ -638,7 +638,7 @@ describe.sequential("cross-document action boundary", () => {
       });
       expect(
         (
-          await opensteer.queryNetwork({
+          await opensteer.network.query({
             limit: 20,
           })
         ).records.find((entry) => entry.url.includes("/computer/api/hydration"))?.status,
@@ -680,7 +680,7 @@ describe.sequential("cross-document action boundary", () => {
         captureNetwork: "soft-settle",
       });
 
-      const { records } = await opensteer.queryNetwork({
+      const { records } = await opensteer.network.query({
         capture: "soft-settle",
         url: "/sdk/api/hydration",
         limit: 20,

@@ -11,22 +11,12 @@ import {
   writeJsonFileAtomic,
 } from "./internal/filesystem.js";
 import {
-  createAuthRecipeRegistry,
   createDescriptorRegistry,
   createInteractionTraceRegistry,
-  createRecipeRegistry,
   createRequestPlanRegistry,
-  createReverseCaseRegistry,
-  createReversePackageRegistry,
-  createReverseReportRegistry,
-  type AuthRecipeRegistryStore,
   type DescriptorRegistryStore,
   type InteractionTraceRegistryStore,
-  type RecipeRegistryStore,
   type RequestPlanRegistryStore,
-  type ReverseCaseRegistryStore,
-  type ReversePackageRegistryStore,
-  type ReverseReportRegistryStore,
 } from "./registry.js";
 import { createSavedNetworkStore, type SavedNetworkStore } from "./network/saved-store.js";
 import { createObservationStore, type FilesystemObservationStore } from "./observations.js";
@@ -80,13 +70,8 @@ export interface FilesystemOpensteerWorkspace {
   readonly registry: {
     readonly descriptors: DescriptorRegistryStore;
     readonly requestPlans: RequestPlanRegistryStore;
-    readonly authRecipes: AuthRecipeRegistryStore;
-    readonly recipes: RecipeRegistryStore;
     readonly savedNetwork: SavedNetworkStore;
-    readonly reverseCases: ReverseCaseRegistryStore;
     readonly interactionTraces: InteractionTraceRegistryStore;
-    readonly reversePackages: ReversePackageRegistryStore;
-    readonly reverseReports: ReverseReportRegistryStore;
   };
   lock<T>(task: () => Promise<T>): Promise<T>;
 }
@@ -189,26 +174,11 @@ export async function createFilesystemOpensteerWorkspace(
   const requestPlans = createRequestPlanRegistry(options.rootPath);
   await requestPlans.initialize();
 
-  const authRecipes = createAuthRecipeRegistry(options.rootPath);
-  await authRecipes.initialize();
-
-  const recipes = createRecipeRegistry(options.rootPath);
-  await recipes.initialize();
-
   const savedNetwork = createSavedNetworkStore(options.rootPath);
   await savedNetwork.initialize();
 
-  const reverseCases = createReverseCaseRegistry(options.rootPath);
-  await reverseCases.initialize();
-
   const interactionTraces = createInteractionTraceRegistry(options.rootPath);
   await interactionTraces.initialize();
-
-  const reversePackages = createReversePackageRegistry(options.rootPath);
-  await reversePackages.initialize();
-
-  const reverseReports = createReverseReportRegistry(options.rootPath);
-  await reverseReports.initialize();
 
   const traces = createTraceStore(options.rootPath, artifacts);
   await traces.initialize();
@@ -237,13 +207,8 @@ export async function createFilesystemOpensteerWorkspace(
     registry: {
       descriptors,
       requestPlans,
-      authRecipes,
-      recipes,
       savedNetwork,
-      reverseCases,
       interactionTraces,
-      reversePackages,
-      reverseReports,
     },
     lock<T>(task: () => Promise<T>): Promise<T> {
       return withFilesystemLock(lockPath, task);

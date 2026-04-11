@@ -180,7 +180,6 @@ export type {
   OpensteerOptions,
   OpensteerScrollOptions,
   OpensteerTargetOptions,
-  OpensteerWaitForNetworkOptions,
   OpensteerWaitForPageOptions,
 } from "./sdk/opensteer.js";
 export type {
