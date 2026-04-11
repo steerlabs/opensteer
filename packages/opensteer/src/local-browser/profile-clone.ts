@@ -117,11 +117,12 @@ async function copyRootLevelEntries(input: {
       continue;
     }
 
-    if (SKIPPED_ROOT_DIRECTORIES.has(entry) || isProfileDirectory(input.sourceUserDataDir, entry)) {
+    if (SKIPPED_ROOT_DIRECTORIES.has(entry)) {
       continue;
     }
 
-    if (input.copyMode === "session") {
+    const profileDirectory = isProfileDirectory(input.sourceUserDataDir, entry);
+    if (input.copyMode === "session" && !profileDirectory) {
       continue;
     }
 

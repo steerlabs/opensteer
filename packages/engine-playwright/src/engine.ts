@@ -99,8 +99,10 @@ import {
   asChromiumBrowser,
   buildContextOptions,
   buildLaunchOptions,
+  resolveHumanize,
   type PlaywrightBrowserContextOptions,
   type PlaywrightBrowserCoreEngineOptions,
+  type ResolvedHumanize,
 } from "./options.js";
 import {
   clone,
@@ -141,6 +143,14 @@ import {
   getViewportMetricsFromCdp,
 } from "./viewport-screenshot.js";
 import { capturePlaywrightStorageOrigins } from "./storage-capture.js";
+import {
+  humanizedMouseMove,
+  humanizedMouseClick,
+  humanizedMouseScroll,
+  humanizedTextInput,
+  type CursorState,
+} from "./humanize.js";
+import { executeBrowserFetch, parseBrowserFetchResponse } from "./browser-fetch.js";
 
 interface RuntimeCallFrame {
   readonly url?: string;
@@ -304,6 +314,8 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   private computerUseBridge: ComputerUseBridge | undefined;
   private domActionBridge: DomActionBridge | undefined;
   private disposed = false;
+  private readonly humanize: ResolvedHumanize;
+  private readonly cursor: CursorState = { x: 0, y: 0 };
 
   private constructor(
     browser: Browser,
@@ -315,6 +327,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     this.options = options;
     this.contextOptions = options.context;
     this.bodyCaptureLimitBytes = options.bodyCaptureLimitBytes ?? DEFAULT_BODY_CAPTURE_LIMIT_BYTES;
+    this.humanize = resolveHumanize(options.context?.humanize);
   }
 
   static async create(
@@ -747,7 +760,13 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     const startedAt = Date.now();
     const metrics = await this.getViewportMetrics({ pageRef: input.pageRef });
     const point = toViewportPoint(metrics, input.point, input.coordinateSpace);
-    await controller.page.mouse.move(point.x, point.y);
+
+    if (this.humanize.mouse) {
+      await humanizedMouseMove(controller.page, this.cursor, point.x, point.y);
+    } else {
+      await controller.page.mouse.move(point.x, point.y);
+    }
+
     await this.flushPendingPageTasks(controller.sessionRef);
     const mainFrame = this.requireMainFrame(controller);
 
@@ -777,12 +796,23 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     }).catch(() => undefined);
     const metrics = await this.getViewportMetrics({ pageRef: input.pageRef });
     const point = toViewportPoint(metrics, input.point, input.coordinateSpace);
-    await this.withModifiers(controller.page, input.modifiers, async () => {
-      await controller.page.mouse.click(point.x, point.y, {
-        ...(input.button === undefined ? {} : { button: input.button }),
-        ...(input.clickCount === undefined ? {} : { clickCount: input.clickCount }),
+
+    if (this.humanize.mouse) {
+      await this.withModifiers(controller.page, input.modifiers, async () => {
+        await humanizedMouseClick(controller.page, this.cursor, point.x, point.y, {
+          ...(input.button === undefined ? {} : { button: input.button }),
+          ...(input.clickCount === undefined ? {} : { clickCount: input.clickCount }),
+        });
       });
-    });
+    } else {
+      await this.withModifiers(controller.page, input.modifiers, async () => {
+        await controller.page.mouse.click(point.x, point.y, {
+          ...(input.button === undefined ? {} : { button: input.button }),
+          ...(input.clickCount === undefined ? {} : { clickCount: input.clickCount }),
+        });
+      });
+    }
+
     await this.flushPendingPageTasks(controller.sessionRef);
     const mainFrame = this.requireMainFrame(controller);
     const events = mergeDistinctStepEvents([
@@ -809,8 +839,19 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     const startedAt = Date.now();
     const metrics = await this.getViewportMetrics({ pageRef: input.pageRef });
     const point = toViewportPoint(metrics, input.point, input.coordinateSpace);
-    await controller.page.mouse.move(point.x, point.y);
-    await controller.page.mouse.wheel(input.delta.x, input.delta.y);
+
+    if (this.humanize.scroll) {
+      // mouseMove was already called by the executor before mouseScroll, so
+      // just ensure cursor position and dispatch discrete scroll ticks.
+      await controller.page.mouse.move(point.x, point.y);
+      this.cursor.x = point.x;
+      this.cursor.y = point.y;
+      await humanizedMouseScroll(controller.page, input.delta.x, input.delta.y);
+    } else {
+      await controller.page.mouse.move(point.x, point.y);
+      await controller.page.mouse.wheel(input.delta.x, input.delta.y);
+    }
+
     await controller.page.evaluate(
       () =>
         new Promise<void>((resolve) => {
@@ -871,7 +912,13 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   }): Promise<StepResult<void>> {
     const controller = this.requirePage(input.pageRef);
     const startedAt = Date.now();
-    await controller.page.keyboard.type(input.text);
+
+    if (this.humanize.keyboard) {
+      await humanizedTextInput(controller.page, input.text);
+    } else {
+      await controller.page.keyboard.type(input.text);
+    }
+
     await this.flushPendingPageTasks(controller.sessionRef);
     const mainFrame = this.requireMainFrame(controller);
     const events = mergeDistinctStepEvents([
@@ -1663,6 +1710,125 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     const controller = pageRef === undefined ? undefined : this.pages.get(pageRef);
     const mainFrame = controller === undefined ? undefined : this.requireMainFrame(controller);
 
+    input.signal?.throwIfAborted?.();
+
+    // Try browser-routed fetch first (runs through Chrome's native network
+    // stack — same TLS fingerprint, same HTTP/2 connection pool, correct
+    // Sec-Fetch-* headers).  Falls back to Playwright's context.request.fetch
+    // when the active page is unavailable or when the in-page fetch fails
+    // (e.g. CORS, restrictive CSP).
+    const result = controller !== undefined
+      ? await this.executeRequestViaBrowser(session, controller, input)
+      : undefined;
+    if (result !== undefined) {
+      return result;
+    }
+
+    return this.executeRequestViaPlaywright(session, controller, mainFrame, pageRef, input);
+  }
+
+  private async executeRequestViaBrowser(
+    session: SessionState,
+    controller: PageController,
+    input: {
+      readonly sessionRef: SessionRef;
+      readonly request: SessionTransportRequest;
+      readonly signal?: AbortSignal;
+    },
+  ): Promise<StepResult<SessionTransportResponse> | undefined> {
+    const startedAt = Date.now();
+    const mainFrame = this.requireMainFrame(controller);
+
+    try {
+      const fetchResult = await raceWithAbort(
+        executeBrowserFetch(controller.page, input.request),
+        input.signal,
+      );
+      const { headers: responseHeaders, body: responseBody } = parseBrowserFetchResponse(
+        fetchResult,
+        this.bodyCaptureLimitBytes,
+      );
+
+      const responseBodySkipReason = getResponseBodySkipReasonForMetadata({
+        method: input.request.method.toUpperCase(),
+        status: fetchResult.status,
+        resourceType: "fetch",
+        url: fetchResult.url,
+        captureState: "complete",
+      });
+
+      const requestId = createNetworkRequestId(`transport-${++this.requestCounter}`);
+      const record: NetworkRecordState = {
+        kind: "http",
+        requestId,
+        sessionRef: input.sessionRef,
+        cdpRequestId: undefined,
+        pageRef: controller.pageRef,
+        frameRef: mainFrame.frameRef,
+        documentRef: mainFrame.currentDocument.documentRef,
+        method: input.request.method.toUpperCase(),
+        url: input.request.url,
+        requestHeaders: (input.request.headers ?? []).map((header) =>
+          createHeaderEntry(header.name, header.value),
+        ),
+        responseHeaders,
+        status: fetchResult.status,
+        statusText: fetchResult.statusText,
+        resourceType: "fetch",
+        redirectFromRequestId: undefined,
+        redirectToRequestId: undefined,
+        navigationRequest: false,
+        timing: undefined,
+        transfer: undefined,
+        source: undefined,
+        captureState: "complete",
+        requestBodyState: input.request.body === undefined ? "skipped" : "complete",
+        responseBodyState: responseBody === undefined ? "skipped" : "complete",
+        requestBodySkipReason: input.request.body === undefined ? "not-present" : undefined,
+        responseBodySkipReason:
+          responseBody === undefined
+            ? (responseBodySkipReason ?? "not-present-or-unavailable")
+            : undefined,
+        requestBodyError: undefined,
+        responseBodyError: undefined,
+        requestBody: input.request.body === undefined ? undefined : clone(input.request.body),
+        responseBody,
+      };
+      session.networkRecords.push(record);
+
+      return this.createStepResult(input.sessionRef, controller.pageRef, startedAt, {
+        frameRef: mainFrame.frameRef,
+        documentRef: mainFrame.currentDocument.documentRef,
+        documentEpoch: mainFrame.currentDocument.documentEpoch,
+        events: this.drainQueuedEvents(controller.pageRef),
+        data: {
+          url: fetchResult.url,
+          status: fetchResult.status,
+          statusText: fetchResult.statusText,
+          headers: responseHeaders,
+          ...(responseBody === undefined ? {} : { body: responseBody }),
+          redirected: fetchResult.redirected,
+        },
+      });
+    } catch {
+      // Browser-routed fetch failed (CORS, CSP, page closed, etc.).
+      // Fall through so the caller can use the Playwright fallback.
+      return undefined;
+    }
+  }
+
+  private async executeRequestViaPlaywright(
+    session: SessionState,
+    controller: PageController | undefined,
+    mainFrame: FrameState | undefined,
+    pageRef: PageRef | undefined,
+    input: {
+      readonly sessionRef: SessionRef;
+      readonly request: SessionTransportRequest;
+      readonly signal?: AbortSignal;
+    },
+  ): Promise<StepResult<SessionTransportResponse>> {
+    const startedAt = Date.now();
     const headersObject = Object.fromEntries(
       (input.request.headers ?? []).map((header) => [header.name, header.value]),
     );
@@ -1671,7 +1837,6 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
 
     let response: Awaited<ReturnType<BrowserContext["request"]["fetch"]>>;
     try {
-      input.signal?.throwIfAborted?.();
       response = await raceWithAbort(
         session.context.request.fetch(input.request.url, {
           method: input.request.method,

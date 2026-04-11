@@ -141,6 +141,15 @@ export type OpensteerBrowserMode = "temporary" | "persistent";
 
 export type OpensteerBrowserOptions = OpensteerBrowserMode | OpensteerAttachBrowserOptions;
 
+export interface OpensteerHumanizeOptions {
+  /** Interpolate mouse paths with curves and jitter before clicks/scrolls. */
+  readonly mouse?: boolean;
+  /** Realistic per-character typing cadence with key hold duration. */
+  readonly keyboard?: boolean;
+  /** Break large scrolls into discrete wheel ticks with delays. */
+  readonly scroll?: boolean;
+}
+
 export interface OpensteerBrowserContextOptions {
   readonly ignoreHTTPSErrors?: boolean;
   readonly locale?: string;
@@ -155,6 +164,12 @@ export interface OpensteerBrowserContextOptions {
   readonly reducedMotion?: "reduce" | "no-preference";
   readonly colorScheme?: "light" | "dark" | "no-preference";
   readonly stealthProfile?: OpensteerStealthProfileInput;
+  /**
+   * Enable human-like interaction patterns for mouse, keyboard, and scroll
+   * events.  When `true` (the default), all sub-options are enabled.  Pass
+   * `false` to disable, or an object to control individual categories.
+   */
+  readonly humanize?: boolean | OpensteerHumanizeOptions;
 }
 
 export interface OpensteerStealthProfileInput {
@@ -743,6 +758,20 @@ const opensteerBrowserContextOptionsSchema: JsonSchema = objectSchema(
       {
         title: "OpensteerStealthProfileInput",
       },
+    ),
+    humanize: oneOfSchema(
+      [
+        { type: "boolean" } as JsonSchema,
+        objectSchema(
+          {
+            mouse: { type: "boolean" },
+            keyboard: { type: "boolean" },
+            scroll: { type: "boolean" },
+          },
+          { title: "OpensteerHumanizeOptions" },
+        ),
+      ],
+      { title: "OpensteerHumanize" },
     ),
   },
   {

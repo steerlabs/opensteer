@@ -75,6 +75,34 @@ export interface PlaywrightChromiumLaunchOptions {
   readonly timeoutMs?: number;
 }
 
+export interface PlaywrightHumanizeOptions {
+  readonly mouse?: boolean;
+  readonly keyboard?: boolean;
+  readonly scroll?: boolean;
+}
+
+export interface ResolvedHumanize {
+  readonly mouse: boolean;
+  readonly keyboard: boolean;
+  readonly scroll: boolean;
+}
+
+export function resolveHumanize(
+  input: boolean | PlaywrightHumanizeOptions | undefined,
+): ResolvedHumanize {
+  if (input === false || input === undefined) {
+    return { mouse: false, keyboard: false, scroll: false };
+  }
+  if (input === true) {
+    return { mouse: true, keyboard: true, scroll: true };
+  }
+  return {
+    mouse: input.mouse ?? true,
+    keyboard: input.keyboard ?? true,
+    scroll: input.scroll ?? true,
+  };
+}
+
 export interface PlaywrightBrowserContextOptions {
   readonly ignoreHTTPSErrors?: boolean;
   readonly locale?: string;
@@ -89,6 +117,7 @@ export interface PlaywrightBrowserContextOptions {
   readonly reducedMotion?: "reduce" | "no-preference";
   readonly colorScheme?: "light" | "dark" | "no-preference";
   readonly extraHTTPHeaders?: readonly HeaderEntry[];
+  readonly humanize?: boolean | PlaywrightHumanizeOptions;
 }
 
 export interface AdoptedChromiumBrowser {
