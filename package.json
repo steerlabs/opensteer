@@ -35,7 +35,7 @@
   "devDependencies": {
     "@changesets/cli": "^2.29.7",
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "@types/node": "^25.5.0",
+    "@types/node": "^25.6.0",
     "prettier": "^3.8.1",
     "publint": "^0.3.18",
     "rimraf": "^6.1.3",
