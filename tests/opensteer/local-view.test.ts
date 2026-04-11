@@ -278,6 +278,32 @@ describe("local browser view", () => {
           waitUntil: "networkidle",
         });
 
+        await page.waitForFunction(
+          ({ label }) =>
+            document.getElementById("active-session-label")?.textContent?.includes(label) ?? false,
+          { label: session.label },
+        );
+        await page.waitForFunction(
+          () => document.getElementById("session-count-badge")?.textContent === "1",
+        );
+        expect(await page.getByLabel("Toggle sessions panel").getAttribute("aria-expanded")).toBe(
+          "false",
+        );
+        await page.getByLabel("Toggle sessions panel").click();
+        await page.waitForFunction(() =>
+          document.getElementById("session-drawer")?.classList.contains("is-open"),
+        );
+        expect(await page.getByLabel("Toggle sessions panel").getAttribute("aria-expanded")).toBe(
+          "true",
+        );
+        await page.keyboard.press("Escape");
+        await page.waitForFunction(
+          () => !document.getElementById("session-drawer")?.classList.contains("is-open"),
+        );
+        expect(await page.getByLabel("Toggle sessions panel").getAttribute("aria-expanded")).toBe(
+          "false",
+        );
+
         await page.waitForFunction(() => {
           const image = document.querySelector("[data-testid='viewer-image']");
           return image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0;

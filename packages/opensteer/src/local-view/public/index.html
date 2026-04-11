@@ -14,6 +14,8 @@
           class="drawer-toggle"
           type="button"
           aria-label="Toggle sessions panel"
+          aria-controls="session-drawer"
+          aria-expanded="false"
         >
           <svg
             width="18"
@@ -54,11 +56,11 @@
           class="active-session-indicator"
           type="button"
           aria-label="Switch session"
+          aria-controls="session-drawer"
+          aria-expanded="false"
         >
           <span id="active-session-dot" class="active-session-dot"></span>
-          <span id="active-session-label" class="active-session-label"
-            >No session selected</span
-          >
+          <span id="active-session-label" class="active-session-label">No session selected</span>
           <svg
             class="active-session-chevron"
             width="12"

@@ -1020,12 +1020,16 @@ class LocalViewApp {
     this.drawerOpen = true;
     this.sessionDrawerEl.classList.add("is-open");
     this.drawerBackdropEl.classList.add("is-visible");
+    this.drawerToggleEl.setAttribute("aria-expanded", "true");
+    this.activeSessionIndicatorEl.setAttribute("aria-expanded", "true");
   }
 
   closeDrawer() {
     this.drawerOpen = false;
     this.sessionDrawerEl.classList.remove("is-open");
     this.drawerBackdropEl.classList.remove("is-visible");
+    this.drawerToggleEl.setAttribute("aria-expanded", "false");
+    this.activeSessionIndicatorEl.setAttribute("aria-expanded", "false");
   }
 
   toggleDrawer() {
@@ -1223,10 +1227,10 @@ class LocalViewApp {
     );
 
     this.viewerSurfaceEl.addEventListener("keydown", (event) => {
-      const payload = createCdpKeyDownPayload(event);
-      if (!payload) {
+      if (event.key === "Escape" && this.drawerOpen) {
         return;
       }
+      const payload = createCdpKeyDownPayload(event);
       event.preventDefault();
       void this.dispatchPointerCommand("Input.dispatchKeyEvent", payload);
     });
@@ -1501,8 +1505,7 @@ class LocalViewApp {
   }
 
   renderSessions() {
-    const activeSession =
-      this.sessions.find((s) => s.sessionId === this.selectedSessionId) ?? null;
+    const activeSession = this.sessions.find((s) => s.sessionId === this.selectedSessionId) ?? null;
     this.activeSessionLabelEl.textContent = activeSession
       ? activeSession.label
       : "No session selected";
