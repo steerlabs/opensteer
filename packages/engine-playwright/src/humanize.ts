@@ -185,10 +185,11 @@ export async function humanizedMouseScroll(
 export async function humanizedTextInput(page: Page, text: string): Promise<void> {
   const baseDelayMs = 55;
   const jitterMs = 25;
+  const segments = splitGraphemes(text);
 
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i]!;
-    const prev = text[i - 1];
+  for (let i = 0; i < segments.length; i++) {
+    const char = segments[i]!;
+    const prev = segments[i - 1];
 
     // Compute inter-key delay.
     const punctuationPause = /[.,!?;:]/.test(prev ?? "") ? 60 : 0;
@@ -205,7 +206,16 @@ export async function humanizedTextInput(page: Page, text: string): Promise<void
     }
 
     // Press the key with a realistic hold duration (40-80 ms).
-    await page.keyboard.down(char);
+    try {
+      await page.keyboard.down(char);
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes("Unknown key:")) {
+        throw error;
+      }
+      await page.keyboard.type(char);
+      continue;
+    }
+
     await delay(40 + Math.random() * 40);
     await page.keyboard.up(char);
   }
@@ -217,4 +227,12 @@ export async function humanizedTextInput(page: Page, text: string): Promise<void
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function splitGraphemes(text: string): string[] {
+  if (typeof Intl.Segmenter !== "function") {
+    return Array.from(text);
+  }
+  const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  return Array.from(segmenter.segment(text), ({ segment }) => segment);
 }

@@ -840,15 +840,17 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     const metrics = await this.getViewportMetrics({ pageRef: input.pageRef });
     const point = toViewportPoint(metrics, input.point, input.coordinateSpace);
 
-    if (this.humanize.scroll) {
-      // mouseMove was already called by the executor before mouseScroll, so
-      // just ensure cursor position and dispatch discrete scroll ticks.
+    if (this.humanize.mouse) {
+      await humanizedMouseMove(controller.page, this.cursor, point.x, point.y);
+    } else {
       await controller.page.mouse.move(point.x, point.y);
       this.cursor.x = point.x;
       this.cursor.y = point.y;
+    }
+
+    if (this.humanize.scroll) {
       await humanizedMouseScroll(controller.page, input.delta.x, input.delta.y);
     } else {
-      await controller.page.mouse.move(point.x, point.y);
       await controller.page.mouse.wheel(input.delta.x, input.delta.y);
     }
 
