@@ -1645,7 +1645,7 @@ const opensteerSemanticOperationSpecificationsBase = [
   defineSemanticOperationSpec<OpensteerArtifactReadInput, OpensteerArtifactReadOutput>({
     name: "artifact.read",
     description:
-      "Read a persisted artifact by ID so agents can inspect captured scripts, storage, cookies, or snapshots linked from reverse packages and reports.",
+      "Read a persisted artifact by ID so agents can inspect captured scripts, storage, cookies, or snapshots linked from recorded workflows.",
     inputSchema: opensteerArtifactReadInputSchema,
     outputSchema: opensteerArtifactReadOutputSchema,
     requiredCapabilities: [],

@@ -3,9 +3,6 @@ import { randomUUID } from "node:crypto";
 
 import {
   type OpensteerInteractionTracePayload,
-  type OpensteerReverseCasePayload,
-  type OpensteerReversePackagePayload,
-  type OpensteerReverseReportPayload,
   type OpensteerRequestPlanFreshness,
   type OpensteerRequestPlanPayload,
 } from "@opensteer/protocol";
@@ -47,9 +44,6 @@ export interface RegistryRecord<TPayload = JsonValue> {
 
 export type DescriptorRecord = RegistryRecord;
 export type InteractionTraceRecord = RegistryRecord<OpensteerInteractionTracePayload>;
-export type ReverseCaseRecord = RegistryRecord<OpensteerReverseCasePayload>;
-export type ReversePackageRecord = RegistryRecord<OpensteerReversePackagePayload>;
-export type ReverseReportRecord = RegistryRecord<OpensteerReverseReportPayload>;
 
 export type RequestPlanFreshness = OpensteerRequestPlanFreshness;
 
@@ -77,9 +71,6 @@ export interface WriteRequestPlanInput extends WriteDescriptorInput<OpensteerReq
   readonly freshness?: RequestPlanFreshness;
 }
 export interface WriteInteractionTraceInput extends WriteDescriptorInput<OpensteerInteractionTracePayload> {}
-export interface WriteReverseCaseInput extends WriteDescriptorInput<OpensteerReverseCasePayload> {}
-export interface WriteReversePackageInput extends WriteDescriptorInput<OpensteerReversePackagePayload> {}
-export interface WriteReverseReportInput extends WriteDescriptorInput<OpensteerReverseReportPayload> {}
 
 export interface ListRegistryRecordsInput {
   readonly key?: string;
@@ -89,14 +80,6 @@ export interface UpdateRequestPlanFreshnessInput {
   readonly id: string;
   readonly updatedAt?: number;
   readonly freshness?: RequestPlanFreshness;
-}
-
-export interface UpdateReverseCaseInput {
-  readonly id: string;
-  readonly updatedAt?: number;
-  readonly tags?: readonly string[];
-  readonly provenance?: RegistryProvenance;
-  readonly payload: OpensteerReverseCasePayload;
 }
 
 export interface DescriptorRegistryStore {
@@ -128,37 +111,6 @@ export interface InteractionTraceRegistryStore {
   getById(id: string): Promise<InteractionTraceRecord | undefined>;
   list(input?: ListRegistryRecordsInput): Promise<readonly InteractionTraceRecord[]>;
   resolve(input: ResolveRegistryRecordInput): Promise<InteractionTraceRecord | undefined>;
-}
-
-export interface ReverseCaseRegistryStore {
-  readonly recordsDirectory: string;
-  readonly indexesDirectory: string;
-
-  write(input: WriteReverseCaseInput): Promise<ReverseCaseRecord>;
-  getById(id: string): Promise<ReverseCaseRecord | undefined>;
-  list(input?: ListRegistryRecordsInput): Promise<readonly ReverseCaseRecord[]>;
-  resolve(input: ResolveRegistryRecordInput): Promise<ReverseCaseRecord | undefined>;
-  update(input: UpdateReverseCaseInput): Promise<ReverseCaseRecord>;
-}
-
-export interface ReversePackageRegistryStore {
-  readonly recordsDirectory: string;
-  readonly indexesDirectory: string;
-
-  write(input: WriteReversePackageInput): Promise<ReversePackageRecord>;
-  getById(id: string): Promise<ReversePackageRecord | undefined>;
-  list(input?: ListRegistryRecordsInput): Promise<readonly ReversePackageRecord[]>;
-  resolve(input: ResolveRegistryRecordInput): Promise<ReversePackageRecord | undefined>;
-}
-
-export interface ReverseReportRegistryStore {
-  readonly recordsDirectory: string;
-  readonly indexesDirectory: string;
-
-  write(input: WriteReverseReportInput): Promise<ReverseReportRecord>;
-  getById(id: string): Promise<ReverseReportRecord | undefined>;
-  list(input?: ListRegistryRecordsInput): Promise<readonly ReverseReportRecord[]>;
-  resolve(input: ResolveRegistryRecordInput): Promise<ReverseReportRecord | undefined>;
 }
 
 function normalizeTags(tags: readonly string[] | undefined): readonly string[] {
@@ -537,171 +489,6 @@ export class FilesystemInteractionTraceRegistry
   }
 }
 
-export class FilesystemReverseCaseRegistry
-  extends FilesystemRegistryStore<ReverseCaseRecord>
-  implements ReverseCaseRegistryStore
-{
-  constructor(rootPath: string) {
-    super(rootPath, ["registry", "reverse-cases"]);
-  }
-
-  async write(input: WriteReverseCaseInput): Promise<ReverseCaseRecord> {
-    const id = normalizeNonEmptyString("id", input.id ?? `reverse-case:${randomUUID()}`);
-    const key = normalizeNonEmptyString("key", input.key);
-    const version = normalizeNonEmptyString("version", input.version);
-    const createdAt = normalizeTimestamp("createdAt", input.createdAt ?? Date.now());
-    const updatedAt = normalizeTimestamp("updatedAt", input.updatedAt ?? createdAt);
-
-    if (updatedAt < createdAt) {
-      throw new RangeError("updatedAt must be greater than or equal to createdAt");
-    }
-
-    const payload = input.payload;
-    const contentHash = sha256Hex(Buffer.from(canonicalJsonString(payload), "utf8"));
-    const provenance = normalizeProvenance(input.provenance);
-    const record: ReverseCaseRecord = {
-      id,
-      key,
-      version,
-      createdAt,
-      updatedAt,
-      contentHash,
-      tags: normalizeTags(input.tags),
-      ...(provenance === undefined ? {} : { provenance }),
-      payload,
-    };
-
-    return this.writeRecord(record);
-  }
-
-  async list(input: ListRegistryRecordsInput = {}): Promise<readonly ReverseCaseRecord[]> {
-    const key = input.key === undefined ? undefined : normalizeNonEmptyString("key", input.key);
-    const records = await this.readAllRecords();
-    return key === undefined ? records : records.filter((record) => record.key === key);
-  }
-
-  async update(input: UpdateReverseCaseInput): Promise<ReverseCaseRecord> {
-    const id = normalizeNonEmptyString("id", input.id);
-
-    return withFilesystemLock(this.writeLockPath(), async () => {
-      const existing = await this.getById(id);
-      if (existing === undefined) {
-        throw new Error(`registry record ${id} was not found`);
-      }
-
-      const nextUpdatedAt = normalizeTimestamp(
-        "updatedAt",
-        input.updatedAt ?? Math.max(Date.now(), existing.updatedAt),
-      );
-      if (nextUpdatedAt < existing.createdAt) {
-        throw new RangeError("updatedAt must be greater than or equal to createdAt");
-      }
-
-      const nextPayload = input.payload;
-      const nextProvenance = normalizeProvenance(input.provenance ?? existing.provenance);
-      const nextRecord: ReverseCaseRecord = {
-        ...existing,
-        updatedAt: nextUpdatedAt,
-        contentHash: sha256Hex(Buffer.from(canonicalJsonString(nextPayload), "utf8")),
-        tags: normalizeTags(input.tags ?? existing.tags),
-        ...(nextProvenance === undefined ? {} : { provenance: nextProvenance }),
-        payload: nextPayload,
-      };
-
-      await writeJsonFileAtomic(this.recordPath(id), nextRecord);
-      return nextRecord;
-    });
-  }
-}
-
-export class FilesystemReversePackageRegistry
-  extends FilesystemRegistryStore<ReversePackageRecord>
-  implements ReversePackageRegistryStore
-{
-  constructor(rootPath: string) {
-    super(rootPath, ["registry", "reverse-packages"]);
-  }
-
-  async write(input: WriteReversePackageInput): Promise<ReversePackageRecord> {
-    const id = normalizeNonEmptyString("id", input.id ?? `reverse-package:${randomUUID()}`);
-    const key = normalizeNonEmptyString("key", input.key);
-    const version = normalizeNonEmptyString("version", input.version);
-    const createdAt = normalizeTimestamp("createdAt", input.createdAt ?? Date.now());
-    const updatedAt = normalizeTimestamp("updatedAt", input.updatedAt ?? createdAt);
-
-    if (updatedAt < createdAt) {
-      throw new RangeError("updatedAt must be greater than or equal to createdAt");
-    }
-
-    const payload = input.payload;
-    const contentHash = sha256Hex(Buffer.from(canonicalJsonString(payload), "utf8"));
-    const provenance = normalizeProvenance(input.provenance);
-    const record: ReversePackageRecord = {
-      id,
-      key,
-      version,
-      createdAt,
-      updatedAt,
-      contentHash,
-      tags: normalizeTags(input.tags),
-      ...(provenance === undefined ? {} : { provenance }),
-      payload,
-    };
-
-    return this.writeRecord(record);
-  }
-
-  async list(input: ListRegistryRecordsInput = {}): Promise<readonly ReversePackageRecord[]> {
-    const key = input.key === undefined ? undefined : normalizeNonEmptyString("key", input.key);
-    const records = await this.readAllRecords();
-    return key === undefined ? records : records.filter((record) => record.key === key);
-  }
-}
-
-export class FilesystemReverseReportRegistry
-  extends FilesystemRegistryStore<ReverseReportRecord>
-  implements ReverseReportRegistryStore
-{
-  constructor(rootPath: string) {
-    super(rootPath, ["registry", "reverse-reports"]);
-  }
-
-  async write(input: WriteReverseReportInput): Promise<ReverseReportRecord> {
-    const id = normalizeNonEmptyString("id", input.id ?? `reverse-report:${randomUUID()}`);
-    const key = normalizeNonEmptyString("key", input.key);
-    const version = normalizeNonEmptyString("version", input.version);
-    const createdAt = normalizeTimestamp("createdAt", input.createdAt ?? Date.now());
-    const updatedAt = normalizeTimestamp("updatedAt", input.updatedAt ?? createdAt);
-
-    if (updatedAt < createdAt) {
-      throw new RangeError("updatedAt must be greater than or equal to createdAt");
-    }
-
-    const payload = input.payload;
-    const contentHash = sha256Hex(Buffer.from(canonicalJsonString(payload), "utf8"));
-    const provenance = normalizeProvenance(input.provenance);
-    const record: ReverseReportRecord = {
-      id,
-      key,
-      version,
-      createdAt,
-      updatedAt,
-      contentHash,
-      tags: normalizeTags(input.tags),
-      ...(provenance === undefined ? {} : { provenance }),
-      payload,
-    };
-
-    return this.writeRecord(record);
-  }
-
-  async list(input: ListRegistryRecordsInput = {}): Promise<readonly ReverseReportRecord[]> {
-    const key = input.key === undefined ? undefined : normalizeNonEmptyString("key", input.key);
-    const records = await this.readAllRecords();
-    return key === undefined ? records : records.filter((record) => record.key === key);
-  }
-}
-
 export function createDescriptorRegistry(rootPath: string): FilesystemDescriptorRegistry {
   return new FilesystemDescriptorRegistry(rootPath);
 }
@@ -714,16 +501,4 @@ export function createInteractionTraceRegistry(
   rootPath: string,
 ): FilesystemInteractionTraceRegistry {
   return new FilesystemInteractionTraceRegistry(rootPath);
-}
-
-export function createReverseCaseRegistry(rootPath: string): FilesystemReverseCaseRegistry {
-  return new FilesystemReverseCaseRegistry(rootPath);
-}
-
-export function createReversePackageRegistry(rootPath: string): FilesystemReversePackageRegistry {
-  return new FilesystemReversePackageRegistry(rootPath);
-}
-
-export function createReverseReportRegistry(rootPath: string): FilesystemReverseReportRegistry {
-  return new FilesystemReverseReportRegistry(rootPath);
 }

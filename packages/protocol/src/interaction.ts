@@ -15,7 +15,7 @@ import {
   opensteerStateSnapshotSchema,
   type OpensteerStateDelta,
   type OpensteerStateSnapshot,
-} from "./reverse.js";
+} from "./state.js";
 import type { JsonValue } from "./json.js";
 import type { OpensteerTargetInput } from "./semantic.js";
 

@@ -14,15 +14,9 @@ import {
   createDescriptorRegistry,
   createInteractionTraceRegistry,
   createRequestPlanRegistry,
-  createReverseCaseRegistry,
-  createReversePackageRegistry,
-  createReverseReportRegistry,
   type DescriptorRegistryStore,
   type InteractionTraceRegistryStore,
   type RequestPlanRegistryStore,
-  type ReverseCaseRegistryStore,
-  type ReversePackageRegistryStore,
-  type ReverseReportRegistryStore,
 } from "./registry.js";
 import { createSavedNetworkStore, type SavedNetworkStore } from "./network/saved-store.js";
 import { createObservationStore, type FilesystemObservationStore } from "./observations.js";
@@ -77,10 +71,7 @@ export interface FilesystemOpensteerWorkspace {
     readonly descriptors: DescriptorRegistryStore;
     readonly requestPlans: RequestPlanRegistryStore;
     readonly savedNetwork: SavedNetworkStore;
-    readonly reverseCases: ReverseCaseRegistryStore;
     readonly interactionTraces: InteractionTraceRegistryStore;
-    readonly reversePackages: ReversePackageRegistryStore;
-    readonly reverseReports: ReverseReportRegistryStore;
   };
   lock<T>(task: () => Promise<T>): Promise<T>;
 }
@@ -186,17 +177,8 @@ export async function createFilesystemOpensteerWorkspace(
   const savedNetwork = createSavedNetworkStore(options.rootPath);
   await savedNetwork.initialize();
 
-  const reverseCases = createReverseCaseRegistry(options.rootPath);
-  await reverseCases.initialize();
-
   const interactionTraces = createInteractionTraceRegistry(options.rootPath);
   await interactionTraces.initialize();
-
-  const reversePackages = createReversePackageRegistry(options.rootPath);
-  await reversePackages.initialize();
-
-  const reverseReports = createReverseReportRegistry(options.rootPath);
-  await reverseReports.initialize();
 
   const traces = createTraceStore(options.rootPath, artifacts);
   await traces.initialize();
@@ -226,10 +208,7 @@ export async function createFilesystemOpensteerWorkspace(
       descriptors,
       requestPlans,
       savedNetwork,
-      reverseCases,
       interactionTraces,
-      reversePackages,
-      reverseReports,
     },
     lock<T>(task: () => Promise<T>): Promise<T> {
       return withFilesystemLock(lockPath, task);

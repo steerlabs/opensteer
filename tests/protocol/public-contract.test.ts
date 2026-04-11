@@ -37,6 +37,8 @@ import {
   opensteerSemanticOperationSpecificationMap,
   opensteerSemanticOperationSpecifications,
   opensteerSemanticRestEndpoints,
+  opensteerStateDeltaSchema,
+  opensteerStateSnapshotSchema,
   assertValidSemanticOperationInput,
   parseOpensteerRef,
   resolveComputerUseBridge,
@@ -680,5 +682,12 @@ describe("protocol trace and artifact schemas", () => {
     expect(opensteerRequestPlanPayloadSchema.properties?.transport).toBeDefined();
     expect(opensteerRequestPlanRecordSchema.properties?.payload).toBeDefined();
     expect(opensteerRequestPlanRecordSchema.properties).not.toHaveProperty("lifecycle");
+  });
+
+  test("exports state schemas used by interaction traces", () => {
+    expect(opensteerStateSnapshotSchema.properties?.storage).toBeDefined();
+    expect(opensteerStateSnapshotSchema.properties?.hiddenFields).toBeDefined();
+    expect(opensteerStateDeltaSchema.properties?.cookiesChanged).toBeDefined();
+    expect(opensteerStateDeltaSchema.properties?.globalsChanged).toBeDefined();
   });
 });
