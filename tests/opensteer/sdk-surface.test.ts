@@ -123,6 +123,7 @@ describe("Opensteer v2 SDK surface", () => {
     expect(state.browserManagerCtor).toHaveBeenCalledWith({
       workspace: "github-sync",
       browser: "persistent",
+      environment: {},
       launch: {
         headless: false,
       },
@@ -149,6 +150,25 @@ describe("Opensteer v2 SDK surface", () => {
     });
     expect(state.runtime.open).toHaveBeenCalledWith({
       url: "https://example.com",
+    });
+  });
+
+  test("passes root-scoped executable path env to the browser manager", () => {
+    state.environmentByRoot.set("/tmp/opensteer", {
+      OPENSTEER_EXECUTABLE_PATH: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    });
+
+    new Opensteer({
+      workspace: "github-sync",
+      rootDir: "/tmp/opensteer",
+    });
+
+    expect(state.browserManagerCtor).toHaveBeenCalledWith({
+      workspace: "github-sync",
+      rootDir: "/tmp/opensteer",
+      environment: {
+        OPENSTEER_EXECUTABLE_PATH: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      },
     });
   });
 
@@ -283,11 +303,13 @@ describe("Opensteer v2 SDK surface", () => {
       OPENSTEER_PROVIDER: "cloud",
       OPENSTEER_API_KEY: "osk_a",
       OPENSTEER_BASE_URL: "https://a.example",
+      OPENSTEER_EXECUTABLE_PATH: "/Applications/Google Chrome A.app/Contents/MacOS/Google Chrome",
     });
     state.environmentByRoot.set("/tmp/opensteer-b", {
       OPENSTEER_PROVIDER: "cloud",
       OPENSTEER_API_KEY: "osk_b",
       OPENSTEER_BASE_URL: "https://b.example",
+      OPENSTEER_EXECUTABLE_PATH: "/Applications/Google Chrome B.app/Contents/MacOS/Google Chrome",
     });
     state.runtimeConfig.provider = {
       mode: "cloud",
@@ -310,6 +332,8 @@ describe("Opensteer v2 SDK surface", () => {
           OPENSTEER_PROVIDER: "cloud",
           OPENSTEER_API_KEY: "osk_a",
           OPENSTEER_BASE_URL: "https://a.example",
+          OPENSTEER_EXECUTABLE_PATH:
+            "/Applications/Google Chrome A.app/Contents/MacOS/Google Chrome",
         },
         runtimeOptions: {
           rootDir: "/tmp/opensteer-a",
@@ -320,6 +344,8 @@ describe("Opensteer v2 SDK surface", () => {
           OPENSTEER_PROVIDER: "cloud",
           OPENSTEER_API_KEY: "osk_b",
           OPENSTEER_BASE_URL: "https://b.example",
+          OPENSTEER_EXECUTABLE_PATH:
+            "/Applications/Google Chrome B.app/Contents/MacOS/Google Chrome",
         },
         runtimeOptions: {
           rootDir: "/tmp/opensteer-b",

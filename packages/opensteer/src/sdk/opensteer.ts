@@ -206,6 +206,7 @@ export class Opensteer {
         ...(runtimeOptions.rootPath === undefined ? {} : { rootPath: runtimeOptions.rootPath }),
         ...(runtimeOptions.workspace === undefined ? {} : { workspace: runtimeOptions.workspace }),
         ...(engineName === undefined ? {} : { engineName }),
+        environment,
         ...(runtimeOptions.browser === undefined ? {} : { browser: runtimeOptions.browser }),
         ...(runtimeOptions.launch === undefined ? {} : { launch: runtimeOptions.launch }),
         ...(runtimeOptions.context === undefined ? {} : { context: runtimeOptions.context }),
