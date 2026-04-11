@@ -46,7 +46,7 @@ describe.sequential("network capture and fetch", () => {
       await opensteer.open(`${baseUrl}/request-plan`);
       await opensteer.evaluate("async () => window.runReplayablePost()");
 
-      const { records } = await opensteer.queryNetwork({
+      const { records } = await opensteer.network.query({
         limit: 20,
         includeBodies: true,
       });
@@ -147,7 +147,7 @@ describe.sequential("network capture and fetch", () => {
       await opensteer.open(`${baseUrl}/request-plan-large`);
       await opensteer.evaluate("async () => window.runLargeReplayablePost()");
 
-      const { records } = await opensteer.queryNetwork({
+      const { records } = await opensteer.network.query({
         limit: 20,
         includeBodies: true,
       });

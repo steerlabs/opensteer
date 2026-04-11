@@ -23,6 +23,9 @@ const publishWithProvenance = shouldPublishWithProvenance();
 const summaryPath = process.env.GITHUB_STEP_SUMMARY;
 const results = [];
 
+console.log("run publish preflight checks");
+await runCommand("node", ["scripts/check-packed-secrets.mjs"], repoRoot);
+
 for (const relativePackageDir of publishOrder) {
   const packageDir = path.join(repoRoot, relativePackageDir);
   const manifest = await readPackageManifest(packageDir);

@@ -90,11 +90,6 @@ export type OpensteerExtractOptions =
       readonly schema: Record<string, unknown>;
     };
 
-export interface OpensteerWaitForNetworkOptions extends OpensteerNetworkQueryInput {
-  readonly timeoutMs?: number;
-  readonly pollIntervalMs?: number;
-}
-
 export interface OpensteerWaitForPageOptions {
   readonly openerPageRef?: string;
   readonly urlIncludes?: string;
@@ -241,7 +236,7 @@ export class Opensteer {
     };
 
     this.network = {
-      query: (input = {}) => this.queryNetwork(input),
+      query: (input = {}) => this.runtime.queryNetwork(input),
       detail: (recordId, options) => this.runtime.getNetworkDetail({ recordId, ...options }),
     };
   }
@@ -289,12 +284,6 @@ export class Opensteer {
     return (await this.runtime.evaluate(normalized)).value;
   }
 
-  async evaluateJson(
-    input: string | OpensteerPageEvaluateInput,
-  ): Promise<OpensteerPageEvaluateOutput["value"]> {
-    return this.evaluate(input);
-  }
-
   async addInitScript(
     input: string | OpensteerAddInitScriptInput,
   ): Promise<OpensteerAddInitScriptOutput> {
@@ -339,44 +328,6 @@ export class Opensteer {
 
   async extract(input: OpensteerExtractOptions): Promise<unknown> {
     return (await this.runtime.extract(input)).data;
-  }
-
-  async queryNetwork(
-    input: OpensteerNetworkQueryOptions = {},
-  ): Promise<OpensteerNetworkQueryResult> {
-    return this.runtime.queryNetwork(input);
-  }
-
-  async waitForNetwork(
-    input: OpensteerWaitForNetworkOptions,
-  ): Promise<OpensteerNetworkQueryResult["records"][number]> {
-    const { timeoutMs, pollIntervalMs, ...query } = input;
-    const timeoutAt = Date.now() + (timeoutMs ?? 30_000);
-    const pollInterval = pollIntervalMs ?? 100;
-    const baseline = new Set(
-      (await this.runtime.queryNetwork({ ...query, limit: 200 })).records.map(
-        (record) => record.recordId,
-      ),
-    );
-
-    while (true) {
-      const next = (await this.runtime.queryNetwork({ ...query, limit: 200 })).records.find(
-        (record) => !baseline.has(record.recordId),
-      );
-      if (next !== undefined) {
-        return next;
-      }
-      if (Date.now() >= timeoutAt) {
-        throw new Error("waitForNetwork timed out");
-      }
-      await delay(pollInterval);
-    }
-  }
-
-  async waitForResponse(
-    input: OpensteerWaitForNetworkOptions,
-  ): Promise<OpensteerNetworkQueryResult["records"][number]> {
-    return this.waitForNetwork(input);
   }
 
   async waitForPage(

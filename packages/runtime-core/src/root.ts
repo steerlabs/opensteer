@@ -14,7 +14,6 @@ import {
   createAuthRecipeRegistry,
   createDescriptorRegistry,
   createInteractionTraceRegistry,
-  createRecipeRegistry,
   createRequestPlanRegistry,
   createReverseCaseRegistry,
   createReversePackageRegistry,
@@ -22,7 +21,6 @@ import {
   type AuthRecipeRegistryStore,
   type DescriptorRegistryStore,
   type InteractionTraceRegistryStore,
-  type RecipeRegistryStore,
   type RequestPlanRegistryStore,
   type ReverseCaseRegistryStore,
   type ReversePackageRegistryStore,
@@ -81,7 +79,6 @@ export interface FilesystemOpensteerWorkspace {
     readonly descriptors: DescriptorRegistryStore;
     readonly requestPlans: RequestPlanRegistryStore;
     readonly authRecipes: AuthRecipeRegistryStore;
-    readonly recipes: RecipeRegistryStore;
     readonly savedNetwork: SavedNetworkStore;
     readonly reverseCases: ReverseCaseRegistryStore;
     readonly interactionTraces: InteractionTraceRegistryStore;
@@ -192,9 +189,6 @@ export async function createFilesystemOpensteerWorkspace(
   const authRecipes = createAuthRecipeRegistry(options.rootPath);
   await authRecipes.initialize();
 
-  const recipes = createRecipeRegistry(options.rootPath);
-  await recipes.initialize();
-
   const savedNetwork = createSavedNetworkStore(options.rootPath);
   await savedNetwork.initialize();
 
@@ -238,7 +232,6 @@ export async function createFilesystemOpensteerWorkspace(
       descriptors,
       requestPlans,
       authRecipes,
-      recipes,
       savedNetwork,
       reverseCases,
       interactionTraces,

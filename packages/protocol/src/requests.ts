@@ -78,12 +78,10 @@ export interface OpensteerRequestPlanResponseExpectation {
   readonly contentType?: string;
 }
 
-export interface OpensteerRecipeRef {
+export interface OpensteerAuthRecipeRef {
   readonly key: string;
   readonly version?: string;
 }
-
-export type OpensteerAuthRecipeRef = OpensteerRecipeRef;
 
 export interface OpensteerRequestFailurePolicyHeaderMatch {
   readonly name: string;
@@ -110,11 +108,11 @@ export interface OpensteerRequestRetryPolicy {
   readonly failurePolicy?: OpensteerRequestFailurePolicy;
 }
 
-export type OpensteerRecipeCachePolicy = "none" | "untilFailure";
+export type OpensteerAuthRecipeCachePolicy = "none" | "untilFailure";
 
 export interface OpensteerRequestPlanRecipeBinding {
-  readonly recipe: OpensteerRecipeRef;
-  readonly cachePolicy?: OpensteerRecipeCachePolicy;
+  readonly recipe: OpensteerAuthRecipeRef;
+  readonly cachePolicy?: OpensteerAuthRecipeCachePolicy;
 }
 
 export interface OpensteerRequestPlanRecoverBinding extends OpensteerRequestPlanRecipeBinding {
@@ -128,7 +126,7 @@ export interface OpensteerRequestPlanRecipes {
 
 export interface OpensteerRequestPlanAuth {
   readonly strategy: "session-cookie" | "bearer-token" | "api-key" | "custom";
-  readonly recipe?: OpensteerRecipeRef;
+  readonly recipe?: OpensteerAuthRecipeRef;
   readonly failurePolicy?: OpensteerRequestFailurePolicy;
   readonly description?: string;
 }
@@ -170,27 +168,27 @@ export interface OpensteerRequestPlanRecord {
   readonly payload: OpensteerRequestPlanPayload;
 }
 
-export interface OpensteerRecipeStepHeaderCapture {
+export interface OpensteerAuthRecipeStepHeaderCapture {
   readonly name: string;
   readonly saveAs: string;
 }
 
-export interface OpensteerRecipeStepBodyJsonPointerCapture {
+export interface OpensteerAuthRecipeStepBodyJsonPointerCapture {
   readonly pointer: string;
   readonly saveAs: string;
 }
 
-export interface OpensteerRecipeStepBodyTextCapture {
+export interface OpensteerAuthRecipeStepBodyTextCapture {
   readonly saveAs: string;
 }
 
-export interface OpensteerRecipeStepResponseCapture {
-  readonly header?: OpensteerRecipeStepHeaderCapture;
-  readonly bodyJsonPointer?: OpensteerRecipeStepBodyJsonPointerCapture;
-  readonly bodyText?: OpensteerRecipeStepBodyTextCapture;
+export interface OpensteerAuthRecipeStepResponseCapture {
+  readonly header?: OpensteerAuthRecipeStepHeaderCapture;
+  readonly bodyJsonPointer?: OpensteerAuthRecipeStepBodyJsonPointerCapture;
+  readonly bodyText?: OpensteerAuthRecipeStepBodyTextCapture;
 }
 
-export interface OpensteerRecipeRequestStepInput {
+export interface OpensteerAuthRecipeRequestStepInput {
   readonly url: string;
   readonly transport?: TransportKind;
   readonly pageRef?: PageRef;
@@ -202,22 +200,22 @@ export interface OpensteerRecipeRequestStepInput {
   readonly followRedirects?: boolean;
 }
 
-export interface OpensteerRecipeGotoStep {
+export interface OpensteerAuthRecipeGotoStep {
   readonly kind: "goto";
   readonly url: string;
 }
 
-export interface OpensteerRecipeReloadStep {
+export interface OpensteerAuthRecipeReloadStep {
   readonly kind: "reload";
 }
 
-export interface OpensteerRecipeWaitForUrlStep {
+export interface OpensteerAuthRecipeWaitForUrlStep {
   readonly kind: "waitForUrl";
   readonly includes: string;
   readonly timeoutMs?: number;
 }
 
-export interface OpensteerRecipeWaitForNetworkStep {
+export interface OpensteerAuthRecipeWaitForNetworkStep {
   readonly kind: "waitForNetwork";
   readonly url?: string;
   readonly hostname?: string;
@@ -229,7 +227,7 @@ export interface OpensteerRecipeWaitForNetworkStep {
   readonly saveAs?: string;
 }
 
-export interface OpensteerRecipeWaitForCookieStep {
+export interface OpensteerAuthRecipeWaitForCookieStep {
   readonly kind: "waitForCookie";
   readonly name: string;
   readonly url?: string;
@@ -237,7 +235,7 @@ export interface OpensteerRecipeWaitForCookieStep {
   readonly saveAs?: string;
 }
 
-export interface OpensteerRecipeWaitForStorageStep {
+export interface OpensteerAuthRecipeWaitForStorageStep {
   readonly kind: "waitForStorage";
   readonly area: "local" | "session";
   readonly origin: string;
@@ -246,14 +244,14 @@ export interface OpensteerRecipeWaitForStorageStep {
   readonly saveAs?: string;
 }
 
-export interface OpensteerRecipeReadCookieStep {
+export interface OpensteerAuthRecipeReadCookieStep {
   readonly kind: "readCookie";
   readonly name: string;
   readonly url?: string;
   readonly saveAs: string;
 }
 
-export interface OpensteerRecipeReadStorageStep {
+export interface OpensteerAuthRecipeReadStorageStep {
   readonly kind: "readStorage";
   readonly area: "local" | "session";
   readonly origin: string;
@@ -262,7 +260,7 @@ export interface OpensteerRecipeReadStorageStep {
   readonly saveAs: string;
 }
 
-export interface OpensteerRecipeEvaluateStep {
+export interface OpensteerAuthRecipeEvaluateStep {
   readonly kind: "evaluate";
   readonly script: string;
   readonly args?: readonly JsonValue[];
@@ -270,31 +268,31 @@ export interface OpensteerRecipeEvaluateStep {
   readonly saveAs?: string;
 }
 
-export interface OpensteerRecipeSyncCookiesToJarStep {
+export interface OpensteerAuthRecipeSyncCookiesToJarStep {
   readonly kind: "syncCookiesToJar";
   readonly jar: string;
   readonly urls?: readonly string[];
 }
 
-export interface OpensteerRecipeRequestStep {
+export interface OpensteerAuthRecipeRequestStep {
   readonly kind: "request";
-  readonly request: OpensteerRecipeRequestStepInput;
-  readonly capture?: OpensteerRecipeStepResponseCapture;
+  readonly request: OpensteerAuthRecipeRequestStepInput;
+  readonly capture?: OpensteerAuthRecipeStepResponseCapture;
 }
 
 export interface OpensteerAuthRecipeSessionRequestStep {
   readonly kind: "sessionRequest";
-  readonly request: OpensteerRecipeRequestStepInput;
-  readonly capture?: OpensteerRecipeStepResponseCapture;
+  readonly request: OpensteerAuthRecipeRequestStepInput;
+  readonly capture?: OpensteerAuthRecipeStepResponseCapture;
 }
 
 export interface OpensteerAuthRecipeDirectRequestStep {
   readonly kind: "directRequest";
-  readonly request: OpensteerRecipeRequestStepInput;
-  readonly capture?: OpensteerRecipeStepResponseCapture;
+  readonly request: OpensteerAuthRecipeRequestStepInput;
+  readonly capture?: OpensteerAuthRecipeStepResponseCapture;
 }
 
-export interface OpensteerRecipeSolveCaptchaStep {
+export interface OpensteerAuthRecipeSolveCaptchaStep {
   readonly kind: "solveCaptcha";
   readonly provider: CaptchaProvider;
   readonly apiKey: string;
@@ -306,55 +304,47 @@ export interface OpensteerRecipeSolveCaptchaStep {
   readonly saveAs?: string;
 }
 
-export interface OpensteerRecipeHookRef {
+export interface OpensteerAuthRecipeHookRef {
   readonly specifier: string;
   readonly export: string;
 }
 
-export type OpensteerAuthRecipeHookRef = OpensteerRecipeHookRef;
-
-export interface OpensteerRecipeHookStep {
+export interface OpensteerAuthRecipeHookStep {
   readonly kind: "hook";
-  readonly hook: OpensteerRecipeHookRef;
+  readonly hook: OpensteerAuthRecipeHookRef;
 }
 
-export type OpensteerRecipeStep =
-  | OpensteerRecipeGotoStep
-  | OpensteerRecipeReloadStep
-  | OpensteerRecipeWaitForUrlStep
-  | OpensteerRecipeWaitForNetworkStep
-  | OpensteerRecipeWaitForCookieStep
-  | OpensteerRecipeWaitForStorageStep
-  | OpensteerRecipeReadCookieStep
-  | OpensteerRecipeReadStorageStep
-  | OpensteerRecipeEvaluateStep
-  | OpensteerRecipeSyncCookiesToJarStep
-  | OpensteerRecipeRequestStep
+export type OpensteerAuthRecipeStep =
+  | OpensteerAuthRecipeGotoStep
+  | OpensteerAuthRecipeReloadStep
+  | OpensteerAuthRecipeWaitForUrlStep
+  | OpensteerAuthRecipeWaitForNetworkStep
+  | OpensteerAuthRecipeWaitForCookieStep
+  | OpensteerAuthRecipeWaitForStorageStep
+  | OpensteerAuthRecipeReadCookieStep
+  | OpensteerAuthRecipeReadStorageStep
+  | OpensteerAuthRecipeEvaluateStep
+  | OpensteerAuthRecipeSyncCookiesToJarStep
+  | OpensteerAuthRecipeRequestStep
   | OpensteerAuthRecipeSessionRequestStep
   | OpensteerAuthRecipeDirectRequestStep
-  | OpensteerRecipeSolveCaptchaStep
-  | OpensteerRecipeHookStep;
+  | OpensteerAuthRecipeSolveCaptchaStep
+  | OpensteerAuthRecipeHookStep;
 
-export type OpensteerAuthRecipeStep = OpensteerRecipeStep;
-
-export interface OpensteerRecipeRetryOverrides {
+export interface OpensteerAuthRecipeRetryOverrides {
   readonly params?: Readonly<Record<string, string>>;
   readonly headers?: Readonly<Record<string, string>>;
   readonly query?: Readonly<Record<string, string>>;
   readonly body?: Readonly<Record<string, string>>;
 }
 
-export type OpensteerAuthRecipeRetryOverrides = OpensteerRecipeRetryOverrides;
-
-export interface OpensteerRecipePayload {
+export interface OpensteerAuthRecipePayload {
   readonly description?: string;
-  readonly steps: readonly OpensteerRecipeStep[];
-  readonly outputs?: OpensteerRecipeRetryOverrides;
+  readonly steps: readonly OpensteerAuthRecipeStep[];
+  readonly outputs?: OpensteerAuthRecipeRetryOverrides;
 }
 
-export type OpensteerAuthRecipePayload = OpensteerRecipePayload;
-
-export interface OpensteerRecipeRecord {
+export interface OpensteerAuthRecipeRecord {
   readonly id: string;
   readonly key: string;
   readonly version: string;
@@ -363,10 +353,8 @@ export interface OpensteerRecipeRecord {
   readonly contentHash: string;
   readonly tags: readonly string[];
   readonly provenance?: OpensteerRegistryProvenance;
-  readonly payload: OpensteerRecipePayload;
+  readonly payload: OpensteerAuthRecipePayload;
 }
-
-export type OpensteerAuthRecipeRecord = OpensteerRecipeRecord;
 
 export interface OpensteerNetworkQueryInput {
   readonly pageRef?: PageRef;
@@ -617,55 +605,43 @@ export interface OpensteerListRequestPlansOutput {
   readonly plans: readonly OpensteerRequestPlanRecord[];
 }
 
-export interface OpensteerWriteRecipeInput {
+export interface OpensteerWriteAuthRecipeInput {
   readonly id?: string;
   readonly key: string;
   readonly version: string;
   readonly tags?: readonly string[];
   readonly provenance?: OpensteerRegistryProvenance;
-  readonly payload: OpensteerRecipePayload;
+  readonly payload: OpensteerAuthRecipePayload;
 }
 
-export type OpensteerWriteAuthRecipeInput = OpensteerWriteRecipeInput;
-
-export interface OpensteerGetRecipeInput {
+export interface OpensteerGetAuthRecipeInput {
   readonly key: string;
   readonly version?: string;
 }
 
-export type OpensteerGetAuthRecipeInput = OpensteerGetRecipeInput;
-
-export interface OpensteerListRecipesInput {
+export interface OpensteerListAuthRecipesInput {
   readonly key?: string;
 }
 
-export type OpensteerListAuthRecipesInput = OpensteerListRecipesInput;
-
-export interface OpensteerListRecipesOutput {
-  readonly recipes: readonly OpensteerRecipeRecord[];
+export interface OpensteerListAuthRecipesOutput {
+  readonly recipes: readonly OpensteerAuthRecipeRecord[];
 }
 
-export type OpensteerListAuthRecipesOutput = OpensteerListRecipesOutput;
-
-export interface OpensteerRunRecipeInput {
+export interface OpensteerRunAuthRecipeInput {
   readonly key: string;
   readonly version?: string;
   readonly variables?: Readonly<Record<string, string>>;
 }
 
-export type OpensteerRunAuthRecipeInput = OpensteerRunRecipeInput;
-
-export interface OpensteerRunRecipeOutput {
+export interface OpensteerRunAuthRecipeOutput {
   readonly recipe: {
     readonly id: string;
     readonly key: string;
     readonly version: string;
   };
   readonly variables: Readonly<Record<string, string>>;
-  readonly overrides?: OpensteerRecipeRetryOverrides;
+  readonly overrides?: OpensteerAuthRecipeRetryOverrides;
 }
-
-export type OpensteerRunAuthRecipeOutput = OpensteerRunRecipeOutput;
 
 export type OpensteerRequestScalarMap = Readonly<Record<string, OpensteerRequestScalar>>;
 
@@ -886,18 +862,16 @@ export const opensteerRequestPlanResponseExpectationSchema: JsonSchema = objectS
   },
 );
 
-export const opensteerRecipeRefSchema: JsonSchema = objectSchema(
+export const opensteerAuthRecipeRefSchema: JsonSchema = objectSchema(
   {
     key: stringSchema({ minLength: 1 }),
     version: stringSchema({ minLength: 1 }),
   },
   {
-    title: "OpensteerRecipeRef",
+    title: "OpensteerAuthRecipeRef",
     required: ["key"],
   },
 );
-
-export const opensteerAuthRecipeRefSchema: JsonSchema = opensteerRecipeRefSchema;
 
 export const opensteerRequestFailurePolicyHeaderMatchSchema: JsonSchema = objectSchema(
   {
@@ -958,17 +932,17 @@ export const opensteerRequestRetryPolicySchema: JsonSchema = objectSchema(
   },
 );
 
-export const opensteerRecipeCachePolicySchema: JsonSchema = enumSchema(
+export const opensteerAuthRecipeCachePolicySchema: JsonSchema = enumSchema(
   ["none", "untilFailure"] as const,
   {
-    title: "OpensteerRecipeCachePolicy",
+    title: "OpensteerAuthRecipeCachePolicy",
   },
 );
 
 export const opensteerRequestPlanRecipeBindingSchema: JsonSchema = objectSchema(
   {
-    recipe: opensteerRecipeRefSchema,
-    cachePolicy: opensteerRecipeCachePolicySchema,
+    recipe: opensteerAuthRecipeRefSchema,
+    cachePolicy: opensteerAuthRecipeCachePolicySchema,
   },
   {
     title: "OpensteerRequestPlanRecipeBinding",
@@ -978,8 +952,8 @@ export const opensteerRequestPlanRecipeBindingSchema: JsonSchema = objectSchema(
 
 export const opensteerRequestPlanRecoverBindingSchema: JsonSchema = objectSchema(
   {
-    recipe: opensteerRecipeRefSchema,
-    cachePolicy: opensteerRecipeCachePolicySchema,
+    recipe: opensteerAuthRecipeRefSchema,
+    cachePolicy: opensteerAuthRecipeCachePolicySchema,
     failurePolicy: opensteerRequestFailurePolicySchema,
   },
   {
@@ -1001,7 +975,7 @@ export const opensteerRequestPlanRecipesSchema: JsonSchema = objectSchema(
 export const opensteerRequestPlanAuthSchema: JsonSchema = objectSchema(
   {
     strategy: enumSchema(["session-cookie", "bearer-token", "api-key", "custom"] as const),
-    recipe: opensteerRecipeRefSchema,
+    recipe: opensteerAuthRecipeRefSchema,
     failurePolicy: opensteerRequestFailurePolicySchema,
     description: stringSchema({ minLength: 1 }),
   },
@@ -1115,27 +1089,27 @@ export const opensteerRequestBodyInputSchema: JsonSchema = oneOfSchema(
   },
 );
 
-const opensteerRecipeRetryOverridesSchema: JsonSchema = objectSchema(
+const opensteerAuthRecipeRetryOverridesSchema: JsonSchema = objectSchema(
   {
     params: recordSchema(stringSchema(), {
-      title: "OpensteerRecipeParams",
+      title: "OpensteerAuthRecipeParams",
     }),
     headers: recordSchema(stringSchema(), {
-      title: "OpensteerRecipeHeaders",
+      title: "OpensteerAuthRecipeHeaders",
     }),
     query: recordSchema(stringSchema(), {
-      title: "OpensteerRecipeQuery",
+      title: "OpensteerAuthRecipeQuery",
     }),
     body: recordSchema(stringSchema(), {
-      title: "OpensteerRecipeBodyVariables",
+      title: "OpensteerAuthRecipeBodyVariables",
     }),
   },
   {
-    title: "OpensteerRecipeRetryOverrides",
+    title: "OpensteerAuthRecipeRetryOverrides",
   },
 );
 
-const opensteerRecipeStepResponseCaptureSchema: JsonSchema = objectSchema(
+const opensteerAuthRecipeStepResponseCaptureSchema: JsonSchema = objectSchema(
   {
     header: objectSchema(
       {
@@ -1168,11 +1142,11 @@ const opensteerRecipeStepResponseCaptureSchema: JsonSchema = objectSchema(
     ),
   },
   {
-    title: "OpensteerRecipeStepResponseCapture",
+    title: "OpensteerAuthRecipeStepResponseCapture",
   },
 );
 
-const opensteerRecipeRequestStepInputSchema: JsonSchema = objectSchema(
+const opensteerAuthRecipeRequestStepInputSchema: JsonSchema = objectSchema(
   {
     url: stringSchema({ minLength: 1 }),
     transport: transportKindSchema,
@@ -1180,34 +1154,32 @@ const opensteerRecipeRequestStepInputSchema: JsonSchema = objectSchema(
     cookieJar: stringSchema({ minLength: 1 }),
     method: stringSchema({ minLength: 1 }),
     headers: recordSchema(stringSchema(), {
-      title: "OpensteerRecipeRequestHeaders",
+      title: "OpensteerAuthRecipeRequestHeaders",
     }),
     query: recordSchema(stringSchema(), {
-      title: "OpensteerRecipeRequestQuery",
+      title: "OpensteerAuthRecipeRequestQuery",
     }),
     body: opensteerRequestBodyInputSchema,
     followRedirects: { type: "boolean" },
   },
   {
-    title: "OpensteerRecipeRequestStepInput",
+    title: "OpensteerAuthRecipeRequestStepInput",
     required: ["url"],
   },
 );
 
-export const opensteerRecipeHookRefSchema: JsonSchema = objectSchema(
+export const opensteerAuthRecipeHookRefSchema: JsonSchema = objectSchema(
   {
     specifier: stringSchema({ minLength: 1 }),
     export: stringSchema({ minLength: 1 }),
   },
   {
-    title: "OpensteerRecipeHookRef",
+    title: "OpensteerAuthRecipeHookRef",
     required: ["specifier", "export"],
   },
 );
 
-export const opensteerAuthRecipeHookRefSchema: JsonSchema = opensteerRecipeHookRefSchema;
-
-export const opensteerRecipeStepSchema: JsonSchema = oneOfSchema(
+export const opensteerAuthRecipeStepSchema: JsonSchema = oneOfSchema(
   [
     objectSchema(
       {
@@ -1252,7 +1224,7 @@ export const opensteerRecipeStepSchema: JsonSchema = oneOfSchema(
         saveAs: stringSchema({ minLength: 1 }),
       },
       {
-        title: "OpensteerRecipeWaitForNetworkStep",
+        title: "OpensteerAuthRecipeWaitForNetworkStep",
         required: ["kind"],
       },
     ),
@@ -1305,7 +1277,7 @@ export const opensteerRecipeStepSchema: JsonSchema = oneOfSchema(
         saveAs: stringSchema({ minLength: 1 }),
       },
       {
-        title: "OpensteerRecipeReadStorageStep",
+        title: "OpensteerAuthRecipeReadStorageStep",
         required: ["kind", "area", "origin", "key", "saveAs"],
       },
     ),
@@ -1318,7 +1290,7 @@ export const opensteerRecipeStepSchema: JsonSchema = oneOfSchema(
         saveAs: stringSchema({ minLength: 1 }),
       },
       {
-        title: "OpensteerRecipeEvaluateStep",
+        title: "OpensteerAuthRecipeEvaluateStep",
         required: ["kind", "script"],
       },
     ),
@@ -1331,26 +1303,26 @@ export const opensteerRecipeStepSchema: JsonSchema = oneOfSchema(
         }),
       },
       {
-        title: "OpensteerRecipeSyncCookiesToJarStep",
+        title: "OpensteerAuthRecipeSyncCookiesToJarStep",
         required: ["kind", "jar"],
       },
     ),
     objectSchema(
       {
         kind: enumSchema(["request"] as const),
-        request: opensteerRecipeRequestStepInputSchema,
-        capture: opensteerRecipeStepResponseCaptureSchema,
+        request: opensteerAuthRecipeRequestStepInputSchema,
+        capture: opensteerAuthRecipeStepResponseCaptureSchema,
       },
       {
-        title: "OpensteerRecipeRequestStep",
+        title: "OpensteerAuthRecipeRequestStep",
         required: ["kind", "request"],
       },
     ),
     objectSchema(
       {
         kind: enumSchema(["sessionRequest"] as const),
-        request: opensteerRecipeRequestStepInputSchema,
-        capture: opensteerRecipeStepResponseCaptureSchema,
+        request: opensteerAuthRecipeRequestStepInputSchema,
+        capture: opensteerAuthRecipeStepResponseCaptureSchema,
       },
       {
         title: "OpensteerAuthRecipeSessionRequestStep",
@@ -1360,8 +1332,8 @@ export const opensteerRecipeStepSchema: JsonSchema = oneOfSchema(
     objectSchema(
       {
         kind: enumSchema(["directRequest"] as const),
-        request: opensteerRecipeRequestStepInputSchema,
-        capture: opensteerRecipeStepResponseCaptureSchema,
+        request: opensteerAuthRecipeRequestStepInputSchema,
+        capture: opensteerAuthRecipeStepResponseCaptureSchema,
       },
       {
         title: "OpensteerAuthRecipeDirectRequestStep",
@@ -1381,45 +1353,41 @@ export const opensteerRecipeStepSchema: JsonSchema = oneOfSchema(
         saveAs: stringSchema({ minLength: 1 }),
       },
       {
-        title: "OpensteerRecipeSolveCaptchaStep",
+        title: "OpensteerAuthRecipeSolveCaptchaStep",
         required: ["kind", "provider", "apiKey"],
       },
     ),
     objectSchema(
       {
         kind: enumSchema(["hook"] as const),
-        hook: opensteerRecipeHookRefSchema,
+        hook: opensteerAuthRecipeHookRefSchema,
       },
       {
-        title: "OpensteerRecipeHookStep",
+        title: "OpensteerAuthRecipeHookStep",
         required: ["kind", "hook"],
       },
     ),
   ],
   {
-    title: "OpensteerRecipeStep",
+    title: "OpensteerAuthRecipeStep",
   },
 );
 
-export const opensteerAuthRecipeStepSchema: JsonSchema = opensteerRecipeStepSchema;
-
-export const opensteerRecipePayloadSchema: JsonSchema = objectSchema(
+export const opensteerAuthRecipePayloadSchema: JsonSchema = objectSchema(
   {
     description: stringSchema({ minLength: 1 }),
-    steps: arraySchema(opensteerRecipeStepSchema, {
+    steps: arraySchema(opensteerAuthRecipeStepSchema, {
       minItems: 1,
     }),
-    outputs: opensteerRecipeRetryOverridesSchema,
+    outputs: opensteerAuthRecipeRetryOverridesSchema,
   },
   {
-    title: "OpensteerRecipePayload",
+    title: "OpensteerAuthRecipePayload",
     required: ["steps"],
   },
 );
 
-export const opensteerAuthRecipePayloadSchema: JsonSchema = opensteerRecipePayloadSchema;
-
-export const opensteerRecipeRecordSchema: JsonSchema = objectSchema(
+export const opensteerAuthRecipeRecordSchema: JsonSchema = objectSchema(
   {
     id: stringSchema({ minLength: 1 }),
     key: stringSchema({ minLength: 1 }),
@@ -1431,15 +1399,13 @@ export const opensteerRecipeRecordSchema: JsonSchema = objectSchema(
       uniqueItems: true,
     }),
     provenance: opensteerRegistryProvenanceSchema,
-    payload: opensteerRecipePayloadSchema,
+    payload: opensteerAuthRecipePayloadSchema,
   },
   {
-    title: "OpensteerRecipeRecord",
+    title: "OpensteerAuthRecipeRecord",
     required: ["id", "key", "version", "createdAt", "updatedAt", "contentHash", "tags", "payload"],
   },
 );
-
-export const opensteerAuthRecipeRecordSchema: JsonSchema = opensteerRecipeRecordSchema;
 
 export const opensteerNetworkQueryInputSchema: JsonSchema = objectSchema(
   {
@@ -1873,7 +1839,7 @@ export const opensteerListRequestPlansOutputSchema: JsonSchema = objectSchema(
   },
 );
 
-export const opensteerWriteRecipeInputSchema: JsonSchema = objectSchema(
+export const opensteerWriteAuthRecipeInputSchema: JsonSchema = objectSchema(
   {
     id: stringSchema({ minLength: 1 }),
     key: stringSchema({ minLength: 1 }),
@@ -1882,69 +1848,59 @@ export const opensteerWriteRecipeInputSchema: JsonSchema = objectSchema(
       uniqueItems: true,
     }),
     provenance: opensteerRegistryProvenanceSchema,
-    payload: opensteerRecipePayloadSchema,
+    payload: opensteerAuthRecipePayloadSchema,
   },
   {
-    title: "OpensteerWriteRecipeInput",
+    title: "OpensteerWriteAuthRecipeInput",
     required: ["key", "version", "payload"],
   },
 );
 
-export const opensteerWriteAuthRecipeInputSchema: JsonSchema = opensteerWriteRecipeInputSchema;
-
-export const opensteerGetRecipeInputSchema: JsonSchema = objectSchema(
+export const opensteerGetAuthRecipeInputSchema: JsonSchema = objectSchema(
   {
     key: stringSchema({ minLength: 1 }),
     version: stringSchema({ minLength: 1 }),
   },
   {
-    title: "OpensteerGetRecipeInput",
+    title: "OpensteerGetAuthRecipeInput",
     required: ["key"],
   },
 );
 
-export const opensteerGetAuthRecipeInputSchema: JsonSchema = opensteerGetRecipeInputSchema;
-
-export const opensteerListRecipesInputSchema: JsonSchema = objectSchema(
+export const opensteerListAuthRecipesInputSchema: JsonSchema = objectSchema(
   {
     key: stringSchema({ minLength: 1 }),
   },
   {
-    title: "OpensteerListRecipesInput",
+    title: "OpensteerListAuthRecipesInput",
   },
 );
 
-export const opensteerListAuthRecipesInputSchema: JsonSchema = opensteerListRecipesInputSchema;
-
-export const opensteerListRecipesOutputSchema: JsonSchema = objectSchema(
+export const opensteerListAuthRecipesOutputSchema: JsonSchema = objectSchema(
   {
-    recipes: arraySchema(opensteerRecipeRecordSchema),
+    recipes: arraySchema(opensteerAuthRecipeRecordSchema),
   },
   {
-    title: "OpensteerListRecipesOutput",
+    title: "OpensteerListAuthRecipesOutput",
     required: ["recipes"],
   },
 );
 
-export const opensteerListAuthRecipesOutputSchema: JsonSchema = opensteerListRecipesOutputSchema;
-
-export const opensteerRunRecipeInputSchema: JsonSchema = objectSchema(
+export const opensteerRunAuthRecipeInputSchema: JsonSchema = objectSchema(
   {
     key: stringSchema({ minLength: 1 }),
     version: stringSchema({ minLength: 1 }),
     variables: recordSchema(stringSchema(), {
-      title: "OpensteerRecipeVariables",
+      title: "OpensteerAuthRecipeVariables",
     }),
   },
   {
-    title: "OpensteerRunRecipeInput",
+    title: "OpensteerRunAuthRecipeInput",
     required: ["key"],
   },
 );
 
-export const opensteerRunAuthRecipeInputSchema: JsonSchema = opensteerRunRecipeInputSchema;
-
-export const opensteerRunRecipeOutputSchema: JsonSchema = objectSchema(
+export const opensteerRunAuthRecipeOutputSchema: JsonSchema = objectSchema(
   {
     recipe: objectSchema(
       {
@@ -1953,22 +1909,20 @@ export const opensteerRunRecipeOutputSchema: JsonSchema = objectSchema(
         version: stringSchema({ minLength: 1 }),
       },
       {
-        title: "OpensteerResolvedRecipeRef",
+        title: "OpensteerResolvedAuthRecipeRef",
         required: ["id", "key", "version"],
       },
     ),
     variables: recordSchema(stringSchema(), {
-      title: "OpensteerResolvedRecipeVariables",
+      title: "OpensteerResolvedAuthRecipeVariables",
     }),
-    overrides: opensteerRecipeRetryOverridesSchema,
+    overrides: opensteerAuthRecipeRetryOverridesSchema,
   },
   {
-    title: "OpensteerRunRecipeOutput",
+    title: "OpensteerRunAuthRecipeOutput",
     required: ["recipe", "variables"],
   },
 );
-
-export const opensteerRunAuthRecipeOutputSchema: JsonSchema = opensteerRunRecipeOutputSchema;
 
 export const opensteerRequestExecuteInputSchema: JsonSchema = objectSchema(
   {
