@@ -1,16 +1,5 @@
-/**
- * Bot detection test suite.
- *
- * Launches a real headful Chrome via Opensteer, visits bot-detection test
- * sites, evaluates their results, and prints a pass/fail report.
- *
- * Usage:
- *   node --import tsx tests/detection/detect-test.mts
- */
+/** Manual bot-detection probe. Run with `node --import tsx scripts/detection/detect-test.mts`. */
 
-import { OpensteerBrowserManager } from "../../packages/opensteer/src/browser-manager.js";
-import { createPlaywrightBrowserCoreEngine } from "../../packages/engine-playwright/src/engine.js";
-import { connectPlaywrightChromiumBrowser } from "../../packages/engine-playwright/src/engine.js";
 import { chromium } from "playwright";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -21,7 +10,6 @@ import { existsSync, readFileSync } from "node:fs";
 const CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const TIMEOUT = 20_000;
 
-// Minimal Chrome flags — matches our new headful config.
 const CHROME_ARGS = [
   "--remote-debugging-port=0",
   "--no-first-run",
@@ -35,11 +23,9 @@ interface TestResult {
   details: string;
 }
 
-// ---------------------------------------------------------------------------
-// Launch Chrome directly (same as browser-manager does for headful)
-// ---------------------------------------------------------------------------
-
-async function launchChrome(userDataDir: string): Promise<{ endpoint: string; pid: number; kill: () => void }> {
+async function launchChrome(
+  userDataDir: string,
+): Promise<{ endpoint: string; pid: number; kill: () => void }> {
   const args = [
     ...CHROME_ARGS,
     `--user-data-dir=${userDataDir}`,
@@ -57,42 +43,45 @@ async function launchChrome(userDataDir: string): Promise<{ endpoint: string; pi
   child.stderr?.setEncoding("utf8");
   child.stderr?.on("data", (chunk: string) => stderrLines.push(chunk));
 
-  // Wait for DevToolsActivePort file
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     const portFile = join(userDataDir, "DevToolsActivePort");
     if (existsSync(portFile)) {
-      const lines = readFileSync(portFile, "utf8").split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      const lines = readFileSync(portFile, "utf8")
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean);
       const port = parseInt(lines[0] ?? "", 10);
       if (port > 0) {
-        // Verify the endpoint is reachable
         try {
-          const resp = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(2000) });
+          const resp = await fetch(`http://127.0.0.1:${port}/json/version`, {
+            signal: AbortSignal.timeout(2000),
+          });
           if (resp.ok) {
             const wsPath = lines[1] ?? "/devtools/browser";
             return {
               endpoint: `http://127.0.0.1:${port}`,
               pid: child.pid ?? 0,
-              kill: () => { try { process.kill(child.pid!, "SIGKILL"); } catch {} },
+              kill: () => {
+                try {
+                  process.kill(child.pid!, "SIGKILL");
+                } catch {}
+              },
             };
           }
         } catch {}
       }
     }
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 100));
   }
 
   child.kill("SIGKILL");
   throw new Error(`Chrome failed to start. stderr: ${stderrLines.join("")}`);
 }
 
-// ---------------------------------------------------------------------------
-// Test: bot.sannysoft.com
-// ---------------------------------------------------------------------------
-
 async function testSannysoft(page: any): Promise<TestResult> {
   await page.goto("https://bot.sannysoft.com/", { waitUntil: "networkidle", timeout: TIMEOUT });
-  await new Promise(r => setTimeout(r, 3000));
+  await new Promise((r) => setTimeout(r, 3000));
 
   const results = await page.evaluate(() => {
     const rows = document.querySelectorAll("table#fp-table tr, table#advanced-table tr");
@@ -124,13 +113,12 @@ async function testSannysoft(page: any): Promise<TestResult> {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Test: browserleaks.com/javascript (navigator properties)
-// ---------------------------------------------------------------------------
-
 async function testBrowserleaks(page: any): Promise<TestResult> {
-  await page.goto("https://browserleaks.com/javascript", { waitUntil: "networkidle", timeout: TIMEOUT });
-  await new Promise(r => setTimeout(r, 3000));
+  await page.goto("https://browserleaks.com/javascript", {
+    waitUntil: "networkidle",
+    timeout: TIMEOUT,
+  });
+  await new Promise((r) => setTimeout(r, 3000));
 
   const results = await page.evaluate(() => {
     const text = document.body?.innerText ?? "";
@@ -143,15 +131,12 @@ async function testBrowserleaks(page: any): Promise<TestResult> {
   return {
     site: "browserleaks.com/javascript",
     passed: results.issues.length === 0,
-    details: results.issues.length === 0
-      ? `No automation signals detected. UA: ${results.userAgent.slice(0, 80)}`
-      : `Issues: ${results.issues.join(", ")}`,
+    details:
+      results.issues.length === 0
+        ? `No automation signals detected. UA: ${results.userAgent.slice(0, 80)}`
+        : `Issues: ${results.issues.join(", ")}`,
   };
 }
-
-// ---------------------------------------------------------------------------
-// Test: Core detection signals via page.evaluate
-// ---------------------------------------------------------------------------
 
 async function testCoreSignals(page: any): Promise<TestResult> {
   await page.goto("https://example.com", { waitUntil: "networkidle", timeout: TIMEOUT });
@@ -220,7 +205,10 @@ async function testCoreSignals(page: any): Promise<TestResult> {
       const err = new Error("test");
       let getterCalled = false;
       Object.defineProperty(err, "stack", {
-        get() { getterCalled = true; return ""; },
+        get() {
+          getterCalled = true;
+          return "";
+        },
         configurable: true,
       });
       console.debug(err);
@@ -234,9 +222,10 @@ async function testCoreSignals(page: any): Promise<TestResult> {
   return {
     site: "core-signals (example.com)",
     passed: results.issues.length === 0,
-    details: results.issues.length === 0
-      ? "All core signals clean"
-      : `Issues: ${results.issues.join(", ")}`,
+    details:
+      results.issues.length === 0
+        ? "All core signals clean"
+        : `Issues: ${results.issues.join(", ")}`,
   };
 }
 
@@ -246,8 +235,11 @@ async function testCoreSignals(page: any): Promise<TestResult> {
 
 async function testIntoli(page: any): Promise<TestResult> {
   try {
-    await page.goto("https://intoli.com/blog/not-possible/", { waitUntil: "networkidle", timeout: TIMEOUT });
-    await new Promise(r => setTimeout(r, 2000));
+    await page.goto("https://intoli.com/blog/not-possible/", {
+      waitUntil: "networkidle",
+      timeout: TIMEOUT,
+    });
+    await new Promise((r) => setTimeout(r, 2000));
     return { site: "intoli.com", passed: true, details: "Page loaded without block" };
   } catch {
     return { site: "intoli.com", passed: false, details: "Failed to load or blocked" };
@@ -261,19 +253,24 @@ async function testIntoli(page: any): Promise<TestResult> {
 async function testNowSecure(page: any): Promise<TestResult> {
   try {
     await page.goto("https://nowsecure.nl/", { waitUntil: "domcontentloaded", timeout: 30_000 });
-    await new Promise(r => setTimeout(r, 8000));
+    await new Promise((r) => setTimeout(r, 8000));
     const url = page.url();
     const title = await page.title();
     const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 500) ?? "");
-    const blocked = title.toLowerCase().includes("just a moment") ||
-                    bodyText.includes("Checking if the site connection is secure");
+    const blocked =
+      title.toLowerCase().includes("just a moment") ||
+      bodyText.includes("Checking if the site connection is secure");
     return {
       site: "nowsecure.nl (Cloudflare)",
       passed: !blocked,
       details: !blocked ? `Passed: ${title}` : `Blocked: ${title} (${url})`,
     };
   } catch (err: any) {
-    return { site: "nowsecure.nl (Cloudflare)", passed: false, details: `Error: ${err.message?.slice(0, 100)}` };
+    return {
+      site: "nowsecure.nl (Cloudflare)",
+      passed: false,
+      details: `Error: ${err.message?.slice(0, 100)}`,
+    };
   }
 }
 
@@ -284,13 +281,14 @@ async function testNowSecure(page: any): Promise<TestResult> {
 async function testCloudflare(page: any, url: string, label: string): Promise<TestResult> {
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: TIMEOUT });
-    await new Promise(r => setTimeout(r, 6000));
+    await new Promise((r) => setTimeout(r, 6000));
     const title = await page.title();
     const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 500) ?? "");
-    const blocked = title.toLowerCase().includes("just a moment") ||
-                    title.toLowerCase().includes("attention required") ||
-                    bodyText.includes("Checking if the site connection is secure") ||
-                    bodyText.includes("Enable JavaScript and cookies");
+    const blocked =
+      title.toLowerCase().includes("just a moment") ||
+      title.toLowerCase().includes("attention required") ||
+      bodyText.includes("Checking if the site connection is secure") ||
+      bodyText.includes("Enable JavaScript and cookies");
     return {
       site: label,
       passed: !blocked,
@@ -307,8 +305,11 @@ async function testCloudflare(page: any, url: string, label: string): Promise<Te
 
 async function testFingerprint(page: any): Promise<TestResult> {
   try {
-    await page.goto("https://fingerprint.com/products/bot-detection/", { waitUntil: "networkidle", timeout: TIMEOUT });
-    await new Promise(r => setTimeout(r, 3000));
+    await page.goto("https://fingerprint.com/products/bot-detection/", {
+      waitUntil: "networkidle",
+      timeout: TIMEOUT,
+    });
+    await new Promise((r) => setTimeout(r, 3000));
     const title = await page.title();
     return { site: "fingerprint.com", passed: true, details: `Loaded: ${title}` };
   } catch (err: any) {
@@ -322,8 +323,11 @@ async function testFingerprint(page: any): Promise<TestResult> {
 
 async function testCreepJS(page: any): Promise<TestResult> {
   try {
-    await page.goto("https://abrahamjuliot.github.io/creepjs/", { waitUntil: "networkidle", timeout: TIMEOUT });
-    await new Promise(r => setTimeout(r, 8000));
+    await page.goto("https://abrahamjuliot.github.io/creepjs/", {
+      waitUntil: "networkidle",
+      timeout: TIMEOUT,
+    });
+    await new Promise((r) => setTimeout(r, 8000));
 
     const results = await page.evaluate(() => {
       const trustEl = document.querySelector(".visitor-info .grade") as HTMLElement;
@@ -333,8 +337,8 @@ async function testCreepJS(page: any): Promise<TestResult> {
       return { trust, botText, title: document.title };
     });
 
-    const hasBotFlag = results.botText.toLowerCase().includes("bot") ||
-                       results.trust.toLowerCase().includes("f");
+    const hasBotFlag =
+      results.botText.toLowerCase().includes("bot") || results.trust.toLowerCase().includes("f");
     return {
       site: "creepjs",
       passed: !hasBotFlag,
@@ -365,7 +369,7 @@ async function main() {
 
     browser = await chromium.connectOverCDP({ endpointURL: chrome.endpoint });
     const context = browser.contexts()[0]!;
-    const page = context.pages()[0] ?? await context.newPage();
+    const page = context.pages()[0] ?? (await context.newPage());
 
     // Inject the CDP Runtime.enable leak defense (same as Opensteer does natively).
     await context.addInitScript({
@@ -392,7 +396,7 @@ async function main() {
     });
   };
   ['debug', 'log', 'info', 'error', 'warn', 'trace', 'dir'].forEach(_wrap);
-})();`
+})();`,
     });
 
     const results: TestResult[] = [];
@@ -441,45 +445,58 @@ async function main() {
 
     // Indeed — uses Turnstile interactive checkbox. Try clicking it.
     console.log("Testing: indeed.com (Turnstile checkbox)...");
-    results.push(await (async (): Promise<TestResult> => {
-      try {
-        await page.goto("https://www.indeed.com/", { waitUntil: "domcontentloaded", timeout: 30_000 });
-        await new Promise(r => setTimeout(r, 3000));
-        const title0 = await page.title();
-        if (!title0.toLowerCase().includes("just a moment")) {
-          return { site: "indeed.com (Turnstile)", passed: true, details: `No challenge: "${title0}"` };
-        }
-        // Try to find and click the Turnstile checkbox
-        const clicked = await page.evaluate(() => {
-          const inputs = document.querySelectorAll("input[type='checkbox']");
-          for (const inp of inputs) {
-            (inp as HTMLElement).click();
-            return true;
+    results.push(
+      await (async (): Promise<TestResult> => {
+        try {
+          await page.goto("https://www.indeed.com/", {
+            waitUntil: "domcontentloaded",
+            timeout: 30_000,
+          });
+          await new Promise((r) => setTimeout(r, 3000));
+          const title0 = await page.title();
+          if (!title0.toLowerCase().includes("just a moment")) {
+            return {
+              site: "indeed.com (Turnstile)",
+              passed: true,
+              details: `No challenge: "${title0}"`,
+            };
           }
-          // Try clicking the label area
-          const labels = document.querySelectorAll("label");
-          for (const label of labels) {
-            if (label.textContent?.includes("Verify") || label.textContent?.includes("human")) {
-              label.click();
+          // Try to find and click the Turnstile checkbox
+          const clicked = await page.evaluate(() => {
+            const inputs = document.querySelectorAll("input[type='checkbox']");
+            for (const inp of inputs) {
+              (inp as HTMLElement).click();
               return true;
             }
-          }
-          return false;
-        });
-        await new Promise(r => setTimeout(r, 8000));
-        const title = await page.title();
-        const blocked = title.toLowerCase().includes("just a moment");
-        return {
-          site: "indeed.com (Turnstile)",
-          passed: !blocked,
-          details: blocked
-            ? `Interactive Turnstile challenge (checkbox) - requires click, not a detection issue`
-            : `Passed after checkbox click: "${title}"`,
-        };
-      } catch (err: any) {
-        return { site: "indeed.com (Turnstile)", passed: false, details: `Error: ${err.message?.slice(0, 100)}` };
-      }
-    })());
+            // Try clicking the label area
+            const labels = document.querySelectorAll("label");
+            for (const label of labels) {
+              if (label.textContent?.includes("Verify") || label.textContent?.includes("human")) {
+                label.click();
+                return true;
+              }
+            }
+            return false;
+          });
+          await new Promise((r) => setTimeout(r, 8000));
+          const title = await page.title();
+          const blocked = title.toLowerCase().includes("just a moment");
+          return {
+            site: "indeed.com (Turnstile)",
+            passed: !blocked,
+            details: blocked
+              ? `Interactive Turnstile challenge (checkbox) - requires click, not a detection issue`
+              : `Passed after checkbox click: "${title}"`,
+          };
+        } catch (err: any) {
+          return {
+            site: "indeed.com (Turnstile)",
+            passed: false,
+            details: `Error: ${err.message?.slice(0, 100)}`,
+          };
+        }
+      })(),
+    );
 
     // More sites — mix of protection levels
     const moreSites = [
@@ -524,17 +541,20 @@ async function main() {
     }
 
     console.log("\n" + "-".repeat(70));
-    console.log(`Total: ${results.length} | Passed: ${passed} | Failed: ${failed} | Rate: ${Math.round(passed / results.length * 100)}%`);
+    console.log(
+      `Total: ${results.length} | Passed: ${passed} | Failed: ${failed} | Rate: ${Math.round((passed / results.length) * 100)}%`,
+    );
     console.log("-".repeat(70) + "\n");
-
   } finally {
-    try { await browser?.close(); } catch {}
+    try {
+      await browser?.close();
+    } catch {}
     chrome?.kill();
     await rm(userDataDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
-main().catch(err => {
+main().catch((err) => {
   console.error("Fatal error:", err);
   process.exit(1);
 });

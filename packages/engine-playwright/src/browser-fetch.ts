@@ -56,9 +56,7 @@ export async function executeBrowserFetch(
     method: request.method,
     headers: (request.headers ?? []).map((h) => [h.name, h.value]),
     bodyBase64:
-      request.body === undefined
-        ? undefined
-        : Buffer.from(request.body.bytes).toString("base64"),
+      request.body === undefined ? undefined : Buffer.from(request.body.bytes).toString("base64"),
     followRedirects: request.followRedirects !== false,
     timeoutMs: request.timeoutMs,
   };
@@ -107,9 +105,7 @@ export async function executeBrowserFetch(
           credentials: "include",
           redirect: inp.followRedirects ? "follow" : "manual",
           signal: controller.signal,
-          ...(inp.bodyBase64 === undefined
-            ? {}
-            : { body: decodeBase64(inp.bodyBase64) }),
+          ...(inp.bodyBase64 === undefined ? {} : { body: decodeBase64(inp.bodyBase64) }),
         });
 
         const body = new Uint8Array(await response.arrayBuffer());
@@ -165,9 +161,7 @@ export function parseBrowserFetchResponse(
   readonly body: BodyPayload | undefined;
 } {
   const headers = result.headers.map(([name, value]) => createHeaderEntry(name, value));
-  const contentType = headers.find(
-    (h) => h.name.toLowerCase() === "content-type",
-  )?.value;
+  const contentType = headers.find((h) => h.name.toLowerCase() === "content-type")?.value;
 
   let body: BodyPayload | undefined;
   try {

@@ -90,30 +90,38 @@ await opensteer.close();
 <td width="50%">
 
 ### Persistent Sessions
+
 Logins, cookies, and browser state survive across restarts. Each workspace is a full Chrome user-data directory.
 
 ### Profile Cloning
+
 Clone a real Chrome profile to start a workspace already logged in. Source browser doesn't need to close.
 
 ### Network Capture
+
 Record traffic during any action, inspect requests, and replay APIs with browser-backed `fetch()`.
 
 ### Script Analysis
+
 Capture, beautify, deobfuscate, and sandbox page JavaScript.
 
 </td>
 <td width="50%">
 
 ### Computer Use
+
 Coordinate-based mouse and keyboard when DOM targeting isn't enough.
 
 ### Stealth
+
 Anti-detection defaults: UA spoofing, fingerprint management, automation signal removal.
 
 ### Local View
+
 Stream live screenshots from headless sessions to a browser-based viewer.
 
 ### Local or Cloud
+
 Run browsers locally or on [Opensteer Cloud](https://opensteer.com). Same CLI, same SDK.
 
 </td>
@@ -133,12 +141,12 @@ See the full [Workflow Guide](./docs/workflows.md) for details.
 
 ## Documentation
 
-| Resource | Description |
-|----------|-------------|
-| [Package Guide](./packages/opensteer/README.md) | Full CLI and SDK reference |
-| [Workflow Guide](./docs/workflows.md) | Discover-then-codify methodology |
-| [Instrumentation Guide](./docs/instrumentation.md) | Tracing and observability |
-| [Skills Guide](./skills/README.md) | Agent skill installation and authoring |
+| Resource                                           | Description                            |
+| -------------------------------------------------- | -------------------------------------- |
+| [Package Guide](./packages/opensteer/README.md)    | Full CLI and SDK reference             |
+| [Workflow Guide](./docs/workflows.md)              | Discover-then-codify methodology       |
+| [Instrumentation Guide](./docs/instrumentation.md) | Tracing and observability              |
+| [Skills Guide](./skills/README.md)                 | Agent skill installation and authoring |
 
 ## FAQ
 

@@ -201,9 +201,7 @@ describe("OpensteerBrowserManager", () => {
   });
 
   test("prefers explicit launch executablePath over OPENSTEER_EXECUTABLE_PATH", async () => {
-    const rootPath = await mkdtemp(
-      path.join(tmpdir(), "opensteer-browser-manager-explicit-path-"),
-    );
+    const rootPath = await mkdtemp(path.join(tmpdir(), "opensteer-browser-manager-explicit-path-"));
 
     try {
       vi.stubEnv("OPENSTEER_EXECUTABLE_PATH", "/env/chromium");
@@ -230,6 +228,79 @@ describe("OpensteerBrowserManager", () => {
       await engine.dispose?.();
 
       expect(state.resolveChromeExecutablePath).toHaveBeenCalledWith("/flag/chromium");
+    } finally {
+      await rm(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  test("does not enable humanize unless the caller opts in", async () => {
+    const rootPath = await mkdtemp(path.join(tmpdir(), "opensteer-browser-manager-humanize-off-"));
+
+    try {
+      state.readDevToolsActivePort.mockReturnValue({
+        port: 54513,
+        webSocketPath: "/devtools/browser/humanize-off",
+      });
+      state.inspectCdpEndpoint.mockImplementation(async ({ endpoint }) => {
+        if (endpoint === "http://127.0.0.1:54513") {
+          return createInspectedEndpoint(54513, "humanize-off");
+        }
+        throw new Error(`Unexpected CDP endpoint: ${endpoint}`);
+      });
+
+      const manager = new OpensteerBrowserManager({
+        rootPath,
+        workspace: "humanize-off",
+      });
+
+      const engine = await manager.createEngine();
+      await engine.dispose?.();
+
+      expect(state.createPlaywrightBrowserCoreEngine).toHaveBeenCalledTimes(1);
+      expect(state.createPlaywrightBrowserCoreEngine).toHaveBeenCalledWith(
+        expect.objectContaining({
+          context: expect.not.objectContaining({
+            humanize: expect.anything(),
+          }),
+        }),
+      );
+    } finally {
+      await rm(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  test("enables humanize when OPENSTEER_HUMANIZE is set", async () => {
+    const rootPath = await mkdtemp(path.join(tmpdir(), "opensteer-browser-manager-humanize-on-"));
+
+    try {
+      vi.stubEnv("OPENSTEER_HUMANIZE", "1");
+      state.readDevToolsActivePort.mockReturnValue({
+        port: 54513,
+        webSocketPath: "/devtools/browser/humanize-on",
+      });
+      state.inspectCdpEndpoint.mockImplementation(async ({ endpoint }) => {
+        if (endpoint === "http://127.0.0.1:54513") {
+          return createInspectedEndpoint(54513, "humanize-on");
+        }
+        throw new Error(`Unexpected CDP endpoint: ${endpoint}`);
+      });
+
+      const manager = new OpensteerBrowserManager({
+        rootPath,
+        workspace: "humanize-on",
+      });
+
+      const engine = await manager.createEngine();
+      await engine.dispose?.();
+
+      expect(state.createPlaywrightBrowserCoreEngine).toHaveBeenCalledTimes(1);
+      expect(state.createPlaywrightBrowserCoreEngine).toHaveBeenCalledWith(
+        expect.objectContaining({
+          context: expect.objectContaining({
+            humanize: true,
+          }),
+        }),
+      );
     } finally {
       await rm(rootPath, { recursive: true, force: true });
     }

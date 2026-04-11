@@ -41,10 +41,16 @@ export function resolveChromeExecutablePath(executablePath: string | undefined):
     return resolvedPath;
   }
 
-  for (const installation of detectLocalChromeInstallations()) {
-    if (installation.executablePath) {
-      return installation.executablePath;
-    }
+  const chromeInstallation = detectLocalChromeInstallations().find(
+    (installation) => installation.brand === "chrome" && installation.executablePath !== null,
+  );
+  if (chromeInstallation?.executablePath) {
+    return chromeInstallation.executablePath;
+  }
+
+  const brandedInstallation = detectInstalledBrowserBrands()[0];
+  if (brandedInstallation) {
+    return brandedInstallation.executablePath;
   }
 
   throw new Error(

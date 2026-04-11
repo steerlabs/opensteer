@@ -1,8 +1,4 @@
-/**
- * Test that browser-routed fetch works correctly.
- * Verifies: same-origin fetch, cross-origin fetch, headers, cookies,
- * response body, redirects, error handling.
- */
+/** Manual probe for browser-routed fetch behavior. */
 import { chromium } from "playwright";
 import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -19,11 +15,19 @@ interface TestResult {
 }
 
 async function launchChrome(userDataDir: string) {
-  const child = spawn(CHROME_PATH, [
-    "--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check",
-    "--disable-blink-features=AutomationControlled",
-    `--user-data-dir=${userDataDir}`, "--window-size=1440,900", "about:blank",
-  ], { stdio: ["ignore", "ignore", "pipe"], detached: true });
+  const child = spawn(
+    CHROME_PATH,
+    [
+      "--remote-debugging-port=0",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-blink-features=AutomationControlled",
+      `--user-data-dir=${userDataDir}`,
+      "--window-size=1440,900",
+      "about:blank",
+    ],
+    { stdio: ["ignore", "ignore", "pipe"], detached: true },
+  );
   child.unref();
 
   const deadline = Date.now() + 15_000;
@@ -33,56 +37,84 @@ async function launchChrome(userDataDir: string) {
       const lines = readFileSync(portFile, "utf8").split(/\r?\n/).filter(Boolean);
       const port = parseInt(lines[0] ?? "", 10);
       if (port > 0) {
-        try { await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(2000) }); }
-        catch { await new Promise(r => setTimeout(r, 100)); continue; }
-        return { port, kill: () => { try { process.kill(child.pid!, "SIGKILL"); } catch {} } };
+        try {
+          await fetch(`http://127.0.0.1:${port}/json/version`, {
+            signal: AbortSignal.timeout(2000),
+          });
+        } catch {
+          await new Promise((r) => setTimeout(r, 100));
+          continue;
+        }
+        return {
+          port,
+          kill: () => {
+            try {
+              process.kill(child.pid!, "SIGKILL");
+            } catch {}
+          },
+        };
       }
     }
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 100));
   }
   child.kill("SIGKILL");
   throw new Error("Chrome failed to start");
 }
 
-/**
- * Execute a fetch inside the page context (same as our browser-fetch.ts)
- * and return the result.
- */
-async function browserFetch(page: any, url: string, options: {
-  method?: string;
-  headers?: Record<string, string>;
-  body?: string;
-} = {}): Promise<{ status: number; statusText: string; headers: [string, string][]; body: string; url: string; redirected: boolean }> {
-  return page.evaluate(async (opts: { url: string; method: string; headers: [string, string][]; body: string | undefined }) => {
-    const headers = new Headers();
-    for (const [name, value] of opts.headers) {
-      headers.append(name, value);
-    }
-    const response = await fetch(opts.url, {
-      method: opts.method,
-      headers,
-      credentials: "include",
-      ...(opts.body === undefined ? {} : { body: opts.body }),
-    });
-    const body = await response.text();
-    const responseHeaders: [string, string][] = [];
-    response.headers.forEach((value: string, name: string) => {
-      responseHeaders.push([name, value]);
-    });
-    return {
-      status: response.status,
-      statusText: response.statusText,
-      headers: responseHeaders,
-      body: body.slice(0, 5000),
-      url: response.url,
-      redirected: response.redirected,
-    };
-  }, {
-    url,
-    method: options.method ?? "GET",
-    headers: Object.entries(options.headers ?? {}),
-    body: options.body,
-  });
+async function browserFetch(
+  page: any,
+  url: string,
+  options: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+  } = {},
+): Promise<{
+  status: number;
+  statusText: string;
+  headers: [string, string][];
+  body: string;
+  url: string;
+  redirected: boolean;
+}> {
+  return page.evaluate(
+    async (opts: {
+      url: string;
+      method: string;
+      headers: [string, string][];
+      body: string | undefined;
+    }) => {
+      const headers = new Headers();
+      for (const [name, value] of opts.headers) {
+        headers.append(name, value);
+      }
+      const response = await fetch(opts.url, {
+        method: opts.method,
+        headers,
+        credentials: "include",
+        ...(opts.body === undefined ? {} : { body: opts.body }),
+      });
+      const body = await response.text();
+      const responseHeaders: [string, string][] = [];
+      response.headers.forEach((value: string, name: string) => {
+        responseHeaders.push([name, value]);
+      });
+      return {
+        status: response.status,
+        statusText: response.statusText,
+        headers: responseHeaders,
+        body: body.slice(0, 5000),
+        url: response.url,
+        redirected: response.redirected,
+      };
+    },
+    {
+      url,
+      method: options.method ?? "GET",
+      headers: Object.entries(options.headers ?? {}),
+      body: options.body,
+    },
+  );
 }
 
 async function main() {
@@ -90,11 +122,10 @@ async function main() {
   const chrome = await launchChrome(userDataDir);
   const browser = await chromium.connectOverCDP({ endpointURL: `http://127.0.0.1:${chrome.port}` });
   const context = browser.contexts()[0]!;
-  const page = context.pages()[0] ?? await context.newPage();
+  const page = context.pages()[0] ?? (await context.newPage());
 
   const results: TestResult[] = [];
 
-  // Test 1: Same-origin GET — navigate to httpbin, then fetch from it
   try {
     await page.goto("https://httpbin.org/", { waitUntil: "networkidle", timeout: 15_000 });
     const res = await browserFetch(page, "https://httpbin.org/get");
@@ -109,7 +140,6 @@ async function main() {
     results.push({ test: "Same-origin GET", ok: false, detail: e.message });
   }
 
-  // Test 2: POST with body
   try {
     const res = await browserFetch(page, "https://httpbin.org/post", {
       method: "POST",
@@ -127,7 +157,6 @@ async function main() {
     results.push({ test: "POST with JSON body", ok: false, detail: e.message });
   }
 
-  // Test 3: Custom headers
   try {
     const res = await browserFetch(page, "https://httpbin.org/headers", {
       headers: { "X-Custom-Test": "opensteer-test-123" },
@@ -143,13 +172,11 @@ async function main() {
     results.push({ test: "Custom headers", ok: false, detail: e.message });
   }
 
-  // Test 4: Cookies — set a cookie via httpbin, then verify it's sent
   try {
-    // Navigate to set a cookie
     await page.goto("https://httpbin.org/cookies/set?testcookie=abc123", {
-      waitUntil: "networkidle", timeout: 15_000,
+      waitUntil: "networkidle",
+      timeout: 15_000,
     });
-    // Fetch cookies endpoint — browser should include the cookie
     const res = await browserFetch(page, "https://httpbin.org/cookies");
     const json = JSON.parse(res.body);
     const cookieValue = json.cookies?.testcookie;
@@ -162,9 +189,11 @@ async function main() {
     results.push({ test: "Cookies included in fetch", ok: false, detail: e.message });
   }
 
-  // Test 5: Response headers
   try {
-    const res = await browserFetch(page, "https://httpbin.org/response-headers?X-Test-Header=hello");
+    const res = await browserFetch(
+      page,
+      "https://httpbin.org/response-headers?X-Test-Header=hello",
+    );
     const testHeader = res.headers.find(([n]) => n.toLowerCase() === "x-test-header");
     results.push({
       test: "Response headers parsed",

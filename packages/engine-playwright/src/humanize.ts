@@ -1,5 +1,4 @@
 import type { Page } from "playwright";
-import type { ResolvedHumanize } from "./options.js";
 
 /**
  * Mutable cursor state shared across a single engine instance so that each
@@ -218,12 +217,4 @@ export async function humanizedTextInput(page: Page, text: string): Promise<void
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Utility to check if a specific humanize channel is active. */
-export function isHumanizeActive(
-  humanize: ResolvedHumanize,
-  channel: keyof ResolvedHumanize,
-): boolean {
-  return humanize[channel];
 }

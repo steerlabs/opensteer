@@ -1705,7 +1705,6 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     readonly signal?: AbortSignal;
   }): Promise<StepResult<SessionTransportResponse>> {
     const session = this.requireSession(input.sessionRef);
-    const startedAt = Date.now();
     const pageRef = session.activePageRef ?? Array.from(session.pageRefs)[0];
     const controller = pageRef === undefined ? undefined : this.pages.get(pageRef);
     const mainFrame = controller === undefined ? undefined : this.requireMainFrame(controller);
@@ -1717,9 +1716,8 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     // Sec-Fetch-* headers).  Falls back to Playwright's context.request.fetch
     // when the active page is unavailable or when the in-page fetch fails
     // (e.g. CORS, restrictive CSP).
-    const result = controller !== undefined
-      ? await this.executeRequestViaBrowser(session, controller, input)
-      : undefined;
+    const result =
+      controller !== undefined ? await this.executeRequestViaBrowser(controller, input) : undefined;
     if (result !== undefined) {
       return result;
     }
@@ -1728,7 +1726,6 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
   }
 
   private async executeRequestViaBrowser(
-    session: SessionState,
     controller: PageController,
     input: {
       readonly sessionRef: SessionRef;
@@ -1748,53 +1745,6 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
         fetchResult,
         this.bodyCaptureLimitBytes,
       );
-
-      const responseBodySkipReason = getResponseBodySkipReasonForMetadata({
-        method: input.request.method.toUpperCase(),
-        status: fetchResult.status,
-        resourceType: "fetch",
-        url: fetchResult.url,
-        captureState: "complete",
-      });
-
-      const requestId = createNetworkRequestId(`transport-${++this.requestCounter}`);
-      const record: NetworkRecordState = {
-        kind: "http",
-        requestId,
-        sessionRef: input.sessionRef,
-        cdpRequestId: undefined,
-        pageRef: controller.pageRef,
-        frameRef: mainFrame.frameRef,
-        documentRef: mainFrame.currentDocument.documentRef,
-        method: input.request.method.toUpperCase(),
-        url: input.request.url,
-        requestHeaders: (input.request.headers ?? []).map((header) =>
-          createHeaderEntry(header.name, header.value),
-        ),
-        responseHeaders,
-        status: fetchResult.status,
-        statusText: fetchResult.statusText,
-        resourceType: "fetch",
-        redirectFromRequestId: undefined,
-        redirectToRequestId: undefined,
-        navigationRequest: false,
-        timing: undefined,
-        transfer: undefined,
-        source: undefined,
-        captureState: "complete",
-        requestBodyState: input.request.body === undefined ? "skipped" : "complete",
-        responseBodyState: responseBody === undefined ? "skipped" : "complete",
-        requestBodySkipReason: input.request.body === undefined ? "not-present" : undefined,
-        responseBodySkipReason:
-          responseBody === undefined
-            ? (responseBodySkipReason ?? "not-present-or-unavailable")
-            : undefined,
-        requestBodyError: undefined,
-        responseBodyError: undefined,
-        requestBody: input.request.body === undefined ? undefined : clone(input.request.body),
-        responseBody,
-      };
-      session.networkRecords.push(record);
 
       return this.createStepResult(input.sessionRef, controller.pageRef, startedAt, {
         frameRef: mainFrame.frameRef,

@@ -1268,16 +1268,16 @@ function normalizeBrowserContextOptions(
 function resolveHumanizeOption(
   explicit: OpensteerBrowserContextOptions["humanize"],
   environment?: OpensteerEnvironment,
-): boolean | import("@opensteer/protocol").OpensteerHumanizeOptions {
+): boolean | import("@opensteer/protocol").OpensteerHumanizeOptions | undefined {
   if (explicit !== undefined) {
     return explicit;
   }
   const envValue = environment?.OPENSTEER_HUMANIZE;
   if (envValue !== undefined) {
-    return envValue !== "false" && envValue !== "0";
+    const normalized = envValue.trim().toLowerCase();
+    return normalized !== "false" && normalized !== "0";
   }
-  // Default: humanize is ON.
-  return true;
+  return undefined;
 }
 
 function toEngineBrowserContextOptions(
