@@ -56,7 +56,7 @@ async function readLocalSecrets() {
           return undefined;
         }
         const name = line.slice(0, separator).trim();
-        const value = line.slice(separator + 1);
+        const value = line.slice(separator + 1).trim();
         if (!/(api[_-]?key|token|secret|password|passwd)/iu.test(name)) {
           return undefined;
         }
