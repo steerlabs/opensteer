@@ -11,14 +11,12 @@ import {
   writeJsonFileAtomic,
 } from "./internal/filesystem.js";
 import {
-  createAuthRecipeRegistry,
   createDescriptorRegistry,
   createInteractionTraceRegistry,
   createRequestPlanRegistry,
   createReverseCaseRegistry,
   createReversePackageRegistry,
   createReverseReportRegistry,
-  type AuthRecipeRegistryStore,
   type DescriptorRegistryStore,
   type InteractionTraceRegistryStore,
   type RequestPlanRegistryStore,
@@ -78,7 +76,6 @@ export interface FilesystemOpensteerWorkspace {
   readonly registry: {
     readonly descriptors: DescriptorRegistryStore;
     readonly requestPlans: RequestPlanRegistryStore;
-    readonly authRecipes: AuthRecipeRegistryStore;
     readonly savedNetwork: SavedNetworkStore;
     readonly reverseCases: ReverseCaseRegistryStore;
     readonly interactionTraces: InteractionTraceRegistryStore;
@@ -186,9 +183,6 @@ export async function createFilesystemOpensteerWorkspace(
   const requestPlans = createRequestPlanRegistry(options.rootPath);
   await requestPlans.initialize();
 
-  const authRecipes = createAuthRecipeRegistry(options.rootPath);
-  await authRecipes.initialize();
-
   const savedNetwork = createSavedNetworkStore(options.rootPath);
   await savedNetwork.initialize();
 
@@ -231,7 +225,6 @@ export async function createFilesystemOpensteerWorkspace(
     registry: {
       descriptors,
       requestPlans,
-      authRecipes,
       savedNetwork,
       reverseCases,
       interactionTraces,
