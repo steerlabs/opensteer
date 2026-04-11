@@ -42,6 +42,7 @@ import {
   writePersistedSessionRecord,
   type PersistedLocalBrowserSessionRecord,
 } from "./live-session.js";
+import type { OpensteerEnvironment } from "./env.js";
 import {
   bestEffortRegisterLocalViewSession,
   bestEffortUnregisterLocalViewSession,
@@ -109,6 +110,7 @@ export interface OpensteerBrowserManagerOptions {
   readonly rootPath?: string;
   readonly workspace?: string;
   readonly engineName?: OpensteerEngineName;
+  readonly environment?: OpensteerEnvironment;
   readonly browser?: OpensteerBrowserOptions;
   readonly launch?: OpensteerBrowserLaunchOptions;
   readonly context?: OpensteerBrowserContextOptions;
@@ -130,7 +132,7 @@ export class OpensteerBrowserManager {
     this.workspace = normalizeWorkspace(options.workspace);
     this.mode = resolveBrowserMode(this.workspace, options.browser);
     this.browserOptions = isAttachBrowserOptions(options.browser) ? options.browser : undefined;
-    this.launchOptions = options.launch;
+    this.launchOptions = resolveLaunchOptions(options.launch, options.environment ?? process.env);
     this.contextOptions = normalizeBrowserContextOptions(options.context);
     this.engineName = options.engineName ?? DEFAULT_OPENSTEER_ENGINE;
     assertSupportedEngineOptions({
@@ -739,6 +741,35 @@ export class OpensteerBrowserManager {
 function normalizeWorkspace(workspace: string | undefined): string | undefined {
   const normalized = workspace?.trim();
   return normalized === undefined || normalized.length === 0 ? undefined : normalized;
+}
+
+function resolveLaunchOptions(
+  launch: OpensteerBrowserLaunchOptions | undefined,
+  environment: OpensteerEnvironment,
+): OpensteerBrowserLaunchOptions | undefined {
+  if (launch?.executablePath !== undefined) {
+    return launch;
+  }
+
+  const executablePath = normalizeConfiguredExecutablePath(
+    environment.OPENSTEER_EXECUTABLE_PATH,
+  );
+  if (executablePath === undefined) {
+    return launch;
+  }
+
+  return {
+    ...(launch ?? {}),
+    executablePath,
+  };
+}
+
+function normalizeConfiguredExecutablePath(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? undefined : trimmed;
 }
 
 function toPersistedLocalBrowserSessionRecord(

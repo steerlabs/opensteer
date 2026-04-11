@@ -141,6 +141,7 @@ function createInspectedEndpoint(port: number, label: string) {
 describe("OpensteerBrowserManager", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
     state.spawn.mockImplementation(() => state.createMockChild());
     state.resolveChromeExecutablePath.mockReturnValue("/mock/chromium");
     state.readDevToolsActivePort.mockReturnValue(null);
@@ -167,6 +168,71 @@ describe("OpensteerBrowserManager", () => {
     expect(state.createPlaywrightBrowserCoreEngine).toHaveBeenCalledTimes(1);
     expect(state.engineDispose).toHaveBeenCalledTimes(1);
     expect(state.browser.close).toHaveBeenCalledTimes(1);
+  });
+
+  test("uses OPENSTEER_EXECUTABLE_PATH as the default browser executable", async () => {
+    const rootPath = await mkdtemp(path.join(tmpdir(), "opensteer-browser-manager-env-path-"));
+
+    try {
+      vi.stubEnv("OPENSTEER_EXECUTABLE_PATH", "/env/chromium");
+      state.readDevToolsActivePort.mockReturnValue({
+        port: 54513,
+        webSocketPath: "/devtools/browser/env-path",
+      });
+      state.inspectCdpEndpoint.mockImplementation(async ({ endpoint }) => {
+        if (endpoint === "http://127.0.0.1:54513") {
+          return createInspectedEndpoint(54513, "env-path");
+        }
+        throw new Error(`Unexpected CDP endpoint: ${endpoint}`);
+      });
+
+      const manager = new OpensteerBrowserManager({
+        rootPath,
+        workspace: "env-path",
+      });
+
+      const engine = await manager.createEngine();
+      await engine.dispose?.();
+
+      expect(state.resolveChromeExecutablePath).toHaveBeenCalledWith("/env/chromium");
+    } finally {
+      await rm(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  test("prefers explicit launch executablePath over OPENSTEER_EXECUTABLE_PATH", async () => {
+    const rootPath = await mkdtemp(
+      path.join(tmpdir(), "opensteer-browser-manager-explicit-path-"),
+    );
+
+    try {
+      vi.stubEnv("OPENSTEER_EXECUTABLE_PATH", "/env/chromium");
+      state.readDevToolsActivePort.mockReturnValue({
+        port: 54513,
+        webSocketPath: "/devtools/browser/explicit-path",
+      });
+      state.inspectCdpEndpoint.mockImplementation(async ({ endpoint }) => {
+        if (endpoint === "http://127.0.0.1:54513") {
+          return createInspectedEndpoint(54513, "explicit-path");
+        }
+        throw new Error(`Unexpected CDP endpoint: ${endpoint}`);
+      });
+
+      const manager = new OpensteerBrowserManager({
+        rootPath,
+        workspace: "explicit-path",
+        launch: {
+          executablePath: "/flag/chromium",
+        },
+      });
+
+      const engine = await manager.createEngine();
+      await engine.dispose?.();
+
+      expect(state.resolveChromeExecutablePath).toHaveBeenCalledWith("/flag/chromium");
+    } finally {
+      await rm(rootPath, { recursive: true, force: true });
+    }
   });
 
   test("launches persistent browsers with a caller-supplied fixed remote debugging port", async () => {

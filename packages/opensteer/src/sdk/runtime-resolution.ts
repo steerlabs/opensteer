@@ -57,9 +57,10 @@ export function createOpensteerSemanticRuntime(
 ): OpensteerDisconnectableRuntime {
   const runtimeOptions = input.runtimeOptions ?? {};
   const engine = input.engine ?? runtimeOptions.engineName ?? DEFAULT_OPENSTEER_ENGINE;
+  const environment = input.environment ?? process.env;
   const config = resolveOpensteerRuntimeConfig({
     ...(input.provider === undefined ? {} : { provider: input.provider }),
-    ...(input.environment === undefined ? {} : { environment: input.environment }),
+    environment,
   });
   assertProviderSupportsEngine(config.provider.mode, engine);
 
@@ -81,5 +82,6 @@ export function createOpensteerSemanticRuntime(
   return new OpensteerRuntime({
     ...runtimeOptions,
     engineName: engine,
+    environment,
   });
 }

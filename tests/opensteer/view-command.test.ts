@@ -94,6 +94,94 @@ describe("view command", () => {
     }
   });
 
+  test("opens the local view URL in a browser for non-json output", async () => {
+    const previousOpensteerHome = process.env.OPENSTEER_HOME;
+    const stateHome = await mkdtemp(path.join(tmpdir(), "opensteer-view-command-open-"));
+    process.env.OPENSTEER_HOME = stateHome;
+
+    try {
+      let openedUrl: string | undefined;
+      const output = await captureStdout(async () => {
+        await handleViewCommand(parseCommandLine(["view"]), {
+          openUrl: async (url) => {
+            openedUrl = url;
+          },
+        });
+      });
+
+      expect(openedUrl).toBeDefined();
+      expect(openedUrl).toContain("127.0.0.1");
+      expect(output).toBe(`${openedUrl}\n`);
+    } finally {
+      await stopLocalViewService().catch(() => undefined);
+      await rm(stateHome, { recursive: true, force: true }).catch(() => undefined);
+      if (previousOpensteerHome === undefined) {
+        delete process.env.OPENSTEER_HOME;
+      } else {
+        process.env.OPENSTEER_HOME = previousOpensteerHome;
+      }
+    }
+  });
+
+  test("does not auto-open the local view for json output", async () => {
+    const previousOpensteerHome = process.env.OPENSTEER_HOME;
+    const stateHome = await mkdtemp(path.join(tmpdir(), "opensteer-view-command-json-"));
+    process.env.OPENSTEER_HOME = stateHome;
+
+    try {
+      let opened = false;
+      const output = JSON.parse(
+        await captureStdout(async () => {
+          await handleViewCommand(parseCommandLine(["view", "--json"]), {
+            openUrl: async () => {
+              opened = true;
+            },
+          });
+        }),
+      ) as { readonly url: string };
+
+      expect(output.url).toContain("127.0.0.1");
+      expect(opened).toBe(false);
+    } finally {
+      await stopLocalViewService().catch(() => undefined);
+      await rm(stateHome, { recursive: true, force: true }).catch(() => undefined);
+      if (previousOpensteerHome === undefined) {
+        delete process.env.OPENSTEER_HOME;
+      } else {
+        process.env.OPENSTEER_HOME = previousOpensteerHome;
+      }
+    }
+  });
+
+  test("continues when automatically opening the local view fails", async () => {
+    const previousOpensteerHome = process.env.OPENSTEER_HOME;
+    const stateHome = await mkdtemp(path.join(tmpdir(), "opensteer-view-command-open-fail-"));
+    process.env.OPENSTEER_HOME = stateHome;
+
+    try {
+      const stderr = await captureStderr(async () => {
+        const stdout = await captureStdout(async () => {
+          await handleViewCommand(parseCommandLine(["view"]), {
+            openUrl: async () => {
+              throw new Error("open failed");
+            },
+          });
+        });
+        expect(stdout).toContain("127.0.0.1");
+      });
+
+      expect(stderr).toContain("Could not automatically open the local view.");
+    } finally {
+      await stopLocalViewService().catch(() => undefined);
+      await rm(stateHome, { recursive: true, force: true }).catch(() => undefined);
+      if (previousOpensteerHome === undefined) {
+        delete process.env.OPENSTEER_HOME;
+      } else {
+        process.env.OPENSTEER_HOME = previousOpensteerHome;
+      }
+    }
+  });
+
   test("reports stop=false when the service is already stopped", async () => {
     const previousOpensteerHome = process.env.OPENSTEER_HOME;
     const stateHome = await mkdtemp(path.join(tmpdir(), "opensteer-view-command-idle-"));
@@ -121,18 +209,29 @@ describe("view command", () => {
 });
 
 async function captureStdout(task: () => Promise<void>): Promise<string> {
+  return captureWrite(process.stdout, task);
+}
+
+async function captureStderr(task: () => Promise<void>): Promise<string> {
+  return captureWrite(process.stderr, task);
+}
+
+async function captureWrite(
+  stream: Pick<NodeJS.WriteStream, "write">,
+  task: () => Promise<void>,
+): Promise<string> {
   let output = "";
-  const originalWrite = process.stdout.write.bind(process.stdout);
-  process.stdout.write = ((chunk) => {
+  const originalWrite = stream.write.bind(stream);
+  stream.write = ((chunk) => {
     output += String(chunk);
     return true;
-  }) as typeof process.stdout.write;
+  }) as typeof stream.write;
 
   try {
     await task();
     return output;
   } finally {
-    process.stdout.write = originalWrite;
+    stream.write = originalWrite;
   }
 }
 

@@ -25,6 +25,7 @@ import {
   DEFAULT_OPENSTEER_ENGINE,
   type OpensteerEngineName,
 } from "../internal/engine-selection.js";
+import type { OpensteerEnvironment } from "../env.js";
 import type { OpensteerPolicy } from "../policy/index.js";
 import { resolveFilesystemWorkspacePath } from "../root.js";
 
@@ -35,6 +36,7 @@ export interface OpensteerRuntimeOptions {
   readonly rootDir?: string;
   readonly rootPath?: string;
   readonly engineName?: OpensteerEngineName;
+  readonly environment?: OpensteerEnvironment;
   readonly browser?: OpensteerBrowserOptions;
   readonly launch?: OpensteerBrowserLaunchOptions;
   readonly context?: OpensteerBrowserContextOptions;
@@ -54,6 +56,7 @@ export interface OpensteerSessionRuntimeOptions {
   readonly rootDir?: string;
   readonly rootPath?: string;
   readonly engineName?: OpensteerEngineName;
+  readonly environment?: OpensteerEnvironment;
   readonly browser?: OpensteerBrowserOptions;
   readonly launch?: OpensteerBrowserLaunchOptions;
   readonly context?: OpensteerBrowserContextOptions;
@@ -91,8 +94,10 @@ export class OpensteerRuntime extends SharedOpensteerSessionRuntime {
     super(
       buildSharedRuntimeOptions({
         name: publicWorkspace ?? "default",
+        ...(options.rootDir === undefined ? {} : { rootDir: options.rootDir }),
         rootPath,
         ...(publicWorkspace === undefined ? {} : { workspaceName: publicWorkspace }),
+        ...(options.environment === undefined ? {} : { environment: options.environment }),
         ...(options.browser === undefined ? {} : { browser: options.browser }),
         ...(options.launch === undefined ? {} : { launch: options.launch }),
         ...(options.context === undefined ? {} : { context: options.context }),
@@ -134,7 +139,9 @@ export class OpensteerSessionRuntime extends SharedOpensteerSessionRuntime {
     super(
       buildSharedRuntimeOptions({
         name: options.name,
+        ...(options.rootDir === undefined ? {} : { rootDir: options.rootDir }),
         rootPath,
+        ...(options.environment === undefined ? {} : { environment: options.environment }),
         ...(options.browser === undefined ? {} : { browser: options.browser }),
         ...(options.launch === undefined ? {} : { launch: options.launch }),
         ...(options.context === undefined ? {} : { context: options.context }),
@@ -163,8 +170,10 @@ export class OpensteerSessionRuntime extends SharedOpensteerSessionRuntime {
 
 function buildSharedRuntimeOptions(input: {
   readonly name: string;
+  readonly rootDir?: string;
   readonly rootPath: string;
   readonly workspaceName?: string;
+  readonly environment?: OpensteerEnvironment;
   readonly browser?: OpensteerBrowserOptions;
   readonly launch?: OpensteerBrowserLaunchOptions;
   readonly context?: OpensteerBrowserContextOptions;
@@ -184,9 +193,11 @@ function buildSharedRuntimeOptions(input: {
     input.engineFactory ??
     ((factoryOptions: OpensteerEngineFactoryOptions) =>
       new OpensteerBrowserManager({
+        ...(input.rootDir === undefined ? {} : { rootDir: input.rootDir }),
         rootPath: input.rootPath,
         ...(input.workspaceName === undefined ? {} : { workspace: input.workspaceName }),
         engineName: input.engineName,
+        ...(input.environment === undefined ? {} : { environment: input.environment }),
         ...((factoryOptions.browser ?? input.browser) === undefined
           ? {}
           : { browser: factoryOptions.browser ?? input.browser }),

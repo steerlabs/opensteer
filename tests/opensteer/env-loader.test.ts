@@ -12,6 +12,7 @@ afterEach(() => {
   delete process.env.OPENSTEER_PROVIDER;
   delete process.env.OPENSTEER_BASE_URL;
   delete process.env.OPENSTEER_API_KEY;
+  delete process.env.OPENSTEER_EXECUTABLE_PATH;
   delete process.env.DATABASE_URL;
   delete process.env.PORT;
 });
@@ -30,15 +31,24 @@ describe("CLI env loading", () => {
           "OPENSTEER_PROVIDER=local",
           "OPENSTEER_BASE_URL=https://parent.example",
           "OPENSTEER_API_KEY=parent-key",
+          "OPENSTEER_EXECUTABLE_PATH=/Applications/Parent Chrome",
         ].join("\n"),
       );
       await writeFile(
         path.join(childDir, ".env"),
-        ["OPENSTEER_PROVIDER=cloud", "OPENSTEER_BASE_URL=https://child.example"].join("\n"),
+        [
+          "OPENSTEER_PROVIDER=cloud",
+          "OPENSTEER_BASE_URL=https://child.example",
+          "OPENSTEER_EXECUTABLE_PATH=/Applications/Child Chrome",
+        ].join("\n"),
       );
       await writeFile(
         path.join(childDir, ".env.local"),
-        "OPENSTEER_BASE_URL=https://child-local.example\nPORT=4000\n",
+        [
+          "OPENSTEER_BASE_URL=https://child-local.example",
+          "OPENSTEER_EXECUTABLE_PATH=/Applications/Child Local Chrome",
+          "PORT=4000",
+        ].join("\n"),
       );
 
       vi.stubEnv("OPENSTEER_API_KEY", "protected-key");
@@ -49,6 +59,7 @@ describe("CLI env loading", () => {
       expect(process.env.OPENSTEER_PROVIDER).toBe("cloud");
       expect(process.env.OPENSTEER_BASE_URL).toBe("https://child-local.example");
       expect(process.env.OPENSTEER_API_KEY).toBe("protected-key");
+      expect(process.env.OPENSTEER_EXECUTABLE_PATH).toBe("/Applications/Child Local Chrome");
       expect(process.env.PORT).toBe("4000");
     } finally {
       await rm(rootDir, { recursive: true, force: true });
@@ -67,6 +78,7 @@ describe("CLI env loading", () => {
           "DATABASE_URL=postgres://host-app",
           "OPENSTEER_PROVIDER=cloud",
           "OPENSTEER_BASE_URL=https://cloud.example",
+          "OPENSTEER_EXECUTABLE_PATH=/Applications/Cloud Chrome",
         ].join("\n"),
       );
 
@@ -75,6 +87,7 @@ describe("CLI env loading", () => {
       expect(environment).toEqual({
         OPENSTEER_PROVIDER: "cloud",
         OPENSTEER_BASE_URL: "https://cloud.example",
+        OPENSTEER_EXECUTABLE_PATH: "/Applications/Cloud Chrome",
       });
       expect(process.env.DATABASE_URL).toBeUndefined();
     } finally {

@@ -12,8 +12,14 @@ import {
 import { buildLocalViewSessionId } from "../local-view/session-manifest.js";
 import { resolveFilesystemWorkspacePath } from "../root.js";
 import type { ParsedCommandLine } from "./parse.js";
+import { openBrowserUrl, type BrowserUrlOpener } from "./open-browser.js";
 
-export async function handleViewCommand(parsed: ParsedCommandLine): Promise<void> {
+export async function handleViewCommand(
+  parsed: ParsedCommandLine,
+  options: {
+    readonly openUrl?: BrowserUrlOpener;
+  } = {},
+): Promise<void> {
   const subcommand = parsed.command[1];
 
   if (subcommand === "serve") {
@@ -56,6 +62,16 @@ export async function handleViewCommand(parsed: ParsedCommandLine): Promise<void
     url,
     ...(sessionId === undefined ? {} : { sessionId }),
   });
+
+  if (parsed.options.json !== true) {
+    try {
+      await (options.openUrl ?? openBrowserUrl)(url);
+    } catch {
+      process.stderr.write(
+        `Could not automatically open the local view. Open it manually: ${url}\n`,
+      );
+    }
+  }
 }
 
 async function resolveWorkspaceSessionId(input: {
