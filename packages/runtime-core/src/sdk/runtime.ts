@@ -281,6 +281,7 @@ interface MutationCaptureFinalizeDiagnostics {
 
 const MUTATION_CAPTURE_FINALIZE_TIMEOUT_MS = 5_000;
 const PERSISTED_NETWORK_FLUSH_TIMEOUT_MS = 5_000;
+const PERSISTED_NETWORK_SETTLE_POLL_MS = 25;
 const PENDING_OPERATION_EVENT_CAPTURE_LIMIT = 64;
 const PENDING_OPERATION_EVENT_CAPTURE_SKEW_MS = 1_000;
 const REPLAY_PROBE_MIN_ATTEMPT_TIMEOUT_MS = 3_000;
@@ -3676,15 +3677,27 @@ export class OpensteerSessionRuntime {
       return [];
     }
     const root = await this.ensureRoot();
-    const browserRecords = await this.readBrowserNetworkRecords(
-      {
-        includeBodies: true,
-        includeCurrentPageOnly: options.includeCurrentPageOnly,
-        ...(options.pageRef === undefined ? {} : { pageRef: options.pageRef }),
-        requestIds,
-      },
-      signal,
-    );
+    let browserRecords: readonly BrowserNetworkRecord[] = [];
+
+    for (;;) {
+      browserRecords = await this.readBrowserNetworkRecords(
+        {
+          includeBodies: true,
+          includeCurrentPageOnly: options.includeCurrentPageOnly,
+          ...(options.pageRef === undefined ? {} : { pageRef: options.pageRef }),
+          requestIds,
+        },
+        signal,
+      );
+      if (
+        browserRecords.length === requestIds.length &&
+        browserRecords.every((record) => record.captureState !== "pending")
+      ) {
+        break;
+      }
+      await delayWithSignal(PERSISTED_NETWORK_SETTLE_POLL_MS, signal);
+    }
+
     return this.networkHistory.persist(browserRecords, root.registry.savedNetwork, {
       bodyWriteMode: "authoritative",
       redactSecretHeaders: false,

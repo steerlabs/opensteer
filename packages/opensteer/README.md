@@ -168,6 +168,21 @@ const data = await opensteer.extract({
 
 Use `snapshot("action")` or `snapshot("extraction")` during exploration. The snapshot result is the filtered HTML string, not a huge raw DOM object.
 
+## Humanized Input
+
+Humanized cursor movement, typing cadence, and wheel ticks are opt-in:
+
+```ts
+const opensteer = new Opensteer({
+  workspace: "demo",
+  context: {
+    humanize: true,
+  },
+});
+```
+
+You can also set `OPENSTEER_HUMANIZE=1` to turn it on for local runs without changing code.
+
 ## Public SDK Surface
 
 - `new Opensteer({ workspace?, rootDir?, browser?, provider? })`

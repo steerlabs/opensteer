@@ -133,8 +133,12 @@ export class OpensteerBrowserManager {
     this.mode = resolveBrowserMode(this.workspace, options.browser);
     this.browserOptions = isAttachBrowserOptions(options.browser) ? options.browser : undefined;
     this.launchOptions = resolveLaunchOptions(options.launch, options.environment ?? process.env);
-    this.contextOptions = normalizeBrowserContextOptions(options.context);
     this.engineName = options.engineName ?? DEFAULT_OPENSTEER_ENGINE;
+    this.contextOptions = normalizeBrowserContextOptions(
+      options.context,
+      options.environment ?? process.env,
+      this.engineName,
+    );
     assertSupportedEngineOptions({
       engineName: this.engineName,
       ...(options.browser === undefined ? {} : { browser: options.browser }),
@@ -751,9 +755,7 @@ function resolveLaunchOptions(
     return launch;
   }
 
-  const executablePath = normalizeConfiguredExecutablePath(
-    environment.OPENSTEER_EXECUTABLE_PATH,
-  );
+  const executablePath = normalizeConfiguredExecutablePath(environment.OPENSTEER_EXECUTABLE_PATH);
   if (executablePath === undefined) {
     return launch;
   }
@@ -915,26 +917,43 @@ function buildChromeArgs(
   requestedRemoteDebuggingPort?: number,
 ): readonly string[] {
   const isHeadless = launch?.headless ?? true;
-  const args = [
-    ...(requestedRemoteDebuggingPort === undefined ? ["--remote-debugging-port=0"] : []),
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-blink-features=AutomationControlled",
-    "--disable-background-networking",
-    "--disable-backgrounding-occluded-windows",
-    "--disable-component-update",
-    "--disable-default-apps",
-    "--disable-hang-monitor",
-    "--disable-popup-blocking",
-    "--disable-prompt-on-repost",
-    "--disable-sync",
-    "--disable-infobars",
-    "--disable-features=Translate",
-    "--enable-features=NetworkService,NetworkServiceInProcess",
-    "--password-store=basic",
-    "--use-mock-keychain",
-    `--user-data-dir=${userDataDir}`,
-  ];
+
+  // Headful mode: minimal flags to avoid creating detectable behavioral
+  // differences vs. a normal user-launched Chrome.  Every extra --disable-*
+  // flag changes Chrome's runtime behaviour in ways bot-detection systems
+  // can fingerprint (missing SafeBrowsing requests, popups never blocked,
+  // background networking absent, etc.).
+  //
+  // Headless mode: keep the full convenience set because the browser is not
+  // visible to the user and the extra flags improve stability.
+  const args = isHeadless
+    ? [
+        ...(requestedRemoteDebuggingPort === undefined ? ["--remote-debugging-port=0"] : []),
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-background-networking",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-component-update",
+        "--disable-default-apps",
+        "--disable-hang-monitor",
+        "--disable-popup-blocking",
+        "--disable-prompt-on-repost",
+        "--disable-sync",
+        "--disable-infobars",
+        "--disable-features=Translate",
+        "--enable-features=NetworkService,NetworkServiceInProcess",
+        "--password-store=basic",
+        "--use-mock-keychain",
+        `--user-data-dir=${userDataDir}`,
+      ]
+    : [
+        ...(requestedRemoteDebuggingPort === undefined ? ["--remote-debugging-port=0"] : []),
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-blink-features=AutomationControlled",
+        `--user-data-dir=${userDataDir}`,
+      ];
 
   if (isHeadless) {
     args.push("--headless=new");
@@ -1220,23 +1239,45 @@ function isMissingPackageError(error: unknown, packageName: string): boolean {
 
 function normalizeBrowserContextOptions(
   context: OpensteerBrowserContextOptions | undefined,
+  environment?: OpensteerEnvironment,
+  engineName: OpensteerEngineName = DEFAULT_OPENSTEER_ENGINE,
 ): OpensteerBrowserContextOptions | undefined {
   const stealthProfile = resolveStealthProfile(context?.stealthProfile);
   const locale = context?.locale ?? stealthProfile?.locale;
   const timezoneId = context?.timezoneId ?? stealthProfile?.timezoneId;
   const userAgent = context?.userAgent ?? stealthProfile?.userAgent;
+  const humanize =
+    engineName === "abp" && context?.humanize === undefined
+      ? undefined
+      : resolveHumanizeOption(context?.humanize, environment);
   return {
     ...(context ?? {}),
     ...(stealthProfile === undefined ? {} : { stealthProfile }),
     ...(locale === undefined ? {} : { locale }),
     ...(timezoneId === undefined ? {} : { timezoneId }),
     ...(userAgent === undefined ? {} : { userAgent }),
+    ...(humanize === undefined ? {} : { humanize }),
     viewport: context?.viewport ??
       stealthProfile?.viewport ?? {
         width: 1440,
         height: 900,
       },
   };
+}
+
+function resolveHumanizeOption(
+  explicit: OpensteerBrowserContextOptions["humanize"],
+  environment?: OpensteerEnvironment,
+): boolean | import("@opensteer/protocol").OpensteerHumanizeOptions | undefined {
+  if (explicit !== undefined) {
+    return explicit;
+  }
+  const envValue = environment?.OPENSTEER_HUMANIZE;
+  if (envValue !== undefined) {
+    const normalized = envValue.trim().toLowerCase();
+    return normalized !== "false" && normalized !== "0";
+  }
+  return undefined;
 }
 
 function toEngineBrowserContextOptions(

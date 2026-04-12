@@ -92,32 +92,33 @@ const BROWSER_BRANDS: readonly BrowserBrandRecord[] = [
     },
   },
   {
-    id: "chromium",
-    displayName: "Chromium",
+    id: "edge",
+    displayName: "Microsoft Edge",
     darwin: {
-      executableCandidates: ["/Applications/Chromium.app/Contents/MacOS/Chromium"],
-      userDataDir: "~/Library/Application Support/Chromium",
-      bundleId: "org.chromium.Chromium",
-      processNames: ["/Applications/Chromium.app/Contents/MacOS/Chromium"],
+      executableCandidates: ["/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"],
+      userDataDir: "~/Library/Application Support/Microsoft Edge",
+      bundleId: "com.microsoft.edgemac",
+      processNames: ["/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"],
     },
     win32: {
       executableCandidates: [
-        join(WINDOWS_PROGRAM_FILES, "Chromium", "Application", "chrome.exe"),
-        join(WINDOWS_PROGRAM_FILES_X86, "Chromium", "Application", "chrome.exe"),
-        join("~", "AppData", "Local", "Chromium", "Application", "chrome.exe"),
+        join(WINDOWS_PROGRAM_FILES, "Microsoft", "Edge", "Application", "msedge.exe"),
+        join(WINDOWS_PROGRAM_FILES_X86, "Microsoft", "Edge", "Application", "msedge.exe"),
+        join("~", "AppData", "Local", "Microsoft", "Edge", "Application", "msedge.exe"),
       ],
-      userDataDir: "~/AppData/Local/Chromium/User Data",
-      processNames: ["/chromium/application/chrome.exe"],
+      userDataDir: "~/AppData/Local/Microsoft/Edge/User Data",
+      processNames: ["/microsoft/edge/application/msedge.exe"],
     },
     linux: {
       executableCandidates: [
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        resolveBinaryFromPath("chromium"),
-        resolveBinaryFromPath("chromium-browser"),
+        "/usr/bin/microsoft-edge",
+        "/usr/bin/microsoft-edge-stable",
+        "/opt/microsoft/msedge/msedge",
+        resolveBinaryFromPath("microsoft-edge"),
+        resolveBinaryFromPath("microsoft-edge-stable"),
       ],
-      userDataDir: "~/.config/chromium",
-      processNames: ["/chromium", "/chromium-browser"],
+      userDataDir: "~/.config/microsoft-edge",
+      processNames: ["/microsoft-edge", "/microsoft-edge-stable", "/opt/microsoft/msedge/msedge"],
     },
   },
   {
@@ -152,36 +153,6 @@ const BROWSER_BRANDS: readonly BrowserBrandRecord[] = [
       ],
       userDataDir: "~/.config/BraveSoftware/Brave-Browser",
       processNames: ["/brave-browser", "/opt/brave.com/brave/brave-browser"],
-    },
-  },
-  {
-    id: "edge",
-    displayName: "Microsoft Edge",
-    darwin: {
-      executableCandidates: ["/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"],
-      userDataDir: "~/Library/Application Support/Microsoft Edge",
-      bundleId: "com.microsoft.edgemac",
-      processNames: ["/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"],
-    },
-    win32: {
-      executableCandidates: [
-        join(WINDOWS_PROGRAM_FILES, "Microsoft", "Edge", "Application", "msedge.exe"),
-        join(WINDOWS_PROGRAM_FILES_X86, "Microsoft", "Edge", "Application", "msedge.exe"),
-        join("~", "AppData", "Local", "Microsoft", "Edge", "Application", "msedge.exe"),
-      ],
-      userDataDir: "~/AppData/Local/Microsoft/Edge/User Data",
-      processNames: ["/microsoft/edge/application/msedge.exe"],
-    },
-    linux: {
-      executableCandidates: [
-        "/usr/bin/microsoft-edge",
-        "/usr/bin/microsoft-edge-stable",
-        "/opt/microsoft/msedge/msedge",
-        resolveBinaryFromPath("microsoft-edge"),
-        resolveBinaryFromPath("microsoft-edge-stable"),
-      ],
-      userDataDir: "~/.config/microsoft-edge",
-      processNames: ["/microsoft-edge", "/microsoft-edge-stable", "/opt/microsoft/msedge/msedge"],
     },
   },
   {
@@ -221,6 +192,35 @@ const BROWSER_BRANDS: readonly BrowserBrandRecord[] = [
       executableCandidates: ["/Applications/Helium.app/Contents/MacOS/Helium"],
       userDataDir: "~/Library/Application Support/net.imput.helium",
       processNames: ["/Applications/Helium.app/Contents/MacOS/Helium"],
+    },
+  },
+  {
+    id: "chromium",
+    displayName: "Chromium",
+    darwin: {
+      executableCandidates: ["/Applications/Chromium.app/Contents/MacOS/Chromium"],
+      userDataDir: "~/Library/Application Support/Chromium",
+      bundleId: "org.chromium.Chromium",
+      processNames: ["/Applications/Chromium.app/Contents/MacOS/Chromium"],
+    },
+    win32: {
+      executableCandidates: [
+        join(WINDOWS_PROGRAM_FILES, "Chromium", "Application", "chrome.exe"),
+        join(WINDOWS_PROGRAM_FILES_X86, "Chromium", "Application", "chrome.exe"),
+        join("~", "AppData", "Local", "Chromium", "Application", "chrome.exe"),
+      ],
+      userDataDir: "~/AppData/Local/Chromium/User Data",
+      processNames: ["/chromium/application/chrome.exe"],
+    },
+    linux: {
+      executableCandidates: [
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        resolveBinaryFromPath("chromium"),
+        resolveBinaryFromPath("chromium-browser"),
+      ],
+      userDataDir: "~/.config/chromium",
+      processNames: ["/chromium", "/chromium-browser"],
     },
   },
 ] as const;

@@ -18,6 +18,31 @@ afterEach(async () => {
 });
 
 describe("browser profile snapshot cloning", () => {
+  test("full copy mode preserves profile directories when no specific profile is selected", async () => {
+    const sourceUserDataDir = await mkdtemp(path.join(tmpdir(), "opensteer-profile-source-full-"));
+    const targetUserDataDir = await mkdtemp(path.join(tmpdir(), "opensteer-profile-target-full-"));
+    temporaryDirs.push(sourceUserDataDir, targetUserDataDir);
+
+    await mkdir(path.join(sourceUserDataDir, "Default", "Local Storage"), { recursive: true });
+    await writeFile(path.join(sourceUserDataDir, "Local State"), '{"profile":{}}');
+    await writeFile(path.join(sourceUserDataDir, "Default", "Preferences"), "{}");
+    await writeFile(path.join(sourceUserDataDir, "Default", "Cookies"), "cookies");
+    await writeFile(path.join(sourceUserDataDir, "Default", "Local Storage", "leveldb"), "storage");
+
+    await createBrowserProfileSnapshot({
+      sourceUserDataDir,
+      targetUserDataDir,
+      copyMode: "full",
+    });
+
+    await expect(
+      readFile(path.join(targetUserDataDir, "Default", "Cookies"), "utf8"),
+    ).resolves.toBe("cookies");
+    await expect(
+      readFile(path.join(targetUserDataDir, "Default", "Local Storage", "leveldb"), "utf8"),
+    ).resolves.toBe("storage");
+  });
+
   test("session copy mode keeps auth-bearing state and skips volatile caches", async () => {
     const sourceUserDataDir = await mkdtemp(path.join(tmpdir(), "opensteer-profile-source-"));
     const targetUserDataDir = await mkdtemp(path.join(tmpdir(), "opensteer-profile-target-"));

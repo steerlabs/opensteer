@@ -11,6 +11,15 @@ import {
 export const CROSS_DOCUMENT_INTERACTION_TIMEOUT_MS = 30_000;
 export const CROSS_DOCUMENT_DETECTION_WINDOW_MS = 500;
 
+/**
+ * Maximum time (ms) to wait for post-load network quiet after a cross-document
+ * navigation has been detected and bootstrap has settled.  Heavy sites may keep
+ * issuing fetch/XHR requests indefinitely (analytics, ads, lazy data), so the
+ * tracker would never reach zero pending requests.  Capping this phase prevents
+ * the whole action from timing out just because the new page is chatty.
+ */
+export const CROSS_DOCUMENT_POST_LOAD_SETTLE_TIMEOUT_MS = 5_000;
+
 export interface ActionBoundarySnapshot {
   readonly pageRef: PageRef;
   readonly documentRef: DocumentRef;
@@ -62,6 +71,7 @@ export async function waitForActionBoundary(
   let trigger: ActionBoundarySettleTrigger = "dom-action";
   let crossDocument = false;
   let sameDocumentAsyncActivity = false;
+  let crossDocumentPostLoadDeadline: number | undefined;
 
   while (Date.now() < deadline) {
     input.throwBackgroundError();
@@ -148,13 +158,32 @@ export async function waitForActionBoundary(
     }
 
     if (crossDocument) {
+      // Start the post-load settle deadline once bootstrap is settled.
+      if (crossDocumentPostLoadDeadline === undefined) {
+        crossDocumentPostLoadDeadline = Math.min(
+          deadline,
+          Date.now() + CROSS_DOCUMENT_POST_LOAD_SETTLE_TIMEOUT_MS,
+        );
+      }
+
+      // If the post-load settle sub-timeout expired, accept the navigation as
+      // settled.  Heavy pages (ads, analytics, streaming data) may never reach
+      // zero pending tracked requests, so waiting longer just wastes the budget.
+      if (Date.now() >= crossDocumentPostLoadDeadline) {
+        return {
+          trigger,
+          crossDocument,
+          bootstrapSettled: true,
+        };
+      }
+
       if (
         !postLoadTrackerIsSettled(
           await input.readTrackerState(),
           DEFAULT_POST_LOAD_TRACKER_QUIET_WINDOW_MS,
         )
       ) {
-        await delay(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
+        await delay(Math.min(pollIntervalMs, Math.max(0, crossDocumentPostLoadDeadline - Date.now())));
         continue;
       }
       return {

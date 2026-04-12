@@ -49,11 +49,11 @@ describe("browser brand registry", () => {
     expect(getAllBrowserBrands().map((brand) => brand.id)).toEqual([
       "chrome",
       "chrome-canary",
-      "chromium",
-      "brave",
       "edge",
+      "brave",
       "vivaldi",
       "helium",
+      "chromium",
     ]);
   });
 
