@@ -40,14 +40,13 @@ If the user wants to manually drive a browser and record the flow, use the `reco
 ## Core Rules
 
 1. Always use a workspace for stateful commands: `--workspace <id>` or `OPENSTEER_WORKSPACE`.
-2. In this repo, prefer `pnpm run opensteer:local -- <command>` instead of bare `opensteer ...`.
-3. Re-snapshot after navigation or big UI changes before reusing element numbers.
-4. CLI to discover, SDK for the final implementation.
-5. Use `persist` for stable reusable targets and extraction payloads.
-6. Use `exec` for SDK code and API experiments. Use `evaluate` only for page-context JavaScript.
-7. If `fetch()` fails with auth errors, inspect `state()`, `cookies()`, and `storage()` before changing transport.
-8. Keep output simple. Prefer ordinary TypeScript with `Opensteer`, no extra abstraction.
-9. Close the browser when done. Do not leave headed browsers running. Use `opensteer browser delete --workspace <id>` or SDK cleanup when the session does not need to stay open.
+2. Re-snapshot after navigation or big UI changes before reusing element numbers.
+3. CLI to discover, SDK for the final implementation.
+4. Use `persist` for stable reusable targets and extraction payloads.
+5. Use `exec` for SDK code and API experiments. Use `evaluate` only for page-context JavaScript.
+6. If `fetch()` fails with auth errors, inspect `state()`, `cookies()`, and `storage()` before changing transport.
+7. Keep output simple. Prefer ordinary TypeScript with `Opensteer`, no extra abstraction.
+8. Close the browser when done. Do not leave headed browsers running. Use `opensteer browser delete --workspace <id>` or SDK cleanup when the session does not need to stay open.
 
 ## Choose A Path
 
