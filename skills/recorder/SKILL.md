@@ -1,6 +1,6 @@
 ---
 name: "recorder"
-description: "Use when the user wants to record a live browser workflow and turn it into a replayable Opensteer script. Prefer this for manual browser capture, multi-tab recording, and record-then-rerun workflows with the Opensteer CLI."
+description: "Use when the user wants to record a live browser workflow and turn it into a replayable script or API. Prefer this for manual browser capture, multi-tab recording, and record-then-rerun workflows with the Opensteer CLI."
 ---
 
 # Recorder
