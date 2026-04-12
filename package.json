@@ -25,7 +25,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "opensteer:local": "node scripts/opensteer-local.mjs",
-    "package:check": "publint packages/browser-core && publint packages/engine-abp && publint packages/engine-playwright && publint packages/opensteer && publint packages/protocol && publint packages/runtime-core && node scripts/check-packed-manifests.mjs && node scripts/check-packed-secrets.mjs",
+    "package:check": "node scripts/sync-package-readme.mjs --check && publint packages/browser-core && publint packages/engine-abp && publint packages/engine-playwright && publint packages/opensteer && publint packages/protocol && publint packages/runtime-core && node scripts/check-packed-manifests.mjs && node scripts/check-packed-secrets.mjs",
     "release:publish": "node scripts/publish-npm.mjs",
     "skills:check": "skills add . --list",
     "test": "vitest run --config vitest.config.ts --passWithNoTests",
