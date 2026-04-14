@@ -29,13 +29,6 @@ const state = vi.hoisted(() => {
         path: "/tmp/screenshot.png",
       },
     })),
-    snapshot: vi.fn(async (input = {}) => ({
-      url: "https://example.com",
-      title: "Workspace Runtime",
-      mode: (input as { readonly mode?: string }).mode ?? "action",
-      html: "<html></html>",
-      counters: [],
-    })),
     close: vi.fn(async () => ({ closed: true })),
     disconnect: vi.fn(async () => undefined),
   };
@@ -93,6 +86,7 @@ vi.mock("../../packages/opensteer/src/env.js", () => ({
   ),
 }));
 
+import * as publicOpensteer from "../../packages/opensteer/src/index.js";
 import { Opensteer } from "../../packages/opensteer/src/sdk/opensteer.js";
 
 describe("Opensteer v2 SDK surface", () => {
@@ -208,17 +202,20 @@ describe("Opensteer v2 SDK surface", () => {
     expect(state.browserManager.delete).toHaveBeenCalledTimes(1);
   });
 
-  test("snapshot forwards string shorthand modes to the runtime", async () => {
+  test("does not expose snapshot on the public Opensteer instance", () => {
     const opensteer = new Opensteer({
       workspace: "github-sync",
     });
 
-    const snapshot = await opensteer.snapshot("action");
+    expect("snapshot" in opensteer).toBe(false);
+  });
 
-    expect(state.runtime.snapshot).toHaveBeenCalledWith({
-      mode: "action",
-    });
-    expect(snapshot).toBe("<html></html>");
+  test("does not export low-level runtime entrypoints from the package root", () => {
+    expect("OpensteerRuntime" in publicOpensteer).toBe(false);
+    expect("OpensteerSessionRuntime" in publicOpensteer).toBe(false);
+    expect("createOpensteerSemanticRuntime" in publicOpensteer).toBe(false);
+    expect("dispatchSemanticOperation" in publicOpensteer).toBe(false);
+    expect("CloudSessionProxy" in publicOpensteer).toBe(false);
   });
 
   test("computerExecute forwards computer actions to the semantic runtime", async () => {

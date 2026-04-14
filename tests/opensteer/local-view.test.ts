@@ -7,7 +7,7 @@ import path from "node:path";
 import { chromium, type Page } from "playwright";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
-import { OpensteerSessionRuntime } from "../../packages/opensteer/src/index.js";
+import { OpensteerSessionRuntime } from "../../packages/opensteer/src/sdk/runtime.js";
 import { bestEffortRegisterLocalViewSession } from "../../packages/opensteer/src/local-view/registration.js";
 import {
   resolveLocalViewMode,

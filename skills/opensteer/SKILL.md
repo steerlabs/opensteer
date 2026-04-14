@@ -416,7 +416,6 @@ opensteer artifact read <artifactId> --workspace demo
 ## SDK Surface
 
 - `open(url)`, `goto(url, { captureNetwork? })`, `close()`
-- `snapshot("action" | "extraction")`
 - `click()`, `hover()`, `input()`, `scroll()`
 - `extract({ persist })` — replay-only, no inline templates
 - `listPages()`, `newPage()`, `activatePage()`, `closePage()`

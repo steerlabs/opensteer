@@ -18,13 +18,12 @@ import type {
   OpensteerPageListOutput,
   OpensteerPageNewInput,
   OpensteerPageNewOutput,
-  OpensteerSnapshotMode,
 } from "@opensteer/protocol";
 
 export const opensteerConformanceFamilies = [
   "session-page-lifecycle",
   "evaluate-init-script",
-  "dom-actions-extract-snapshot",
+  "dom-actions-extract",
   "cookies-storage",
   "network-capture",
   "route-intercept",
@@ -55,7 +54,6 @@ export interface OpensteerConformanceTarget {
   goto(url: string, options?: { readonly captureNetwork?: string }): Promise<unknown>;
   evaluate(input: string | OpensteerPageEvaluateInput): Promise<unknown>;
   addInitScript(input: string | OpensteerAddInitScriptInput): Promise<OpensteerAddInitScriptOutput>;
-  snapshot(input?: OpensteerSnapshotMode): Promise<string>;
   click(input: {
     readonly selector?: string;
     readonly element?: number;
@@ -289,8 +287,8 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
     },
   },
   {
-    id: "dom-actions-extract-snapshot",
-    family: "dom-actions-extract-snapshot",
+    id: "dom-actions-extract",
+    family: "dom-actions-extract",
     description: "executes DOM actions and extracts stable page state",
     async run({ target, urls }) {
       await target.open(urls.main);
@@ -306,12 +304,6 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
       );
       assertEqual(extracted.status, "clicked");
       assertEqual(extracted.mirror, "typed-value");
-
-      const snapshot = await target.snapshot();
-      assert(
-        snapshot.includes("typed-value"),
-        "expected snapshot() to include current page content",
-      );
     },
   },
   {
