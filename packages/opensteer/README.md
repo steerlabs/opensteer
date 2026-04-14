@@ -162,8 +162,7 @@ const data = await opensteer.extract({
 });
 ```
 
-Author extraction templates from the CLI. Bare numbers target counters, `{ c, attr }` reads an
-attribute from a counter-backed element, and `{ source: "current_url" }` reads page metadata.
+Author extraction templates from the CLI. Bare numbers reference element numbers from the snapshot (`c="N"` attributes), `{ c, attr }` reads an attribute from that element, and `{ source: "current_url" }` reads page metadata.
 
 ```bash
 opensteer extract '{"title":3,"productUrl":{"c":7,"attr":"href"},"url":{"source":"current_url"}}' --workspace demo --persist "page summary"

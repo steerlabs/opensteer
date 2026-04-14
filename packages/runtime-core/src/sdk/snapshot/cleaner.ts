@@ -439,7 +439,10 @@ function serializeForExtraction($: CheerioAPI, root: AnyNode): string {
   }
 
   traverse(root, 0);
-  return lines.join("\n");
+  return lines
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .join("");
 }
 
 function isClickable($: CheerioAPI, el: Cheerio<Element>, context: ClickableContext): boolean {

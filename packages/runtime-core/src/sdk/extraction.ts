@@ -25,7 +25,7 @@ import {
 } from "./extraction-data-path.js";
 
 interface OpensteerTemplateFieldByCounter {
-  readonly counter: number;
+  readonly c: number;
   readonly attribute?: string;
 }
 
@@ -158,12 +158,6 @@ export function assertValidOpensteerExtractionTemplateRoot(template: unknown): a
   }
 }
 
-export function assertValidOpensteerExtractionSchemaRoot(schema: unknown): asserts schema is {
-  readonly [key: string]: OpensteerTemplateNode;
-} {
-  assertValidOpensteerExtractionTemplateRoot(schema);
-}
-
 export function isPersistedOpensteerExtractionValueNode(
   value: unknown,
 ): value is PersistedOpensteerExtractionValueNode {
@@ -198,21 +192,14 @@ export async function compileOpensteerExtractionPayload(
   options: {
     readonly pageRef: PageRef;
     readonly dom: DomRuntime;
-  } & (
-    | {
-        readonly template: Record<string, unknown>;
-      }
-    | {
-        readonly schema: Record<string, unknown>;
-      }
-  ),
+    readonly template: Readonly<Record<string, unknown>>;
+  },
 ): Promise<PersistedOpensteerExtractionPayload> {
-  const template = readExtractionTemplate(options);
-  assertValidOpensteerExtractionTemplateRoot(template);
+  assertValidOpensteerExtractionTemplateRoot(options.template);
   const fieldTargets = await compileOpensteerExtractionFieldTargets({
     dom: options.dom,
     pageRef: options.pageRef,
-    template,
+    template: options.template,
   });
   return compilePersistedOpensteerExtractionPayloadFromFieldTargets({
     pageRef: options.pageRef,
@@ -225,22 +212,15 @@ export async function compileOpensteerExtractionFieldTargets(
   options: {
     readonly pageRef: PageRef;
     readonly dom: DomRuntime;
-  } & (
-    | {
-        readonly template: Record<string, unknown>;
-      }
-    | {
-        readonly schema: Record<string, unknown>;
-      }
-  ),
+    readonly template: Readonly<Record<string, unknown>>;
+  },
 ): Promise<readonly OpensteerExtractionFieldTarget[]> {
-  const template = readExtractionTemplate(options);
-  assertValidOpensteerExtractionTemplateRoot(template);
+  assertValidOpensteerExtractionTemplateRoot(options.template);
   const fields: OpensteerExtractionFieldTarget[] = [];
   await collectFieldTargetsFromTemplateObject({
     dom: options.dom,
     pageRef: options.pageRef,
-    value: template,
+    value: options.template,
     path: "",
     fields,
     insideArray: false,
@@ -316,22 +296,10 @@ export function createOpensteerExtractionDescriptorStore(options: {
   return new MemoryOpensteerExtractionDescriptorStore(namespace);
 }
 
-function readExtractionTemplate(
-  options:
-    | {
-        readonly template: Record<string, unknown>;
-      }
-    | {
-        readonly schema: Record<string, unknown>;
-      },
-): Record<string, unknown> {
-  return "template" in options ? options.template : options.schema;
-}
-
 async function collectFieldTargetsFromTemplateObject(options: {
   readonly dom: DomRuntime;
   readonly pageRef: PageRef;
-  readonly value: Record<string, unknown>;
+  readonly value: Readonly<Record<string, unknown>>;
   readonly path: string;
   readonly fields: OpensteerExtractionFieldTarget[];
   readonly insideArray: boolean;
@@ -407,7 +375,7 @@ async function collectFieldTargetsFromTemplateValue(options: {
       const itemFields = options.fields.slice(fieldCountBeforeItem);
       if (!itemFields.some((field) => !("source" in field))) {
         throw new Error(
-          `Extraction array "${labelForPath(options.path)}" item ${String(index)} must include at least one counter- or selector-backed field.`,
+          `Extraction array "${labelForPath(options.path)}" item ${String(index)} must include at least one element number or selector field.`,
         );
       }
     }
@@ -460,7 +428,7 @@ async function compileFieldTarget(options: {
     path: await resolveSelectorFieldPath({
       dom: options.dom,
       pageRef: options.pageRef,
-      selector: `[c="${String(options.field.counter)}"]`,
+      selector: `[c="${String(options.field.c)}"]`,
     }),
     ...(options.field.attribute === undefined ? {} : { attribute: options.field.attribute }),
   };
@@ -897,7 +865,7 @@ function countNonNullLeaves(value: JsonValue): number {
 function normalizeTemplateField(value: unknown): OpensteerTemplateField | null {
   if (typeof value === "number") {
     return {
-      counter: normalizeExtractionCounter(value),
+      c: normalizeExtractionCounter(value),
     };
   }
 
@@ -943,7 +911,7 @@ function normalizeTemplateField(value: unknown): OpensteerTemplateField | null {
   }
 
   return {
-    counter: normalizeExtractionCounter(raw.c ?? raw.element),
+    c: normalizeExtractionCounter(raw.c ?? raw.element),
     ...(attribute === undefined ? {} : { attribute }),
   };
 }
@@ -952,7 +920,7 @@ function normalizeExtractionCounter(value: unknown): number {
   const counter = Number(value);
   if (!Number.isInteger(counter) || counter < 1) {
     throw new Error(
-      `Extraction field counter must be a positive integer, received ${String(value)}.`,
+      `Extraction element number must be a positive integer, received ${String(value)}.`,
     );
   }
   return counter;

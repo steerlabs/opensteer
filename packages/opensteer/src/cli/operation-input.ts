@@ -128,7 +128,7 @@ export async function buildOperationInput(
               },
         direction,
         amount,
-        ...(persist === undefined ? {} : { persist }),
+        persist,
         ...(captureNetwork === undefined ? {} : { captureNetwork }),
       };
     }
