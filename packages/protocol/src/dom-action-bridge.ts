@@ -56,6 +56,7 @@ export interface DomPointerHitAssessment {
   readonly relation: DomPointerHitRelation;
   readonly blocking: boolean;
   readonly ambiguous?: boolean;
+  readonly blockingDescription?: string;
   readonly canonicalTarget?: NodeLocator;
   readonly hitOwner?: NodeLocator;
 }

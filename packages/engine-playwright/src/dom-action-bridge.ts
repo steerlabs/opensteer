@@ -251,6 +251,20 @@ const POINTER_ACTION_HELPERS = String.raw`
     const rect = element.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
   }
+
+  function describeBlockingElement(element) {
+    if (!(element instanceof Element)) return null;
+    const tag = "<" + element.tagName.toLowerCase() + ">";
+    const label = element.getAttribute("aria-label");
+    if (label) return tag + ' "' + label.slice(0, 80) + '"';
+    const text = (element.textContent || "").trim();
+    if (text) return tag + ' "' + text.slice(0, 80) + '"';
+    const role = element.getAttribute("role");
+    if (role) return tag + " role=" + JSON.stringify(role);
+    const id = element.getAttribute("id");
+    if (id) return tag + " id=" + JSON.stringify(id);
+    return tag;
+  }
 `;
 
 const RESOLVE_POINTER_OWNER_DECLARATION =
@@ -301,10 +315,13 @@ const CLASSIFY_POINTER_HIT_DECLARATION =
       ? pointInsideDocumentRect(point, targetRect)
       : false;
 
+  const blockingDescription = blocking ? describeBlockingElement(blockingCandidate) : null;
+
   return {
     relation,
     blocking,
     ambiguous,
+    ...(blockingDescription ? { blockingDescription } : {}),
   };
 }`;
 
@@ -1174,11 +1191,15 @@ function normalizePointerHitAssessment(
   if (candidate.ambiguous !== undefined && typeof candidate.ambiguous !== "boolean") {
     throw new Error("DOM action bridge returned an invalid pointer hit payload");
   }
+  if (candidate.blockingDescription !== undefined && typeof candidate.blockingDescription !== "string") {
+    throw new Error("DOM action bridge returned an invalid pointer hit payload");
+  }
 
   return {
     relation: candidate.relation,
     blocking: candidate.blocking,
     ...(candidate.ambiguous === undefined ? {} : { ambiguous: candidate.ambiguous }),
+    ...(candidate.blockingDescription === undefined ? {} : { blockingDescription: candidate.blockingDescription }),
     canonicalTarget,
   };
 }

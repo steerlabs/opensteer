@@ -70,7 +70,7 @@ interface ActionablePointerTarget {
   readonly original: ResolvedDomTarget;
 }
 
-const MAX_DOM_ACTION_ATTEMPTS = 3;
+const MAX_DOM_ACTION_ATTEMPTS = 2;
 const DEFAULT_SCROLL_OPTIONS = {
   block: "center",
   inline: "center",
@@ -673,11 +673,14 @@ export class DomActionExecutor {
     throw this.createActionabilityError(
       operation,
       "obscured",
-      `hit test resolved ${hit.nodeRef} outside the target subtree rooted at ${resolved.nodeRef}`,
+      `target is obscured by ${assessment.blockingDescription ?? "another element"} at the click point`,
       {
         ...details,
         hitRelation: assessment.relation,
         ...(assessment.ambiguous === undefined ? {} : { hitAmbiguous: assessment.ambiguous }),
+        ...(assessment.blockingDescription === undefined
+          ? {}
+          : { blockingDescription: assessment.blockingDescription }),
         ...(assessment.canonicalTarget === undefined
           ? {}
           : {
@@ -696,7 +699,6 @@ export class DomActionExecutor {
           (node) => node.nodeRef === hit.nodeRef,
         ),
       },
-      true,
     );
   }
 
