@@ -6,10 +6,8 @@ import { chromium } from "playwright";
 import { describe, expect, test } from "vitest";
 
 import { createPlaywrightBrowserCoreEngine } from "../../packages/engine-playwright/src/index.js";
-import {
-  OpensteerSessionRuntime,
-  createFilesystemOpensteerWorkspace,
-} from "../../packages/opensteer/src/index.js";
+import { OpensteerSessionRuntime } from "../../packages/opensteer/src/sdk/runtime.js";
+import { createFilesystemOpensteerWorkspace } from "../../packages/opensteer/src/index.js";
 
 function dataUrl(body: string, title: string): string {
   return `data:text/html,${encodeURIComponent(`<!doctype html>

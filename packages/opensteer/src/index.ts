@@ -204,7 +204,6 @@ export type {
   OpensteerRuntimeWorkspace,
   OpensteerSessionRuntimeOptions,
 } from "./sdk/runtime.js";
-export { OpensteerRuntime, OpensteerSessionRuntime } from "./sdk/runtime.js";
 export type {
   OpensteerCloudProviderOptions,
   OpensteerLocalProviderOptions,
@@ -218,14 +217,7 @@ export {
   normalizeOpensteerProviderMode,
   resolveOpensteerProvider,
 } from "./provider/config.js";
-export {
-  createOpensteerSemanticRuntime,
-  resolveOpensteerRuntimeConfig,
-} from "./sdk/runtime-resolution.js";
-export type {
-  OpensteerDisconnectableRuntime,
-  OpensteerSemanticRuntime,
-} from "./sdk/semantic-runtime.js";
+export { resolveOpensteerRuntimeConfig } from "./sdk/runtime-resolution.js";
 export type {
   OpensteerBrowserManagerOptions,
   OpensteerBrowserStatus,
@@ -276,9 +268,7 @@ export {
   type SyncBrowserProfileCookiesInput,
 } from "./cloud/client.js";
 export {
-  CloudSessionProxy,
   readPersistedCloudSessionRecord,
-  type CloudSessionProxyOptions,
   type PersistedCloudSessionRecord,
 } from "./cloud/session-proxy.js";
 export type {
@@ -295,7 +285,6 @@ export {
   resolveLiveSessionRecordPath,
   writePersistedSessionRecord,
 } from "./live-session.js";
-export { dispatchSemanticOperation } from "./cli/dispatch.js";
 export type {
   InspectedCdpEndpoint,
   LocalCdpBrowserCandidate,

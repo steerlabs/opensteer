@@ -5,9 +5,9 @@ import path from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 
 import { createFakeBrowserCoreEngine } from "../../packages/browser-core/src/index.js";
+import { OpensteerSessionRuntime } from "../../packages/opensteer/src/sdk/runtime.js";
 import {
   createFilesystemOpensteerWorkspace,
-  OpensteerSessionRuntime,
   runWithPolicyTimeout,
 } from "../../packages/opensteer/src/index.js";
 

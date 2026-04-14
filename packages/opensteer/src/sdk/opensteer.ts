@@ -30,7 +30,6 @@ import type {
   OpensteerSessionCloseOutput,
   OpensteerSessionFetchInput,
   OpensteerSessionInfo,
-  OpensteerSnapshotMode,
   OpensteerStateQueryOutput,
   OpensteerStorageArea,
   OpensteerStorageDomainSnapshot,
@@ -353,10 +352,6 @@ export class Opensteer {
       }
       await delay(pollIntervalMs);
     }
-  }
-
-  async snapshot(mode: OpensteerSnapshotMode = "action"): Promise<string> {
-    return (await this.runtime.snapshot({ mode })).html;
   }
 
   async cookies(domain?: string): Promise<OpensteerCookieJar> {

@@ -138,6 +138,7 @@ const defaultNavigationSettleObserver: SettleObserver = {
     }
 
     try {
+      const startedAt = Date.now();
       await input.engine.waitForPostLoadQuiet({
         pageRef: input.pageRef,
         timeoutMs: effectiveTimeout,
@@ -145,9 +146,13 @@ const defaultNavigationSettleObserver: SettleObserver = {
         captureWindowMs: Math.min(NAVIGATION_POST_LOAD_CAPTURE_WINDOW_MS, effectiveTimeout),
         signal: input.signal,
       });
+      const visualTimeout = Math.max(0, effectiveTimeout - (Date.now() - startedAt));
+      if (visualTimeout <= 0) {
+        return true;
+      }
       await input.engine.waitForVisualStability({
         pageRef: input.pageRef,
-        timeoutMs: effectiveTimeout,
+        timeoutMs: visualTimeout,
         settleMs: profile.settleMs,
         scope: profile.scope,
       });

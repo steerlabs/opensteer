@@ -20,12 +20,12 @@ import {
   OpensteerProtocolError,
   resolveDomActionBridge,
 } from "../../packages/protocol/src/index.js";
+import { OpensteerRuntime } from "../../packages/opensteer/src/sdk/runtime.js";
 import {
   createDomRuntime,
   createFilesystemOpensteerWorkspace,
   defaultPolicy,
   Opensteer,
-  OpensteerRuntime,
   type OpensteerPolicy,
   type SettleObserver,
 } from "../../packages/opensteer/src/index.js";

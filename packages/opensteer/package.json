@@ -1,6 +1,6 @@
 {
   "name": "opensteer",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "description": "Opensteer browser automation, replay, and reverse-engineering toolkit.",
   "license": "MIT",
   "type": "module",
@@ -76,9 +76,9 @@
     "@opensteer/protocol": "workspace:*"
   },
   "scripts": {
-    "build": "tsup && node ../../scripts/copy-opensteer-local-view-assets.mjs && node ../../scripts/sync-package-skills.mjs",
+    "build": "tsup && node ../../scripts/copy-opensteer-local-view-assets.mjs && node ../../scripts/sync-package-skills.mjs && node ../../scripts/sync-package-readme.mjs",
     "clean": "rimraf dist skills",
-    "prepack": "node ../../scripts/copy-opensteer-local-view-assets.mjs && node ../../scripts/sync-package-skills.mjs",
+    "prepack": "node ../../scripts/copy-opensteer-local-view-assets.mjs && node ../../scripts/sync-package-skills.mjs && node ../../scripts/sync-package-readme.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   }
 }
