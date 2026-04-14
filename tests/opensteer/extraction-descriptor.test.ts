@@ -175,10 +175,14 @@ describe("Extraction descriptor replay paths", () => {
       const srcsetMatch = snapshot.html.match(/srcset="([^"]*)"/);
       expect(hrefMatch).not.toBeNull();
       expect(srcsetMatch).not.toBeNull();
-      expect(hrefMatch?.[1].length ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(500);
-      expect(srcsetMatch?.[1].length ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(500);
-      expect(hrefMatch?.[1].endsWith(" [truncated]")).toBe(true);
-      expect(srcsetMatch?.[1].endsWith(" [truncated]")).toBe(true);
+      expect(hrefMatch?.[1].length ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(80);
+      expect(srcsetMatch?.[1].length ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(160);
+      // href uses middle truncation; srcset keeps compact candidate structure with the same marker
+      expect(hrefMatch?.[1]).toContain("...");
+      expect(srcsetMatch?.[1]).toContain("320w");
+      expect(srcsetMatch?.[1]).toContain("2048w");
+      expect(srcsetMatch?.[1]).toContain("...");
+      expect(srcsetMatch?.[1]).not.toContain("[truncated]");
 
       const linkCounter = snapshot.counters.find((candidate) =>
         candidate.pathHint.includes("#long-link"),
