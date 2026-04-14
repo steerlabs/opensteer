@@ -80,15 +80,9 @@ export interface OpensteerScrollOptions extends OpensteerTargetOptions {
   readonly amount: number;
 }
 
-export type OpensteerExtractOptions =
-  | {
-      readonly persist: string;
-      readonly schema?: Record<string, unknown>;
-    }
-  | {
-      readonly persist?: string;
-      readonly schema: Record<string, unknown>;
-    };
+export interface OpensteerExtractOptions {
+  readonly persist: string;
+}
 
 export interface OpensteerWaitForPageOptions {
   readonly openerPageRef?: string;

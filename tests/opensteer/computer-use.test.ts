@@ -19,6 +19,7 @@ import {
 } from "../../packages/browser-core/src/index.js";
 import {
   Opensteer,
+  OpensteerRuntime,
   OpensteerSessionRuntime,
   defaultPolicy,
   runWithPolicyTimeout,
@@ -50,6 +51,40 @@ afterEach(async () => {
 afterAll(async () => {
   await closeServer?.();
 });
+
+async function seedExtractionDescriptors(options: {
+  readonly rootDir: string;
+  readonly workspace: string;
+  readonly url: string;
+  readonly entries: ReadonlyArray<{
+    readonly persist: string;
+    readonly template: Record<string, unknown>;
+  }>;
+}): Promise<void> {
+  const runtime = new OpensteerRuntime({
+    workspace: options.workspace,
+    rootDir: options.rootDir,
+    cleanupRootOnClose: false,
+    browser: "temporary",
+    launch: {
+      headless: true,
+    },
+  });
+
+  try {
+    await runtime.open({
+      url: options.url,
+    });
+    for (const entry of options.entries) {
+      await runtime.extract({
+        persist: entry.persist,
+        template: entry.template,
+      });
+    }
+  } finally {
+    await runtime.close().catch(() => undefined);
+  }
+}
 
 describe("Phase 9 computer-use runtime", () => {
   test("executes computer-use actions, persists screenshot artifacts, and enriches traces", async () => {
@@ -201,9 +236,23 @@ describe("Phase 9 computer-use runtime", () => {
 
   test("exposes computerExecute through the public Opensteer SDK wrapper", async () => {
     const rootDir = await createPhase6TemporaryRoot();
+    await seedExtractionDescriptors({
+      rootDir,
+      workspace: "phase9-opensteer-wrapper",
+      url: `${baseUrl}/computer/main`,
+      entries: [
+        {
+          persist: "computer status through sdk wrapper",
+          template: {
+            status: { selector: "#status" },
+          },
+        },
+      ],
+    });
     const opensteer = new Opensteer({
       name: "phase9-opensteer-wrapper",
       rootDir,
+      workspace: "phase9-opensteer-wrapper",
       browser: "temporary",
       launch: {
         headless: true,
@@ -229,11 +278,6 @@ describe("Phase 9 computer-use runtime", () => {
 
       const extracted = await opensteer.extract({
         persist: "computer status through sdk wrapper",
-        schema: {
-          status: {
-            selector: "#status",
-          },
-        },
       });
       expect(extracted).toEqual({
         status: "clicked",
@@ -330,7 +374,7 @@ describe("Phase 9 computer-use runtime", () => {
 
       const currentUrl = await runtime.extract({
         persist: "popup current url",
-        schema: {
+        template: {
           currentUrl: { source: "current_url" },
         },
       });
@@ -558,7 +602,7 @@ describe("Phase 9 computer-use runtime", () => {
 async function extractStatus(runtime: OpensteerSessionRuntime): Promise<string> {
   const result = await runtime.extract({
     persist: "computer status",
-    schema: {
+    template: {
       status: {
         selector: "#status",
       },
@@ -570,7 +614,7 @@ async function extractStatus(runtime: OpensteerSessionRuntime): Promise<string> 
 async function extractMirror(runtime: OpensteerSessionRuntime): Promise<string> {
   const result = await runtime.extract({
     persist: "computer mirror",
-    schema: {
+    template: {
       mirror: {
         selector: "#mirror",
       },
@@ -582,7 +626,7 @@ async function extractMirror(runtime: OpensteerSessionRuntime): Promise<string> 
 async function extractDragValue(runtime: OpensteerSessionRuntime): Promise<string> {
   const result = await runtime.extract({
     persist: "computer drag value",
-    schema: {
+    template: {
       dragValue: {
         selector: "#drag-value",
       },

@@ -237,13 +237,12 @@ describe("semantic protocol validation", () => {
     ).not.toThrow();
   });
 
-  test("accepts dom.extract with schema-only and named replay inputs", () => {
+  test("accepts dom.extract with named template and replay inputs", () => {
     expect(() =>
       assertValidSemanticOperationInput("dom.extract", {
-        schema: {
-          title: {
-            element: 3,
-          },
+        persist: "product cards",
+        template: {
+          title: 3,
         },
       }),
     ).not.toThrow();
@@ -251,12 +250,10 @@ describe("semantic protocol validation", () => {
     expect(() =>
       assertValidSemanticOperationInput("dom.extract", {
         persist: "product cards",
-        schema: {
+        template: {
           items: [
             {
-              name: {
-                element: 13,
-              },
+              name: 13,
             },
           ],
         },

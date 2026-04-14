@@ -560,9 +560,9 @@ describe("Phase 5 snapshot integration", () => {
         const payload = await compileOpensteerExtractionPayload({
           dom,
           pageRef: created.data.pageRef,
-          schema: {
-            childShadow: { element: childShadowCounter.element },
-            nestedShadow: { element: nestedShadowCounter.element },
+          template: {
+            childShadow: childShadowCounter.element,
+            nestedShadow: nestedShadowCounter.element,
           },
         });
 

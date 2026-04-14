@@ -11,7 +11,7 @@ import {
   type OpensteerConformanceHarness,
   type OpensteerConformanceUrls,
 } from "../../packages/conformance/src/index.js";
-import { Opensteer } from "../../packages/opensteer/src/index.js";
+import { Opensteer, OpensteerRuntime } from "../../packages/opensteer/src/index.js";
 
 let urls: OpensteerConformanceUrls;
 let closeServer: (() => Promise<void>) | undefined;
@@ -57,6 +57,7 @@ describe.sequential("Opensteer local conformance", () => {
 async function createHarness(): Promise<OpensteerConformanceHarness> {
   const rootDir = await mkdtemp(path.join(tmpdir(), "opensteer-conformance-"));
   temporaryRoots.push(rootDir);
+  await seedConformanceExtractionDescriptors(rootDir);
   const target = new Opensteer({
     workspace: "opensteer-local-conformance",
     rootDir,
@@ -77,6 +78,45 @@ async function createHarness(): Promise<OpensteerConformanceHarness> {
     urls,
     supports: () => true,
   };
+}
+
+async function seedConformanceExtractionDescriptors(rootDir: string): Promise<void> {
+  const runtime = new OpensteerRuntime({
+    workspace: "opensteer-local-conformance",
+    rootDir,
+    cleanupRootOnClose: false,
+    browser: "temporary",
+    launch: {
+      headless: true,
+    },
+    context: {
+      viewport: {
+        width: 800,
+        height: 600,
+      },
+    },
+  });
+
+  try {
+    await runtime.open({
+      url: urls.main,
+    });
+    await runtime.extract({
+      persist: "conformance fixture state",
+      template: {
+        status: { selector: "#status" },
+        mirror: { selector: "#mirror" },
+      },
+    });
+    await runtime.extract({
+      persist: "conformance computer status",
+      template: {
+        status: { selector: "#status" },
+      },
+    });
+  } finally {
+    await runtime.close().catch(() => undefined);
+  }
 }
 
 function htmlDocument(title: string, body: string): string {
