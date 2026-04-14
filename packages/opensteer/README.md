@@ -72,7 +72,17 @@ opensteer extract '{"title":{"element":3}}' --workspace demo
 opensteer close --workspace demo
 ```
 
-### SDK
+For DOM exploration:
+
+```bash
+opensteer snapshot action --workspace demo
+opensteer input 5 laptop --workspace demo --persist "search input" --capture-network search
+opensteer click 7 --workspace demo --persist "search button" --capture-network search
+opensteer snapshot extraction --workspace demo
+opensteer extract '{"title":3,"productUrl":{"c":7,"attr":"href"},"url":{"source":"current_url"}}' --workspace demo --persist "page summary"
+```
+
+## SDK Quickstart
 
 ```ts
 import { Opensteer } from "opensteer";
@@ -197,6 +207,114 @@ pnpm run test
 ```
 
 ## Community
+
+```ts
+const response = await opensteer.fetch("https://api.example.com/search", {
+  query: { keyword: "laptop" },
+  transport: "matched-tls",
+});
+```
+
+## Browser State
+
+Opensteer exposes the browser state agents need for request tracing:
+
+```ts
+const cookies = await opensteer.cookies("example.com");
+const localStorage = await opensteer.storage("example.com", "local");
+const sessionStorage = await opensteer.storage("example.com", "session");
+const state = await opensteer.state("example.com");
+```
+
+`cookies()` returns a lightweight cookie jar:
+
+```ts
+cookies.has("session");
+cookies.get("session");
+cookies.getAll();
+cookies.serialize();
+```
+
+## DOM Automation
+
+```ts
+await opensteer.click({ persist: "search button", captureNetwork: "search" });
+await opensteer.input({
+  persist: "search input",
+  text: "laptop",
+  pressEnter: true,
+  captureNetwork: "search",
+});
+
+const data = await opensteer.extract({
+  persist: "page summary",
+});
+```
+
+Author extraction templates from the CLI. Bare numbers reference element numbers from the snapshot (`c="N"` attributes), `{ c, attr }` reads an attribute from that element, and `{ source: "current_url" }` reads page metadata.
+
+```bash
+opensteer extract '{"title":3,"productUrl":{"c":7,"attr":"href"},"url":{"source":"current_url"}}' --workspace demo --persist "page summary"
+```
+
+Use `snapshot("action")` or `snapshot("extraction")` during exploration. The snapshot result is the filtered HTML string, not a huge raw DOM object.
+
+## Humanized Input
+
+Humanized cursor movement, typing cadence, and wheel ticks are opt-in:
+
+```ts
+const opensteer = new Opensteer({
+  workspace: "demo",
+  context: {
+    humanize: true,
+  },
+});
+```
+
+You can also set `OPENSTEER_HUMANIZE=1` to turn it on for local runs without changing code.
+
+## Public SDK Surface
+
+- `new Opensteer({ workspace?, rootDir?, browser?, provider? })`
+- `open(url | input?)`
+- `info()`
+- `listPages()`
+- `newPage()`
+- `activatePage()`
+- `closePage()`
+- `goto(url, { captureNetwork? })`
+- `evaluate(script | input)`
+- `addInitScript(input)`
+- `snapshot("action" | "extraction")`
+- `click({ element? | selector? | persist?, captureNetwork? })`
+- `hover({ element? | selector? | persist?, captureNetwork? })`
+- `input({ text, element? | selector? | persist?, captureNetwork? })`
+- `scroll({ direction, amount, element? | selector? | persist?, captureNetwork? })`
+- `extract({ persist })`
+- `network.query(input?)`
+- `network.detail(recordId, { probe?: boolean })`
+- `waitForPage(input?)`
+- `cookies(domain?)`
+- `storage(domain?, "local" | "session")`
+- `state(domain?)`
+- `fetch(url, options?)`
+- `computerExecute(input)`
+- `route(input)`
+- `interceptScript(input)`
+- `browser.status()`
+- `browser.clone(input)`
+- `browser.reset()`
+- `browser.delete()`
+- `close()`
+- `disconnect()`
+
+## Design Notes
+
+- `network query` is intentionally summary-oriented. Use `network detail` for deep inspection.
+- `replay` is transport-aware and should usually replace manual probe logic.
+- `browser status` intentionally does not leak the raw browser websocket endpoint.
+- The package also exports advanced cloud and browser-management utilities, but the core agent workflow is the local discovery-first SDK and CLI shown above.
 
 - [Contributing](https://github.com/steerlabs/opensteer/blob/main/CONTRIBUTING.md)
 - [Code of Conduct](https://github.com/steerlabs/opensteer/blob/main/CODE_OF_CONDUCT.md)

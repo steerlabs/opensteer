@@ -128,18 +128,18 @@ export async function buildOperationInput(
               },
         direction,
         amount,
-        ...(persist === undefined ? {} : { persist }),
+        persist,
         ...(captureNetwork === undefined ? {} : { captureNetwork }),
       };
     }
     case "dom.extract": {
       if (parsed.rest[0] === undefined) {
-        throw new Error("extract requires a schema.");
+        throw new Error("extract requires a template.");
       }
-      const persist = readExtractPersistKey(parsed);
+      const persist = readPersistKey(parsed, "extract");
       return {
-        schema: parseRequiredJsonObjectArgument(joinRest(parsed.rest, 0), "extract schema"),
-        ...(persist === undefined ? {} : { persist }),
+        persist,
+        template: parseRequiredJsonObjectArgument(joinRest(parsed.rest, 0), "extract template"),
       };
     }
     case "network.query": {
@@ -357,7 +357,7 @@ function buildElementTargetInput(
       kind: "element",
       element,
     },
-    ...(persist === undefined ? {} : { persist }),
+    persist,
     ...(captureNetwork === undefined ? {} : { captureNetwork }),
   };
 }
@@ -586,28 +586,14 @@ function readKeyModifiers(
 
 function readPersistKey(
   parsed: ParsedCommandLine,
-  verb: "click" | "hover" | "input" | "scroll",
-): string | undefined {
+  verb: "click" | "hover" | "input" | "scroll" | "extract",
+): string {
   const value = readSingle(parsed.rawOptions, "persist");
   if (value === undefined) {
-    return undefined;
+    throw new Error(`${verb} requires "--persist <key>".`);
   }
   if (value === "true" || value === "false") {
-    throw new Error(`${verb} requires "--persist <key>" when using --persist.`);
-  }
-  if (verb === "scroll" && readOptionalNumber(parsed.rawOptions, "element") === undefined) {
-    throw new Error('scroll requires "--element <n>" when using "--persist <key>".');
-  }
-  return value;
-}
-
-function readExtractPersistKey(parsed: ParsedCommandLine): string | undefined {
-  const value = readSingle(parsed.rawOptions, "persist");
-  if (value === undefined) {
-    return undefined;
-  }
-  if (value === "true" || value === "false") {
-    throw new Error('extract requires "--persist <key>" when using --persist.');
+    throw new Error(`${verb} requires "--persist <key>".`);
   }
   return value;
 }

@@ -15,11 +15,11 @@ Navigation:
 
 DOM:
   snapshot [action|extraction]
-  click <element> [--button left|middle|right] [--persist <key>] [--capture-network <label>]
-  hover <element> [--persist <key>] [--capture-network <label>]
-  input <element> <text> [--press-enter] [--persist <key>] [--capture-network <label>]
-  scroll <direction> <amount> [--element <n>] [--persist <key>] [--capture-network <label>]
-  extract <schema> [--persist <key>]
+  click <element> --persist <key> [--button left|middle|right] [--capture-network <label>]
+  hover <element> --persist <key> [--capture-network <label>]
+  input <element> <text> --persist <key> [--press-enter] [--capture-network <label>]
+  scroll <direction> <amount> --persist <key> [--element <n>] [--capture-network <label>]
+  extract <template> --persist <key>
   evaluate <script>
   init-script <script>
 

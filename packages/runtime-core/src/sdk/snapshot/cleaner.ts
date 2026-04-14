@@ -22,10 +22,19 @@ import {
 const STRIP_TAGS = new Set(["script", "style", "noscript", "meta", "link", "template"]);
 
 const TEXT_ATTR_MAX = 150;
-const URL_ATTR_MAX = 500;
-const URL_ATTRS = new Set(["href", "src", "srcset"]);
+const SRCSET_ATTR_MAX = 160;
+const MIDDLE_TRUNCATED_URL_ATTRS = new Set(["href", "src"]);
 const TEXT_ATTRS = new Set(["alt", "title", "aria-label", "placeholder", "value"]);
-const TRUNCATION_SUFFIX = " [truncated]";
+const TRUNCATION_SUFFIX = "...";
+const MIDDLE_TRUNCATION_MARKER = "...";
+const MIDDLE_TRUNCATION_HEAD_MAX = 40;
+const MIDDLE_TRUNCATION_TAIL_MAX = 20;
+const SRCSET_CANDIDATE_HEAD_MAX = 36;
+const SRCSET_CANDIDATE_TAIL_MAX = 12;
+const SRCSET_COMPACT_CANDIDATE_HEAD_MAX = 20;
+const SRCSET_COMPACT_CANDIDATE_TAIL_MAX = 8;
+const SRCSET_FALLBACK_HEAD_MAX = 56;
+const SRCSET_FALLBACK_TAIL_MAX = 20;
 
 const NOISE_SELECTORS = [
   `[${OPENSTEER_HIDDEN_ATTR}]`,
@@ -36,6 +45,13 @@ const NOISE_SELECTORS = [
 
 interface ClickableContext {
   readonly hasPreMarked: boolean;
+}
+
+interface SrcsetCandidateSummary {
+  readonly url: string;
+  readonly descriptorText: string;
+  readonly width: number | null;
+  readonly density: number | null;
 }
 
 function compactHtml(html: string): string {
@@ -116,9 +132,61 @@ function truncateValue(value: string, max: number): string {
   return `${head}${TRUNCATION_SUFFIX}`;
 }
 
+function takeValueWithinSerializedLengthFromEnd(value: string, max: number): string {
+  let serializedLength = 0;
+  const chars: string[] = [];
+
+  for (let index = value.length - 1; index >= 0; index -= 1) {
+    const char = value[index]!;
+
+    let nextLength = 1;
+    if (char === "&") {
+      nextLength = 5;
+    } else if (char === "<" || char === ">") {
+      nextLength = 4;
+    } else if (char === '"') {
+      nextLength = 6;
+    }
+
+    if (serializedLength + nextLength > max) {
+      break;
+    }
+
+    chars.push(char);
+    serializedLength += nextLength;
+  }
+
+  return chars.reverse().join("");
+}
+
+function truncateValueInMiddle(
+  value: string,
+  headMax: number,
+  tailMax: number,
+  marker: string = MIDDLE_TRUNCATION_MARKER,
+): string {
+  const markerLength = getSerializedLength(marker);
+  const max = headMax + markerLength + tailMax;
+  if (getSerializedLength(value) <= max) {
+    return value;
+  }
+
+  const head = takeValueWithinSerializedLength(value, headMax).replace(/\s+$/u, "");
+  const tail = takeValueWithinSerializedLengthFromEnd(value, tailMax).replace(/^\s+/u, "");
+
+  if (head.length === 0) {
+    return tail.length === 0 ? marker : `${marker}${tail}`;
+  }
+  if (tail.length === 0) {
+    return `${head}${marker}`;
+  }
+
+  return `${head}${marker}${tail}`;
+}
+
 function getAttrLimit(attr: string): number | undefined {
-  if (URL_ATTRS.has(attr)) {
-    return URL_ATTR_MAX;
+  if (attr === "srcset") {
+    return SRCSET_ATTR_MAX;
   }
   if (TEXT_ATTRS.has(attr)) {
     return TEXT_ATTR_MAX;
@@ -126,9 +194,279 @@ function getAttrLimit(attr: string): number | undefined {
   return undefined;
 }
 
+function shouldBoundAttr(attr: string): boolean {
+  return MIDDLE_TRUNCATED_URL_ATTRS.has(attr) || getAttrLimit(attr) !== undefined;
+}
+
 function setBoundedAttr(el: Cheerio<Element>, attr: string, value: string): void {
+  if (MIDDLE_TRUNCATED_URL_ATTRS.has(attr)) {
+    el.attr(
+      attr,
+      truncateValueInMiddle(value, MIDDLE_TRUNCATION_HEAD_MAX, MIDDLE_TRUNCATION_TAIL_MAX),
+    );
+    return;
+  }
+
   const limit = getAttrLimit(attr);
+  if (attr === "srcset" && limit !== undefined) {
+    el.attr(attr, truncateSrcsetValue(value, limit));
+    return;
+  }
+
   el.attr(attr, limit === undefined ? value : truncateValue(value, limit));
+}
+
+function truncateSrcsetValue(value: string, max: number): string {
+  if (getSerializedLength(value) <= max) {
+    return value;
+  }
+
+  const candidates = parseSrcsetCandidates(value);
+  if (candidates.length === 0) {
+    return truncateValueInMiddle(value, SRCSET_FALLBACK_HEAD_MAX, SRCSET_FALLBACK_TAIL_MAX);
+  }
+
+  for (const [headMax, tailMax, includeBest] of [
+    [SRCSET_CANDIDATE_HEAD_MAX, SRCSET_CANDIDATE_TAIL_MAX, true],
+    [SRCSET_COMPACT_CANDIDATE_HEAD_MAX, SRCSET_COMPACT_CANDIDATE_TAIL_MAX, true],
+    [SRCSET_COMPACT_CANDIDATE_HEAD_MAX, SRCSET_COMPACT_CANDIDATE_TAIL_MAX, false],
+  ] as const) {
+    const compact = buildTruncatedSrcsetValue(candidates, headMax, tailMax, includeBest);
+    if (getSerializedLength(compact) <= max) {
+      return compact;
+    }
+  }
+
+  return truncateValueInMiddle(value, SRCSET_FALLBACK_HEAD_MAX, SRCSET_FALLBACK_TAIL_MAX);
+}
+
+function buildTruncatedSrcsetValue(
+  candidates: readonly SrcsetCandidateSummary[],
+  headMax: number,
+  tailMax: number,
+  includeBest: boolean,
+): string {
+  const kept = getPreferredSrcsetCandidateIndices(candidates, includeBest);
+  const parts: string[] = [];
+  let previousIndex: number | undefined;
+
+  for (const candidateIndex of kept) {
+    if (previousIndex !== undefined && candidateIndex - previousIndex > 1) {
+      parts.push(MIDDLE_TRUNCATION_MARKER);
+    }
+
+    parts.push(formatSrcsetCandidate(candidates[candidateIndex]!, headMax, tailMax));
+    previousIndex = candidateIndex;
+  }
+
+  return parts.join(", ");
+}
+
+function getPreferredSrcsetCandidateIndices(
+  candidates: readonly SrcsetCandidateSummary[],
+  includeBest: boolean,
+): number[] {
+  if (candidates.length === 0) {
+    return [];
+  }
+
+  const kept = new Set<number>([0, candidates.length - 1]);
+  if (includeBest) {
+    kept.add(pickBestSrcsetCandidateIndex(candidates));
+  }
+
+  return [...kept].filter((index) => index >= 0 && index < candidates.length).sort((a, b) => a - b);
+}
+
+function pickBestSrcsetCandidateIndex(candidates: readonly SrcsetCandidateSummary[]): number {
+  let bestWidthIndex = -1;
+  let bestWidth = -1;
+  let bestDensityIndex = -1;
+  let bestDensity = -1;
+
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index]!;
+
+    if (
+      typeof candidate.width === "number" &&
+      Number.isFinite(candidate.width) &&
+      candidate.width > bestWidth
+    ) {
+      bestWidth = candidate.width;
+      bestWidthIndex = index;
+    }
+
+    if (
+      typeof candidate.density === "number" &&
+      Number.isFinite(candidate.density) &&
+      candidate.density > bestDensity
+    ) {
+      bestDensity = candidate.density;
+      bestDensityIndex = index;
+    }
+  }
+
+  if (bestWidthIndex >= 0) {
+    return bestWidthIndex;
+  }
+  if (bestDensityIndex >= 0) {
+    return bestDensityIndex;
+  }
+
+  return candidates.length - 1;
+}
+
+function formatSrcsetCandidate(
+  candidate: SrcsetCandidateSummary,
+  headMax: number,
+  tailMax: number,
+): string {
+  const url = truncateValueInMiddle(candidate.url, headMax, tailMax);
+  return candidate.descriptorText ? `${url} ${candidate.descriptorText}` : url;
+}
+
+function parseSrcsetCandidates(raw: string): SrcsetCandidateSummary[] {
+  const text = raw.trim();
+  if (!text) {
+    return [];
+  }
+
+  const out: SrcsetCandidateSummary[] = [];
+  let index = 0;
+
+  while (index < text.length) {
+    index = skipSrcsetSeparators(text, index);
+    if (index >= text.length) {
+      break;
+    }
+
+    const urlToken = readSrcsetUrlToken(text, index);
+    index = urlToken.nextIndex;
+    const url = urlToken.value.trim();
+    if (!url) {
+      continue;
+    }
+
+    index = skipSrcsetWhitespace(text, index);
+    const descriptors: string[] = [];
+    while (index < text.length && text[index] !== ",") {
+      const descriptorToken = readSrcsetDescriptorToken(text, index);
+      if (!descriptorToken.value) {
+        index = descriptorToken.nextIndex;
+        continue;
+      }
+      descriptors.push(descriptorToken.value);
+      index = descriptorToken.nextIndex;
+      index = skipSrcsetWhitespace(text, index);
+    }
+    if (index < text.length && text[index] === ",") {
+      index += 1;
+    }
+
+    let width: number | null = null;
+    let density: number | null = null;
+    for (const descriptor of descriptors) {
+      const token = descriptor.trim().toLowerCase();
+      if (!token) {
+        continue;
+      }
+
+      const widthMatch = token.match(/^(\d+)w$/);
+      if (widthMatch) {
+        const parsed = Number.parseInt(widthMatch[1]!, 10);
+        if (Number.isFinite(parsed)) {
+          width = parsed;
+        }
+        continue;
+      }
+
+      const densityMatch = token.match(/^(\d*\.?\d+)x$/);
+      if (densityMatch) {
+        const parsed = Number.parseFloat(densityMatch[1]!);
+        if (Number.isFinite(parsed)) {
+          density = parsed;
+        }
+      }
+    }
+
+    out.push({
+      url,
+      descriptorText: descriptors.join(" "),
+      width,
+      density,
+    });
+  }
+
+  return out;
+}
+
+function skipSrcsetWhitespace(value: string, index: number): number {
+  let cursor = index;
+  while (cursor < value.length && /\s/u.test(value[cursor]!)) {
+    cursor += 1;
+  }
+  return cursor;
+}
+
+function skipSrcsetSeparators(value: string, index: number): number {
+  let cursor = skipSrcsetWhitespace(value, index);
+  while (cursor < value.length && value[cursor] === ",") {
+    cursor += 1;
+    cursor = skipSrcsetWhitespace(value, cursor);
+  }
+  return cursor;
+}
+
+function readSrcsetUrlToken(value: string, index: number): { value: string; nextIndex: number } {
+  let cursor = index;
+  let out = "";
+  const isDataUrl = value
+    .slice(index, index + 5)
+    .toLowerCase()
+    .startsWith("data:");
+
+  while (cursor < value.length) {
+    const char = value[cursor]!;
+    if (/\s/u.test(char)) {
+      break;
+    }
+    if (char === "," && !isDataUrl) {
+      break;
+    }
+    out += char;
+    cursor += 1;
+  }
+
+  if (isDataUrl && out.endsWith(",") && cursor < value.length) {
+    out = out.slice(0, -1);
+  }
+
+  return {
+    value: out,
+    nextIndex: cursor,
+  };
+}
+
+function readSrcsetDescriptorToken(
+  value: string,
+  index: number,
+): { value: string; nextIndex: number } {
+  let cursor = skipSrcsetWhitespace(value, index);
+  let out = "";
+
+  while (cursor < value.length) {
+    const char = value[cursor]!;
+    if (char === "," || /\s/u.test(char)) {
+      break;
+    }
+    out += char;
+    cursor += 1;
+  }
+
+  return {
+    value: out.trim(),
+    nextIndex: cursor,
+  };
 }
 
 function removeNoise($: CheerioAPI): void {
@@ -161,39 +499,76 @@ function markInlineSelfHiddenFallback($: CheerioAPI): void {
 }
 
 function pruneSelfHiddenNodes($: CheerioAPI): void {
-  const nodes: Cheerio<Element>[] = [];
-  $(`[${OPENSTEER_SELF_HIDDEN_ATTR}]`).each(function collectSelfHiddenNodes() {
-    nodes.push($(this as Element));
-  });
-  nodes.sort((left, right) => right.parents().length - left.parents().length);
-
-  for (const el of nodes) {
-    if (!el[0]) {
+  for (const node of getElementsInReverseDocumentOrder($)) {
+    if (node.attribs?.[OPENSTEER_SELF_HIDDEN_ATTR] === undefined) {
       continue;
     }
 
+    const el = $(node);
     el.contents().each(function removeSelfHiddenText(this: AnyNode) {
       if (this.type === "text") {
         $(this).remove();
       }
     });
 
-    if (el.children().length === 0) {
+    if (!hasElementChildren(node)) {
       el.remove();
     }
   }
 }
 
-function hasDirectText($: CheerioAPI, el: Cheerio<Element>): boolean {
-  return (
-    el.contents().filter(function hasDirectNodeText(this: AnyNode) {
-      return this.type === "text" && $(this).text().trim() !== "";
-    }).length > 0
-  );
+function getChildNodes(node: AnyNode | undefined): readonly AnyNode[] {
+  return (node as { readonly children?: readonly AnyNode[] } | undefined)?.children ?? [];
 }
 
-function hasTextDeep(el: Cheerio<Element>): boolean {
-  return el.text().trim().length > 0;
+function isElementLikeNode(node: AnyNode | undefined): node is Element {
+  return node?.type === "tag" || node?.type === "script" || node?.type === "style";
+}
+
+function hasDirectText(node: Element | undefined): boolean {
+  if (!node) {
+    return false;
+  }
+
+  for (const child of getChildNodes(node)) {
+    if (child.type === "text" && ((child as { readonly data?: string }).data || "").trim() !== "") {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function hasElementChildren(node: Element | undefined): boolean {
+  if (!node) {
+    return false;
+  }
+
+  for (const child of getChildNodes(node)) {
+    if (isElementLikeNode(child)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function hasTextDeepNode(node: AnyNode | undefined): boolean {
+  if (!node) {
+    return false;
+  }
+
+  if (node.type === "text") {
+    return ((node as { readonly data?: string }).data || "").trim() !== "";
+  }
+
+  for (const child of getChildNodes(node)) {
+    if (hasTextDeepNode(child)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function hasActionLabel(attrs: Record<string, string | undefined>): boolean {
@@ -208,7 +583,7 @@ function hasActionLabel(attrs: Record<string, string | undefined>): boolean {
 }
 
 function unwrapActionNode($: CheerioAPI, el: Cheerio<Element>): void {
-  if (hasTextDeep(el)) {
+  if (hasTextDeepNode(el[0])) {
     if (el.prev().length > 0) {
       el.before(" ");
     }
@@ -233,7 +608,7 @@ function stripToAttrs(el: Cheerio<Element>, keep: Set<string>): void {
       continue;
     }
 
-    if (getAttrLimit(attr) !== undefined) {
+    if (shouldBoundAttr(attr)) {
       setBoundedAttr(el, attr, value);
     }
   }
@@ -256,6 +631,10 @@ function deduplicateImages(html: string): string {
   const seen = new Set<string>();
 
   return html.replace(/<img\b([^>]*)>/gi, (full, attrContent) => {
+    if (/\bc\s*=/.test(attrContent)) {
+      return full;
+    }
+
     const srcMatch = attrContent.match(/\bsrc\s*=\s*(["']?)(.*?)\1/);
     const srcsetMatch = attrContent.match(/\bsrcset\s*=\s*(["'])(.*?)\1/);
 
@@ -278,72 +657,215 @@ function deduplicateImages(html: string): string {
   });
 }
 
-function isPreservedImageElement($: CheerioAPI, el: Cheerio<Element>): boolean {
-  const tag = ((el[0] as Element | undefined)?.tagName || "").toLowerCase();
+function hasAttribute(node: Element | undefined, attr: string): boolean {
+  return node?.attribs?.[attr] !== undefined;
+}
+
+function hasPictureAncestor(node: Element | undefined): boolean {
+  let current = node?.parent;
+  while (current) {
+    if (isElementLikeNode(current) && (current.tagName || "").toLowerCase() === "picture") {
+      return true;
+    }
+    current = current.parent;
+  }
+  return false;
+}
+
+function pictureHasPreservedDescendant(node: Element | undefined): boolean {
+  if (!node) {
+    return false;
+  }
+
+  for (const child of getChildNodes(node)) {
+    if (!isElementLikeNode(child)) {
+      continue;
+    }
+
+    const tag = (child.tagName || "").toLowerCase();
+    if (tag === "img") {
+      return true;
+    }
+    if (
+      tag === "source" &&
+      typeof child.attribs?.src === "string" &&
+      child.attribs.src.trim() !== ""
+    ) {
+      return true;
+    }
+    if (
+      tag === "source" &&
+      typeof child.attribs?.srcset === "string" &&
+      child.attribs.srcset.trim() !== ""
+    ) {
+      return true;
+    }
+    if (pictureHasPreservedDescendant(child)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function isPreservedImageElement(node: Element | undefined): boolean {
+  const tag = (node?.tagName || "").toLowerCase();
   if (tag === "img") {
     return true;
   }
 
   if (tag === "picture") {
-    const hasImg = el.find("img").length > 0;
-    const hasSource = el.find("source[src], source[srcset]").length > 0;
-    return hasImg || hasSource;
+    return pictureHasPreservedDescendant(node);
   }
 
   if (tag === "source") {
-    const inPicture = el.parents("picture").length > 0;
+    const inPicture = hasPictureAncestor(node);
     const hasSrc =
-      (el.attr("src") != null && el.attr("src")!.trim() !== "") ||
-      (el.attr("srcset") != null && el.attr("srcset")!.trim() !== "");
+      (typeof node?.attribs?.src === "string" && node.attribs.src.trim() !== "") ||
+      (typeof node?.attribs?.srcset === "string" && node.attribs.srcset.trim() !== "");
     return inPicture && hasSrc;
   }
 
   return false;
 }
 
+function getElementsInReverseDocumentOrder($: CheerioAPI): Element[] {
+  return $.root()
+    .find("*")
+    .toArray()
+    .reverse()
+    .filter((node): node is Element => node.type === "tag");
+}
+
+function getNodeDepth(node: AnyNode): number {
+  let depth = 0;
+  let current = node.parent;
+  while (current) {
+    depth++;
+    current = current.parent;
+  }
+  return depth;
+}
+
+function getElementsByDepthDescending($: CheerioAPI): Element[] {
+  const elements = $.root()
+    .find("*")
+    .toArray()
+    .filter((node): node is Element => node.type === "tag");
+
+  const depths = new Map<Element, number>();
+  for (const el of elements) {
+    depths.set(el, getNodeDepth(el));
+  }
+
+  return elements.sort((a, b) => (depths.get(b) ?? 0) - (depths.get(a) ?? 0));
+}
+
 function flattenExtractionTree($: CheerioAPI): void {
-  const flatten = (root: Cheerio<AnyNode>): void => {
-    root.find("*").each(function flattenNode() {
-      const el = $(this as Element);
-      const node = el[0];
-      if (!node) {
-        return;
-      }
+  for (const node of getElementsInReverseDocumentOrder($)) {
+    const el = $(node);
+    const tag = (node.tagName || "").toLowerCase();
+    if (ROOT_TAGS.has(tag) || isBoundaryTag(tag) || isPreservedImageElement(node)) {
+      continue;
+    }
 
-      const tag = (node.tagName || "").toLowerCase();
-      if (ROOT_TAGS.has(tag) || isBoundaryTag(tag)) {
-        return;
-      }
+    if (tag === "a" || hasDirectText(node)) {
+      continue;
+    }
 
-      if (isPreservedImageElement($, el)) {
-        return;
-      }
+    if (!hasElementChildren(node)) {
+      el.remove();
+      continue;
+    }
 
-      if (tag === "a") {
-        el.children().each(function flattenAnchorChild() {
-          flatten($(this as Element));
-        });
-        return;
-      }
+    el.replaceWith(el.contents());
+  }
+}
 
-      const hasText = hasDirectText($, el);
-      if (hasText) {
-        return;
-      }
+function hasMarkedAncestor(el: Cheerio<Element>, attr: string): boolean {
+  let current = el[0]?.parent;
+  while (current) {
+    if (!isElementLikeNode(current)) {
+      return false;
+    }
+    if (current.attribs?.[attr] !== undefined) {
+      return true;
+    }
+    current = current.parent;
+  }
+  return false;
+}
 
-      if (el.children().length === 0) {
-        el.remove();
-        return;
-      }
+function isIndicatorImage(node: Element | undefined): boolean {
+  return (
+    (node?.tagName || "").toLowerCase() === "img" &&
+    (hasAttribute(node, "alt") || hasAttribute(node, "src") || hasAttribute(node, "srcset"))
+  );
+}
 
-      el.children().each(function flattenChild() {
-        flatten($(this as Element));
-      });
-      el.replaceWith(el.contents());
-    });
+function isIndicatorPictureSource(node: Element | undefined): boolean {
+  return (
+    (node?.tagName || "").toLowerCase() === "source" &&
+    hasPictureAncestor(node) &&
+    (hasAttribute(node, "src") || hasAttribute(node, "srcset"))
+  );
+}
+
+function isSemanticIndicator(node: Element | undefined): boolean {
+  const tag = (node?.tagName || "").toLowerCase();
+  if (tag === "svg") {
+    return true;
+  }
+
+  return (
+    hasAttribute(node, "aria-label") ||
+    hasAttribute(node, "title") ||
+    hasAttribute(node, "data-icon") ||
+    node?.attribs?.role === "img"
+  );
+}
+
+function findIndicatorDescendant(root: Element | undefined): Element | undefined {
+  if (!root) {
+    return undefined;
+  }
+
+  let firstImage: Element | undefined;
+  let firstSource: Element | undefined;
+  let firstSemantic: Element | undefined;
+
+  const visit = (node: AnyNode): boolean => {
+    if (!isElementLikeNode(node)) {
+      return false;
+    }
+
+    if (isIndicatorImage(node)) {
+      firstImage = node;
+      return true;
+    }
+    if (firstSource === undefined && isIndicatorPictureSource(node)) {
+      firstSource = node;
+    }
+    if (firstSemantic === undefined && isSemanticIndicator(node)) {
+      firstSemantic = node;
+    }
+
+    for (const child of getChildNodes(node)) {
+      if (visit(child)) {
+        return true;
+      }
+    }
+
+    return false;
   };
 
-  flatten($.root());
+  for (const child of getChildNodes(root)) {
+    if (visit(child)) {
+      return firstImage;
+    }
+  }
+
+  return firstImage ?? firstSource ?? firstSemantic;
 }
 
 function serializeForExtraction($: CheerioAPI, root: AnyNode): string {
@@ -439,7 +961,10 @@ function serializeForExtraction($: CheerioAPI, root: AnyNode): string {
   }
 
   traverse(root, 0);
-  return lines.join("\n");
+  return lines
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .join("");
 }
 
 function isClickable($: CheerioAPI, el: Cheerio<Element>, context: ClickableContext): boolean {
@@ -562,7 +1087,12 @@ export function cleanForExtraction(html: string): string {
   });
 
   flattenExtractionTree($clean);
-  return deduplicateImages(serializeForExtraction($clean, $clean.root()[0] as unknown as AnyNode));
+  const root = $clean.root()[0];
+  if (root === undefined) {
+    return "";
+  }
+
+  return deduplicateImages(serializeForExtraction($clean, root));
 }
 
 export function cleanForAction(html: string): string {
@@ -593,27 +1123,13 @@ export function cleanForAction(html: string): string {
   $(`[${clickableMark}]`).each(function markIndicators() {
     const el = $(this as Element);
     const wrapperAttrs = el.attr() || {};
-    if (hasTextDeep(el) || hasActionLabel(wrapperAttrs)) {
+    if (hasTextDeepNode(el[0]) || hasActionLabel(wrapperAttrs)) {
       return;
     }
 
-    const imageIndicator = el.find("img[alt], img[src], img[srcset]").first();
-    if (imageIndicator.length) {
-      imageIndicator.attr(indicatorMark, "1");
-      return;
-    }
-
-    const pictureSourceIndicator = el.find("picture source[src], picture source[srcset]").first();
-    if (pictureSourceIndicator.length) {
-      pictureSourceIndicator.attr(indicatorMark, "1");
-      return;
-    }
-
-    const semanticIndicator = el
-      .find('[aria-label], [title], [data-icon], [role="img"], svg')
-      .first();
-    if (semanticIndicator.length) {
-      semanticIndicator.attr(indicatorMark, "1");
+    const indicatorNode = findIndicatorDescendant(el[0]);
+    if (indicatorNode !== undefined) {
+      $(indicatorNode).attr(indicatorMark, "1");
     }
   });
 
@@ -624,7 +1140,7 @@ export function cleanForAction(html: string): string {
     if (NATIVE_INTERACTIVE_TAGS.has(tag) || tag === "a") {
       return;
     }
-    if (el.children().length > 0 || hasDirectText($, el)) {
+    if (hasElementChildren(node) || hasDirectText(node)) {
       return;
     }
 
@@ -656,53 +1172,36 @@ export function cleanForAction(html: string): string {
     }
   });
 
-  let changed = true;
-  while (changed) {
-    changed = false;
-    const nodes: Cheerio<Element>[] = [];
-    $("*").each(function collectNodes() {
-      nodes.push($(this as Element));
-    });
-    nodes.sort((left, right) => right.parents().length - left.parents().length);
+  for (const node of getElementsByDepthDescending($)) {
+    const el = $(node);
+    const tag = (node.tagName || "").toLowerCase();
+    if (ROOT_TAGS.has(tag) || isBoundaryTag(tag)) {
+      continue;
+    }
 
-    for (const el of nodes) {
-      const node = el[0];
-      if (!node) {
-        continue;
-      }
+    if (el.attr(clickableMark) !== undefined || el.attr(indicatorMark) !== undefined) {
+      continue;
+    }
 
-      const tag = (node.tagName || "").toLowerCase();
-      if (ROOT_TAGS.has(tag) || isBoundaryTag(tag)) {
-        continue;
-      }
+    const insideClickable = hasMarkedAncestor(el, clickableMark);
+    const preserveBranch = el.attr(branchMark) !== undefined;
+    const hasContent = hasElementChildren(node) || hasDirectText(node);
 
-      if (el.attr(clickableMark) !== undefined || el.attr(indicatorMark) !== undefined) {
-        continue;
-      }
-
-      const insideClickable = el.parents(`[${clickableMark}]`).length > 0;
-      const preserveBranch = el.attr(branchMark) !== undefined;
-      const hasContent = el.children().length > 0 || hasDirectText($, el);
-
-      if (insideClickable || preserveBranch) {
-        if (!hasContent) {
-          el.remove();
-        } else {
-          unwrapActionNode($, el);
-        }
-        changed = true;
-        continue;
-      }
-
+    if (insideClickable || preserveBranch) {
       if (!hasContent) {
         el.remove();
-        changed = true;
-        continue;
+      } else {
+        unwrapActionNode($, el);
       }
-
-      unwrapActionNode($, el);
-      changed = true;
+      continue;
     }
+
+    if (!hasContent) {
+      el.remove();
+      continue;
+    }
+
+    unwrapActionNode($, el);
   }
 
   $.root()
@@ -813,12 +1312,6 @@ export function cleanForAction(html: string): string {
         "placeholder",
         "value",
         "aria-label",
-        "aria-labelledby",
-        "aria-describedby",
-        "aria-expanded",
-        "aria-pressed",
-        "aria-selected",
-        "aria-haspopup",
       ]) {
         keep.add(attr);
       }
