@@ -25,6 +25,7 @@ import {
   createFilesystemOpensteerWorkspace,
   defaultPolicy,
   Opensteer,
+  OpensteerRuntime,
   type OpensteerPolicy,
   type SettleObserver,
 } from "../../packages/opensteer/src/index.js";
@@ -43,6 +44,42 @@ function createLocalOpensteer(options: ConstructorParameters<typeof Opensteer>[0
       : {}),
     ...options,
   });
+}
+
+async function seedExtractionDescriptors(options: {
+  readonly workspace: string;
+  readonly url: string;
+  readonly entries: ReadonlyArray<{
+    readonly persist: string;
+    readonly template: Record<string, unknown>;
+  }>;
+  readonly rootDir?: string;
+  readonly rootPath?: string;
+}): Promise<void> {
+  const runtime = new OpensteerRuntime({
+    workspace: options.workspace,
+    ...(options.rootDir === undefined ? {} : { rootDir: options.rootDir }),
+    ...(options.rootPath === undefined ? {} : { rootPath: options.rootPath }),
+    cleanupRootOnClose: false,
+    browser: "temporary",
+    launch: {
+      headless: true,
+    },
+  });
+
+  try {
+    await runtime.open({
+      url: options.url,
+    });
+    for (const entry of options.entries) {
+      await runtime.extract({
+        persist: entry.persist,
+        template: entry.template,
+      });
+    }
+  } finally {
+    await runtime.close().catch(() => undefined);
+  }
 }
 
 describe.sequential("cross-document action boundary", () => {
@@ -322,6 +359,19 @@ describe.sequential("cross-document action boundary", () => {
   }, 60_000);
 
   test("captures named hydration requests after pressEnter navigation", async () => {
+    await seedExtractionDescriptors({
+      workspace: "navigation-network-capture",
+      rootDir: suiteRootDir,
+      url: `${baseUrl}/sdk/hydration-results?mode=enter`,
+      entries: [
+        {
+          persist: "hydration status",
+          template: {
+            status: { selector: "#hydration-status" },
+          },
+        },
+      ],
+    });
     const opensteer = createLocalOpensteer({
       workspace: "navigation-network-capture",
       browser: "temporary",
@@ -342,11 +392,6 @@ describe.sequential("cross-document action boundary", () => {
       await expect(
         opensteer.extract({
           persist: "hydration status",
-          schema: {
-            status: {
-              selector: "#hydration-status",
-            },
-          },
         }),
       ).resolves.toEqual({
         status: "hydrated",
@@ -363,6 +408,19 @@ describe.sequential("cross-document action boundary", () => {
   }, 60_000);
 
   test("reuses persisted input descriptors through the SDK wrapper", async () => {
+    await seedExtractionDescriptors({
+      workspace: "navigation-network-persisted-input",
+      rootDir: suiteRootDir,
+      url: `${baseUrl}/sdk/same-document-enter`,
+      entries: [
+        {
+          persist: "persisted input hydration status",
+          template: {
+            status: { selector: "#hydration-status" },
+          },
+        },
+      ],
+    });
     const opensteer = createLocalOpensteer({
       workspace: "navigation-network-persisted-input",
       browser: "temporary",
@@ -388,11 +446,6 @@ describe.sequential("cross-document action boundary", () => {
       await expect(
         opensteer.extract({
           persist: "persisted input hydration status",
-          schema: {
-            status: {
-              selector: "#hydration-status",
-            },
-          },
         }),
       ).resolves.toEqual({
         status: "hydrated",
@@ -409,6 +462,19 @@ describe.sequential("cross-document action boundary", () => {
   }, 60_000);
 
   test("pressEnter submits even when typing keeps bootstrap trackers noisy", async () => {
+    await seedExtractionDescriptors({
+      workspace: "navigation-network-noisy-enter",
+      rootDir: suiteRootDir,
+      url: `${baseUrl}/sdk/hydration-results?mode=noisy-enter`,
+      entries: [
+        {
+          persist: "noisy hydration status",
+          template: {
+            status: { selector: "#hydration-status" },
+          },
+        },
+      ],
+    });
     const opensteer = createLocalOpensteer({
       workspace: "navigation-network-noisy-enter",
       browser: "temporary",
@@ -434,11 +500,6 @@ describe.sequential("cross-document action boundary", () => {
       await expect(
         opensteer.extract({
           persist: "noisy hydration status",
-          schema: {
-            status: {
-              selector: "#hydration-status",
-            },
-          },
         }),
       ).resolves.toEqual({
         status: "hydrated",
@@ -455,6 +516,19 @@ describe.sequential("cross-document action boundary", () => {
   }, 60_000);
 
   test("click navigations succeed even when the destination page keeps scheduling timers", async () => {
+    await seedExtractionDescriptors({
+      workspace: "navigation-network-noisy-click",
+      rootDir: suiteRootDir,
+      url: `${baseUrl}/sdk/hydration-results?mode=noisy-click`,
+      entries: [
+        {
+          persist: "noisy click hydration status",
+          template: {
+            status: { selector: "#hydration-status" },
+          },
+        },
+      ],
+    });
     const opensteer = createLocalOpensteer({
       workspace: "navigation-network-noisy-click",
       browser: "temporary",
@@ -478,11 +552,6 @@ describe.sequential("cross-document action boundary", () => {
       await expect(
         opensteer.extract({
           persist: "noisy click hydration status",
-          schema: {
-            status: {
-              selector: "#hydration-status",
-            },
-          },
         }),
       ).resolves.toEqual({
         status: "hydrated",
@@ -500,6 +569,19 @@ describe.sequential("cross-document action boundary", () => {
 
   test("does not persist action-triggered network without captureNetwork", async () => {
     const rootPath = await mkdtemp(path.join(os.tmpdir(), "opensteer-no-capture-"));
+    await seedExtractionDescriptors({
+      workspace: "navigation-network-no-capture",
+      rootPath,
+      url: `${baseUrl}/sdk/hydration-results?mode=enter`,
+      entries: [
+        {
+          persist: "hydration status without capture",
+          template: {
+            status: { selector: "#hydration-status" },
+          },
+        },
+      ],
+    });
     const opensteer = createLocalOpensteer({
       workspace: "navigation-network-no-capture",
       rootPath,
@@ -521,11 +603,6 @@ describe.sequential("cross-document action boundary", () => {
       await expect(
         opensteer.extract({
           persist: "hydration status without capture",
-          schema: {
-            status: {
-              selector: "#hydration-status",
-            },
-          },
         }),
       ).resolves.toEqual({
         status: "hydrated",
@@ -587,6 +664,25 @@ describe.sequential("cross-document action boundary", () => {
   }, 60_000);
 
   test("waits for same-tab navigation hydration before returning computer-use clicks", async () => {
+    await seedExtractionDescriptors({
+      workspace: "computer-action-boundary",
+      rootDir: suiteRootDir,
+      url: `${baseUrl}/computer/hydration-results?mode=click`,
+      entries: [
+        {
+          persist: "computer hydration status",
+          template: {
+            status: { selector: "#hydration-status" },
+          },
+        },
+        {
+          persist: "computer current page",
+          template: {
+            url: { source: "current_url" },
+          },
+        },
+      ],
+    });
     const opensteer = createLocalOpensteer({
       workspace: "computer-action-boundary",
       browser: "temporary",
@@ -614,11 +710,6 @@ describe.sequential("cross-document action boundary", () => {
       await expect(
         opensteer.extract({
           persist: "computer hydration status",
-          schema: {
-            status: {
-              selector: "#hydration-status",
-            },
-          },
         }),
       ).resolves.toEqual({
         status: "hydrated",
@@ -627,11 +718,6 @@ describe.sequential("cross-document action boundary", () => {
       await expect(
         opensteer.extract({
           persist: "computer current page",
-          schema: {
-            url: {
-              source: "current_url",
-            },
-          },
         }),
       ).resolves.toEqual({
         url: `${baseUrl}/computer/hydration-results?mode=click`,

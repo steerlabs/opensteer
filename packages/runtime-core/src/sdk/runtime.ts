@@ -178,7 +178,7 @@ import { NetworkHistory } from "../network/history.js";
 import type { SavedNetworkQueryInput } from "../network/saved-store.js";
 import { executeMatchedTlsTransportRequest as executeMatchedTlsTransportRequestWithCurl } from "../requests/execution/matched-tls/index.js";
 import {
-  assertValidOpensteerExtractionSchemaRoot,
+  assertValidOpensteerExtractionTemplateRoot,
   compileOpensteerExtractionFieldTargets,
   compilePersistedOpensteerExtractionPayloadFromFieldTargets,
   createOpensteerExtractionDescriptorStore,
@@ -1151,12 +1151,12 @@ export class OpensteerSessionRuntime {
         async (timeout) => {
           let descriptor: OpensteerExtractionDescriptorRecord | undefined;
           let data: JsonValue;
-          if (input.schema !== undefined) {
-            assertValidOpensteerExtractionSchemaRoot(input.schema);
+          if (input.template !== undefined) {
+            assertValidOpensteerExtractionTemplateRoot(input.template);
             const fieldTargets = await timeout.runStep(() =>
               compileOpensteerExtractionFieldTargets({
                 pageRef,
-                schema: input.schema as Record<string, unknown>,
+                template: input.template as Record<string, unknown>,
                 dom: this.requireDom(),
               }),
             );
@@ -1188,7 +1188,7 @@ export class OpensteerSessionRuntime {
                 descriptors.write({
                   persist,
                   root: payload,
-                  schemaHash: canonicalJsonString(input.schema),
+                  templateHash: canonicalJsonString(input.template),
                   sourceUrl: pageInfo.url,
                 }),
               );
@@ -1250,9 +1250,9 @@ export class OpensteerSessionRuntime {
         artifacts,
         data: {
           ...(input.persist === undefined ? {} : { persist: input.persist }),
-          ...(descriptor?.payload.schemaHash === undefined
+          ...(descriptor?.payload.templateHash === undefined
             ? {}
-            : { schemaHash: descriptor.payload.schemaHash }),
+            : { templateHash: descriptor.payload.templateHash }),
           data: output.data,
         },
         context: buildRuntimeTraceContext({

@@ -46,7 +46,7 @@ opensteer snapshot action --workspace demo
 opensteer input 5 laptop --workspace demo --persist "search input" --capture-network search
 opensteer click 7 --workspace demo --persist "search button" --capture-network search
 opensteer snapshot extraction --workspace demo
-opensteer extract '{"title":{"element":3}}' --workspace demo --persist "page summary"
+opensteer extract '{"title":3,"productUrl":{"c":7,"attr":"href"},"url":{"source":"current_url"}}' --workspace demo --persist "page summary"
 ```
 
 ## SDK Quickstart
@@ -159,11 +159,14 @@ await opensteer.input({
 
 const data = await opensteer.extract({
   persist: "page summary",
-  schema: {
-    title: { selector: "title" },
-    url: { source: "current_url" },
-  },
 });
+```
+
+Author extraction templates from the CLI. Bare numbers target counters, `{ c, attr }` reads an
+attribute from a counter-backed element, and `{ source: "current_url" }` reads page metadata.
+
+```bash
+opensteer extract '{"title":3,"productUrl":{"c":7,"attr":"href"},"url":{"source":"current_url"}}' --workspace demo --persist "page summary"
 ```
 
 Use `snapshot("action")` or `snapshot("extraction")` during exploration. The snapshot result is the filtered HTML string, not a huge raw DOM object.
@@ -200,7 +203,7 @@ You can also set `OPENSTEER_HUMANIZE=1` to turn it on for local runs without cha
 - `hover({ element? | selector? | persist?, captureNetwork? })`
 - `input({ text, element? | selector? | persist?, captureNetwork? })`
 - `scroll({ direction, amount, element? | selector? | persist?, captureNetwork? })`
-- `extract({ schema } | { persist, schema? })`
+- `extract({ persist })`
 - `network.query(input?)`
 - `network.detail(recordId, { probe?: boolean })`
 - `waitForPage(input?)`

@@ -406,7 +406,7 @@ export interface OpensteerDomScrollInput {
 
 export interface OpensteerDomExtractInput {
   readonly persist?: string;
-  readonly schema?: Readonly<Record<string, unknown>>;
+  readonly template?: Readonly<Record<string, unknown>>;
 }
 
 export interface OpensteerDomExtractOutput {
@@ -1196,10 +1196,10 @@ const opensteerDomScrollInputSchema: JsonSchema = objectSchema(
   },
 );
 
-const opensteerExtractSchemaSchema: JsonSchema = objectSchema(
+const opensteerExtractTemplateSchema: JsonSchema = objectSchema(
   {},
   {
-    title: "OpensteerExtractSchema",
+    title: "OpensteerExtractTemplate",
     additionalProperties: true,
   },
 );
@@ -1208,13 +1208,13 @@ const opensteerDomExtractInputSchema: JsonSchema = defineSchema({
   ...objectSchema(
     {
       persist: stringSchema(),
-      schema: opensteerExtractSchemaSchema,
+      template: opensteerExtractTemplateSchema,
     },
     {
       title: "OpensteerDomExtractInput",
     },
   ),
-  anyOf: [defineSchema({ required: ["persist"] }), defineSchema({ required: ["schema"] })],
+  anyOf: [defineSchema({ required: ["persist"] }), defineSchema({ required: ["template"] })],
 });
 
 const jsonValueSchema: JsonSchema = recordSchema({}, { title: "JsonValueRecord" });

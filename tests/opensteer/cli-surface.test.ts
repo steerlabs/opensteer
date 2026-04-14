@@ -46,20 +46,36 @@ describe("CLI surface parsing", () => {
   });
 
   test("builds input text from positional args", async () => {
-    const parsed = parseCommandLine(["input", "5", "laptop pro", "--press-enter"]);
+    const parsed = parseCommandLine([
+      "input",
+      "5",
+      "laptop pro",
+      "--persist",
+      "search input",
+      "--press-enter",
+    ]);
 
     await expect(buildOperationInput("dom.input", parsed, DUMMY_RUNTIME)).resolves.toEqual({
       target: {
         kind: "element",
         element: 5,
       },
+      persist: "search input",
       text: "laptop pro",
       pressEnter: true,
     });
   });
 
   test("defaults scroll to the page root when no element is provided", async () => {
-    const parsed = parseCommandLine(["scroll", "down", "250", "--capture-network", "feed"]);
+    const parsed = parseCommandLine([
+      "scroll",
+      "down",
+      "250",
+      "--persist",
+      "page root scroll",
+      "--capture-network",
+      "feed",
+    ]);
 
     await expect(buildOperationInput("dom.scroll", parsed, DUMMY_RUNTIME)).resolves.toEqual({
       target: {
@@ -68,26 +84,38 @@ describe("CLI surface parsing", () => {
       },
       direction: "down",
       amount: 250,
+      persist: "page root scroll",
       captureNetwork: "feed",
     });
   });
 
-  test("builds extract input from positional schema and optional persist", async () => {
-    const parsed = parseCommandLine([
-      "extract",
-      '{"title":{"element":3}}',
-      "--persist",
-      "page summary",
-    ]);
+  test("builds extract input from positional template and required persist", async () => {
+    const parsed = parseCommandLine(["extract", '{"title":3}', "--persist", "page summary"]);
 
     await expect(buildOperationInput("dom.extract", parsed, DUMMY_RUNTIME)).resolves.toEqual({
       persist: "page summary",
-      schema: {
-        title: {
-          element: 3,
-        },
+      template: {
+        title: 3,
       },
     });
+  });
+
+  test("requires persist keys for CLI DOM actions and extract", async () => {
+    await expect(
+      buildOperationInput("dom.click", parseCommandLine(["click", "7"]), DUMMY_RUNTIME),
+    ).rejects.toThrow('click requires "--persist <key>".');
+
+    await expect(
+      buildOperationInput("dom.scroll", parseCommandLine(["scroll", "down", "250"]), DUMMY_RUNTIME),
+    ).rejects.toThrow('scroll requires "--persist <key>".');
+
+    await expect(
+      buildOperationInput(
+        "dom.extract",
+        parseCommandLine(["extract", '{"title":3}']),
+        DUMMY_RUNTIME,
+      ),
+    ).rejects.toThrow('extract requires "--persist <key>".');
   });
 
   test("builds fetch input with scoped JSON flags", async () => {

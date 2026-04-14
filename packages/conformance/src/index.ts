@@ -84,10 +84,7 @@ export interface OpensteerConformanceTarget {
     readonly direction: "up" | "down" | "left" | "right";
     readonly amount: number;
   }): Promise<OpensteerActionResult>;
-  extract(input: {
-    readonly persist: string;
-    readonly schema?: Record<string, unknown>;
-  }): Promise<unknown>;
+  extract(input: { readonly persist: string }): Promise<unknown>;
   cookies(domain?: string): Promise<{
     has(name: string): boolean;
     get(name: string): string | undefined;
@@ -304,10 +301,6 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
       const extracted = asRecord(
         await target.extract({
           persist: "conformance fixture state",
-          schema: {
-            status: { selector: "#status" },
-            mirror: { selector: "#mirror" },
-          },
         }),
         "expected extract() to produce an object",
       );
@@ -458,9 +451,6 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
       const status = asRecord(
         await target.extract({
           persist: "conformance computer status",
-          schema: {
-            status: { selector: "#status" },
-          },
         }),
         "expected extract() to return the computer action status",
       );

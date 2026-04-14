@@ -62,8 +62,8 @@ describe("Extraction descriptor replay paths", () => {
       const payload = await compileOpensteerExtractionPayload({
         dom,
         pageRef: created.data.pageRef,
-        schema: {
-          counterValue: { element: counter.element },
+        template: {
+          counterValue: counter.element,
           selectorValue: { selector: "#selector-target" },
         },
       });
@@ -193,9 +193,9 @@ describe("Extraction descriptor replay paths", () => {
       const payload = await compileOpensteerExtractionPayload({
         dom,
         pageRef: created.data.pageRef,
-        schema: {
-          link: { element: linkCounter.element, attribute: "href" },
-          image: { element: imageCounter.element, attribute: "srcset" },
+        template: {
+          link: { c: linkCounter.element, attr: "href" },
+          image: { c: imageCounter.element, attr: "srcset" },
         },
       });
 
@@ -258,16 +258,16 @@ describe("Extraction descriptor replay paths", () => {
       const payload = await compileOpensteerExtractionPayload({
         dom,
         pageRef: created.data.pageRef,
-        schema: {
+        template: {
           items: [
             {
               title: { selector: "#products li:nth-child(1) a.title" },
-              url: { selector: "#products li:nth-child(1) a.title", attribute: "href" },
+              url: { selector: "#products li:nth-child(1) a.title", attr: "href" },
               price: { selector: "#products li:nth-child(1) .price" },
             },
             {
               title: { selector: "#products li:nth-child(2) a.title" },
-              url: { selector: "#products li:nth-child(2) a.title", attribute: "href" },
+              url: { selector: "#products li:nth-child(2) a.title", attr: "href" },
               price: { selector: "#products li:nth-child(2) .price" },
             },
           ],
@@ -323,16 +323,16 @@ describe("Extraction descriptor replay paths", () => {
       const payload = await compileOpensteerExtractionPayload({
         dom,
         pageRef: created.data.pageRef,
-        schema: {
+        template: {
           items: [
             {
               title: { selector: "#products li:nth-child(1) .title" },
-              url: { selector: "#products li:nth-child(1) .title", attribute: "href" },
+              url: { selector: "#products li:nth-child(1) .title", attr: "href" },
               price: { selector: "#products li:nth-child(1) .price" },
             },
             {
               title: { selector: "#products li:nth-child(2) .title" },
-              url: { selector: "#products li:nth-child(2) .title", attribute: "href" },
+              url: { selector: "#products li:nth-child(2) .title", attr: "href" },
               price: { selector: "#products li:nth-child(2) .price" },
             },
           ],
@@ -408,7 +408,7 @@ describe("Extraction descriptor replay paths", () => {
       const payload = await compileOpensteerExtractionPayload({
         dom,
         pageRef: created.data.pageRef,
-        schema: {
+        template: {
           items: [
             {
               title: { selector: "#products li:nth-child(1) [data-role='title']" },
@@ -520,17 +520,17 @@ describe("Extraction descriptor replay paths", () => {
       const payload = await compileOpensteerExtractionPayload({
         dom,
         pageRef: created.data.pageRef,
-        schema: {
+        template: {
           items: [
             {
-              title: { element: titleOne.element },
-              url: { element: titleOne.element, attribute: "href" },
-              price: { element: priceOne.element },
+              title: titleOne.element,
+              url: { c: titleOne.element, attr: "href" },
+              price: priceOne.element,
             },
             {
-              title: { element: titleTwo.element },
-              url: { element: titleTwo.element, attribute: "href" },
-              price: { element: priceTwo.element },
+              title: titleTwo.element,
+              url: { c: titleTwo.element, attr: "href" },
+              price: priceTwo.element,
             },
           ],
         },

@@ -24,29 +24,29 @@ import {
   joinDataPath,
 } from "./extraction-data-path.js";
 
-interface OpensteerSchemaFieldByElement {
-  readonly element: number;
+interface OpensteerTemplateFieldByCounter {
+  readonly counter: number;
   readonly attribute?: string;
 }
 
-interface OpensteerSchemaFieldBySelector {
+interface OpensteerTemplateFieldBySelector {
   readonly selector: string;
   readonly attribute?: string;
 }
 
-interface OpensteerSchemaFieldBySource {
+interface OpensteerTemplateFieldBySource {
   readonly source: "current_url";
 }
 
-type OpensteerSchemaField =
-  | OpensteerSchemaFieldByElement
-  | OpensteerSchemaFieldBySelector
-  | OpensteerSchemaFieldBySource;
+type OpensteerTemplateField =
+  | OpensteerTemplateFieldByCounter
+  | OpensteerTemplateFieldBySelector
+  | OpensteerTemplateFieldBySource;
 
-type OpensteerSchemaNode =
-  | OpensteerSchemaField
-  | readonly OpensteerSchemaNode[]
-  | { readonly [key: string]: OpensteerSchemaNode };
+type OpensteerTemplateNode =
+  | OpensteerTemplateField
+  | readonly OpensteerTemplateNode[]
+  | { readonly [key: string]: OpensteerTemplateNode };
 
 interface OpensteerExtractionPathFieldTarget {
   readonly key: string;
@@ -99,7 +99,7 @@ export interface OpensteerExtractionDescriptorPayload {
   readonly kind: "dom-extraction";
   readonly persist: string;
   readonly root: PersistedOpensteerExtractionPayload;
-  readonly schemaHash?: string;
+  readonly templateHash?: string;
   readonly sourceUrl?: string;
 }
 
@@ -119,7 +119,7 @@ export interface OpensteerExtractionDescriptorStore {
   write(input: {
     readonly persist: string;
     readonly root: PersistedOpensteerExtractionPayload;
-    readonly schemaHash?: string;
+    readonly templateHash?: string;
     readonly sourceUrl?: string;
     readonly createdAt?: number;
     readonly updatedAt?: number;
@@ -150,12 +150,18 @@ interface MergedVariantRow {
   readonly value: JsonValue;
 }
 
-export function assertValidOpensteerExtractionSchemaRoot(schema: unknown): asserts schema is {
-  readonly [key: string]: OpensteerSchemaNode;
+export function assertValidOpensteerExtractionTemplateRoot(template: unknown): asserts template is {
+  readonly [key: string]: OpensteerTemplateNode;
 } {
-  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
-    throw new Error("Invalid extraction schema: expected a JSON object at the top level.");
+  if (!template || typeof template !== "object" || Array.isArray(template)) {
+    throw new Error("Invalid extraction template: expected a JSON object at the top level.");
   }
+}
+
+export function assertValidOpensteerExtractionSchemaRoot(schema: unknown): asserts schema is {
+  readonly [key: string]: OpensteerTemplateNode;
+} {
+  assertValidOpensteerExtractionTemplateRoot(schema);
 }
 
 export function isPersistedOpensteerExtractionValueNode(
@@ -188,16 +194,25 @@ export function isPersistedOpensteerExtractionArrayNode(
   return "$array" in value;
 }
 
-export async function compileOpensteerExtractionPayload(options: {
-  readonly pageRef: PageRef;
-  readonly schema: Record<string, unknown>;
-  readonly dom: DomRuntime;
-}): Promise<PersistedOpensteerExtractionPayload> {
-  assertValidOpensteerExtractionSchemaRoot(options.schema);
+export async function compileOpensteerExtractionPayload(
+  options: {
+    readonly pageRef: PageRef;
+    readonly dom: DomRuntime;
+  } & (
+    | {
+        readonly template: Record<string, unknown>;
+      }
+    | {
+        readonly schema: Record<string, unknown>;
+      }
+  ),
+): Promise<PersistedOpensteerExtractionPayload> {
+  const template = readExtractionTemplate(options);
+  assertValidOpensteerExtractionTemplateRoot(template);
   const fieldTargets = await compileOpensteerExtractionFieldTargets({
     dom: options.dom,
     pageRef: options.pageRef,
-    schema: options.schema,
+    template,
   });
   return compilePersistedOpensteerExtractionPayloadFromFieldTargets({
     pageRef: options.pageRef,
@@ -206,17 +221,26 @@ export async function compileOpensteerExtractionPayload(options: {
   });
 }
 
-export async function compileOpensteerExtractionFieldTargets(options: {
-  readonly pageRef: PageRef;
-  readonly schema: Record<string, unknown>;
-  readonly dom: DomRuntime;
-}): Promise<readonly OpensteerExtractionFieldTarget[]> {
-  assertValidOpensteerExtractionSchemaRoot(options.schema);
+export async function compileOpensteerExtractionFieldTargets(
+  options: {
+    readonly pageRef: PageRef;
+    readonly dom: DomRuntime;
+  } & (
+    | {
+        readonly template: Record<string, unknown>;
+      }
+    | {
+        readonly schema: Record<string, unknown>;
+      }
+  ),
+): Promise<readonly OpensteerExtractionFieldTarget[]> {
+  const template = readExtractionTemplate(options);
+  assertValidOpensteerExtractionTemplateRoot(template);
   const fields: OpensteerExtractionFieldTarget[] = [];
-  await collectFieldTargetsFromSchemaObject({
+  await collectFieldTargetsFromTemplateObject({
     dom: options.dom,
     pageRef: options.pageRef,
-    value: options.schema,
+    value: template,
     path: "",
     fields,
     insideArray: false,
@@ -292,7 +316,19 @@ export function createOpensteerExtractionDescriptorStore(options: {
   return new MemoryOpensteerExtractionDescriptorStore(namespace);
 }
 
-async function collectFieldTargetsFromSchemaObject(options: {
+function readExtractionTemplate(
+  options:
+    | {
+        readonly template: Record<string, unknown>;
+      }
+    | {
+        readonly schema: Record<string, unknown>;
+      },
+): Record<string, unknown> {
+  return "template" in options ? options.template : options.schema;
+}
+
+async function collectFieldTargetsFromTemplateObject(options: {
   readonly dom: DomRuntime;
   readonly pageRef: PageRef;
   readonly value: Record<string, unknown>;
@@ -306,7 +342,7 @@ async function collectFieldTargetsFromSchemaObject(options: {
       continue;
     }
 
-    await collectFieldTargetsFromSchemaValue({
+    await collectFieldTargetsFromTemplateValue({
       dom: options.dom,
       pageRef: options.pageRef,
       value: childValue,
@@ -317,7 +353,7 @@ async function collectFieldTargetsFromSchemaObject(options: {
   }
 }
 
-async function collectFieldTargetsFromSchemaValue(options: {
+async function collectFieldTargetsFromTemplateValue(options: {
   readonly dom: DomRuntime;
   readonly pageRef: PageRef;
   readonly value: unknown;
@@ -325,7 +361,7 @@ async function collectFieldTargetsFromSchemaValue(options: {
   readonly fields: OpensteerExtractionFieldTarget[];
   readonly insideArray: boolean;
 }): Promise<void> {
-  const normalizedField = normalizeSchemaField(options.value);
+  const normalizedField = normalizeTemplateField(options.value);
   if (normalizedField !== null) {
     options.fields.push(
       await compileFieldTarget({
@@ -341,12 +377,12 @@ async function collectFieldTargetsFromSchemaValue(options: {
   if (Array.isArray(options.value)) {
     if (options.insideArray) {
       throw new Error(
-        `Nested arrays are not supported in extraction schema at "${labelForPath(options.path)}".`,
+        `Nested arrays are not supported in extraction template at "${labelForPath(options.path)}".`,
       );
     }
     if (options.value.length === 0) {
       throw new Error(
-        `Extraction array "${labelForPath(options.path)}" must include at least one representative item.`,
+        `Extraction array "${labelForPath(options.path)}" must include at least one representative template item.`,
       );
     }
 
@@ -359,7 +395,7 @@ async function collectFieldTargetsFromSchemaValue(options: {
       }
 
       const fieldCountBeforeItem = options.fields.length;
-      await collectFieldTargetsFromSchemaObject({
+      await collectFieldTargetsFromTemplateObject({
         dom: options.dom,
         pageRef: options.pageRef,
         value: itemValue as Record<string, unknown>,
@@ -371,7 +407,7 @@ async function collectFieldTargetsFromSchemaValue(options: {
       const itemFields = options.fields.slice(fieldCountBeforeItem);
       if (!itemFields.some((field) => !("source" in field))) {
         throw new Error(
-          `Extraction array "${labelForPath(options.path)}" item ${String(index)} must include at least one element- or selector-backed field.`,
+          `Extraction array "${labelForPath(options.path)}" item ${String(index)} must include at least one counter- or selector-backed field.`,
         );
       }
     }
@@ -380,11 +416,11 @@ async function collectFieldTargetsFromSchemaValue(options: {
 
   if (!options.value || typeof options.value !== "object") {
     throw new Error(
-      `Invalid extraction schema value at "${labelForPath(options.path)}": expected an object, array, or field descriptor.`,
+      `Invalid extraction template value at "${labelForPath(options.path)}": expected an object, array, or field descriptor.`,
     );
   }
 
-  await collectFieldTargetsFromSchemaObject({
+  await collectFieldTargetsFromTemplateObject({
     dom: options.dom,
     pageRef: options.pageRef,
     value: options.value as Record<string, unknown>,
@@ -397,7 +433,7 @@ async function collectFieldTargetsFromSchemaValue(options: {
 async function compileFieldTarget(options: {
   readonly dom: DomRuntime;
   readonly pageRef: PageRef;
-  readonly field: OpensteerSchemaField;
+  readonly field: OpensteerTemplateField;
   readonly path: string;
 }): Promise<OpensteerExtractionFieldTarget> {
   if ("source" in options.field) {
@@ -424,7 +460,7 @@ async function compileFieldTarget(options: {
     path: await resolveSelectorFieldPath({
       dom: options.dom,
       pageRef: options.pageRef,
-      selector: `[c="${String(options.field.element)}"]`,
+      selector: `[c="${String(options.field.counter)}"]`,
     }),
     ...(options.field.attribute === undefined ? {} : { attribute: options.field.attribute }),
   };
@@ -858,27 +894,37 @@ function countNonNullLeaves(value: JsonValue): number {
   return Object.values(value).reduce<number>((sum, item) => sum + countNonNullLeaves(item), 0);
 }
 
-function normalizeSchemaField(value: unknown): OpensteerSchemaField | null {
+function normalizeTemplateField(value: unknown): OpensteerTemplateField | null {
+  if (typeof value === "number") {
+    return {
+      counter: normalizeExtractionCounter(value),
+    };
+  }
+
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
 
   const raw = value as Record<string, unknown>;
-  const hasElement = raw.element !== undefined;
+  const hasCounter = raw.c !== undefined || raw.element !== undefined;
   const hasSelector = raw.selector !== undefined;
   const hasSource = raw.source !== undefined;
-  const targetCount = Number(hasElement) + Number(hasSelector) + Number(hasSource);
+  const targetCount = Number(hasCounter) + Number(hasSelector) + Number(hasSource);
   if (targetCount === 0) {
     return null;
   }
   if (targetCount !== 1) {
     throw new Error(
-      "Extraction field descriptors must specify exactly one of element, selector, or source.",
+      "Extraction field descriptors must specify exactly one of c/element, selector, or source.",
     );
   }
 
   const attribute =
-    raw.attribute === undefined ? undefined : normalizeNonEmptyString("attribute", raw.attribute);
+    raw.attr !== undefined
+      ? normalizeNonEmptyString("attr", raw.attr)
+      : raw.attribute === undefined
+        ? undefined
+        : normalizeNonEmptyString("attribute", raw.attribute);
 
   if (hasSource) {
     if (raw.source !== "current_url") {
@@ -896,17 +942,20 @@ function normalizeSchemaField(value: unknown): OpensteerSchemaField | null {
     };
   }
 
-  const element = Number(raw.element);
-  if (!Number.isInteger(element) || element < 1) {
-    throw new Error(
-      `Extraction field element must be a positive integer, received ${String(raw.element)}.`,
-    );
-  }
-
   return {
-    element,
+    counter: normalizeExtractionCounter(raw.c ?? raw.element),
     ...(attribute === undefined ? {} : { attribute }),
   };
+}
+
+function normalizeExtractionCounter(value: unknown): number {
+  const counter = Number(value);
+  if (!Number.isInteger(counter) || counter < 1) {
+    throw new Error(
+      `Extraction field counter must be a positive integer, received ${String(value)}.`,
+    );
+  }
+  return counter;
 }
 
 function normalizeNamespace(namespace: string | undefined): string {
@@ -946,7 +995,11 @@ export function parseExtractionDescriptorRecord(
       kind: "dom-extraction",
       persist: raw.persist,
       root,
-      ...(typeof raw.schemaHash === "string" ? { schemaHash: raw.schemaHash } : {}),
+      ...(typeof raw.templateHash === "string"
+        ? { templateHash: raw.templateHash }
+        : typeof raw.schemaHash === "string"
+          ? { templateHash: raw.schemaHash }
+          : {}),
       ...(typeof raw.sourceUrl === "string" ? { sourceUrl: raw.sourceUrl } : {}),
     },
   };
@@ -1056,7 +1109,7 @@ class FilesystemOpensteerExtractionDescriptorStore implements OpensteerExtractio
   async write(input: {
     readonly persist: string;
     readonly root: PersistedOpensteerExtractionPayload;
-    readonly schemaHash?: string;
+    readonly templateHash?: string;
     readonly sourceUrl?: string;
     readonly createdAt?: number;
     readonly updatedAt?: number;
@@ -1065,7 +1118,7 @@ class FilesystemOpensteerExtractionDescriptorStore implements OpensteerExtractio
       kind: "dom-extraction",
       persist: input.persist,
       root: input.root,
-      ...(input.schemaHash === undefined ? {} : { schemaHash: input.schemaHash }),
+      ...(input.templateHash === undefined ? {} : { templateHash: input.templateHash }),
       ...(input.sourceUrl === undefined ? {} : { sourceUrl: input.sourceUrl }),
     };
     const key = persistKey(this.namespace, input.persist);
@@ -1120,7 +1173,7 @@ class MemoryOpensteerExtractionDescriptorStore implements OpensteerExtractionDes
   async write(input: {
     readonly persist: string;
     readonly root: PersistedOpensteerExtractionPayload;
-    readonly schemaHash?: string;
+    readonly templateHash?: string;
     readonly sourceUrl?: string;
     readonly createdAt?: number;
     readonly updatedAt?: number;
@@ -1129,7 +1182,7 @@ class MemoryOpensteerExtractionDescriptorStore implements OpensteerExtractionDes
       kind: "dom-extraction",
       persist: input.persist,
       root: input.root,
-      ...(input.schemaHash === undefined ? {} : { schemaHash: input.schemaHash }),
+      ...(input.templateHash === undefined ? {} : { templateHash: input.templateHash }),
       ...(input.sourceUrl === undefined ? {} : { sourceUrl: input.sourceUrl }),
     };
     const key = persistKey(this.namespace, input.persist);
