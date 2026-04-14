@@ -227,7 +227,7 @@ describe("action snapshot cleaner", () => {
       </html>
     `);
 
-    expect(cleaned).toContain("<div c=\"1\">abcd</div>");
+    expect(cleaned).toContain('<div c="1">abcd</div>');
     expect(cleaned).not.toContain("abdc");
   });
 

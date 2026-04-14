@@ -17,7 +17,10 @@ import {
   createScrollOffset,
   createSize,
 } from "../../packages/browser-core/src/index.js";
-import { OpensteerRuntime, OpensteerSessionRuntime } from "../../packages/opensteer/src/sdk/runtime.js";
+import {
+  OpensteerRuntime,
+  OpensteerSessionRuntime,
+} from "../../packages/opensteer/src/sdk/runtime.js";
 import {
   Opensteer,
   defaultPolicy,

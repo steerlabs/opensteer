@@ -1304,15 +1304,7 @@ export function cleanForAction(html: string): string {
     ]);
 
     if (clickable) {
-      for (const attr of [
-        "href",
-        "role",
-        "type",
-        "title",
-        "placeholder",
-        "value",
-        "aria-label",
-      ]) {
+      for (const attr of ["href", "role", "type", "title", "placeholder", "value", "aria-label"]) {
         keep.add(attr);
       }
     }

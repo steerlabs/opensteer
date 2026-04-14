@@ -183,7 +183,9 @@ export async function waitForActionBoundary(
           DEFAULT_POST_LOAD_TRACKER_QUIET_WINDOW_MS,
         )
       ) {
-        await delay(Math.min(pollIntervalMs, Math.max(0, crossDocumentPostLoadDeadline - Date.now())));
+        await delay(
+          Math.min(pollIntervalMs, Math.max(0, crossDocumentPostLoadDeadline - Date.now())),
+        );
         continue;
       }
       return {
