@@ -318,11 +318,11 @@ Re-snapshot after switching tabs — element numbers are per-page.
 
 Each workspace has one browser. Three modes:
 
-| Mode | What it does | Data persists? |
-| --- | --- | --- |
-| **Persistent** (default) | Browser tied to workspace, survives restarts | Yes |
-| **Temporary** | Headless browser in `/tmp`, cleaned up on close | No |
-| **Attach** | Connects to an already-running browser via CDP | Depends on that browser |
+| Mode                     | What it does                                    | Data persists?          |
+| ------------------------ | ----------------------------------------------- | ----------------------- |
+| **Persistent** (default) | Browser tied to workspace, survives restarts    | Yes                     |
+| **Temporary**            | Headless browser in `/tmp`, cleaned up on close | No                      |
+| **Attach**               | Connects to an already-running browser via CDP  | Depends on that browser |
 
 ### Headless vs headed
 

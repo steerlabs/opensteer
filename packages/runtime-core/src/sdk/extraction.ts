@@ -188,13 +188,11 @@ export function isPersistedOpensteerExtractionArrayNode(
   return "$array" in value;
 }
 
-export async function compileOpensteerExtractionPayload(
-  options: {
-    readonly pageRef: PageRef;
-    readonly dom: DomRuntime;
-    readonly template: Readonly<Record<string, unknown>>;
-  },
-): Promise<PersistedOpensteerExtractionPayload> {
+export async function compileOpensteerExtractionPayload(options: {
+  readonly pageRef: PageRef;
+  readonly dom: DomRuntime;
+  readonly template: Readonly<Record<string, unknown>>;
+}): Promise<PersistedOpensteerExtractionPayload> {
   assertValidOpensteerExtractionTemplateRoot(options.template);
   const fieldTargets = await compileOpensteerExtractionFieldTargets({
     dom: options.dom,
@@ -208,13 +206,11 @@ export async function compileOpensteerExtractionPayload(
   });
 }
 
-export async function compileOpensteerExtractionFieldTargets(
-  options: {
-    readonly pageRef: PageRef;
-    readonly dom: DomRuntime;
-    readonly template: Readonly<Record<string, unknown>>;
-  },
-): Promise<readonly OpensteerExtractionFieldTarget[]> {
+export async function compileOpensteerExtractionFieldTargets(options: {
+  readonly pageRef: PageRef;
+  readonly dom: DomRuntime;
+  readonly template: Readonly<Record<string, unknown>>;
+}): Promise<readonly OpensteerExtractionFieldTarget[]> {
   assertValidOpensteerExtractionTemplateRoot(options.template);
   const fields: OpensteerExtractionFieldTarget[] = [];
   await collectFieldTargetsFromTemplateObject({
