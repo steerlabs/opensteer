@@ -137,10 +137,7 @@ function takeValueWithinSerializedLengthFromEnd(value: string, max: number): str
   const chars: string[] = [];
 
   for (let index = value.length - 1; index >= 0; index -= 1) {
-    const char = value[index];
-    if (char === undefined) {
-      continue;
-    }
+    const char = value[index]!;
 
     let nextLength = 1;
     if (char === "&") {
@@ -251,24 +248,15 @@ function buildTruncatedSrcsetValue(
 ): string {
   const kept = getPreferredSrcsetCandidateIndices(candidates, includeBest);
   const parts: string[] = [];
+  let previousIndex: number | undefined;
 
-  for (let index = 0; index < kept.length; index += 1) {
-    const candidateIndex = kept[index];
-    if (candidateIndex === undefined) {
-      continue;
-    }
-
-    const previousIndex = index > 0 ? kept[index - 1] : undefined;
+  for (const candidateIndex of kept) {
     if (previousIndex !== undefined && candidateIndex - previousIndex > 1) {
       parts.push(MIDDLE_TRUNCATION_MARKER);
     }
 
-    const candidate = candidates[candidateIndex];
-    if (!candidate) {
-      continue;
-    }
-
-    parts.push(formatSrcsetCandidate(candidate, headMax, tailMax));
+    parts.push(formatSrcsetCandidate(candidates[candidateIndex]!, headMax, tailMax));
+    previousIndex = candidateIndex;
   }
 
   return parts.join(", ");
@@ -297,10 +285,7 @@ function pickBestSrcsetCandidateIndex(candidates: readonly SrcsetCandidateSummar
   let bestDensity = -1;
 
   for (let index = 0; index < candidates.length; index += 1) {
-    const candidate = candidates[index];
-    if (!candidate) {
-      continue;
-    }
+    const candidate = candidates[index]!;
 
     if (
       typeof candidate.width === "number" &&
@@ -341,7 +326,7 @@ function formatSrcsetCandidate(
 }
 
 function parseSrcsetCandidates(raw: string): SrcsetCandidateSummary[] {
-  const text = String(raw || "").trim();
+  const text = raw.trim();
   if (!text) {
     return [];
   }
@@ -646,8 +631,6 @@ function deduplicateImages(html: string): string {
   const seen = new Set<string>();
 
   return html.replace(/<img\b([^>]*)>/gi, (full, attrContent) => {
-    // Counter-tagged elements are distinct tracked elements — never deduplicate by src.
-    // src values may be middle-truncated, making different images appear identical.
     if (/\bc\s*=/.test(attrContent)) {
       return full;
     }
@@ -1104,7 +1087,12 @@ export function cleanForExtraction(html: string): string {
   });
 
   flattenExtractionTree($clean);
-  return deduplicateImages(serializeForExtraction($clean, $clean.root()[0] as unknown as AnyNode));
+  const root = $clean.root()[0];
+  if (root === undefined) {
+    return "";
+  }
+
+  return deduplicateImages(serializeForExtraction($clean, root));
 }
 
 export function cleanForAction(html: string): string {

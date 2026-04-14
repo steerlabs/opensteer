@@ -177,7 +177,6 @@ describe("Extraction descriptor replay paths", () => {
       expect(srcsetMatch).not.toBeNull();
       expect(hrefMatch?.[1].length ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(80);
       expect(srcsetMatch?.[1].length ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(160);
-      // href uses middle truncation; srcset keeps compact candidate structure with the same marker
       expect(hrefMatch?.[1]).toContain("...");
       expect(srcsetMatch?.[1]).toContain("320w");
       expect(srcsetMatch?.[1]).toContain("2048w");

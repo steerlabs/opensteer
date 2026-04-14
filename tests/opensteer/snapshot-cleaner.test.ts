@@ -325,9 +325,6 @@ describe("action snapshot cleaner", () => {
   });
 
   test("does not deduplicate counter-tagged images with the same truncated src", () => {
-    // After middle-truncation, images from the same CDN with the same dimensions share
-    // an identical truncated src (same 40-char head + same 20-char tail). Without the
-    // c-attribute guard, deduplicateImages would remove all but the first.
     const cdnBase = "https://cdn.example.com/products/";
     const suffix = "?qlt=65&fmt=webp&hei=350&wid=350";
     const makeUrl = (uuid: string) => `${cdnBase}${uuid}${suffix}`;
@@ -346,11 +343,9 @@ describe("action snapshot cleaner", () => {
       </body></html>
     `);
 
-    // All three images must survive — they are distinct tracked elements
     expect(cleaned).toContain('c="2"');
     expect(cleaned).toContain('c="4"');
     expect(cleaned).toContain('c="6"');
-    // All three srcs should appear (middle-truncated), not just the first
     const imgMatches = [...cleaned.matchAll(/<img\b[^>]*c="[^"]*"[^>]*>/gi)];
     expect(imgMatches).toHaveLength(3);
   });
