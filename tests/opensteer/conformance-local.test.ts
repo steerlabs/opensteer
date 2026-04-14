@@ -11,7 +11,8 @@ import {
   type OpensteerConformanceHarness,
   type OpensteerConformanceUrls,
 } from "../../packages/conformance/src/index.js";
-import { Opensteer, OpensteerRuntime } from "../../packages/opensteer/src/index.js";
+import { OpensteerRuntime } from "../../packages/opensteer/src/sdk/runtime.js";
+import { Opensteer } from "../../packages/opensteer/src/index.js";
 
 let urls: OpensteerConformanceUrls;
 let closeServer: (() => Promise<void>) | undefined;
