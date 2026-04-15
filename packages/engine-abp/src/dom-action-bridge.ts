@@ -521,15 +521,18 @@ const BUILD_LIVE_REPLAY_PATH_SOURCE = String.raw`(target, policy) => {
 
 export function createAbpDomActionBridge(context: AbpDomActionBridgeContext): DomActionBridge {
   return {
-    async buildReplayPath(locator) {
+    async buildReplayPath(locator, options) {
       const { controller, document, backendNodeId } = await prepareLiveNodeContext(
         context,
         locator,
       );
       return withTemporaryExecutionResume(context, controller, async () => {
+        const policy = options?.enableTextMatch
+          ? { ...LIVE_REPLAY_PATH_POLICY, enableTextMatch: true }
+          : LIVE_REPLAY_PATH_POLICY;
         const raw = await callNodeValueFunction(controller, document, locator, backendNodeId, {
           functionDeclaration: BUILD_LIVE_REPLAY_PATH_DECLARATION,
-          arguments: [{ value: LIVE_REPLAY_PATH_POLICY }, { value: BUILD_LIVE_REPLAY_PATH_SOURCE }],
+          arguments: [{ value: policy }, { value: BUILD_LIVE_REPLAY_PATH_SOURCE }],
         });
         return requireReplayPath(raw, locator);
       });

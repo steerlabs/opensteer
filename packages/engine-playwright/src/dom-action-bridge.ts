@@ -532,6 +532,7 @@ const BUILD_LIVE_REPLAY_PATH_SOURCE = String.raw`(target, policy) => {
   function buildSegmentSelector(data) {
     let selector = String(data.tag || "*").toLowerCase();
     for (const clause of data.match || []) {
+      if (clause.kind === "text") continue;
       if (clause.kind === "position") {
         if (clause.axis === "nthOfType") {
           selector += ":nth-of-type(" + Math.max(1, Number(data.position?.nthOfType || 1)) + ")";
@@ -575,6 +576,8 @@ const BUILD_LIVE_REPLAY_PATH_SOURCE = String.raw`(target, policy) => {
 
   function selectReplayCandidate(nodes, root) {
     const selectors = buildCandidates(nodes);
+    const targetNode = nodes[nodes.length - 1];
+    const textClauses = (targetNode?.match || []).filter((c) => c.kind === "text");
     let fallback = null;
     let fallbackSelector = null;
     let fallbackCount = 0;
@@ -584,6 +587,13 @@ const BUILD_LIVE_REPLAY_PATH_SOURCE = String.raw`(target, policy) => {
         matches = Array.from(root.querySelectorAll(selector));
       } catch {
         matches = [];
+      }
+      if (textClauses.length > 0 && matches.length > 1) {
+        const filtered = matches.filter((el) => {
+          const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+          return textClauses.every((tc) => text.includes(tc.value));
+        });
+        if (filtered.length > 0) matches = filtered;
       }
       if (!matches.length) continue;
       if (matches.length === 1) {
@@ -636,6 +646,15 @@ const BUILD_LIVE_REPLAY_PATH_SOURCE = String.raw`(target, policy) => {
       else pool.push(clause);
     }
 
+    if (data.textContent) {
+      const clause = { kind: "text", value: data.textContent };
+      const keyId = clauseKey(clause);
+      if (!used.has(keyId)) {
+        used.add(keyId);
+        pool.push(clause);
+      }
+    }
+
     for (const clause of [
       { kind: "position", axis: "nthOfType" },
       { kind: "position", axis: "nthChild" },
@@ -659,6 +678,9 @@ const BUILD_LIVE_REPLAY_PATH_SOURCE = String.raw`(target, policy) => {
       tag: element.tagName.toLowerCase(),
       attrs: collectAttrs(element),
       position: toPosition(element, root),
+      textContent: policy.enableTextMatch
+        ? (element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80)
+        : "",
       match: [],
     }));
 
@@ -737,13 +759,14 @@ export function createPlaywrightDomActionBridge(
   context: PlaywrightDomActionBridgeContext,
 ): DomActionBridge {
   return {
-    buildReplayPath(locator) {
+    buildReplayPath(locator, options) {
       return withLiveNode(context, locator, async ({ controller, document, backendNodeId }) => {
         const localPath = await buildLiveReplayPathForLocator(
           controller,
           document,
           locator,
           backendNodeId,
+          options,
         );
         return prefixIframeReplayPath(context, document.frameRef, localPath);
       });
@@ -1209,10 +1232,14 @@ async function buildLiveReplayPathForLocator(
   document: DocumentState,
   locator: NodeLocator,
   backendNodeId: number,
+  options?: { readonly enableTextMatch?: boolean },
 ): Promise<ReplayElementPath> {
+  const policy = options?.enableTextMatch
+    ? { ...LIVE_REPLAY_PATH_POLICY, enableTextMatch: true }
+    : LIVE_REPLAY_PATH_POLICY;
   const raw = await callNodeFunction(controller, document, locator, backendNodeId, {
     functionDeclaration: BUILD_LIVE_REPLAY_PATH_DECLARATION,
-    arguments: [{ value: LIVE_REPLAY_PATH_POLICY }, { value: BUILD_LIVE_REPLAY_PATH_SOURCE }],
+    arguments: [{ value: policy }, { value: BUILD_LIVE_REPLAY_PATH_SOURCE }],
     returnByValue: true,
   });
   return requireReplayPath(raw, locator);

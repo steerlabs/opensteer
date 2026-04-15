@@ -178,7 +178,12 @@ class DefaultDomRuntime implements DomRuntime {
   }
 
   async buildPath(input: DomBuildPathInput): Promise<ReplayElementPath> {
-    return sanitizeReplayElementPath(await this.requireBridge().buildReplayPath(input.locator));
+    return sanitizeReplayElementPath(
+      await this.requireBridge().buildReplayPath(
+        input.locator,
+        input.enableTextMatch ? { enableTextMatch: true } : undefined,
+      ),
+    );
   }
 
   async resolveTarget(input: DomResolveTargetInput): Promise<ResolvedDomTarget> {
@@ -470,7 +475,7 @@ class DefaultDomRuntime implements DomRuntime {
     if (resolvedByLocator) {
       const { snapshot, node } = resolvedByLocator;
       const anchor = await this.buildAnchorFromSnapshotNode(session, snapshot, node);
-      const replayPath = await this.tryBuildPathFromNode(snapshot, node);
+      const replayPath = await this.tryBuildPathFromNode(snapshot, node, { enableTextMatch: true });
       return this.createResolvedTarget("live", snapshot, node, anchor, {
         ...(target.persist === undefined ? {} : { persist: target.persist }),
         ...(replayPath === undefined ? {} : { replayPath }),
@@ -500,14 +505,15 @@ class DefaultDomRuntime implements DomRuntime {
     const anchor = await this.buildAnchorFromSnapshotNode(session, snapshot, node);
     const writeDescriptor =
       descriptorWriter ?? ((input: DomWriteDescriptorInput) => this.descriptors.write(input));
-    const replayPath = await this.tryBuildPathFromNode(snapshot, node);
+    const enableTextMatch = method !== "extract";
+    const replayPath = await this.tryBuildPathFromNode(snapshot, node, { enableTextMatch });
     const descriptor =
       target.persist === undefined
         ? undefined
         : await writeDescriptor({
             method,
             persist: target.persist,
-            path: replayPath ?? (await this.buildPathForNode(snapshot, node)),
+            path: replayPath ?? (await this.buildPathForNode(snapshot, node, { enableTextMatch })),
             sourceUrl: snapshot.url,
           });
     return this.createResolvedTarget("selector", snapshot, node, anchor, {
@@ -668,7 +674,7 @@ class DefaultDomRuntime implements DomRuntime {
       );
     }
 
-    const replayPath = await this.tryBuildPathFromNode(context.snapshot, target.node);
+    const replayPath = await this.tryBuildPathFromNode(context.snapshot, target.node, { enableTextMatch: true });
     return this.createResolvedTarget(source, context.snapshot, target.node, anchor, {
       ...(persist === undefined ? {} : { persist }),
       ...(replayPath === undefined ? {} : { replayPath }),
@@ -928,6 +934,7 @@ class DefaultDomRuntime implements DomRuntime {
   private async buildPathForNode(
     snapshot: DomSnapshot,
     node: DomSnapshotNode,
+    options?: { readonly enableTextMatch?: boolean },
   ): Promise<ReplayElementPath> {
     if (node.nodeRef === undefined) {
       throw new Error(
@@ -937,15 +944,17 @@ class DefaultDomRuntime implements DomRuntime {
 
     return this.buildPath({
       locator: createNodeLocator(snapshot.documentRef, snapshot.documentEpoch, node.nodeRef),
+      ...(options?.enableTextMatch ? { enableTextMatch: true } : {}),
     });
   }
 
   private async tryBuildPathFromNode(
     snapshot: DomSnapshot,
     node: DomSnapshotNode,
+    options?: { readonly enableTextMatch?: boolean },
   ): Promise<ReplayElementPath | undefined> {
     try {
-      return await this.buildPathForNode(snapshot, node);
+      return await this.buildPathForNode(snapshot, node, options);
     } catch {
       return undefined;
     }

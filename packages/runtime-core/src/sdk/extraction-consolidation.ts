@@ -568,6 +568,10 @@ function relaxPathForSingleSample(path: ElementPath, mode: "item-root" | "field"
           return !isLast;
         }
 
+        if (clause.kind === "text") {
+          return false;
+        }
+
         const key = String(clause.key || "")
           .trim()
           .toLowerCase();
@@ -696,13 +700,11 @@ function buildNodeStructure(node: PathNode): Record<string, unknown> {
   }
 
   const matchClauses = (node.match || [])
-    .map((clause) =>
-      clause.kind === "position"
-        ? `position:${clause.axis}`
-        : `attr:${String(clause.key || "")
-            .trim()
-            .toLowerCase()}`,
-    )
+    .map((clause) => {
+      if (clause.kind === "position") return `position:${clause.axis}`;
+      if (clause.kind === "text") return `text:${clause.value}`;
+      return `attr:${String(clause.key || "").trim().toLowerCase()}`;
+    })
     .sort();
 
   return {
@@ -1217,6 +1219,10 @@ function mergeMatchByMajority(
         op: clause.op === "startsWith" || clause.op === "contains" ? clause.op : "exact",
         ...(clause.value === undefined ? {} : { value: clause.value }),
       });
+      continue;
+    }
+
+    if (clause.kind === "text") {
       continue;
     }
 

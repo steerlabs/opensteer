@@ -1,5 +1,4 @@
 import {
-  DEFAULT_VISUAL_STABILITY_SETTLE_MS,
   DEFAULT_POST_LOAD_TRACKER_QUIET_WINDOW_MS,
   type VisualStabilityScope,
 } from "@opensteer/browser-core";
@@ -41,23 +40,6 @@ const DEFAULT_SETTLE_DELAYS: Readonly<Record<string, number>> = {
   "dom-action": 100,
   snapshot: 0,
 };
-
-const defaultSnapshotSettleObserver: SettleObserver = {
-  async settle(input) {
-    if (input.trigger !== "snapshot") {
-      return false;
-    }
-
-    await input.engine.waitForVisualStability({
-      pageRef: input.pageRef,
-      ...(input.remainingMs === undefined ? {} : { timeoutMs: input.remainingMs }),
-      settleMs: DEFAULT_VISUAL_STABILITY_SETTLE_MS,
-      scope: "visible-frames",
-    });
-    return true;
-  },
-};
-Object.freeze(defaultSnapshotSettleObserver);
 
 interface VisualStabilityProfile {
   readonly settleMs: number;
@@ -165,7 +147,6 @@ const defaultNavigationSettleObserver: SettleObserver = {
 Object.freeze(defaultNavigationSettleObserver);
 
 const DEFAULT_SETTLE_OBSERVERS: NonNullable<SettlePolicy["observers"]> = Object.freeze([
-  defaultSnapshotSettleObserver,
   defaultDomActionSettleObserver,
   defaultNavigationSettleObserver,
 ]);

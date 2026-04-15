@@ -61,8 +61,12 @@ export interface DomPointerHitAssessment {
   readonly hitOwner?: NodeLocator;
 }
 
+export interface BuildReplayPathOptions {
+  readonly enableTextMatch?: boolean;
+}
+
 export interface DomActionBridge {
-  buildReplayPath(locator: NodeLocator): Promise<ReplayElementPath>;
+  buildReplayPath(locator: NodeLocator, options?: BuildReplayPathOptions): Promise<ReplayElementPath>;
   inspectActionTarget(locator: NodeLocator): Promise<DomActionTargetInspection>;
   canonicalizePointerTarget(locator: NodeLocator): Promise<NodeLocator>;
   classifyPointerHit(input: {

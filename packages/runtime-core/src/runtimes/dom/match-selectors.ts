@@ -32,6 +32,10 @@ function buildClauseSelector(node: PathNode, clause: MatchClause): string {
     return "";
   }
 
+  if (clause.kind === "text") {
+    return "";
+  }
+
   if (clause.kind === "position") {
     if (clause.axis === "nthOfType") {
       return `:nth-of-type(${Math.max(1, Number(node.position?.nthOfType || 1))})`;
