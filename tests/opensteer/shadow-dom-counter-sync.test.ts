@@ -5,16 +5,21 @@ import { once } from "node:events";
 import { createPlaywrightBrowserCoreEngine } from "../../packages/engine-playwright/src/index.js";
 import { compileOpensteerSnapshot } from "../../packages/runtime-core/src/sdk/snapshot/compiler.js";
 
+type SnapshotResult = Awaited<ReturnType<typeof compileOpensteerSnapshot>>;
+type PlaywrightEngine = Awaited<ReturnType<typeof createPlaywrightBrowserCoreEngine>>;
+type SnapshotSetup = {
+  readonly engine: PlaywrightEngine;
+  readonly pageRef: string;
+};
+
 let baseUrl = "";
 let closeServer: (() => Promise<void>) | undefined;
+const SHADOW_BUTTON_TEXTS = ["Add a note", "Send without a note"] as const;
 
 function html(body: string, title: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${title}</title></head><body>${body}</body></html>`;
 }
 
-/**
- * Control: shadow DOM content present from initial page load, no dynamic changes.
- */
 function staticShadow(): string {
   return html(
     `
@@ -34,11 +39,6 @@ function staticShadow(): string {
   );
 }
 
-/**
- * Simulates LinkedIn's connect dialog: shadow DOM host starts with only
- * a messaging overlay. Clicking a trigger dynamically injects dialog
- * buttons into the shadow root.
- */
 function dynamicShadowDialog(): string {
   return html(
     `
@@ -64,10 +64,6 @@ function dynamicShadowDialog(): string {
   );
 }
 
-/**
- * Simulates Ember-like framework re-rendering: shadow DOM content is
- * periodically replaced via innerHTML, stripping any data-os-* attributes.
- */
 function frameworkRerender(): string {
   return html(
     `
@@ -132,18 +128,86 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Filter counter records for shadow DOM buttons by their text content.
- * Counter records are the authoritative source — they come directly from
- * the snapshot and include nodeRef, shadowDepth, and text.
- */
-function findButtonCounters(
-  counters: readonly { element: number; text?: string; tagName: string; shadowDepth: number; nodeRef?: string }[],
-  texts: readonly string[],
-) {
+function findButtonCounters(counters: SnapshotResult["counters"], texts: readonly string[]) {
   return counters.filter(
     (c) => c.tagName === "BUTTON" && c.shadowDepth > 0 && texts.some((t) => c.text?.includes(t)),
   );
+}
+
+function expectShadowButtons(
+  snapshot: SnapshotResult,
+  options: {
+    readonly requireNodeRef?: boolean;
+    readonly requireShadowDepth?: boolean;
+  } = {},
+): void {
+  for (const text of SHADOW_BUTTON_TEXTS) {
+    expect(snapshot.html).toContain(text);
+  }
+
+  const buttons = findButtonCounters(snapshot.counters, SHADOW_BUTTON_TEXTS);
+  expect(buttons).toHaveLength(2);
+
+  for (const button of buttons) {
+    if (options.requireNodeRef) {
+      expect(button.nodeRef).toBeDefined();
+    }
+    if (options.requireShadowDepth) {
+      expect(button.shadowDepth).toBeGreaterThan(0);
+    }
+  }
+}
+
+async function clickTrigger({ engine, pageRef }: SnapshotSetup): Promise<void> {
+  const frames = await engine.listFrames({ pageRef });
+  const mainFrame = frames.find((frame) => frame.parentFrameRef === undefined);
+  if (mainFrame === undefined) {
+    throw new Error("main frame not found");
+  }
+
+  await engine.evaluateFrame({
+    frameRef: mainFrame.frameRef,
+    script: `(() => { document.getElementById("trigger").click(); })`,
+    args: [],
+  });
+}
+
+async function captureSnapshot(
+  pathname: string,
+  options: {
+    readonly settleMs?: number;
+    readonly prepare?: (setup: SnapshotSetup) => Promise<void>;
+    readonly prepareSettleMs?: number;
+  } = {},
+): Promise<SnapshotResult> {
+  const engine = await createPlaywrightBrowserCoreEngine({
+    launch: { headless: true },
+  });
+
+  try {
+    const sessionRef = await engine.createSession();
+    const created = await engine.createPage({
+      sessionRef,
+      url: `${baseUrl}${pathname}`,
+    });
+    await wait(options.settleMs ?? 300);
+
+    if (options.prepare) {
+      await options.prepare({ engine, pageRef: created.data.pageRef });
+      const prepareSettleMs = options.prepareSettleMs ?? 0;
+      if (prepareSettleMs > 0) {
+        await wait(prepareSettleMs);
+      }
+    }
+
+    return await compileOpensteerSnapshot({
+      engine,
+      pageRef: created.data.pageRef,
+      mode: "action",
+    });
+  } finally {
+    await engine.dispose();
+  }
 }
 
 beforeAll(async () => {
@@ -163,38 +227,13 @@ describe.sequential("Shadow DOM counter sync", () => {
     "assigns counters to static shadow DOM elements in snapshot HTML",
     { timeout: 60_000 },
     async () => {
-      const engine = await createPlaywrightBrowserCoreEngine({
-        launch: { headless: true },
+      const snapshot = await captureSnapshot("/counter-sync/static-shadow", {
+        settleMs: 300,
       });
-
-      try {
-        const sessionRef = await engine.createSession();
-        const created = await engine.createPage({
-          sessionRef,
-          url: `${baseUrl}/counter-sync/static-shadow`,
-        });
-        await wait(300);
-
-        const snapshot = await compileOpensteerSnapshot({
-          engine,
-          pageRef: created.data.pageRef,
-          mode: "action",
-        });
-
-        // Snapshot HTML should contain shadow DOM button text
-        expect(snapshot.html).toContain("Add a note");
-        expect(snapshot.html).toContain("Send without a note");
-
-        // Counter records should include nodeRefs for shadow DOM buttons
-        const dialogButtons = findButtonCounters(snapshot.counters, ["Add a note", "Send without a note"]);
-        expect(dialogButtons.length).toBe(2);
-        for (const record of dialogButtons) {
-          expect(record.nodeRef).toBeDefined();
-          expect(record.shadowDepth).toBeGreaterThan(0);
-        }
-      } finally {
-        await engine.dispose();
-      }
+      expectShadowButtons(snapshot, {
+        requireNodeRef: true,
+        requireShadowDepth: true,
+      });
     },
   );
 
@@ -202,87 +241,21 @@ describe.sequential("Shadow DOM counter sync", () => {
     "assigns counters to dynamically injected shadow DOM elements",
     { timeout: 60_000 },
     async () => {
-      const engine = await createPlaywrightBrowserCoreEngine({
-        launch: { headless: true },
+      const snapshot = await captureSnapshot("/counter-sync/dynamic-shadow-dialog", {
+        settleMs: 300,
+        prepare: clickTrigger,
+        prepareSettleMs: 200,
       });
-
-      try {
-        const sessionRef = await engine.createSession();
-        const created = await engine.createPage({
-          sessionRef,
-          url: `${baseUrl}/counter-sync/dynamic-shadow-dialog`,
-        });
-        await wait(300);
-
-        // Click the trigger to inject dialog into shadow DOM
-        const frames = await engine.listFrames({ pageRef: created.data.pageRef });
-        const mainFrame = (frames as { frameRef: string; parentFrameRef?: string }[]).find(
-          (f) => f.parentFrameRef === undefined,
-        )!;
-        await engine.evaluateFrame({
-          frameRef: mainFrame.frameRef,
-          script: `(() => { document.getElementById("trigger").click(); })`,
-          args: [],
-        });
-        await wait(200);
-
-        // Snapshot should capture the dynamically injected dialog buttons
-        const snapshot = await compileOpensteerSnapshot({
-          engine,
-          pageRef: created.data.pageRef,
-          mode: "action",
-        });
-
-        // Snapshot HTML should contain dynamic dialog button text
-        expect(snapshot.html).toContain("Add a note");
-        expect(snapshot.html).toContain("Send without a note");
-
-        // Counter records should have nodeRefs for dynamically injected buttons
-        const dialogButtons = findButtonCounters(snapshot.counters, ["Add a note", "Send without a note"]);
-        expect(dialogButtons.length).toBe(2);
-        for (const record of dialogButtons) {
-          expect(record.nodeRef).toBeDefined();
-        }
-      } finally {
-        await engine.dispose();
-      }
+      expectShadowButtons(snapshot, {
+        requireNodeRef: true,
+      });
     },
   );
 
-  test(
-    "assigns counters under framework re-rendering",
-    { timeout: 60_000 },
-    async () => {
-      const engine = await createPlaywrightBrowserCoreEngine({
-        launch: { headless: true },
-      });
-
-      try {
-        const sessionRef = await engine.createSession();
-        const created = await engine.createPage({
-          sessionRef,
-          url: `${baseUrl}/counter-sync/framework-rerender`,
-        });
-        await wait(500);
-
-        // Snapshot should capture buttons even under constant re-renders.
-        // Since counter resolution uses the snapshot (not live DOM c= attrs),
-        // re-rendering doesn't affect counter usability.
-        const snapshot = await compileOpensteerSnapshot({
-          engine,
-          pageRef: created.data.pageRef,
-          mode: "action",
-        });
-
-        expect(snapshot.html).toContain("Add a note");
-        expect(snapshot.html).toContain("Send without a note");
-
-        // Counter records should exist for buttons even under re-rendering
-        const dialogButtons = findButtonCounters(snapshot.counters, ["Add a note", "Send without a note"]);
-        expect(dialogButtons.length).toBe(2);
-      } finally {
-        await engine.dispose();
-      }
-    },
-  );
+  test("assigns counters under framework re-rendering", { timeout: 60_000 }, async () => {
+    const snapshot = await captureSnapshot("/counter-sync/framework-rerender", {
+      settleMs: 500,
+    });
+    expectShadowButtons(snapshot);
+  });
 });

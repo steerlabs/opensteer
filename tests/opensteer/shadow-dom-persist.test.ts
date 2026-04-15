@@ -11,6 +11,13 @@ import {
   createFilesystemOpensteerWorkspace,
 } from "../../packages/opensteer/src/index.js";
 
+type PersistCase = {
+  readonly title: string;
+  readonly pathname: string;
+  readonly selector: string;
+  readonly persist: string;
+};
+
 let baseUrl = "";
 let closeServer: (() => Promise<void>) | undefined;
 const temporaryRoots: string[] = [];
@@ -19,12 +26,6 @@ function html(body: string, title: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${title}</title></head><body>${body}</body></html>`;
 }
 
-/**
- * Two buttons as direct siblings in a shadow root.
- * Same class, no aria-label. id is present for selection but deferred
- * by the replay path builder (won't be used for persist uniqueness).
- * Position clauses should distinguish them.
- */
 function genericSiblings(): string {
   return html(
     `
@@ -41,11 +42,6 @@ function genericSiblings(): string {
   );
 }
 
-/**
- * Each button is the sole child of an identical wrapper div.
- * Both buttons are nth-of-type(1) in their own parent. Parent position
- * must distinguish them.
- */
 function parallelSubtrees(): string {
   return html(
     `
@@ -62,11 +58,6 @@ function parallelSubtrees(): string {
   );
 }
 
-/**
- * Two bare divs (no class, no id beyond container) each hosting
- * identical shadow trees. The HOST finalizePath must distinguish the
- * host divs in the light DOM.
- */
 function identicalHosts(): string {
   return html(
     `
@@ -90,11 +81,6 @@ function identicalHosts(): string {
   );
 }
 
-/**
- * Deeply nested identical branches where every intermediate element is
- * a sole child, so all positions are 1. Only the top-level branch
- * elements are siblings.
- */
 function deepIdenticalBranches(): string {
   return html(
     `
@@ -122,11 +108,6 @@ function deepIdenticalBranches(): string {
   );
 }
 
-/**
- * Control: same as generic siblings but buttons have aria-label.
- * Persist should always succeed since aria-label is a stable primary
- * attribute in the replay path builder.
- */
 function withAriaLabel(): string {
   return html(
     `
@@ -193,6 +174,75 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const persistCases = [
+  {
+    title: "persists click on shadow DOM button with aria-label (control)",
+    pathname: "/shadow-persist/with-aria-label",
+    selector: "#btn-send",
+    persist: "aria-label-button",
+  },
+  {
+    title: "persists click on generic sibling shadow DOM buttons",
+    pathname: "/shadow-persist/generic-siblings",
+    selector: "#btn-send",
+    persist: "generic-sibling-button",
+  },
+  {
+    title: "persists click on shadow DOM button in parallel subtrees",
+    pathname: "/shadow-persist/parallel-subtrees",
+    selector: "#btn-send",
+    persist: "parallel-subtree-button",
+  },
+  {
+    title: "persists click on shadow DOM button across identical hosts",
+    pathname: "/shadow-persist/identical-hosts",
+    selector: "#btn-send-1",
+    persist: "identical-host-button",
+  },
+  {
+    title: "persists click on shadow DOM button in deep identical branches",
+    pathname: "/shadow-persist/deep-identical-branches",
+    selector: "#btn-send-1",
+    persist: "deep-branch-button",
+  },
+] satisfies readonly PersistCase[];
+
+async function expectStoredDescriptor(testCase: PersistCase): Promise<void> {
+  const rootPath = await createTemporaryRoot();
+  const root = await createFilesystemOpensteerWorkspace({ rootPath });
+  const engine = await createPlaywrightBrowserCoreEngine({
+    launch: { headless: true },
+  });
+
+  try {
+    const runtime = createDomRuntime({ engine, root, namespace: "shadow-persist" });
+    const sessionRef = await engine.createSession();
+    const created = await engine.createPage({
+      sessionRef,
+      url: `${baseUrl}${testCase.pathname}`,
+    });
+    await wait(400);
+
+    await runtime.resolveTarget({
+      pageRef: created.data.pageRef,
+      method: "click",
+      target: {
+        kind: "selector",
+        selector: testCase.selector,
+        persist: testCase.persist,
+      },
+    });
+
+    const stored = await runtime.readDescriptor({
+      method: "click",
+      persist: testCase.persist,
+    });
+    expect(stored).toBeDefined();
+  } finally {
+    await engine.dispose();
+  }
+}
+
 beforeAll(async () => {
   const started = await startServer();
   baseUrl = started.url;
@@ -211,174 +261,10 @@ afterAll(async () => {
   }
 });
 
-/**
- * These tests probe the boundary of the replay path builder for shadow DOM
- * elements. Each fixture targets #btn-send inside a shadow root. The id
- * attribute is deferred by the builder's shouldDeferMatchAttribute policy,
- * so the builder must find uniqueness through class + position + ancestors.
- *
- * All fixtures are expected to succeed with the current algorithm (position
- * clauses are robust enough). If a fixture that matches a real-world failure
- * pattern is identified, it should be added here.
- */
 describe.sequential("Shadow DOM persist boundary tests", () => {
-  test(
-    "persists click on shadow DOM button with aria-label (control)",
-    { timeout: 60_000 },
-    async () => {
-      const rootPath = await createTemporaryRoot();
-      const root = await createFilesystemOpensteerWorkspace({ rootPath });
-      const engine = await createPlaywrightBrowserCoreEngine({
-        launch: { headless: true },
-      });
-
-      try {
-        const runtime = createDomRuntime({ engine, root, namespace: "shadow-persist" });
-        const sessionRef = await engine.createSession();
-        const created = await engine.createPage({
-          sessionRef,
-          url: `${baseUrl}/shadow-persist/with-aria-label`,
-        });
-        await wait(400);
-
-        await runtime.resolveTarget({
-          pageRef: created.data.pageRef,
-          method: "click",
-          target: { kind: "selector", selector: "#btn-send", persist: "aria-label-button" },
-        });
-        const stored = await runtime.readDescriptor({ method: "click", persist: "aria-label-button" });
-        expect(stored).toBeDefined();
-      } finally {
-        await engine.dispose();
-      }
-    },
-  );
-
-  test(
-    "persists click on generic sibling shadow DOM buttons",
-    { timeout: 60_000 },
-    async () => {
-      const rootPath = await createTemporaryRoot();
-      const root = await createFilesystemOpensteerWorkspace({ rootPath });
-      const engine = await createPlaywrightBrowserCoreEngine({
-        launch: { headless: true },
-      });
-
-      try {
-        const runtime = createDomRuntime({ engine, root, namespace: "shadow-persist" });
-        const sessionRef = await engine.createSession();
-        const created = await engine.createPage({
-          sessionRef,
-          url: `${baseUrl}/shadow-persist/generic-siblings`,
-        });
-        await wait(400);
-
-        await runtime.resolveTarget({
-          pageRef: created.data.pageRef,
-          method: "click",
-          target: { kind: "selector", selector: "#btn-send", persist: "generic-sibling-button" },
-        });
-        const stored = await runtime.readDescriptor({ method: "click", persist: "generic-sibling-button" });
-        expect(stored).toBeDefined();
-      } finally {
-        await engine.dispose();
-      }
-    },
-  );
-
-  test(
-    "persists click on shadow DOM button in parallel subtrees",
-    { timeout: 60_000 },
-    async () => {
-      const rootPath = await createTemporaryRoot();
-      const root = await createFilesystemOpensteerWorkspace({ rootPath });
-      const engine = await createPlaywrightBrowserCoreEngine({
-        launch: { headless: true },
-      });
-
-      try {
-        const runtime = createDomRuntime({ engine, root, namespace: "shadow-persist" });
-        const sessionRef = await engine.createSession();
-        const created = await engine.createPage({
-          sessionRef,
-          url: `${baseUrl}/shadow-persist/parallel-subtrees`,
-        });
-        await wait(400);
-
-        await runtime.resolveTarget({
-          pageRef: created.data.pageRef,
-          method: "click",
-          target: { kind: "selector", selector: "#btn-send", persist: "parallel-subtree-button" },
-        });
-        const stored = await runtime.readDescriptor({ method: "click", persist: "parallel-subtree-button" });
-        expect(stored).toBeDefined();
-      } finally {
-        await engine.dispose();
-      }
-    },
-  );
-
-  test(
-    "persists click on shadow DOM button across identical hosts",
-    { timeout: 60_000 },
-    async () => {
-      const rootPath = await createTemporaryRoot();
-      const root = await createFilesystemOpensteerWorkspace({ rootPath });
-      const engine = await createPlaywrightBrowserCoreEngine({
-        launch: { headless: true },
-      });
-
-      try {
-        const runtime = createDomRuntime({ engine, root, namespace: "shadow-persist" });
-        const sessionRef = await engine.createSession();
-        const created = await engine.createPage({
-          sessionRef,
-          url: `${baseUrl}/shadow-persist/identical-hosts`,
-        });
-        await wait(400);
-
-        await runtime.resolveTarget({
-          pageRef: created.data.pageRef,
-          method: "click",
-          target: { kind: "selector", selector: "#btn-send-1", persist: "identical-host-button" },
-        });
-        const stored = await runtime.readDescriptor({ method: "click", persist: "identical-host-button" });
-        expect(stored).toBeDefined();
-      } finally {
-        await engine.dispose();
-      }
-    },
-  );
-
-  test(
-    "persists click on shadow DOM button in deep identical branches",
-    { timeout: 60_000 },
-    async () => {
-      const rootPath = await createTemporaryRoot();
-      const root = await createFilesystemOpensteerWorkspace({ rootPath });
-      const engine = await createPlaywrightBrowserCoreEngine({
-        launch: { headless: true },
-      });
-
-      try {
-        const runtime = createDomRuntime({ engine, root, namespace: "shadow-persist" });
-        const sessionRef = await engine.createSession();
-        const created = await engine.createPage({
-          sessionRef,
-          url: `${baseUrl}/shadow-persist/deep-identical-branches`,
-        });
-        await wait(400);
-
-        await runtime.resolveTarget({
-          pageRef: created.data.pageRef,
-          method: "click",
-          target: { kind: "selector", selector: "#btn-send-1", persist: "deep-branch-button" },
-        });
-        const stored = await runtime.readDescriptor({ method: "click", persist: "deep-branch-button" });
-        expect(stored).toBeDefined();
-      } finally {
-        await engine.dispose();
-      }
-    },
-  );
+  for (const testCase of persistCases) {
+    test(testCase.title, { timeout: 60_000 }, async () => {
+      await expectStoredDescriptor(testCase);
+    });
+  }
 });

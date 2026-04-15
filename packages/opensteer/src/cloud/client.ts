@@ -400,18 +400,15 @@ async function createCloudRequestError(
     pathname: input.pathname,
     url: input.url,
     message:
-      payload?.error ??
-      `${input.method} ${input.pathname} failed with ${String(response.status)}.`,
+      payload?.error ?? `${input.method} ${input.pathname} failed with ${String(response.status)}.`,
     ...(payload?.code === undefined ? {} : { code: payload.code }),
     ...(payload?.details === undefined ? {} : { details: payload.details }),
   });
 }
 
-async function readCloudErrorPayload(response: Response): Promise<OpensteerCloudErrorPayload | undefined> {
-  if (typeof response.json !== "function") {
-    return undefined;
-  }
-
+async function readCloudErrorPayload(
+  response: Response,
+): Promise<OpensteerCloudErrorPayload | undefined> {
   try {
     return asCloudErrorPayload(await response.json());
   } catch {

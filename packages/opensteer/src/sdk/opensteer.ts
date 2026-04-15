@@ -172,6 +172,16 @@ class SessionCookieJar implements OpensteerCookieJar {
   }
 }
 
+function createSdkProtocolError(error: unknown, fallbackMessage: string): OpensteerProtocolError {
+  const normalized = normalizeThrownOpensteerError(error, fallbackMessage);
+  return new OpensteerProtocolError(normalized.code, normalized.message, {
+    cause: error,
+    retriable: normalized.retriable,
+    ...(normalized.capability === undefined ? {} : { capability: normalized.capability }),
+    ...(normalized.details === undefined ? {} : { details: normalized.details }),
+  });
+}
+
 async function wrapSdkError<T>(operation: string, fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
@@ -179,13 +189,7 @@ async function wrapSdkError<T>(operation: string, fn: () => Promise<T>): Promise
     if (isOpensteerProtocolError(error)) {
       throw error;
     }
-    const normalized = normalizeThrownOpensteerError(error, `${operation} failed`);
-    throw new OpensteerProtocolError(normalized.code, normalized.message, {
-      cause: error,
-      retriable: normalized.retriable,
-      ...(normalized.capability === undefined ? {} : { capability: normalized.capability }),
-      ...(normalized.details === undefined ? {} : { details: normalized.details }),
-    });
+    throw createSdkProtocolError(error, `${operation} failed`);
   }
 }
 
@@ -218,7 +222,9 @@ export class Opensteer {
         this.browserManager = new OpensteerBrowserManager({
           ...(runtimeOptions.rootDir === undefined ? {} : { rootDir: runtimeOptions.rootDir }),
           ...(runtimeOptions.rootPath === undefined ? {} : { rootPath: runtimeOptions.rootPath }),
-          ...(runtimeOptions.workspace === undefined ? {} : { workspace: runtimeOptions.workspace }),
+          ...(runtimeOptions.workspace === undefined
+            ? {}
+            : { workspace: runtimeOptions.workspace }),
           ...(engineName === undefined ? {} : { engineName }),
           environment,
           ...(runtimeOptions.browser === undefined ? {} : { browser: runtimeOptions.browser }),
@@ -237,34 +243,33 @@ export class Opensteer {
         });
         this.browser = {
           status: () => wrapSdkError("browser.status", () => this.browserManager!.status()),
-          clone: (input) => wrapSdkError("browser.clone", () => this.browserManager!.clonePersistentBrowser(input)),
+          clone: (input) =>
+            wrapSdkError("browser.clone", () => this.browserManager!.clonePersistentBrowser(input)),
           reset: () => wrapSdkError("browser.reset", () => this.browserManager!.reset()),
           delete: () => wrapSdkError("browser.delete", () => this.browserManager!.delete()),
         };
       }
 
       this.dom = {
-        click: (input) => wrapSdkError("dom.click", () => this.click(input)),
-        hover: (input) => wrapSdkError("dom.hover", () => this.hover(input)),
-        input: (input) => wrapSdkError("dom.input", () => this.input(input)),
-        scroll: (input) => wrapSdkError("dom.scroll", () => this.scroll(input)),
+        click: (input) => this.click(input),
+        hover: (input) => this.hover(input),
+        input: (input) => this.input(input),
+        scroll: (input) => this.scroll(input),
       };
 
       this.network = {
-        query: (input = {}) => wrapSdkError("network.query", () => this.runtime.queryNetwork(input)),
-        detail: (recordId, options) => wrapSdkError("network.detail", () => this.runtime.getNetworkDetail({ recordId, ...options })),
+        query: (input = {}) =>
+          wrapSdkError("network.query", () => this.runtime.queryNetwork(input)),
+        detail: (recordId, options) =>
+          wrapSdkError("network.detail", () =>
+            this.runtime.getNetworkDetail({ recordId, ...options }),
+          ),
       };
     } catch (error) {
       if (isOpensteerProtocolError(error)) {
         throw error;
       }
-      const normalized = normalizeThrownOpensteerError(error, "Failed to initialize Opensteer");
-      throw new OpensteerProtocolError(normalized.code, normalized.message, {
-        cause: error,
-        retriable: normalized.retriable,
-        ...(normalized.capability === undefined ? {} : { capability: normalized.capability }),
-        ...(normalized.details === undefined ? {} : { details: normalized.details }),
-      });
+      throw createSdkProtocolError(error, "Failed to initialize Opensteer");
     }
   }
 
@@ -404,10 +409,10 @@ export class Opensteer {
   }
 
   async cookies(domain?: string): Promise<OpensteerCookieJar> {
-    return wrapSdkError("session.cookies", async () =>
-      new SessionCookieJar(
-        await this.runtime.getCookies(domain === undefined ? {} : { domain }),
-      ),
+    return wrapSdkError(
+      "session.cookies",
+      async () =>
+        new SessionCookieJar(await this.runtime.getCookies(domain === undefined ? {} : { domain })),
     );
   }
 
@@ -416,12 +421,15 @@ export class Opensteer {
     type: OpensteerStorageArea = "local",
   ): Promise<OpensteerStorageMap> {
     return wrapSdkError("session.storage", async () => {
-      const snapshot = await this.runtime.getStorageSnapshot(domain === undefined ? {} : { domain });
+      const snapshot = await this.runtime.getStorageSnapshot(
+        domain === undefined ? {} : { domain },
+      );
       const domainSnapshot = pickStorageDomainSnapshot(snapshot, domain);
       if (domainSnapshot === undefined) {
         return {};
       }
-      const entries = type === "local" ? domainSnapshot.localStorage : domainSnapshot.sessionStorage;
+      const entries =
+        type === "local" ? domainSnapshot.localStorage : domainSnapshot.sessionStorage;
       return Object.fromEntries(entries.map((entry) => [entry.key, entry.value]));
     });
   }
@@ -437,7 +445,10 @@ export class Opensteer {
       const input = buildFetchInput(url, options);
       const result = await this.runtime.fetch(input);
       if (result.response === undefined) {
-        throw new OpensteerProtocolError("operation-failed", result.note ?? `session.fetch did not produce a response for ${url}`);
+        throw new OpensteerProtocolError(
+          "operation-failed",
+          result.note ?? `session.fetch did not produce a response for ${url}`,
+        );
       }
       return toResponse(result.response);
     });
@@ -489,7 +500,10 @@ export class Opensteer {
     ) {
       return this.runtime as OpensteerDisconnectableRuntime & OpensteerInstrumentableRuntime;
     }
-    throw new OpensteerProtocolError("unsupported-operation", `${method}() is not available for this session runtime.`);
+    throw new OpensteerProtocolError(
+      "unsupported-operation",
+      `${method}() is not available for this session runtime.`,
+    );
   }
 }
 
@@ -517,7 +531,10 @@ function normalizeTargetOptions(input: OpensteerTargetOptions): {
   const hasElement = input.element !== undefined;
   const hasSelector = input.selector !== undefined;
   if (hasElement && hasSelector) {
-    throw new OpensteerProtocolError("invalid-argument", "Specify exactly one of element, selector, or persist.");
+    throw new OpensteerProtocolError(
+      "invalid-argument",
+      "Specify exactly one of element, selector, or persist.",
+    );
   }
 
   if (hasElement) {
@@ -543,7 +560,10 @@ function normalizeTargetOptions(input: OpensteerTargetOptions): {
   }
 
   if (input.persist === undefined) {
-    throw new OpensteerProtocolError("invalid-argument", "Specify exactly one of element, selector, or persist.");
+    throw new OpensteerProtocolError(
+      "invalid-argument",
+      "Specify exactly one of element, selector, or persist.",
+    );
   }
 
   return {
