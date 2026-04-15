@@ -36,7 +36,11 @@ export interface AbpActionSettleOptions {
   readonly timeoutMs: number;
   readonly signal?: AbortSignal;
   readonly snapshot?: ActionBoundarySnapshot;
-  readonly policySettle?: (pageRef: PageRef, trigger: ActionBoundarySettleTrigger) => Promise<void>;
+  readonly policySettle?: (
+    pageRef: PageRef,
+    trigger: ActionBoundarySettleTrigger,
+    boundary?: ActionBoundaryOutcome,
+  ) => Promise<void>;
 }
 
 export type AbpActionBoundaryOptions = Omit<AbpActionSettleOptions, "controller">;
@@ -226,7 +230,7 @@ export function createAbpActionSettler(context: AbpActionSettlerContext) {
         });
 
         if (policySettle) {
-          await policySettle(controller.pageRef, boundary.trigger);
+          await policySettle(controller.pageRef, boundary.trigger, boundary);
         }
       }
     } finally {

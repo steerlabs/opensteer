@@ -30,15 +30,18 @@ describe("runtime stale page recovery", () => {
     });
 
     try {
-      const opened = await runtime.open({
+      await runtime.open({
         url: "https://example.com/a",
       });
+      const pagesAfterOpen = await runtime.listPages();
+      const openedPageRef = pagesAfterOpen.activePageRef;
+      expect(openedPageRef).toBeDefined();
       const secondPage = await runtime.newPage({
         url: "https://example.com/b",
       });
 
       await engine.closePage({
-        pageRef: opened.pageRef,
+        pageRef: openedPageRef!,
       });
 
       await expect(runtime.listPages()).resolves.toMatchObject({

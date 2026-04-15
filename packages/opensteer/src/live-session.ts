@@ -1,9 +1,10 @@
 import { rm } from "node:fs/promises";
 import path from "node:path";
 
-import type { OpensteerSessionCapabilities } from "@opensteer/protocol";
+import type { OpensteerSessionCapabilities, OpensteerSessionOwnership } from "@opensteer/protocol";
 
 import { pathExists, readJsonFile, writeJsonFileAtomic } from "./internal/filesystem.js";
+import { inspectCdpEndpoint } from "./local-browser/cdp-discovery.js";
 
 export const OPENSTEER_LIVE_SESSION_LAYOUT = "opensteer-session";
 export const OPENSTEER_LIVE_SESSION_VERSION = 1;
@@ -24,6 +25,7 @@ interface PersistedSessionRecordBase {
 export interface PersistedLocalBrowserSessionRecord extends PersistedSessionRecordBase {
   readonly provider: "local";
   readonly engine: "playwright" | "abp";
+  readonly ownership?: Exclude<OpensteerSessionOwnership, "managed">;
   readonly endpoint?: string;
   readonly baseUrl?: string;
   readonly remoteDebuggingUrl?: string;
@@ -106,6 +108,32 @@ export async function clearPersistedSessionRecord(
   await rm(resolveLiveSessionRecordPath(rootPath, provider), { force: true });
 }
 
+export function getPersistedLocalBrowserSessionOwnership(
+  record: PersistedLocalBrowserSessionRecord,
+): Exclude<OpensteerSessionOwnership, "managed"> {
+  return record.ownership === "attached" ? "attached" : "owned";
+}
+
+export async function isAttachedLocalBrowserSessionReachable(
+  record: PersistedLocalBrowserSessionRecord,
+): Promise<boolean> {
+  if (getPersistedLocalBrowserSessionOwnership(record) !== "attached") {
+    return false;
+  }
+  if (record.engine !== "playwright" || record.endpoint === undefined) {
+    return false;
+  }
+  try {
+    await inspectCdpEndpoint({
+      endpoint: record.endpoint,
+      timeoutMs: 1_500,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function isPersistedCloudSessionRecord(
   value: Partial<PersistedCloudSessionRecord> | Partial<PersistedSessionRecord>,
 ): value is PersistedCloudSessionRecord {
@@ -130,6 +158,9 @@ function isPersistedLocalBrowserSessionRecord(
     value.version === OPENSTEER_LIVE_SESSION_VERSION &&
     value.provider === "local" &&
     (value.engine === "playwright" || value.engine === "abp") &&
+    (value.ownership === undefined ||
+      value.ownership === "owned" ||
+      value.ownership === "attached") &&
     typeof value.pid === "number" &&
     Number.isFinite(value.pid) &&
     typeof value.startedAt === "number" &&

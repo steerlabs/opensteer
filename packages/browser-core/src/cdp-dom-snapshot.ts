@@ -124,6 +124,47 @@ export function rareCdpIntegerValue(
   return data.value[matchIndex];
 }
 
+function buildRareCdpStringIndex(
+  strings: readonly string[],
+  data: CdpRareStringData | undefined,
+): ReadonlyMap<number, string> {
+  const indexed = new Map<number, string>();
+  if (!data) {
+    return indexed;
+  }
+
+  const length = Math.min(data.index.length, data.value.length);
+  for (let cursor = 0; cursor < length; cursor += 1) {
+    const rareIndex = data.index[cursor];
+    const valueIndex = data.value[cursor];
+    if (rareIndex === undefined) {
+      continue;
+    }
+    indexed.set(rareIndex, parseCdpStringTable(strings, valueIndex));
+  }
+  return indexed;
+}
+
+function buildRareCdpIntegerIndex(
+  data: CdpRareIntegerData | undefined,
+): ReadonlyMap<number, number> {
+  const indexed = new Map<number, number>();
+  if (!data) {
+    return indexed;
+  }
+
+  const length = Math.min(data.index.length, data.value.length);
+  for (let cursor = 0; cursor < length; cursor += 1) {
+    const rareIndex = data.index[cursor];
+    const rareValue = data.value[cursor];
+    if (rareIndex === undefined || rareValue === undefined) {
+      continue;
+    }
+    indexed.set(rareIndex, rareValue);
+  }
+  return indexed;
+}
+
 export function normalizeCdpShadowRootType(
   value: string | undefined,
 ): "open" | "closed" | "user-agent" | undefined {
@@ -201,6 +242,13 @@ export function buildDomSnapshotFromCdpCapture(
   }
 
   const layoutByNodeIndex = decodeLayoutByNodeIndex(captured.rawDocument, captured.strings);
+  const shadowRootTypeByNodeIndex = buildRareCdpStringIndex(
+    captured.strings,
+    captured.rawDocument.nodes.shadowRootType,
+  );
+  const contentDocumentIndexByNodeIndex = buildRareCdpIntegerIndex(
+    captured.rawDocument.nodes.contentDocumentIndex,
+  );
   const aggregatedTextByNodeIndex = buildAggregatedTextIndex(
     captured.rawDocument,
     captured.shadowBoundariesByBackendNodeId,
@@ -227,11 +275,7 @@ export function buildDomSnapshotFromCdpCapture(
       });
     }
 
-    const directShadowRootType = rareCdpStringValue(
-      captured.strings,
-      captured.rawDocument.nodes.shadowRootType,
-      index,
-    );
+    const directShadowRootType = shadowRootTypeByNodeIndex.get(index);
     const normalizedShadowRootType = normalizeCdpShadowRootType(directShadowRootType);
     const shadowBoundary =
       backendNodeId === undefined
@@ -241,10 +285,7 @@ export function buildDomSnapshotFromCdpCapture(
       shadowBoundary?.shadowHostBackendNodeId === undefined
         ? undefined
         : nodeRefResolver(shadowBoundary.shadowHostBackendNodeId);
-    const contentDocumentIndex = rareCdpIntegerValue(
-      captured.rawDocument.nodes.contentDocumentIndex,
-      index,
-    );
+    const contentDocumentIndex = contentDocumentIndexByNodeIndex.get(index);
     const contentDocumentRef =
       contentDocumentIndex === undefined ? undefined : contentDocRefResolver(contentDocumentIndex);
     const layout = layoutByNodeIndex.get(index);
@@ -432,6 +473,8 @@ function buildAggregatedTextIndex(
   }
 
   const layoutTextByNodeIndex = new Map<number, string>();
+  const textValueByNodeIndex = buildRareCdpStringIndex(strings, document.nodes.textValue);
+  const inputValueByNodeIndex = buildRareCdpStringIndex(strings, document.nodes.inputValue);
   for (let layoutIndex = 0; layoutIndex < document.layout.nodeIndex.length; layoutIndex += 1) {
     const nodeIndex = document.layout.nodeIndex[layoutIndex];
     if (nodeIndex === undefined) {
@@ -479,7 +522,14 @@ function buildAggregatedTextIndex(
     }
 
     const nodeType = document.nodes.nodeType?.[index] ?? 0;
-    const ownText = readOwnNodeText(document, strings, layoutTextByNodeIndex, index);
+    const ownText = readOwnNodeText(
+      document,
+      strings,
+      layoutTextByNodeIndex,
+      textValueByNodeIndex,
+      inputValueByNodeIndex,
+      index,
+    );
     if (nodeType === 3 || nodeType === 4) {
       memo.set(index, ownText);
       return ownText;
@@ -517,11 +567,13 @@ function readOwnNodeText(
   document: CdpDomSnapshotDocument,
   strings: readonly string[],
   layoutTextByNodeIndex: ReadonlyMap<number, string>,
+  textValueByNodeIndex: ReadonlyMap<number, string>,
+  inputValueByNodeIndex: ReadonlyMap<number, string>,
   index: number,
 ): string {
   return (
-    rareCdpStringValue(strings, document.nodes.textValue, index) ||
-    rareCdpStringValue(strings, document.nodes.inputValue, index) ||
+    textValueByNodeIndex.get(index) ||
+    inputValueByNodeIndex.get(index) ||
     (document.nodes.nodeType?.[index] === 3 || document.nodes.nodeType?.[index] === 4
       ? parseCdpStringTable(strings, document.nodes.nodeValue?.[index]) ||
         layoutTextByNodeIndex.get(index) ||

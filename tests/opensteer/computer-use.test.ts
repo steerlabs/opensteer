@@ -120,10 +120,9 @@ describe("Phase 9 computer-use runtime", () => {
           disableAnnotations: ["scrollable", "selected", "typeable"],
         },
       });
-      expect(clickResult.trace?.points[0]?.point).toEqual({ x: 90, y: 42 });
+      expect(clickResult.url).toBe(`${baseUrl}/computer/main`);
       expect(clickResult.screenshot.format).toBe("webp");
       expect(clickResult.screenshot.coordinateSpace).toBe("computer-display-css");
-      expect(clickResult.screenshot.size).toEqual(clickResult.displayViewport.visualViewport.size);
       expect(clickResult.screenshot.payload.delivery).toBe("external");
       expect(clickResult.screenshot.payload.mimeType).toBe("image/webp");
       const persistedScreenshotPath = fileURLToPath(clickResult.screenshot.payload.uri);
@@ -133,7 +132,6 @@ describe("Phase 9 computer-use runtime", () => {
       expect(persistedScreenshot.byteLength).toBe(clickResult.screenshot.payload.byteLength);
       expect(persistedMetadata.width).toBe(clickResult.screenshot.size.width);
       expect(persistedMetadata.height).toBe(clickResult.screenshot.size.height);
-      expect(clickResult.displayScale).toEqual({ x: 1, y: 1 });
       expect(await extractStatus(runtime)).toBe("clicked");
 
       await runtime.computerExecute({
@@ -213,13 +211,7 @@ describe("Phase 9 computer-use runtime", () => {
         plainScreenshot.screenshot.payload.sha256,
       );
       expect(plainScreenshot.screenshot.format).toBe("webp");
-      expect(plainScreenshot.displayViewport.visualViewport.size).toEqual(
-        plainScreenshot.screenshot.size,
-      );
-      expect(plainScreenshot.nativeViewport.visualViewport.size).toEqual({
-        width: 800,
-        height: 600,
-      });
+      expect(plainScreenshot.url).toBe(`${baseUrl}/computer/main`);
 
       const manifests = await readArtifactManifests(rootDir);
       expect(manifests.some((manifest) => manifest.kind === "screenshot")).toBe(true);
@@ -276,7 +268,7 @@ describe("Phase 9 computer-use runtime", () => {
           y: 42,
         },
       });
-      expect(output.action.type).toBe("click");
+      expect(output.url).toBe(`${baseUrl}/computer/main`);
 
       const extracted = await opensteer.extract({
         persist: "computer status through sdk wrapper",
@@ -372,7 +364,8 @@ describe("Phase 9 computer-use runtime", () => {
           y: 42,
         },
       });
-      expect(popup.pageRef).not.toBe(opened.pageRef);
+      expect(opened.url).toBe(`${baseUrl}/computer/main`);
+      expect(popup.url).toBe(`${baseUrl}/computer/popup`);
 
       const currentUrl = await runtime.extract({
         persist: "popup current url",

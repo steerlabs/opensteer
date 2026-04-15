@@ -3,6 +3,8 @@ import path from "node:path";
 import type { OpensteerCloudConfig } from "../cloud/config.js";
 import { OpensteerCloudClient } from "../cloud/client.js";
 import {
+  getPersistedLocalBrowserSessionOwnership,
+  isAttachedLocalBrowserSessionReachable,
   readPersistedCloudSessionRecord,
   readPersistedLocalBrowserSessionRecord,
   type PersistedCloudSessionRecord,
@@ -71,7 +73,7 @@ export async function collectOpensteerStatus(input: {
     ...output,
     rootPath,
     lanes: {
-      local: describeLocalLane(localRecord, input.provider.mode === "local"),
+      local: await describeLocalLane(localRecord, input.provider.mode === "local"),
       cloud: await describeCloudLane({
         record: cloudRecord,
         current: input.provider.mode === "cloud",
@@ -133,11 +135,46 @@ async function readWorkspaceCloudRecord(
   return readPersistedCloudSessionRecord(rootPath);
 }
 
-function describeLocalLane(
+async function describeLocalLane(
   record: PersistedLocalBrowserSessionRecord | undefined,
   current: boolean,
-): OpensteerStatusLaneSummary {
-  if (record === undefined || !isProcessRunning(record.pid)) {
+): Promise<OpensteerStatusLaneSummary> {
+  if (record === undefined) {
+    return {
+      provider: "local",
+      status: "idle",
+      current,
+      summary: "none",
+    };
+  }
+
+  if (getPersistedLocalBrowserSessionOwnership(record) === "attached") {
+    if (!(await isAttachedLocalBrowserSessionReachable(record))) {
+      return {
+        provider: "local",
+        status: "stale",
+        current,
+        summary: "attached browser unavailable",
+        detail: record.engine,
+        engine: record.engine,
+      };
+    }
+
+    const browser = record.executablePath
+      ? path.basename(record.executablePath).replace(/\.[A-Za-z0-9]+$/u, "")
+      : undefined;
+    return {
+      provider: "local",
+      status: "active",
+      current,
+      summary: "attached browser",
+      detail: browser ?? record.engine,
+      engine: record.engine,
+      ...(browser === undefined ? {} : { browser }),
+    };
+  }
+
+  if (!isProcessRunning(record.pid)) {
     return {
       provider: "local",
       status: "idle",

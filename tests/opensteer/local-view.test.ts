@@ -447,7 +447,8 @@ describe("local browser view", () => {
           await dialog.dismiss();
         });
         await closeButton.click();
-        expect(isProcessRunning(session.pid)).toBe(true);
+        expect(session.pid).toBeDefined();
+        expect(isProcessRunning(session.pid!)).toBe(true);
 
         page.once("dialog", async (dialog) => {
           expect(dialog.type()).toBe("confirm");
@@ -455,7 +456,7 @@ describe("local browser view", () => {
         });
         await closeButton.click();
 
-        await waitFor(async () => (isProcessRunning(session.pid) ? null : true), 20_000);
+        await waitFor(async () => (isProcessRunning(session.pid!) ? null : true), 20_000);
         const sessionsAfterClose = await waitFor(async () => {
           const response = await fetch(new URL("/api/sessions", localViewServer.url), {
             headers: {

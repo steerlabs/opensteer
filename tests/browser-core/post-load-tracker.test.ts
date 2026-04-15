@@ -203,6 +203,7 @@ describe("post-load tracker", () => {
         documentRef: "doc-1" as never,
         url: "https://example.test/search",
         tracker: {
+          lastMutationAt: 100,
           lastTrackedNetworkActivityAt: 100,
           trackedPendingFetches: 0,
           trackedPendingXhrs: 0,
@@ -252,6 +253,56 @@ describe("post-load tracker", () => {
       trigger: "navigation",
       crossDocument: false,
       bootstrapSettled: true,
+      observedMutationQuietMs: 20,
+    });
+  });
+
+  test("cross-document settle finalizes with the latest tracker state", async () => {
+    let reads = 0;
+    const boundary = await waitForActionBoundary({
+      timeoutMs: 1_000,
+      snapshot: {
+        pageRef: "page-1" as never,
+        documentRef: "doc-1" as never,
+        url: "https://example.test/search",
+        tracker: {
+          lastMutationAt: 100,
+          lastTrackedNetworkActivityAt: 100,
+          trackedPendingFetches: 0,
+          trackedPendingXhrs: 0,
+        },
+      },
+      getCurrentMainFrameDocumentRef: () => "doc-2" as never,
+      getCurrentPageUrl: () => "https://example.test/results",
+      isCurrentMainFrameBootstrapSettled: () => true,
+      readTrackerState: async () => {
+        reads += 1;
+        return {
+          installedAt: 100,
+          lastMutationAt: 150,
+          lastNetworkActivityAt: 150,
+          lastTrackedNetworkActivityAt: 150,
+          now: 700,
+          pendingFetches: 0,
+          pendingTimeouts: 0,
+          pendingXhrs: 0,
+          trackedPendingFetches: 0,
+          trackedPendingXhrs: 0,
+          collecting: true,
+          readyState: "complete",
+        };
+      },
+      throwBackgroundError: () => undefined,
+      isPageClosed: () => false,
+    });
+
+    expect(reads).toBe(1);
+    expect(boundary).toEqual({
+      trigger: "navigation",
+      crossDocument: true,
+      bootstrapSettled: true,
+      observedMutationQuietMs: 550,
+      postLoadHandled: true,
     });
   });
 });

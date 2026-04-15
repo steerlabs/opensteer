@@ -35,8 +35,10 @@ $HOME/
 # Local editor and agent state
 .codex/
 .claude/
+.agents/
 .vscode/
 .idea/
+skills-lock.json
 
 # Test artifacts
 playwright-report/

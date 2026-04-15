@@ -93,7 +93,7 @@ export function updateDocumentTreeSignature(
 
 export function resolveCapturedContentDocumentRef(
   framesByCdpId: ReadonlyMap<string, FrameState>,
-  captured: CapturedDomSnapshot,
+  captured: Pick<CapturedDomSnapshot, "documents" | "strings">,
   contentDocumentIndex: number,
 ): DocumentRef | undefined {
   const contentDocument = captured.documents[contentDocumentIndex];

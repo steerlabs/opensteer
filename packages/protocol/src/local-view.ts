@@ -57,7 +57,7 @@ export interface OpensteerLocalViewSessionSummary {
   readonly rootPath: string;
   readonly engine: "playwright" | "abp";
   readonly ownership: OpensteerSessionOwnership;
-  readonly pid: number;
+  readonly pid?: number;
   readonly startedAt: number;
   readonly browserName?: string;
 }

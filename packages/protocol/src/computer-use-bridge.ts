@@ -31,7 +31,11 @@ export interface ComputerUseBridgeInput {
   readonly screenshot: NormalizedComputerScreenshotOptions;
   readonly signal: AbortSignal;
   remainingMs(): number | undefined;
-  policySettle(pageRef: PageRef, trigger: ActionBoundarySettleTrigger): Promise<void>;
+  policySettle(
+    pageRef: PageRef,
+    trigger: ActionBoundarySettleTrigger,
+    boundary?: ActionBoundaryOutcome,
+  ): Promise<void>;
 }
 
 export interface ComputerUseBridgeOutput {

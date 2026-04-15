@@ -414,7 +414,7 @@ export class DomActionExecutor {
         ...(snapshot === undefined ? {} : { snapshot }),
         signal: timeout.signal,
         remainingMs: () => timeout.remainingMs(),
-        policySettle: async (targetPageRef, trigger) => {
+        policySettle: async (targetPageRef, trigger, boundary) => {
           try {
             await settleWithPolicy(this.options.policy.settle, {
               operation,
@@ -423,6 +423,10 @@ export class DomActionExecutor {
               pageRef: targetPageRef,
               signal: timeout.signal,
               remainingMs: timeout.remainingMs(),
+              ...(boundary?.observedMutationQuietMs === undefined
+                ? {}
+                : { observedMutationQuietMs: boundary.observedMutationQuietMs }),
+              ...(boundary?.postLoadHandled === true ? { postLoadHandled: true } : {}),
             });
           } catch (error) {
             if (snapshot !== undefined && isSoftSettleTimeoutError(error, timeout.signal)) {

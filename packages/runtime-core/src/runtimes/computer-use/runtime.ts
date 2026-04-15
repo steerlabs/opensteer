@@ -2,11 +2,16 @@ import type {
   BrowserCoreEngine,
   PageRef,
   ScreenshotArtifact as BrowserCoreScreenshotArtifact,
+  ViewportMetrics,
 } from "@opensteer/browser-core";
 import {
   OpensteerProtocolError,
+  type OpensteerComputerAction,
+  type OpensteerComputerDisplayScale,
   type OpensteerComputerExecuteInput,
-  type OpensteerComputerExecuteOutput,
+  type OpensteerComputerExecuteTiming,
+  type OpensteerComputerTraceEnrichment,
+  type OpensteerEvent,
 } from "@opensteer/protocol";
 
 import {
@@ -45,11 +50,16 @@ export interface ComputerUseRuntime {
   }): Promise<ComputerUseRuntimeOutput>;
 }
 
-export interface ComputerUseRuntimeOutput extends Omit<
-  OpensteerComputerExecuteOutput,
-  "screenshot"
-> {
+export interface ComputerUseRuntimeOutput {
+  readonly action: OpensteerComputerAction;
+  readonly pageRef: PageRef;
   readonly screenshot: BrowserCoreScreenshotArtifact;
+  readonly displayViewport: ViewportMetrics;
+  readonly nativeViewport: ViewportMetrics;
+  readonly displayScale: OpensteerComputerDisplayScale;
+  readonly events: readonly OpensteerEvent[];
+  readonly timing: OpensteerComputerExecuteTiming;
+  readonly trace?: OpensteerComputerTraceEnrichment;
 }
 
 export function createComputerUseRuntime(options: {
@@ -100,7 +110,7 @@ class DefaultComputerUseRuntime implements ComputerUseRuntime {
         screenshot,
         signal: input.timeout.signal,
         remainingMs: () => input.timeout.remainingMs(),
-        policySettle: async (pageRef, trigger) => {
+        policySettle: async (pageRef, trigger, boundary) => {
           try {
             await settleWithPolicy(this.options.policy.settle, {
               operation: "computer.execute",
@@ -109,6 +119,10 @@ class DefaultComputerUseRuntime implements ComputerUseRuntime {
               pageRef,
               signal: input.timeout.signal,
               remainingMs: input.timeout.remainingMs(),
+              ...(boundary?.observedMutationQuietMs === undefined
+                ? {}
+                : { observedMutationQuietMs: boundary.observedMutationQuietMs }),
+              ...(boundary?.postLoadHandled === true ? { postLoadHandled: true } : {}),
             });
           } catch (error) {
             if (

@@ -451,19 +451,6 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       });
     });
 
-    if (session.initialPage) {
-      const task = this.handleAttachedInitialPage(session, session.initialPage).catch((error) => {
-        if (isContextClosedError(error)) {
-          return;
-        }
-        throw error;
-      });
-      session.pendingPageTasks.add(task);
-      void task.finally(() => {
-        session.pendingPageTasks.delete(task);
-      });
-    }
-
     return sessionRef;
   }
 
@@ -506,11 +493,24 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     if (session.initialPage) {
       const initialPage = session.initialPage;
       session.initialPage = undefined;
+      let controller = this.pageByPlaywrightPage.get(initialPage);
+      let navigatedBeforeInitialization = false;
+
+      if (!controller) {
+        navigatedBeforeInitialization = await this.prepareAttachedInitialPage(
+          initialPage,
+          input.url,
+        );
+        controller = await this.initializePageController(
+          session,
+          initialPage,
+          input.openerPageRef,
+          true,
+        );
+      }
+
       await this.flushPendingPageTasks(session.sessionRef);
-      const controller =
-        this.pageByPlaywrightPage.get(initialPage) ??
-        (await this.initializePageController(session, initialPage, input.openerPageRef, true));
-      if (input.url) {
+      if (input.url && !navigatedBeforeInitialization) {
         await controller.page.goto(input.url, {
           waitUntil: "domcontentloaded",
         });
@@ -1184,6 +1184,39 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     );
   }
 
+  async getPageDomSnapshots(input: { readonly pageRef: PageRef }): Promise<readonly DomSnapshot[]> {
+    const controller = this.requirePage(input.pageRef);
+    await this.flushDomUpdateTask(controller);
+    const captured = await capturePageDomSnapshot(controller.cdp, { includeLayout: true });
+    const snapshots: DomSnapshot[] = [];
+
+    for (const frame of controller.framesByCdpId.values()) {
+      const rawDocument = findCapturedDocument(captured, frame.cdpFrameId);
+      if (!rawDocument) {
+        continue;
+      }
+
+      updateDocumentTreeSignature(frame.currentDocument, rawDocument, this.retiredDocuments);
+      snapshots.push(
+        buildDomSnapshotFromCapture(
+          frame.currentDocument,
+          {
+            capturedAt: captured.capturedAt,
+            documents: captured.documents,
+            rawDocument,
+            shadowBoundariesByBackendNodeId: captured.shadowBoundariesByBackendNodeId,
+            strings: captured.strings,
+          },
+          (document, backendNodeId) => this.nodeRefForBackendNode(document, backendNodeId),
+          (contentDocIndex) =>
+            resolveCapturedContentDocumentRef(controller.framesByCdpId, captured, contentDocIndex),
+        ),
+      );
+    }
+
+    return snapshots;
+  }
+
   async getActionBoundarySnapshot(input: {
     readonly pageRef: PageRef;
   }): Promise<ActionBoundarySnapshot> {
@@ -1197,6 +1230,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     readonly pageRef: PageRef;
     readonly timeoutMs?: number;
     readonly settleMs?: number;
+    readonly initialQuietMs?: number;
     readonly scope?: "main-frame" | "visible-frames";
   }): Promise<void> {
     const controller = this.requirePage(input.pageRef);
@@ -1204,6 +1238,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     await waitForCdpVisualStability(controller.cdp, {
       ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
       ...(input.settleMs === undefined ? {} : { settleMs: input.settleMs }),
+      ...(input.initialQuietMs === undefined ? {} : { initialQuietMs: input.initialQuietMs }),
       ...(input.scope === undefined ? {} : { scope: input.scope }),
     });
     await this.flushDomUpdateTask(controller);
@@ -1913,17 +1948,25 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     }
   }
 
-  private async handleAttachedInitialPage(session: SessionState, page: Page): Promise<void> {
-    if (session.lifecycleState !== "open") {
-      return;
-    }
-    if (this.pageByPlaywrightPage.has(page)) {
-      return;
-    }
+  private async prepareAttachedInitialPage(page: Page, url: string | undefined): Promise<boolean> {
     if (this.contextOptions?.viewport !== undefined && this.contextOptions.viewport !== null) {
       await page.setViewportSize(this.contextOptions.viewport);
     }
-    await this.initializePageController(session, page, undefined, true);
+    if (url === undefined) {
+      return false;
+    }
+
+    const reservedPageRef = createPageRef(`playwright-${++this.pageCounter}`);
+    this.preassignedPopupPageRefs.set(page, reservedPageRef);
+    try {
+      await page.goto(url, {
+        waitUntil: "domcontentloaded",
+      });
+      return true;
+    } catch (error) {
+      this.preassignedPopupPageRefs.delete(page);
+      throw normalizePlaywrightError(error, reservedPageRef);
+    }
   }
 
   private async initializePageController(

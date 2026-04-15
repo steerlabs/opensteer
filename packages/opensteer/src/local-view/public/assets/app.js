@@ -1556,7 +1556,16 @@ class LocalViewApp {
 
       const meta = document.createElement("span");
       meta.className = "session-info";
-      meta.textContent = [session.workspace, `pid ${session.pid}`].filter(Boolean).join(" \u00b7 ");
+      meta.textContent = [
+        session.workspace,
+        Number.isInteger(session.pid) && session.pid > 0
+          ? `pid ${session.pid}`
+          : session.ownership === "attached"
+            ? "attached"
+            : "",
+      ]
+        .filter(Boolean)
+        .join(" \u00b7 ");
 
       row2.append(badge, meta);
 

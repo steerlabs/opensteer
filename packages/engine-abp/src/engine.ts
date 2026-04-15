@@ -1621,6 +1621,43 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     );
   }
 
+  async getPageDomSnapshots(input: { readonly pageRef: PageRef }): Promise<readonly DomSnapshot[]> {
+    const controller = this.requirePage(input.pageRef);
+    await this.flushDomUpdateTask(controller);
+    const captured = await capturePageDomSnapshot(controller.cdp, { includeLayout: true });
+    const snapshots: DomSnapshot[] = [];
+
+    for (const frame of controller.framesByCdpId.values()) {
+      const rawDocument = findCapturedDocument(captured, frame.cdpFrameId);
+      if (!rawDocument) {
+        continue;
+      }
+
+      updateDocumentTreeSignature(frame.currentDocument, rawDocument, this.retiredDocuments);
+      snapshots.push(
+        buildDomSnapshotFromCapture(
+          frame.currentDocument,
+          {
+            capturedAt: captured.capturedAt,
+            documents: captured.documents,
+            rawDocument,
+            shadowBoundariesByBackendNodeId: captured.shadowBoundariesByBackendNodeId,
+            strings: captured.strings,
+          },
+          (liveDocument, backendNodeId) => this.nodeRefForBackendNode(liveDocument, backendNodeId),
+          (contentDocumentIndex) =>
+            resolveCapturedContentDocumentRef(
+              controller.framesByCdpId,
+              captured,
+              contentDocumentIndex,
+            ),
+        ),
+      );
+    }
+
+    return snapshots;
+  }
+
   async getActionBoundarySnapshot(input: {
     readonly pageRef: PageRef;
   }): Promise<ActionBoundarySnapshot> {
@@ -1633,6 +1670,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     readonly pageRef: PageRef;
     readonly timeoutMs?: number;
     readonly settleMs?: number;
+    readonly initialQuietMs?: number;
     readonly scope?: "main-frame" | "visible-frames";
   }): Promise<void> {
     const controller = this.requirePage(input.pageRef);
@@ -1640,6 +1678,7 @@ export class AbpBrowserCoreEngine implements BrowserCoreEngine {
     await waitForCdpVisualStability(controller.cdp, {
       ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
       ...(input.settleMs === undefined ? {} : { settleMs: input.settleMs }),
+      ...(input.initialQuietMs === undefined ? {} : { initialQuietMs: input.initialQuietMs }),
       ...(input.scope === undefined ? {} : { scope: input.scope }),
     });
     await this.flushDomUpdateTask(controller);

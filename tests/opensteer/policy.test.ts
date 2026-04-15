@@ -230,7 +230,7 @@ describe("Phase 7 visual stability settle observers", () => {
       pageRef: context.pageRef,
       timeoutMs: 7_000,
       settleMs: 750,
-      scope: "visible-frames",
+      scope: "main-frame",
     });
   });
 
@@ -260,7 +260,7 @@ describe("Phase 7 visual stability settle observers", () => {
       pageRef: context.pageRef,
       timeoutMs: 7_000,
       settleMs: 600,
-      scope: "visible-frames",
+      scope: "main-frame",
     });
   });
 
@@ -277,6 +277,25 @@ describe("Phase 7 visual stability settle observers", () => {
     expect(engine.waitForVisualStability).toHaveBeenCalledWith(
       expect.objectContaining({ timeoutMs: 1_500 }),
     );
+  });
+
+  test("dom-action observer forwards observed quiet time to visual stability", async () => {
+    const engine = createMockEngine();
+    const policy = defaultPolicy().settle;
+    const context = {
+      ...createContextWithEngine("dom-action", engine, { operation: "dom.click" }),
+      observedMutationQuietMs: 480,
+    };
+
+    await settleWithPolicy(policy, context);
+
+    expect(engine.waitForVisualStability).toHaveBeenCalledWith({
+      pageRef: context.pageRef,
+      timeoutMs: 7_000,
+      settleMs: 750,
+      initialQuietMs: 480,
+      scope: "main-frame",
+    });
   });
 
   test("hover timeout cap applies even when remainingMs is larger", async () => {
@@ -330,7 +349,7 @@ describe("Phase 7 visual stability settle observers", () => {
     expect(engine.waitForVisualStability).not.toHaveBeenCalled();
   });
 
-  test("navigation observer waits for post-load quiet before visual stability", async () => {
+  test("navigation observer keeps a visual confirmation window after post-load quiet", async () => {
     const engine = createMockEngine();
     const policy = defaultPolicy().settle;
     const context = createContextWithEngine("navigation", engine);
@@ -344,10 +363,33 @@ describe("Phase 7 visual stability settle observers", () => {
       captureWindowMs: 1_000,
       signal: context.signal,
     });
+    expect(engine.waitForVisualStability).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pageRef: context.pageRef,
+        settleMs: 750,
+        initialQuietMs: 400,
+        scope: "visible-frames",
+      }),
+    );
+  });
+
+  test("navigation observer skips duplicate post-load quiet after boundary already handled it", async () => {
+    const engine = createMockEngine();
+    const policy = defaultPolicy().settle;
+    const context = {
+      ...createContextWithEngine("navigation", engine),
+      observedMutationQuietMs: 620,
+      postLoadHandled: true,
+    };
+
+    await settleWithPolicy(policy, context);
+
+    expect(engine.waitForPostLoadQuiet).not.toHaveBeenCalled();
     expect(engine.waitForVisualStability).toHaveBeenCalledWith({
       pageRef: context.pageRef,
       timeoutMs: 7_000,
       settleMs: 750,
+      initialQuietMs: 620,
       scope: "visible-frames",
     });
   });

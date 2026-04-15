@@ -228,23 +228,27 @@ export async function markLiveSnapshotSemantics(options: {
     pageRef: options.pageRef,
   });
 
-  for (const frame of frames) {
-    await evaluateFrameBestEffort(
-      options.engine,
-      frame.frameRef,
-      MARK_SNAPSHOT_SEMANTICS_SCRIPT,
-      SNAPSHOT_SEMANTIC_ARGS,
-    );
-  }
-
-  return async () => {
-    for (const frame of frames) {
-      await evaluateFrameBestEffort(
+  await Promise.all(
+    frames.map((frame) =>
+      evaluateFrameBestEffort(
         options.engine,
         frame.frameRef,
-        CLEAR_SNAPSHOT_SEMANTICS_SCRIPT,
-        CLEAR_SNAPSHOT_SEMANTIC_ARGS,
-      );
-    }
+        MARK_SNAPSHOT_SEMANTICS_SCRIPT,
+        SNAPSHOT_SEMANTIC_ARGS,
+      ),
+    ),
+  );
+
+  return async () => {
+    await Promise.all(
+      frames.map((frame) =>
+        evaluateFrameBestEffort(
+          options.engine,
+          frame.frameRef,
+          CLEAR_SNAPSHOT_SEMANTICS_SCRIPT,
+          CLEAR_SNAPSHOT_SEMANTIC_ARGS,
+        ),
+      ),
+    );
   };
 }

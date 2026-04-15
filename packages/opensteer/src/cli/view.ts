@@ -1,6 +1,10 @@
 import path from "node:path";
 
-import { readPersistedLocalBrowserSessionRecord } from "../live-session.js";
+import {
+  getPersistedLocalBrowserSessionOwnership,
+  isAttachedLocalBrowserSessionReachable,
+  readPersistedLocalBrowserSessionRecord,
+} from "../live-session.js";
 import { isProcessRunning } from "../local-browser/process-owner.js";
 import { setLocalViewMode } from "../local-view/preferences.js";
 import { runLocalViewService } from "../local-view/serve.js";
@@ -9,7 +13,7 @@ import {
   ensureLocalViewServiceRunning,
   stopLocalViewService,
 } from "../local-view/service.js";
-import { buildLocalViewSessionId } from "../local-view/session-manifest.js";
+import { buildLocalViewSessionIdForRecord } from "../local-view/session-manifest.js";
 import { resolveFilesystemWorkspacePath } from "../root.js";
 import { CliError } from "./errors.js";
 import type { ParsedCommandLine } from "./parse.js";
@@ -84,14 +88,20 @@ async function resolveWorkspaceSessionId(input: {
     workspace: input.workspace,
   });
   const live = await readPersistedLocalBrowserSessionRecord(rootPath);
-  if (!live || !isProcessRunning(live.pid)) {
+  if (!live) {
+    return undefined;
+  }
+  if (getPersistedLocalBrowserSessionOwnership(live) === "attached") {
+    if (!(await isAttachedLocalBrowserSessionReachable(live))) {
+      return undefined;
+    }
+  } else if (!isProcessRunning(live.pid)) {
     return undefined;
   }
 
-  return buildLocalViewSessionId({
+  return buildLocalViewSessionIdForRecord({
     rootPath,
-    pid: live.pid,
-    startedAt: live.startedAt,
+    live,
   });
 }
 

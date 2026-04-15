@@ -33,6 +33,8 @@ export interface SettleContext extends SettleDelayInput {
   readonly pageRef: PageRef;
   readonly signal: AbortSignal;
   readonly remainingMs: number | undefined;
+  readonly observedMutationQuietMs?: number;
+  readonly postLoadHandled?: boolean;
 }
 
 export interface SettleObserver {

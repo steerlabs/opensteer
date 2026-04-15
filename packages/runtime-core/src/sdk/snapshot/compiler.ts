@@ -1,27 +1,23 @@
-import * as cheerio from "cheerio";
+import type { CheerioAPI } from "cheerio";
 
 import {
-  createNodeLocator,
   type BrowserCoreEngine,
   type DocumentEpoch,
   type DocumentRef,
   type DomSnapshot,
   type DomSnapshotNode,
   type FrameRef,
-  type NodeLocator,
   type NodeRef,
   type PageRef,
 } from "@opensteer/browser-core";
 import type { OpensteerSnapshotCounter, OpensteerSnapshotMode } from "@opensteer/protocol";
 
-import type { StructuralElementAnchor } from "../../runtimes/dom/index.js";
 import {
-  buildLocalStructuralElementAnchor,
-  createSnapshotIndex,
-  sanitizeStructuralElementAnchor,
-} from "../../runtimes/dom/path.js";
-import { findIframeHostNode, type DomSnapshotIndex } from "../../runtimes/dom/selectors.js";
-import { cleanForAction, cleanForExtraction } from "./cleaner.js";
+  prepareActionSnapshotDom,
+  prepareExtractionSnapshotDom,
+  serializePreparedActionSnapshot,
+  serializePreparedExtractionSnapshot,
+} from "./cleaner.js";
 import {
   OPENSTEER_BOUNDARY_ATTR,
   OPENSTEER_HIDDEN_ATTR,
@@ -42,8 +38,6 @@ import { markLiveSnapshotSemantics } from "./marking.js";
 
 interface CompiledOpensteerSnapshotCounterRecord extends Omit<OpensteerSnapshotCounter, "nodeRef"> {
   readonly nodeRef: NodeRef;
-  readonly locator: NodeLocator;
-  readonly anchor: StructuralElementAnchor;
   readonly sparseCounter?: number;
   readonly liveCounterSyncEligible: boolean;
 }
@@ -62,16 +56,12 @@ interface RenderDepth {
 }
 
 interface RenderedNodeMetadata {
-  readonly locator: NodeLocator;
-  readonly anchor: StructuralElementAnchor;
   readonly pageRef: PageRef;
   readonly frameRef: FrameRef;
   readonly documentRef: DocumentRef;
   readonly documentEpoch: DocumentEpoch;
   readonly nodeRef: NodeRef;
   readonly tagName: string;
-  readonly pathHint: string;
-  readonly text?: string;
   readonly attributes?: readonly {
     readonly name: string;
     readonly value: string;
@@ -80,13 +70,15 @@ interface RenderedNodeMetadata {
   readonly shadowDepth: number;
   readonly interactive: boolean;
   readonly liveCounterSyncEligible: boolean;
+  readonly textContent?: string;
 }
 
 interface CompiledCounterHtml {
-  readonly html: string;
   readonly counterRecords: ReadonlyMap<number, CompiledOpensteerSnapshotCounterRecord>;
   readonly sparseToDirectMapping: ReadonlyMap<number, number>;
 }
+
+const EXTRACTION_SKIPPED_COUNTER_TAGS = new Set(["html", "head", "body"]);
 
 const INTERNAL_SNAPSHOT_ATTRIBUTE_NAMES = new Set([
   "c",
@@ -104,7 +96,7 @@ const MAX_LIVE_COUNTER_SYNC_ATTEMPTS = 4;
 
 const CLEAR_LIVE_COUNTERS_SCRIPT = `(({ sparseCounterAttr }) => {
   const walk = (root) => {
-    for (const child of root.children) {
+    for (const child of Array.from(root?.children || [])) {
       child.removeAttribute("c");
       child.removeAttribute(sparseCounterAttr);
       walk(child);
@@ -121,7 +113,7 @@ const CLEAR_LIVE_COUNTERS_SCRIPT = `(({ sparseCounterAttr }) => {
 const ASSIGN_SPARSE_COUNTERS_SCRIPT = `(({ sparseCounterAttr, startCounter }) => {
   let counter = startCounter;
   const walk = (root) => {
-    for (const child of root.children) {
+    for (const child of Array.from(root?.children || [])) {
       child.setAttribute(sparseCounterAttr, String(counter++));
       walk(child);
       if (child.shadowRoot) {
@@ -136,7 +128,7 @@ const ASSIGN_SPARSE_COUNTERS_SCRIPT = `(({ sparseCounterAttr, startCounter }) =>
 
 const APPLY_DENSE_COUNTERS_SCRIPT = `(({ sparseCounterAttr, mapping }) => {
   const walk = (root) => {
-    for (const child of root.children) {
+    for (const child of Array.from(root?.children || [])) {
       child.removeAttribute("c");
       const sparse = child.getAttribute(sparseCounterAttr);
       if (sparse !== null) {
@@ -223,20 +215,22 @@ export async function clearOpensteerLiveCounters(
   const frames = await engine.listFrames({ pageRef });
   const failures: string[] = [];
 
-  for (const frame of frames) {
-    try {
-      await engine.evaluateFrame({
-        frameRef: frame.frameRef,
-        script: CLEAR_LIVE_COUNTERS_SCRIPT,
-        args: [{ sparseCounterAttr: OPENSTEER_SPARSE_COUNTER_ATTR }],
-      });
-    } catch (error) {
-      if (isDetachedFrameSyncError(error)) {
-        continue;
+  await Promise.all(
+    frames.map(async (frame) => {
+      try {
+        await engine.evaluateFrame({
+          frameRef: frame.frameRef,
+          script: CLEAR_LIVE_COUNTERS_SCRIPT,
+          args: [{ sparseCounterAttr: OPENSTEER_SPARSE_COUNTER_ATTR }],
+        });
+      } catch (error) {
+        if (isDetachedFrameSyncError(error)) {
+          return;
+        }
+        failures.push(`frame ${frame.frameRef} could not be cleared (${describeError(error)}).`);
       }
-      failures.push(`frame ${frame.frameRef} could not be cleared (${describeError(error)}).`);
-    }
-  }
+    }),
+  );
 
   if (failures.length > 0) {
     throw buildLiveCounterSyncError("clear live counters", failures);
@@ -298,25 +292,29 @@ async function syncDenseCountersToLiveDom(
     ]),
   );
 
-  for (const frame of frames) {
-    try {
-      await engine.evaluateFrame({
-        frameRef: frame.frameRef,
-        script: APPLY_DENSE_COUNTERS_SCRIPT,
-        args: [
-          {
-            sparseCounterAttr: OPENSTEER_SPARSE_COUNTER_ATTR,
-            mapping: mappingObj,
-          },
-        ],
-      });
-    } catch (error) {
-      if (isDetachedFrameSyncError(error)) {
-        continue;
+  await Promise.all(
+    frames.map(async (frame) => {
+      try {
+        await engine.evaluateFrame({
+          frameRef: frame.frameRef,
+          script: APPLY_DENSE_COUNTERS_SCRIPT,
+          args: [
+            {
+              sparseCounterAttr: OPENSTEER_SPARSE_COUNTER_ATTR,
+              mapping: mappingObj,
+            },
+          ],
+        });
+      } catch (error) {
+        if (isDetachedFrameSyncError(error)) {
+          return;
+        }
+        failures.push(
+          `frame ${frame.frameRef} could not be synchronized (${describeError(error)}).`,
+        );
       }
-      failures.push(`frame ${frame.frameRef} could not be synchronized (${describeError(error)}).`);
-    }
-  }
+    }),
+  );
 
   if (failures.length > 0) {
     throw buildLiveCounterSyncError("synchronize dense counters", failures);
@@ -343,18 +341,18 @@ export async function compileOpensteerSnapshot(options: {
       await assignSparseCountersToLiveDom(options.engine, options.pageRef);
 
       const pageInfo = await options.engine.getPageInfo({ pageRef: options.pageRef });
-      const mainSnapshot = await getMainDocumentSnapshot(options.engine, options.pageRef);
-      const snapshotsByDocumentRef = await collectDocumentSnapshots(options.engine, mainSnapshot);
+      const { mainSnapshot, snapshotsByDocumentRef } = await getPageDocumentSnapshots(
+        options.engine,
+        options.pageRef,
+      );
 
       await cleanupLiveSemantics();
       cleanupLiveSemantics = async () => {};
 
-      const snapshotIndices = new Map<DocumentRef, DomSnapshotIndex>();
       const renderedNodes = new Map<string, RenderedNodeMetadata>();
       const rawHtml = renderDocumentSnapshot(
         mainSnapshot.documentRef,
         snapshotsByDocumentRef,
-        snapshotIndices,
         renderedNodes,
         {
           iframeDepth: 0,
@@ -362,11 +360,17 @@ export async function compileOpensteerSnapshot(options: {
         },
       );
 
-      const cleanedHtml =
-        options.mode === "extraction" ? cleanForExtraction(rawHtml) : cleanForAction(rawHtml);
-      const compiledHtml = assignCounters(cleanedHtml, renderedNodes);
+      const preparedSnapshotDom =
+        options.mode === "extraction"
+          ? prepareExtractionSnapshotDom(rawHtml)
+          : prepareActionSnapshotDom(rawHtml);
+      const compiledHtml = assignCountersInDom(preparedSnapshotDom, renderedNodes, options.mode);
       const finalHtml =
-        options.mode === "extraction" ? unwrapExtractionHtml(compiledHtml.html) : compiledHtml.html;
+        preparedSnapshotDom === undefined
+          ? ""
+          : options.mode === "extraction"
+            ? serializePreparedExtractionSnapshot(preparedSnapshotDom)
+            : serializePreparedActionSnapshot(preparedSnapshotDom);
 
       ensureSparseCountersForAllRecords(compiledHtml.counterRecords);
       await syncDenseCountersToLiveDom(
@@ -413,6 +417,37 @@ async function getMainDocumentSnapshot(
   return engine.getDomSnapshot({ frameRef: mainFrame.frameRef });
 }
 
+async function getPageDocumentSnapshots(
+  engine: BrowserCoreEngine,
+  pageRef: PageRef,
+): Promise<{
+  readonly mainSnapshot: DomSnapshot;
+  readonly snapshotsByDocumentRef: ReadonlyMap<DocumentRef, DomSnapshot>;
+}> {
+  const bundleEngine = engine as BrowserCoreEngine & {
+    getPageDomSnapshots?: (input: { readonly pageRef: PageRef }) => Promise<readonly DomSnapshot[]>;
+  };
+  const bundledSnapshots = await bundleEngine.getPageDomSnapshots?.({ pageRef });
+  if (bundledSnapshots && bundledSnapshots.length > 0) {
+    const mainSnapshot =
+      bundledSnapshots.find((snapshot) => snapshot.parentDocumentRef === undefined) ??
+      bundledSnapshots[0]!;
+    return {
+      mainSnapshot,
+      snapshotsByDocumentRef: new Map(
+        bundledSnapshots.map((snapshot) => [snapshot.documentRef, snapshot]),
+      ),
+    };
+  }
+
+  const mainSnapshot = await getMainDocumentSnapshot(engine, pageRef);
+  const snapshotsByDocumentRef = await collectDocumentSnapshots(engine, mainSnapshot);
+  return {
+    mainSnapshot,
+    snapshotsByDocumentRef,
+  };
+}
+
 async function collectDocumentSnapshots(
   engine: BrowserCoreEngine,
   mainSnapshot: DomSnapshot,
@@ -444,7 +479,6 @@ async function collectDocumentSnapshots(
 function renderDocumentSnapshot(
   documentRef: DocumentRef,
   snapshotsByDocumentRef: ReadonlyMap<DocumentRef, DomSnapshot>,
-  snapshotIndices: Map<DocumentRef, DomSnapshotIndex>,
   renderedNodes: Map<string, RenderedNodeMetadata>,
   depth: RenderDepth,
 ): string {
@@ -461,15 +495,7 @@ function renderDocumentSnapshot(
     );
   }
 
-  return renderNode(
-    snapshot,
-    rootNode,
-    nodesById,
-    snapshotsByDocumentRef,
-    snapshotIndices,
-    renderedNodes,
-    depth,
-  );
+  return renderNode(snapshot, rootNode, nodesById, snapshotsByDocumentRef, renderedNodes, depth);
 }
 
 function renderNode(
@@ -477,7 +503,6 @@ function renderNode(
   node: DomSnapshotNode,
   nodesById: ReadonlyMap<number, DomSnapshotNode>,
   snapshotsByDocumentRef: ReadonlyMap<DocumentRef, DomSnapshot>,
-  snapshotIndices: Map<DocumentRef, DomSnapshotIndex>,
   renderedNodes: Map<string, RenderedNodeMetadata>,
   depth: RenderDepth,
 ): string {
@@ -490,40 +515,16 @@ function renderNode(
   }
 
   if (node.nodeType === 9 || node.nodeType === 11) {
-    return renderChildren(
-      snapshot,
-      node,
-      nodesById,
-      snapshotsByDocumentRef,
-      snapshotIndices,
-      renderedNodes,
-      depth,
-    );
+    return renderChildren(snapshot, node, nodesById, snapshotsByDocumentRef, renderedNodes, depth);
   }
 
   if (node.nodeType !== 1) {
-    return renderChildren(
-      snapshot,
-      node,
-      nodesById,
-      snapshotsByDocumentRef,
-      snapshotIndices,
-      renderedNodes,
-      depth,
-    );
+    return renderChildren(snapshot, node, nodesById, snapshotsByDocumentRef, renderedNodes, depth);
   }
 
   const tagName = normalizeTagName(node.nodeName);
   if (isPseudoElementTagName(tagName)) {
-    return renderChildren(
-      snapshot,
-      node,
-      nodesById,
-      snapshotsByDocumentRef,
-      snapshotIndices,
-      renderedNodes,
-      depth,
-    );
+    return renderChildren(snapshot, node, nodesById, snapshotsByDocumentRef, renderedNodes, depth);
   }
 
   // Flatten structural root tags (html, head, body) inside iframe/shadow boundaries.
@@ -534,31 +535,24 @@ function renderNode(
     (depth.iframeDepth > 0 || depth.shadowDepth > 0) &&
     (tagName === "html" || tagName === "head" || tagName === "body")
   ) {
-    return renderChildren(
-      snapshot,
-      node,
-      nodesById,
-      snapshotsByDocumentRef,
-      snapshotIndices,
-      renderedNodes,
-      depth,
-    );
+    return renderChildren(snapshot, node, nodesById, snapshotsByDocumentRef, renderedNodes, depth);
   }
 
   const snapshotAttributes = normalizeNodeAttributes(node.attributes);
+  const snapshotAttributeIndex = indexNodeAttributes(snapshotAttributes);
   const authoredAttributes = stripInternalSnapshotAttributes(snapshotAttributes);
+  const authoredAttributeIndex = indexNodeAttributes(authoredAttributes);
   const attributes = [...authoredAttributes];
   const subtreeHidden =
-    hasAttribute(snapshotAttributes, OPENSTEER_HIDDEN_ATTR) || isLikelySubtreeHidden(node);
+    snapshotAttributeIndex.has(OPENSTEER_HIDDEN_ATTR) || isLikelySubtreeHidden(node);
   const selfHidden =
     !subtreeHidden &&
-    (hasAttribute(snapshotAttributes, OPENSTEER_SELF_HIDDEN_ATTR) ||
-      isLikelySelfHidden(node, nodesById));
+    (snapshotAttributeIndex.has(OPENSTEER_SELF_HIDDEN_ATTR) || isLikelySelfHidden(node, nodesById));
   const interactive =
     !subtreeHidden &&
     !selfHidden &&
-    (hasAttribute(snapshotAttributes, OPENSTEER_INTERACTIVE_ATTR) ||
-      isLikelyInteractive(tagName, node, authoredAttributes));
+    (snapshotAttributeIndex.has(OPENSTEER_INTERACTIVE_ATTR) ||
+      isLikelyInteractive(tagName, node, authoredAttributes, authoredAttributeIndex));
 
   if (interactive) {
     attributes.push({ name: OPENSTEER_INTERACTIVE_ATTR, value: "1" });
@@ -568,7 +562,7 @@ function renderNode(
   } else if (selfHidden) {
     attributes.push({ name: OPENSTEER_SELF_HIDDEN_ATTR, value: "1" });
   }
-  const sparseCounter = findAttributeValue(snapshotAttributes, OPENSTEER_SPARSE_COUNTER_ATTR);
+  const sparseCounter = snapshotAttributeIndex.get(OPENSTEER_SPARSE_COUNTER_ATTR);
   if (sparseCounter !== undefined) {
     attributes.push({ name: OPENSTEER_SPARSE_COUNTER_ATTR, value: sparseCounter });
   }
@@ -580,23 +574,18 @@ function renderNode(
     const syntheticNodeId = buildSyntheticNodeId(snapshot, node);
     attributes.push({ name: OPENSTEER_NODE_ID_ATTR, value: syntheticNodeId });
     renderedNodes.set(syntheticNodeId, {
-      locator: createNodeLocator(snapshot.documentRef, snapshot.documentEpoch, node.nodeRef),
-      anchor: buildSnapshotElementAnchor(snapshot, node, snapshotsByDocumentRef, snapshotIndices),
       pageRef: snapshot.pageRef,
       frameRef: snapshot.frameRef,
       documentRef: snapshot.documentRef,
       documentEpoch: snapshot.documentEpoch,
       nodeRef: node.nodeRef,
       tagName: tagName.toUpperCase(),
-      pathHint: buildPathHint(tagName, authoredAttributes),
-      ...(buildTextSnippet(node.textContent) === undefined
-        ? {}
-        : { text: buildTextSnippet(node.textContent)! }),
       ...(authoredAttributes.length === 0 ? {} : { attributes: authoredAttributes }),
       iframeDepth: depth.iframeDepth,
       shadowDepth: depth.shadowDepth,
       interactive,
       liveCounterSyncEligible: isLiveCounterSyncEligible(node, nodesById),
+      ...(node.textContent === undefined ? {} : { textContent: node.textContent }),
     });
   }
 
@@ -606,7 +595,6 @@ function renderNode(
     node,
     nodesById,
     snapshotsByDocumentRef,
-    snapshotIndices,
     renderedNodes,
     depth,
   );
@@ -621,7 +609,6 @@ function renderNode(
   const iframeHtml = renderDocumentSnapshot(
     node.contentDocumentRef,
     snapshotsByDocumentRef,
-    snapshotIndices,
     renderedNodes,
     {
       iframeDepth: depth.iframeDepth + 1,
@@ -640,7 +627,6 @@ function renderChildren(
   node: DomSnapshotNode,
   nodesById: ReadonlyMap<number, DomSnapshotNode>,
   snapshotsByDocumentRef: ReadonlyMap<DocumentRef, DomSnapshot>,
-  snapshotIndices: Map<DocumentRef, DomSnapshotIndex>,
   renderedNodes: Map<string, RenderedNodeMetadata>,
   depth: RenderDepth,
 ): string {
@@ -665,18 +651,10 @@ function renderChildren(
   if (shadowChildren.length > 0) {
     const shadowHtml = shadowChildren
       .map((child) =>
-        renderNode(
-          snapshot,
-          child,
-          nodesById,
-          snapshotsByDocumentRef,
-          snapshotIndices,
-          renderedNodes,
-          {
-            iframeDepth: depth.iframeDepth,
-            shadowDepth: depth.shadowDepth + 1,
-          },
-        ),
+        renderNode(snapshot, child, nodesById, snapshotsByDocumentRef, renderedNodes, {
+          iframeDepth: depth.iframeDepth,
+          shadowDepth: depth.shadowDepth + 1,
+        }),
       )
       .join("");
     chunks.push(
@@ -686,29 +664,28 @@ function renderChildren(
 
   for (const child of regularChildren) {
     chunks.push(
-      renderNode(
-        snapshot,
-        child,
-        nodesById,
-        snapshotsByDocumentRef,
-        snapshotIndices,
-        renderedNodes,
-        depth,
-      ),
+      renderNode(snapshot, child, nodesById, snapshotsByDocumentRef, renderedNodes, depth),
     );
   }
 
   return chunks.join("");
 }
 
-function assignCounters(
-  cleanedHtml: string,
+function assignCountersInDom(
+  $: CheerioAPI | undefined,
   renderedNodes: ReadonlyMap<string, RenderedNodeMetadata>,
+  mode: OpensteerSnapshotMode,
 ): CompiledCounterHtml {
-  const $ = cheerio.load(cleanedHtml, { xmlMode: false });
   const counterRecords = new Map<number, CompiledOpensteerSnapshotCounterRecord>();
   const sparseToDirectMapping = new Map<number, number>();
   let nextCounter = 1;
+
+  if (!$) {
+    return {
+      counterRecords,
+      sparseToDirectMapping,
+    };
+  }
 
   $("*").each(function assignElementCounter() {
     const el = $(this);
@@ -723,15 +700,32 @@ function assignCounters(
       return;
     }
 
+    if (
+      mode === "extraction" &&
+      EXTRACTION_SKIPPED_COUNTER_TAGS.has(rendered.tagName.toLowerCase())
+    ) {
+      el.removeAttr(OPENSTEER_SPARSE_COUNTER_ATTR);
+      return;
+    }
+
     const rawSparseCounter = el.attr(OPENSTEER_SPARSE_COUNTER_ATTR);
     el.removeAttr(OPENSTEER_SPARSE_COUNTER_ATTR);
     const sparseCounter = rawSparseCounter ? Number.parseInt(rawSparseCounter, 10) : undefined;
+    const replayableSparseCounter =
+      typeof sparseCounter === "number" && Number.isFinite(sparseCounter)
+        ? sparseCounter
+        : undefined;
+    if (rendered.liveCounterSyncEligible && replayableSparseCounter === undefined) {
+      return;
+    }
 
     const counter = nextCounter++;
     el.attr("c", String(counter));
-    if (sparseCounter !== undefined && Number.isFinite(sparseCounter)) {
-      sparseToDirectMapping.set(sparseCounter, counter);
+    if (replayableSparseCounter !== undefined) {
+      sparseToDirectMapping.set(replayableSparseCounter, counter);
     }
+    const pathHint = buildPathHint(rendered.tagName.toLowerCase(), rendered.attributes ?? []);
+    const text = buildTextSnippet(rendered.textContent);
     counterRecords.set(counter, {
       element: counter,
       pageRef: rendered.pageRef,
@@ -740,21 +734,18 @@ function assignCounters(
       documentEpoch: rendered.documentEpoch,
       nodeRef: rendered.nodeRef,
       tagName: rendered.tagName,
-      pathHint: rendered.pathHint,
-      ...(rendered.text === undefined ? {} : { text: rendered.text }),
+      pathHint,
+      ...(text === undefined ? {} : { text }),
       ...(rendered.attributes === undefined ? {} : { attributes: rendered.attributes }),
       iframeDepth: rendered.iframeDepth,
       shadowDepth: rendered.shadowDepth,
       interactive: rendered.interactive,
       liveCounterSyncEligible: rendered.liveCounterSyncEligible,
-      locator: rendered.locator,
-      anchor: rendered.anchor,
-      ...(sparseCounter !== undefined && Number.isFinite(sparseCounter) ? { sparseCounter } : {}),
+      ...(replayableSparseCounter === undefined ? {} : { sparseCounter: replayableSparseCounter }),
     });
   });
 
   return {
-    html: $.html(),
     counterRecords,
     sparseToDirectMapping,
   };
@@ -861,9 +852,10 @@ function isLikelyInteractive(
   tagName: string,
   node: DomSnapshotNode,
   attributes: readonly { readonly name: string; readonly value: string }[],
+  attributeIndex: ReadonlyMap<string, string>,
 ): boolean {
   if (NATIVE_INTERACTIVE_TAGS.has(tagName)) {
-    if (tagName === "input" && findAttributeValue(attributes, "type")?.toLowerCase() === "hidden") {
+    if (tagName === "input" && attributeIndex.get("type")?.toLowerCase() === "hidden") {
       return false;
     }
 
@@ -872,30 +864,30 @@ function isLikelyInteractive(
     }
   }
 
-  if (tagName === "a" && findAttributeValue(attributes, "href") !== undefined) {
+  if (tagName === "a" && attributeIndex.has("href")) {
     return true;
   }
 
   if (
-    findAttributeValue(attributes, "onclick") !== undefined ||
-    findAttributeValue(attributes, "onmousedown") !== undefined ||
-    findAttributeValue(attributes, "onmouseup") !== undefined ||
-    findAttributeValue(attributes, "data-action") !== undefined ||
-    findAttributeValue(attributes, "data-click") !== undefined ||
-    findAttributeValue(attributes, "data-toggle") !== undefined
+    attributeIndex.has("onclick") ||
+    attributeIndex.has("onmousedown") ||
+    attributeIndex.has("onmouseup") ||
+    attributeIndex.has("data-action") ||
+    attributeIndex.has("data-click") ||
+    attributeIndex.has("data-toggle")
   ) {
     return true;
   }
 
-  if (hasNonNegativeTabIndex(findAttributeValue(attributes, "tabindex"))) {
+  if (hasNonNegativeTabIndex(attributeIndex.get("tabindex"))) {
     return true;
   }
 
-  if (findAttributeValue(attributes, "contenteditable")?.toLowerCase() === "true") {
+  if (attributeIndex.get("contenteditable")?.toLowerCase() === "true") {
     return true;
   }
 
-  const role = findAttributeValue(attributes, "role")?.toLowerCase();
+  const role = attributeIndex.get("role")?.toLowerCase();
   return role !== undefined && INTERACTIVE_ROLE_SET.has(role);
 }
 
@@ -980,19 +972,6 @@ function parseOpacity(value: string | undefined): number {
   return Number.isFinite(parsed) ? parsed : Number.NaN;
 }
 
-function hasAttribute(
-  attributes: readonly { readonly name: string; readonly value: string }[],
-  name: string,
-): boolean {
-  const normalizedName = name.toLowerCase();
-  return attributes.some((attribute) => attribute.name.toLowerCase() === normalizedName);
-}
-
-function unwrapExtractionHtml(html: string): string {
-  const $ = cheerio.load(html, { xmlMode: false });
-  return $("body").html()?.trim() || html;
-}
-
 function buildSyntheticNodeId(snapshot: DomSnapshot, node: DomSnapshotNode): string {
   return `${snapshot.documentRef}:${String(snapshot.documentEpoch)}:${String(node.snapshotNodeId)}`;
 }
@@ -1057,6 +1036,16 @@ function findAttributeValue(
   return attributes.find((attribute) => attribute.name.toLowerCase() === normalizedName)?.value;
 }
 
+function indexNodeAttributes(
+  attributes: readonly { readonly name: string; readonly value: string }[],
+): ReadonlyMap<string, string> {
+  const indexed = new Map<string, string>();
+  for (const attribute of attributes) {
+    indexed.set(attribute.name.toLowerCase(), attribute.value);
+  }
+  return indexed;
+}
+
 function attributesToHtml(
   attributes: readonly { readonly name: string; readonly value: string }[],
 ): string {
@@ -1075,79 +1064,6 @@ function escapeAttribute(value: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
-}
-
-function buildSnapshotElementAnchor(
-  snapshot: DomSnapshot,
-  node: DomSnapshotNode,
-  snapshotsByDocumentRef: ReadonlyMap<DocumentRef, DomSnapshot>,
-  snapshotIndices: Map<DocumentRef, DomSnapshotIndex>,
-): StructuralElementAnchor {
-  const index = getSnapshotIndex(snapshot.documentRef, snapshotsByDocumentRef, snapshotIndices);
-  const localAnchor = buildLocalStructuralElementAnchor(index, node);
-  return prefixIframeContext(snapshot, localAnchor, snapshotsByDocumentRef, snapshotIndices);
-}
-
-function prefixIframeContext(
-  snapshot: DomSnapshot,
-  localPath: StructuralElementAnchor,
-  snapshotsByDocumentRef: ReadonlyMap<DocumentRef, DomSnapshot>,
-  snapshotIndices: Map<DocumentRef, DomSnapshotIndex>,
-): StructuralElementAnchor {
-  if (snapshot.parentDocumentRef === undefined) {
-    return sanitizeStructuralElementAnchor(localPath);
-  }
-
-  const parentSnapshot = snapshotsByDocumentRef.get(snapshot.parentDocumentRef);
-  if (!parentSnapshot) {
-    throw new Error(
-      `document ${snapshot.documentRef} has parent ${snapshot.parentDocumentRef} but no parent snapshot`,
-    );
-  }
-
-  const parentIndex = getSnapshotIndex(
-    parentSnapshot.documentRef,
-    snapshotsByDocumentRef,
-    snapshotIndices,
-  );
-  const iframeHost = findIframeHostNode(parentIndex, snapshot.documentRef);
-  if (!iframeHost) {
-    throw new Error(
-      `document ${snapshot.documentRef} has parent ${snapshot.parentDocumentRef} but no iframe host`,
-    );
-  }
-
-  const hostPath = buildSnapshotElementAnchor(
-    parentSnapshot,
-    iframeHost,
-    snapshotsByDocumentRef,
-    snapshotIndices,
-  );
-  return sanitizeStructuralElementAnchor({
-    resolution: "structural",
-    context: [...hostPath.context, { kind: "iframe", host: hostPath.nodes }, ...localPath.context],
-    nodes: localPath.nodes,
-  });
-}
-
-function getSnapshotIndex(
-  documentRef: DocumentRef,
-  snapshotsByDocumentRef: ReadonlyMap<DocumentRef, DomSnapshot>,
-  snapshotIndices: Map<DocumentRef, DomSnapshotIndex>,
-): DomSnapshotIndex {
-  const existing = snapshotIndices.get(documentRef);
-  if (existing) {
-    return existing;
-  }
-
-  const snapshot = snapshotsByDocumentRef.get(documentRef);
-  if (!snapshot) {
-    throw new Error(`missing DOM snapshot for ${documentRef}`);
-  }
-
-  const index = createSnapshotIndex(snapshot);
-  snapshotIndices.set(documentRef, index);
-  return index;
 }
 
 function escapeHtml(value: string): string {

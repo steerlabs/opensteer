@@ -90,7 +90,7 @@ describe("Playwright-backed observations", () => {
         });
 
         try {
-          const session = await runtime.open();
+          await runtime.open();
           await runtime.setObservabilityConfig({
             profile: "diagnostic",
           });
@@ -111,10 +111,13 @@ describe("Playwright-backed observations", () => {
           await wait(400);
           await runtime.snapshot();
 
-          const observationSession = await workspace.observations.getSession(session.sessionRef);
+          const sessionInfo = await runtime.info();
+          const sessionRef = sessionInfo.sessionId;
+          expect(sessionRef).toBeDefined();
+          const observationSession = await workspace.observations.getSession(sessionRef!);
 
           expect(observationSession).toMatchObject({
-            sessionId: session.sessionRef,
+            sessionId: sessionRef,
             profile: "diagnostic",
           });
         } finally {

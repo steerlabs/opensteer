@@ -11,7 +11,10 @@ import {
   readJsonFile,
   writeJsonFileAtomic,
 } from "../internal/filesystem.js";
-import type { PersistedLocalBrowserSessionRecord } from "../live-session.js";
+import {
+  getPersistedLocalBrowserSessionOwnership,
+  type PersistedLocalBrowserSessionRecord,
+} from "../live-session.js";
 import { resolveLocalViewSessionsDir } from "./runtime-dir.js";
 
 export const OPENSTEER_LOCAL_VIEW_SESSION_LAYOUT = "opensteer-local-view-session";
@@ -32,13 +35,47 @@ export interface PersistedLocalViewSessionManifest {
 
 export function buildLocalViewSessionId(input: {
   readonly rootPath: string;
-  readonly pid: number;
   readonly startedAt: number;
+  readonly pid?: number;
+  readonly ownership?: OpensteerSessionOwnership;
+  readonly endpoint?: string;
+  readonly baseUrl?: string;
+  readonly remoteDebuggingUrl?: string;
 }): string {
+  const ownership = input.ownership ?? "owned";
+  const identity =
+    ownership === "attached"
+      ? (input.endpoint ?? input.remoteDebuggingUrl ?? input.baseUrl ?? "attached")
+      : `pid:${String(input.pid ?? 0)}`;
   const hash = createHash("sha256")
-    .update(`${input.rootPath}\n${String(input.pid)}\n${String(input.startedAt)}`)
+    .update(`${input.rootPath}\n${ownership}\n${identity}\n${String(input.startedAt)}`)
     .digest("hex");
   return `local_${hash.slice(0, 24)}`;
+}
+
+export function buildLocalViewSessionIdForRecord(input: {
+  readonly rootPath: string;
+  readonly live: PersistedLocalBrowserSessionRecord;
+}): string {
+  const ownership = getPersistedLocalBrowserSessionOwnership(input.live);
+  if (ownership === "attached") {
+    return buildLocalViewSessionId({
+      rootPath: input.rootPath,
+      ownership,
+      startedAt: input.live.startedAt,
+      ...(input.live.endpoint === undefined ? {} : { endpoint: input.live.endpoint }),
+      ...(input.live.baseUrl === undefined ? {} : { baseUrl: input.live.baseUrl }),
+      ...(input.live.remoteDebuggingUrl === undefined
+        ? {}
+        : { remoteDebuggingUrl: input.live.remoteDebuggingUrl }),
+    });
+  }
+  return buildLocalViewSessionId({
+    rootPath: input.rootPath,
+    ownership,
+    startedAt: input.live.startedAt,
+    pid: input.live.pid,
+  });
 }
 
 export function createLocalViewSessionManifest(input: {
@@ -50,10 +87,9 @@ export function createLocalViewSessionManifest(input: {
   return {
     layout: OPENSTEER_LOCAL_VIEW_SESSION_LAYOUT,
     version: OPENSTEER_LOCAL_VIEW_SESSION_VERSION,
-    sessionId: buildLocalViewSessionId({
+    sessionId: buildLocalViewSessionIdForRecord({
       rootPath: input.rootPath,
-      pid: input.live.pid,
-      startedAt: input.live.startedAt,
+      live: input.live,
     }),
     rootPath: input.rootPath,
     ...(input.workspace === undefined ? {} : { workspace: input.workspace }),

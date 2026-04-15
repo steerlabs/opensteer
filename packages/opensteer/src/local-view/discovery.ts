@@ -4,6 +4,8 @@ import type { OpensteerLocalViewSessionSummary } from "@opensteer/protocol";
 
 import { pathExists } from "../internal/filesystem.js";
 import {
+  getPersistedLocalBrowserSessionOwnership,
+  isAttachedLocalBrowserSessionReachable,
   readPersistedLocalBrowserSessionRecord,
   type PersistedLocalBrowserSessionRecord,
 } from "../live-session.js";
@@ -12,6 +14,7 @@ import {
   deleteLocalViewSessionManifest,
   listLocalViewSessionManifests,
   readLocalViewSessionManifest,
+  buildLocalViewSessionIdForRecord,
   type PersistedLocalViewSessionManifest,
 } from "./session-manifest.js";
 import { resolveBrowserWebSocketUrl } from "./resolve-browser-websocket.js";
@@ -61,13 +64,17 @@ async function resolveSessionSummary(
   return {
     sessionId: manifest.sessionId,
     label: manifest.workspace ?? (path.basename(manifest.rootPath) || manifest.sessionId),
-    status: isProcessRunning(record.pid) ? "live" : "stale",
+    status:
+      getPersistedLocalBrowserSessionOwnership(record) === "attached" ||
+      isProcessRunning(record.pid)
+        ? "live"
+        : "stale",
     ...(manifest.workspace === undefined ? {} : { workspace: manifest.workspace }),
     rootPath: manifest.rootPath,
     engine: record.engine,
     ownership: manifest.ownership,
-    pid: record.pid,
     startedAt: record.startedAt,
+    ...(record.pid > 0 ? { pid: record.pid } : {}),
     ...(browserName === undefined ? {} : { browserName }),
   };
 }
@@ -106,12 +113,23 @@ async function readLiveRecord(
   }
 
   if (
-    record.pid !== manifest.pid ||
+    buildLocalViewSessionIdForRecord({
+      rootPath: manifest.rootPath,
+      live: record,
+    }) !== manifest.sessionId ||
     record.startedAt !== manifest.startedAt ||
-    !isProcessRunning(record.pid)
+    record.engine !== manifest.engine ||
+    getPersistedLocalBrowserSessionOwnership(record) !== manifest.ownership
   ) {
     return undefined;
   }
 
+  if (getPersistedLocalBrowserSessionOwnership(record) === "attached") {
+    return (await isAttachedLocalBrowserSessionReachable(record)) ? record : undefined;
+  }
+
+  if (record.pid !== manifest.pid || !isProcessRunning(record.pid)) {
+    return undefined;
+  }
   return record;
 }

@@ -2,6 +2,7 @@ import type { DocumentRef, PageRef } from "./identity.js";
 import {
   DEFAULT_ACTION_BOUNDARY_POLL_INTERVAL_MS,
   DEFAULT_POST_LOAD_TRACKER_QUIET_WINDOW_MS,
+  getPostLoadTrackerMutationQuietMs,
   postLoadTrackerHasTrackedNetworkActivitySince,
   postLoadTrackerIsSettled,
   type PostLoadTrackerSnapshot,
@@ -34,6 +35,8 @@ export interface ActionBoundaryOutcome {
   readonly trigger: ActionBoundarySettleTrigger;
   readonly crossDocument: boolean;
   readonly bootstrapSettled: boolean;
+  readonly observedMutationQuietMs?: number;
+  readonly postLoadHandled?: boolean;
   readonly timedOutPhase?: ActionBoundaryTimedOutPhase;
 }
 
@@ -72,24 +75,42 @@ export async function waitForActionBoundary(
   let crossDocument = false;
   let sameDocumentAsyncActivity = false;
   let crossDocumentPostLoadDeadline: number | undefined;
+  let lastTrackerState: PostLoadTrackerState | undefined;
+
+  const finalizeOutcome = (
+    outcome: Omit<ActionBoundaryOutcome, "observedMutationQuietMs" | "postLoadHandled">,
+  ): ActionBoundaryOutcome => {
+    const observedMutationQuietMs =
+      !crossDocument &&
+      input.snapshot?.tracker !== undefined &&
+      lastTrackerState !== undefined &&
+      lastTrackerState.lastMutationAt <= input.snapshot.tracker.lastMutationAt
+        ? undefined
+        : getPostLoadTrackerMutationQuietMs(lastTrackerState);
+    return {
+      ...outcome,
+      ...(observedMutationQuietMs === undefined ? {} : { observedMutationQuietMs }),
+      ...(crossDocument && outcome.bootstrapSettled ? { postLoadHandled: true } : {}),
+    };
+  };
 
   while (Date.now() < deadline) {
     input.throwBackgroundError();
     if (input.isPageClosed()) {
-      return {
+      return finalizeOutcome({
         trigger,
         crossDocument,
         bootstrapSettled: true,
-      };
+      });
     }
     if (input.signal?.aborted) {
       if (isTimeoutAbort(input.signal.reason) && Date.now() >= deadline) {
-        return {
+        return finalizeOutcome({
           trigger,
           crossDocument,
           bootstrapSettled: false,
           timedOutPhase: "bootstrap",
-        };
+        });
       }
       throw abortError(input.signal);
     }
@@ -104,17 +125,12 @@ export async function waitForActionBoundary(
       trigger = "navigation";
       crossDocument = true;
     }
-    if (
-      !crossDocument &&
-      !sameDocumentAsyncActivity &&
-      input.snapshot?.tracker !== undefined &&
-      postLoadTrackerHasTrackedNetworkActivitySince(
-        input.snapshot.tracker,
-        await input.readTrackerState(),
-      )
-    ) {
-      trigger = "navigation";
-      sameDocumentAsyncActivity = true;
+    if (!crossDocument && !sameDocumentAsyncActivity && input.snapshot?.tracker !== undefined) {
+      lastTrackerState = await input.readTrackerState();
+      if (postLoadTrackerHasTrackedNetworkActivitySince(input.snapshot.tracker, lastTrackerState)) {
+        trigger = "navigation";
+        sameDocumentAsyncActivity = true;
+      }
     }
     if (
       !crossDocument &&
@@ -133,19 +149,19 @@ export async function waitForActionBoundary(
       crossDocumentDetectionDeadline !== undefined &&
       Date.now() >= crossDocumentDetectionDeadline
     ) {
-      return {
+      return finalizeOutcome({
         trigger,
         crossDocument,
         bootstrapSettled: true,
-      };
+      });
     }
 
     if (sameDocumentAsyncActivity) {
-      return {
+      return finalizeOutcome({
         trigger,
         crossDocument,
         bootstrapSettled: true,
-      };
+      });
     }
 
     if (
@@ -170,40 +186,37 @@ export async function waitForActionBoundary(
       // settled.  Heavy pages (ads, analytics, streaming data) may never reach
       // zero pending tracked requests, so waiting longer just wastes the budget.
       if (Date.now() >= crossDocumentPostLoadDeadline) {
-        return {
+        return finalizeOutcome({
           trigger,
           crossDocument,
           bootstrapSettled: true,
-        };
+        });
       }
 
-      if (
-        !postLoadTrackerIsSettled(
-          await input.readTrackerState(),
-          DEFAULT_POST_LOAD_TRACKER_QUIET_WINDOW_MS,
-        )
-      ) {
+      lastTrackerState = await input.readTrackerState();
+      if (!postLoadTrackerIsSettled(lastTrackerState, DEFAULT_POST_LOAD_TRACKER_QUIET_WINDOW_MS)) {
         await delay(
           Math.min(pollIntervalMs, Math.max(0, crossDocumentPostLoadDeadline - Date.now())),
         );
         continue;
       }
-      return {
+
+      return finalizeOutcome({
         trigger,
         crossDocument,
         bootstrapSettled: true,
-      };
+      });
     }
 
     await delay(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
   }
 
-  return {
+  return finalizeOutcome({
     trigger,
     crossDocument,
     bootstrapSettled: false,
     timedOutPhase: "bootstrap",
-  };
+  });
 }
 
 function abortError(signal: AbortSignal): unknown {

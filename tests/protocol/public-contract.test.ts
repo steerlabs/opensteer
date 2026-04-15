@@ -597,9 +597,15 @@ describe("semantic protocol descriptors", () => {
 
     const computerOutputSchema =
       opensteerSemanticOperationSpecificationMap["computer.execute"]?.outputSchema;
-    expect(computerOutputSchema?.required).toContain("displayViewport");
-    expect(computerOutputSchema?.required).toContain("nativeViewport");
-    expect(computerOutputSchema?.required).toContain("displayScale");
+    expect(computerOutputSchema?.required).toEqual(["url", "title", "screenshot"]);
+    expect(computerOutputSchema?.properties).not.toHaveProperty("action");
+    expect(computerOutputSchema?.properties).not.toHaveProperty("pageRef");
+    expect(computerOutputSchema?.properties).not.toHaveProperty("displayViewport");
+    expect(computerOutputSchema?.properties).not.toHaveProperty("nativeViewport");
+    expect(computerOutputSchema?.properties).not.toHaveProperty("displayScale");
+    expect(computerOutputSchema?.properties).not.toHaveProperty("events");
+    expect(computerOutputSchema?.properties).not.toHaveProperty("timing");
+    expect(computerOutputSchema?.properties).not.toHaveProperty("trace");
     expect(
       computerOutputSchema?.properties?.screenshot?.properties?.coordinateSpace?.enum,
     ).toContain("computer-display-css");
@@ -609,6 +615,32 @@ describe("semantic protocol descriptors", () => {
     expect(
       computerOutputSchema?.properties?.screenshot?.properties?.payload?.properties,
     ).not.toHaveProperty("data");
+  });
+
+  test("keeps semantic success outputs minimal for navigation and DOM actions", () => {
+    const openOutputSchema =
+      opensteerSemanticOperationSpecificationMap["session.open"]?.outputSchema;
+    expect(openOutputSchema?.required).toEqual(["url", "title"]);
+    expect(openOutputSchema?.properties).not.toHaveProperty("sessionRef");
+    expect(openOutputSchema?.properties).not.toHaveProperty("pageRef");
+
+    const newPageOutputSchema =
+      opensteerSemanticOperationSpecificationMap["page.new"]?.outputSchema;
+    expect(newPageOutputSchema?.required).toEqual(["pageRef", "url", "title"]);
+    expect(newPageOutputSchema?.properties).not.toHaveProperty("sessionRef");
+
+    const activateOutputSchema =
+      opensteerSemanticOperationSpecificationMap["page.activate"]?.outputSchema;
+    expect(activateOutputSchema?.required).toEqual(["url", "title"]);
+    expect(activateOutputSchema?.properties).not.toHaveProperty("pageRef");
+
+    const actionOutputSchema =
+      opensteerSemanticOperationSpecificationMap["dom.click"]?.outputSchema;
+    expect(actionOutputSchema?.required).toEqual(["tagName"]);
+    expect(actionOutputSchema?.properties).toHaveProperty("persist");
+    expect(actionOutputSchema?.properties).not.toHaveProperty("target");
+    expect(actionOutputSchema?.properties).not.toHaveProperty("point");
+    expect(actionOutputSchema?.properties).not.toHaveProperty("pathHint");
   });
 
   test("uses workspace-centric session.open input and rejects v1 browser modes", () => {

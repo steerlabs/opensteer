@@ -9,24 +9,29 @@ const state = vi.hoisted(() => {
   };
   const runtime = {
     open: vi.fn(async (input = {}) => ({
-      sessionRef: "session:test",
-      pageRef: "page:test",
       url: (input as { readonly url?: string }).url ?? "about:blank",
       title: "Workspace Runtime",
     })),
     click: vi.fn(async () => ({
-      actionId: "action:test",
-      pageRef: "page:test",
-      target: {
-        kind: "selector",
-        selector: '[data-cell="A1"]',
-      },
+      tagName: "button",
     })),
     computerExecute: vi.fn(async () => ({
-      pageRef: "page:test",
-      actionId: "computer:test",
+      url: "https://example.com",
+      title: "Workspace Runtime",
       screenshot: {
-        path: "/tmp/screenshot.png",
+        payload: {
+          delivery: "external",
+          uri: "file:///tmp/screenshot.png",
+          mimeType: "image/png",
+          byteLength: 3,
+          sha256: "deadbeef",
+        },
+        format: "png",
+        size: {
+          width: 1,
+          height: 1,
+        },
+        coordinateSpace: "computer-display-css",
       },
     })),
     close: vi.fn(async () => ({ closed: true })),

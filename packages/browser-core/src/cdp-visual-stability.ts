@@ -14,6 +14,7 @@ interface CdpSessionLike {
 interface VisualStabilityOptions {
   readonly timeoutMs?: number;
   readonly settleMs?: number;
+  readonly initialQuietMs?: number;
   readonly scope?: VisualStabilityScope;
 }
 
@@ -104,6 +105,7 @@ export async function waitForCdpVisualStability(
 ): Promise<void> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_VISUAL_STABILITY_TIMEOUT_MS;
   const settleMs = options.settleMs ?? DEFAULT_VISUAL_STABILITY_SETTLE_MS;
+  const initialQuietMs = Math.max(0, options.initialQuietMs ?? 0);
   const scope = options.scope ?? "main-frame";
 
   if (timeoutMs <= 0) {
@@ -112,14 +114,14 @@ export async function waitForCdpVisualStability(
 
   const runtime = new StealthCdpRuntime(cdp);
   if (scope === "visible-frames") {
-    await runtime.waitForVisibleFramesVisualStability(timeoutMs, settleMs);
+    await runtime.waitForVisibleFramesVisualStability(timeoutMs, settleMs, initialQuietMs);
     return;
   }
 
-  await runtime.waitForMainFrameVisualStability(timeoutMs, settleMs);
+  await runtime.waitForMainFrameVisualStability(timeoutMs, settleMs, initialQuietMs);
 }
 
-function buildStabilityScript(timeout: number, settleMs: number): string {
+function buildStabilityScript(timeout: number, settleMs: number, initialQuietMs: number): string {
   return `new Promise(function(resolve) {
     var deadline = Date.now() + ${timeout};
     var resolved = false;
@@ -128,7 +130,12 @@ function buildStabilityScript(timeout: number, settleMs: number): string {
     var observedShadowRoots = [];
     var fonts = document.fonts;
     var fontsReady = !fonts || fonts.status === 'loaded';
-    var lastRelevantMutationAt = Date.now();
+    var viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
+    var minorMutationAreaPx = Math.max(900, Math.min(6000, viewportArea * 0.0025));
+    var compactActionAreaPx = Math.max(196, Math.min(2500, viewportArea * 0.0008));
+    var blockingImageAreaPx = Math.max(50000, Math.min(200000, viewportArea * 0.15));
+    var blockingAnimationAreaPx = Math.max(14000, Math.min(90000, viewportArea * 0.02));
+    var lastRelevantMutationAt = Date.now() - ${initialQuietMs};
 
     function clearObservers() {
         for (var i = 0; i < observers.length; i++) {
@@ -171,6 +178,89 @@ function buildStabilityScript(timeout: number, settleMs: number): string {
         return true;
     }
 
+    function getVisibleArea(element) {
+        if (!(element instanceof Element)) return 0;
+
+        var rect = element.getBoundingClientRect();
+        var width = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0));
+        var height = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
+        return width * height;
+    }
+
+    function elementContainsViewportCenter(element) {
+        if (!(element instanceof Element)) return false;
+
+        var rect = element.getBoundingClientRect();
+        var centerX = window.innerWidth / 2;
+        var centerY = window.innerHeight / 2;
+        return (
+            rect.left <= centerX &&
+            rect.right >= centerX &&
+            rect.top <= centerY &&
+            rect.bottom >= centerY
+        );
+    }
+
+    function isInteractiveElement(element) {
+        if (!(element instanceof Element) || typeof element.closest !== 'function') return false;
+        return !!element.closest(
+            'a[href],button,input,select,textarea,summary,' +
+            '[role="button"],[role="link"],[role="checkbox"],[role="radio"],' +
+            '[role="menuitem"],[role="option"],[role="dialog"],[role="menu"],' +
+            '[role="listbox"],[contenteditable=""],[contenteditable="true"]'
+        );
+    }
+
+    function hasSubstantialVisibleText(element) {
+        if (!(element instanceof Element)) return false;
+
+        var text = element.textContent;
+        return typeof text === 'string' && text.trim().length >= 16;
+    }
+
+    function isElementVisuallySignificant(element) {
+        if (!isElementVisiblyIntersectingViewport(element)) return false;
+
+        var visibleArea = getVisibleArea(element);
+        if (visibleArea >= minorMutationAreaPx) return true;
+        if (visibleArea >= compactActionAreaPx && elementContainsViewportCenter(element)) return true;
+        if (visibleArea >= compactActionAreaPx && isInteractiveElement(element)) return true;
+        if (visibleArea >= compactActionAreaPx && hasSubstantialVisibleText(element)) return true;
+        return false;
+    }
+
+    function isPotentiallyVisualAttribute(attributeName) {
+        if (!attributeName) return true;
+        if (attributeName === 'class' || attributeName === 'style') return true;
+        if (
+            attributeName === 'hidden' ||
+            attributeName === 'open' ||
+            attributeName === 'value' ||
+            attributeName === 'checked' ||
+            attributeName === 'selected' ||
+            attributeName === 'disabled' ||
+            attributeName === 'src' ||
+            attributeName === 'srcset' ||
+            attributeName === 'sizes' ||
+            attributeName === 'poster'
+        ) {
+            return true;
+        }
+        if (attributeName.startsWith('data-')) return false;
+        if (attributeName.startsWith('aria-')) {
+            return (
+                attributeName === 'aria-hidden' ||
+                attributeName === 'aria-expanded' ||
+                attributeName === 'aria-modal' ||
+                attributeName === 'aria-pressed' ||
+                attributeName === 'aria-selected' ||
+                attributeName === 'aria-checked' ||
+                attributeName === 'aria-current'
+            );
+        }
+        return true;
+    }
+
     function resolveRelevantElement(node) {
         if (!node) return null;
         if (node instanceof Element) return node;
@@ -184,13 +274,27 @@ function buildStabilityScript(timeout: number, settleMs: number): string {
     function isNodeVisiblyRelevant(node) {
         var element = resolveRelevantElement(node);
         if (!element) return false;
-        return isElementVisiblyIntersectingViewport(element);
+        return isElementVisuallySignificant(element);
     }
 
     function hasRelevantMutation(records) {
         for (var i = 0; i < records.length; i++) {
             var record = records[i];
-            if (isNodeVisiblyRelevant(record.target)) return true;
+
+            if (record.type === 'attributes') {
+                if (
+                    isPotentiallyVisualAttribute(record.attributeName) &&
+                    isNodeVisiblyRelevant(record.target)
+                ) {
+                    return true;
+                }
+                continue;
+            }
+
+            if (record.type === 'characterData') {
+                if (isNodeVisiblyRelevant(record.target)) return true;
+                continue;
+            }
 
             var addedNodes = record.addedNodes;
             for (var j = 0; j < addedNodes.length; j++) {
@@ -265,6 +369,13 @@ function buildStabilityScript(timeout: number, settleMs: number): string {
         for (var i = 0; i < images.length; i++) {
             var img = images[i];
             if (!isElementVisiblyIntersectingViewport(img)) continue;
+            var visibleArea = getVisibleArea(img);
+            if (
+                visibleArea < blockingImageAreaPx &&
+                !(elementContainsViewportCenter(img) && visibleArea >= compactActionAreaPx)
+            ) {
+                continue;
+            }
             if (!img.complete) return false;
         }
         return true;
@@ -299,6 +410,19 @@ function buildStabilityScript(timeout: number, settleMs: number): string {
                 var target = getAnimationTarget(effect);
                 if (!target) continue;
                 if (!isElementVisiblyIntersectingViewport(target)) continue;
+                var visibleArea = getVisibleArea(target);
+                var remaining = Number.POSITIVE_INFINITY;
+                if (typeof animation.currentTime === 'number') {
+                    remaining = Math.max(0, endTime - animation.currentTime);
+                }
+                if (remaining <= 150) continue;
+                if (
+                    visibleArea < blockingAnimationAreaPx &&
+                    !(visibleArea >= compactActionAreaPx && isInteractiveElement(target)) &&
+                    !(visibleArea >= compactActionAreaPx && elementContainsViewportCenter(target))
+                ) {
+                    continue;
+                }
                 return true;
             }
         }
@@ -358,17 +482,31 @@ class StealthCdpRuntime {
 
   constructor(private readonly session: CdpSessionLike) {}
 
-  async waitForMainFrameVisualStability(timeoutMs: number, settleMs: number): Promise<void> {
+  async waitForMainFrameVisualStability(
+    timeoutMs: number,
+    settleMs: number,
+    initialQuietMs: number,
+  ): Promise<void> {
     const frameRecords = await this.getFrameRecords();
     const mainFrame = frameRecords[0];
     if (!mainFrame) {
       return;
     }
 
-    await this.waitForFrameVisualStability(mainFrame.frameId, timeoutMs, settleMs, true);
+    await this.waitForFrameVisualStability(
+      mainFrame.frameId,
+      timeoutMs,
+      settleMs,
+      initialQuietMs,
+      true,
+    );
   }
 
-  async waitForVisibleFramesVisualStability(timeoutMs: number, settleMs: number): Promise<void> {
+  async waitForVisibleFramesVisualStability(
+    timeoutMs: number,
+    settleMs: number,
+    initialQuietMs: number,
+  ): Promise<void> {
     const deadline = Date.now() + timeoutMs;
 
     while (true) {
@@ -385,7 +523,13 @@ class StealthCdpRuntime {
       await Promise.all(
         frameIds.map(async (frameId) => {
           try {
-            await this.waitForFrameVisualStability(frameId, remaining, settleMs, false);
+            await this.waitForFrameVisualStability(
+              frameId,
+              remaining,
+              settleMs,
+              initialQuietMs,
+              false,
+            );
           } catch (error) {
             if (isIgnorableFrameError(error)) {
               return;
@@ -456,13 +600,14 @@ class StealthCdpRuntime {
     frameId: string,
     timeoutMs: number,
     settleMs: number,
+    initialQuietMs: number,
     retryTransientContextErrors: boolean,
   ): Promise<void> {
     if (timeoutMs <= 0) {
       return;
     }
 
-    const script = buildStabilityScript(timeoutMs, settleMs);
+    const script = buildStabilityScript(timeoutMs, settleMs, initialQuietMs);
 
     if (!retryTransientContextErrors) {
       let contextId = await this.ensureFrameContextId(frameId);
