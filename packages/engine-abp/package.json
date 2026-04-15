@@ -1,6 +1,6 @@
 {
   "name": "@opensteer/engine-abp",
-  "version": "0.8.9",
+  "version": "0.8.10",
   "description": "Agent Browser Protocol engine for Opensteer.",
   "license": "MIT",
   "type": "module",

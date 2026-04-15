@@ -1,6 +1,6 @@
 {
   "name": "opensteer",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "description": "Opensteer browser automation, replay, and reverse-engineering toolkit.",
   "license": "MIT",
   "type": "module",
