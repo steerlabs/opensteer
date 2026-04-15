@@ -4,6 +4,7 @@ import type { OpensteerBrowserOptions } from "@opensteer/protocol";
 
 import { normalizeOpensteerProviderMode, type OpensteerProviderMode } from "../provider/config.js";
 import { resolveCommandLength } from "./commands.js";
+import { CliError } from "./errors.js";
 
 export interface ParsedCliOptions {
   readonly workspace?: string;
@@ -163,7 +164,7 @@ export function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
     const key = token.slice(2, separator === -1 ? undefined : separator);
     const spec = CLI_OPTION_SPECS[key as keyof typeof CLI_OPTION_SPECS];
     if (spec === undefined) {
-      throw new Error(`Unknown option: --${key}.`);
+      throw new CliError("unknown_option", `Unknown option: --${key}.`);
     }
 
     if (separator !== -1) {
@@ -197,7 +198,8 @@ export function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
     }
 
     if (next === undefined || next.startsWith("--")) {
-      throw new Error(
+      throw new CliError(
+        "missing_arguments",
         `Option "--${key}" requires a value.${next?.startsWith("--") === true ? ` Use "--${key}=<value>" when the value begins with "--".` : ``}`,
       );
     }
@@ -256,10 +258,14 @@ export function parseCommandLine(argv: readonly string[]): ParsedCommandLine {
   const autoLocalView = readOptionalBoolean(rawOptions, "auto");
   const noAutoLocalView = readOptionalBoolean(rawOptions, "no-auto");
   if (autoLocalView === true && noAutoLocalView === true) {
-    throw new Error('Options "--auto" and "--no-auto" cannot be combined.');
+    throw new CliError("invalid_option", 'Options "--auto" and "--no-auto" cannot be combined.');
   }
   if (command[0] !== "view" && (autoLocalView !== undefined || noAutoLocalView !== undefined)) {
-    throw new Error('Options "--auto" and "--no-auto" are only supported with "view".');
+    throw new CliError(
+      "invalid_option",
+      'Options "--auto" and "--no-auto" are only supported with "view".',
+      "opensteer view --auto",
+    );
   }
   const global = readOptionalBoolean(rawOptions, "global");
   const yes = readOptionalBoolean(rawOptions, "yes");
@@ -325,7 +331,7 @@ export function parseKeyValueList(
     values.map((entry) => {
       const separator = entry.indexOf("=");
       if (separator <= 0) {
-        throw new Error(`Expected NAME=VALUE, received "${entry}".`);
+        throw new CliError("invalid_value", `Expected NAME=VALUE, received "${entry}".`);
       }
       return [entry.slice(0, separator), entry.slice(separator + 1)];
     }),
@@ -368,7 +374,7 @@ export function readOptionalBoolean(
   if (value === "false") {
     return false;
   }
-  throw new Error(`Option "--${name}" must be true or false.`);
+  throw new CliError("invalid_value", `Option "--${name}" must be true or false.`);
 }
 
 export function readOptionalNumber(
@@ -381,7 +387,7 @@ export function readOptionalNumber(
   }
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
-    throw new Error(`Option "--${name}" must be a number.`);
+    throw new CliError("invalid_value", `Option "--${name}" must be a number.`);
   }
   return parsed;
 }
@@ -391,7 +397,14 @@ export function readJsonValue(
   name: string,
 ): unknown {
   const value = readSingle(options, name);
-  return value === undefined ? undefined : JSON.parse(value);
+  if (value === undefined) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    throw new CliError("invalid_value", `Option "--${name}" contains invalid JSON.`);
+  }
 }
 
 export function readJsonObject(
@@ -403,7 +416,7 @@ export function readJsonObject(
     return undefined;
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`Option "--${name}" must be a JSON object.`);
+    throw new CliError("invalid_value", `Option "--${name}" must be a JSON object.`);
   }
   return parsed as Record<string, unknown>;
 }
@@ -417,7 +430,7 @@ export function readJsonArray(
     return undefined;
   }
   if (!Array.isArray(parsed)) {
-    throw new Error(`Option "--${name}" must be a JSON array.`);
+    throw new CliError("invalid_value", `Option "--${name}" must be a JSON array.`);
   }
   return parsed;
 }

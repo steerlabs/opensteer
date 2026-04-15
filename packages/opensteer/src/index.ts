@@ -296,3 +296,10 @@ export {
   inspectCdpEndpoint,
   OpensteerAttachAmbiguousError,
 } from "./local-browser/cdp-discovery.js";
+export {
+  OpensteerProtocolError,
+  isOpensteerProtocolError,
+  opensteerErrorCodes,
+  type OpensteerError,
+  type OpensteerErrorCode,
+} from "@opensteer/protocol";

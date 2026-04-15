@@ -44,7 +44,7 @@ interface PlaywrightDomActionBridgeContext {
 
 const READ_ACTION_TARGET_STATE_DECLARATION = String.raw`function() {
   const node = this;
-  if (!(node instanceof Element)) {
+  if (!node || node.nodeType !== 1) {
     return {
       connected: false,
       cssVisible: false,
@@ -72,13 +72,13 @@ const READ_ACTION_TARGET_STATE_DECLARATION = String.raw`function() {
       ? !node.matches(":disabled") && node.getAttribute("aria-disabled") !== "true"
       : true;
 
+  const tag = node.localName;
   const editable =
-    (node instanceof ownerWindow.HTMLInputElement ||
-      node instanceof ownerWindow.HTMLTextAreaElement) &&
+    (tag === "input" || tag === "textarea") &&
     !node.readOnly &&
     enabled
       ? true
-      : node instanceof ownerWindow.HTMLSelectElement && enabled
+      : tag === "select" && enabled
         ? true
         : node.isContentEditable;
 
@@ -95,31 +95,43 @@ const READ_ACTION_TARGET_STATE_DECLARATION = String.raw`function() {
 }`;
 
 const POINTER_ACTION_HELPERS = String.raw`
+  function isElementNode(node) {
+    return node != null && node.nodeType === 1;
+  }
+
+  function isShadowRoot(node) {
+    return node != null && node.nodeType === 11 && "host" in node;
+  }
+
+  function isNodeLike(node) {
+    return node != null && typeof node.nodeType === "number";
+  }
+
   function parentInComposedTree(node) {
     if (!node) {
       return null;
     }
     const slot = "assignedSlot" in node ? node.assignedSlot : null;
-    if (slot instanceof Element) {
+    if (isElementNode(slot)) {
       return slot;
     }
     const parent = node.parentNode;
-    if (parent instanceof ShadowRoot) {
+    if (isShadowRoot(parent)) {
       return parent.host;
     }
-    return parent instanceof Element ? parent : null;
+    return isElementNode(parent) ? parent : null;
   }
 
   function closestElementInComposedTree(node) {
     if (!node) {
       return null;
     }
-    if (node instanceof Element) {
+    if (isElementNode(node)) {
       return node;
     }
     let current = parentInComposedTree(node);
     while (current) {
-      if (current instanceof Element) {
+      if (isElementNode(current)) {
         return current;
       }
       current = parentInComposedTree(current);
@@ -179,7 +191,7 @@ const POINTER_ACTION_HELPERS = String.raw`
     while (current) {
       if (current.localName === "label") {
         const control = "control" in current ? current.control : null;
-        if (control instanceof Element) {
+        if (isElementNode(control)) {
           return control;
         }
       }
@@ -193,7 +205,7 @@ const POINTER_ACTION_HELPERS = String.raw`
   }
 
   function composedContains(container, node) {
-    if (!(container instanceof Node) || !(node instanceof Node)) {
+    if (!isNodeLike(container) || !isNodeLike(node)) {
       return false;
     }
     let current = node;
@@ -253,7 +265,7 @@ const POINTER_ACTION_HELPERS = String.raw`
   }
 
   function describeBlockingElement(element) {
-    if (!(element instanceof Element)) return null;
+    if (!isElementNode(element)) return null;
     const tag = "<" + element.tagName.toLowerCase() + ">";
     const label = element.getAttribute("aria-label");
     if (label) return tag + ' "' + label.slice(0, 80) + '"';
@@ -390,6 +402,14 @@ const BUILD_LIVE_REPLAY_PATH_DECLARATION = String.raw`function(policy, source) {
 
 const BUILD_LIVE_REPLAY_PATH_SOURCE = String.raw`(target, policy) => {
   const MAX_ATTRIBUTE_VALUE_LENGTH = 300;
+
+  function isElementNode(node) {
+    return node != null && node.nodeType === 1;
+  }
+
+  function isShadowRoot(node) {
+    return node != null && node.nodeType === 11 && "host" in node;
+  }
 
   function isValidAttrKey(key) {
     const trimmed = String(key || "").trim();
@@ -726,18 +746,18 @@ const BUILD_LIVE_REPLAY_PATH_SOURCE = String.raw`(target, policy) => {
     return null;
   }
 
-  if (!(target instanceof Element)) return null;
+  if (!isElementNode(target)) return null;
 
   const context = [];
-  let currentRoot = target.getRootNode() instanceof ShadowRoot ? target.getRootNode() : document;
+  let currentRoot = isShadowRoot(target.getRootNode()) ? target.getRootNode() : document;
   const targetChain = buildChain(target);
   const finalizedTarget = finalizePath(targetChain, currentRoot);
   if (!finalizedTarget) return null;
 
-  while (currentRoot instanceof ShadowRoot) {
+  while (isShadowRoot(currentRoot)) {
     const host = currentRoot.host;
     const hostRoot =
-      host.getRootNode() instanceof ShadowRoot ? host.getRootNode() : document;
+      isShadowRoot(host.getRootNode()) ? host.getRootNode() : document;
     const hostChain = buildChain(host);
     const finalizedHost = finalizePath(hostChain, hostRoot);
     if (!finalizedHost) return null;
