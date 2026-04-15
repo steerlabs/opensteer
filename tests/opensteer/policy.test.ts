@@ -230,7 +230,7 @@ describe("Phase 7 visual stability settle observers", () => {
       pageRef: context.pageRef,
       timeoutMs: 7_000,
       settleMs: 750,
-      scope: "visible-frames",
+      scope: "main-frame",
     });
   });
 
@@ -260,7 +260,7 @@ describe("Phase 7 visual stability settle observers", () => {
       pageRef: context.pageRef,
       timeoutMs: 7_000,
       settleMs: 600,
-      scope: "visible-frames",
+      scope: "main-frame",
     });
   });
 

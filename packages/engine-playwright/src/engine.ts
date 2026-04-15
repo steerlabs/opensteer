@@ -1184,6 +1184,39 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     );
   }
 
+  async getPageDomSnapshots(input: { readonly pageRef: PageRef }): Promise<readonly DomSnapshot[]> {
+    const controller = this.requirePage(input.pageRef);
+    await this.flushDomUpdateTask(controller);
+    const captured = await capturePageDomSnapshot(controller.cdp, { includeLayout: true });
+    const snapshots: DomSnapshot[] = [];
+
+    for (const frame of controller.framesByCdpId.values()) {
+      const rawDocument = findCapturedDocument(captured, frame.cdpFrameId);
+      if (!rawDocument) {
+        continue;
+      }
+
+      updateDocumentTreeSignature(frame.currentDocument, rawDocument, this.retiredDocuments);
+      snapshots.push(
+        buildDomSnapshotFromCapture(
+          frame.currentDocument,
+          {
+            capturedAt: captured.capturedAt,
+            documents: captured.documents,
+            rawDocument,
+            shadowBoundariesByBackendNodeId: captured.shadowBoundariesByBackendNodeId,
+            strings: captured.strings,
+          },
+          (document, backendNodeId) => this.nodeRefForBackendNode(document, backendNodeId),
+          (contentDocIndex) =>
+            resolveCapturedContentDocumentRef(controller.framesByCdpId, captured, contentDocIndex),
+        ),
+      );
+    }
+
+    return snapshots;
+  }
+
   async getActionBoundarySnapshot(input: {
     readonly pageRef: PageRef;
   }): Promise<ActionBoundarySnapshot> {

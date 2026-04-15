@@ -627,33 +627,34 @@ function restoreBoundedAttr(el: Cheerio<Element>, attr: string, value: string | 
   setBoundedAttr(el, attr, value);
 }
 
-function deduplicateImages(html: string): string {
+function deduplicateImagesInDom($: CheerioAPI): void {
   const seen = new Set<string>();
 
-  return html.replace(/<img\b([^>]*)>/gi, (full, attrContent) => {
-    if (/\bc\s*=/.test(attrContent)) {
-      return full;
+  $("img").each(function deduplicateDomImage() {
+    const el = $(this as Element);
+    if (el.attr("c") !== undefined) {
+      return;
     }
 
-    const srcMatch = attrContent.match(/\bsrc\s*=\s*(["']?)(.*?)\1/);
-    const srcsetMatch = attrContent.match(/\bsrcset\s*=\s*(["'])(.*?)\1/);
-
-    let src: string | null = null;
-    if (srcMatch && srcMatch[2]) {
-      src = srcMatch[2].trim();
-    } else if (srcsetMatch && srcsetMatch[2]) {
-      src = srcsetMatch[2].split(",")[0]?.trim().split(" ")[0] ?? null;
-    }
-
+    const srcValue = el.attr("src")?.trim();
+    const srcsetValue = el.attr("srcset");
+    const src =
+      srcValue && srcValue.length > 0
+        ? srcValue
+        : srcsetValue
+            ?.split(",")[0]
+            ?.trim()
+            .split(/\s+/u)[0];
     if (!src) {
-      return full;
+      return;
     }
+
     if (seen.has(src)) {
-      return "";
+      el.remove();
+      return;
     }
 
     seen.add(src);
-    return full;
   });
 }
 
@@ -737,30 +738,6 @@ function getElementsInReverseDocumentOrder($: CheerioAPI): Element[] {
     .filter((node): node is Element => node.type === "tag");
 }
 
-function getNodeDepth(node: AnyNode): number {
-  let depth = 0;
-  let current = node.parent;
-  while (current) {
-    depth++;
-    current = current.parent;
-  }
-  return depth;
-}
-
-function getElementsByDepthDescending($: CheerioAPI): Element[] {
-  const elements = $.root()
-    .find("*")
-    .toArray()
-    .filter((node): node is Element => node.type === "tag");
-
-  const depths = new Map<Element, number>();
-  for (const el of elements) {
-    depths.set(el, getNodeDepth(el));
-  }
-
-  return elements.sort((a, b) => (depths.get(b) ?? 0) - (depths.get(a) ?? 0));
-}
-
 function flattenExtractionTree($: CheerioAPI): void {
   for (const node of getElementsInReverseDocumentOrder($)) {
     const el = $(node);
@@ -780,20 +757,6 @@ function flattenExtractionTree($: CheerioAPI): void {
 
     el.replaceWith(el.contents());
   }
-}
-
-function hasMarkedAncestor(el: Cheerio<Element>, attr: string): boolean {
-  let current = el[0]?.parent;
-  while (current) {
-    if (!isElementLikeNode(current)) {
-      return false;
-    }
-    if (current.attribs?.[attr] !== undefined) {
-      return true;
-    }
-    current = current.parent;
-  }
-  return false;
 }
 
 function isIndicatorImage(node: Element | undefined): boolean {
@@ -967,7 +930,7 @@ function serializeForExtraction($: CheerioAPI, root: AnyNode): string {
     .join("");
 }
 
-function isClickable($: CheerioAPI, el: Cheerio<Element>, context: ClickableContext): boolean {
+function isClickable(el: Cheerio<Element>, context: ClickableContext): boolean {
   if (context.hasPreMarked) {
     return el.attr(OPENSTEER_INTERACTIVE_ATTR) !== undefined;
   }
@@ -1017,9 +980,9 @@ function isClickable($: CheerioAPI, el: Cheerio<Element>, context: ClickableCont
   return false;
 }
 
-export function cleanForExtraction(html: string): string {
+export function prepareExtractionSnapshotDom(html: string): CheerioAPI | undefined {
   if (!html.trim()) {
-    return "";
+    return undefined;
   }
 
   const $ = cheerio.load(html, { xmlMode: false });
@@ -1028,15 +991,8 @@ export function cleanForExtraction(html: string): string {
   markInlineSelfHiddenFallback($);
   pruneSelfHiddenNodes($);
 
-  const $clean = cheerio.load(
-    $.html()
-      .replace(/\n{2,}/g, "\n")
-      .trim(),
-    { xmlMode: false },
-  );
-
-  $clean("*").each(function stripAndRestoreExtractionAttrs() {
-    const el = $clean(this as Element);
+  $("*").each(function stripAndRestoreExtractionAttrs() {
+    const el = $(this as Element);
     const node = el[0];
     if (!node) {
       return;
@@ -1086,18 +1042,32 @@ export function cleanForExtraction(html: string): string {
     }
   });
 
-  flattenExtractionTree($clean);
-  const root = $clean.root()[0];
+  flattenExtractionTree($);
+  deduplicateImagesInDom($);
+  return $;
+}
+
+export function serializePreparedExtractionSnapshot($: CheerioAPI): string {
+  const root = $.root()[0];
   if (root === undefined) {
     return "";
   }
 
-  return deduplicateImages(serializeForExtraction($clean, root));
+  return serializeForExtraction($, root);
 }
 
-export function cleanForAction(html: string): string {
-  if (!html.trim()) {
+export function cleanForExtraction(html: string): string {
+  const prepared = prepareExtractionSnapshotDom(html);
+  if (!prepared) {
     return "";
+  }
+
+  return serializePreparedExtractionSnapshot(prepared);
+}
+
+export function prepareActionSnapshotDom(html: string): CheerioAPI | undefined {
+  if (!html.trim()) {
+    return undefined;
   }
 
   const $ = cheerio.load(html, { xmlMode: false });
@@ -1108,14 +1078,13 @@ export function cleanForAction(html: string): string {
 
   const clickableMark = "data-clickable-marker";
   const indicatorMark = "data-keep-indicator";
-  const branchMark = "data-keep-branch";
   const context: ClickableContext = {
     hasPreMarked: $(`[${OPENSTEER_INTERACTIVE_ATTR}]`).length > 0,
   };
 
   $("*").each(function markClickables() {
     const el = $(this as Element);
-    if (isClickable($, el, context)) {
+    if (isClickable(el, context)) {
       el.attr(clickableMark, "1");
     }
   });
@@ -1150,29 +1119,7 @@ export function cleanForAction(html: string): string {
     }
   });
 
-  $(`[${clickableMark}], [${indicatorMark}]`).each(function markBranches() {
-    let current = $(this as Element).parent();
-
-    while (current.length > 0) {
-      const node = current[0];
-      if (!node || node.type !== "tag") {
-        break;
-      }
-
-      const ancestor = current as Cheerio<Element>;
-      const tag = (((node as Element).tagName || "") as string).toLowerCase();
-      if (ROOT_TAGS.has(tag) || ancestor.attr(clickableMark) !== undefined) {
-        break;
-      }
-
-      if (!isBoundaryTag(tag)) {
-        ancestor.attr(branchMark, "1");
-      }
-      current = ancestor.parent();
-    }
-  });
-
-  for (const node of getElementsByDepthDescending($)) {
+  for (const node of getElementsInReverseDocumentOrder($)) {
     const el = $(node);
     const tag = (node.tagName || "").toLowerCase();
     if (ROOT_TAGS.has(tag) || isBoundaryTag(tag)) {
@@ -1183,18 +1130,7 @@ export function cleanForAction(html: string): string {
       continue;
     }
 
-    const insideClickable = hasMarkedAncestor(el, clickableMark);
-    const preserveBranch = el.attr(branchMark) !== undefined;
     const hasContent = hasElementChildren(node) || hasDirectText(node);
-
-    if (insideClickable || preserveBranch) {
-      if (!hasContent) {
-        el.remove();
-      } else {
-        unwrapActionNode($, el);
-      }
-      continue;
-    }
 
     if (!hasContent) {
       el.remove();
@@ -1323,14 +1259,32 @@ export function cleanForAction(html: string): string {
 
     el.removeAttr(clickableMark);
     el.removeAttr(indicatorMark);
-    el.removeAttr(branchMark);
     el.removeAttr(OPENSTEER_INTERACTIVE_ATTR);
     el.removeAttr(OPENSTEER_HIDDEN_ATTR);
     el.removeAttr(OPENSTEER_SCROLLABLE_ATTR);
     el.removeAttr(OPENSTEER_SELF_HIDDEN_ATTR);
   });
 
-  return compactHtml(deduplicateImages($.html()));
+  deduplicateImagesInDom($);
+  return $;
+}
+
+export function serializePreparedActionSnapshot($: CheerioAPI): string {
+  const normalized = compactHtml($.html());
+  if (normalized.length === 0) {
+    return "";
+  }
+
+  return cheerio.load(normalized, { xmlMode: false }).html();
+}
+
+export function cleanForAction(html: string): string {
+  const prepared = prepareActionSnapshotDom(html);
+  if (!prepared) {
+    return "";
+  }
+
+  return serializePreparedActionSnapshot(prepared);
 }
 
 const VOID_TAGS = new Set([

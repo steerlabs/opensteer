@@ -48,15 +48,15 @@ interface VisualStabilityProfile {
 }
 
 const DOM_ACTION_VISUAL_STABILITY_PROFILES: Readonly<Record<string, VisualStabilityProfile>> = {
-  "dom.click": { settleMs: 750, scope: "visible-frames", timeoutMs: 7_000 },
-  "dom.input": { settleMs: 750, scope: "visible-frames", timeoutMs: 7_000 },
-  "dom.scroll": { settleMs: 600, scope: "visible-frames", timeoutMs: 7_000 },
+  "dom.click": { settleMs: 750, scope: "main-frame", timeoutMs: 7_000 },
+  "dom.input": { settleMs: 750, scope: "main-frame", timeoutMs: 7_000 },
+  "dom.scroll": { settleMs: 600, scope: "main-frame", timeoutMs: 7_000 },
   "dom.hover": { settleMs: 200, scope: "main-frame", timeoutMs: 2_500 },
 };
 
 const DEFAULT_DOM_ACTION_VISUAL_STABILITY_PROFILE: VisualStabilityProfile = {
   settleMs: 750,
-  scope: "visible-frames",
+  scope: "main-frame",
   timeoutMs: 7_000,
 };
 
