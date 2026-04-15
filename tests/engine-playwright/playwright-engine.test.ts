@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "vitest";
+import { afterAll, beforeAll, expect, test, vi } from "vitest";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { once } from "node:events";
 
@@ -615,13 +615,13 @@ test(
       });
 
       const initializedUrls: string[] = [];
-      const engineWithInternals = engine as any;
-      const originalInitializePageController =
-        engineWithInternals.initializePageController.bind(engine);
-      engineWithInternals.initializePageController = async (...args: any[]) => {
-        initializedUrls.push(args[1].url());
-        return originalInitializePageController(...args);
-      };
+      const originalNewCdpSession = context.newCDPSession.bind(context);
+      const newCdpSessionSpy = vi
+        .spyOn(context, "newCDPSession")
+        .mockImplementation(async (pageOrFrame) => {
+          initializedUrls.push(attachedPage.url());
+          return originalNewCdpSession(pageOrFrame);
+        });
 
       try {
         const sessionRef = await engine.createSession();
@@ -633,6 +633,7 @@ test(
         expect(initializedUrls[0]).toBe(`${baseUrl}/basic`);
         expect(created.data.url).toBe(`${baseUrl}/basic`);
       } finally {
+        newCdpSessionSpy.mockRestore();
         await engine.dispose();
       }
     } finally {

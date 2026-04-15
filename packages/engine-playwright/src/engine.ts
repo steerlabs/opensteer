@@ -497,25 +497,10 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       let navigatedBeforeInitialization = false;
 
       if (!controller) {
-        let reservedPageRef: PageRef | undefined;
-        if (this.contextOptions?.viewport !== undefined && this.contextOptions.viewport !== null) {
-          await initialPage.setViewportSize(this.contextOptions.viewport);
-        }
-        if (input.url !== undefined) {
-          reservedPageRef = createPageRef(`playwright-${++this.pageCounter}`);
-          this.preassignedPopupPageRefs.set(initialPage, reservedPageRef);
-          try {
-            // Navigate attached pages before DOM/controller setup so we do not
-            // pay initialization cost for whatever heavy page was left open.
-            await initialPage.goto(input.url, {
-              waitUntil: "domcontentloaded",
-            });
-            navigatedBeforeInitialization = true;
-          } catch (error) {
-            this.preassignedPopupPageRefs.delete(initialPage);
-            throw normalizePlaywrightError(error, reservedPageRef);
-          }
-        }
+        navigatedBeforeInitialization = await this.prepareAttachedInitialPage(
+          initialPage,
+          input.url,
+        );
         controller = await this.initializePageController(
           session,
           initialPage,
@@ -1963,17 +1948,25 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     }
   }
 
-  private async handleAttachedInitialPage(session: SessionState, page: Page): Promise<void> {
-    if (session.lifecycleState !== "open") {
-      return;
-    }
-    if (this.pageByPlaywrightPage.has(page)) {
-      return;
-    }
+  private async prepareAttachedInitialPage(page: Page, url: string | undefined): Promise<boolean> {
     if (this.contextOptions?.viewport !== undefined && this.contextOptions.viewport !== null) {
       await page.setViewportSize(this.contextOptions.viewport);
     }
-    await this.initializePageController(session, page, undefined, true);
+    if (url === undefined) {
+      return false;
+    }
+
+    const reservedPageRef = createPageRef(`playwright-${++this.pageCounter}`);
+    this.preassignedPopupPageRefs.set(page, reservedPageRef);
+    try {
+      await page.goto(url, {
+        waitUntil: "domcontentloaded",
+      });
+      return true;
+    } catch (error) {
+      this.preassignedPopupPageRefs.delete(page);
+      throw normalizePlaywrightError(error, reservedPageRef);
+    }
   }
 
   private async initializePageController(

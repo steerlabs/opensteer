@@ -309,7 +309,9 @@ async function syncDenseCountersToLiveDom(
         if (isDetachedFrameSyncError(error)) {
           return;
         }
-        failures.push(`frame ${frame.frameRef} could not be synchronized (${describeError(error)}).`);
+        failures.push(
+          `frame ${frame.frameRef} could not be synchronized (${describeError(error)}).`,
+        );
       }
     }),
   );
@@ -493,14 +495,7 @@ function renderDocumentSnapshot(
     );
   }
 
-  return renderNode(
-    snapshot,
-    rootNode,
-    nodesById,
-    snapshotsByDocumentRef,
-    renderedNodes,
-    depth,
-  );
+  return renderNode(snapshot, rootNode, nodesById, snapshotsByDocumentRef, renderedNodes, depth);
 }
 
 function renderNode(
@@ -520,37 +515,16 @@ function renderNode(
   }
 
   if (node.nodeType === 9 || node.nodeType === 11) {
-    return renderChildren(
-      snapshot,
-      node,
-      nodesById,
-      snapshotsByDocumentRef,
-      renderedNodes,
-      depth,
-    );
+    return renderChildren(snapshot, node, nodesById, snapshotsByDocumentRef, renderedNodes, depth);
   }
 
   if (node.nodeType !== 1) {
-    return renderChildren(
-      snapshot,
-      node,
-      nodesById,
-      snapshotsByDocumentRef,
-      renderedNodes,
-      depth,
-    );
+    return renderChildren(snapshot, node, nodesById, snapshotsByDocumentRef, renderedNodes, depth);
   }
 
   const tagName = normalizeTagName(node.nodeName);
   if (isPseudoElementTagName(tagName)) {
-    return renderChildren(
-      snapshot,
-      node,
-      nodesById,
-      snapshotsByDocumentRef,
-      renderedNodes,
-      depth,
-    );
+    return renderChildren(snapshot, node, nodesById, snapshotsByDocumentRef, renderedNodes, depth);
   }
 
   // Flatten structural root tags (html, head, body) inside iframe/shadow boundaries.
@@ -561,14 +535,7 @@ function renderNode(
     (depth.iframeDepth > 0 || depth.shadowDepth > 0) &&
     (tagName === "html" || tagName === "head" || tagName === "body")
   ) {
-    return renderChildren(
-      snapshot,
-      node,
-      nodesById,
-      snapshotsByDocumentRef,
-      renderedNodes,
-      depth,
-    );
+    return renderChildren(snapshot, node, nodesById, snapshotsByDocumentRef, renderedNodes, depth);
   }
 
   const snapshotAttributes = normalizeNodeAttributes(node.attributes);
@@ -580,8 +547,7 @@ function renderNode(
     snapshotAttributeIndex.has(OPENSTEER_HIDDEN_ATTR) || isLikelySubtreeHidden(node);
   const selfHidden =
     !subtreeHidden &&
-    (snapshotAttributeIndex.has(OPENSTEER_SELF_HIDDEN_ATTR) ||
-      isLikelySelfHidden(node, nodesById));
+    (snapshotAttributeIndex.has(OPENSTEER_SELF_HIDDEN_ATTR) || isLikelySelfHidden(node, nodesById));
   const interactive =
     !subtreeHidden &&
     !selfHidden &&
@@ -685,17 +651,10 @@ function renderChildren(
   if (shadowChildren.length > 0) {
     const shadowHtml = shadowChildren
       .map((child) =>
-        renderNode(
-          snapshot,
-          child,
-          nodesById,
-          snapshotsByDocumentRef,
-          renderedNodes,
-          {
-            iframeDepth: depth.iframeDepth,
-            shadowDepth: depth.shadowDepth + 1,
-          },
-        ),
+        renderNode(snapshot, child, nodesById, snapshotsByDocumentRef, renderedNodes, {
+          iframeDepth: depth.iframeDepth,
+          shadowDepth: depth.shadowDepth + 1,
+        }),
       )
       .join("");
     chunks.push(
@@ -705,14 +664,7 @@ function renderChildren(
 
   for (const child of regularChildren) {
     chunks.push(
-      renderNode(
-        snapshot,
-        child,
-        nodesById,
-        snapshotsByDocumentRef,
-        renderedNodes,
-        depth,
-      ),
+      renderNode(snapshot, child, nodesById, snapshotsByDocumentRef, renderedNodes, depth),
     );
   }
 
@@ -759,20 +711,18 @@ function assignCountersInDom(
     const rawSparseCounter = el.attr(OPENSTEER_SPARSE_COUNTER_ATTR);
     el.removeAttr(OPENSTEER_SPARSE_COUNTER_ATTR);
     const sparseCounter = rawSparseCounter ? Number.parseInt(rawSparseCounter, 10) : undefined;
-    if (
-      rendered.liveCounterSyncEligible &&
-      (sparseCounter === undefined || !Number.isFinite(sparseCounter))
-    ) {
-      // The element was captured in the DOM snapshot but could not be bound to
-      // a live sparse marker, usually because the page mutated underneath us.
-      // Do not expose a numbered counter that cannot be replayed reliably.
+    const replayableSparseCounter =
+      typeof sparseCounter === "number" && Number.isFinite(sparseCounter)
+        ? sparseCounter
+        : undefined;
+    if (rendered.liveCounterSyncEligible && replayableSparseCounter === undefined) {
       return;
     }
 
     const counter = nextCounter++;
     el.attr("c", String(counter));
-    if (sparseCounter !== undefined && Number.isFinite(sparseCounter)) {
-      sparseToDirectMapping.set(sparseCounter, counter);
+    if (replayableSparseCounter !== undefined) {
+      sparseToDirectMapping.set(replayableSparseCounter, counter);
     }
     const pathHint = buildPathHint(rendered.tagName.toLowerCase(), rendered.attributes ?? []);
     const text = buildTextSnippet(rendered.textContent);
@@ -791,7 +741,7 @@ function assignCountersInDom(
       shadowDepth: rendered.shadowDepth,
       interactive: rendered.interactive,
       liveCounterSyncEligible: rendered.liveCounterSyncEligible,
-      ...(sparseCounter !== undefined && Number.isFinite(sparseCounter) ? { sparseCounter } : {}),
+      ...(replayableSparseCounter === undefined ? {} : { sparseCounter: replayableSparseCounter }),
     });
   });
 
