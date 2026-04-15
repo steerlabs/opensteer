@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -6,12 +7,15 @@ import { describe, expect, test } from "vitest";
 
 import { parseCommandLine } from "../../packages/opensteer/src/cli/parse.js";
 import { handleViewCommand } from "../../packages/opensteer/src/cli/view.js";
+import { writePersistedSessionRecord } from "../../packages/opensteer/src/live-session.js";
+import { bestEffortRegisterLocalViewSession } from "../../packages/opensteer/src/local-view/registration.js";
 import {
   resolveLocalViewMode,
   setLocalViewMode,
 } from "../../packages/opensteer/src/local-view/preferences.js";
 import { stopLocalViewService } from "../../packages/opensteer/src/local-view/service.js";
 import { readLocalViewServiceState } from "../../packages/opensteer/src/local-view/service-state.js";
+import { resolveFilesystemWorkspacePath } from "../../packages/opensteer/src/root.js";
 
 describe("view command", () => {
   test("updates the local-view preference without starting the service", async () => {
@@ -206,6 +210,66 @@ describe("view command", () => {
       }
     }
   });
+
+  test("deep-links to attached workspace sessions", async () => {
+    const previousOpensteerHome = process.env.OPENSTEER_HOME;
+    const previousCwd = process.cwd();
+    const stateHome = await mkdtemp(path.join(tmpdir(), "opensteer-view-command-attached-"));
+    process.env.OPENSTEER_HOME = stateHome;
+    process.chdir(stateHome);
+    const workspace = "attached-workspace";
+    const rootPath = resolveFilesystemWorkspacePath({
+      rootDir: process.cwd(),
+      workspace,
+    });
+    const endpointServer = await startAttachedEndpointServer();
+    const endpoint = `ws://127.0.0.1:${String(endpointServer.port)}/devtools/browser/attached-view`;
+
+    try {
+      await setLocalViewMode("manual");
+      const startedAt = Date.now();
+      const liveRecord = {
+        layout: "opensteer-session" as const,
+        version: 1 as const,
+        provider: "local" as const,
+        workspace,
+        ownership: "attached" as const,
+        engine: "playwright" as const,
+        endpoint,
+        pid: 0,
+        startedAt,
+        updatedAt: startedAt,
+        userDataDir: path.join(rootPath, "browser", "user-data"),
+      };
+      await writePersistedSessionRecord(rootPath, liveRecord);
+      await bestEffortRegisterLocalViewSession({
+        rootPath,
+        workspace,
+        live: liveRecord,
+        ownership: "attached",
+      });
+
+      const output = JSON.parse(
+        await captureStdout(async () => {
+          await handleViewCommand(parseCommandLine(["view", "--workspace", workspace, "--json"]));
+        }),
+      ) as { readonly url: string; readonly sessionId?: string };
+
+      expect(output.sessionId).toMatch(/^local_/u);
+      expect(output.url).toContain("127.0.0.1");
+      expect(output.url).toContain(`#session=${encodeURIComponent(output.sessionId!)}`);
+    } finally {
+      await endpointServer.close();
+      await stopLocalViewService().catch(() => undefined);
+      await rm(stateHome, { recursive: true, force: true }).catch(() => undefined);
+      if (previousOpensteerHome === undefined) {
+        delete process.env.OPENSTEER_HOME;
+      } else {
+        process.env.OPENSTEER_HOME = previousOpensteerHome;
+      }
+      process.chdir(previousCwd);
+    }
+  });
 });
 
 async function captureStdout(task: () => Promise<void>): Promise<string> {
@@ -245,4 +309,45 @@ async function waitFor<T>(task: () => Promise<T | null>, timeoutMs = 10_000): Pr
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error("Timed out waiting for condition.");
+}
+
+async function startAttachedEndpointServer(): Promise<{
+  readonly port: number;
+  readonly close: () => Promise<void>;
+}> {
+  const server = createServer((request, response) => {
+    if (request.url === "/json/version") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          Browser: "Chromium",
+          "Protocol-Version": "1.3",
+          webSocketDebuggerUrl: `ws://127.0.0.1:${String(
+            (server.address() as { port: number }).port,
+          )}/devtools/browser/attached-view`,
+        }),
+      );
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+
+  return {
+    port: (server.address() as { port: number }).port,
+    close: async () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      }),
+  };
 }

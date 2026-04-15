@@ -129,6 +129,7 @@ vi.mock("../../packages/opensteer/src/local-view/registration.js", () => ({
 }));
 
 import { OpensteerBrowserManager } from "../../packages/opensteer/src/browser-manager.js";
+import { readPersistedLocalBrowserSessionRecord } from "../../packages/opensteer/src/live-session.js";
 
 function createInspectedEndpoint(port: number, label: string) {
   return {
@@ -151,6 +152,13 @@ describe("OpensteerBrowserManager", () => {
   });
 
   test("starts Playwright detach on attached CDP browsers during disposal", async () => {
+    state.inspectCdpEndpoint.mockImplementation(async ({ endpoint }) => {
+      if (endpoint === "ws://127.0.0.1:9222/devtools/browser/test") {
+        return createInspectedEndpoint(9222, "test");
+      }
+      throw new Error(`Unexpected CDP endpoint: ${endpoint}`);
+    });
+
     const manager = new OpensteerBrowserManager({
       browser: {
         mode: "attach",
@@ -168,6 +176,59 @@ describe("OpensteerBrowserManager", () => {
     expect(state.createPlaywrightBrowserCoreEngine).toHaveBeenCalledTimes(1);
     expect(state.engineDispose).toHaveBeenCalledTimes(1);
     expect(state.browser.close).toHaveBeenCalledTimes(1);
+  });
+
+  test("persists attached workspace browsers for later local-view reuse", async () => {
+    const rootPath = await mkdtemp(path.join(tmpdir(), "opensteer-browser-manager-attach-"));
+
+    try {
+      state.inspectCdpEndpoint.mockImplementation(async ({ endpoint }) => {
+        if (endpoint === "ws://127.0.0.1:9222/devtools/browser/attached-live") {
+          return createInspectedEndpoint(9222, "attached-live");
+        }
+        throw new Error(`Unexpected CDP endpoint: ${endpoint}`);
+      });
+
+      const attachedManager = new OpensteerBrowserManager({
+        rootPath,
+        workspace: "attached-live",
+        browser: {
+          mode: "attach",
+          endpoint: "ws://127.0.0.1:9222/devtools/browser/attached-live",
+          freshTab: false,
+        },
+      });
+
+      const engine = await attachedManager.createEngine();
+      await engine.dispose?.();
+
+      await expect(readPersistedLocalBrowserSessionRecord(rootPath)).resolves.toMatchObject({
+        provider: "local",
+        workspace: "attached-live",
+        ownership: "attached",
+        engine: "playwright",
+        endpoint: "ws://127.0.0.1:9222/devtools/browser/attached-live",
+        pid: 0,
+      });
+
+      const persistentManager = new OpensteerBrowserManager({
+        rootPath,
+        workspace: "attached-live",
+      });
+
+      await expect(persistentManager.status()).resolves.toMatchObject({
+        mode: "attach",
+        engine: "playwright",
+        workspace: "attached-live",
+        live: true,
+      });
+
+      await persistentManager.close();
+      await expect(readPersistedLocalBrowserSessionRecord(rootPath)).resolves.toBeUndefined();
+      expect(state.spawn).not.toHaveBeenCalled();
+    } finally {
+      await rm(rootPath, { recursive: true, force: true });
+    }
   });
 
   test("uses OPENSTEER_EXECUTABLE_PATH as the default browser executable", async () => {

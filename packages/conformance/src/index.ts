@@ -223,25 +223,39 @@ export const opensteerCoreConformanceCases: readonly OpensteerConformanceCase[] 
     description: "opens, enumerates, activates, and closes pages coherently",
     async run({ target, urls }) {
       const opened = await target.open(urls.main);
+      assertEqual(opened.url, urls.main, "expected session.open to report the active page URL");
       const initial = await target.listPages();
+      const openedPageRef = initial.activePageRef;
+      assert(openedPageRef !== undefined, "expected session.open to leave an active page");
       assert(
-        initial.pages.some((page) => page.pageRef === opened.pageRef),
+        initial.pages.some((page) => page.pageRef === openedPageRef),
         "expected the opened page to appear in page.list output",
       );
 
       const created = await target.newPage({
         url: urls.secondary,
-        openerPageRef: opened.pageRef,
+        openerPageRef: openedPageRef,
       });
       const withPopup = await target.listPages();
       assert(
         withPopup.pages.some((page) => page.pageRef === created.pageRef),
         "expected page.new to create a second page",
       );
+      assertEqual(created.url, urls.secondary, "expected page.new to report the new page URL");
+      assertEqual(
+        withPopup.activePageRef,
+        created.pageRef,
+        "expected page.new to switch the active page",
+      );
 
       const activated = await target.activatePage({ pageRef: created.pageRef });
       assertEqual(
-        activated.pageRef,
+        activated.url,
+        created.url,
+        "expected page.activate to report the active page summary",
+      );
+      assertEqual(
+        (await target.listPages()).activePageRef,
         created.pageRef,
         "expected page.activate to switch the active page",
       );

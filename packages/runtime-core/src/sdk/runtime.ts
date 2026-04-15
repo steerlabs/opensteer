@@ -69,6 +69,7 @@ import {
   type OpensteerStorageDomainSnapshot,
   type OpensteerStateDomainSnapshot,
   type OpensteerHiddenField,
+  type OpensteerNavigationSummary,
   type OpensteerPageActivateInput,
   type OpensteerPageActivateOutput,
   type OpensteerPageCloseInput,
@@ -91,6 +92,7 @@ import {
   type OpensteerOpenInput,
   type OpensteerOpenOutput,
   type OpensteerResolvedTarget,
+  type OpensteerScreenshotSummary,
   type OpensteerSemanticOperationName,
   type OpensteerSessionInfo,
   type OpensteerSessionCloseOutput,
@@ -238,7 +240,7 @@ interface OpensteerTraceArtifacts {
 
 interface PersistedComputerArtifacts {
   readonly manifests: readonly ArtifactManifest[];
-  readonly output: OpensteerComputerExecuteOutput;
+  readonly screenshot: OpensteerScreenshotSummary;
 }
 
 interface OpensteerSessionTraceInput {
@@ -423,7 +425,7 @@ export class OpensteerSessionRuntime {
           options,
         );
       }
-      return this.readSessionState();
+      return this.readNavigationSummary();
     }
 
     const startedAt = Date.now();
@@ -470,7 +472,7 @@ export class OpensteerSessionRuntime {
           }
 
           return {
-            state: await timeout.runStep(() => this.readSessionState()),
+            state: await timeout.runStep(() => this.readNavigationSummary()),
             frameRef,
           };
         },
@@ -575,7 +577,11 @@ export class OpensteerSessionRuntime {
           "page.new cannot use openerPageRef before a session exists",
         );
       }
-      return this.open(input.url === undefined ? {} : { url: input.url }, options);
+      const summary = await this.open(input.url === undefined ? {} : { url: input.url }, options);
+      return {
+        pageRef: await this.ensurePageRef(),
+        ...summary,
+      };
     }
 
     const startedAt = Date.now();
@@ -591,7 +597,7 @@ export class OpensteerSessionRuntime {
             }),
           );
           this.pageRef = created.data.pageRef;
-          return this.readSessionState();
+          return this.readCreatedPageOutput(created.data.pageRef);
         },
         options,
       );
@@ -639,7 +645,7 @@ export class OpensteerSessionRuntime {
             this.requireEngine().activatePage({ pageRef: input.pageRef }),
           );
           this.pageRef = input.pageRef;
-          return this.readSessionState();
+          return this.readNavigationSummary(input.pageRef);
         },
         options,
       );
@@ -783,7 +789,7 @@ export class OpensteerSessionRuntime {
           timeout.throwIfAborted();
           return {
             navigation,
-            state: await timeout.runStep(() => this.readSessionState()),
+            state: await timeout.runStep(() => this.readNavigationSummary(pageRef)),
           };
         },
         (diagnostics) => {
@@ -2211,7 +2217,7 @@ export class OpensteerSessionRuntime {
     let boundaryDiagnostics: ActionBoundaryDiagnostics | undefined;
 
     try {
-      const { artifacts, output } = await this.runMutationCapturedOperation(
+      const { artifacts, output, result } = await this.runMutationCapturedOperation(
         "computer.execute",
         {
           ...(input.captureNetwork === undefined ? {} : { captureNetwork: input.captureNetwork }),
@@ -2229,9 +2235,14 @@ export class OpensteerSessionRuntime {
             await this.invalidateLiveSnapshotCounters([pageRef, output.pageRef], timeout);
             this.pageRef = output.pageRef;
             const artifacts = await this.persistComputerArtifacts(output, timeout);
+            const result = {
+              ...(await timeout.runStep(() => this.readNavigationSummary(output.pageRef))),
+              screenshot: artifacts.screenshot,
+            } satisfies OpensteerComputerExecuteOutput;
             return {
               artifacts: { manifests: artifacts.manifests },
-              output: artifacts.output,
+              output,
+              result,
             };
           } catch (error) {
             boundaryDiagnostics ??= takeActionBoundaryDiagnostics(timeout.signal);
@@ -2270,7 +2281,7 @@ export class OpensteerSessionRuntime {
         }),
       });
 
-      return output;
+      return result;
     } catch (error) {
       await this.appendTrace({
         operation: "computer.execute",
@@ -2449,8 +2460,9 @@ export class OpensteerSessionRuntime {
           mutationCaptureDiagnostics = diagnostics;
         },
       );
-      const output = toOpensteerActionResult(executed.result);
+      const output = toOpensteerActionResult(executed.result.resolved);
       const actionEvents = "events" in executed.result ? executed.result.events : undefined;
+      const resolvedTarget = toOpensteerResolvedTarget(executed.result.resolved);
 
       await this.appendTrace({
         operation,
@@ -2459,8 +2471,15 @@ export class OpensteerSessionRuntime {
         outcome: "ok",
         ...(actionEvents === undefined ? {} : { events: actionEvents }),
         data: {
-          target: output.target,
-          ...(output.point === undefined ? {} : { point: output.point }),
+          target: resolvedTarget,
+          ...("point" in executed.result && executed.result.point !== undefined
+            ? {
+                point: {
+                  x: executed.result.point.x,
+                  y: executed.result.point.y,
+                },
+              }
+            : {}),
           ...(boundaryDiagnostics === undefined ? {} : { settle: boundaryDiagnostics }),
           ...buildMutationCaptureTraceData(mutationCaptureDiagnostics),
         },
@@ -4489,19 +4508,22 @@ export class OpensteerSessionRuntime {
     }
   }
 
-  private async readSessionState(): Promise<OpensteerOpenOutput> {
-    const pageRef = await this.ensurePageRef();
+  private async readNavigationSummary(
+    targetPageRef?: PageRef,
+  ): Promise<OpensteerNavigationSummary> {
+    const pageRef = targetPageRef ?? (await this.ensurePageRef());
     const pageInfo = await this.requireEngine().getPageInfo({ pageRef });
-    const sessionRef = this.sessionRef;
-    if (!sessionRef) {
-      throw new Error("Opensteer session is not initialized");
-    }
 
     return {
-      sessionRef,
-      pageRef,
       url: pageInfo.url,
       title: pageInfo.title,
+    };
+  }
+
+  private async readCreatedPageOutput(pageRef: PageRef): Promise<OpensteerPageNewOutput> {
+    return {
+      pageRef,
+      ...(await this.readNavigationSummary(pageRef)),
     };
   }
 
@@ -4591,12 +4613,12 @@ export class OpensteerSessionRuntime {
     const screenshotPayload = manifestToExternalBinaryLocation(root.rootPath, screenshotManifest);
     return {
       manifests,
-      output: {
-        ...output,
-        screenshot: {
-          ...output.screenshot,
-          payload: screenshotPayload,
-        },
+      screenshot: {
+        payload: screenshotPayload,
+        format: output.screenshot.format,
+        size: output.screenshot.size,
+        coordinateSpace: output.screenshot.coordinateSpace,
+        ...(output.screenshot.clip === undefined ? {} : { clip: output.screenshot.clip }),
       },
     };
   }
@@ -6725,24 +6747,10 @@ function normalizeNamespace(value: string | undefined): string {
   return normalized.length === 0 ? "default" : normalized;
 }
 
-function toOpensteerActionResult(
-  result:
-    | DomActionOutcome
-    | {
-        readonly resolved: ResolvedDomTarget;
-        readonly point?: undefined;
-      },
-): OpensteerActionResult {
+function toOpensteerActionResult(target: ResolvedDomTarget): OpensteerActionResult {
   return {
-    target: toOpensteerResolvedTarget(result.resolved),
-    ...(result.point === undefined
-      ? {}
-      : {
-          point: {
-            x: result.point.x,
-            y: result.point.y,
-          },
-        }),
+    tagName: toOpensteerTagName(target.node.nodeName),
+    ...(target.persist === undefined ? {} : { persist: target.persist }),
   };
 }
 
@@ -6753,11 +6761,16 @@ function toOpensteerResolvedTarget(target: ResolvedDomTarget): OpensteerResolved
     documentRef: target.documentRef,
     documentEpoch: target.documentEpoch,
     nodeRef: target.nodeRef,
-    tagName: target.node.nodeName.toUpperCase(),
+    tagName: toOpensteerTagName(target.node.nodeName),
     pathHint: buildPathSelectorHint(target.replayPath ?? target.anchor),
     ...(target.persist === undefined ? {} : { persist: target.persist }),
     ...(target.selectorUsed === undefined ? {} : { selectorUsed: target.selectorUsed }),
   };
+}
+
+function toOpensteerTagName(nodeName: string): string {
+  const tagName = String(nodeName).trim().toLowerCase();
+  return tagName.length === 0 ? "element" : tagName;
 }
 
 function normalizeOpensteerError(error: unknown) {

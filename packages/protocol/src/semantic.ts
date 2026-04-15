@@ -13,6 +13,8 @@ import {
 } from "./json.js";
 import { OpensteerProtocolError } from "./errors.js";
 import type { OpensteerCapability } from "./capabilities.js";
+import type { ExternalBinaryLocation } from "./binary-location.js";
+import { externalBinaryLocationSchema } from "./binary-location.js";
 import {
   documentEpochSchema,
   documentRefSchema,
@@ -29,18 +31,11 @@ import type {
   PageRef,
   SessionRef,
 } from "./identity.js";
-import { pointSchema, viewportMetricsSchema } from "./geometry.js";
-import type { Point, ViewportMetrics } from "./geometry.js";
+import { coordinateSpaceSchema, pointSchema, rectSchema, sizeSchema } from "./geometry.js";
+import type { CoordinateSpace, Point, Rect, Size } from "./geometry.js";
 import { pageInfoSchema } from "./metadata.js";
-import { opensteerEventSchema, type OpensteerEvent } from "./events.js";
 import { requestEnvelopeSchema, responseEnvelopeSchema } from "./envelopes.js";
-import {
-  hitTestResultSchema,
-  screenshotArtifactSchema,
-  type HitTestResult,
-  type ScreenshotArtifact,
-  type ScreenshotFormat,
-} from "./snapshots.js";
+import { screenshotFormatSchema, type HitTestResult, type ScreenshotFormat } from "./snapshots.js";
 import type {
   OpensteerArtifactReadInput,
   OpensteerArtifactReadOutput,
@@ -230,11 +225,8 @@ export interface OpensteerResolvedTarget {
 }
 
 export interface OpensteerActionResult {
-  readonly target: OpensteerResolvedTarget;
-  readonly point?: {
-    readonly x: number;
-    readonly y: number;
-  };
+  readonly tagName: string;
+  readonly persist?: string;
 }
 
 export interface OpensteerSnapshotCounter {
@@ -256,9 +248,7 @@ export interface OpensteerSnapshotCounter {
   readonly interactive: boolean;
 }
 
-export interface OpensteerSessionState {
-  readonly sessionRef: SessionRef;
-  readonly pageRef: PageRef;
+export interface OpensteerNavigationSummary {
   readonly url: string;
   readonly title: string;
 }
@@ -271,7 +261,7 @@ export interface OpensteerOpenInput {
   readonly context?: OpensteerBrowserContextOptions;
 }
 
-export interface OpensteerOpenOutput extends OpensteerSessionState {}
+export interface OpensteerOpenOutput extends OpensteerNavigationSummary {}
 
 export interface OpensteerPageListInput {}
 
@@ -285,13 +275,15 @@ export interface OpensteerPageNewInput {
   readonly openerPageRef?: PageRef;
 }
 
-export interface OpensteerPageNewOutput extends OpensteerSessionState {}
+export interface OpensteerPageNewOutput extends OpensteerNavigationSummary {
+  readonly pageRef: PageRef;
+}
 
 export interface OpensteerPageActivateInput {
   readonly pageRef: PageRef;
 }
 
-export interface OpensteerPageActivateOutput extends OpensteerSessionState {}
+export interface OpensteerPageActivateOutput extends OpensteerNavigationSummary {}
 
 export interface OpensteerPageCloseInput {
   readonly pageRef?: PageRef;
@@ -308,7 +300,7 @@ export interface OpensteerPageGotoInput {
   readonly captureNetwork?: string;
 }
 
-export interface OpensteerPageGotoOutput extends OpensteerSessionState {}
+export interface OpensteerPageGotoOutput extends OpensteerNavigationSummary {}
 
 export interface OpensteerPageEvaluateInput {
   readonly script: string;
@@ -498,6 +490,14 @@ export interface OpensteerComputerScreenshotOptions {
   readonly disableAnnotations?: readonly OpensteerComputerAnnotation[];
 }
 
+export interface OpensteerScreenshotSummary {
+  readonly payload: ExternalBinaryLocation;
+  readonly format: "png" | "jpeg" | "webp";
+  readonly size: Size;
+  readonly coordinateSpace: CoordinateSpace;
+  readonly clip?: Rect;
+}
+
 export interface OpensteerComputerExecuteInput {
   readonly action: OpensteerComputerAction;
   readonly screenshot?: OpensteerComputerScreenshotOptions;
@@ -527,15 +527,9 @@ export interface OpensteerComputerExecuteTiming {
 }
 
 export interface OpensteerComputerExecuteOutput {
-  readonly action: OpensteerComputerAction;
-  readonly pageRef: PageRef;
-  readonly screenshot: ScreenshotArtifact;
-  readonly displayViewport: ViewportMetrics;
-  readonly nativeViewport: ViewportMetrics;
-  readonly displayScale: OpensteerComputerDisplayScale;
-  readonly events: readonly OpensteerEvent[];
-  readonly timing: OpensteerComputerExecuteTiming;
-  readonly trace?: OpensteerComputerTraceEnrichment;
+  readonly url: string;
+  readonly title: string;
+  readonly screenshot: OpensteerScreenshotSummary;
 }
 
 export const opensteerSemanticOperationNames = [
@@ -819,40 +813,14 @@ const opensteerTargetInputSchema: JsonSchema = oneOfSchema(
   },
 );
 
-const opensteerResolvedTargetSchema: JsonSchema = objectSchema(
-  {
-    pageRef: pageRefSchema,
-    frameRef: frameRefSchema,
-    documentRef: documentRefSchema,
-    documentEpoch: documentEpochSchema,
-    nodeRef: nodeRefSchema,
-    tagName: stringSchema(),
-    pathHint: stringSchema(),
-    persist: stringSchema(),
-    selectorUsed: stringSchema(),
-  },
-  {
-    title: "OpensteerResolvedTarget",
-    required: [
-      "pageRef",
-      "frameRef",
-      "documentRef",
-      "documentEpoch",
-      "nodeRef",
-      "tagName",
-      "pathHint",
-    ],
-  },
-);
-
 const opensteerActionResultSchema: JsonSchema = objectSchema(
   {
-    target: opensteerResolvedTargetSchema,
-    point: pointSchema,
+    tagName: stringSchema({ minLength: 1 }),
+    persist: stringSchema({ minLength: 1 }),
   },
   {
     title: "OpensteerActionResult",
-    required: ["target"],
+    required: ["tagName"],
   },
 );
 
@@ -900,16 +868,14 @@ const opensteerSnapshotCounterSchema: JsonSchema = objectSchema(
   },
 );
 
-const opensteerSessionStateSchema: JsonSchema = objectSchema(
+const opensteerNavigationSummarySchema: JsonSchema = objectSchema(
   {
-    sessionRef: sessionRefSchema,
-    pageRef: pageRefSchema,
     url: stringSchema(),
     title: stringSchema(),
   },
   {
-    title: "OpensteerSessionState",
-    required: ["sessionRef", "pageRef", "url", "title"],
+    title: "OpensteerNavigationSummary",
+    required: ["url", "title"],
   },
 );
 
@@ -982,6 +948,18 @@ const opensteerPageCloseOutputSchema: JsonSchema = objectSchema(
   {
     title: "OpensteerPageCloseOutput",
     required: ["closedPageRef", "pages"],
+  },
+);
+
+const opensteerPageNewOutputSchema: JsonSchema = objectSchema(
+  {
+    pageRef: pageRefSchema,
+    url: stringSchema(),
+    title: stringSchema(),
+  },
+  {
+    title: "OpensteerPageNewOutput",
+    required: ["pageRef", "url", "title"],
   },
 );
 
@@ -1405,76 +1383,29 @@ const opensteerComputerExecuteInputSchema: JsonSchema = objectSchema(
   },
 );
 
-const opensteerComputerTracePointSchema: JsonSchema = objectSchema(
+const opensteerScreenshotSummarySchema: JsonSchema = objectSchema(
   {
-    role: enumSchema(["point", "start", "end"] as const),
-    point: pointSchema,
-    hitTest: hitTestResultSchema,
-    target: opensteerResolvedTargetSchema,
+    payload: externalBinaryLocationSchema,
+    format: screenshotFormatSchema,
+    size: sizeSchema,
+    coordinateSpace: coordinateSpaceSchema,
+    clip: rectSchema,
   },
   {
-    title: "OpensteerComputerTracePoint",
-    required: ["role", "point"],
-  },
-);
-
-const opensteerComputerTraceEnrichmentSchema: JsonSchema = objectSchema(
-  {
-    points: arraySchema(opensteerComputerTracePointSchema),
-  },
-  {
-    title: "OpensteerComputerTraceEnrichment",
-    required: ["points"],
-  },
-);
-
-const opensteerComputerExecuteTimingSchema: JsonSchema = objectSchema(
-  {
-    actionMs: integerSchema({ minimum: 0 }),
-    waitMs: integerSchema({ minimum: 0 }),
-    totalMs: integerSchema({ minimum: 0 }),
-  },
-  {
-    title: "OpensteerComputerExecuteTiming",
-    required: ["actionMs", "waitMs", "totalMs"],
-  },
-);
-
-const opensteerComputerDisplayScaleSchema: JsonSchema = objectSchema(
-  {
-    x: numberSchema({ exclusiveMinimum: 0 }),
-    y: numberSchema({ exclusiveMinimum: 0 }),
-  },
-  {
-    title: "OpensteerComputerDisplayScale",
-    required: ["x", "y"],
+    title: "OpensteerScreenshotSummary",
+    required: ["payload", "format", "size", "coordinateSpace"],
   },
 );
 
 const opensteerComputerExecuteOutputSchema: JsonSchema = objectSchema(
   {
-    action: opensteerComputerActionSchema,
-    pageRef: pageRefSchema,
-    screenshot: screenshotArtifactSchema,
-    displayViewport: viewportMetricsSchema,
-    nativeViewport: viewportMetricsSchema,
-    displayScale: opensteerComputerDisplayScaleSchema,
-    events: arraySchema(opensteerEventSchema),
-    timing: opensteerComputerExecuteTimingSchema,
-    trace: opensteerComputerTraceEnrichmentSchema,
+    url: stringSchema(),
+    title: stringSchema(),
+    screenshot: opensteerScreenshotSummarySchema,
   },
   {
     title: "OpensteerComputerExecuteOutput",
-    required: [
-      "action",
-      "pageRef",
-      "screenshot",
-      "displayViewport",
-      "nativeViewport",
-      "displayScale",
-      "events",
-      "timing",
-    ],
+    required: ["url", "title", "screenshot"],
   },
 );
 
@@ -1516,7 +1447,7 @@ const opensteerSemanticOperationSpecificationsBase = [
     name: "session.open",
     description: "Open or resume the current Opensteer session and primary page.",
     inputSchema: opensteerOpenInputSchema,
-    outputSchema: opensteerSessionStateSchema,
+    outputSchema: opensteerNavigationSummarySchema,
     requiredCapabilities: ["sessions.manage", "pages.manage"],
     resolveRequiredCapabilities: (input) =>
       input.url === undefined
@@ -1534,7 +1465,7 @@ const opensteerSemanticOperationSpecificationsBase = [
     name: "page.new",
     description: "Create and optionally navigate a new top-level page in the current session.",
     inputSchema: opensteerPageNewInputSchema,
-    outputSchema: opensteerSessionStateSchema,
+    outputSchema: opensteerPageNewOutputSchema,
     requiredCapabilities: ["pages.manage"],
     resolveRequiredCapabilities: (input) =>
       input.url === undefined ? ["pages.manage"] : ["pages.manage", "pages.navigate"],
@@ -1543,7 +1474,7 @@ const opensteerSemanticOperationSpecificationsBase = [
     name: "page.activate",
     description: "Activate an existing top-level page in the current session.",
     inputSchema: opensteerPageActivateInputSchema,
-    outputSchema: opensteerSessionStateSchema,
+    outputSchema: opensteerNavigationSummarySchema,
     requiredCapabilities: ["pages.manage", "inspect.pages"],
   }),
   defineSemanticOperationSpec<OpensteerPageCloseInput, OpensteerPageCloseOutput>({
@@ -1557,7 +1488,7 @@ const opensteerSemanticOperationSpecificationsBase = [
     name: "page.goto",
     description: "Navigate the current Opensteer page to a new URL.",
     inputSchema: opensteerPageGotoInputSchema,
-    outputSchema: opensteerSessionStateSchema,
+    outputSchema: opensteerNavigationSummarySchema,
     requiredCapabilities: ["pages.navigate"],
   }),
   defineSemanticOperationSpec<OpensteerPageEvaluateInput, OpensteerPageEvaluateOutput>({

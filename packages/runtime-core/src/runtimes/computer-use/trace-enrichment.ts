@@ -116,9 +116,14 @@ function toOpensteerResolvedTarget(target: ResolvedDomTarget): OpensteerResolved
     documentRef: target.documentRef,
     documentEpoch: target.documentEpoch,
     nodeRef: target.nodeRef,
-    tagName: target.node.nodeName.toUpperCase(),
+    tagName: toOpensteerTagName(target.node.nodeName),
     pathHint: buildPathSelectorHint(target.replayPath ?? target.anchor),
     ...(target.persist === undefined ? {} : { persist: target.persist }),
     ...(target.selectorUsed === undefined ? {} : { selectorUsed: target.selectorUsed }),
   };
+}
+
+function toOpensteerTagName(nodeName: string): string {
+  const tagName = String(nodeName).trim().toLowerCase();
+  return tagName.length === 0 ? "element" : tagName;
 }

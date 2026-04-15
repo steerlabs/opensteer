@@ -38,6 +38,8 @@ import {
 } from "./root.js";
 import {
   clearPersistedSessionRecord,
+  getPersistedLocalBrowserSessionOwnership,
+  isAttachedLocalBrowserSessionReachable,
   readPersistedLocalBrowserSessionRecord,
   writePersistedSessionRecord,
   type PersistedLocalBrowserSessionRecord,
@@ -87,6 +89,7 @@ export interface WorkspaceBrowserManifest {
 
 export interface WorkspaceLiveBrowserRecord {
   readonly mode: "persistent";
+  readonly ownership: "owned" | "attached";
   readonly engine: OpensteerEngineName;
   readonly endpoint?: string;
   readonly baseUrl?: string;
@@ -187,7 +190,7 @@ export class OpensteerBrowserManager {
 
     const liveRecord = await this.readLivePersistentBrowser(await this.ensureWorkspaceStore());
     return {
-      mode: this.mode,
+      mode: liveRecord?.ownership === "attached" ? "attach" : this.mode,
       engine: liveRecord?.engine ?? this.engineName,
       ...(this.workspace === undefined ? {} : { workspace: this.workspace }),
       live: liveRecord !== undefined,
@@ -333,6 +336,7 @@ export class OpensteerBrowserManager {
       });
       const liveRecord: WorkspaceLiveBrowserRecord = {
         mode: "persistent",
+        ownership: "owned",
         engine: "abp",
         baseUrl: launched.baseUrl,
         remoteDebuggingUrl: launched.remoteDebuggingUrl,
@@ -431,13 +435,87 @@ export class OpensteerBrowserManager {
 
   private async createAttachEngine(): Promise<DisposableBrowserCoreEngine> {
     const endpoint = await resolveAttachEndpoint(this.browserOptions);
-    return this.createAttachedEngine({
-      endpoint,
-      ...(this.browserOptions?.headers === undefined
-        ? {}
-        : { headers: this.browserOptions.headers }),
-      freshTab: this.browserOptions?.freshTab ?? true,
-      onDispose: async () => undefined,
+    if (this.workspace === undefined) {
+      return this.createAttachedEngine({
+        endpoint,
+        ...(this.browserOptions?.headers === undefined
+          ? {}
+          : { headers: this.browserOptions.headers }),
+        freshTab: this.browserOptions?.freshTab ?? true,
+        onDispose: async () => undefined,
+      });
+    }
+
+    const workspace = await this.ensureWorkspaceStore();
+    return workspace.lock(async () => {
+      const live = await this.readLivePersistentBrowser(workspace);
+      if (live) {
+        if (live.engine !== "playwright") {
+          throw new Error(
+            `workspace "${this.workspace}" already has a live ${live.engine} browser. Close it before attaching a Playwright browser.`,
+          );
+        }
+        if (live.ownership !== "attached") {
+          throw new Error(
+            `workspace "${this.workspace}" already has a live Opensteer-owned browser. Close it before attaching another browser.`,
+          );
+        }
+        if (live.endpoint === undefined) {
+          throw new Error("workspace live browser record is missing a DevTools endpoint.");
+        }
+        if (live.endpoint !== endpoint) {
+          throw new Error(
+            `workspace "${this.workspace}" is already attached to a different browser endpoint. Close it before reattaching.`,
+          );
+        }
+        await bestEffortRegisterLocalViewSession({
+          rootPath: workspace.rootPath,
+          ...(this.workspace === undefined ? {} : { workspace: this.workspace }),
+          live: toPersistedLocalBrowserSessionRecord(this.workspace, live),
+          ownership: "attached",
+        });
+        return this.createAttachedEngine({
+          endpoint: live.endpoint,
+          ...(this.browserOptions?.headers === undefined
+            ? {}
+            : { headers: this.browserOptions.headers }),
+          freshTab: this.browserOptions?.freshTab ?? true,
+          onDispose: async () => undefined,
+        });
+      }
+
+      const liveRecord: WorkspaceLiveBrowserRecord = {
+        mode: "persistent",
+        ownership: "attached",
+        engine: "playwright",
+        endpoint,
+        pid: 0,
+        startedAt: Date.now(),
+        userDataDir: workspace.browserUserDataDir,
+      };
+      await this.writeLivePersistentBrowser(workspace, liveRecord);
+      const persistedLiveRecord = toPersistedLocalBrowserSessionRecord(this.workspace, liveRecord);
+      await bestEffortRegisterLocalViewSession({
+        rootPath: workspace.rootPath,
+        ...(this.workspace === undefined ? {} : { workspace: this.workspace }),
+        live: persistedLiveRecord,
+        ownership: "attached",
+      });
+
+      try {
+        return await this.createAttachedEngine({
+          endpoint,
+          ...(this.browserOptions?.headers === undefined
+            ? {}
+            : { headers: this.browserOptions.headers }),
+          freshTab: this.browserOptions?.freshTab ?? true,
+          onDispose: async () => undefined,
+        });
+      } catch (error) {
+        await this.unregisterLocalViewSessionForRecord(workspace.rootPath, persistedLiveRecord);
+        await clearPersistedSessionRecord(workspace.rootPath, "local").catch(() => undefined);
+        throw error;
+      }
     });
   }
 
@@ -458,7 +536,7 @@ export class OpensteerBrowserManager {
           rootPath: workspace.rootPath,
           ...(this.workspace === undefined ? {} : { workspace: this.workspace }),
           live: toPersistedLocalBrowserSessionRecord(this.workspace, live),
-          ownership: "owned",
+          ownership: live.ownership,
         });
         return this.createAttachedEngine({
           endpoint: live.endpoint,
@@ -477,6 +555,7 @@ export class OpensteerBrowserManager {
       });
       const liveRecord: WorkspaceLiveBrowserRecord = {
         mode: "persistent",
+        ownership: "owned",
         engine: "playwright",
         endpoint: launched.endpoint,
         pid: launched.pid,
@@ -636,7 +715,20 @@ export class OpensteerBrowserManager {
     if (live === undefined) {
       return undefined;
     }
+    if (live.ownership === "attached") {
+      const attachedRecord = toPersistedLocalBrowserSessionRecord(this.workspace, live);
+      if (!(await isAttachedLocalBrowserSessionReachable(attachedRecord))) {
+        await this.unregisterLocalViewSessionForRecord(workspace.rootPath, attachedRecord);
+        await clearPersistedSessionRecord(workspace.rootPath, "local").catch(() => undefined);
+        return undefined;
+      }
+      return live;
+    }
     if (!isProcessRunning(live.pid)) {
+      await this.unregisterLocalViewSessionForRecord(
+        workspace.rootPath,
+        toPersistedLocalBrowserSessionRecord(this.workspace, live),
+      );
       await clearPersistedSessionRecord(workspace.rootPath, "local").catch(() => undefined);
       return undefined;
     }
@@ -695,6 +787,11 @@ export class OpensteerBrowserManager {
       toPersistedLocalBrowserSessionRecord(this.workspace, live),
     );
 
+    if (live.ownership === "attached") {
+      await clearPersistedSessionRecord(workspace.rootPath, "local").catch(() => undefined);
+      return;
+    }
+
     if (live.engine === "playwright") {
       if (live.endpoint !== undefined) {
         await requestBrowserClose(live.endpoint).catch(() => undefined);
@@ -733,11 +830,23 @@ export class OpensteerBrowserManager {
     record: PersistedLocalBrowserSessionRecord,
   ): Promise<void> {
     await bestEffortUnregisterLocalViewSession(
-      buildLocalViewSessionId({
-        rootPath,
-        pid: record.pid,
-        startedAt: record.startedAt,
-      }),
+      getPersistedLocalBrowserSessionOwnership(record) === "attached"
+        ? buildLocalViewSessionId({
+            rootPath,
+            startedAt: record.startedAt,
+            ownership: "attached",
+            ...(record.endpoint === undefined ? {} : { endpoint: record.endpoint }),
+            ...(record.baseUrl === undefined ? {} : { baseUrl: record.baseUrl }),
+            ...(record.remoteDebuggingUrl === undefined
+              ? {}
+              : { remoteDebuggingUrl: record.remoteDebuggingUrl }),
+          })
+        : buildLocalViewSessionId({
+            rootPath,
+            startedAt: record.startedAt,
+            ownership: "owned",
+            pid: record.pid,
+          }),
     );
   }
 }
@@ -783,6 +892,7 @@ function toPersistedLocalBrowserSessionRecord(
     version: 1,
     provider: "local",
     ...(workspace === undefined ? {} : { workspace }),
+    ownership: live.ownership,
     engine: live.engine,
     ...(live.endpoint === undefined ? {} : { endpoint: live.endpoint }),
     ...(live.baseUrl === undefined ? {} : { baseUrl: live.baseUrl }),
@@ -803,6 +913,7 @@ function toWorkspaceLiveBrowserRecord(
 ): WorkspaceLiveBrowserRecord {
   return {
     mode: "persistent",
+    ownership: getPersistedLocalBrowserSessionOwnership(record),
     engine: record.engine,
     ...(record.endpoint === undefined ? {} : { endpoint: record.endpoint }),
     ...(record.baseUrl === undefined ? {} : { baseUrl: record.baseUrl }),
@@ -841,7 +952,12 @@ async function resolveAttachEndpoint(
 ): Promise<string> {
   const endpoint = browser?.endpoint?.trim();
   if (endpoint && endpoint.length > 0) {
-    return endpoint;
+    const inspected = await inspectCdpEndpoint({
+      endpoint,
+      ...(browser?.headers === undefined ? {} : { headers: browser.headers }),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+    });
+    return inspected.endpoint;
   }
   const selection = await selectAttachBrowserCandidate({
     timeoutMs: DEFAULT_TIMEOUT_MS,

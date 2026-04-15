@@ -7,6 +7,7 @@ export function renderOperationOutput(
 ): string {
   switch (operation) {
     case "session.open":
+    case "page.activate":
     case "page.goto":
       return renderJson(formatNavigationOutput(result));
     case "page.snapshot":
@@ -15,14 +16,14 @@ export function renderOperationOutput(
     case "dom.hover":
     case "dom.input":
     case "dom.scroll":
-      return renderJson(formatActionOutput(result, input));
+      return renderJson(formatActionOutput(result));
     case "dom.extract":
       return renderJson(formatExtractOutput(result));
     case "page.list":
-    case "page.new":
-    case "page.activate":
     case "page.close":
       return formatTabOutput(result);
+    case "page.new":
+      return renderJson(formatCreatedPageOutput(result));
     case "network.query":
       return formatNetworkQueryOutput(result, input);
     case "network.detail":
@@ -66,6 +67,15 @@ function formatNavigationOutput(result: unknown): Record<string, unknown> {
   };
 }
 
+function formatCreatedPageOutput(result: unknown): Record<string, unknown> {
+  return {
+    ...(readStringField(result, "pageRef") === undefined
+      ? {}
+      : { pageRef: readStringField(result, "pageRef") }),
+    ...formatNavigationOutput(result),
+  };
+}
+
 function formatSnapshotOutput(result: unknown): string {
   if (
     result !== null &&
@@ -77,49 +87,15 @@ function formatSnapshotOutput(result: unknown): string {
   return renderJson(result);
 }
 
-function formatActionOutput(
-  result: unknown,
-  input: Record<string, unknown> | undefined,
-): Record<string, unknown> {
-  const target = readObjectField(result, "target");
-  const output: Record<string, unknown> = {
-    ...(readStringField(target, "tagName") === undefined
+function formatActionOutput(result: unknown): Record<string, unknown> {
+  return {
+    ...(readStringField(result, "tagName") === undefined
       ? {}
-      : { tagName: readStringField(target, "tagName") }),
-    ...(readStringField(target, "pathHint") === undefined
+      : { tagName: readStringField(result, "tagName") }),
+    ...(readStringField(result, "persist") === undefined
       ? {}
-      : { pathHint: readStringField(target, "pathHint") }),
+      : { persist: readStringField(result, "persist") }),
   };
-
-  const point = readObjectField(result, "point");
-  if (point !== undefined) {
-    output.point = {
-      ...(readNumberField(point, "x") === undefined ? {} : { x: readNumberField(point, "x") }),
-      ...(readNumberField(point, "y") === undefined ? {} : { y: readNumberField(point, "y") }),
-    };
-  }
-
-  const persist = readStringField(target, "persist");
-  if (persist !== undefined) {
-    output.persist = persist;
-  }
-
-  const text = readStringField(input, "text");
-  if (text !== undefined) {
-    output.text = text;
-  }
-
-  const direction = readStringField(input, "direction");
-  if (direction !== undefined) {
-    output.direction = direction;
-  }
-
-  const amount = readNumberField(input, "amount");
-  if (amount !== undefined) {
-    output.amount = amount;
-  }
-
-  return output;
 }
 
 function formatExtractOutput(result: unknown): unknown {
@@ -447,12 +423,15 @@ function formatStateOutput(result: unknown): string {
 }
 
 function formatComputerOutput(result: unknown): Record<string, unknown> {
-  const action = readObjectField(result, "action");
   const screenshot = readObjectField(result, "screenshot");
   const payload = readObjectField(screenshot, "payload");
-  const timing = readObjectField(result, "timing");
   return {
-    ...(action === undefined ? {} : { action }),
+    ...(readStringField(result, "url") === undefined
+      ? {}
+      : { url: readStringField(result, "url") }),
+    ...(readStringField(result, "title") === undefined
+      ? {}
+      : { title: readStringField(result, "title") }),
     ...(payload === undefined
       ? {}
       : {
@@ -468,7 +447,6 @@ function formatComputerOutput(result: unknown): Record<string, unknown> {
               : { size: readObjectField(screenshot, "size") }),
           },
         }),
-    ...(timing === undefined ? {} : { timingMs: timing }),
   };
 }
 

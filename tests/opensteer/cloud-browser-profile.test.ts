@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
+  OPENSTEER_PROTOCOL_REST_BASE_PATH,
   createErrorEnvelope,
   createOpensteerError,
   createSuccessEnvelope,
@@ -468,7 +469,8 @@ describe("cloud browser-profile integration", () => {
         }
 
         if (
-          url === `${semanticBaseUrl}/api/v2/semantic/operations/session/open` &&
+          url ===
+            `${semanticBaseUrl}${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/session/open` &&
           init?.method === "POST"
         ) {
           semanticOpenCalls += 1;
@@ -602,7 +604,8 @@ describe("cloud browser-profile integration", () => {
         }
 
         if (
-          url === `${firstSemanticBaseUrl}/api/v2/semantic/operations/session/open` &&
+          url ===
+            `${firstSemanticBaseUrl}${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/session/open` &&
           init?.method === "POST"
         ) {
           events.push("semantic-open-1");
@@ -619,7 +622,8 @@ describe("cloud browser-profile integration", () => {
         }
 
         if (
-          url === `${secondSemanticBaseUrl}/api/v2/semantic/operations/session/open` &&
+          url ===
+            `${secondSemanticBaseUrl}${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/session/open` &&
           init?.method === "POST"
         ) {
           events.push("semantic-open-2");
@@ -748,7 +752,8 @@ describe("cloud browser-profile integration", () => {
         }
 
         if (
-          url === `${firstSemanticBaseUrl}/api/v2/semantic/operations/session/open` &&
+          url ===
+            `${firstSemanticBaseUrl}${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/session/open` &&
           init?.method === "POST"
         ) {
           events.push("semantic-open-1");
@@ -765,7 +770,8 @@ describe("cloud browser-profile integration", () => {
         }
 
         if (
-          url === `${secondSemanticBaseUrl}/api/v2/semantic/operations/session/open` &&
+          url ===
+            `${secondSemanticBaseUrl}${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/session/open` &&
           init?.method === "POST"
         ) {
           events.push("semantic-open-2");
@@ -863,7 +869,8 @@ describe("cloud browser-profile integration", () => {
       }
 
       if (
-        url === `${firstSemanticBaseUrl}/api/v2/semantic/operations/session/open` &&
+        url ===
+          `${firstSemanticBaseUrl}${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/session/open` &&
         init?.method === "POST"
       ) {
         events.push("semantic-open-1");
@@ -1117,7 +1124,8 @@ describe("cloud browser-profile integration", () => {
       }
 
       if (
-        url === `${secondSemanticBaseUrl}/api/v2/semantic/operations/session/open` &&
+        url ===
+          `${secondSemanticBaseUrl}${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/session/open` &&
         init?.method === "POST"
       ) {
         const request = JSON.parse(String(init.body)) as OpensteerRequestEnvelope<unknown>;
@@ -1198,7 +1206,8 @@ describe("cloud browser-profile integration", () => {
       }
 
       if (
-        url === `${semanticBaseUrl}/api/v2/semantic/operations/session/open` &&
+        url ===
+          `${semanticBaseUrl}${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/session/open` &&
         init?.method === "POST"
       ) {
         const request = JSON.parse(String(init.body)) as OpensteerRequestEnvelope<unknown>;
@@ -1293,7 +1302,8 @@ describe("cloud browser-profile integration", () => {
       }
 
       if (
-        url === `${semanticBaseUrl}/api/v2/semantic/operations/session/open` &&
+        url ===
+          `${semanticBaseUrl}${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/session/open` &&
         init?.method === "POST"
       ) {
         const request = JSON.parse(String(init.body)) as OpensteerRequestEnvelope<unknown>;
@@ -1388,7 +1398,8 @@ describe("cloud browser-profile integration", () => {
       }
 
       if (
-        url === `${semanticBaseUrl}/api/v2/semantic/operations/session/open` &&
+        url ===
+          `${semanticBaseUrl}${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/session/open` &&
         init?.method === "POST"
       ) {
         const request = JSON.parse(String(init.body)) as OpensteerRequestEnvelope<unknown>;
@@ -1455,7 +1466,8 @@ describe("cloud browser-profile integration", () => {
       }
 
       if (
-        url === `${semanticBaseUrl}/api/v2/semantic/operations/network/detail` &&
+        url ===
+          `${semanticBaseUrl}${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/network/detail` &&
         init?.method === "POST"
       ) {
         const request = JSON.parse(String(init.body)) as OpensteerRequestEnvelope<unknown>;
@@ -1506,7 +1518,9 @@ describe("cloud browser-profile integration", () => {
     });
 
     const lastFetch = fetchMock.mock.calls.at(-1);
-    expect(lastFetch?.[0]).toBe(`${semanticBaseUrl}/api/v2/semantic/operations/network/detail`);
+    expect(lastFetch?.[0]).toBe(
+      `${semanticBaseUrl}${OPENSTEER_PROTOCOL_REST_BASE_PATH}/semantic/operations/network/detail`,
+    );
     expect(lastFetch?.[1]).toEqual(
       expect.objectContaining({
         headers: expect.objectContaining({

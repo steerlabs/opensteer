@@ -254,9 +254,8 @@ describe("runOpensteerRecordCommand", () => {
     expect(runtime.addInitScripts).toEqual([FLOW_RECORDER_INSTALL_SCRIPT]);
 
     const script = await readFile(outputPath, "utf8");
-    expect(script).toContain(
-      'const page0 = (await opensteer.open("https://example.com")).pageRef;',
-    );
+    expect(script).toContain('await opensteer.open("https://example.com");');
+    expect(script).toContain("const page0 = (await opensteer.listPages()).activePageRef;");
     expect(script).toContain("await opensteer.close();");
   });
 

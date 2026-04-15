@@ -172,9 +172,8 @@ describe("recorder codegen", () => {
       actions: [],
     });
 
-    expect(script).toContain(
-      `const page0 = (await opensteer.open("https://example.com")).pageRef;`,
-    );
+    expect(script).toContain(`await opensteer.open("https://example.com");`);
+    expect(script).toContain(`const page0 = (await opensteer.listPages()).activePageRef;`);
     expect(script).toContain(`await opensteer.close();`);
   });
 
@@ -234,9 +233,8 @@ describe("recorder codegen", () => {
       },
     });
 
-    expect(script).toContain(
-      `const page0 = (await opensteer.open("https://example.com")).pageRef;`,
-    );
+    expect(script).toContain(`await opensteer.open("https://example.com");`);
+    expect(script).toContain(`const page0 = (await opensteer.listPages()).activePageRef;`);
     expect(script).toContain(
       `const page1 = (await opensteer.newPage({ openerPageRef: page0, url: "https://example.com/docs" })).pageRef;`,
     );
