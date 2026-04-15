@@ -449,6 +449,7 @@ export class OpensteerSessionRuntime {
           const createdPage = await timeout.runStep(() =>
             engine.createPage({
               sessionRef,
+              ...(input.url === undefined ? {} : { url: input.url }),
             }),
           );
           openedPageRef = createdPage.data.pageRef;
@@ -460,15 +461,16 @@ export class OpensteerSessionRuntime {
 
           let frameRef = createdPage.frameRef;
           if (input.url !== undefined) {
-            const navigation = await this.navigatePage(
-              {
+            await timeout.runStep(() =>
+              settleWithPolicy(this.policy.settle, {
                 operation: "session.open",
+                trigger: "navigation",
+                engine: this.requireEngine(),
                 pageRef: createdPage.data.pageRef,
-                url: input.url,
-              },
-              timeout,
+                signal: timeout.signal,
+                remainingMs: timeout.remainingMs(),
+              }),
             );
-            frameRef = navigation.data.mainFrame.frameRef;
           }
 
           return {

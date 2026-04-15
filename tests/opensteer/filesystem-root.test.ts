@@ -1,4 +1,4 @@
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -6,6 +6,7 @@ import { afterEach, describe, expect, test } from "vitest";
 
 import { createFilesystemOpensteerWorkspace } from "../../packages/opensteer/src/index.js";
 import { bodyPayloadFromUtf8 } from "../../packages/protocol/src/network.js";
+import { withFilesystemLock } from "../../packages/runtime-core/src/internal/filesystem.js";
 
 const temporaryRoots: string[] = [];
 
@@ -67,6 +68,25 @@ function requestPlanPayload(urlTemplate: string) {
 }
 
 describe("Phase 3 filesystem root", () => {
+  test("reclaims stale lock directories left behind by interrupted runs", async () => {
+    const rootPath = await createTemporaryRoot();
+    const lockPath = path.join(rootPath, ".lock");
+    await mkdir(lockPath, { recursive: true });
+
+    const staleAt = new Date(Date.now() - 60_000);
+    await utimes(lockPath, staleAt, staleAt);
+
+    const result = await Promise.race([
+      withFilesystemLock(lockPath, async () => "ok"),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("stale filesystem lock was not reclaimed")), 2_000);
+      }),
+    ]);
+
+    expect(result).toBe("ok");
+    expect(await pathExists(lockPath)).toBe(false);
+  });
+
   test("initializes the root layout idempotently and only creates the expected tree", async () => {
     const rootPath = await createTemporaryRoot();
 

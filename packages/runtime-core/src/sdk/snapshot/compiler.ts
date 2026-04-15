@@ -96,7 +96,7 @@ const MAX_LIVE_COUNTER_SYNC_ATTEMPTS = 4;
 
 const CLEAR_LIVE_COUNTERS_SCRIPT = `(({ sparseCounterAttr }) => {
   const walk = (root) => {
-    for (const child of root.children) {
+    for (const child of Array.from(root?.children || [])) {
       child.removeAttribute("c");
       child.removeAttribute(sparseCounterAttr);
       walk(child);
@@ -113,7 +113,7 @@ const CLEAR_LIVE_COUNTERS_SCRIPT = `(({ sparseCounterAttr }) => {
 const ASSIGN_SPARSE_COUNTERS_SCRIPT = `(({ sparseCounterAttr, startCounter }) => {
   let counter = startCounter;
   const walk = (root) => {
-    for (const child of root.children) {
+    for (const child of Array.from(root?.children || [])) {
       child.setAttribute(sparseCounterAttr, String(counter++));
       walk(child);
       if (child.shadowRoot) {
@@ -128,7 +128,7 @@ const ASSIGN_SPARSE_COUNTERS_SCRIPT = `(({ sparseCounterAttr, startCounter }) =>
 
 const APPLY_DENSE_COUNTERS_SCRIPT = `(({ sparseCounterAttr, mapping }) => {
   const walk = (root) => {
-    for (const child of root.children) {
+    for (const child of Array.from(root?.children || [])) {
       child.removeAttribute("c");
       const sparse = child.getAttribute(sparseCounterAttr);
       if (sparse !== null) {
@@ -759,6 +759,15 @@ function assignCountersInDom(
     const rawSparseCounter = el.attr(OPENSTEER_SPARSE_COUNTER_ATTR);
     el.removeAttr(OPENSTEER_SPARSE_COUNTER_ATTR);
     const sparseCounter = rawSparseCounter ? Number.parseInt(rawSparseCounter, 10) : undefined;
+    if (
+      rendered.liveCounterSyncEligible &&
+      (sparseCounter === undefined || !Number.isFinite(sparseCounter))
+    ) {
+      // The element was captured in the DOM snapshot but could not be bound to
+      // a live sparse marker, usually because the page mutated underneath us.
+      // Do not expose a numbered counter that cannot be replayed reliably.
+      return;
+    }
 
     const counter = nextCounter++;
     el.attr("c", String(counter));

@@ -125,17 +125,12 @@ export async function waitForActionBoundary(
       trigger = "navigation";
       crossDocument = true;
     }
-    if (
-      !crossDocument &&
-      !sameDocumentAsyncActivity &&
-      input.snapshot?.tracker !== undefined &&
-      postLoadTrackerHasTrackedNetworkActivitySince(
-        input.snapshot.tracker,
-        (lastTrackerState = await input.readTrackerState()),
-      )
-    ) {
-      trigger = "navigation";
-      sameDocumentAsyncActivity = true;
+    if (!crossDocument && !sameDocumentAsyncActivity && input.snapshot?.tracker !== undefined) {
+      lastTrackerState = await input.readTrackerState();
+      if (postLoadTrackerHasTrackedNetworkActivitySince(input.snapshot.tracker, lastTrackerState)) {
+        trigger = "navigation";
+        sameDocumentAsyncActivity = true;
+      }
     }
     if (
       !crossDocument &&
@@ -198,17 +193,14 @@ export async function waitForActionBoundary(
         });
       }
 
-      if (
-        !postLoadTrackerIsSettled(
-          (lastTrackerState = await input.readTrackerState()),
-          DEFAULT_POST_LOAD_TRACKER_QUIET_WINDOW_MS,
-        )
-      ) {
+      lastTrackerState = await input.readTrackerState();
+      if (!postLoadTrackerIsSettled(lastTrackerState, DEFAULT_POST_LOAD_TRACKER_QUIET_WINDOW_MS)) {
         await delay(
           Math.min(pollIntervalMs, Math.max(0, crossDocumentPostLoadDeadline - Date.now())),
         );
         continue;
       }
+
       return finalizeOutcome({
         trigger,
         crossDocument,

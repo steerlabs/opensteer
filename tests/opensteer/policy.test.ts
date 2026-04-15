@@ -349,7 +349,7 @@ describe("Phase 7 visual stability settle observers", () => {
     expect(engine.waitForVisualStability).not.toHaveBeenCalled();
   });
 
-  test("navigation observer waits for post-load quiet before visual stability", async () => {
+  test("navigation observer keeps a visual confirmation window after post-load quiet", async () => {
     const engine = createMockEngine();
     const policy = defaultPolicy().settle;
     const context = createContextWithEngine("navigation", engine);
@@ -363,13 +363,14 @@ describe("Phase 7 visual stability settle observers", () => {
       captureWindowMs: 1_000,
       signal: context.signal,
     });
-    expect(engine.waitForVisualStability).toHaveBeenCalledWith({
-      pageRef: context.pageRef,
-      timeoutMs: 7_000,
-      settleMs: 750,
-      initialQuietMs: 400,
-      scope: "visible-frames",
-    });
+    expect(engine.waitForVisualStability).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pageRef: context.pageRef,
+        settleMs: 750,
+        initialQuietMs: 400,
+        scope: "visible-frames",
+      }),
+    );
   });
 
   test("navigation observer skips duplicate post-load quiet after boundary already handled it", async () => {

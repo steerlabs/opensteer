@@ -595,6 +595,55 @@ test(
 );
 
 test(
+  "navigates attached bootstrap pages before controller initialization when a URL is provided",
+  { timeout: 15_000 },
+  async () => {
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const context = await browser.newContext();
+      const attachedPage = await context.newPage();
+      await attachedPage.goto(`${baseUrl}/dom`, {
+        waitUntil: "domcontentloaded",
+      });
+
+      const engine = await createPlaywrightBrowserCoreEngine({
+        browser,
+        attachedContext: context,
+        attachedPage,
+        closeBrowserOnDispose: true,
+        closeAttachedContextOnSessionClose: false,
+      });
+
+      const initializedUrls: string[] = [];
+      const engineWithInternals = engine as any;
+      const originalInitializePageController =
+        engineWithInternals.initializePageController.bind(engine);
+      engineWithInternals.initializePageController = async (...args: any[]) => {
+        initializedUrls.push(args[1].url());
+        return originalInitializePageController(...args);
+      };
+
+      try {
+        const sessionRef = await engine.createSession();
+        const created = await engine.createPage({
+          sessionRef,
+          url: `${baseUrl}/basic`,
+        });
+
+        expect(initializedUrls[0]).toBe(`${baseUrl}/basic`);
+        expect(created.data.url).toBe(`${baseUrl}/basic`);
+      } finally {
+        await engine.dispose();
+      }
+    } finally {
+      if (browser.isConnected()) {
+        await browser.close().catch(() => undefined);
+      }
+    }
+  },
+);
+
+test(
   "captures DOM snapshots, stale nodes, hit-testing, text input, screenshots, and freeze state",
   { timeout: 60_000 },
   async () => {

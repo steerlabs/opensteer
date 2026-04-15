@@ -451,19 +451,6 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       });
     });
 
-    if (session.initialPage) {
-      const task = this.handleAttachedInitialPage(session, session.initialPage).catch((error) => {
-        if (isContextClosedError(error)) {
-          return;
-        }
-        throw error;
-      });
-      session.pendingPageTasks.add(task);
-      void task.finally(() => {
-        session.pendingPageTasks.delete(task);
-      });
-    }
-
     return sessionRef;
   }
 
@@ -506,11 +493,39 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     if (session.initialPage) {
       const initialPage = session.initialPage;
       session.initialPage = undefined;
+      let controller = this.pageByPlaywrightPage.get(initialPage);
+      let navigatedBeforeInitialization = false;
+
+      if (!controller) {
+        let reservedPageRef: PageRef | undefined;
+        if (this.contextOptions?.viewport !== undefined && this.contextOptions.viewport !== null) {
+          await initialPage.setViewportSize(this.contextOptions.viewport);
+        }
+        if (input.url !== undefined) {
+          reservedPageRef = createPageRef(`playwright-${++this.pageCounter}`);
+          this.preassignedPopupPageRefs.set(initialPage, reservedPageRef);
+          try {
+            // Navigate attached pages before DOM/controller setup so we do not
+            // pay initialization cost for whatever heavy page was left open.
+            await initialPage.goto(input.url, {
+              waitUntil: "domcontentloaded",
+            });
+            navigatedBeforeInitialization = true;
+          } catch (error) {
+            this.preassignedPopupPageRefs.delete(initialPage);
+            throw normalizePlaywrightError(error, reservedPageRef);
+          }
+        }
+        controller = await this.initializePageController(
+          session,
+          initialPage,
+          input.openerPageRef,
+          true,
+        );
+      }
+
       await this.flushPendingPageTasks(session.sessionRef);
-      const controller =
-        this.pageByPlaywrightPage.get(initialPage) ??
-        (await this.initializePageController(session, initialPage, input.openerPageRef, true));
-      if (input.url) {
+      if (input.url && !navigatedBeforeInitialization) {
         await controller.page.goto(input.url, {
           waitUntil: "domcontentloaded",
         });
