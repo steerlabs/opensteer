@@ -100,7 +100,7 @@ class DefaultComputerUseRuntime implements ComputerUseRuntime {
         screenshot,
         signal: input.timeout.signal,
         remainingMs: () => input.timeout.remainingMs(),
-        policySettle: async (pageRef, trigger) => {
+        policySettle: async (pageRef, trigger, boundary) => {
           try {
             await settleWithPolicy(this.options.policy.settle, {
               operation: "computer.execute",
@@ -109,6 +109,10 @@ class DefaultComputerUseRuntime implements ComputerUseRuntime {
               pageRef,
               signal: input.timeout.signal,
               remainingMs: input.timeout.remainingMs(),
+              ...(boundary?.observedMutationQuietMs === undefined
+                ? {}
+                : { observedMutationQuietMs: boundary.observedMutationQuietMs }),
+              ...(boundary?.postLoadHandled === true ? { postLoadHandled: true } : {}),
             });
           } catch (error) {
             if (

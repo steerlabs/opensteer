@@ -41,7 +41,11 @@ export interface DomActionSettleOptions {
   readonly snapshot?: ActionBoundarySnapshot;
   readonly signal: AbortSignal;
   remainingMs(): number | undefined;
-  policySettle(pageRef: PageRef, trigger: ActionBoundarySettleTrigger): Promise<void>;
+  policySettle(
+    pageRef: PageRef,
+    trigger: ActionBoundarySettleTrigger,
+    boundary?: ActionBoundaryOutcome,
+  ): Promise<void>;
 }
 
 export type DomPointerHitRelation =
@@ -66,7 +70,10 @@ export interface BuildReplayPathOptions {
 }
 
 export interface DomActionBridge {
-  buildReplayPath(locator: NodeLocator, options?: BuildReplayPathOptions): Promise<ReplayElementPath>;
+  buildReplayPath(
+    locator: NodeLocator,
+    options?: BuildReplayPathOptions,
+  ): Promise<ReplayElementPath>;
   inspectActionTarget(locator: NodeLocator): Promise<DomActionTargetInspection>;
   canonicalizePointerTarget(locator: NodeLocator): Promise<NodeLocator>;
   classifyPointerHit(input: {

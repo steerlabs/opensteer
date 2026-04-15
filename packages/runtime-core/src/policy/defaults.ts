@@ -92,6 +92,9 @@ const defaultDomActionSettleObserver: SettleObserver = {
         pageRef: input.pageRef,
         timeoutMs: effectiveTimeout,
         settleMs: profile.settleMs,
+        ...(input.observedMutationQuietMs === undefined
+          ? {}
+          : { initialQuietMs: input.observedMutationQuietMs }),
         scope: profile.scope,
       });
       return true;
@@ -120,15 +123,22 @@ const defaultNavigationSettleObserver: SettleObserver = {
     }
 
     try {
-      const startedAt = Date.now();
-      await input.engine.waitForPostLoadQuiet({
-        pageRef: input.pageRef,
-        timeoutMs: effectiveTimeout,
-        quietMs: DEFAULT_POST_LOAD_TRACKER_QUIET_WINDOW_MS,
-        captureWindowMs: Math.min(NAVIGATION_POST_LOAD_CAPTURE_WINDOW_MS, effectiveTimeout),
-        signal: input.signal,
-      });
-      const visualTimeout = Math.max(0, effectiveTimeout - (Date.now() - startedAt));
+      let visualTimeout = effectiveTimeout;
+      let initialQuietMs = input.observedMutationQuietMs ?? 0;
+
+      if (!input.postLoadHandled) {
+        const startedAt = Date.now();
+        await input.engine.waitForPostLoadQuiet({
+          pageRef: input.pageRef,
+          timeoutMs: effectiveTimeout,
+          quietMs: DEFAULT_POST_LOAD_TRACKER_QUIET_WINDOW_MS,
+          captureWindowMs: Math.min(NAVIGATION_POST_LOAD_CAPTURE_WINDOW_MS, effectiveTimeout),
+          signal: input.signal,
+        });
+        visualTimeout = Math.max(0, effectiveTimeout - (Date.now() - startedAt));
+        initialQuietMs = Math.max(initialQuietMs, DEFAULT_POST_LOAD_TRACKER_QUIET_WINDOW_MS);
+      }
+
       if (visualTimeout <= 0) {
         return true;
       }
@@ -136,6 +146,7 @@ const defaultNavigationSettleObserver: SettleObserver = {
         pageRef: input.pageRef,
         timeoutMs: visualTimeout,
         settleMs: profile.settleMs,
+        ...(initialQuietMs <= 0 ? {} : { initialQuietMs }),
         scope: profile.scope,
       });
       return true;

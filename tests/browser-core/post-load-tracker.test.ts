@@ -203,6 +203,7 @@ describe("post-load tracker", () => {
         documentRef: "doc-1" as never,
         url: "https://example.test/search",
         tracker: {
+          lastMutationAt: 100,
           lastTrackedNetworkActivityAt: 100,
           trackedPendingFetches: 0,
           trackedPendingXhrs: 0,
@@ -252,6 +253,7 @@ describe("post-load tracker", () => {
       trigger: "navigation",
       crossDocument: false,
       bootstrapSettled: true,
+      observedMutationQuietMs: 20,
     });
   });
 });

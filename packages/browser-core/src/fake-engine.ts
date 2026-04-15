@@ -746,6 +746,7 @@ export class FakeBrowserCoreEngine implements BrowserCoreEngine {
     readonly pageRef: PageRef;
     readonly timeoutMs?: number;
     readonly settleMs?: number;
+    readonly initialQuietMs?: number;
     readonly scope?: "main-frame" | "visible-frames";
   }): Promise<void> {
     this.requireCapability("inspector.visualStability");

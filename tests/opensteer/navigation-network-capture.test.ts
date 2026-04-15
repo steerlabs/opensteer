@@ -358,6 +358,82 @@ describe.sequential("cross-document action boundary", () => {
     }
   }, 60_000);
 
+  test("returns promptly after same-document modal clicks without extra async work", async () => {
+    const engine = await createPlaywrightBrowserCoreEngine({
+      launch: { headless: true },
+    });
+
+    try {
+      const dom = createDomRuntime({ engine });
+      const sessionRef = await engine.createSession();
+      const created = await engine.createPage({
+        sessionRef,
+        url: `${baseUrl}/runtime/same-document-modal`,
+      });
+
+      const startedAt = Date.now();
+      await dom.click({
+        pageRef: created.data.pageRef,
+        target: {
+          kind: "selector",
+          selector: "#continue",
+        },
+      });
+      const elapsed = Date.now() - startedAt;
+
+      const mainFrame = requireMainFrame(
+        await engine.listFrames({ pageRef: created.data.pageRef }),
+      );
+      const snapshot = await engine.getDomSnapshot({
+        frameRef: mainFrame.frameRef,
+      });
+      expect(
+        await engine.readText(createLocator(snapshot, requireNodeById(snapshot.nodes, "dialog"))),
+      ).toBe("ready");
+      expect(elapsed).toBeLessThan(1_100);
+    } finally {
+      await engine.dispose();
+    }
+  }, 60_000);
+
+  test("ignores tiny visible noise once the primary same-document UI is ready", async () => {
+    const engine = await createPlaywrightBrowserCoreEngine({
+      launch: { headless: true },
+    });
+
+    try {
+      const dom = createDomRuntime({ engine });
+      const sessionRef = await engine.createSession();
+      const created = await engine.createPage({
+        sessionRef,
+        url: `${baseUrl}/runtime/same-document-noisy-modal`,
+      });
+
+      const startedAt = Date.now();
+      await dom.click({
+        pageRef: created.data.pageRef,
+        target: {
+          kind: "selector",
+          selector: "#continue",
+        },
+      });
+      const elapsed = Date.now() - startedAt;
+
+      const mainFrame = requireMainFrame(
+        await engine.listFrames({ pageRef: created.data.pageRef }),
+      );
+      const snapshot = await engine.getDomSnapshot({
+        frameRef: mainFrame.frameRef,
+      });
+      expect(
+        await engine.readText(createLocator(snapshot, requireNodeById(snapshot.nodes, "dialog"))),
+      ).toBe("loaded");
+      expect(elapsed).toBeLessThan(1_500);
+    } finally {
+      await engine.dispose();
+    }
+  }, 60_000);
+
   test("captures named hydration requests after pressEnter navigation", async () => {
     await seedExtractionDescriptors({
       workspace: "navigation-network-capture",
@@ -903,6 +979,18 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
+  if (route === "same-document-modal") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(sameDocumentModalDocument(scope));
+    return;
+  }
+
+  if (route === "same-document-noisy-modal") {
+    response.setHeader("content-type", "text/html; charset=utf-8");
+    response.end(sameDocumentNoisyModalDocument(scope));
+    return;
+  }
+
   if (route === "noisy-click") {
     response.setHeader("content-type", "text/html; charset=utf-8");
     response.end(noisyClickDocument(scope));
@@ -1126,6 +1214,60 @@ function sameDocumentClickDocument(scope: string): string {
       </script>
     `,
     `${scope} same document click`,
+  );
+}
+
+function sameDocumentModalDocument(scope: string): string {
+  return html(
+    `
+      <button id="continue" type="button">Open modal</button>
+      <div id="dialog" hidden>idle</div>
+      <script>
+        const button = document.getElementById("continue");
+        const dialog = document.getElementById("dialog");
+
+        button.addEventListener("click", () => {
+          setTimeout(() => {
+            dialog.hidden = false;
+            dialog.textContent = "ready";
+          }, 120);
+        });
+      </script>
+    `,
+    `${scope} same document modal`,
+  );
+}
+
+function sameDocumentNoisyModalDocument(scope: string): string {
+  return html(
+    `
+      <button id="continue" type="button">Open modal</button>
+      <div id="dialog" hidden>idle</div>
+      <div
+        id="noise"
+        style="position:fixed;top:8px;right:8px;width:12px;height:12px;font-size:10px;line-height:12px"
+      >0</div>
+      <script>
+        const button = document.getElementById("continue");
+        const dialog = document.getElementById("dialog");
+        const noise = document.getElementById("noise");
+
+        button.addEventListener("click", () => {
+          dialog.hidden = false;
+          dialog.textContent = "loaded";
+
+          let count = 0;
+          const interval = setInterval(() => {
+            count += 1;
+            noise.textContent = String(count % 10);
+            if (count >= 80) {
+              clearInterval(interval);
+            }
+          }, 80);
+        });
+      </script>
+    `,
+    `${scope} same document noisy modal`,
   );
 }
 

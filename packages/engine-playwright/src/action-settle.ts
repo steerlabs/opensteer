@@ -35,13 +35,21 @@ export interface PlaywrightActionSettleOptions {
   readonly timeoutMs: number;
   readonly signal?: AbortSignal;
   readonly snapshot?: ActionBoundarySnapshot;
-  readonly policySettle?: (pageRef: PageRef, trigger: ActionBoundarySettleTrigger) => Promise<void>;
+  readonly policySettle?: (
+    pageRef: PageRef,
+    trigger: ActionBoundarySettleTrigger,
+    boundary?: ActionBoundaryOutcome,
+  ) => Promise<void>;
 }
 
 export interface PlaywrightActionBoundaryOptions {
   readonly signal?: AbortSignal;
   readonly snapshot?: ActionBoundarySnapshot;
-  readonly policySettle?: (pageRef: PageRef, trigger: ActionBoundarySettleTrigger) => Promise<void>;
+  readonly policySettle?: (
+    pageRef: PageRef,
+    trigger: ActionBoundarySettleTrigger,
+    boundary?: ActionBoundaryOutcome,
+  ) => Promise<void>;
   remainingMs(): number | undefined;
 }
 
@@ -230,7 +238,7 @@ export function createPlaywrightActionSettler(context: PlaywrightActionSettlerCo
       });
 
       if (policySettle) {
-        await policySettle(controller.pageRef, boundary.trigger);
+        await policySettle(controller.pageRef, boundary.trigger, boundary);
       }
     }
 

@@ -17,9 +17,20 @@ export interface PostLoadTrackerState {
 }
 
 export interface PostLoadTrackerSnapshot {
+  readonly lastMutationAt: number;
   readonly lastTrackedNetworkActivityAt: number;
   readonly trackedPendingFetches: number;
   readonly trackedPendingXhrs: number;
+}
+
+export function getPostLoadTrackerMutationQuietMs(
+  tracker: PostLoadTrackerState | undefined,
+): number | undefined {
+  if (!tracker || tracker.readyState === "loading") {
+    return undefined;
+  }
+
+  return Math.max(0, tracker.now - Math.max(tracker.installedAt, tracker.lastMutationAt));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -254,6 +265,7 @@ export function capturePostLoadTrackerSnapshot(
   tracker: PostLoadTrackerState,
 ): PostLoadTrackerSnapshot {
   return {
+    lastMutationAt: tracker.lastMutationAt,
     lastTrackedNetworkActivityAt: tracker.lastTrackedNetworkActivityAt,
     trackedPendingFetches: tracker.trackedPendingFetches,
     trackedPendingXhrs: tracker.trackedPendingXhrs,

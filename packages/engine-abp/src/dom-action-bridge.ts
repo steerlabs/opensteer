@@ -1227,7 +1227,10 @@ function normalizePointerHitAssessment(
   if (candidate.ambiguous !== undefined && typeof candidate.ambiguous !== "boolean") {
     throw new Error("DOM action bridge returned an invalid pointer hit payload");
   }
-  if (candidate.blockingDescription !== undefined && typeof candidate.blockingDescription !== "string") {
+  if (
+    candidate.blockingDescription !== undefined &&
+    typeof candidate.blockingDescription !== "string"
+  ) {
     throw new Error("DOM action bridge returned an invalid pointer hit payload");
   }
 
@@ -1235,7 +1238,9 @@ function normalizePointerHitAssessment(
     relation: candidate.relation,
     blocking: candidate.blocking,
     ...(candidate.ambiguous === undefined ? {} : { ambiguous: candidate.ambiguous }),
-    ...(candidate.blockingDescription === undefined ? {} : { blockingDescription: candidate.blockingDescription }),
+    ...(candidate.blockingDescription === undefined
+      ? {}
+      : { blockingDescription: candidate.blockingDescription }),
     canonicalTarget,
   };
 }

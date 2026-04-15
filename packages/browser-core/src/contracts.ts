@@ -215,6 +215,7 @@ export interface BrowserInspector {
     readonly pageRef: PageRef;
     readonly timeoutMs?: number;
     readonly settleMs?: number;
+    readonly initialQuietMs?: number;
     readonly scope?: VisualStabilityScope;
   }): Promise<void>;
   waitForPostLoadQuiet(input: {

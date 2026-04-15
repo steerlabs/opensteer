@@ -1230,6 +1230,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     readonly pageRef: PageRef;
     readonly timeoutMs?: number;
     readonly settleMs?: number;
+    readonly initialQuietMs?: number;
     readonly scope?: "main-frame" | "visible-frames";
   }): Promise<void> {
     const controller = this.requirePage(input.pageRef);
@@ -1237,6 +1238,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     await waitForCdpVisualStability(controller.cdp, {
       ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
       ...(input.settleMs === undefined ? {} : { settleMs: input.settleMs }),
+      ...(input.initialQuietMs === undefined ? {} : { initialQuietMs: input.initialQuietMs }),
       ...(input.scope === undefined ? {} : { scope: input.scope }),
     });
     await this.flushDomUpdateTask(controller);
