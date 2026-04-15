@@ -36,12 +36,24 @@ export interface OpensteerCloudSessionDescriptor {
   readonly initialGrantExpiresAt?: number;
 }
 
-interface OpensteerCloudSessionState {
+export interface OpensteerCloudSessionState {
   readonly status?: string;
+  readonly runtimeWorkerId?: string;
+  readonly registryDesiredRevision?: number;
+  readonly registryLoadedRevision?: number;
+  readonly idleTimeoutMs?: number;
+  readonly absoluteTtlMs?: number;
+  readonly expiresAt?: number;
 }
 
 interface OpensteerCloudSessionCloseDescriptor {
   readonly status?: string;
+}
+
+interface OpensteerCloudErrorPayload {
+  readonly error?: string;
+  readonly code?: string;
+  readonly details?: unknown;
 }
 
 interface CloudRequestOptions {
@@ -53,6 +65,34 @@ const CLOUD_CLOSE_TIMEOUT_MS = 60_000;
 const CLOUD_CLOSE_POLL_INTERVAL_MS = 250;
 
 export type { SyncBrowserProfileCookiesInput };
+
+export class OpensteerCloudRequestError extends Error {
+  readonly statusCode: number;
+  readonly code: string | undefined;
+  readonly details: unknown;
+  readonly method: string;
+  readonly pathname: string;
+  readonly url: string;
+
+  constructor(args: {
+    readonly statusCode: number;
+    readonly code?: string;
+    readonly details?: unknown;
+    readonly method: string;
+    readonly pathname: string;
+    readonly url: string;
+    readonly message: string;
+  }) {
+    super(args.message);
+    this.name = "OpensteerCloudRequestError";
+    this.statusCode = args.statusCode;
+    this.code = args.code;
+    this.details = args.details;
+    this.method = args.method;
+    this.pathname = args.pathname;
+    this.url = args.url;
+  }
+}
 
 export class OpensteerCloudClient {
   constructor(private readonly config: OpensteerCloudConfig) {}
@@ -279,7 +319,11 @@ export class OpensteerCloudClient {
       });
     }
     if (!response.ok) {
-      throw new Error(`${init.method} ${pathname} failed with ${String(response.status)}.`);
+      throw await createCloudRequestError(response, {
+        method: init.method,
+        pathname,
+        url,
+      });
     }
     return response;
   }
@@ -339,4 +383,48 @@ function wrapCloudFetchError(
   );
   wrapped.name = error.name;
   return wrapped;
+}
+
+async function createCloudRequestError(
+  response: Response,
+  input: {
+    readonly method: string;
+    readonly pathname: string;
+    readonly url: string;
+  },
+): Promise<OpensteerCloudRequestError> {
+  const payload = await readCloudErrorPayload(response);
+  return new OpensteerCloudRequestError({
+    statusCode: response.status,
+    method: input.method,
+    pathname: input.pathname,
+    url: input.url,
+    message:
+      payload?.error ?? `${input.method} ${input.pathname} failed with ${String(response.status)}.`,
+    ...(payload?.code === undefined ? {} : { code: payload.code }),
+    ...(payload?.details === undefined ? {} : { details: payload.details }),
+  });
+}
+
+async function readCloudErrorPayload(
+  response: Response,
+): Promise<OpensteerCloudErrorPayload | undefined> {
+  try {
+    return asCloudErrorPayload(await response.json());
+  } catch {
+    return undefined;
+  }
+}
+
+function asCloudErrorPayload(value: unknown): OpensteerCloudErrorPayload | undefined {
+  if (value === null || typeof value !== "object") {
+    return undefined;
+  }
+
+  const payload = value as Record<string, unknown>;
+  return {
+    ...(typeof payload.error === "string" ? { error: payload.error } : {}),
+    ...(typeof payload.code === "string" ? { code: payload.code } : {}),
+    ...("details" in payload ? { details: payload.details } : {}),
+  };
 }

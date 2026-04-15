@@ -23,6 +23,7 @@ import {
 } from "../sdk/runtime-resolution.js";
 import { dispatchSemanticOperation } from "./dispatch.js";
 import { loadCliEnvironment } from "./env-loader.js";
+import { CliError, emitWarning, formatCliErrorOutput } from "./errors.js";
 import { getHelpText } from "./help.js";
 import { buildOperationInput } from "./operation-input.js";
 import { renderOperationOutput } from "./output.js";
@@ -108,11 +109,11 @@ async function main(): Promise<void> {
 
   const operation = resolveOperation(parsed.command);
   if (!operation) {
-    throw new Error(`Unknown command: ${parsed.command.join(" ")}`);
+    throw new CliError("unknown_command", `Unknown command: ${parsed.command.join(" ")}`);
   }
 
   if (parsed.options.workspace === undefined) {
-    throw new Error('Stateful commands require "--workspace <id>" or OPENSTEER_WORKSPACE.');
+    throw new CliError("missing_workspace", 'Stateful commands require "--workspace <id>" or OPENSTEER_WORKSPACE.');
   }
 
   const { engineName, provider, runtimeProvider } = resolveCliRuntimeSelection(parsed);
@@ -138,14 +139,29 @@ async function main(): Promise<void> {
   let renderOperation = operation;
   try {
     const input = await buildOperationInput(operation, parsed, runtime);
-    result = await dispatchSemanticOperation(runtime, operation, input);
+    const rawResult = await dispatchSemanticOperation(runtime, operation, input);
 
     if (parsed.command[0] === "tab" && operation !== "page.list") {
       renderOperation = "page.list";
       result = await runtime.listPages({});
+    } else {
+      result = rawResult;
+    }
+
+    let warning: string | undefined;
+    if (result !== null && typeof result === "object" && "warning" in (result as object)) {
+      const { warning: w, ...rest } = result as Record<string, unknown>;
+      if (typeof w === "string") {
+        warning = w;
+        result = rest;
+      }
     }
 
     process.stdout.write(renderOperationOutput(renderOperation, result, input));
+
+    if (warning !== undefined) {
+      emitWarning(warning);
+    }
   } finally {
     await runtime.disconnect().catch(() => undefined);
   }
@@ -153,12 +169,14 @@ async function main(): Promise<void> {
 
 async function handleExecCommand(parsed: ParsedCommandLine): Promise<void> {
   if (parsed.options.workspace === undefined) {
-    throw new Error('exec requires "--workspace <id>" or OPENSTEER_WORKSPACE.');
+    throw new CliError("missing_workspace", 'exec requires "--workspace <id>" or OPENSTEER_WORKSPACE.');
   }
   const expression = parsed.rest.join(" ");
   if (!expression) {
-    throw new Error(
-      "exec requires an expression. Example: exec \"await this.evaluate('document.title')\"",
+    throw new CliError(
+      "missing_arguments",
+      "exec requires an expression.",
+      'opensteer exec <expression>',
     );
   }
 
@@ -199,8 +217,10 @@ async function handleBrowserCommand(parsed: ParsedCommandLine): Promise<void> {
   if (subcommand === "inspect") {
     const endpoint = parsed.options.attachEndpoint ?? parsed.rest[0];
     if (!endpoint) {
-      throw new Error(
+      throw new CliError(
+        "missing_arguments",
         'browser inspect requires "--attach-endpoint <url>" or a positional endpoint.',
+        "opensteer browser inspect <endpoint>",
       );
     }
     const result = await inspectCdpEndpoint({
@@ -217,7 +237,8 @@ async function handleBrowserCommand(parsed: ParsedCommandLine): Promise<void> {
   }
 
   if (parsed.options.workspace === undefined) {
-    throw new Error(
+    throw new CliError(
+      "missing_workspace",
       'Browser workspace commands require "--workspace <id>" or OPENSTEER_WORKSPACE.',
     );
   }
@@ -241,7 +262,11 @@ async function handleBrowserCommand(parsed: ParsedCommandLine): Promise<void> {
     case "clone": {
       const sourceUserDataDir = parsed.options.sourceUserDataDir;
       if (!sourceUserDataDir) {
-        throw new Error('browser clone requires "--source-user-data-dir <path>".');
+        throw new CliError(
+          "missing_arguments",
+          'browser clone requires "--source-user-data-dir <path>".',
+          "opensteer browser clone --source-user-data-dir <path>",
+        );
       }
       const result = await manager.clonePersistentBrowser({
         sourceUserDataDir,
@@ -263,7 +288,7 @@ async function handleBrowserCommand(parsed: ParsedCommandLine): Promise<void> {
       return;
     }
     default:
-      throw new Error(`Unknown browser command: ${parsed.command.join(" ")}`);
+      throw new CliError("unknown_command", `Unknown browser command: ${parsed.command.join(" ")}`);
   }
 }
 
@@ -304,26 +329,30 @@ async function handleCloseCommand(
 
 async function handleRecordCommandEntry(parsed: ParsedCommandLine): Promise<void> {
   if (parsed.options.workspace === undefined) {
-    throw new Error('record requires "--workspace <id>" or OPENSTEER_WORKSPACE.');
+    throw new CliError("missing_workspace", 'record requires "--workspace <id>" or OPENSTEER_WORKSPACE.');
   }
 
   const url = parsed.options.url ?? parsed.rest[0];
   if (url === undefined) {
-    throw new Error('record requires "--url <value>" or a positional URL.');
+    throw new CliError(
+      "missing_arguments",
+      'record requires "--url <value>" or a positional URL.',
+      "opensteer record --url <url> --workspace <id>",
+    );
   }
 
   const provider = resolveCliProvider(parsed);
   assertCloudCliOptionsMatchProvider(parsed, provider.mode);
   const engineName = resolveCliEngineName(parsed);
   if (engineName !== "playwright") {
-    throw new Error("record requires engine=playwright.");
+    throw new CliError("config_conflict", "record requires engine=playwright.");
   }
   const rootDir = process.cwd();
   const recordBrowser = parsed.options.browser;
 
   if (provider.mode === "cloud") {
     if (typeof recordBrowser === "object") {
-      throw new Error('record does not support browser.mode="attach".');
+      throw new CliError("config_conflict", 'record does not support browser.mode="attach".');
     }
 
     const runtimeProvider = buildCliRuntimeProvider(parsed, provider.mode);
@@ -346,11 +375,11 @@ async function handleRecordCommandEntry(parsed: ParsedCommandLine): Promise<void
   }
 
   if (parsed.options.launch?.headless === true) {
-    throw new Error('record requires a headed browser. Remove "--headless true".');
+    throw new CliError("config_conflict", 'record requires a headed browser. Remove "--headless true".');
   }
 
   if (typeof recordBrowser === "object") {
-    throw new Error('record does not support browser.mode="attach".');
+    throw new CliError("config_conflict", 'record does not support browser.mode="attach".');
   }
 
   const launch = {
@@ -436,7 +465,7 @@ function buildCliBrowserProfile(
     parsed.options.cloudProfileReuseIfActive === true &&
     parsed.options.cloudProfileId === undefined
   ) {
-    throw new Error('"--cloud-profile-reuse-if-active" requires "--cloud-profile-id <id>".');
+    throw new CliError("invalid_option", '"--cloud-profile-reuse-if-active" requires "--cloud-profile-id <id>".');
   }
 
   return parsed.options.cloudProfileId === undefined
@@ -537,7 +566,8 @@ function assertCloudCliOptionsMatchProvider(
       parsed.options.cloudProfileId !== undefined ||
       parsed.options.cloudProfileReuseIfActive === true)
   ) {
-    throw new Error(
+    throw new CliError(
+      "config_conflict",
       'Cloud-specific options require provider=cloud. Set "--provider cloud" or OPENSTEER_PROVIDER=cloud.',
     );
   }
@@ -575,20 +605,7 @@ function printVersion(): void {
 }
 
 main().catch((error) => {
-  const payload =
-    error instanceof Error
-      ? {
-          error: {
-            name: error.name,
-            message: error.message,
-          },
-        }
-      : {
-          error: {
-            name: "Error",
-            message: String(error),
-          },
-        };
+  const payload = formatCliErrorOutput(error);
   process.stderr.write(`${JSON.stringify(payload)}\n`);
   process.exitCode = 1;
 });

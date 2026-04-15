@@ -917,10 +917,12 @@ describe("Phase 5 DOM runtime integration", () => {
           }),
         ).rejects.toMatchObject({
           code: "operation-failed",
+          message: expect.stringContaining("obscured by"),
           details: {
             policy: "actionability",
             reason: "obscured",
             hitRelation: "outside",
+            blockingDescription: expect.stringContaining("<button>"),
           },
         });
       } finally {

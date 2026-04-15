@@ -1,4 +1,4 @@
-import type { CloudBrowserProfilePreference } from "@opensteer/protocol";
+import { OpensteerProtocolError, type CloudBrowserProfilePreference } from "@opensteer/protocol";
 
 export const OPENSTEER_PROVIDER_MODES = ["local", "cloud"] as const;
 
@@ -37,7 +37,8 @@ export function assertProviderSupportsEngine(
   }
 
   if (provider === "cloud") {
-    throw new Error(
+    throw new OpensteerProtocolError(
+      "invalid-argument",
       "ABP is not supported for provider=cloud. Cloud provider currently requires Playwright.",
     );
   }
@@ -52,7 +53,8 @@ export function normalizeOpensteerProviderMode(
     return normalized;
   }
 
-  throw new Error(
+  throw new OpensteerProtocolError(
+    "invalid-argument",
     `${source} must be one of ${OPENSTEER_PROVIDER_MODES.join(", ")}; received "${value}".`,
   );
 }

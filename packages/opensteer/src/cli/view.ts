@@ -11,6 +11,7 @@ import {
 } from "../local-view/service.js";
 import { buildLocalViewSessionId } from "../local-view/session-manifest.js";
 import { resolveFilesystemWorkspacePath } from "../root.js";
+import { CliError } from "./errors.js";
 import type { ParsedCommandLine } from "./parse.js";
 import { openBrowserUrl, type BrowserUrlOpener } from "./open-browser.js";
 
@@ -36,7 +37,7 @@ export async function handleViewCommand(
   }
 
   if (subcommand !== undefined) {
-    throw new Error(`Unknown view command: view ${subcommand}`);
+    throw new CliError("unknown_command", `Unknown view command: view ${subcommand}`);
   }
 
   if (parsed.options.localViewMode !== undefined) {
@@ -96,7 +97,10 @@ async function resolveWorkspaceSessionId(input: {
 
 function assertNoViewPreferenceFlag(parsed: ParsedCommandLine): void {
   if (parsed.options.localViewMode !== undefined) {
-    throw new Error("View preference flags cannot be combined with this subcommand.");
+    throw new CliError(
+      "invalid_option",
+      "View preference flags cannot be combined with this subcommand.",
+    );
   }
 }
 

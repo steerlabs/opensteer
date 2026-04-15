@@ -103,7 +103,7 @@ describe("Phase 7 policy settle", () => {
         settle: async () => true,
       }),
     ).toThrow(TypeError);
-    expect(defaultPolicy().settle.observers).toHaveLength(3);
+    expect(defaultPolicy().settle.observers).toHaveLength(2);
   });
 
   test("skips fixed delays when configured as zero", async () => {
@@ -370,7 +370,7 @@ describe("Phase 7 visual stability settle observers", () => {
     await promise;
   });
 
-  test("snapshot observer is unaffected by new observers", async () => {
+  test("snapshot trigger settles immediately without visual stability wait", async () => {
     const engine = createMockEngine();
     const policy = defaultPolicy().settle;
     const context = {
@@ -384,11 +384,7 @@ describe("Phase 7 visual stability settle observers", () => {
 
     await settleWithPolicy(policy, context);
 
-    expect(engine.waitForVisualStability).toHaveBeenCalledWith({
-      pageRef: context.pageRef,
-      settleMs: 750,
-      scope: "visible-frames",
-    });
+    expect(engine.waitForVisualStability).not.toHaveBeenCalled();
   });
 });
 

@@ -12,7 +12,12 @@ export interface PositionMatchClause {
   readonly axis: "nthOfType" | "nthChild";
 }
 
-export type MatchClause = AttributeMatchClause | PositionMatchClause;
+export interface TextMatchClause {
+  readonly kind: "text";
+  readonly value: string;
+}
+
+export type MatchClause = AttributeMatchClause | PositionMatchClause | TextMatchClause;
 
 export interface PathNodePosition {
   readonly nthChild: number;

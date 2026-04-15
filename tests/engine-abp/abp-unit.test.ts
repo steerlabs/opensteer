@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
+  createNodeLocator,
   createDocumentEpoch,
   createDocumentRef,
   createFrameRef,
@@ -14,6 +15,7 @@ import {
   PAGE_CDP_METHOD_ALLOWLIST,
 } from "../../packages/engine-abp/src/cdp-transport.js";
 import { createAbpComputerUseBridge } from "../../packages/engine-abp/src/computer-use.js";
+import { createAbpDomActionBridge } from "../../packages/engine-abp/src/dom-action-bridge.js";
 import { AbpApiError, normalizeAbpError } from "../../packages/engine-abp/src/errors.js";
 import { buildAbpLaunchCommand } from "../../packages/engine-abp/src/launcher.js";
 import {
@@ -252,6 +254,105 @@ describe("engine-abp internals", () => {
     expect(chooseNextActivePageRef([first, second], second)).toBe(second);
     expect(chooseNextActivePageRef([first, second], createPageRef("third"))).toBe(first);
     expect(chooseNextActivePageRef([])).toBeUndefined();
+  });
+
+  test("ships a text-aware replay path source when ABP text matching is enabled", async () => {
+    const pageRef = createPageRef("abp-page");
+    const documentRef = createDocumentRef("abp-document");
+    const documentEpoch = createDocumentEpoch(1);
+    const locator = createNodeLocator(documentRef, documentEpoch, "node:abp-1");
+    const runtimeCalls: Array<readonly { readonly value: unknown }[]> = [];
+
+    const controller: PageController = {
+      sessionRef: createSessionRef("abp-session"),
+      pageRef,
+      tabId: "tab:abp",
+      cdp: {
+        send: vi.fn(async (method: string, params?: Record<string, unknown>) => {
+          if (method === "DOM.resolveNode") {
+            return {
+              object: {
+                objectId: "object:abp-node",
+              },
+            };
+          }
+
+          if (method === "Runtime.callFunctionOn") {
+            runtimeCalls.push(
+              Array.isArray(params?.arguments)
+                ? (params.arguments as readonly { readonly value: unknown }[])
+                : [],
+            );
+            return {
+              result: {
+                value: {
+                  resolution: "deterministic",
+                  context: [],
+                  nodes: [],
+                },
+              },
+            };
+          }
+
+          if (method === "Runtime.releaseObject") {
+            return {};
+          }
+
+          throw new Error(`Unexpected CDP method: ${method}`);
+        }),
+      },
+      queuedEvents: [],
+      framesByCdpId: new Map(),
+      documentsByRef: new Map(),
+      lifecycleState: "active",
+      openerPageRef: undefined,
+      mainFrameRef: undefined,
+      lastKnownTitle: "",
+      explicitCloseInFlight: false,
+      domUpdateTask: undefined,
+      backgroundError: undefined,
+      executionPaused: false,
+      settleTrackerRegistered: false,
+    };
+
+    const bridge = createAbpDomActionBridge({
+      resolveController: () => controller,
+      resolveSession: () => {
+        throw new Error("resolveSession should not be called");
+      },
+      flushDomUpdateTask: async () => undefined,
+      settleActionBoundary: async () => {
+        throw new Error("settleActionBoundary should not be called");
+      },
+      syncExecutionPaused: async () => false,
+      setExecutionPaused: async () => undefined,
+      isPageClosedError: () => false,
+      locateBackendNode: () => locator,
+      requireLiveNode: () => ({
+        document: {
+          documentRef,
+          pageRef,
+        },
+        backendNodeId: 1,
+      }),
+      getDomSnapshot: async () => {
+        throw new Error("getDomSnapshot should not be called");
+      },
+      getViewportMetrics: async () => {
+        throw new Error("getViewportMetrics should not be called");
+      },
+    });
+
+    await bridge.buildReplayPath(locator, {
+      enableTextMatch: true,
+    });
+
+    const buildReplayCall = runtimeCalls.find((args) => args.length >= 2);
+    expect(buildReplayCall?.[0]?.value).toMatchObject({
+      enableTextMatch: true,
+    });
+    expect(String(buildReplayCall?.[1]?.value)).toContain('clause.kind === "text"');
+    expect(String(buildReplayCall?.[1]?.value)).toContain("textContent: policy.enableTextMatch");
   });
 
   test("resolves opener relationships after adopted pages are registered", () => {

@@ -44,7 +44,7 @@ interface PlaywrightDomActionBridgeContext {
 
 const READ_ACTION_TARGET_STATE_DECLARATION = String.raw`function() {
   const node = this;
-  if (!(node instanceof Element)) {
+  if (!node || node.nodeType !== 1) {
     return {
       connected: false,
       cssVisible: false,
@@ -72,13 +72,13 @@ const READ_ACTION_TARGET_STATE_DECLARATION = String.raw`function() {
       ? !node.matches(":disabled") && node.getAttribute("aria-disabled") !== "true"
       : true;
 
+  const tag = node.localName;
   const editable =
-    (node instanceof ownerWindow.HTMLInputElement ||
-      node instanceof ownerWindow.HTMLTextAreaElement) &&
+    (tag === "input" || tag === "textarea") &&
     !node.readOnly &&
     enabled
       ? true
-      : node instanceof ownerWindow.HTMLSelectElement && enabled
+      : tag === "select" && enabled
         ? true
         : node.isContentEditable;
 
@@ -95,31 +95,43 @@ const READ_ACTION_TARGET_STATE_DECLARATION = String.raw`function() {
 }`;
 
 const POINTER_ACTION_HELPERS = String.raw`
+  function isElementNode(node) {
+    return node != null && node.nodeType === 1;
+  }
+
+  function isShadowRoot(node) {
+    return node != null && node.nodeType === 11 && "host" in node;
+  }
+
+  function isNodeLike(node) {
+    return node != null && typeof node.nodeType === "number";
+  }
+
   function parentInComposedTree(node) {
     if (!node) {
       return null;
     }
     const slot = "assignedSlot" in node ? node.assignedSlot : null;
-    if (slot instanceof Element) {
+    if (isElementNode(slot)) {
       return slot;
     }
     const parent = node.parentNode;
-    if (parent instanceof ShadowRoot) {
+    if (isShadowRoot(parent)) {
       return parent.host;
     }
-    return parent instanceof Element ? parent : null;
+    return isElementNode(parent) ? parent : null;
   }
 
   function closestElementInComposedTree(node) {
     if (!node) {
       return null;
     }
-    if (node instanceof Element) {
+    if (isElementNode(node)) {
       return node;
     }
     let current = parentInComposedTree(node);
     while (current) {
-      if (current instanceof Element) {
+      if (isElementNode(current)) {
         return current;
       }
       current = parentInComposedTree(current);
@@ -179,7 +191,7 @@ const POINTER_ACTION_HELPERS = String.raw`
     while (current) {
       if (current.localName === "label") {
         const control = "control" in current ? current.control : null;
-        if (control instanceof Element) {
+        if (isElementNode(control)) {
           return control;
         }
       }
@@ -193,7 +205,7 @@ const POINTER_ACTION_HELPERS = String.raw`
   }
 
   function composedContains(container, node) {
-    if (!(container instanceof Node) || !(node instanceof Node)) {
+    if (!isNodeLike(container) || !isNodeLike(node)) {
       return false;
     }
     let current = node;
@@ -251,6 +263,20 @@ const POINTER_ACTION_HELPERS = String.raw`
     const rect = element.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
   }
+
+  function describeBlockingElement(element) {
+    if (!isElementNode(element)) return null;
+    const tag = "<" + element.tagName.toLowerCase() + ">";
+    const label = element.getAttribute("aria-label");
+    if (label) return tag + ' "' + label.slice(0, 80) + '"';
+    const text = (element.textContent || "").trim();
+    if (text) return tag + ' "' + text.slice(0, 80) + '"';
+    const role = element.getAttribute("role");
+    if (role) return tag + " role=" + JSON.stringify(role);
+    const id = element.getAttribute("id");
+    if (id) return tag + " id=" + JSON.stringify(id);
+    return tag;
+  }
 `;
 
 const RESOLVE_POINTER_OWNER_DECLARATION =
@@ -301,10 +327,13 @@ const CLASSIFY_POINTER_HIT_DECLARATION =
       ? pointInsideDocumentRect(point, targetRect)
       : false;
 
+  const blockingDescription = blocking ? describeBlockingElement(blockingCandidate) : null;
+
   return {
     relation,
     blocking,
     ambiguous,
+    ...(blockingDescription ? { blockingDescription } : {}),
   };
 }`;
 
@@ -373,6 +402,14 @@ const BUILD_LIVE_REPLAY_PATH_DECLARATION = String.raw`function(policy, source) {
 
 const BUILD_LIVE_REPLAY_PATH_SOURCE = String.raw`(target, policy) => {
   const MAX_ATTRIBUTE_VALUE_LENGTH = 300;
+
+  function isElementNode(node) {
+    return node != null && node.nodeType === 1;
+  }
+
+  function isShadowRoot(node) {
+    return node != null && node.nodeType === 11 && "host" in node;
+  }
 
   function isValidAttrKey(key) {
     const trimmed = String(key || "").trim();
@@ -515,6 +552,7 @@ const BUILD_LIVE_REPLAY_PATH_SOURCE = String.raw`(target, policy) => {
   function buildSegmentSelector(data) {
     let selector = String(data.tag || "*").toLowerCase();
     for (const clause of data.match || []) {
+      if (clause.kind === "text") continue;
       if (clause.kind === "position") {
         if (clause.axis === "nthOfType") {
           selector += ":nth-of-type(" + Math.max(1, Number(data.position?.nthOfType || 1)) + ")";
@@ -558,6 +596,8 @@ const BUILD_LIVE_REPLAY_PATH_SOURCE = String.raw`(target, policy) => {
 
   function selectReplayCandidate(nodes, root) {
     const selectors = buildCandidates(nodes);
+    const targetNode = nodes[nodes.length - 1];
+    const textClauses = (targetNode?.match || []).filter((c) => c.kind === "text");
     let fallback = null;
     let fallbackSelector = null;
     let fallbackCount = 0;
@@ -567,6 +607,13 @@ const BUILD_LIVE_REPLAY_PATH_SOURCE = String.raw`(target, policy) => {
         matches = Array.from(root.querySelectorAll(selector));
       } catch {
         matches = [];
+      }
+      if (textClauses.length > 0 && matches.length > 1) {
+        const filtered = matches.filter((el) => {
+          const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+          return textClauses.every((tc) => text.includes(tc.value));
+        });
+        if (filtered.length > 0) matches = filtered;
       }
       if (!matches.length) continue;
       if (matches.length === 1) {
@@ -619,6 +666,15 @@ const BUILD_LIVE_REPLAY_PATH_SOURCE = String.raw`(target, policy) => {
       else pool.push(clause);
     }
 
+    if (data.textContent) {
+      const clause = { kind: "text", value: data.textContent };
+      const keyId = clauseKey(clause);
+      if (!used.has(keyId)) {
+        used.add(keyId);
+        pool.push(clause);
+      }
+    }
+
     for (const clause of [
       { kind: "position", axis: "nthOfType" },
       { kind: "position", axis: "nthChild" },
@@ -642,6 +698,9 @@ const BUILD_LIVE_REPLAY_PATH_SOURCE = String.raw`(target, policy) => {
       tag: element.tagName.toLowerCase(),
       attrs: collectAttrs(element),
       position: toPosition(element, root),
+      textContent: policy.enableTextMatch
+        ? (element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80)
+        : "",
       match: [],
     }));
 
@@ -687,18 +746,18 @@ const BUILD_LIVE_REPLAY_PATH_SOURCE = String.raw`(target, policy) => {
     return null;
   }
 
-  if (!(target instanceof Element)) return null;
+  if (!isElementNode(target)) return null;
 
   const context = [];
-  let currentRoot = target.getRootNode() instanceof ShadowRoot ? target.getRootNode() : document;
+  let currentRoot = isShadowRoot(target.getRootNode()) ? target.getRootNode() : document;
   const targetChain = buildChain(target);
   const finalizedTarget = finalizePath(targetChain, currentRoot);
   if (!finalizedTarget) return null;
 
-  while (currentRoot instanceof ShadowRoot) {
+  while (isShadowRoot(currentRoot)) {
     const host = currentRoot.host;
     const hostRoot =
-      host.getRootNode() instanceof ShadowRoot ? host.getRootNode() : document;
+      isShadowRoot(host.getRootNode()) ? host.getRootNode() : document;
     const hostChain = buildChain(host);
     const finalizedHost = finalizePath(hostChain, hostRoot);
     if (!finalizedHost) return null;
@@ -720,13 +779,14 @@ export function createPlaywrightDomActionBridge(
   context: PlaywrightDomActionBridgeContext,
 ): DomActionBridge {
   return {
-    buildReplayPath(locator) {
+    buildReplayPath(locator, options) {
       return withLiveNode(context, locator, async ({ controller, document, backendNodeId }) => {
         const localPath = await buildLiveReplayPathForLocator(
           controller,
           document,
           locator,
           backendNodeId,
+          options,
         );
         return prefixIframeReplayPath(context, document.frameRef, localPath);
       });
@@ -1174,11 +1234,15 @@ function normalizePointerHitAssessment(
   if (candidate.ambiguous !== undefined && typeof candidate.ambiguous !== "boolean") {
     throw new Error("DOM action bridge returned an invalid pointer hit payload");
   }
+  if (candidate.blockingDescription !== undefined && typeof candidate.blockingDescription !== "string") {
+    throw new Error("DOM action bridge returned an invalid pointer hit payload");
+  }
 
   return {
     relation: candidate.relation,
     blocking: candidate.blocking,
     ...(candidate.ambiguous === undefined ? {} : { ambiguous: candidate.ambiguous }),
+    ...(candidate.blockingDescription === undefined ? {} : { blockingDescription: candidate.blockingDescription }),
     canonicalTarget,
   };
 }
@@ -1188,10 +1252,14 @@ async function buildLiveReplayPathForLocator(
   document: DocumentState,
   locator: NodeLocator,
   backendNodeId: number,
+  options?: { readonly enableTextMatch?: boolean },
 ): Promise<ReplayElementPath> {
+  const policy = options?.enableTextMatch
+    ? { ...LIVE_REPLAY_PATH_POLICY, enableTextMatch: true }
+    : LIVE_REPLAY_PATH_POLICY;
   const raw = await callNodeFunction(controller, document, locator, backendNodeId, {
     functionDeclaration: BUILD_LIVE_REPLAY_PATH_DECLARATION,
-    arguments: [{ value: LIVE_REPLAY_PATH_POLICY }, { value: BUILD_LIVE_REPLAY_PATH_SOURCE }],
+    arguments: [{ value: policy }, { value: BUILD_LIVE_REPLAY_PATH_SOURCE }],
     returnByValue: true,
   });
   return requireReplayPath(raw, locator);

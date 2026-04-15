@@ -1,7 +1,8 @@
-import type {
-  OpensteerBrowserContextOptions,
-  OpensteerBrowserLaunchOptions,
-  OpensteerBrowserOptions,
+import {
+  OpensteerProtocolError,
+  type OpensteerBrowserContextOptions,
+  type OpensteerBrowserLaunchOptions,
+  type OpensteerBrowserOptions,
 } from "@opensteer/protocol";
 
 export const OPENSTEER_ENGINE_NAMES = ["playwright", "abp"] as const;
@@ -43,7 +44,8 @@ export function normalizeOpensteerEngineName(
     return normalized;
   }
 
-  throw new Error(
+  throw new OpensteerProtocolError(
+    "invalid-argument",
     `${source} must be one of ${OPENSTEER_ENGINE_NAMES.join(", ")}; received "${value}".`,
   );
 }
@@ -62,7 +64,8 @@ export function assertSupportedEngineOptions(input: {
     input.browser !== null &&
     input.browser.mode === "attach"
   ) {
-    throw new Error(
+    throw new OpensteerProtocolError(
+      "invalid-argument",
       'ABP engine does not support browser.mode="attach". Use the Playwright engine for attach flows.',
     );
   }
@@ -72,7 +75,8 @@ export function assertSupportedEngineOptions(input: {
     return;
   }
 
-  throw new Error(
+  throw new OpensteerProtocolError(
+    "invalid-argument",
     `ABP engine does not support ${unsupportedContextOptionNames.join(", ")}. Supported ABP context options: context.viewport.`,
   );
 }

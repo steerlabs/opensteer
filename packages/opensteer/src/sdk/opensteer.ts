@@ -1,39 +1,41 @@
-import type {
-  CookieRecord,
-  OpensteerCookieQueryOutput,
-  OpensteerActionResult,
-  OpensteerAddInitScriptInput,
-  OpensteerAddInitScriptOutput,
-  OpensteerComputerExecuteInput,
-  OpensteerComputerExecuteOutput,
-  OpensteerComputerKeyModifier,
-  OpensteerComputerMouseButton,
-  OpensteerNetworkDetailOutput,
-  OpensteerNetworkQueryInput,
-  OpensteerNetworkQueryOutput,
-  OpensteerOpenInput,
-  OpensteerOpenOutput,
-  OpensteerPageActivateInput,
-  OpensteerPageActivateOutput,
-  OpensteerPageCloseInput,
-  OpensteerPageCloseOutput,
-  OpensteerPageEvaluateInput,
-  OpensteerPageEvaluateOutput,
-  OpensteerPageGotoInput,
-  OpensteerPageGotoOutput,
-  OpensteerPageListInput,
-  OpensteerPageListOutput,
-  OpensteerPageNewInput,
-  OpensteerPageNewOutput,
-  OpensteerRequestBodyInput,
-  OpensteerRequestResponseResult,
-  OpensteerSessionCloseOutput,
-  OpensteerSessionFetchInput,
-  OpensteerSessionInfo,
-  OpensteerStateQueryOutput,
-  OpensteerStorageArea,
-  OpensteerStorageDomainSnapshot,
-  OpensteerTargetInput,
+import {
+  OpensteerProtocolError,
+  isOpensteerProtocolError,
+  type CookieRecord,
+  type OpensteerCookieQueryOutput,
+  type OpensteerActionResult,
+  type OpensteerAddInitScriptInput,
+  type OpensteerAddInitScriptOutput,
+  type OpensteerComputerExecuteInput,
+  type OpensteerComputerExecuteOutput,
+  type OpensteerComputerKeyModifier,
+  type OpensteerComputerMouseButton,
+  type OpensteerNetworkDetailOutput,
+  type OpensteerNetworkQueryInput,
+  type OpensteerNetworkQueryOutput,
+  type OpensteerOpenInput,
+  type OpensteerOpenOutput,
+  type OpensteerPageActivateInput,
+  type OpensteerPageActivateOutput,
+  type OpensteerPageCloseInput,
+  type OpensteerPageCloseOutput,
+  type OpensteerPageEvaluateInput,
+  type OpensteerPageEvaluateOutput,
+  type OpensteerPageGotoInput,
+  type OpensteerPageGotoOutput,
+  type OpensteerPageListInput,
+  type OpensteerPageListOutput,
+  type OpensteerPageNewInput,
+  type OpensteerPageNewOutput,
+  type OpensteerRequestBodyInput,
+  type OpensteerRequestResponseResult,
+  type OpensteerSessionCloseOutput,
+  type OpensteerSessionFetchInput,
+  type OpensteerSessionInfo,
+  type OpensteerStateQueryOutput,
+  type OpensteerStorageArea,
+  type OpensteerStorageDomainSnapshot,
+  type OpensteerTargetInput,
 } from "@opensteer/protocol";
 
 import {
@@ -42,6 +44,7 @@ import {
   type WorkspaceBrowserManifest,
 } from "../browser-manager.js";
 import { resolveOpensteerEnvironment } from "../env.js";
+import { normalizeThrownOpensteerError } from "../internal/errors.js";
 import type { OpensteerProviderOptions } from "../provider/config.js";
 import type {
   OpensteerInterceptScriptOptions,
@@ -169,6 +172,27 @@ class SessionCookieJar implements OpensteerCookieJar {
   }
 }
 
+function createSdkProtocolError(error: unknown, fallbackMessage: string): OpensteerProtocolError {
+  const normalized = normalizeThrownOpensteerError(error, fallbackMessage);
+  return new OpensteerProtocolError(normalized.code, normalized.message, {
+    cause: error,
+    retriable: normalized.retriable,
+    ...(normalized.capability === undefined ? {} : { capability: normalized.capability }),
+    ...(normalized.details === undefined ? {} : { details: normalized.details }),
+  });
+}
+
+async function wrapSdkError<T>(operation: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    if (isOpensteerProtocolError(error)) {
+      throw error;
+    }
+    throw createSdkProtocolError(error, `${operation} failed`);
+  }
+}
+
 export class Opensteer {
   private readonly runtime: OpensteerDisconnectableRuntime;
   private readonly browserManager: OpensteerBrowserManager | undefined;
@@ -177,186 +201,218 @@ export class Opensteer {
   readonly network: OpensteerNetworkController;
 
   constructor(options: OpensteerOptions = {}) {
-    const environment = resolveOpensteerEnvironment(options.rootDir);
-    const { provider, engineName, ...runtimeOptions } = options;
-    const runtimeConfig = resolveOpensteerRuntimeConfig({
-      ...(provider === undefined ? {} : { provider }),
-      environment,
-    });
+    try {
+      const environment = resolveOpensteerEnvironment(options.rootDir);
+      const { provider, engineName, ...runtimeOptions } = options;
+      const runtimeConfig = resolveOpensteerRuntimeConfig({
+        ...(provider === undefined ? {} : { provider }),
+        environment,
+      });
 
-    if (runtimeConfig.provider.mode === "cloud") {
-      this.browserManager = undefined;
-      this.runtime = createOpensteerSemanticRuntime({
-        ...(provider === undefined ? {} : { provider }),
-        ...(engineName === undefined ? {} : { engine: engineName }),
-        environment,
-        runtimeOptions,
-      });
-      this.browser = createUnsupportedBrowserController();
-    } else {
-      this.browserManager = new OpensteerBrowserManager({
-        ...(runtimeOptions.rootDir === undefined ? {} : { rootDir: runtimeOptions.rootDir }),
-        ...(runtimeOptions.rootPath === undefined ? {} : { rootPath: runtimeOptions.rootPath }),
-        ...(runtimeOptions.workspace === undefined ? {} : { workspace: runtimeOptions.workspace }),
-        ...(engineName === undefined ? {} : { engineName }),
-        environment,
-        ...(runtimeOptions.browser === undefined ? {} : { browser: runtimeOptions.browser }),
-        ...(runtimeOptions.launch === undefined ? {} : { launch: runtimeOptions.launch }),
-        ...(runtimeOptions.context === undefined ? {} : { context: runtimeOptions.context }),
-      });
-      this.runtime = createOpensteerSemanticRuntime({
-        ...(provider === undefined ? {} : { provider }),
-        ...(engineName === undefined ? {} : { engine: engineName }),
-        environment,
-        runtimeOptions: {
-          ...runtimeOptions,
-          rootPath: this.browserManager.rootPath,
-          cleanupRootOnClose: this.browserManager.cleanupRootOnDisconnect,
-        },
-      });
-      this.browser = {
-        status: () => this.browserManager!.status(),
-        clone: (input) => this.browserManager!.clonePersistentBrowser(input),
-        reset: () => this.browserManager!.reset(),
-        delete: () => this.browserManager!.delete(),
+      if (runtimeConfig.provider.mode === "cloud") {
+        this.browserManager = undefined;
+        this.runtime = createOpensteerSemanticRuntime({
+          ...(provider === undefined ? {} : { provider }),
+          ...(engineName === undefined ? {} : { engine: engineName }),
+          environment,
+          runtimeOptions,
+        });
+        this.browser = createUnsupportedBrowserController();
+      } else {
+        this.browserManager = new OpensteerBrowserManager({
+          ...(runtimeOptions.rootDir === undefined ? {} : { rootDir: runtimeOptions.rootDir }),
+          ...(runtimeOptions.rootPath === undefined ? {} : { rootPath: runtimeOptions.rootPath }),
+          ...(runtimeOptions.workspace === undefined
+            ? {}
+            : { workspace: runtimeOptions.workspace }),
+          ...(engineName === undefined ? {} : { engineName }),
+          environment,
+          ...(runtimeOptions.browser === undefined ? {} : { browser: runtimeOptions.browser }),
+          ...(runtimeOptions.launch === undefined ? {} : { launch: runtimeOptions.launch }),
+          ...(runtimeOptions.context === undefined ? {} : { context: runtimeOptions.context }),
+        });
+        this.runtime = createOpensteerSemanticRuntime({
+          ...(provider === undefined ? {} : { provider }),
+          ...(engineName === undefined ? {} : { engine: engineName }),
+          environment,
+          runtimeOptions: {
+            ...runtimeOptions,
+            rootPath: this.browserManager.rootPath,
+            cleanupRootOnClose: this.browserManager.cleanupRootOnDisconnect,
+          },
+        });
+        this.browser = {
+          status: () => wrapSdkError("browser.status", () => this.browserManager!.status()),
+          clone: (input) =>
+            wrapSdkError("browser.clone", () => this.browserManager!.clonePersistentBrowser(input)),
+          reset: () => wrapSdkError("browser.reset", () => this.browserManager!.reset()),
+          delete: () => wrapSdkError("browser.delete", () => this.browserManager!.delete()),
+        };
+      }
+
+      this.dom = {
+        click: (input) => this.click(input),
+        hover: (input) => this.hover(input),
+        input: (input) => this.input(input),
+        scroll: (input) => this.scroll(input),
       };
+
+      this.network = {
+        query: (input = {}) =>
+          wrapSdkError("network.query", () => this.runtime.queryNetwork(input)),
+        detail: (recordId, options) =>
+          wrapSdkError("network.detail", () =>
+            this.runtime.getNetworkDetail({ recordId, ...options }),
+          ),
+      };
+    } catch (error) {
+      if (isOpensteerProtocolError(error)) {
+        throw error;
+      }
+      throw createSdkProtocolError(error, "Failed to initialize Opensteer");
     }
-
-    this.dom = {
-      click: (input) => this.click(input),
-      hover: (input) => this.hover(input),
-      input: (input) => this.input(input),
-      scroll: (input) => this.scroll(input),
-    };
-
-    this.network = {
-      query: (input = {}) => this.runtime.queryNetwork(input),
-      detail: (recordId, options) => this.runtime.getNetworkDetail({ recordId, ...options }),
-    };
   }
 
   async open(input: string | OpensteerOpenInput = {}): Promise<OpensteerOpenOutput> {
-    return this.runtime.open(typeof input === "string" ? { url: input } : input);
+    return wrapSdkError("session.open", () =>
+      this.runtime.open(typeof input === "string" ? { url: input } : input),
+    );
   }
 
   async info(): Promise<OpensteerSessionInfo> {
-    return this.runtime.info();
+    return wrapSdkError("session.info", () => this.runtime.info());
   }
 
   async listPages(input: OpensteerPageListInput = {}): Promise<OpensteerPageListOutput> {
-    return this.runtime.listPages(input);
+    return wrapSdkError("page.list", () => this.runtime.listPages(input));
   }
 
   async newPage(input: OpensteerPageNewInput = {}): Promise<OpensteerPageNewOutput> {
-    return this.runtime.newPage(input);
+    return wrapSdkError("page.new", () => this.runtime.newPage(input));
   }
 
   async activatePage(input: OpensteerPageActivateInput): Promise<OpensteerPageActivateOutput> {
-    return this.runtime.activatePage(input);
+    return wrapSdkError("page.activate", () => this.runtime.activatePage(input));
   }
 
   async closePage(input: OpensteerPageCloseInput = {}): Promise<OpensteerPageCloseOutput> {
-    return this.runtime.closePage(input);
+    return wrapSdkError("page.close", () => this.runtime.closePage(input));
   }
 
   async goto(url: string, options: OpensteerGotoOptions = {}): Promise<OpensteerPageGotoOutput> {
-    return this.runtime.goto({
-      url,
-      ...options,
-    });
+    return wrapSdkError("page.goto", () =>
+      this.runtime.goto({
+        url,
+        ...options,
+      }),
+    );
   }
 
   async evaluate(
     input: string | OpensteerPageEvaluateInput,
   ): Promise<OpensteerPageEvaluateOutput["value"]> {
-    const normalized =
-      typeof input === "string"
-        ? {
-            script: input,
-          }
-        : input;
-    return (await this.runtime.evaluate(normalized)).value;
+    return wrapSdkError("page.evaluate", async () => {
+      const normalized =
+        typeof input === "string"
+          ? {
+              script: input,
+            }
+          : input;
+      return (await this.runtime.evaluate(normalized)).value;
+    });
   }
 
   async addInitScript(
     input: string | OpensteerAddInitScriptInput,
   ): Promise<OpensteerAddInitScriptOutput> {
-    return this.runtime.addInitScript(
-      typeof input === "string"
-        ? {
-            script: input,
-          }
-        : input,
+    return wrapSdkError("page.addInitScript", () =>
+      this.runtime.addInitScript(
+        typeof input === "string"
+          ? {
+              script: input,
+            }
+          : input,
+      ),
     );
   }
 
   async click(input: OpensteerClickOptions): Promise<OpensteerActionResult> {
-    const { button, clickCount, modifiers, ...target } = input;
-    return this.runtime.click({
-      ...normalizeTargetOptions(target),
-      ...(button === undefined ? {} : { button }),
-      ...(clickCount === undefined ? {} : { clickCount }),
-      ...(modifiers === undefined ? {} : { modifiers }),
+    return wrapSdkError("dom.click", () => {
+      const { button, clickCount, modifiers, ...target } = input;
+      return this.runtime.click({
+        ...normalizeTargetOptions(target),
+        ...(button === undefined ? {} : { button }),
+        ...(clickCount === undefined ? {} : { clickCount }),
+        ...(modifiers === undefined ? {} : { modifiers }),
+      });
     });
   }
 
   async hover(input: OpensteerTargetOptions): Promise<OpensteerActionResult> {
-    return this.runtime.hover(normalizeTargetOptions(input));
+    return wrapSdkError("dom.hover", () => this.runtime.hover(normalizeTargetOptions(input)));
   }
 
   async input(input: OpensteerInputOptions): Promise<OpensteerActionResult> {
-    return this.runtime.input({
-      ...normalizeTargetOptions(input),
-      text: input.text,
-      ...(input.pressEnter === undefined ? {} : { pressEnter: input.pressEnter }),
-    });
+    return wrapSdkError("dom.input", () =>
+      this.runtime.input({
+        ...normalizeTargetOptions(input),
+        text: input.text,
+        ...(input.pressEnter === undefined ? {} : { pressEnter: input.pressEnter }),
+      }),
+    );
   }
 
   async scroll(input: OpensteerScrollOptions): Promise<OpensteerActionResult> {
-    return this.runtime.scroll({
-      ...normalizeTargetOptions(input),
-      direction: input.direction,
-      amount: input.amount,
-    });
+    return wrapSdkError("dom.scroll", () =>
+      this.runtime.scroll({
+        ...normalizeTargetOptions(input),
+        direction: input.direction,
+        amount: input.amount,
+      }),
+    );
   }
 
   async extract(input: OpensteerExtractOptions): Promise<unknown> {
-    return (await this.runtime.extract(input)).data;
+    return wrapSdkError("extract", async () => (await this.runtime.extract(input)).data);
   }
 
   async waitForPage(
     input: OpensteerWaitForPageOptions = {},
   ): Promise<OpensteerPageListOutput["pages"][number]> {
-    const baseline = new Set((await this.runtime.listPages()).pages.map((page) => page.pageRef));
-    const timeoutAt = Date.now() + (input.timeoutMs ?? 30_000);
-    const pollIntervalMs = input.pollIntervalMs ?? 100;
+    return wrapSdkError("page.waitForPage", async () => {
+      const baseline = new Set((await this.runtime.listPages()).pages.map((page) => page.pageRef));
+      const timeoutAt = Date.now() + (input.timeoutMs ?? 30_000);
+      const pollIntervalMs = input.pollIntervalMs ?? 100;
 
-    while (true) {
-      const match = (await this.runtime.listPages()).pages.find((page) => {
-        if (baseline.has(page.pageRef)) {
-          return false;
+      while (true) {
+        const match = (await this.runtime.listPages()).pages.find((page) => {
+          if (baseline.has(page.pageRef)) {
+            return false;
+          }
+          if (input.openerPageRef !== undefined && page.openerPageRef !== input.openerPageRef) {
+            return false;
+          }
+          if (input.urlIncludes !== undefined && !page.url.includes(input.urlIncludes)) {
+            return false;
+          }
+          return true;
+        });
+        if (match !== undefined) {
+          return match;
         }
-        if (input.openerPageRef !== undefined && page.openerPageRef !== input.openerPageRef) {
-          return false;
+        if (Date.now() >= timeoutAt) {
+          throw new OpensteerProtocolError("timeout", "waitForPage timed out");
         }
-        if (input.urlIncludes !== undefined && !page.url.includes(input.urlIncludes)) {
-          return false;
-        }
-        return true;
-      });
-      if (match !== undefined) {
-        return match;
+        await delay(pollIntervalMs);
       }
-      if (Date.now() >= timeoutAt) {
-        throw new Error("waitForPage timed out");
-      }
-      await delay(pollIntervalMs);
-    }
+    });
   }
 
   async cookies(domain?: string): Promise<OpensteerCookieJar> {
-    return new SessionCookieJar(
-      await this.runtime.getCookies(domain === undefined ? {} : { domain }),
+    return wrapSdkError(
+      "session.cookies",
+      async () =>
+        new SessionCookieJar(await this.runtime.getCookies(domain === undefined ? {} : { domain })),
     );
   }
 
@@ -364,56 +420,74 @@ export class Opensteer {
     domain?: string,
     type: OpensteerStorageArea = "local",
   ): Promise<OpensteerStorageMap> {
-    const snapshot = await this.runtime.getStorageSnapshot(domain === undefined ? {} : { domain });
-    const domainSnapshot = pickStorageDomainSnapshot(snapshot, domain);
-    if (domainSnapshot === undefined) {
-      return {};
-    }
-    const entries = type === "local" ? domainSnapshot.localStorage : domainSnapshot.sessionStorage;
-    return Object.fromEntries(entries.map((entry) => [entry.key, entry.value]));
+    return wrapSdkError("session.storage", async () => {
+      const snapshot = await this.runtime.getStorageSnapshot(
+        domain === undefined ? {} : { domain },
+      );
+      const domainSnapshot = pickStorageDomainSnapshot(snapshot, domain);
+      if (domainSnapshot === undefined) {
+        return {};
+      }
+      const entries =
+        type === "local" ? domainSnapshot.localStorage : domainSnapshot.sessionStorage;
+      return Object.fromEntries(entries.map((entry) => [entry.key, entry.value]));
+    });
   }
 
   async state(domain?: string): Promise<OpensteerBrowserState> {
-    return this.runtime.getBrowserState(domain === undefined ? {} : { domain });
+    return wrapSdkError("session.state", () =>
+      this.runtime.getBrowserState(domain === undefined ? {} : { domain }),
+    );
   }
 
   async fetch(url: string, options: OpensteerFetchOptions = {}): Promise<Response> {
-    const input = buildFetchInput(url, options);
-    const result = await this.runtime.fetch(input);
-    if (result.response === undefined) {
-      throw new Error(result.note ?? `session.fetch did not produce a response for ${url}`);
-    }
-    return toResponse(result.response);
+    return wrapSdkError("session.fetch", async () => {
+      const input = buildFetchInput(url, options);
+      const result = await this.runtime.fetch(input);
+      if (result.response === undefined) {
+        throw new OpensteerProtocolError(
+          "operation-failed",
+          result.note ?? `session.fetch did not produce a response for ${url}`,
+        );
+      }
+      return toResponse(result.response);
+    });
   }
 
   async computerExecute(
     input: OpensteerComputerExecuteOptions,
   ): Promise<OpensteerComputerExecuteOutput> {
-    return this.runtime.computerExecute(input);
+    return wrapSdkError("session.computerExecute", () => this.runtime.computerExecute(input));
   }
 
   async route(input: OpensteerRouteOptions): Promise<OpensteerRouteRegistration> {
-    return this.requireOwnedInstrumentationRuntime("route").route(input);
+    return wrapSdkError("session.route", () =>
+      this.requireOwnedInstrumentationRuntime("route").route(input),
+    );
   }
 
   async interceptScript(
     input: OpensteerInterceptScriptOptions,
   ): Promise<OpensteerRouteRegistration> {
-    return this.requireOwnedInstrumentationRuntime("interceptScript").interceptScript(input);
+    return wrapSdkError("session.interceptScript", () =>
+      this.requireOwnedInstrumentationRuntime("interceptScript").interceptScript(input),
+    );
   }
 
   async close(): Promise<OpensteerSessionCloseOutput> {
-    if (this.browserManager === undefined || this.browserManager.mode === "temporary") {
-      return this.runtime.close();
-    }
+    return wrapSdkError("session.close", async () => {
+      if (this.browserManager === undefined || this.browserManager.mode === "temporary") {
+        return this.runtime.close();
+      }
 
-    const output = await this.runtime.close();
-    await this.browserManager.close();
-    return output;
+      const output = await this.runtime.close();
+      await this.browserManager.close();
+      return output;
+    });
   }
 
   async disconnect(): Promise<void> {
-    await this.runtime.disconnect();
+    return wrapSdkError("session.disconnect", () => this.runtime.disconnect());
   }
 
   private requireOwnedInstrumentationRuntime(
@@ -426,13 +500,19 @@ export class Opensteer {
     ) {
       return this.runtime as OpensteerDisconnectableRuntime & OpensteerInstrumentableRuntime;
     }
-    throw new Error(`${method}() is not available for this session runtime.`);
+    throw new OpensteerProtocolError(
+      "unsupported-operation",
+      `${method}() is not available for this session runtime.`,
+    );
   }
 }
 
 function createUnsupportedBrowserController(): OpensteerBrowserController {
   const fail = async (): Promise<never> => {
-    throw new Error("browser.* helpers are only available in local mode.");
+    throw new OpensteerProtocolError(
+      "unsupported-operation",
+      "browser.* helpers are only available in local mode.",
+    );
   };
 
   return {
@@ -451,7 +531,10 @@ function normalizeTargetOptions(input: OpensteerTargetOptions): {
   const hasElement = input.element !== undefined;
   const hasSelector = input.selector !== undefined;
   if (hasElement && hasSelector) {
-    throw new Error("Specify exactly one of element, selector, or persist.");
+    throw new OpensteerProtocolError(
+      "invalid-argument",
+      "Specify exactly one of element, selector, or persist.",
+    );
   }
 
   if (hasElement) {
@@ -477,7 +560,10 @@ function normalizeTargetOptions(input: OpensteerTargetOptions): {
   }
 
   if (input.persist === undefined) {
-    throw new Error("Specify exactly one of element, selector, or persist.");
+    throw new OpensteerProtocolError(
+      "invalid-argument",
+      "Specify exactly one of element, selector, or persist.",
+    );
   }
 
   return {

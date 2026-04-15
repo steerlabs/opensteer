@@ -27,6 +27,7 @@ import type {
   PathNodePosition,
   ReplayElementPath,
   StructuralElementAnchor,
+  TextMatchClause,
 } from "./types.js";
 
 const MAX_ATTRIBUTE_VALUE_LENGTH = 300;
@@ -180,9 +181,18 @@ export function resolveDomPathInScope(
     return null;
   }
 
+  const lastNode = domPath[domPath.length - 1];
+  const textClauses = lastNode?.match.filter((c): c is TextMatchClause => c.kind === "text") ?? [];
+
   let fallback: ResolveMatch | null = null;
   for (const selector of candidates) {
-    const matches = querySelectorAllInScope(index, selector, scope);
+    let matches = querySelectorAllInScope(index, selector, scope);
+    if (textClauses.length > 0 && matches.length > 1) {
+      const filtered = matches.filter((node) => matchesTextClauses(node, textClauses));
+      if (filtered.length > 0) {
+        matches = filtered;
+      }
+    }
     if (matches.length === 1) {
       return {
         node: matches[0]!,
@@ -202,6 +212,14 @@ export function resolveDomPathInScope(
   }
 
   return fallback;
+}
+
+function matchesTextClauses(
+  node: DomSnapshotNode,
+  clauses: readonly TextMatchClause[],
+): boolean {
+  const text = (node.textContent ?? "").replace(/\s+/g, " ").trim();
+  return clauses.every((clause) => text.includes(clause.value));
 }
 
 export function queryAllDomPathInScope(
@@ -485,14 +503,18 @@ function clonePathNode(node: PathNode): PathNode {
 }
 
 function cloneMatchClause(clause: MatchClause): MatchClause {
-  return clause.kind === "position"
-    ? { kind: "position", axis: clause.axis }
-    : {
-        kind: "attr",
-        key: clause.key,
-        ...(clause.op === undefined ? {} : { op: clause.op }),
-        ...(clause.value === undefined ? {} : { value: clause.value }),
-      };
+  if (clause.kind === "position") {
+    return { kind: "position", axis: clause.axis };
+  }
+  if (clause.kind === "text") {
+    return { kind: "text", value: clause.value };
+  }
+  return {
+    kind: "attr",
+    key: clause.key,
+    ...(clause.op === undefined ? {} : { op: clause.op }),
+    ...(clause.value === undefined ? {} : { value: clause.value }),
+  };
 }
 
 function normalizeMatch(
@@ -550,6 +572,13 @@ function normalizeMatch(
           op,
           ...(value === undefined ? {} : { value }),
         });
+        continue;
+      }
+      if (record.kind === "text") {
+        const textValue = typeof record.value === "string" ? record.value.trim() : "";
+        if (textValue) {
+          push({ kind: "text", value: textValue.slice(0, 80) });
+        }
       }
     }
   }

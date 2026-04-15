@@ -32,6 +32,20 @@ export function normalizeThrownOpensteerError(
     });
   }
 
+  if (
+    error instanceof Error &&
+    "opensteerError" in error &&
+    typeof (error as { opensteerError: unknown }).opensteerError === "object" &&
+    (error as { opensteerError: unknown }).opensteerError !== null
+  ) {
+    const oe = (error as { opensteerError: OpensteerError }).opensteerError;
+    return createOpensteerError(oe.code, oe.message, {
+      retriable: oe.retriable,
+      ...(oe.capability === undefined ? {} : { capability: oe.capability }),
+      ...(oe.details === undefined ? {} : { details: oe.details }),
+    });
+  }
+
   if (error instanceof Error) {
     return createOpensteerError("operation-failed", error.message, {
       details: {

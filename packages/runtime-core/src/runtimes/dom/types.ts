@@ -22,6 +22,7 @@ import type {
   PathNodePosition,
   ReplayElementPath,
   StructuralElementAnchor,
+  TextMatchClause,
 } from "@opensteer/protocol";
 
 import type { TimeoutExecutionContext } from "../../policy/index.js";
@@ -35,6 +36,7 @@ export type {
   PathNodePosition,
   ReplayElementPath,
   StructuralElementAnchor,
+  TextMatchClause,
 } from "@opensteer/protocol";
 
 export type DomPath = readonly PathNode[];
@@ -116,6 +118,7 @@ export interface ResolvedDomTarget {
 
 export interface DomBuildPathInput {
   readonly locator: NodeLocator;
+  readonly enableTextMatch?: boolean;
 }
 
 export interface DomResolveTargetInput {

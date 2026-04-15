@@ -44,31 +44,43 @@ interface AbpDomActionBridgeContext {
 }
 
 const POINTER_ACTION_HELPERS = String.raw`
+  function isElementNode(node) {
+    return node != null && node.nodeType === 1;
+  }
+
+  function isShadowRoot(node) {
+    return node != null && node.nodeType === 11 && "host" in node;
+  }
+
+  function isNodeLike(node) {
+    return node != null && typeof node.nodeType === "number";
+  }
+
   function parentInComposedTree(node) {
     if (!node) {
       return null;
     }
     const slot = "assignedSlot" in node ? node.assignedSlot : null;
-    if (slot instanceof Element) {
+    if (isElementNode(slot)) {
       return slot;
     }
     const parent = node.parentNode;
-    if (parent instanceof ShadowRoot) {
+    if (isShadowRoot(parent)) {
       return parent.host;
     }
-    return parent instanceof Element ? parent : null;
+    return isElementNode(parent) ? parent : null;
   }
 
   function closestElementInComposedTree(node) {
     if (!node) {
       return null;
     }
-    if (node instanceof Element) {
+    if (isElementNode(node)) {
       return node;
     }
     let current = parentInComposedTree(node);
     while (current) {
-      if (current instanceof Element) {
+      if (isElementNode(current)) {
         return current;
       }
       current = parentInComposedTree(current);
@@ -128,7 +140,7 @@ const POINTER_ACTION_HELPERS = String.raw`
     while (current) {
       if (current.localName === "label") {
         const control = "control" in current ? current.control : null;
-        if (control instanceof Element) {
+        if (isElementNode(control)) {
           return control;
         }
       }
@@ -142,7 +154,7 @@ const POINTER_ACTION_HELPERS = String.raw`
   }
 
   function composedContains(container, node) {
-    if (!(container instanceof Node) || !(node instanceof Node)) {
+    if (!isNodeLike(container) || !isNodeLike(node)) {
       return false;
     }
     let current = node;
@@ -200,6 +212,20 @@ const POINTER_ACTION_HELPERS = String.raw`
     const rect = element.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
   }
+
+  function describeBlockingElement(element) {
+    if (!isElementNode(element)) return null;
+    const tag = "<" + element.tagName.toLowerCase() + ">";
+    const label = element.getAttribute("aria-label");
+    if (label) return tag + ' "' + label.slice(0, 80) + '"';
+    const text = (element.textContent || "").trim();
+    if (text) return tag + ' "' + text.slice(0, 80) + '"';
+    const role = element.getAttribute("role");
+    if (role) return tag + " role=" + JSON.stringify(role);
+    const id = element.getAttribute("id");
+    if (id) return tag + " id=" + JSON.stringify(id);
+    return tag;
+  }
 `;
 
 const RESOLVE_POINTER_OWNER_DECLARATION =
@@ -250,10 +276,13 @@ const CLASSIFY_POINTER_HIT_DECLARATION =
       ? pointInsideDocumentRect(point, targetRect)
       : false;
 
+  const blockingDescription = blocking ? describeBlockingElement(blockingCandidate) : null;
+
   return {
     relation,
     blocking,
     ambiguous,
+    ...(blockingDescription ? { blockingDescription } : {}),
   };
 }`;
 
@@ -304,6 +333,14 @@ const BUILD_LIVE_REPLAY_PATH_DECLARATION = String.raw`function(policy, source) {
 
 const BUILD_LIVE_REPLAY_PATH_SOURCE = String.raw`(target, policy) => {
   const MAX_ATTRIBUTE_VALUE_LENGTH = 300;
+
+  function isElementNode(node) {
+    return node != null && node.nodeType === 1;
+  }
+
+  function isShadowRoot(node) {
+    return node != null && node.nodeType === 11 && "host" in node;
+  }
 
   function isValidAttrKey(key) {
     const trimmed = String(key || "").trim();
@@ -367,124 +404,316 @@ const BUILD_LIVE_REPLAY_PATH_SOURCE = String.raw`(target, policy) => {
     return Array.from(root.children || []);
   }
 
-  function cssEscape(value) {
-    return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  }
-
-  function stablePrimaryKey(attrs) {
-    for (const key of policy.stablePrimaryAttrKeys || []) {
-      if (attrs[key]) return key;
-    }
-    return null;
-  }
-
-  function countMatches(root, tag, attrKey, attrValue, mode) {
-    const scope = root instanceof ShadowRoot ? root : root.ownerDocument;
-    if (!scope || typeof scope.querySelectorAll !== "function") return 0;
-    const escapedTag = String(tag || "*");
-    let selector = escapedTag;
-    if (attrKey && attrValue) {
-      const operator = mode === "prefix" ? "^=" : "=";
-      selector += "[" + attrKey + operator + "\\"" + cssEscape(attrValue) + "\\"]";
-    }
-    try {
-      return scope.querySelectorAll(selector).length;
-    } catch {
-      return 0;
-    }
-  }
-
-  function chooseAttribute(tag, attrs, root) {
-    const stableKey = stablePrimaryKey(attrs);
-    if (stableKey) {
-      const exactCount = countMatches(root, tag, stableKey, attrs[stableKey], "exact");
-      if (exactCount === 1) {
-        return {
-          key: stableKey,
-          value: attrs[stableKey],
-          match: "exact",
-        };
-      }
-    }
-
-    const entries = Object.entries(attrs)
-      .filter(([key]) => !policy.deferredMatchAttrKeys.includes(key))
-      .concat(Object.entries(attrs).filter(([key]) => policy.deferredMatchAttrKeys.includes(key)));
-
-    for (const [key, value] of entries) {
-      const exactCount = countMatches(root, tag, key, value, "exact");
-      if (exactCount === 1) {
-        return { key, value, match: "exact" };
-      }
-      if (value.length >= 4) {
-        const prefixLength = Math.min(Math.max(4, Math.floor(value.length / 2)), value.length);
-        const prefix = value.slice(0, prefixLength);
-        const prefixCount = countMatches(root, tag, key, prefix, "prefix");
-        if (prefixCount === 1) {
-          return { key, value: prefix, match: "prefix" };
-        }
-      }
-    }
-
-    return null;
-  }
-
-  function buildChain(node) {
-    const nodes = [];
-    let current = node;
-    while (current && current instanceof Element) {
-      nodes.unshift(current);
-      current = current.parentElement;
-    }
-    return nodes;
-  }
-
-  function finalizePath(chain, root) {
-    const result = [];
-    for (const node of chain) {
-      const tag = node.tagName.toLowerCase();
-      const attrs = collectAttrs(node);
-      const attribute = chooseAttribute(tag, attrs, root);
-      if (attribute) {
-        result.push({
-          tag,
-          attributes: [
-            {
-              name: attribute.key,
-              value: attribute.value,
-              match: attribute.match,
-            },
-          ],
-        });
-        continue;
-      }
-
-      const siblings = getSiblings(node, root).filter(
-        (candidate) => candidate.tagName.toLowerCase() === tag,
-      );
-      const index = siblings.indexOf(node);
-      result.push({
-        tag,
-        index: siblings.length <= 1 || index < 0 ? undefined : index,
-      });
-    }
-
+  function toPosition(node, root) {
+    const siblings = getSiblings(node, root);
+    const tag = node.tagName.toLowerCase();
+    const sameTag = siblings.filter((candidate) => candidate.tagName.toLowerCase() === tag);
     return {
-      nodes: result,
+      nthChild: siblings.indexOf(node) + 1,
+      nthOfType: sameTag.indexOf(node) + 1,
     };
   }
 
-  if (!(target instanceof Element)) return null;
+  function buildChain(node) {
+    const chain = [];
+    let current = node;
+    while (current) {
+      chain.push(current);
+      if (current.parentElement) {
+        current = current.parentElement;
+        continue;
+      }
+      break;
+    }
+    chain.reverse();
+    return chain;
+  }
+
+  function sortAttributeKeys(keys) {
+    const priority = Array.isArray(policy?.matchAttributePriority)
+      ? policy.matchAttributePriority.map((value) => String(value))
+      : [];
+    return [...keys].sort((left, right) => {
+      const leftIndex = priority.indexOf(left);
+      const rightIndex = priority.indexOf(right);
+      const leftRank = leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex;
+      const rightRank = rightIndex === -1 ? Number.MAX_SAFE_INTEGER : rightIndex;
+      if (leftRank !== rightRank) {
+        return leftRank - rightRank;
+      }
+      return left.localeCompare(right);
+    });
+  }
+
+  function tokenizeClassValue(value) {
+    const seen = new Set();
+    const out = [];
+    for (const token of String(value || "").split(/\s+/)) {
+      const normalized = token.trim();
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      out.push(normalized);
+    }
+    return out;
+  }
+
+  function clauseKey(clause) {
+    return JSON.stringify(clause);
+  }
+
+  function shouldDeferMatchAttribute(rawKey) {
+    const key = String(rawKey || "").trim().toLowerCase();
+    if (!key || key === "class") return false;
+    if (key === "id" || /(?:^|[-_:])id$/.test(key)) return true;
+    const deferred = new Set(
+      Array.isArray(policy?.deferredMatchAttrKeys)
+        ? policy.deferredMatchAttrKeys.map((value) => String(value))
+        : [],
+    );
+    if (deferred.has(key)) return true;
+    const stablePrimary = new Set(
+      Array.isArray(policy?.stablePrimaryAttrKeys)
+        ? policy.stablePrimaryAttrKeys.map((value) => String(value))
+        : [],
+    );
+    if (key.startsWith("data-") && !stablePrimary.has(key)) return true;
+    return !stablePrimary.has(key);
+  }
+
+  function buildSegmentSelector(data) {
+    let selector = String(data.tag || "*").toLowerCase();
+    for (const clause of data.match || []) {
+      if (clause.kind === "text") continue;
+      if (clause.kind === "position") {
+        if (clause.axis === "nthOfType") {
+          selector += ":nth-of-type(" + Math.max(1, Number(data.position?.nthOfType || 1)) + ")";
+        } else {
+          selector += ":nth-child(" + Math.max(1, Number(data.position?.nthChild || 1)) + ")";
+        }
+        continue;
+      }
+
+      const key = String(clause.key || "");
+      const value = typeof clause.value === "string" ? clause.value : data.attrs?.[key];
+      if (!key || !value) continue;
+      if (key === "class" && (clause.op || "exact") === "exact") {
+        for (const token of tokenizeClassValue(value)) {
+          const escapedToken = String(token).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+          selector += '[class~="' + escapedToken + '"]';
+        }
+        continue;
+      }
+      const escaped = String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      const op = clause.op || "exact";
+      if (op === "startsWith") selector += "[" + key + '^="' + escaped + '"]';
+      else if (op === "contains") selector += "[" + key + '*="' + escaped + '"]';
+      else selector += "[" + key + '="' + escaped + '"]';
+    }
+    return selector;
+  }
+
+  function buildCandidates(nodes) {
+    const parts = nodes.map((node) => buildSegmentSelector(node));
+    const out = [];
+    const seen = new Set();
+    for (let start = 0; start < parts.length; start += 1) {
+      const selector = parts.slice(start).join(" ");
+      if (!selector || seen.has(selector)) continue;
+      seen.add(selector);
+      out.push(selector);
+    }
+    return out;
+  }
+
+  function selectReplayCandidate(nodes, root) {
+    const selectors = buildCandidates(nodes);
+    const targetNode = nodes[nodes.length - 1];
+    const textClauses = (targetNode?.match || []).filter((c) => c.kind === "text");
+    let fallback = null;
+    let fallbackSelector = null;
+    let fallbackCount = 0;
+    for (const selector of selectors) {
+      let matches = [];
+      try {
+        matches = Array.from(root.querySelectorAll(selector));
+      } catch {
+        matches = [];
+      }
+      if (textClauses.length > 0 && matches.length > 1) {
+        const filtered = matches.filter((el) => {
+          const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+          return textClauses.every((tc) => text.includes(tc.value));
+        });
+        if (filtered.length > 0) matches = filtered;
+      }
+      if (!matches.length) continue;
+      if (matches.length === 1) {
+        return {
+          element: matches[0],
+          selector,
+          count: 1,
+          mode: "unique",
+        };
+      }
+      if (!fallback) {
+        fallback = matches[0];
+        fallbackSelector = selector;
+        fallbackCount = matches.length;
+      }
+    }
+    if (fallback && fallbackSelector) {
+      return {
+        element: fallback,
+        selector: fallbackSelector,
+        count: fallbackCount,
+        mode: "fallback",
+      };
+    }
+    return null;
+  }
+
+  function buildClausePool(data) {
+    const attrs = data.attrs || {};
+    const pool = [];
+    const deferred = [];
+    const used = new Set();
+
+    const classValue = String(attrs.class || "").trim();
+    if (classValue) {
+      const clause = { kind: "attr", key: "class", op: "exact", value: classValue };
+      used.add(clauseKey(clause));
+      pool.push(clause);
+    }
+
+    for (const key of sortAttributeKeys(Object.keys(attrs))) {
+      if (key === "class") continue;
+      const value = attrs[key];
+      if (!value || !String(value).trim()) continue;
+      const clause = { kind: "attr", key, op: "exact" };
+      const keyId = clauseKey(clause);
+      if (used.has(keyId)) continue;
+      used.add(keyId);
+      if (shouldDeferMatchAttribute(key)) deferred.push(clause);
+      else pool.push(clause);
+    }
+
+    if (data.textContent) {
+      const clause = { kind: "text", value: data.textContent };
+      const keyId = clauseKey(clause);
+      if (!used.has(keyId)) {
+        used.add(keyId);
+        pool.push(clause);
+      }
+    }
+
+    for (const clause of [
+      { kind: "position", axis: "nthOfType" },
+      { kind: "position", axis: "nthChild" },
+    ]) {
+      const keyId = clauseKey(clause);
+      if (used.has(keyId)) continue;
+      used.add(keyId);
+      pool.push(clause);
+    }
+
+    if (!pool.some((clause) => clause.kind === "attr")) {
+      pool.push(...deferred);
+    }
+
+    return pool;
+  }
+
+  function finalizePath(elements, root) {
+    if (!elements.length) return null;
+    const nodes = elements.map((element) => ({
+      tag: element.tagName.toLowerCase(),
+      attrs: collectAttrs(element),
+      position: toPosition(element, root),
+      textContent: policy.enableTextMatch
+        ? (element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80)
+        : "",
+      match: [],
+    }));
+
+    const pools = nodes.map((node) => {
+      node.match = [];
+      return [...buildClausePool(node)];
+    });
+
+    for (let index = 0; index < pools.length; index += 1) {
+      const classIndex = pools[index].findIndex(
+        (clause) => clause.kind === "attr" && clause.key === "class",
+      );
+      if (classIndex < 0) continue;
+      const classClause = pools[index][classIndex];
+      if (!classClause) continue;
+      nodes[index].match.push(classClause);
+      pools[index].splice(classIndex, 1);
+    }
+
+    const expected = elements[elements.length - 1];
+    const totalRemaining = pools.reduce((count, pool) => count + pool.length, 0);
+    for (let iteration = 0; iteration <= totalRemaining; iteration += 1) {
+      const chosen = selectReplayCandidate(nodes, root);
+      if (chosen && chosen.mode === "unique" && chosen.element === expected) {
+        return {
+          nodes,
+          selector: chosen.selector,
+        };
+      }
+
+      let bestIndex = -1;
+      let bestClause = null;
+      let bestRank = Number.MAX_SAFE_INTEGER;
+      for (let index = 0; index < pools.length; index += 1) {
+        const clause = pools[index][0];
+        if (!clause) continue;
+        const rank =
+          clause.kind === "attr"
+            ? 0
+            : clause.kind === "text"
+              ? 1
+              : clause.axis === "nthOfType"
+                ? 2
+                : 3;
+        if (rank < bestRank) {
+          bestRank = rank;
+          bestIndex = index;
+          bestClause = clause;
+        }
+      }
+
+      if (bestIndex === -1 || !bestClause) {
+        break;
+      }
+
+      nodes[bestIndex].match.push(bestClause);
+      pools[bestIndex].shift();
+    }
+
+    const fallback = selectReplayCandidate(nodes, root);
+    if (!fallback || fallback.element !== expected) {
+      return {
+        nodes,
+      };
+    }
+    return {
+      nodes,
+      selector: fallback.selector,
+    };
+  }
+
+  if (!isElementNode(target)) return null;
 
   const context = [];
-  let currentRoot = target.getRootNode() instanceof ShadowRoot ? target.getRootNode() : document;
+  let currentRoot = isShadowRoot(target.getRootNode()) ? target.getRootNode() : document;
   const targetChain = buildChain(target);
   const finalizedTarget = finalizePath(targetChain, currentRoot);
   if (!finalizedTarget) return null;
 
-  while (currentRoot instanceof ShadowRoot) {
+  while (isShadowRoot(currentRoot)) {
     const host = currentRoot.host;
-    const hostRoot = host.getRootNode() instanceof ShadowRoot ? host.getRootNode() : document;
+    const hostRoot = isShadowRoot(host.getRootNode()) ? host.getRootNode() : document;
     const hostChain = buildChain(host);
     const finalizedHost = finalizePath(hostChain, hostRoot);
     if (!finalizedHost) return null;
@@ -504,15 +733,18 @@ const BUILD_LIVE_REPLAY_PATH_SOURCE = String.raw`(target, policy) => {
 
 export function createAbpDomActionBridge(context: AbpDomActionBridgeContext): DomActionBridge {
   return {
-    async buildReplayPath(locator) {
+    async buildReplayPath(locator, options) {
       const { controller, document, backendNodeId } = await prepareLiveNodeContext(
         context,
         locator,
       );
       return withTemporaryExecutionResume(context, controller, async () => {
+        const policy = options?.enableTextMatch
+          ? { ...LIVE_REPLAY_PATH_POLICY, enableTextMatch: true }
+          : LIVE_REPLAY_PATH_POLICY;
         const raw = await callNodeValueFunction(controller, document, locator, backendNodeId, {
           functionDeclaration: BUILD_LIVE_REPLAY_PATH_DECLARATION,
-          arguments: [{ value: LIVE_REPLAY_PATH_POLICY }, { value: BUILD_LIVE_REPLAY_PATH_SOURCE }],
+          arguments: [{ value: policy }, { value: BUILD_LIVE_REPLAY_PATH_SOURCE }],
         });
         return requireReplayPath(raw, locator);
       });
@@ -995,11 +1227,15 @@ function normalizePointerHitAssessment(
   if (candidate.ambiguous !== undefined && typeof candidate.ambiguous !== "boolean") {
     throw new Error("DOM action bridge returned an invalid pointer hit payload");
   }
+  if (candidate.blockingDescription !== undefined && typeof candidate.blockingDescription !== "string") {
+    throw new Error("DOM action bridge returned an invalid pointer hit payload");
+  }
 
   return {
     relation: candidate.relation,
     blocking: candidate.blocking,
     ...(candidate.ambiguous === undefined ? {} : { ambiguous: candidate.ambiguous }),
+    ...(candidate.blockingDescription === undefined ? {} : { blockingDescription: candidate.blockingDescription }),
     canonicalTarget,
   };
 }
