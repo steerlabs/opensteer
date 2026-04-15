@@ -11,7 +11,10 @@ import {
   type OpensteerRequestEnvelope,
 } from "@opensteer/protocol";
 import { defaultPolicy } from "../../packages/opensteer/src/index.js";
-import { OpensteerCloudClient } from "../../packages/opensteer/src/cloud/client.js";
+import {
+  OpensteerCloudClient,
+  OpensteerCloudRequestError,
+} from "../../packages/opensteer/src/cloud/client.js";
 const syncLocalWorkspaceToCloudMock = vi.fn();
 vi.mock("../../packages/opensteer/src/cloud/workspace-sync.js", () => ({
   syncLocalWorkspaceToCloud: (...args: unknown[]) => syncLocalWorkspaceToCloudMock(...args),
@@ -198,6 +201,41 @@ describe("cloud browser-profile integration", () => {
         method: "POST",
       }),
     );
+  });
+
+  test("OpensteerCloudClient preserves structured cloud request errors", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        error: "Session has expired.",
+        code: "CLOUD_SESSION_STALE",
+        details: {
+          reason: "expired",
+        },
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new OpensteerCloudClient({
+      apiKey: "osk_test",
+      baseUrl: "https://api.opensteer.dev",
+    });
+
+    try {
+      await client.issueAccess("session_123", ["semantic"]);
+      throw new Error("expected issueAccess to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(OpensteerCloudRequestError);
+      expect(error).toMatchObject({
+        message: "Session has expired.",
+        statusCode: 409,
+        code: "CLOUD_SESSION_STALE",
+        details: {
+          reason: "expired",
+        },
+      });
+    }
   });
 
   test("OpensteerCloudClient syncs cookies into a cloud browser profile", async () => {
@@ -435,6 +473,566 @@ describe("cloud browser-profile integration", () => {
     } finally {
       await rm(rootDir, { recursive: true, force: true });
     }
+  });
+
+  test("CloudSessionProxy does not reuse persisted workspace sessions that are already expired", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "opensteer-cloud-session-"));
+    const workspace = "cloud-workspace";
+    const workspaceRoot = path.join(rootDir, ".opensteer", "workspaces", workspace);
+    const firstSemanticBaseUrl = "https://cloud.example/runtime/session_123";
+    const secondSemanticBaseUrl = "https://cloud.example/runtime/session_456";
+    const firstSemanticGrant = {
+      kind: "semantic" as const,
+      transport: "http" as const,
+      url: firstSemanticBaseUrl,
+      token: "semantic-token-1",
+      expiresAt: 4_102_444_800_000,
+    };
+    const secondSemanticGrant = {
+      kind: "semantic" as const,
+      transport: "http" as const,
+      url: secondSemanticBaseUrl,
+      token: "semantic-token-2",
+      expiresAt: 4_102_444_800_000,
+    };
+    let createSessionCalls = 0;
+    let getSessionCalls = 0;
+    let staleAccessCalls = 0;
+    let closeSessionCalls = 0;
+    const events: string[] = [];
+
+    syncLocalWorkspaceToCloudMock.mockResolvedValue(undefined);
+
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "https://api.opensteer.dev/v1/sessions" && init?.method === "POST") {
+        createSessionCalls += 1;
+        events.push(`create-session-${createSessionCalls}`);
+        if (createSessionCalls === 1) {
+          return {
+            ok: true,
+            json: async () => ({
+              sessionId: "session_123",
+              status: "active",
+              initialGrants: {
+                semantic: firstSemanticGrant,
+              },
+              initialGrantExpiresAt: firstSemanticGrant.expiresAt,
+            }),
+          };
+        }
+
+        return {
+          ok: true,
+          json: async () => ({
+            sessionId: "session_456",
+            status: "active",
+            initialGrants: {
+              semantic: secondSemanticGrant,
+            },
+            initialGrantExpiresAt: secondSemanticGrant.expiresAt,
+          }),
+        };
+      }
+
+      if (url === "https://api.opensteer.dev/v1/sessions/session_123" && init?.method === "GET") {
+        getSessionCalls += 1;
+        events.push("get-session");
+        return {
+          ok: true,
+          json: async () => ({
+            status: "active",
+            expiresAt: Date.now() - 1,
+          }),
+        };
+      }
+
+      if (
+        url === "https://api.opensteer.dev/v1/sessions/session_123/access" &&
+        init?.method === "POST"
+      ) {
+        staleAccessCalls += 1;
+        events.push("stale-access");
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            error: "Session has expired.",
+            code: "CLOUD_SESSION_STALE",
+          }),
+        };
+      }
+
+      if (
+        url === "https://api.opensteer.dev/v1/sessions/session_456" &&
+        init?.method === "DELETE"
+      ) {
+        closeSessionCalls += 1;
+        return {
+          ok: true,
+          json: async () => ({
+            status: "closed",
+          }),
+        };
+      }
+
+      if (
+        url === `${firstSemanticBaseUrl}/api/v2/semantic/operations/session/open` &&
+        init?.method === "POST"
+      ) {
+        const request = JSON.parse(String(init.body)) as OpensteerRequestEnvelope<unknown>;
+        events.push("semantic-open-1");
+        return {
+          ok: true,
+          json: async () =>
+            createSuccessEnvelope(request, {
+              sessionRef: "session:cloud-1",
+              pageRef: "page:cloud-1",
+              url: "https://example.com",
+              title: "Cloud Workspace",
+            }),
+        };
+      }
+
+      if (
+        url === `${secondSemanticBaseUrl}/api/v2/semantic/operations/session/open` &&
+        init?.method === "POST"
+      ) {
+        const request = JSON.parse(String(init.body)) as OpensteerRequestEnvelope<unknown>;
+        events.push("semantic-open-2");
+        return {
+          ok: true,
+          json: async () =>
+            createSuccessEnvelope(request, {
+              sessionRef: "session:cloud-2",
+              pageRef: "page:cloud-2",
+              url: "https://example.com",
+              title: "Recovered Cloud Workspace",
+            }),
+        };
+      }
+
+      throw new Error(`Unexpected fetch ${init?.method ?? "GET"} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const client = new OpensteerCloudClient({
+        apiKey: "osk_test",
+        baseUrl: "https://api.opensteer.dev",
+      });
+
+      const first = new CloudSessionProxy(client, {
+        rootDir,
+        workspace,
+      });
+      await first.open({
+        url: "https://example.com",
+      });
+      await first.disconnect();
+
+      expect(await readPersistedCloudSessionRecord(workspaceRoot)).toMatchObject({
+        sessionId: "session_123",
+      });
+
+      const second = new CloudSessionProxy(client, {
+        rootDir,
+        workspace,
+      });
+      const reopened = await second.open({
+        url: "https://example.com",
+      });
+
+      expect(reopened).toMatchObject({
+        title: "Recovered Cloud Workspace",
+      });
+      expect(events).toEqual([
+        "create-session-1",
+        "semantic-open-1",
+        "get-session",
+        "create-session-2",
+        "semantic-open-2",
+      ]);
+      expect(createSessionCalls).toBe(2);
+      expect(getSessionCalls).toBe(1);
+      expect(staleAccessCalls).toBe(0);
+      expect(await readPersistedCloudSessionRecord(workspaceRoot)).toMatchObject({
+        sessionId: "session_456",
+      });
+
+      await second.close();
+
+      expect(closeSessionCalls).toBe(1);
+      expect(await readPersistedCloudSessionRecord(workspaceRoot)).toBeUndefined();
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  test("CloudSessionProxy recreates a persisted workspace session when access is stale", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "opensteer-cloud-session-"));
+    const workspace = "cloud-workspace";
+    const workspaceRoot = path.join(rootDir, ".opensteer", "workspaces", workspace);
+    const firstSemanticBaseUrl = "https://cloud.example/runtime/session_123";
+    const secondSemanticBaseUrl = "https://cloud.example/runtime/session_456";
+    const firstSemanticGrant = {
+      kind: "semantic" as const,
+      transport: "http" as const,
+      url: firstSemanticBaseUrl,
+      token: "semantic-token-1",
+      expiresAt: 4_102_444_800_000,
+    };
+    const secondSemanticGrant = {
+      kind: "semantic" as const,
+      transport: "http" as const,
+      url: secondSemanticBaseUrl,
+      token: "semantic-token-2",
+      expiresAt: 4_102_444_800_000,
+    };
+    let createSessionCalls = 0;
+    let getSessionCalls = 0;
+    let staleAccessCalls = 0;
+    let closeSessionCalls = 0;
+    const events: string[] = [];
+
+    syncLocalWorkspaceToCloudMock.mockResolvedValue(undefined);
+
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "https://api.opensteer.dev/v1/sessions" && init?.method === "POST") {
+        createSessionCalls += 1;
+        events.push(`create-session-${createSessionCalls}`);
+        if (createSessionCalls === 1) {
+          return {
+            ok: true,
+            json: async () => ({
+              sessionId: "session_123",
+              status: "active",
+              initialGrants: {
+                semantic: firstSemanticGrant,
+              },
+              initialGrantExpiresAt: firstSemanticGrant.expiresAt,
+            }),
+          };
+        }
+
+        return {
+          ok: true,
+          json: async () => ({
+            sessionId: "session_456",
+            status: "active",
+            initialGrants: {
+              semantic: secondSemanticGrant,
+            },
+            initialGrantExpiresAt: secondSemanticGrant.expiresAt,
+          }),
+        };
+      }
+
+      if (url === "https://api.opensteer.dev/v1/sessions/session_123" && init?.method === "GET") {
+        getSessionCalls += 1;
+        events.push("get-session");
+        return {
+          ok: true,
+          json: async () => ({
+            status: "active",
+            expiresAt: Date.now() + 60_000,
+          }),
+        };
+      }
+
+      if (
+        url === "https://api.opensteer.dev/v1/sessions/session_123/access" &&
+        init?.method === "POST"
+      ) {
+        staleAccessCalls += 1;
+        events.push("stale-access");
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            error: "Session has expired.",
+            code: "CLOUD_SESSION_STALE",
+          }),
+        };
+      }
+
+      if (
+        url === "https://api.opensteer.dev/v1/sessions/session_456" &&
+        init?.method === "DELETE"
+      ) {
+        closeSessionCalls += 1;
+        return {
+          ok: true,
+          json: async () => ({
+            status: "closed",
+          }),
+        };
+      }
+
+      if (
+        url === `${firstSemanticBaseUrl}/api/v2/semantic/operations/session/open` &&
+        init?.method === "POST"
+      ) {
+        const request = JSON.parse(String(init.body)) as OpensteerRequestEnvelope<unknown>;
+        events.push("semantic-open-1");
+        return {
+          ok: true,
+          json: async () =>
+            createSuccessEnvelope(request, {
+              sessionRef: "session:cloud-1",
+              pageRef: "page:cloud-1",
+              url: "https://example.com",
+              title: "Cloud Workspace",
+            }),
+        };
+      }
+
+      if (
+        url === `${secondSemanticBaseUrl}/api/v2/semantic/operations/session/open` &&
+        init?.method === "POST"
+      ) {
+        const request = JSON.parse(String(init.body)) as OpensteerRequestEnvelope<unknown>;
+        events.push("semantic-open-2");
+        return {
+          ok: true,
+          json: async () =>
+            createSuccessEnvelope(request, {
+              sessionRef: "session:cloud-2",
+              pageRef: "page:cloud-2",
+              url: "https://example.com",
+              title: "Recovered Cloud Workspace",
+            }),
+        };
+      }
+
+      throw new Error(`Unexpected fetch ${init?.method ?? "GET"} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const client = new OpensteerCloudClient({
+        apiKey: "osk_test",
+        baseUrl: "https://api.opensteer.dev",
+      });
+
+      const first = new CloudSessionProxy(client, {
+        rootDir,
+        workspace,
+      });
+      await first.open({
+        url: "https://example.com",
+      });
+      await first.disconnect();
+
+      expect(await readPersistedCloudSessionRecord(workspaceRoot)).toMatchObject({
+        sessionId: "session_123",
+      });
+
+      const second = new CloudSessionProxy(client, {
+        rootDir,
+        workspace,
+      });
+      const reopened = await second.open({
+        url: "https://example.com",
+      });
+
+      expect(reopened).toMatchObject({
+        title: "Recovered Cloud Workspace",
+      });
+      expect(events).toEqual([
+        "create-session-1",
+        "semantic-open-1",
+        "get-session",
+        "stale-access",
+        "create-session-2",
+        "semantic-open-2",
+      ]);
+      expect(createSessionCalls).toBe(2);
+      expect(getSessionCalls).toBe(1);
+      expect(staleAccessCalls).toBe(1);
+      expect(await readPersistedCloudSessionRecord(workspaceRoot)).toMatchObject({
+        sessionId: "session_456",
+      });
+
+      await second.close();
+
+      expect(closeSessionCalls).toBe(1);
+      expect(await readPersistedCloudSessionRecord(workspaceRoot)).toBeUndefined();
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  test("CloudSessionProxy recreates a bound session when grant refresh reports a stale session", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    const firstSemanticBaseUrl = "https://cloud.example/runtime/session_123";
+    const secondSemanticBaseUrl = "https://cloud.example/runtime/session_456";
+    const firstSemanticGrant = {
+      kind: "semantic" as const,
+      transport: "http" as const,
+      url: firstSemanticBaseUrl,
+      token: "semantic-token-1",
+      expiresAt: Date.now() + 60_000,
+    };
+    const secondSemanticGrant = {
+      kind: "semantic" as const,
+      transport: "http" as const,
+      url: secondSemanticBaseUrl,
+      token: "semantic-token-2",
+      expiresAt: Date.now() + 120_000,
+    };
+    let createSessionCalls = 0;
+    let staleAccessCalls = 0;
+    let closeSessionCalls = 0;
+    const events: string[] = [];
+
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "https://api.opensteer.dev/v1/sessions" && init?.method === "POST") {
+        createSessionCalls += 1;
+        events.push(`create-session-${createSessionCalls}`);
+        if (createSessionCalls === 1) {
+          return {
+            ok: true,
+            json: async () => ({
+              sessionId: "session_123",
+              status: "active",
+              initialGrants: {
+                semantic: firstSemanticGrant,
+              },
+              initialGrantExpiresAt: firstSemanticGrant.expiresAt,
+            }),
+          };
+        }
+
+        return {
+          ok: true,
+          json: async () => ({
+            sessionId: "session_456",
+            status: "active",
+            initialGrants: {
+              semantic: secondSemanticGrant,
+            },
+            initialGrantExpiresAt: secondSemanticGrant.expiresAt,
+          }),
+        };
+      }
+
+      if (
+        url === "https://api.opensteer.dev/v1/sessions/session_123/access" &&
+        init?.method === "POST"
+      ) {
+        staleAccessCalls += 1;
+        events.push("stale-access");
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            error: "Session has expired.",
+            code: "CLOUD_SESSION_STALE",
+          }),
+        };
+      }
+
+      if (
+        url === "https://api.opensteer.dev/v1/sessions/session_456" &&
+        init?.method === "DELETE"
+      ) {
+        closeSessionCalls += 1;
+        return {
+          ok: true,
+          json: async () => ({
+            status: "closed",
+          }),
+        };
+      }
+
+      if (
+        url === `${firstSemanticBaseUrl}/api/v2/semantic/operations/session/open` &&
+        init?.method === "POST"
+      ) {
+        const request = JSON.parse(String(init.body)) as OpensteerRequestEnvelope<unknown>;
+        events.push("semantic-open-1");
+        return {
+          ok: true,
+          json: async () =>
+            createSuccessEnvelope(request, {
+              sessionRef: "session:cloud-1",
+              pageRef: "page:cloud-1",
+              url: "https://example.com",
+              title: "Cloud Workspace",
+            }),
+        };
+      }
+
+      if (
+        url === `${secondSemanticBaseUrl}/api/v2/semantic/operations/page/list` &&
+        init?.method === "POST"
+      ) {
+        const request = JSON.parse(String(init.body)) as OpensteerRequestEnvelope<unknown>;
+        events.push("page-list-2");
+        return {
+          ok: true,
+          json: async () =>
+            createSuccessEnvelope(request, {
+              activePageRef: "page:cloud-2",
+              pages: [
+                {
+                  pageRef: "page:cloud-2",
+                  url: "https://example.com",
+                  title: "Recovered Cloud Workspace",
+                },
+              ],
+            }),
+        };
+      }
+
+      throw new Error(`Unexpected fetch ${init?.method ?? "GET"} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const proxy = new CloudSessionProxy(
+      new OpensteerCloudClient({
+        apiKey: "osk_test",
+        baseUrl: "https://api.opensteer.dev",
+      }),
+    );
+
+    const opened = await proxy.open({
+      url: "https://example.com",
+    });
+
+    expect(opened).toMatchObject({
+      title: "Cloud Workspace",
+    });
+
+    vi.setSystemTime(new Date("2026-01-01T00:00:55.000Z"));
+
+    const pages = await proxy.listPages();
+
+    expect(pages).toMatchObject({
+      activePageRef: "page:cloud-2",
+      pages: [
+        {
+          pageRef: "page:cloud-2",
+          url: "https://example.com",
+          title: "Recovered Cloud Workspace",
+        },
+      ],
+    });
+    expect(events).toEqual([
+      "create-session-1",
+      "semantic-open-1",
+      "stale-access",
+      "create-session-2",
+      "page-list-2",
+    ]);
+    expect(createSessionCalls).toBe(2);
+    expect(staleAccessCalls).toBe(1);
+
+    await proxy.close();
+
+    expect(closeSessionCalls).toBe(1);
   });
 
   test("CloudSessionProxy fails creating a new session when workspace sync fails", async () => {

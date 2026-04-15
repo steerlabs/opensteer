@@ -104,11 +104,18 @@ import {
 } from "../sdk/semantic-rest-client.js";
 import type { OpensteerDisconnectableRuntime } from "../sdk/semantic-runtime.js";
 import { OpensteerCloudAutomationClient } from "./automation-client.js";
-import type { OpensteerCloudSessionCreateInput } from "./client.js";
-import { OpensteerCloudClient } from "./client.js";
+import type {
+  OpensteerCloudSessionCreateInput,
+  OpensteerCloudSessionState,
+} from "./client.js";
+import {
+  OpensteerCloudClient,
+  OpensteerCloudRequestError,
+} from "./client.js";
 import { syncLocalWorkspaceToCloud } from "./workspace-sync.js";
 
 const TEMPORARY_CLOUD_WORKSPACE_PREFIX = "opensteer-cloud-workspace-";
+const CLOUD_SESSION_REUSE_EXPIRY_SKEW_MS = 10_000;
 
 export interface CloudSessionProxyOptions {
   readonly rootDir?: string;
@@ -575,6 +582,15 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     await clearPersistedSessionRecord(this.rootPath, "cloud").catch(() => undefined);
   }
 
+  private async invalidateSession(): Promise<void> {
+    await this.automation?.close().catch(() => undefined);
+    this.automation = undefined;
+    this.client = undefined;
+    this.sessionId = undefined;
+    this.semanticGrant = undefined;
+    await this.clearPersistedSession();
+  }
+
   private async isReusableCloudSession(
     sessionId: string,
     timeout?: TimeoutExecutionContext,
@@ -584,7 +600,7 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
         signal: timeout?.signal,
         timeoutMs: timeout?.remainingMs(),
       });
-      return session.status !== "closed" && session.status !== "failed";
+      return isReusableCloudSessionState(session);
     } catch (error) {
       if (isMissingCloudSessionError(error)) {
         return false;
@@ -649,7 +665,11 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     try {
       await this.ensureSemanticGrant(true);
       return true;
-    } catch {
+    } catch (refreshError) {
+      if (isRecoverableCloudSessionError(refreshError)) {
+        await this.invalidateSession();
+        throw refreshError;
+      }
       return false;
     }
   }
@@ -659,7 +679,7 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     input: TInput,
     sessionInit: CloudSessionInitInput = {},
   ): Promise<TOutput> {
-    return this.runOperationWithPolicy(operation, async (timeout) => {
+    return this.runOperationWithSessionRecovery(operation, async (timeout) => {
       await this.ensureSession(sessionInit, timeout);
       await this.ensureSemanticGrant(false, timeout);
       return this.requireClient().invoke(operation, input, {
@@ -674,10 +694,37 @@ export class CloudSessionProxy implements OpensteerDisconnectableRuntime {
     invoke: (automation: OpensteerCloudAutomationClient) => Promise<TOutput>,
     sessionInit: CloudSessionInitInput = {},
   ): Promise<TOutput> {
-    return this.runOperationWithPolicy(operation, async (timeout) => {
+    return this.runOperationWithSessionRecovery(operation, async (timeout) => {
       await this.ensureSession(sessionInit, timeout);
       return invoke(this.requireAutomation());
     });
+  }
+
+  private async runOperationWithSessionRecovery<T>(
+    operation: OpensteerSemanticOperationName,
+    invoke: (timeout: TimeoutExecutionContext) => Promise<T>,
+  ): Promise<T> {
+    return this.runOperationWithPolicy(operation, async (timeout) => {
+      let recovered = false;
+      while (true) {
+        try {
+          return await invoke(timeout);
+        } catch (error) {
+          if (recovered || !(await this.tryRecoverStaleSession(error))) {
+            throw error;
+          }
+          recovered = true;
+        }
+      }
+    });
+  }
+
+  private async tryRecoverStaleSession(error: unknown): Promise<boolean> {
+    if (!isRecoverableCloudSessionError(error)) {
+      return false;
+    }
+    await this.invalidateSession();
+    return true;
   }
 
   private async runOperationWithPolicy<T>(
@@ -715,7 +762,37 @@ function assertSupportedCloudBrowserMode(browser: OpensteerOpenInput["browser"] 
 }
 
 function isMissingCloudSessionError(error: unknown): boolean {
+  if (error instanceof OpensteerCloudRequestError) {
+    return error.statusCode === 404 && (error.code === undefined || error.code === "CLOUD_SESSION_NOT_FOUND");
+  }
   return error instanceof Error && /\b404\b/.test(error.message);
+}
+
+function isRecoverableCloudSessionError(error: unknown): boolean {
+  if (!(error instanceof OpensteerCloudRequestError)) {
+    return false;
+  }
+
+  if (error.statusCode === 404) {
+    return error.code === undefined || error.code === "CLOUD_SESSION_NOT_FOUND";
+  }
+
+  return error.statusCode === 409 && error.code === "CLOUD_SESSION_STALE";
+}
+
+function isReusableCloudSessionState(session: OpensteerCloudSessionState): boolean {
+  if (
+    session.status === "closing" ||
+    session.status === "closed" ||
+    session.status === "failed"
+  ) {
+    return false;
+  }
+
+  return !(
+    typeof session.expiresAt === "number" &&
+    session.expiresAt <= Date.now() + CLOUD_SESSION_REUSE_EXPIRY_SKEW_MS
+  );
 }
 
 function isLoopbackBaseUrl(baseUrl: string): boolean {
