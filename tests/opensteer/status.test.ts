@@ -9,6 +9,7 @@ import {
   collectOpensteerStatus,
   renderOpensteerStatus,
 } from "../../packages/opensteer/src/cli/status.js";
+import { DEFAULT_OPENSTEER_CLOUD_BASE_URL } from "../../packages/opensteer/src/cloud/config.js";
 import { OpensteerCloudClient } from "../../packages/opensteer/src/cloud/client.js";
 import { resolveFilesystemWorkspacePath } from "../../packages/opensteer/src/root.js";
 import { writePersistedSessionRecord } from "../../packages/opensteer/src/live-session.js";
@@ -62,7 +63,7 @@ describe("opensteer status", () => {
         },
         cloudConfig: {
           apiKey: "osk_test",
-          baseUrl: "https://api.opensteer.dev",
+          baseUrl: DEFAULT_OPENSTEER_CLOUD_BASE_URL,
         },
       });
 
@@ -87,7 +88,7 @@ describe("opensteer status", () => {
             status: "connected",
             current: true,
             sessionId: "session_123",
-            baseUrl: "https://api.opensteer.dev",
+            baseUrl: DEFAULT_OPENSTEER_CLOUD_BASE_URL,
           },
         },
       });
@@ -95,7 +96,7 @@ describe("opensteer status", () => {
       const rendered = renderOpensteerStatus(status);
       expect(rendered).toContain("Provider resolution");
       expect(rendered).toContain("current: cloud");
-      expect(rendered).toMatch(/session_123\s+https:\/\/api\.opensteer\.dev/u);
+      expect(rendered).toMatch(/session_123\s+https:\/\/api\.opensteer\.com/u);
       expect(rendered).toMatch(/\* cloud\s+connected/u);
       expect(rendered).toMatch(/\s local\s+active/u);
     } finally {

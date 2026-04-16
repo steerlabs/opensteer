@@ -24,6 +24,7 @@ import {
   CloudSessionProxy,
   readPersistedCloudSessionRecord,
 } from "../../packages/opensteer/src/cloud/session-proxy.js";
+import { DEFAULT_OPENSTEER_CLOUD_BASE_URL } from "../../packages/opensteer/src/cloud/config.js";
 import { OpensteerCloudAutomationClient } from "../../packages/opensteer/src/cloud/automation-client.js";
 import { resolveOpensteerRuntimeConfig } from "../../packages/opensteer/src/sdk/runtime-resolution.js";
 
@@ -42,7 +43,7 @@ afterEach(() => {
 });
 
 const CLOUD_API_KEY = "osk_test";
-const CLOUD_BASE_URL = "https://api.opensteer.dev";
+const CLOUD_BASE_URL = DEFAULT_OPENSTEER_CLOUD_BASE_URL;
 const CLOUD_WORKSPACE = "cloud-workspace";
 const EXAMPLE_URL = "https://example.com";
 
@@ -143,7 +144,6 @@ describe("cloud browser-profile integration", () => {
   test("resolves cloud runtime config with a default browser profile preference", () => {
     vi.stubEnv("OPENSTEER_PROVIDER", "cloud");
     vi.stubEnv("OPENSTEER_API_KEY", "osk_test");
-    vi.stubEnv("OPENSTEER_BASE_URL", "https://api.opensteer.dev");
 
     expect(
       resolveOpensteerRuntimeConfig({
@@ -162,7 +162,7 @@ describe("cloud browser-profile integration", () => {
       },
       cloud: {
         apiKey: "osk_test",
-        baseUrl: "https://api.opensteer.dev",
+        baseUrl: DEFAULT_OPENSTEER_CLOUD_BASE_URL,
         browserProfile: {
           profileId: "bp_123",
           reuseIfActive: true,
@@ -183,7 +183,7 @@ describe("cloud browser-profile integration", () => {
 
     const client = new OpensteerCloudClient({
       apiKey: "osk_test",
-      baseUrl: "https://api.opensteer.dev",
+      baseUrl: "https://api.opensteer.com",
       browserProfile: {
         profileId: "bp_default",
       },
@@ -198,7 +198,7 @@ describe("cloud browser-profile integration", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.opensteer.dev/v1/sessions",
+      "https://api.opensteer.com/v1/sessions",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({
@@ -226,7 +226,7 @@ describe("cloud browser-profile integration", () => {
 
     const client = new OpensteerCloudClient({
       apiKey: "osk_test",
-      baseUrl: "https://api.opensteer.dev",
+      baseUrl: "https://api.opensteer.com",
     });
 
     await client.importDescriptors([
@@ -247,7 +247,7 @@ describe("cloud browser-profile integration", () => {
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "https://api.opensteer.dev/registry/descriptors/import",
+      "https://api.opensteer.com/registry/descriptors/import",
       expect.objectContaining({
         method: "POST",
       }),
@@ -268,7 +268,7 @@ describe("cloud browser-profile integration", () => {
 
     const client = new OpensteerCloudClient({
       apiKey: "osk_test",
-      baseUrl: "https://api.opensteer.dev",
+      baseUrl: "https://api.opensteer.com",
     });
 
     await client.importRequestPlans({
@@ -297,7 +297,7 @@ describe("cloud browser-profile integration", () => {
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "https://api.opensteer.dev/registry/request-plans/import",
+      "https://api.opensteer.com/registry/request-plans/import",
       expect.objectContaining({
         method: "POST",
       }),
@@ -379,7 +379,7 @@ describe("cloud browser-profile integration", () => {
 
     const client = new OpensteerCloudClient({
       apiKey: "osk_test",
-      baseUrl: "https://api.opensteer.dev",
+      baseUrl: "https://api.opensteer.com",
     });
 
     const result = await client.syncBrowserProfileCookies({
@@ -395,7 +395,7 @@ describe("cloud browser-profile integration", () => {
     expect(readBrowserCookiesMock).toHaveBeenCalledWith({});
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "https://api.opensteer.dev/v1/browser-profiles/imports",
+      "https://api.opensteer.com/v1/browser-profiles/imports",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({
@@ -935,7 +935,7 @@ describe("cloud browser-profile integration", () => {
       });
 
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url === "https://api.opensteer.dev/v1/sessions" && init?.method === "POST") {
+      if (url === "https://api.opensteer.com/v1/sessions" && init?.method === "POST") {
         createSessionCalls += 1;
         events.push(`create-session-${createSessionCalls}`);
         return {
@@ -955,7 +955,7 @@ describe("cloud browser-profile integration", () => {
     const proxy = new CloudSessionProxy(
       new OpensteerCloudClient({
         apiKey: "osk_test",
-        baseUrl: "https://api.opensteer.dev",
+        baseUrl: "https://api.opensteer.com",
       }),
     );
 
@@ -999,7 +999,7 @@ describe("cloud browser-profile integration", () => {
       });
 
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url === "https://api.opensteer.dev/v1/sessions" && init?.method === "POST") {
+      if (url === "https://api.opensteer.com/v1/sessions" && init?.method === "POST") {
         createSessionCalls += 1;
         events.push(`create-session-${createSessionCalls}`);
         return {
@@ -1019,7 +1019,7 @@ describe("cloud browser-profile integration", () => {
     const proxy = new CloudSessionProxy(
       new OpensteerCloudClient({
         apiKey: "osk_test",
-        baseUrl: "https://api.opensteer.dev",
+        baseUrl: "https://api.opensteer.com",
       }),
     );
 
@@ -1077,7 +1077,7 @@ describe("cloud browser-profile integration", () => {
       });
 
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url === "https://api.opensteer.dev/v1/sessions" && init?.method === "POST") {
+      if (url === "https://api.opensteer.com/v1/sessions" && init?.method === "POST") {
         createSessionCalls += 1;
         events.push(`create-session-${createSessionCalls}`);
         if (createSessionCalls === 1) {
@@ -1108,7 +1108,7 @@ describe("cloud browser-profile integration", () => {
       }
 
       if (
-        url === "https://api.opensteer.dev/v1/sessions/session_123/access" &&
+        url === "https://api.opensteer.com/v1/sessions/session_123/access" &&
         init?.method === "POST"
       ) {
         staleAccessCalls += 1;
@@ -1149,7 +1149,7 @@ describe("cloud browser-profile integration", () => {
     const proxy = new CloudSessionProxy(
       new OpensteerCloudClient({
         apiKey: "osk_test",
-        baseUrl: "https://api.opensteer.dev",
+        baseUrl: "https://api.opensteer.com",
       }),
     );
 
@@ -1191,7 +1191,7 @@ describe("cloud browser-profile integration", () => {
     };
 
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url === "https://api.opensteer.dev/v1/sessions" && init?.method === "POST") {
+      if (url === "https://api.opensteer.com/v1/sessions" && init?.method === "POST") {
         return {
           ok: true,
           json: async () => ({
@@ -1231,7 +1231,7 @@ describe("cloud browser-profile integration", () => {
       const proxy = new CloudSessionProxy(
         new OpensteerCloudClient({
           apiKey: "osk_test",
-          baseUrl: "https://api.opensteer.dev",
+          baseUrl: "https://api.opensteer.com",
         }),
         {
           rootDir,
@@ -1262,7 +1262,7 @@ describe("cloud browser-profile integration", () => {
     };
 
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url === "https://api.opensteer.dev/v1/sessions" && init?.method === "POST") {
+      if (url === "https://api.opensteer.com/v1/sessions" && init?.method === "POST") {
         return {
           ok: true,
           json: async () => ({
@@ -1276,7 +1276,7 @@ describe("cloud browser-profile integration", () => {
         };
       }
 
-      if (url === "https://api.opensteer.dev/v1/sessions/session_123" && init?.method === "GET") {
+      if (url === "https://api.opensteer.com/v1/sessions/session_123" && init?.method === "GET") {
         return {
           ok: true,
           json: async () => ({
@@ -1286,7 +1286,7 @@ describe("cloud browser-profile integration", () => {
       }
 
       if (
-        url === "https://api.opensteer.dev/v1/sessions/session_123/access" &&
+        url === "https://api.opensteer.com/v1/sessions/session_123/access" &&
         init?.method === "POST"
       ) {
         return {
@@ -1326,7 +1326,7 @@ describe("cloud browser-profile integration", () => {
     try {
       const client = new OpensteerCloudClient({
         apiKey: "osk_test",
-        baseUrl: "https://api.opensteer.dev",
+        baseUrl: "https://api.opensteer.com",
       });
 
       syncLocalWorkspaceToCloudMock.mockResolvedValueOnce(undefined);
@@ -1366,7 +1366,7 @@ describe("cloud browser-profile integration", () => {
     let accessCalls = 0;
 
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url === "https://api.opensteer.dev/v1/sessions" && init?.method === "POST") {
+      if (url === "https://api.opensteer.com/v1/sessions" && init?.method === "POST") {
         return {
           ok: true,
           json: async () => ({
@@ -1381,7 +1381,7 @@ describe("cloud browser-profile integration", () => {
       }
 
       if (
-        url === "https://api.opensteer.dev/v1/sessions/session_123/access" &&
+        url === "https://api.opensteer.com/v1/sessions/session_123/access" &&
         init?.method === "POST"
       ) {
         accessCalls += 1;
@@ -1421,7 +1421,7 @@ describe("cloud browser-profile integration", () => {
     const proxy = new CloudSessionProxy(
       new OpensteerCloudClient({
         apiKey: "osk_test",
-        baseUrl: "https://api.opensteer.dev",
+        baseUrl: "https://api.opensteer.com",
       }),
     );
 
@@ -1451,7 +1451,7 @@ describe("cloud browser-profile integration", () => {
     const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
 
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url === "https://api.opensteer.dev/v1/sessions" && init?.method === "POST") {
+      if (url === "https://api.opensteer.com/v1/sessions" && init?.method === "POST") {
         return {
           ok: true,
           json: async () => ({
@@ -1495,7 +1495,7 @@ describe("cloud browser-profile integration", () => {
     const proxy = new CloudSessionProxy(
       new OpensteerCloudClient({
         apiKey: "osk_test",
-        baseUrl: "https://api.opensteer.dev",
+        baseUrl: "https://api.opensteer.com",
       }),
       {
         policy: {
@@ -1542,7 +1542,7 @@ describe("cloud browser-profile integration", () => {
     const proxy = new CloudSessionProxy(
       new OpensteerCloudClient({
         apiKey: "osk_test",
-        baseUrl: "https://api.opensteer.dev",
+        baseUrl: "https://api.opensteer.com",
       }),
     );
 

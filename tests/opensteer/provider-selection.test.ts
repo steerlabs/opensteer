@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, test, vi } from "vitest";
 
+import { DEFAULT_OPENSTEER_CLOUD_BASE_URL } from "../../packages/opensteer/src/cloud/config.js";
 import { CloudSessionProxy } from "../../packages/opensteer/src/cloud/session-proxy.js";
 import { resolveFilesystemWorkspacePath } from "../../packages/opensteer/src/root.js";
 import {
@@ -38,7 +39,7 @@ describe("provider selection", () => {
     });
   });
 
-  test("cloud provider requires both api key and base url", () => {
+  test("cloud provider requires an api key and falls back to the default base URL", () => {
     expect(() =>
       resolveOpensteerRuntimeConfig({
         provider: {
@@ -48,14 +49,24 @@ describe("provider selection", () => {
     ).toThrow("provider=cloud requires OPENSTEER_API_KEY or provider.apiKey.");
 
     vi.stubEnv("OPENSTEER_API_KEY", "osk_test");
+    vi.stubEnv("OPENSTEER_BASE_URL", "   ");
 
-    expect(() =>
+    expect(
       resolveOpensteerRuntimeConfig({
         provider: {
           mode: "cloud",
         },
       }),
-    ).toThrow("provider=cloud requires OPENSTEER_BASE_URL or provider.baseUrl.");
+    ).toEqual({
+      provider: {
+        mode: "cloud",
+        source: "explicit",
+      },
+      cloud: {
+        apiKey: "osk_test",
+        baseUrl: DEFAULT_OPENSTEER_CLOUD_BASE_URL,
+      },
+    });
   });
 
   test("existing local lane does not force local execution when provider resolves to cloud", async () => {

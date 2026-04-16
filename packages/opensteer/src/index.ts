@@ -227,7 +227,7 @@ export type {
 } from "./browser-manager.js";
 export { OpensteerBrowserManager } from "./browser-manager.js";
 export type { OpensteerCloudConfig } from "./cloud/config.js";
-export { resolveCloudConfig } from "./cloud/config.js";
+export { DEFAULT_OPENSTEER_CLOUD_BASE_URL, resolveCloudConfig } from "./cloud/config.js";
 export type {
   BrowserProfileArchiveFormat,
   BrowserProfileCreateRequest,
