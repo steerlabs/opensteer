@@ -15,10 +15,10 @@ Verify the CLI is available:
 command -v opensteer >/dev/null 2>&1 && echo "ok" || echo "opensteer not found"
 ```
 
-For cloud recording, verify environment variables are set:
+For cloud recording, verify the required environment variables are set:
 
 ```bash
-test -n "$OPENSTEER_BASE_URL" && test -n "$OPENSTEER_API_KEY" && test -n "$OPENSTEER_CLOUD_APP_BASE_URL" && echo "ok" || echo "missing cloud env vars"
+test -n "$OPENSTEER_API_KEY" && test -n "$OPENSTEER_CLOUD_APP_BASE_URL" && echo "ok" || echo "missing cloud env vars"
 ```
 
 ## Quick Start

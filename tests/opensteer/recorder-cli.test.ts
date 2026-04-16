@@ -73,7 +73,7 @@ describe("recorder CLI", () => {
 
     await expect(execution).rejects.toMatchObject({
       stderr: expect.stringContaining(
-        "provider=cloud requires OPENSTEER_BASE_URL or provider.baseUrl.",
+        "record with provider=cloud requires OPENSTEER_CLOUD_APP_BASE_URL",
       ),
     });
   }, 60_000);
@@ -112,7 +112,7 @@ describe("recorder CLI", () => {
 
     await expect(execution).rejects.toMatchObject({
       stderr: expect.stringContaining(
-        "provider=cloud requires OPENSTEER_BASE_URL or provider.baseUrl.",
+        "record with provider=cloud requires OPENSTEER_CLOUD_APP_BASE_URL",
       ),
     });
   }, 60_000);
@@ -133,8 +133,6 @@ describe("recorder CLI", () => {
         "https://example.com",
         "--cloud-api-key",
         "test-api-key",
-        "--cloud-base-url",
-        "https://api.opensteer.dev",
       ],
       {
         cwd: process.cwd(),

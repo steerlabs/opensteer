@@ -6,6 +6,8 @@ import {
   type OpensteerProviderOptions,
 } from "../provider/config.js";
 
+export const DEFAULT_OPENSTEER_CLOUD_BASE_URL = "https://api.opensteer.com";
+
 export interface OpensteerCloudConfig {
   readonly apiKey: string;
   readonly baseUrl: string;
@@ -33,22 +35,24 @@ export function resolveCloudConfig(
     input.provider?.mode === "cloud"
       ? (input.provider as OpensteerCloudProviderOptions)
       : undefined;
-  const apiKey = cloudProvider?.apiKey ?? input.environment?.OPENSTEER_API_KEY;
-  if (!apiKey || apiKey.trim().length === 0) {
+  const apiKey =
+    normalizeOptionalCloudConfigValue(cloudProvider?.apiKey) ??
+    normalizeOptionalCloudConfigValue(input.environment?.OPENSTEER_API_KEY);
+  if (apiKey === undefined) {
     throw new Error("provider=cloud requires OPENSTEER_API_KEY or provider.apiKey.");
   }
-  const baseUrl = cloudProvider?.baseUrl ?? input.environment?.OPENSTEER_BASE_URL;
-  if (!baseUrl || baseUrl.trim().length === 0) {
-    throw new Error("provider=cloud requires OPENSTEER_BASE_URL or provider.baseUrl.");
-  }
-  const appBaseUrl = cloudProvider?.appBaseUrl ?? input.environment?.OPENSTEER_CLOUD_APP_BASE_URL;
+  const baseUrl =
+    normalizeOptionalCloudConfigValue(cloudProvider?.baseUrl) ??
+    normalizeOptionalCloudConfigValue(input.environment?.OPENSTEER_BASE_URL) ??
+    DEFAULT_OPENSTEER_CLOUD_BASE_URL;
+  const appBaseUrl =
+    normalizeOptionalCloudConfigValue(cloudProvider?.appBaseUrl) ??
+    normalizeOptionalCloudConfigValue(input.environment?.OPENSTEER_CLOUD_APP_BASE_URL);
 
   return {
-    apiKey: apiKey.trim(),
-    baseUrl: baseUrl.trim().replace(/\/+$/, ""),
-    ...(appBaseUrl === undefined || appBaseUrl.trim().length === 0
-      ? {}
-      : { appBaseUrl: appBaseUrl.trim().replace(/\/+$/, "") }),
+    apiKey,
+    baseUrl,
+    ...(appBaseUrl === undefined ? {} : { appBaseUrl }),
     ...(cloudProvider?.browserProfile === undefined
       ? {}
       : { browserProfile: cloudProvider.browserProfile }),
@@ -58,11 +62,20 @@ export function resolveCloudConfig(
 export function requireCloudAppBaseUrl(
   cloudConfig: Pick<OpensteerCloudConfig, "appBaseUrl">,
 ): string {
-  const appBaseUrl = cloudConfig.appBaseUrl;
-  if (!appBaseUrl || appBaseUrl.trim().length === 0) {
+  const appBaseUrl = normalizeOptionalCloudConfigValue(cloudConfig.appBaseUrl);
+  if (appBaseUrl === undefined) {
     throw new Error(
       'record with provider=cloud requires OPENSTEER_CLOUD_APP_BASE_URL or "--cloud-app-base-url".',
     );
   }
-  return appBaseUrl.trim().replace(/\/+$/, "");
+  return appBaseUrl;
+}
+
+function normalizeOptionalCloudConfigValue(value: string | undefined): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const normalized = value.trim().replace(/\/+$/, "");
+  return normalized.length === 0 ? undefined : normalized;
 }

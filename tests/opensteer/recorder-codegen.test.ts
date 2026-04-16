@@ -177,7 +177,7 @@ describe("recorder codegen", () => {
     expect(script).toContain(`await opensteer.close();`);
   });
 
-  test("generates cloud replay bootstrap with env-backed provider config", () => {
+  test("generates cloud replay bootstrap with the default cloud base URL", () => {
     const script = generateReplayScript({
       actions: [],
       initialPages: [
@@ -194,10 +194,28 @@ describe("recorder codegen", () => {
     });
 
     expect(script).toContain(`mode: "cloud"`);
-    expect(script).toContain(`baseUrl: requireEnv("OPENSTEER_BASE_URL")`);
     expect(script).toContain(`apiKey: requireEnv("OPENSTEER_API_KEY")`);
+    expect(script).not.toContain(`baseUrl: requireEnv("OPENSTEER_BASE_URL")`);
     expect(script).toContain(`profileId: "bp_123"`);
     expect(script).toContain(`reuseIfActive: true`);
+  });
+
+  test("supports env-backed cloud base URL overrides for replay bootstrap", () => {
+    const script = generateReplayScript({
+      actions: [],
+      startUrl: "https://example.com",
+      replayTarget: {
+        kind: "cloud",
+        baseUrlEnvVar: "OPENSTEER_BASE_URL",
+        apiKeyEnvVar: "OPENSTEER_API_KEY",
+      },
+    });
+
+    expect(script).toContain(`baseUrl: requireEnv("OPENSTEER_BASE_URL")`);
+    expect(script).toContain(`apiKey: requireEnv("OPENSTEER_API_KEY")`);
+    expect(script).toContain(
+      `Missing environment variable \${name}. Set OPENSTEER_BASE_URL and OPENSTEER_API_KEY before replaying this recording.`,
+    );
   });
 
   test("bootstraps pre-existing cloud tabs before replaying actions", () => {

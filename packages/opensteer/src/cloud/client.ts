@@ -371,12 +371,12 @@ function wrapCloudFetchError(
 ): Error {
   if (!(error instanceof Error)) {
     return new Error(
-      `Failed to reach Opensteer cloud endpoint ${input.method} ${input.url}. Check OPENSTEER_BASE_URL and network reachability from this environment.`,
+      `Failed to reach Opensteer cloud endpoint ${input.method} ${input.url}. Check the configured Opensteer cloud base URL and network reachability from this environment.`,
     );
   }
 
   const wrapped = new Error(
-    `Failed to reach Opensteer cloud endpoint ${input.method} ${input.url}. Check OPENSTEER_BASE_URL and network reachability from this environment.`,
+    `Failed to reach Opensteer cloud endpoint ${input.method} ${input.url}. Check the configured Opensteer cloud base URL and network reachability from this environment.`,
     {
       cause: error,
     },

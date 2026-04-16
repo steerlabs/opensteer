@@ -302,8 +302,8 @@ function renderOpensteerBootstrap(replayTarget: ReplayTarget): string[] {
     `const opensteer = new Opensteer({`,
     `  provider: {`,
     `    mode: "cloud",`,
-    `    baseUrl: requireEnv(${JSON.stringify(replayTarget.baseUrlEnvVar ?? "OPENSTEER_BASE_URL")}),`,
     `    apiKey: requireEnv(${JSON.stringify(replayTarget.apiKeyEnvVar ?? "OPENSTEER_API_KEY")}),`,
+    ...renderCloudBaseUrl(replayTarget),
     ...renderCloudBrowserProfile(replayTarget),
     `  },`,
     `});`,
@@ -311,17 +311,28 @@ function renderOpensteerBootstrap(replayTarget: ReplayTarget): string[] {
 }
 
 function renderRequireEnvHelper(replayTarget: CloudReplayTarget): string {
-  const baseUrlEnvVar = replayTarget.baseUrlEnvVar ?? "OPENSTEER_BASE_URL";
   const apiKeyEnvVar = replayTarget.apiKeyEnvVar ?? "OPENSTEER_API_KEY";
+  const requiredEnvVars = [
+    ...(replayTarget.baseUrlEnvVar === undefined ? [] : [replayTarget.baseUrlEnvVar]),
+    apiKeyEnvVar,
+  ];
   return [
     `function requireEnv(name: string): string {`,
     `  const value = process.env[name];`,
     `  if (typeof value === "string" && value.trim().length > 0) {`,
     `    return value;`,
     `  }`,
-    `  throw new Error(\`Missing environment variable \${name}. Set ${baseUrlEnvVar} and ${apiKeyEnvVar} before replaying this recording.\`);`,
+    `  throw new Error(\`Missing environment variable \${name}. Set ${requiredEnvVars.join(" and ")} before replaying this recording.\`);`,
     `}`,
   ].join("\n");
+}
+
+function renderCloudBaseUrl(replayTarget: CloudReplayTarget): string[] {
+  if (replayTarget.baseUrlEnvVar === undefined) {
+    return [];
+  }
+
+  return [`    baseUrl: requireEnv(${JSON.stringify(replayTarget.baseUrlEnvVar)}),`];
 }
 
 function renderCloudBrowserProfile(replayTarget: CloudReplayTarget): string[] {

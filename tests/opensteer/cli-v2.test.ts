@@ -337,7 +337,7 @@ describe("Opensteer v2 CLI", () => {
           "--workspace",
           "exec-cloud-overrides",
           "--cloud-base-url",
-          "https://api.opensteer.dev",
+          "https://api.opensteer.com",
           "1",
         ],
         {
