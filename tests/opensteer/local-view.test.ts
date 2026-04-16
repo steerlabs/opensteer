@@ -7,7 +7,14 @@ import path from "node:path";
 import { chromium, type Page } from "playwright";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
-import { OpensteerSessionRuntime } from "../../packages/opensteer/src/sdk/runtime.js";
+import {
+  OpensteerRuntime,
+  OpensteerSessionRuntime,
+} from "../../packages/opensteer/src/sdk/runtime.js";
+import {
+  readPersistedLocalBrowserSessionRecord,
+  writePersistedSessionRecord,
+} from "../../packages/opensteer/src/live-session.js";
 import { bestEffortRegisterLocalViewSession } from "../../packages/opensteer/src/local-view/registration.js";
 import {
   resolveLocalViewMode,
@@ -17,6 +24,7 @@ import { stopLocalViewService } from "../../packages/opensteer/src/local-view/se
 import { readLocalViewServiceState } from "../../packages/opensteer/src/local-view/service-state.js";
 import { startLocalViewServer } from "../../packages/opensteer/src/local-view/server.js";
 import { isProcessRunning } from "../../packages/opensteer/src/local-browser/process-owner.js";
+import { resolveFilesystemWorkspacePath } from "../../packages/opensteer/src/root.js";
 
 let fixtureUrl = "";
 let closeFixtureServer: (() => Promise<void>) | undefined;
@@ -493,6 +501,411 @@ describe("local browser view", () => {
       }
     },
   );
+
+  test(
+    "restores browser-order tabs and the persisted active tab when attaching to an existing headless session",
+    { timeout: 90_000 },
+    async () => {
+      const priorOpensteerHome = process.env.OPENSTEER_HOME;
+      const stateHome = await mkdtemp(path.join(tmpdir(), "opensteer-local-view-tab-attach-"));
+      process.env.OPENSTEER_HOME = stateHome;
+      await setLocalViewMode("manual");
+      const rootPath = await mkdtemp(path.join(tmpdir(), "opensteer-local-view-tab-root-"));
+
+      const runtime = new OpensteerSessionRuntime({
+        name: "local-view-tab-attach-runtime",
+        rootPath,
+        browser: "temporary",
+        launch: {
+          headless: true,
+        },
+        context: {
+          viewport: {
+            width: 800,
+            height: 600,
+          },
+        },
+      });
+
+      const viewerBrowser = await chromium.launch({ headless: true });
+      let localViewServer: Awaited<ReturnType<typeof startLocalViewServer>> | undefined;
+
+      try {
+        await runtime.open({ url: `${fixtureUrl}/viewer` });
+        const firstPageRef = (await runtime.listPages()).pages[0]?.pageRef;
+        expect(firstPageRef).toBeDefined();
+        await runtime.newPage({ url: `${fixtureUrl}/destination` });
+        await runtime.activatePage({ pageRef: firstPageRef! });
+
+        localViewServer = await startLocalViewServer({
+          token: "local-view-tab-attach-token",
+        });
+
+        const session = await waitFor(async () => {
+          const response = await fetch(new URL("/api/sessions", localViewServer.url), {
+            headers: {
+              "x-opensteer-local-token": localViewServer.token,
+            },
+          });
+          if (!response.ok) {
+            return null;
+          }
+          const payload = await response.json();
+          const sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
+          return sessions.find((candidate) => candidate.rootPath === rootPath) ?? null;
+        });
+
+        const page = await viewerBrowser.newPage({
+          viewport: {
+            width: 1800,
+            height: 900,
+          },
+        });
+        await page.goto(`${localViewServer.url}#session=${encodeURIComponent(session.sessionId)}`, {
+          waitUntil: "networkidle",
+        });
+
+        const tabStates = await waitFor(async () => {
+          const current = await readTabStates(page);
+          return current.length === 2 ? current : null;
+        });
+        expect(tabStates.map((tab) => tab.text)).toEqual([
+          "OpenSteer Local Fixture",
+          "Destination",
+        ]);
+        expect(tabStates.map((tab) => tab.active)).toEqual([true, false]);
+        expect(await page.locator("[data-testid='address-input']").inputValue()).toBe(
+          `${fixtureUrl}/viewer`,
+        );
+      } finally {
+        await viewerBrowser.close().catch(() => undefined);
+        await localViewServer?.close().catch(() => undefined);
+        await runtime.close().catch(() => undefined);
+        await rm(rootPath, { recursive: true, force: true }).catch(() => undefined);
+        await rm(stateHome, { recursive: true, force: true }).catch(() => undefined);
+        if (priorOpensteerHome === undefined) {
+          delete process.env.OPENSTEER_HOME;
+        } else {
+          process.env.OPENSTEER_HOME = priorOpensteerHome;
+        }
+      }
+    },
+  );
+
+  test(
+    "persists the active tab hint for workspace runtimes before the local view attaches",
+    { timeout: 90_000 },
+    async () => {
+      const priorOpensteerHome = process.env.OPENSTEER_HOME;
+      const stateHome = await mkdtemp(path.join(tmpdir(), "opensteer-local-view-workspace-state-"));
+      process.env.OPENSTEER_HOME = stateHome;
+      await setLocalViewMode("manual");
+      const rootDir = await mkdtemp(path.join(tmpdir(), "opensteer-local-view-workspace-root-"));
+      const workspace = "local-view-workspace-attach";
+      const rootPath = resolveFilesystemWorkspacePath({
+        rootDir,
+        workspace,
+      });
+
+      const runtime = new OpensteerRuntime({
+        rootDir,
+        workspace,
+        browser: "temporary",
+        launch: {
+          headless: true,
+        },
+        context: {
+          viewport: {
+            width: 800,
+            height: 600,
+          },
+        },
+      });
+
+      const viewerBrowser = await chromium.launch({ headless: true });
+      let localViewServer: Awaited<ReturnType<typeof startLocalViewServer>> | undefined;
+
+      try {
+        await runtime.open({ url: `${fixtureUrl}/viewer` });
+        const firstPageRef = (await runtime.listPages()).pages[0]?.pageRef;
+        expect(firstPageRef).toBeDefined();
+        await runtime.newPage({ url: `${fixtureUrl}/destination` });
+        await runtime.activatePage({ pageRef: firstPageRef! });
+
+        const record = await readPersistedLocalBrowserSessionRecord(rootPath);
+        expect(record?.activePageUrl).toBe(`${fixtureUrl}/viewer`);
+        expect(record?.activePageTitle).toBe("OpenSteer Local Fixture");
+
+        localViewServer = await startLocalViewServer({
+          token: "local-view-workspace-attach-token",
+        });
+
+        const session = await waitFor(async () => {
+          const response = await fetch(new URL("/api/sessions", localViewServer.url), {
+            headers: {
+              "x-opensteer-local-token": localViewServer.token,
+            },
+          });
+          if (!response.ok) {
+            return null;
+          }
+          const payload = await response.json();
+          const sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
+          return sessions.find((candidate) => candidate.rootPath === rootPath) ?? null;
+        });
+
+        const page = await viewerBrowser.newPage({
+          viewport: {
+            width: 1800,
+            height: 900,
+          },
+        });
+        await page.goto(`${localViewServer.url}#session=${encodeURIComponent(session.sessionId)}`, {
+          waitUntil: "networkidle",
+        });
+
+        const tabStates = await waitFor(async () => {
+          const current = await readTabStates(page);
+          return current.length === 2 ? current : null;
+        });
+        expect(tabStates.map((tab) => tab.text)).toEqual([
+          "OpenSteer Local Fixture",
+          "Destination",
+        ]);
+        expect(tabStates.map((tab) => tab.active)).toEqual([true, false]);
+        expect(await page.locator("[data-testid='address-input']").inputValue()).toBe(
+          `${fixtureUrl}/viewer`,
+        );
+      } finally {
+        await viewerBrowser.close().catch(() => undefined);
+        await localViewServer?.close().catch(() => undefined);
+        await runtime.close().catch(() => undefined);
+        await rm(rootDir, { recursive: true, force: true }).catch(() => undefined);
+        await rm(stateHome, { recursive: true, force: true }).catch(() => undefined);
+        if (priorOpensteerHome === undefined) {
+          delete process.env.OPENSTEER_HOME;
+        } else {
+          process.env.OPENSTEER_HOME = priorOpensteerHome;
+        }
+      }
+    },
+  );
+
+  test(
+    "falls back to the browser-order first tab when persisted active page hints are unavailable",
+    { timeout: 90_000 },
+    async () => {
+      const priorOpensteerHome = process.env.OPENSTEER_HOME;
+      const stateHome = await mkdtemp(path.join(tmpdir(), "opensteer-local-view-tab-fallback-"));
+      process.env.OPENSTEER_HOME = stateHome;
+      await setLocalViewMode("manual");
+      const rootPath = await mkdtemp(
+        path.join(tmpdir(), "opensteer-local-view-tab-fallback-root-"),
+      );
+
+      const runtime = new OpensteerSessionRuntime({
+        name: "local-view-tab-fallback-runtime",
+        rootPath,
+        browser: "temporary",
+        launch: {
+          headless: true,
+        },
+        context: {
+          viewport: {
+            width: 800,
+            height: 600,
+          },
+        },
+      });
+
+      const viewerBrowser = await chromium.launch({ headless: true });
+      let localViewServer: Awaited<ReturnType<typeof startLocalViewServer>> | undefined;
+
+      try {
+        await runtime.open({ url: `${fixtureUrl}/viewer` });
+        const firstPageRef = (await runtime.listPages()).pages[0]?.pageRef;
+        expect(firstPageRef).toBeDefined();
+        await runtime.newPage({ url: `${fixtureUrl}/destination` });
+        await runtime.activatePage({ pageRef: firstPageRef! });
+
+        const record = await readPersistedLocalBrowserSessionRecord(rootPath);
+        expect(record).toBeDefined();
+        const {
+          activePageUrl: _activePageUrl,
+          activePageTitle: _activePageTitle,
+          ...recordWithoutPageHints
+        } = record!;
+        await writePersistedSessionRecord(rootPath, {
+          ...recordWithoutPageHints,
+          updatedAt: Date.now(),
+        });
+
+        localViewServer = await startLocalViewServer({
+          token: "local-view-tab-fallback-token",
+        });
+
+        const session = await waitFor(async () => {
+          const response = await fetch(new URL("/api/sessions", localViewServer.url), {
+            headers: {
+              "x-opensteer-local-token": localViewServer.token,
+            },
+          });
+          if (!response.ok) {
+            return null;
+          }
+          const payload = await response.json();
+          const sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
+          return sessions.find((candidate) => candidate.rootPath === rootPath) ?? null;
+        });
+
+        const page = await viewerBrowser.newPage({
+          viewport: {
+            width: 1800,
+            height: 900,
+          },
+        });
+        await page.goto(`${localViewServer.url}#session=${encodeURIComponent(session.sessionId)}`, {
+          waitUntil: "networkidle",
+        });
+
+        const tabStates = await waitFor(async () => {
+          const current = await readTabStates(page);
+          return current.length === 2 ? current : null;
+        });
+        expect(tabStates.map((tab) => tab.text)).toEqual([
+          "OpenSteer Local Fixture",
+          "Destination",
+        ]);
+        expect(tabStates.map((tab) => tab.active)).toEqual([true, false]);
+        expect(await page.locator("[data-testid='address-input']").inputValue()).toBe(
+          `${fixtureUrl}/viewer`,
+        );
+      } finally {
+        await viewerBrowser.close().catch(() => undefined);
+        await localViewServer?.close().catch(() => undefined);
+        await runtime.close().catch(() => undefined);
+        await rm(rootPath, { recursive: true, force: true }).catch(() => undefined);
+        await rm(stateHome, { recursive: true, force: true }).catch(() => undefined);
+        if (priorOpensteerHome === undefined) {
+          delete process.env.OPENSTEER_HOME;
+        } else {
+          process.env.OPENSTEER_HOME = priorOpensteerHome;
+        }
+      }
+    },
+  );
+
+  test(
+    "places popup tabs next to their opener in the local view",
+    { timeout: 90_000 },
+    async () => {
+      const priorOpensteerHome = process.env.OPENSTEER_HOME;
+      const stateHome = await mkdtemp(path.join(tmpdir(), "opensteer-local-view-popup-order-"));
+      process.env.OPENSTEER_HOME = stateHome;
+      await setLocalViewMode("manual");
+      const rootPath = await mkdtemp(path.join(tmpdir(), "opensteer-local-view-popup-root-"));
+
+      const runtime = new OpensteerSessionRuntime({
+        name: "local-view-popup-order-runtime",
+        rootPath,
+        browser: "temporary",
+        launch: {
+          headless: true,
+        },
+        context: {
+          viewport: {
+            width: 800,
+            height: 600,
+          },
+        },
+      });
+
+      const viewerBrowser = await chromium.launch({ headless: true });
+      let localViewServer: Awaited<ReturnType<typeof startLocalViewServer>> | undefined;
+
+      try {
+        await runtime.open({ url: `${fixtureUrl}/popup-opener` });
+        localViewServer = await startLocalViewServer({
+          token: "local-view-popup-order-token",
+        });
+
+        const session = await waitFor(async () => {
+          const response = await fetch(new URL("/api/sessions", localViewServer.url), {
+            headers: {
+              "x-opensteer-local-token": localViewServer.token,
+            },
+          });
+          if (!response.ok) {
+            return null;
+          }
+          const payload = await response.json();
+          const sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
+          return sessions.find((candidate) => candidate.rootPath === rootPath) ?? null;
+        });
+
+        const page = await viewerBrowser.newPage({
+          viewport: {
+            width: 1800,
+            height: 900,
+          },
+        });
+        await page.goto(`${localViewServer.url}#session=${encodeURIComponent(session.sessionId)}`, {
+          waitUntil: "networkidle",
+        });
+
+        await page.waitForFunction(() => {
+          const image = document.querySelector("[data-testid='viewer-image']");
+          return image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0;
+        });
+
+        await page.getByTestId("new-tab-button").click();
+        await page.waitForFunction(
+          () => document.querySelectorAll("#tab-strip .tab-button").length === 2,
+        );
+        await page.getByTestId("address-input").fill(`${fixtureUrl}/tab-secondary`);
+        await page.getByTestId("address-input").press("Enter");
+        await waitFor(async () => {
+          const current = await readTabStates(page);
+          return current.at(-1)?.text === "Secondary Tab" ? current : null;
+        });
+
+        await page.locator("#tab-strip .tab-button").first().click();
+        await waitFor(async () => {
+          const current = await readTabStates(page);
+          return current[0]?.active === true ? current : null;
+        });
+
+        await runtime.evaluate({
+          script: `() => {
+            window.open(${JSON.stringify(`${fixtureUrl}/popup-child`)}, "_blank");
+            return true;
+          }`,
+        });
+
+        const popupTabs = await waitFor(async () => {
+          const current = await readTabStates(page);
+          return current.length === 3 ? current : null;
+        });
+        expect(popupTabs.map((tab) => tab.text)).toEqual([
+          "Popup Opener",
+          "Popup Child",
+          "Secondary Tab",
+        ]);
+        expect(popupTabs.map((tab) => tab.active)).toEqual([true, false, false]);
+      } finally {
+        await viewerBrowser.close().catch(() => undefined);
+        await localViewServer?.close().catch(() => undefined);
+        await runtime.close().catch(() => undefined);
+        await rm(rootPath, { recursive: true, force: true }).catch(() => undefined);
+        await rm(stateHome, { recursive: true, force: true }).catch(() => undefined);
+        if (priorOpensteerHome === undefined) {
+          delete process.env.OPENSTEER_HOME;
+        } else {
+          process.env.OPENSTEER_HOME = priorOpensteerHome;
+        }
+      }
+    },
+  );
 });
 
 async function startFixtureServer(): Promise<{
@@ -557,6 +970,79 @@ async function startFixtureServer(): Promise<{
   </head>
   <body>
     <main>Clicked</main>
+  </body>
+</html>`);
+      return;
+    }
+
+    if (url.pathname === "/popup-child") {
+      response.setHeader("content-type", "text/html; charset=utf-8");
+      response.end(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Popup Child</title>
+  </head>
+  <body>
+    <main>Popup Child</main>
+  </body>
+</html>`);
+      return;
+    }
+
+    if (url.pathname === "/tab-secondary") {
+      response.setHeader("content-type", "text/html; charset=utf-8");
+      response.end(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Secondary Tab</title>
+  </head>
+  <body>
+    <main>Secondary Tab</main>
+  </body>
+</html>`);
+      return;
+    }
+
+    if (url.pathname === "/popup-opener") {
+      response.setHeader("content-type", "text/html; charset=utf-8");
+      response.end(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Popup Opener</title>
+    <style>
+      body {
+        margin: 0;
+      }
+      main {
+        width: 800px;
+        min-height: 600px;
+        padding: 48px;
+        box-sizing: border-box;
+      }
+      #open-popup {
+        width: 220px;
+        height: 120px;
+        border: 0;
+        border-radius: 10px;
+        background: #0f766e;
+        color: #ffffff;
+        font-size: 26px;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <button id="open-popup" type="button">Open Popup</button>
+    </main>
+    <script>
+      document.getElementById("open-popup").addEventListener("click", () => {
+        window.open("/popup-child", "_blank");
+      });
+    </script>
   </body>
 </html>`);
       return;
@@ -661,6 +1147,23 @@ async function readActiveTabText(page: Page): Promise<string> {
     const activeTab = document.querySelector('#tab-strip .tab-button[data-active="true"]');
     return activeTab?.textContent ?? "";
   });
+}
+
+async function readTabStates(page: Page): Promise<
+  ReadonlyArray<{
+    readonly text: string;
+    readonly active: boolean;
+  }>
+> {
+  return page.evaluate(() =>
+    Array.from(document.querySelectorAll(".chrome-tab-chip")).map((chip) => {
+      const button = chip.querySelector(".tab-button");
+      return {
+        text: button?.textContent ?? "",
+        active: chip instanceof HTMLElement ? chip.dataset.active === "true" : false,
+      };
+    }),
+  );
 }
 
 async function readViewerImageSrc(page: Page): Promise<string> {

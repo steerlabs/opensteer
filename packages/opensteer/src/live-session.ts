@@ -18,6 +18,8 @@ interface PersistedSessionRecordBase {
   readonly workspace?: string;
   readonly updatedAt: number;
   readonly activePageRef?: string;
+  readonly activePageUrl?: string;
+  readonly activePageTitle?: string;
   readonly reconnectable?: boolean;
   readonly capabilities?: OpensteerSessionCapabilities;
 }
@@ -143,6 +145,8 @@ function isPersistedCloudSessionRecord(
     value.provider === "cloud" &&
     typeof value.sessionId === "string" &&
     value.sessionId.length > 0 &&
+    (value.activePageUrl === undefined || typeof value.activePageUrl === "string") &&
+    (value.activePageTitle === undefined || typeof value.activePageTitle === "string") &&
     typeof value.startedAt === "number" &&
     Number.isFinite(value.startedAt) &&
     typeof value.updatedAt === "number" &&
@@ -161,6 +165,8 @@ function isPersistedLocalBrowserSessionRecord(
     (value.ownership === undefined ||
       value.ownership === "owned" ||
       value.ownership === "attached") &&
+    (value.activePageUrl === undefined || typeof value.activePageUrl === "string") &&
+    (value.activePageTitle === undefined || typeof value.activePageTitle === "string") &&
     typeof value.pid === "number" &&
     Number.isFinite(value.pid) &&
     typeof value.startedAt === "number" &&

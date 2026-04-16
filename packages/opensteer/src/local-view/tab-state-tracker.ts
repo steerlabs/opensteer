@@ -2,6 +2,7 @@ import type { BrowserContext, Page } from "playwright";
 
 import type { OpensteerViewStreamTab } from "@opensteer/protocol";
 
+import { readBrowserPageTargetOrder, readPageTargetId } from "./browser-target-order.js";
 import { LocalViewRuntimeState } from "./runtime-state.js";
 
 interface CachedPageMetadata {
@@ -16,6 +17,7 @@ export interface TabStateTrackerDeps {
   readonly sessionId: string;
   readonly pollMs: number;
   readonly runtimeState: LocalViewRuntimeState;
+  readonly initialActivePage?: Page;
   readonly onTabsChanged: (payload: {
     readonly tabs: readonly OpensteerViewStreamTab[];
     readonly activeTabIndex: number;
@@ -37,6 +39,7 @@ export class TabStateTracker {
 
   constructor(deps: TabStateTrackerDeps) {
     this.deps = deps;
+    this.lastActivePage = deps.initialActivePage ?? null;
   }
 
   start(): void {
@@ -183,7 +186,7 @@ export class TabStateTracker {
       const preferredActivePage = this.lastActivePage ?? pages[0] ?? null;
 
       const pageStates = await Promise.all(
-        pages.map(async (page, index) => {
+        pages.map(async (page, originalIndex) => {
           const metadata = await this.readPageMetadata(page, {
             refresh: args.refreshMetadata,
           });
@@ -196,7 +199,7 @@ export class TabStateTracker {
 
           return {
             page,
-            index,
+            originalIndex,
             targetId: metadata.targetId,
             url: page.url(),
             title: metadata.title,
@@ -205,19 +208,20 @@ export class TabStateTracker {
           };
         }),
       );
+      const orderedPageStates = await this.orderPageStates(pageStates);
 
       const activePage = this.pickActivePage(
-        pageStates,
+        orderedPageStates,
         this.lastActivePage,
         preferredActivePage,
-        this.resolveIntentPage(pageStates),
+        this.resolveIntentPage(orderedPageStates),
       );
       if (activePage && activePage !== this.lastActivePage) {
         this.lastActivePage = activePage;
         this.deps.onActivePageChanged(activePage);
       }
 
-      const tabs = pageStates.map((state) => ({
+      const tabs = orderedPageStates.map((state) => ({
         index: state.index,
         ...(state.targetId === undefined ? {} : { targetId: state.targetId }),
         url: state.url,
@@ -277,22 +281,11 @@ export class TabStateTracker {
       return cached;
     }
 
-    const cdp = await page.context().newCDPSession(page);
-    try {
-      const result = (await cdp.send("Target.getTargetInfo")) as {
-        readonly targetInfo?: {
-          readonly targetId?: unknown;
-        };
-      } | null;
-      const targetId = result?.targetInfo?.targetId;
-      if (typeof targetId === "string" && targetId.length > 0) {
-        this.targetIdByPage.set(page, targetId);
-        return targetId;
-      }
-      return null;
-    } finally {
-      await cdp.detach().catch(() => undefined);
+    const targetId = await readPageTargetId(page);
+    if (targetId) {
+      this.targetIdByPage.set(page, targetId);
     }
+    return targetId;
   }
 
   private async readFocusState(page: Page): Promise<{
@@ -424,5 +417,47 @@ export class TabStateTracker {
 
     this.deps.runtimeState.clearPageActivationIntent(this.deps.sessionId, intent.targetId);
     return { page: matched.page };
+  }
+
+  private async orderPageStates<
+    T extends {
+      readonly page: Page;
+      readonly originalIndex: number;
+      readonly targetId: string | undefined;
+    },
+  >(
+    pageStates: readonly T[],
+  ): Promise<Array<Omit<T, "originalIndex"> & { readonly index: number }>> {
+    if (pageStates.length < 2) {
+      return pageStates.map(({ originalIndex: _originalIndex, ...state }, index) => ({
+        ...state,
+        index,
+      }));
+    }
+
+    const orderedTargetIds = await readBrowserPageTargetOrder(this.deps.browserContext);
+    const rankByTargetId = new Map(orderedTargetIds.map((targetId, index) => [targetId, index]));
+
+    return [...pageStates]
+      .sort((left, right) => {
+        const leftRank =
+          left.targetId === undefined ? undefined : rankByTargetId.get(left.targetId);
+        const rightRank =
+          right.targetId === undefined ? undefined : rankByTargetId.get(right.targetId);
+        if (leftRank !== undefined && rightRank !== undefined) {
+          return leftRank - rightRank;
+        }
+        if (leftRank !== undefined) {
+          return -1;
+        }
+        if (rightRank !== undefined) {
+          return 1;
+        }
+        return left.originalIndex - right.originalIndex;
+      })
+      .map(({ originalIndex: _originalIndex, ...state }, index) => ({
+        ...state,
+        index,
+      }));
   }
 }
