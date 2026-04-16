@@ -15,6 +15,16 @@ import type {
   OpensteerBrowserOptions,
   OpensteerBrowserContextOptions,
   OpensteerBrowserLaunchOptions,
+  OpensteerOpenInput,
+  OpensteerOpenOutput,
+  OpensteerPageActivateInput,
+  OpensteerPageActivateOutput,
+  OpensteerPageCloseInput,
+  OpensteerPageCloseOutput,
+  OpensteerPageGotoInput,
+  OpensteerPageGotoOutput,
+  OpensteerPageNewInput,
+  OpensteerPageNewOutput,
   ObservabilityConfig,
   ObservationSink,
 } from "@opensteer/protocol";
@@ -26,6 +36,10 @@ import {
   type OpensteerEngineName,
 } from "../internal/engine-selection.js";
 import type { OpensteerEnvironment } from "../env.js";
+import {
+  readPersistedLocalBrowserSessionRecord,
+  writePersistedSessionRecord,
+} from "../live-session.js";
 import type { OpensteerPolicy } from "../policy/index.js";
 import { resolveFilesystemWorkspacePath } from "../root.js";
 
@@ -122,6 +136,51 @@ export class OpensteerRuntime extends SharedOpensteerSessionRuntime {
       }),
     );
   }
+
+  override async open(
+    input: OpensteerOpenInput = {},
+    options: Parameters<SharedOpensteerSessionRuntime["open"]>[1] = {},
+  ): Promise<OpensteerOpenOutput> {
+    const output = await super.open(input, options);
+    await persistLocalActivePageHint(this, this.rootPath);
+    return output;
+  }
+
+  override async newPage(
+    input: OpensteerPageNewInput = {},
+    options: Parameters<SharedOpensteerSessionRuntime["newPage"]>[1] = {},
+  ): Promise<OpensteerPageNewOutput> {
+    const output = await super.newPage(input, options);
+    await persistLocalActivePageHint(this, this.rootPath);
+    return output;
+  }
+
+  override async activatePage(
+    input: OpensteerPageActivateInput,
+    options: Parameters<SharedOpensteerSessionRuntime["activatePage"]>[1] = {},
+  ): Promise<OpensteerPageActivateOutput> {
+    const output = await super.activatePage(input, options);
+    await persistLocalActivePageHint(this, this.rootPath);
+    return output;
+  }
+
+  override async closePage(
+    input: OpensteerPageCloseInput = {},
+    options: Parameters<SharedOpensteerSessionRuntime["closePage"]>[1] = {},
+  ): Promise<OpensteerPageCloseOutput> {
+    const output = await super.closePage(input, options);
+    await persistLocalActivePageHint(this, this.rootPath);
+    return output;
+  }
+
+  override async goto(
+    input: OpensteerPageGotoInput,
+    options: Parameters<SharedOpensteerSessionRuntime["goto"]>[1] = {},
+  ): Promise<OpensteerPageGotoOutput> {
+    const output = await super.goto(input, options);
+    await persistLocalActivePageHint(this, this.rootPath);
+    return output;
+  }
 }
 
 export class OpensteerSessionRuntime extends SharedOpensteerSessionRuntime {
@@ -166,6 +225,88 @@ export class OpensteerSessionRuntime extends SharedOpensteerSessionRuntime {
       }),
     );
   }
+
+  override async open(
+    input: OpensteerOpenInput = {},
+    options: Parameters<SharedOpensteerSessionRuntime["open"]>[1] = {},
+  ): Promise<OpensteerOpenOutput> {
+    const output = await super.open(input, options);
+    await persistLocalActivePageHint(this, this.rootPath);
+    return output;
+  }
+
+  override async newPage(
+    input: OpensteerPageNewInput = {},
+    options: Parameters<SharedOpensteerSessionRuntime["newPage"]>[1] = {},
+  ): Promise<OpensteerPageNewOutput> {
+    const output = await super.newPage(input, options);
+    await persistLocalActivePageHint(this, this.rootPath);
+    return output;
+  }
+
+  override async activatePage(
+    input: OpensteerPageActivateInput,
+    options: Parameters<SharedOpensteerSessionRuntime["activatePage"]>[1] = {},
+  ): Promise<OpensteerPageActivateOutput> {
+    const output = await super.activatePage(input, options);
+    await persistLocalActivePageHint(this, this.rootPath);
+    return output;
+  }
+
+  override async closePage(
+    input: OpensteerPageCloseInput = {},
+    options: Parameters<SharedOpensteerSessionRuntime["closePage"]>[1] = {},
+  ): Promise<OpensteerPageCloseOutput> {
+    const output = await super.closePage(input, options);
+    await persistLocalActivePageHint(this, this.rootPath);
+    return output;
+  }
+
+  override async goto(
+    input: OpensteerPageGotoInput,
+    options: Parameters<SharedOpensteerSessionRuntime["goto"]>[1] = {},
+  ): Promise<OpensteerPageGotoOutput> {
+    const output = await super.goto(input, options);
+    await persistLocalActivePageHint(this, this.rootPath);
+    return output;
+  }
+}
+
+async function persistLocalActivePageHint(
+  runtime: SharedOpensteerSessionRuntime,
+  rootPath: string,
+): Promise<void> {
+  const record = await readPersistedLocalBrowserSessionRecord(rootPath);
+  if (!record) {
+    return;
+  }
+
+  const sessionInfo = await runtime.info();
+  const activePageRef = sessionInfo.activePageRef;
+  let activePageUrl: string | undefined;
+  let activePageTitle: string | undefined;
+
+  if (activePageRef !== undefined) {
+    const pages = await runtime.listPages();
+    const activePage = pages.pages.find((page) => page.pageRef === activePageRef);
+    activePageUrl = activePage?.url;
+    activePageTitle = activePage?.title;
+  }
+
+  const {
+    activePageRef: _previousActivePageRef,
+    activePageUrl: _previousActivePageUrl,
+    activePageTitle: _previousActivePageTitle,
+    ...restRecord
+  } = record;
+
+  await writePersistedSessionRecord(rootPath, {
+    ...restRecord,
+    updatedAt: Date.now(),
+    ...(activePageRef === undefined ? {} : { activePageRef }),
+    ...(activePageUrl === undefined ? {} : { activePageUrl }),
+    ...(activePageTitle === undefined ? {} : { activePageTitle }),
+  });
 }
 
 function buildSharedRuntimeOptions(input: {

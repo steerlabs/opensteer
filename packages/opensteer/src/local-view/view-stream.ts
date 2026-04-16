@@ -3,6 +3,7 @@ import WebSocket, { type RawData } from "ws";
 
 import type { OpensteerViewport, OpensteerViewStreamTab } from "@opensteer/protocol";
 
+import { orderPagesByBrowserTargetOrder } from "./browser-target-order.js";
 import { resolveLocalViewSession } from "./discovery.js";
 import { LocalViewRuntimeState } from "./runtime-state.js";
 import { TabStateTracker } from "./tab-state-tracker.js";
@@ -291,6 +292,7 @@ class SessionViewStreamProducer {
       sessionId: this.deps.sessionId,
       pollMs: TAB_STATE_POLL_MS,
       runtimeState: this.deps.runtimeState,
+      initialActivePage: session.page,
       onActivePageChanged: (page) => {
         this.activePage = page;
         void this.queueBindToPage(page).catch(() => undefined);
@@ -423,7 +425,26 @@ class SessionViewStreamProducer {
         throw new Error("Connected browser did not expose a Chromium browser context.");
       }
 
-      const page = context.pages()[0] ?? (await context.newPage());
+      const existingPages = context.pages();
+      if (existingPages.length === 0) {
+        const page = await context.newPage();
+        return {
+          browser,
+          context,
+          page,
+        };
+      }
+
+      const orderedPages = await orderPagesByBrowserTargetOrder(context, existingPages);
+      const page =
+        (await resolvePersistedActivePage(orderedPages, {
+          ...(resolved.record.activePageUrl === undefined
+            ? {}
+            : { activePageUrl: resolved.record.activePageUrl }),
+          ...(resolved.record.activePageTitle === undefined
+            ? {}
+            : { activePageTitle: resolved.record.activePageTitle }),
+        })) ?? orderedPages[0]!;
       return {
         browser,
         context,
@@ -855,4 +876,36 @@ async function disconnectPlaywrightChromiumBrowser(browser: Browser): Promise<vo
   const { disconnectPlaywrightChromiumBrowser: disconnect } =
     await import("@opensteer/engine-playwright");
   await disconnect(browser);
+}
+
+async function resolvePersistedActivePage(
+  pages: readonly Page[],
+  input: {
+    readonly activePageUrl?: string;
+    readonly activePageTitle?: string;
+  },
+): Promise<Page | null> {
+  if (pages.length === 0) {
+    return null;
+  }
+
+  const matchesByUrl =
+    input.activePageUrl === undefined
+      ? pages
+      : pages.filter((page) => page.url() === input.activePageUrl);
+  if (matchesByUrl.length === 0) {
+    return null;
+  }
+  if (input.activePageTitle === undefined) {
+    return matchesByUrl[0] ?? null;
+  }
+
+  for (const page of matchesByUrl) {
+    const title = await page.title().catch(() => "");
+    if (title === input.activePageTitle) {
+      return page;
+    }
+  }
+
+  return matchesByUrl[0] ?? null;
 }
