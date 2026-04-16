@@ -888,6 +888,9 @@ async function resolvePersistedActivePage(
   if (pages.length === 0) {
     return null;
   }
+  if (input.activePageUrl === undefined && input.activePageTitle === undefined) {
+    return null;
+  }
 
   const matchesByUrl =
     input.activePageUrl === undefined

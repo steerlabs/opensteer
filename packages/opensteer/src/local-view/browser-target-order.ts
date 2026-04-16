@@ -157,7 +157,7 @@ function normalizeBrowserPageTargetOrder(
     const insertionIndex =
       openerIndex === -1
         ? orderedTargetIds.length
-        : findPopupInsertionIndex(orderedTargetIds, openerIndex, targetInfoById);
+        : findPopupInsertionIndex(orderedTargetIds, openerIndex, openerId, targetInfoById);
     orderedTargetIds.splice(insertionIndex, 0, targetId);
     placed.add(targetId);
   };
@@ -172,6 +172,7 @@ function normalizeBrowserPageTargetOrder(
 function findPopupInsertionIndex(
   orderedTargetIds: readonly string[],
   openerIndex: number,
+  openerTargetId: string,
   targetInfoById: ReadonlyMap<string, NormalizedPageTargetInfo>,
 ): number {
   let index = openerIndex + 1;
@@ -179,7 +180,7 @@ function findPopupInsertionIndex(
     const candidateTargetId = orderedTargetIds[index];
     if (
       !candidateTargetId ||
-      !isDescendantTarget(candidateTargetId, orderedTargetIds[openerIndex]!, targetInfoById)
+      !isDescendantTarget(candidateTargetId, openerTargetId, targetInfoById)
     ) {
       break;
     }
