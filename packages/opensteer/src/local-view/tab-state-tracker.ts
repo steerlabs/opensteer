@@ -428,6 +428,13 @@ export class TabStateTracker {
   >(
     pageStates: readonly T[],
   ): Promise<Array<Omit<T, "originalIndex"> & { readonly index: number }>> {
+    if (pageStates.length < 2) {
+      return pageStates.map(({ originalIndex: _originalIndex, ...state }, index) => ({
+        ...state,
+        index,
+      }));
+    }
+
     const orderedTargetIds = await readBrowserPageTargetOrder(this.deps.browserContext);
     const rankByTargetId = new Map(orderedTargetIds.map((targetId, index) => [targetId, index]));
 

@@ -126,8 +126,20 @@ function normalizeBrowserPageTargetOrder(
   }
   reversedPageInfos.reverse();
 
-  const targetInfoById = new Map(
+  const rawTargetInfoById = new Map(
     reversedPageInfos.map((targetInfo) => [targetInfo.targetId, targetInfo] as const),
+  );
+  const targetInfoById = new Map(
+    reversedPageInfos.map(
+      (targetInfo) =>
+        [
+          targetInfo.targetId,
+          {
+            ...targetInfo,
+            openerId: resolveAcyclicOpenerId(targetInfo.targetId, rawTargetInfoById),
+          } satisfies NormalizedPageTargetInfo,
+        ] as const,
+    ),
   );
   const orderedTargetIds: string[] = [];
   const placed = new Set<string>();
@@ -142,10 +154,7 @@ function normalizeBrowserPageTargetOrder(
       return;
     }
 
-    const openerId =
-      targetInfo.openerId !== undefined && targetInfoById.has(targetInfo.openerId)
-        ? targetInfo.openerId
-        : undefined;
+    const openerId = targetInfo.openerId;
     if (openerId === undefined) {
       orderedTargetIds.push(targetId);
       placed.add(targetId);
@@ -167,6 +176,28 @@ function normalizeBrowserPageTargetOrder(
   }
 
   return orderedTargetIds;
+}
+
+function resolveAcyclicOpenerId(
+  targetId: string,
+  targetInfoById: ReadonlyMap<string, NormalizedPageTargetInfo>,
+): string | undefined {
+  const openerId = targetInfoById.get(targetId)?.openerId;
+  if (openerId === undefined || !targetInfoById.has(openerId)) {
+    return undefined;
+  }
+
+  const visitedTargetIds = new Set<string>([targetId]);
+  let currentTargetId: string | undefined = openerId;
+  while (currentTargetId !== undefined) {
+    if (visitedTargetIds.has(currentTargetId)) {
+      return undefined;
+    }
+    visitedTargetIds.add(currentTargetId);
+    currentTargetId = targetInfoById.get(currentTargetId)?.openerId;
+  }
+
+  return openerId;
 }
 
 function findPopupInsertionIndex(
@@ -194,8 +225,13 @@ function isDescendantTarget(
   ancestorTargetId: string,
   targetInfoById: ReadonlyMap<string, NormalizedPageTargetInfo>,
 ): boolean {
+  const visitedTargetIds = new Set<string>();
   let currentTargetId: string | undefined = targetId;
   while (currentTargetId !== undefined) {
+    if (visitedTargetIds.has(currentTargetId)) {
+      return false;
+    }
+    visitedTargetIds.add(currentTargetId);
     const currentTargetInfo = targetInfoById.get(currentTargetId);
     const openerId = currentTargetInfo?.openerId;
     if (openerId === undefined) {
