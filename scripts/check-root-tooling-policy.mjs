@@ -16,7 +16,7 @@ const dependencyFields = [
 
 const bannedPackagePattern = /(^|\/)ts-node(?:$|\/|-)/;
 const bannedScriptPattern = /\bts-node(?:\b|\/|-)/;
-const disallowedRootScriptPattern = /(^|\s)node\s+--import(?:=|\s+)tsx(?:\s|$)/;
+const disallowedRootScriptPattern = /(^|\s)node\s+--import(?:=|\s+)tsx(?:[/\s]|$)/;
 
 async function collectPackageJsonPaths() {
   const entries = await readdir(packagesDir, { withFileTypes: true });
