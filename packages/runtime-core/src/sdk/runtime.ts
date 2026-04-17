@@ -336,6 +336,7 @@ export class OpensteerSessionRuntime {
   private pageRef: PageRef | undefined;
   private runId: string | undefined;
   private readonly observationSessions = new Map<string, SessionObservationSink>();
+  private readonly openingObservationSessions = new Map<string, Promise<SessionObservationSink>>();
   private readonly openedObservationSessions = new Set<SessionObservationSink>();
   private readonly observationSessionStorage = new AsyncLocalStorage<ObservationSessionScope>();
   private readonly operationEventStorage = new AsyncLocalStorage<OpensteerEvent[]>();
@@ -401,12 +402,7 @@ export class OpensteerSessionRuntime {
     input: Partial<ObservabilityConfig> | undefined,
   ): Promise<ObservabilityConfig> {
     this.observationConfig = normalizeObservabilityConfig(input);
-    const observationSessionId = this.resolveObservationSessionId();
-    if (observationSessionId === undefined) {
-      return this.observationConfig;
-    }
-
-    await this.openObservationSession(observationSessionId);
+    await this.ensureConfiguredObservationSession();
     return this.observationConfig;
   }
 
@@ -4770,6 +4766,7 @@ export class OpensteerSessionRuntime {
     this.extractionDescriptors = undefined;
     this.engine = undefined;
     this.observationSessions.clear();
+    this.openingObservationSessions.clear();
     this.openedObservationSessions.clear();
     this.pendingOperationEventCaptures.length = 0;
 
@@ -4798,7 +4795,41 @@ export class OpensteerSessionRuntime {
       return existingObservationSession;
     }
 
-    return await this.openObservationSession(observationSessionId);
+    const openingObservationSession = this.openingObservationSessions.get(observationSessionId);
+    if (openingObservationSession !== undefined) {
+      return await openingObservationSession;
+    }
+
+    const openObservationSessionTask = this.openObservationSession(observationSessionId).finally(
+      () => {
+        this.openingObservationSessions.delete(observationSessionId);
+      },
+    );
+    this.openingObservationSessions.set(observationSessionId, openObservationSessionTask);
+    return await openObservationSessionTask;
+  }
+
+  private async ensureConfiguredObservationSession(): Promise<SessionObservationSink | undefined> {
+    if (this.observationConfig.profile === "off") {
+      return undefined;
+    }
+    const observationSessionId = this.resolveObservationSessionId();
+    if (observationSessionId === undefined) {
+      return undefined;
+    }
+
+    const hadObservationSession =
+      this.observationSessions.has(observationSessionId) ||
+      this.openingObservationSessions.has(observationSessionId);
+    const observationSession = await this.ensureObservationSession();
+    if (observationSession !== undefined && hadObservationSession) {
+      await observationSession.configure?.({
+        config: this.observationConfig,
+        updatedAt: Date.now(),
+      });
+    }
+
+    return observationSession;
   }
 
   private resolveObservationSessionId(): string | undefined {

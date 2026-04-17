@@ -1,16 +1,41 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { ObservationSink, SessionObservationSink } from "@opensteer/protocol";
+import type {
+  ConfigureObservationSessionInput,
+  ObservationSink,
+  SessionObservationSink,
+} from "@opensteer/protocol";
 import { OpensteerSessionRuntime } from "./runtime.js";
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return {
+    promise,
+    resolve,
+    reject,
+  };
+}
 
 function createObservationRuntime() {
   const openedSessionIds: string[] = [];
   const closedSessionIds: string[] = [];
+  const configuredSessions: Array<{ sessionId: string; profile: string | undefined }> = [];
   const observationSink = {
     async openSession(input: { sessionId: string }) {
       openedSessionIds.push(input.sessionId);
       return {
         sessionId: input.sessionId,
+        async configure(nextInput: ConfigureObservationSessionInput) {
+          configuredSessions.push({
+            sessionId: input.sessionId,
+            profile: nextInput.config?.profile,
+          });
+        },
         async append(): Promise<never> {
           throw new Error("append should not be called in observation session tests");
         },
@@ -41,6 +66,7 @@ function createObservationRuntime() {
     runtime,
     openedSessionIds,
     closedSessionIds,
+    configuredSessions,
   };
 }
 
@@ -71,6 +97,38 @@ test("OpensteerSessionRuntime falls back to the fixed observation session id whe
   });
 
   assert.deepEqual(openedSessionIds, ["root-session"]);
+});
+
+test("OpensteerSessionRuntime reconfigures an open observation session without reopening it", async () => {
+  const { runtime, openedSessionIds, configuredSessions, closedSessionIds } =
+    createObservationRuntime();
+
+  await runtime.setObservabilityConfig({
+    profile: "baseline",
+  });
+  await runtime.setObservabilityConfig({
+    profile: "diagnostic",
+  });
+  await runtime.close();
+
+  assert.deepEqual(openedSessionIds, ["root-session"]);
+  assert.deepEqual(configuredSessions, [
+    {
+      sessionId: "root-session",
+      profile: "diagnostic",
+    },
+  ]);
+  assert.deepEqual(closedSessionIds, ["root-session"]);
+});
+
+test("OpensteerSessionRuntime does not open an observation session when observability is off", async () => {
+  const { runtime, openedSessionIds } = createObservationRuntime();
+
+  await runtime.setObservabilityConfig({
+    profile: "off",
+  });
+
+  assert.deepEqual(openedSessionIds, []);
 });
 
 test("OpensteerSessionRuntime resolves scoped observation sessions even after the root session was opened", async () => {
@@ -140,4 +198,51 @@ test("OpensteerSessionRuntime closes every observation session opened during its
   await runtime.close();
 
   assert.deepEqual(closedSessionIds.sort(), ["controller-session", "root-session"]);
+});
+
+test("OpensteerSessionRuntime deduplicates concurrent observation session opens", async () => {
+  const openStarted = createDeferred<void>();
+  const releaseOpen = createDeferred<void>();
+  const openedSessionIds: string[] = [];
+  const observationSink = {
+    async openSession(input: { sessionId: string }) {
+      openedSessionIds.push(input.sessionId);
+      openStarted.resolve();
+      await releaseOpen.promise;
+      return {
+        sessionId: input.sessionId,
+        async append(): Promise<never> {
+          throw new Error("append should not be called in observation session tests");
+        },
+        async appendBatch() {
+          return [];
+        },
+        async writeArtifact(): Promise<never> {
+          throw new Error("writeArtifact should not be called in observation session tests");
+        },
+        async flush() {},
+        async close() {},
+      } satisfies SessionObservationSink;
+    },
+  } satisfies ObservationSink;
+  const runtime = new OpensteerSessionRuntime({
+    name: "observation-test",
+    engine: {} as never,
+    observationSessionId: "root-session",
+    observability: {
+      profile: "baseline",
+    },
+    observationSink,
+  });
+
+  const firstObservationSession = ensureObservationSession(runtime);
+  await openStarted.promise;
+  const secondObservationSession = ensureObservationSession(runtime);
+  releaseOpen.resolve();
+
+  const [first, second] = await Promise.all([firstObservationSession, secondObservationSession]);
+
+  assert.equal(first?.sessionId, "root-session");
+  assert.equal(second?.sessionId, "root-session");
+  assert.deepEqual(openedSessionIds, ["root-session"]);
 });

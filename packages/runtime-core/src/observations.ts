@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 
 import type {
   AppendObservationEventInput,
+  ConfigureObservationSessionInput,
   ObservationArtifact,
   ObservationEvent,
   ObservationSession,
@@ -141,6 +142,10 @@ class FilesystemSessionSink implements SessionObservationSink {
     readonly sessionId: string,
   ) {}
 
+  configure(input: ConfigureObservationSessionInput): Promise<void> {
+    return this.store.configureSession(this.sessionId, input);
+  }
+
   append(input: AppendObservationEventInput): Promise<ObservationEvent> {
     return this.store.appendEvent(this.sessionId, input);
   }
@@ -179,42 +184,18 @@ class FilesystemObservationStoreImpl implements FilesystemObservationStore {
     const sessionId = normalizeNonEmptyString("sessionId", input.sessionId);
     const openedAt = normalizeTimestamp("openedAt", input.openedAt ?? Date.now());
     const config = normalizeObservabilityConfig(input.config);
-    const redactor = createObservationRedactor(config);
-    this.redactors.set(sessionId, redactor);
-    const redactedLabels = redactor.redactLabels(config.labels);
-    const redactedTraceContext = redactor.redactTraceContext(config.traceContext);
-
-    await withFilesystemLock(this.sessionLockPath(sessionId), async () => {
-      const existing = await this.reconcileSessionManifest(sessionId);
-      if (existing === undefined) {
-        await ensureDirectory(this.sessionEventsDirectory(sessionId));
-        await ensureDirectory(this.sessionArtifactsDirectory(sessionId));
-        const session: ObservationSession = {
-          sessionId,
-          profile: config.profile,
-          ...(redactedLabels === undefined ? {} : { labels: redactedLabels }),
-          ...(redactedTraceContext === undefined ? {} : { traceContext: redactedTraceContext }),
-          openedAt,
-          updatedAt: openedAt,
-          currentSequence: 0,
-          eventCount: 0,
-          artifactCount: 0,
-        };
-        await writeJsonFileExclusive(this.sessionManifestPath(sessionId), session);
-        return;
-      }
-
-      const patched: ObservationSession = {
-        ...existing,
-        profile: config.profile,
-        ...(redactedLabels === undefined ? {} : { labels: redactedLabels }),
-        ...(redactedTraceContext === undefined ? {} : { traceContext: redactedTraceContext }),
-        updatedAt: Math.max(existing.updatedAt, openedAt),
-      };
-      await writeJsonFileAtomic(this.sessionManifestPath(sessionId), patched);
-    });
+    await this.applySessionConfiguration(sessionId, config, openedAt);
 
     return new FilesystemSessionSink(this, sessionId);
+  }
+
+  async configureSession(
+    sessionId: string,
+    input: ConfigureObservationSessionInput,
+  ): Promise<void> {
+    const updatedAt = normalizeTimestamp("updatedAt", input.updatedAt ?? Date.now());
+    const config = normalizeObservabilityConfig(input.config);
+    await this.applySessionConfiguration(sessionId, config, updatedAt);
   }
 
   async getSession(sessionId: string): Promise<ObservationSession | undefined> {
@@ -510,6 +491,47 @@ class FilesystemObservationStoreImpl implements FilesystemObservationStore {
 
   private sessionLockPath(sessionId: string): string {
     return path.join(this.sessionDirectory(sessionId), ".lock");
+  }
+
+  private async applySessionConfiguration(
+    sessionId: string,
+    config: NormalizedObservabilityConfig,
+    timestamp: number,
+  ): Promise<void> {
+    const redactor = createObservationRedactor(config);
+    this.redactors.set(sessionId, redactor);
+    const redactedLabels = redactor.redactLabels(config.labels);
+    const redactedTraceContext = redactor.redactTraceContext(config.traceContext);
+
+    await withFilesystemLock(this.sessionLockPath(sessionId), async () => {
+      const existing = await this.reconcileSessionManifest(sessionId);
+      if (existing === undefined) {
+        await ensureDirectory(this.sessionEventsDirectory(sessionId));
+        await ensureDirectory(this.sessionArtifactsDirectory(sessionId));
+        const session: ObservationSession = {
+          sessionId,
+          profile: config.profile,
+          ...(redactedLabels === undefined ? {} : { labels: redactedLabels }),
+          ...(redactedTraceContext === undefined ? {} : { traceContext: redactedTraceContext }),
+          openedAt: timestamp,
+          updatedAt: timestamp,
+          currentSequence: 0,
+          eventCount: 0,
+          artifactCount: 0,
+        };
+        await writeJsonFileExclusive(this.sessionManifestPath(sessionId), session);
+        return;
+      }
+
+      const patched: ObservationSession = {
+        ...existing,
+        profile: config.profile,
+        ...(redactedLabels === undefined ? {} : { labels: redactedLabels }),
+        ...(redactedTraceContext === undefined ? {} : { traceContext: redactedTraceContext }),
+        updatedAt: Math.max(existing.updatedAt, timestamp),
+      };
+      await writeJsonFileAtomic(this.sessionManifestPath(sessionId), patched);
+    });
   }
 
   private async reconcileSessionManifest(
