@@ -1,4 +1,4 @@
-/** Manual probe for browser-routed fetch behavior. */
+/** Manual probe for browser-routed fetch behavior. Run with `tsx scripts/detection/fetch-test.mts`. */
 import { chromium } from "playwright";
 import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";

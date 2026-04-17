@@ -91,7 +91,9 @@ export function resolveExtractedValueInContext(
 function stripPositionClauses(nodes: ElementPath["nodes"]): ElementPath["nodes"] {
   return (nodes || []).map((node) => ({
     ...node,
-    match: (node.match || []).filter((clause) => clause.kind !== "position" && clause.kind !== "text"),
+    match: (node.match || []).filter(
+      (clause) => clause.kind !== "position" && clause.kind !== "text",
+    ),
   }));
 }
 

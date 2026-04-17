@@ -214,10 +214,7 @@ export function resolveDomPathInScope(
   return fallback;
 }
 
-function matchesTextClauses(
-  node: DomSnapshotNode,
-  clauses: readonly TextMatchClause[],
-): boolean {
+function matchesTextClauses(node: DomSnapshotNode, clauses: readonly TextMatchClause[]): boolean {
   const text = (node.textContent ?? "").replace(/\s+/g, " ").trim();
   return clauses.every((clause) => text.includes(clause.value));
 }

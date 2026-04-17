@@ -703,7 +703,9 @@ function buildNodeStructure(node: PathNode): Record<string, unknown> {
     .map((clause) => {
       if (clause.kind === "position") return `position:${clause.axis}`;
       if (clause.kind === "text") return `text:${clause.value}`;
-      return `attr:${String(clause.key || "").trim().toLowerCase()}`;
+      return `attr:${String(clause.key || "")
+        .trim()
+        .toLowerCase()}`;
     })
     .sort();
 

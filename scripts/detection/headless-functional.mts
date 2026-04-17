@@ -1,4 +1,4 @@
-/** Manual probe for headless interaction behavior. */
+/** Manual probe for headless interaction behavior. Run with `tsx scripts/detection/headless-functional.mts`. */
 import { chromium } from "playwright";
 import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";

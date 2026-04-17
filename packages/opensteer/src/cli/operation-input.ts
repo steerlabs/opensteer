@@ -78,14 +78,22 @@ export async function buildOperationInput(
       return parsed.rest[0] === undefined ? {} : { mode: parsed.rest[0] };
     case "page.evaluate":
       if (parsed.rest[0] === undefined) {
-        throw new CliError("missing_arguments", "evaluate requires a script.", CLI_USAGE_HINTS[operation]);
+        throw new CliError(
+          "missing_arguments",
+          "evaluate requires a script.",
+          CLI_USAGE_HINTS[operation],
+        );
       }
       return {
         script: joinRest(parsed.rest, 0),
       };
     case "page.add-init-script":
       if (parsed.rest[0] === undefined) {
-        throw new CliError("missing_arguments", "init-script requires a script.", CLI_USAGE_HINTS[operation]);
+        throw new CliError(
+          "missing_arguments",
+          "init-script requires a script.",
+          CLI_USAGE_HINTS[operation],
+        );
       }
       return {
         script: joinRest(parsed.rest, 0),
@@ -101,7 +109,11 @@ export async function buildOperationInput(
       return buildElementTargetInput(parsed, "hover");
     case "dom.input": {
       if (parsed.rest[1] === undefined) {
-        throw new CliError("missing_arguments", "input requires an element number and text.", CLI_USAGE_HINTS[operation]);
+        throw new CliError(
+          "missing_arguments",
+          "input requires an element number and text.",
+          CLI_USAGE_HINTS[operation],
+        );
       }
       const pressEnter = readOptionalBoolean(parsed.rawOptions, "press-enter");
       return {
@@ -135,7 +147,11 @@ export async function buildOperationInput(
     }
     case "dom.extract": {
       if (parsed.rest[0] === undefined) {
-        throw new CliError("missing_arguments", "extract requires a template.", CLI_USAGE_HINTS[operation]);
+        throw new CliError(
+          "missing_arguments",
+          "extract requires a template.",
+          CLI_USAGE_HINTS[operation],
+        );
       }
       const persist = readPersistKey(parsed, "extract");
       return {
@@ -171,7 +187,11 @@ export async function buildOperationInput(
     }
     case "network.detail": {
       if (parsed.rest[0] === undefined) {
-        throw new CliError("missing_arguments", "network detail requires a record id.", CLI_USAGE_HINTS[operation]);
+        throw new CliError(
+          "missing_arguments",
+          "network detail requires a record id.",
+          CLI_USAGE_HINTS[operation],
+        );
       }
       const probeFlag = readOptionalBoolean(parsed.rawOptions, "probe");
       return {
@@ -182,7 +202,11 @@ export async function buildOperationInput(
     case "session.fetch": {
       const url = parsed.rest[0];
       if (url === undefined) {
-        throw new CliError("missing_arguments", "fetch requires a URL.", CLI_USAGE_HINTS[operation]);
+        throw new CliError(
+          "missing_arguments",
+          "fetch requires a URL.",
+          CLI_USAGE_HINTS[operation],
+        );
       }
       const bodyJson = readJsonValue(parsed.rawOptions, "body");
       const bodyText = readSingle(parsed.rawOptions, "body-text");
@@ -223,7 +247,11 @@ export async function buildOperationInput(
       const siteKey = readSingle(parsed.rawOptions, "site-key");
       const pageUrl = readSingle(parsed.rawOptions, "page-url");
       if (provider === undefined || apiKey === undefined) {
-        throw new CliError("missing_arguments", 'captcha solve requires "--provider" and "--api-key".', CLI_USAGE_HINTS[operation]);
+        throw new CliError(
+          "missing_arguments",
+          'captcha solve requires "--provider" and "--api-key".',
+          CLI_USAGE_HINTS[operation],
+        );
       }
       return {
         provider: readCaptchaProvider(provider),
@@ -253,7 +281,11 @@ export async function buildOperationInput(
     case "scripts.beautify":
     case "scripts.deobfuscate": {
       if (parsed.rest[0] === undefined) {
-        throw new CliError("missing_arguments", `${parsed.command.join(" ")} requires an artifact id.`, CLI_USAGE_HINTS[operation]);
+        throw new CliError(
+          "missing_arguments",
+          `${parsed.command.join(" ")} requires an artifact id.`,
+          CLI_USAGE_HINTS[operation],
+        );
       }
       const persist = readOptionalBoolean(parsed.rawOptions, "persist");
       return {
@@ -263,7 +295,11 @@ export async function buildOperationInput(
     }
     case "scripts.sandbox":
       if (parsed.rest[0] === undefined) {
-        throw new CliError("missing_arguments", "scripts sandbox requires an artifact id.", CLI_USAGE_HINTS[operation]);
+        throw new CliError(
+          "missing_arguments",
+          "scripts sandbox requires an artifact id.",
+          CLI_USAGE_HINTS[operation],
+        );
       }
       {
         const fidelity = readSingle(parsed.rawOptions, "fidelity");
@@ -314,14 +350,22 @@ export async function buildOperationInput(
     case "interaction.get":
     case "interaction.replay":
       if (parsed.rest[0] === undefined) {
-        throw new CliError("missing_arguments", `${parsed.command.join(" ")} requires a trace id.`, CLI_USAGE_HINTS[operation]);
+        throw new CliError(
+          "missing_arguments",
+          `${parsed.command.join(" ")} requires a trace id.`,
+          CLI_USAGE_HINTS[operation],
+        );
       }
       return {
         traceId: parsed.rest[0],
       };
     case "interaction.diff":
       if (parsed.rest[0] === undefined || parsed.rest[1] === undefined) {
-        throw new CliError("missing_arguments", "interaction diff requires two trace ids.", CLI_USAGE_HINTS[operation]);
+        throw new CliError(
+          "missing_arguments",
+          "interaction diff requires two trace ids.",
+          CLI_USAGE_HINTS[operation],
+        );
       }
       return {
         leftTraceId: parsed.rest[0],
@@ -329,7 +373,11 @@ export async function buildOperationInput(
       };
     case "artifact.read":
       if (parsed.rest[0] === undefined) {
-        throw new CliError("missing_arguments", "artifact read requires an artifact id.", CLI_USAGE_HINTS[operation]);
+        throw new CliError(
+          "missing_arguments",
+          "artifact read requires an artifact id.",
+          CLI_USAGE_HINTS[operation],
+        );
       }
       return {
         artifactId: parsed.rest[0],
@@ -476,7 +524,10 @@ function buildComputerExecuteInput(parsed: ParsedCommandLine): Record<string, un
         },
       };
     default:
-      throw new CliError("unknown_command", `Unknown computer command: ${parsed.command.join(" ")}`);
+      throw new CliError(
+        "unknown_command",
+        `Unknown computer command: ${parsed.command.join(" ")}`,
+      );
   }
 }
 
@@ -513,7 +564,10 @@ function readRequiredNumber(value: string | undefined, message: string): number 
 
 function readSingleDirection(value: string | undefined): "up" | "down" | "left" | "right" {
   if (value === undefined || !SCROLL_DIRECTIONS.has(value)) {
-    throw new CliError("missing_arguments", "scroll requires a direction: up, down, left, or right.");
+    throw new CliError(
+      "missing_arguments",
+      "scroll requires a direction: up, down, left, or right.",
+    );
   }
   return value as "up" | "down" | "left" | "right";
 }
@@ -546,14 +600,20 @@ function readCaptchaProvider(value: string | undefined): "2captcha" | "capsolver
 
 function readCaptchaType(value: string | undefined): "recaptcha-v2" | "hcaptcha" | "turnstile" {
   if (value === undefined || !CAPTCHA_TYPES.has(value)) {
-    throw new CliError("invalid_value", 'Expected "--type" to be one of: recaptcha-v2, hcaptcha, turnstile.');
+    throw new CliError(
+      "invalid_value",
+      'Expected "--type" to be one of: recaptcha-v2, hcaptcha, turnstile.',
+    );
   }
   return value as "recaptcha-v2" | "hcaptcha" | "turnstile";
 }
 
 function readSandboxFidelity(value: string | undefined): "minimal" | "standard" | "full" {
   if (value === undefined || !SANDBOX_FIDELITIES.has(value)) {
-    throw new CliError("invalid_value", 'Expected "--fidelity" to be one of: minimal, standard, full.');
+    throw new CliError(
+      "invalid_value",
+      'Expected "--fidelity" to be one of: minimal, standard, full.',
+    );
   }
   return value as "minimal" | "standard" | "full";
 }
@@ -581,7 +641,10 @@ function readKeyModifiers(
   }
   for (const modifier of modifiers) {
     if (!KEY_MODIFIERS.has(modifier)) {
-      throw new CliError("invalid_value", 'Expected "--modifiers" to contain only: Shift, Control, Alt, Meta.');
+      throw new CliError(
+        "invalid_value",
+        'Expected "--modifiers" to contain only: Shift, Control, Alt, Meta.',
+      );
     }
   }
   return [...new Set(modifiers)] as readonly ("Shift" | "Control" | "Alt" | "Meta")[];

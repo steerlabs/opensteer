@@ -641,10 +641,7 @@ function deduplicateImagesInDom($: CheerioAPI): void {
     const src =
       srcValue && srcValue.length > 0
         ? srcValue
-        : srcsetValue
-            ?.split(",")[0]
-            ?.trim()
-            .split(/\s+/u)[0];
+        : srcsetValue?.split(",")[0]?.trim().split(/\s+/u)[0];
     if (!src) {
       return;
     }

@@ -143,8 +143,8 @@ See the full [Workflow Guide](https://github.com/steerlabs/opensteer/blob/main/d
 
 ## Documentation
 
-| Resource                                           | Description                            |
-| -------------------------------------------------- | -------------------------------------- |
+| Resource                                                                                          | Description                            |
+| ------------------------------------------------------------------------------------------------- | -------------------------------------- |
 | [Package Guide](https://github.com/steerlabs/opensteer/blob/main/packages/opensteer/README.md)    | Full CLI and SDK reference             |
 | [Workflow Guide](https://github.com/steerlabs/opensteer/blob/main/docs/workflows.md)              | Discover-then-codify methodology       |
 | [Instrumentation Guide](https://github.com/steerlabs/opensteer/blob/main/docs/instrumentation.md) | Tracing and observability              |

@@ -1,3 +1,4 @@
+import * as prettier from "prettier";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -12,7 +13,14 @@ const generatedBanner =
   "<!-- This file is generated from the repository README. Run `node scripts/sync-package-readme.mjs`. -->";
 
 const sourceReadme = await readFile(sourcePath, "utf8");
-const syncedReadme = `${generatedBanner}\n\n${rewriteRelativeLinks(sourceReadme)}`;
+const prettierOptions = (await prettier.resolveConfig(targetPath)) ?? {};
+const syncedReadme = await prettier.format(
+  `${generatedBanner}\n\n${rewriteRelativeLinks(sourceReadme)}`,
+  {
+    ...prettierOptions,
+    filepath: targetPath,
+  },
+);
 
 if (process.argv.includes("--check")) {
   const currentReadme = await readFile(targetPath, "utf8");

@@ -113,7 +113,10 @@ async function main(): Promise<void> {
   }
 
   if (parsed.options.workspace === undefined) {
-    throw new CliError("missing_workspace", 'Stateful commands require "--workspace <id>" or OPENSTEER_WORKSPACE.');
+    throw new CliError(
+      "missing_workspace",
+      'Stateful commands require "--workspace <id>" or OPENSTEER_WORKSPACE.',
+    );
   }
 
   const { engineName, provider, runtimeProvider } = resolveCliRuntimeSelection(parsed);
@@ -169,14 +172,17 @@ async function main(): Promise<void> {
 
 async function handleExecCommand(parsed: ParsedCommandLine): Promise<void> {
   if (parsed.options.workspace === undefined) {
-    throw new CliError("missing_workspace", 'exec requires "--workspace <id>" or OPENSTEER_WORKSPACE.');
+    throw new CliError(
+      "missing_workspace",
+      'exec requires "--workspace <id>" or OPENSTEER_WORKSPACE.',
+    );
   }
   const expression = parsed.rest.join(" ");
   if (!expression) {
     throw new CliError(
       "missing_arguments",
       "exec requires an expression.",
-      'opensteer exec <expression>',
+      "opensteer exec <expression>",
     );
   }
 
@@ -329,7 +335,10 @@ async function handleCloseCommand(
 
 async function handleRecordCommandEntry(parsed: ParsedCommandLine): Promise<void> {
   if (parsed.options.workspace === undefined) {
-    throw new CliError("missing_workspace", 'record requires "--workspace <id>" or OPENSTEER_WORKSPACE.');
+    throw new CliError(
+      "missing_workspace",
+      'record requires "--workspace <id>" or OPENSTEER_WORKSPACE.',
+    );
   }
 
   const url = parsed.options.url ?? parsed.rest[0];
@@ -375,7 +384,10 @@ async function handleRecordCommandEntry(parsed: ParsedCommandLine): Promise<void
   }
 
   if (parsed.options.launch?.headless === true) {
-    throw new CliError("config_conflict", 'record requires a headed browser. Remove "--headless true".');
+    throw new CliError(
+      "config_conflict",
+      'record requires a headed browser. Remove "--headless true".',
+    );
   }
 
   if (typeof recordBrowser === "object") {
@@ -465,7 +477,10 @@ function buildCliBrowserProfile(
     parsed.options.cloudProfileReuseIfActive === true &&
     parsed.options.cloudProfileId === undefined
   ) {
-    throw new CliError("invalid_option", '"--cloud-profile-reuse-if-active" requires "--cloud-profile-id <id>".');
+    throw new CliError(
+      "invalid_option",
+      '"--cloud-profile-reuse-if-active" requires "--cloud-profile-id <id>".',
+    );
   }
 
   return parsed.options.cloudProfileId === undefined
