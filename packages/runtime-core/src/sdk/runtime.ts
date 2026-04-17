@@ -327,6 +327,7 @@ export class OpensteerSessionRuntime {
   private pageRef: PageRef | undefined;
   private runId: string | undefined;
   private observations: SessionObservationSink | undefined;
+  private readonly observationSessionStorage = new AsyncLocalStorage<string | undefined>();
   private readonly operationEventStorage = new AsyncLocalStorage<OpensteerEvent[]>();
   private readonly pendingOperationEventCaptures: PendingOperationEventCapture[] = [];
   private ownsEngine = false;
@@ -402,6 +403,13 @@ export class OpensteerSessionRuntime {
       config: this.observationConfig,
     });
     return this.observationConfig;
+  }
+
+  async withObservationSessionId<T>(
+    sessionId: string | undefined,
+    task: () => Promise<T>,
+  ): Promise<T> {
+    return await this.observationSessionStorage.run(sessionId, task);
   }
 
   async open(
@@ -4776,6 +4784,10 @@ export class OpensteerSessionRuntime {
   }
 
   private resolveObservationSessionId(): string | undefined {
+    const scopedSessionId = this.observationSessionStorage.getStore();
+    if (scopedSessionId !== undefined) {
+      return scopedSessionId;
+    }
     return this.observationSessionId ?? this.sessionRef;
   }
 

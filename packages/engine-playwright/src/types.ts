@@ -40,6 +40,7 @@ export interface PendingPageRegistration {
 export interface PageController {
   readonly pageRef: PageRef;
   readonly sessionRef: SessionRef;
+  targetId: string | undefined;
   readonly page: Page;
   readonly cdp: CDPSession;
   readonly externallyOwned: boolean;

@@ -99,13 +99,17 @@ export async function executeBrowserFetch(
       }
 
       try {
+        const requestBody =
+          inp.bodyBase64 === undefined
+            ? undefined
+            : new Uint8Array(decodeBase64(inp.bodyBase64));
         const response = await fetch(inp.url, {
           method: inp.method,
           headers,
           credentials: "include",
           redirect: inp.followRedirects ? "follow" : "manual",
           signal: controller.signal,
-          ...(inp.bodyBase64 === undefined ? {} : { body: decodeBase64(inp.bodyBase64) }),
+          ...(requestBody === undefined ? {} : { body: requestBody }),
         });
 
         const body = new Uint8Array(await response.arrayBuffer());

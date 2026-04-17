@@ -20,6 +20,9 @@ export const pageInfoSchema: JsonSchema = objectSchema(
   {
     pageRef: pageRefSchema,
     sessionRef: sessionRefSchema,
+    targetId: stringSchema({
+      description: "Underlying browser target identifier when available.",
+    }),
     openerPageRef: pageRefSchema,
     url: stringSchema({
       description: "Current main-frame URL.",

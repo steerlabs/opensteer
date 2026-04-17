@@ -1982,6 +1982,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     const controller: PageController = {
       pageRef,
       sessionRef: session.sessionRef,
+      targetId: undefined,
       page,
       cdp,
       externallyOwned,
@@ -2016,6 +2017,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     await cdp.send("DOM.enable", { includeWhitespace: "none" });
     await cdp.send("DOMStorage.enable");
     await cdp.send("DOM.getDocument", { depth: 0 });
+    controller.targetId = await this.readTargetId(cdp);
     await this.installRuntimeEventRecorder(page);
     await this.actionSettler.installTracker(controller);
 
@@ -2950,6 +2952,7 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
     return {
       pageRef: controller.pageRef,
       sessionRef: controller.sessionRef,
+      ...(controller.targetId === undefined ? {} : { targetId: controller.targetId }),
       ...(controller.openerPageRef === undefined
         ? {}
         : { openerPageRef: controller.openerPageRef }),
@@ -2957,6 +2960,22 @@ export class PlaywrightBrowserCoreEngine implements BrowserCoreEngine {
       title: controller.lastKnownTitle,
       lifecycleState: controller.lifecycleState,
     };
+  }
+
+  private async readTargetId(cdp: CDPSession): Promise<string | undefined> {
+    try {
+      const result = (await cdp.send("Target.getTargetInfo")) as
+        | {
+            targetInfo?: {
+              targetId?: unknown;
+            };
+          }
+        | undefined;
+      const targetId = result?.targetInfo?.targetId;
+      return typeof targetId === "string" && targetId.length > 0 ? targetId : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private buildFrameInfo(frame: FrameState): FrameInfo {
