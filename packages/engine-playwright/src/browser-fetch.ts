@@ -99,10 +99,7 @@ export async function executeBrowserFetch(
       }
 
       try {
-        const requestBody =
-          inp.bodyBase64 === undefined
-            ? undefined
-            : new Uint8Array(decodeBase64(inp.bodyBase64));
+        const requestBody = inp.bodyBase64 === undefined ? undefined : decodeBase64(inp.bodyBase64);
         const response = await fetch(inp.url, {
           method: inp.method,
           headers,

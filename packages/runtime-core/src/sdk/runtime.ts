@@ -134,7 +134,7 @@ import {
   type ActionBoundaryDiagnostics,
 } from "../action-boundary.js";
 import { normalizeThrownOpensteerError } from "../internal/errors.js";
-import { sha256Hex } from "../internal/filesystem.js";
+import { normalizeNonEmptyString, sha256Hex } from "../internal/filesystem.js";
 import { canonicalJsonString, toCanonicalJsonValue } from "../json.js";
 import { normalizeObservationContext } from "../observation-utils.js";
 import { normalizeObservabilityConfig } from "../observations.js";
@@ -262,6 +262,15 @@ interface PendingOperationEventCapture {
   readonly events: readonly OpensteerEvent[];
 }
 
+type ObservationSessionScope =
+  | {
+      readonly mode: "session";
+      readonly sessionId: string;
+    }
+  | {
+      readonly mode: "disabled";
+    };
+
 interface RuntimeOperationOptions {
   readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
@@ -326,8 +335,9 @@ export class OpensteerSessionRuntime {
   private sessionRef: SessionRef | undefined;
   private pageRef: PageRef | undefined;
   private runId: string | undefined;
-  private observations: SessionObservationSink | undefined;
-  private readonly observationSessionStorage = new AsyncLocalStorage<string | undefined>();
+  private readonly observationSessions = new Map<string, SessionObservationSink>();
+  private readonly openedObservationSessions = new Set<SessionObservationSink>();
+  private readonly observationSessionStorage = new AsyncLocalStorage<ObservationSessionScope>();
   private readonly operationEventStorage = new AsyncLocalStorage<OpensteerEvent[]>();
   private readonly pendingOperationEventCaptures: PendingOperationEventCapture[] = [];
   private ownsEngine = false;
@@ -396,20 +406,27 @@ export class OpensteerSessionRuntime {
       return this.observationConfig;
     }
 
-    const sink = this.injectedObservationSink ?? (await this.ensureRoot()).observations;
-    this.observations = await sink.openSession({
-      sessionId: observationSessionId,
-      openedAt: Date.now(),
-      config: this.observationConfig,
-    });
+    await this.openObservationSession(observationSessionId);
     return this.observationConfig;
   }
 
-  async withObservationSessionId<T>(
-    sessionId: string | undefined,
-    task: () => Promise<T>,
-  ): Promise<T> {
-    return await this.observationSessionStorage.run(sessionId, task);
+  async withObservationSessionId<T>(sessionId: string, task: () => Promise<T>): Promise<T> {
+    return await this.observationSessionStorage.run(
+      {
+        mode: "session",
+        sessionId: normalizeNonEmptyString("sessionId", sessionId),
+      },
+      task,
+    );
+  }
+
+  async withoutObservationSession<T>(task: () => Promise<T>): Promise<T> {
+    return await this.observationSessionStorage.run(
+      {
+        mode: "disabled",
+      },
+      task,
+    );
   }
 
   async open(
@@ -4742,7 +4759,7 @@ export class OpensteerSessionRuntime {
 
   private async resetRuntimeState(options: { readonly disposeEngine: boolean }): Promise<void> {
     const engine = this.engine;
-    const observations = this.observations;
+    const observationSessions = [...this.openedObservationSessions];
 
     this.networkHistory.clear();
     this.sessionRef = undefined;
@@ -4752,10 +4769,15 @@ export class OpensteerSessionRuntime {
     this.computer = undefined;
     this.extractionDescriptors = undefined;
     this.engine = undefined;
-    this.observations = undefined;
+    this.observationSessions.clear();
+    this.openedObservationSessions.clear();
     this.pendingOperationEventCaptures.length = 0;
 
-    await observations?.close("runtime_reset").catch(() => undefined);
+    await Promise.allSettled(
+      observationSessions.map((observationSession) =>
+        observationSession.close("runtime_reset").catch(() => undefined),
+      ),
+    );
     if (options.disposeEngine && this.ownsEngine && engine?.dispose) {
       await engine.dispose();
     }
@@ -4766,29 +4788,40 @@ export class OpensteerSessionRuntime {
     if (this.observationConfig.profile === "off") {
       return undefined;
     }
-    if (this.observations !== undefined) {
-      return this.observations;
-    }
     const observationSessionId = this.resolveObservationSessionId();
     if (observationSessionId === undefined) {
       return undefined;
     }
 
-    const sink = this.injectedObservationSink ?? (await this.ensureRoot()).observations;
-    this.observations = await sink.openSession({
-      sessionId: observationSessionId,
-      openedAt: Date.now(),
-      config: this.observationConfig,
-    });
-    return this.observations;
+    const existingObservationSession = this.observationSessions.get(observationSessionId);
+    if (existingObservationSession !== undefined) {
+      return existingObservationSession;
+    }
+
+    return await this.openObservationSession(observationSessionId);
   }
 
   private resolveObservationSessionId(): string | undefined {
-    const scopedSessionId = this.observationSessionStorage.getStore();
-    if (scopedSessionId !== undefined) {
-      return scopedSessionId;
+    const scopedSession = this.observationSessionStorage.getStore();
+    if (scopedSession?.mode === "session") {
+      return scopedSession.sessionId;
+    }
+    if (scopedSession?.mode === "disabled") {
+      return undefined;
     }
     return this.observationSessionId ?? this.sessionRef;
+  }
+
+  private async openObservationSession(sessionId: string): Promise<SessionObservationSink> {
+    const sink = this.injectedObservationSink ?? (await this.ensureRoot()).observations;
+    const observationSession = await sink.openSession({
+      sessionId,
+      openedAt: Date.now(),
+      config: this.observationConfig,
+    });
+    this.observationSessions.set(sessionId, observationSession);
+    this.openedObservationSessions.add(observationSession);
+    return observationSession;
   }
 
   private runWithOperationTimeout<T>(
