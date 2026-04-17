@@ -48,7 +48,7 @@
     "skills"
   ],
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@opensteer/engine-playwright": "workspace:*",
     "@opensteer/runtime-core": "workspace:*",
     "cheerio": "^1.1.2",
