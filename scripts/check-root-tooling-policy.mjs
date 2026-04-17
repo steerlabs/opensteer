@@ -16,7 +16,7 @@ const dependencyFields = [
 
 const bannedPackagePattern = /(^|\/)ts-node(?:$|\/|-)/;
 const bannedScriptPattern = /\bts-node(?:\b|\/|-)/;
-const discouragedRootScriptPattern = /(^|\s)node\s+--import(?:=|\s+)tsx(?:\s|$)/;
+const disallowedRootScriptPattern = /(^|\s)node\s+--import(?:=|\s+)tsx(?:\s|$)/;
 
 async function collectPackageJsonPaths() {
   const entries = await readdir(packagesDir, { withFileTypes: true });
@@ -58,13 +58,11 @@ for (const packagePath of await collectPackageJsonPaths()) {
   const scripts = pkg.scripts ?? {};
   for (const [name, command] of Object.entries(scripts)) {
     if (bannedScriptPattern.test(command)) {
-      failures.push(
-        `${relative(packagePath)}: script "${name}" references banned ts-node usage.`,
-      );
+      failures.push(`${relative(packagePath)}: script "${name}" references banned ts-node usage.`);
     }
-    if (packagePath === rootPackagePath && discouragedRootScriptPattern.test(command)) {
+    if (packagePath === rootPackagePath && disallowedRootScriptPattern.test(command)) {
       failures.push(
-        `${relative(packagePath)}: root script "${name}" should invoke "tsx" directly instead of "node --import tsx".`,
+        `${relative(packagePath)}: root script "${name}" should use "tsx" directly instead of "node --import tsx".`,
       );
     }
   }
