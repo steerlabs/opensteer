@@ -5,6 +5,7 @@ export type PageLifecycleState = "opening" | "open" | "closing" | "closed" | "cr
 export interface PageInfo {
   readonly pageRef: PageRef;
   readonly sessionRef: SessionRef;
+  readonly targetId?: string;
   readonly openerPageRef?: PageRef;
   readonly url: string;
   readonly title: string;

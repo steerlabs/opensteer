@@ -137,6 +137,11 @@ export interface OpenObservationSessionInput {
   readonly config?: Partial<ObservabilityConfig>;
 }
 
+export interface ConfigureObservationSessionInput {
+  readonly updatedAt?: number;
+  readonly config?: Partial<ObservabilityConfig>;
+}
+
 export interface AppendObservationEventInput {
   readonly eventId?: string;
   readonly kind: ObservationEventKind;
@@ -167,6 +172,7 @@ export interface WriteObservationArtifactInput {
 export interface SessionObservationSink {
   readonly sessionId: string;
 
+  configure?(input: ConfigureObservationSessionInput): Promise<void>;
   append(input: AppendObservationEventInput): Promise<ObservationEvent>;
   appendBatch(input: readonly AppendObservationEventInput[]): Promise<readonly ObservationEvent[]>;
   writeArtifact(input: WriteObservationArtifactInput): Promise<ObservationArtifact>;
