@@ -674,7 +674,9 @@ class DefaultDomRuntime implements DomRuntime {
       );
     }
 
-    const replayPath = await this.tryBuildPathFromNode(context.snapshot, target.node, { enableTextMatch: true });
+    const replayPath = await this.tryBuildPathFromNode(context.snapshot, target.node, {
+      enableTextMatch: true,
+    });
     return this.createResolvedTarget(source, context.snapshot, target.node, anchor, {
       ...(persist === undefined ? {} : { persist }),
       ...(replayPath === undefined ? {} : { replayPath }),

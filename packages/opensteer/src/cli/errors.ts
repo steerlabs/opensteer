@@ -115,7 +115,7 @@ export const CLI_USAGE_HINTS: Partial<Record<string, string>> = {
   "computer.move": "opensteer computer move <x> <y>",
   "computer.drag": "opensteer computer drag <x1> <y1> <x2> <y2>",
   "computer.screenshot": "opensteer computer screenshot",
-  exec: 'opensteer exec <expression>',
+  exec: "opensteer exec <expression>",
   record: "opensteer record --url <url> --workspace <id>",
   "browser.inspect": "opensteer browser inspect <endpoint>",
   "browser.clone": "opensteer browser clone --source-user-data-dir <path>",

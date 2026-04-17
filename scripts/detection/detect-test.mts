@@ -1,4 +1,4 @@
-/** Manual bot-detection probe. Run with `node --import tsx scripts/detection/detect-test.mts`. */
+/** Manual bot-detection probe. Run with `tsx scripts/detection/detect-test.mts`. */
 
 import { chromium } from "playwright";
 import { mkdtemp, rm } from "node:fs/promises";
