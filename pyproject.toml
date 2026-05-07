@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opensteer"
+version = "0.1.0"
+description = "Global browser-control runtime and agent skills for Opensteer."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "cdp-use==1.4.5",
+    "fetch-use==0.4.0",
+    "pillow==12.2.0",
+    "websockets==16.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.14",
+]
+
+[project.scripts]
+opensteer = "opensteer.run:main"
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+python_files = ["test_*.py"]
+
+[tool.ruff]
+exclude = [
+    ".venv",
+    "build",
+    "dist",
+    "*.egg-info",
+]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F"]
+
+[tool.setuptools.packages.find]
+include = ["opensteer*"]
+
+[tool.setuptools.package-data]
+opensteer = [
+    "agent_skills/SKILL.md",
+    "agent_skills/interaction-skills/*.md",
+]
