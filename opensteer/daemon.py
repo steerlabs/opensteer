@@ -51,7 +51,6 @@ PROFILES = [
     Path.home() / "AppData/Local/Microsoft/Edge Dev/User Data",
     Path.home() / "AppData/Local/Microsoft/Edge SxS/User Data",
 ]
-INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 MARK_TAB_JS = "if(!document.title.startsWith('\U0001f7e2'))document.title='\U0001f7e2 '+document.title"
 OPENSTEER_API = (os.environ.get("OPENSTEER_API") or "https://api.opensteer.com").rstrip("/")
 REMOTE_ID = os.environ.get("OPENSTEER_BROWSER_ID")
@@ -80,6 +79,10 @@ def _redact_ws_url(url):
 
 def _opensteer(path, method, body=None, timeout=15):
     return request_json(OPENSTEER_API, API_KEY or "", path, method, body, timeout=timeout)
+
+
+def has_session_scoped_targets():
+    return bool(REMOTE_ID or os.environ.get("OPENSTEER_PROVIDER") == "cloud")
 
 
 def refresh_remote_cdp_ws_url():
@@ -146,10 +149,6 @@ def stop_remote():
         log(f"stopped remote browser {REMOTE_ID}")
     except Exception as e:
         log(f"stop_remote failed ({REMOTE_ID}): {e}")
-
-
-def is_real_page(t):
-    return t["type"] == "page" and not t.get("url", "").startswith(INTERNAL)
 
 
 def parse_surface_target_id(value):
@@ -283,11 +282,11 @@ class BrowserSession:
 
     def set_session(self, session_id, target_id=None):
         self.clear_session()
+        if target_id:
+            self.claim_target(target_id, active=True)
         self.session = session_id
         if session_id:
             self.broker.session_by_id[session_id] = self
-        if target_id:
-            self.claim_target(target_id, active=True)
 
     def record_target_result(self, method, params, result):
         if method == "Target.createTarget":
@@ -303,19 +302,60 @@ class BrowserSession:
             if sid := params.get("sessionId"):
                 self.broker.session_by_id.pop(sid, None)
 
-    def _choose_target(self, targets):
+    def _saved_target_candidates(self):
+        seen = set()
+        for target_id in [self.target_id, *self.focus_stack, *self.owned_target_ids]:
+            if target_id and target_id not in seen:
+                seen.add(target_id)
+                yield target_id
+
+    def _prune_missing_targets(self, live_target_ids):
+        old_state = (
+            self.target_id,
+            list(self.owned_target_ids),
+            dict(self.opener_by_target_id),
+            list(self.focus_stack),
+        )
+
+        if self.target_id not in live_target_ids:
+            self.target_id = None
+
+        self.owned_target_ids = [t for t in self.owned_target_ids if t in live_target_ids]
+        if self.target_id and self.target_id not in self.owned_target_ids:
+            self.owned_target_ids.append(self.target_id)
+
+        owned = set(self.owned_target_ids)
+        self.focus_stack = [t for t in self.focus_stack if t in owned]
+        self.opener_by_target_id = {
+            target_id: opener_id
+            for target_id, opener_id in self.opener_by_target_id.items()
+            if target_id in owned and opener_id in owned
+        }
+
+        new_state = (
+            self.target_id,
+            list(self.owned_target_ids),
+            dict(self.opener_by_target_id),
+            list(self.focus_stack),
+        )
+        if new_state != old_state:
+            self._save_state()
+
+    def _saved_page_targets(self, targets):
         pages = [t for t in targets if t.get("type") == "page"]
         by_id = {t["targetId"]: t for t in pages if t.get("targetId")}
-        if self.target_id in by_id:
-            return by_id[self.target_id]
-        for target_id in self.owned_target_ids:
+        self._prune_missing_targets(set(by_id))
+        saved = []
+        for target_id in self._saved_target_candidates():
             if target_id in by_id:
-                return by_id[target_id]
-        taken = self.broker.owned_target_ids(excluding=self)
-        for target in pages:
-            if target.get("targetId") not in taken and is_real_page(target):
-                return target
-        return None
+                saved.append(by_id[target_id])
+        return saved
+
+    def _single_session_scoped_page(self, targets):
+        if not has_session_scoped_targets():
+            return None
+        pages = [t for t in targets if t.get("type") == "page" and t.get("targetId")]
+        return pages[0] if len(pages) == 1 else None
 
     async def attach_target(self, target):
         target_id = target["targetId"]
@@ -335,11 +375,23 @@ class BrowserSession:
     async def attach_first_page(self):
         async with self.broker.target_lock:
             targets = (await self.broker.send_cdp("Target.getTargets"))["targetInfos"]
-            target = self._choose_target(targets)
-            if not target:
-                tid = (await self.broker.send_cdp("Target.createTarget", {"url": "about:blank"}))["targetId"]
-                self._log(f"no unowned real pages found, created about:blank ({tid})")
-                target = {"targetId": tid, "url": "about:blank", "type": "page"}
+            for target in self._saved_page_targets(targets):
+                try:
+                    return await self.attach_target(target)
+                except Exception as e:
+                    target_id = target.get("targetId")
+                    self._log(f"attach saved target {target_id}: {e}")
+                    self._forget_target_local(target_id)
+            if target := self._single_session_scoped_page(targets):
+                try:
+                    self._log(f"attaching session-scoped initial target {target['targetId']}")
+                    return await self.attach_target(target)
+                except Exception as e:
+                    target_id = target.get("targetId")
+                    self._log(f"attach session-scoped target {target_id}: {e}")
+            tid = (await self.broker.send_cdp("Target.createTarget", {"url": "about:blank"}))["targetId"]
+            self._log(f"no saved pages found, created about:blank ({tid})")
+            target = {"targetId": tid, "url": "about:blank", "type": "page"}
             return await self.attach_target(target)
 
     def on_event(self, method, params, session_id=None):

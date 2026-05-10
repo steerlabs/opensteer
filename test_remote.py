@@ -363,6 +363,8 @@ def test_broker_start_refreshes_expired_remote_grant_and_session_attaches_page(t
                         }
                     ]
                 }
+            if method == "Target.createTarget":
+                return {"targetId": "target-blank"}
             if method == "Target.attachToTarget":
                 return {"sessionId": "cdp-session-1"}
             return {}
@@ -405,6 +407,11 @@ def test_broker_start_refreshes_expired_remote_grant_and_session_attaches_page(t
         {"targetId": "target-1", "flatten": True},
         None,
     ) in calls
+    assert (
+        "Target.createTarget",
+        {"url": "about:blank"},
+        None,
+    ) not in calls
     assert ("Page.enable", None, "cdp-session-1") in calls
     assert ("DOM.enable", None, "cdp-session-1") in calls
     assert ("Runtime.enable", None, "cdp-session-1") in calls
@@ -477,7 +484,7 @@ def test_session_prefers_saved_active_target_on_attach(tmp_path):
     ) in calls
 
 
-def test_session_falls_back_when_saved_target_is_gone(tmp_path):
+def test_session_creates_blank_when_saved_targets_are_gone(tmp_path):
     state = tmp_path / "state.json"
     state.write_text(
         json.dumps(
@@ -510,11 +517,13 @@ def test_session_falls_back_when_saved_target_is_gone(tmp_path):
             if method == "Target.getTargets":
                 return {
                     "targetInfos": [
-                        {"targetId": "target-1", "type": "page", "url": "https://fallback.test"},
+                        {"targetId": "target-1", "type": "page", "url": "https://existing.test"},
                     ]
                 }
+            if method == "Target.createTarget":
+                return {"targetId": "created-1"}
             if method == "Target.attachToTarget":
-                return {"sessionId": "fallback-session"}
+                return {"sessionId": f"session-for-{params['targetId']}"}
             return {}
 
     with (
@@ -528,16 +537,142 @@ def test_session_falls_back_when_saved_target_is_gone(tmp_path):
         session = broker.get_session("work")
         asyncio.run(session.attach_first_page())
 
-    assert session.target_id == "target-1"
-    assert session.session == "fallback-session"
+    assert session.target_id == "created-1"
+    assert session.session == "session-for-created-1"
+    assert (
+        "Target.attachToTarget",
+        {"targetId": "created-1", "flatten": True},
+        None,
+    ) in calls
     assert (
         "Target.attachToTarget",
         {"targetId": "target-1", "flatten": True},
         None,
+    ) not in calls
+    assert json.loads(state.read_text())["owned_target_ids"] == ["created-1"]
+
+
+def test_cloud_session_attaches_single_initial_target_without_extra_blank(tmp_path):
+    calls = []
+
+    class NeverDoneTask:
+        def done(self):
+            return False
+
+    class EventRegistry:
+        async def handle_event(self, method, params, session_id=None):
+            return None
+
+    class FakeCDPClient:
+        def __init__(self, url):
+            self._event_registry = EventRegistry()
+            self._message_handler_task = NeverDoneTask()
+
+        async def start(self):
+            pass
+
+        async def send_raw(self, method, params=None, session_id=None):
+            calls.append((method, params, session_id))
+            if method == "Target.getTargets":
+                return {
+                    "targetInfos": [
+                        {"targetId": "cloud-root", "type": "page", "url": "about:blank"},
+                    ]
+                }
+            if method == "Target.createTarget":
+                raise AssertionError("cloud session already has one controller-owned target")
+            if method == "Target.attachToTarget":
+                return {"sessionId": f"session-for-{params['targetId']}"}
+            return {}
+
+    with (
+        patch.dict(os.environ, {"OPENSTEER_PROVIDER": "cloud"}, clear=False),
+        patch.object(daemon, "REMOTE_ID", None),
+        patch.object(daemon, "get_ws_url", return_value="ws://test"),
+        patch.object(daemon, "CDPClient", FakeCDPClient),
+        patch.object(daemon, "session_state_path", return_value=str(tmp_path / "state.json")),
+        patch.object(daemon, "log"),
+    ):
+        broker = daemon.BrowserBroker()
+        asyncio.run(broker.start())
+        session = broker.get_session("work")
+        asyncio.run(session.attach_first_page())
+
+    assert session.target_id == "cloud-root"
+    assert session.session == "session-for-cloud-root"
+    assert (
+        "Target.attachToTarget",
+        {"targetId": "cloud-root", "flatten": True},
+        None,
     ) in calls
 
 
-def test_broker_keeps_second_name_off_first_names_owned_tab(tmp_path):
+def test_session_prefers_saved_owned_target_when_active_target_is_gone(tmp_path):
+    state = tmp_path / "state.json"
+    state.write_text(
+        json.dumps(
+            {
+                "active_target_id": "closed-target",
+                "owned_target_ids": ["closed-target", "target-2"],
+                "focus_stack": ["target-2", "closed-target"],
+            }
+        )
+    )
+    calls = []
+
+    class NeverDoneTask:
+        def done(self):
+            return False
+
+    class EventRegistry:
+        async def handle_event(self, method, params, session_id=None):
+            return None
+
+    class FakeCDPClient:
+        def __init__(self, url):
+            self._event_registry = EventRegistry()
+            self._message_handler_task = NeverDoneTask()
+
+        async def start(self):
+            pass
+
+        async def send_raw(self, method, params=None, session_id=None):
+            calls.append((method, params, session_id))
+            if method == "Target.getTargets":
+                return {
+                    "targetInfos": [
+                        {"targetId": "target-1", "type": "page", "url": "https://existing.test"},
+                        {"targetId": "target-2", "type": "page", "url": "https://owned.test"},
+                    ]
+                }
+            if method == "Target.createTarget":
+                raise AssertionError("should not create a new tab when a saved owned target is live")
+            if method == "Target.attachToTarget":
+                return {"sessionId": f"session-for-{params['targetId']}"}
+            return {}
+
+    with (
+        patch.object(daemon, "get_ws_url", return_value="ws://test"),
+        patch.object(daemon, "CDPClient", FakeCDPClient),
+        patch.object(daemon, "session_state_path", return_value=str(state)),
+        patch.object(daemon, "log"),
+    ):
+        broker = daemon.BrowserBroker()
+        asyncio.run(broker.start())
+        session = broker.get_session("work")
+        asyncio.run(session.attach_first_page())
+
+    assert session.target_id == "target-2"
+    assert session.session == "session-for-target-2"
+    assert (
+        "Target.attachToTarget",
+        {"targetId": "target-2", "flatten": True},
+        None,
+    ) in calls
+    assert json.loads(state.read_text())["owned_target_ids"] == ["target-2"]
+
+
+def test_broker_creates_new_tabs_for_new_names(tmp_path):
     calls = []
     created = []
 
@@ -593,19 +728,24 @@ def test_broker_keeps_second_name_off_first_names_owned_tab(tmp_path):
     ):
         first, second = asyncio.run(run())
 
-    assert first.target_id == "target-1"
-    assert second.target_id == "created-1"
-    assert created == ["created-1"]
-    assert (
-        "Target.attachToTarget",
-        {"targetId": "target-1", "flatten": True},
-        None,
-    ) in calls
+    assert first.target_id == "created-1"
+    assert second.target_id == "created-2"
+    assert created == ["created-1", "created-2"]
     assert (
         "Target.attachToTarget",
         {"targetId": "created-1", "flatten": True},
         None,
     ) in calls
+    assert (
+        "Target.attachToTarget",
+        {"targetId": "created-2", "flatten": True},
+        None,
+    ) in calls
+    assert (
+        "Target.attachToTarget",
+        {"targetId": "target-1", "flatten": True},
+        None,
+    ) not in calls
 
 
 def test_broker_serializes_parallel_first_attach_target_ownership(tmp_path):
@@ -667,9 +807,13 @@ def test_broker_serializes_parallel_first_attach_target_ownership(tmp_path):
     ):
         first, second = asyncio.run(run())
 
-    assert first.target_id == "target-1"
-    assert second.target_id == "created-1"
-    assert created == ["created-1"]
+    assert {first.target_id, second.target_id} == {"created-1", "created-2"}
+    assert created == ["created-1", "created-2"]
+    assert (
+        "Target.attachToTarget",
+        {"targetId": "target-1", "flatten": True},
+        None,
+    ) not in calls
 
 
 def test_relay_shutdown_does_not_stop_shared_broker():
@@ -747,6 +891,40 @@ def test_set_session_claims_active_target(tmp_path):
     assert response == {"session_id": "session-1", "target_id": "target-1"}
     assert session.target_id == "target-1"
     assert session.owned_target_ids == ["target-1"]
+
+
+def test_set_session_keeps_new_session_when_active_target_changes(tmp_path):
+    class NeverDoneTask:
+        def done(self):
+            return False
+
+    class FakeCDP:
+        _message_handler_task = NeverDoneTask()
+
+        async def send_raw(self, method, params=None, session_id=None):
+            return {}
+
+    async def run():
+        broker = daemon.BrowserBroker()
+        broker.cdp = FakeCDP()
+        session = broker.get_session("work")
+        session.target_id = "old-target"
+        session.owned_target_ids = ["old-target"]
+        return session, await session.handle(
+            {
+                "meta": "set_session",
+                "session_id": "session-1",
+                "target_id": "target-1",
+            }
+        )
+
+    with patch.object(daemon, "session_state_path", return_value=str(tmp_path / "state.json")):
+        session, response = asyncio.run(run())
+
+    assert response == {"session_id": "session-1", "target_id": "target-1"}
+    assert session.session == "session-1"
+    assert session.target_id == "target-1"
+    assert session.owned_target_ids == ["old-target", "target-1"]
 
 
 def test_target_create_claims_without_changing_active_target(tmp_path):

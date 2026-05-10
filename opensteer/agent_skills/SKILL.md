@@ -70,7 +70,7 @@ Use them when a page mechanic is tricky. Put domain-specific selectors, workflow
 - Use `js(...)` for DOM inspection, extraction, and page API discovery.
 - Use `cdp("Domain.method", ...)` for raw CDP operations not covered by helpers.
 - After navigation, call `wait_for_load()`.
-- For stale or internal tabs, call `ensure_real_tab()`.
+- Navigate the current Opensteer-owned tab by default; use `list_tabs()` and `switch_tab(target_id)` only when the user explicitly asks for a specific existing tab.
 - If a page redirects to login, stop and ask the user. Do not type credentials from screenshots.
 
 ## Boundaries

@@ -2,17 +2,19 @@
 
 ## The omnibox popup problem
 
-When Chrome opens fresh, the only CDP `type: "page"` targets are `chrome://inspect` and `chrome://omnibox-popup.top-chrome/` (a 1px invisible viewport). If the daemon attaches to the omnibox popup, all subsequent work — including `new_tab()` and `goto_url()` — happens on tabs that exist in CDP but may not be visible in the Chrome UI.
+When Chrome opens fresh, the only CDP `type: "page"` targets are often `chrome://inspect` and `chrome://omnibox-popup.top-chrome/` (a 1px invisible viewport). Opensteer avoids taking over arbitrary browser pages by restoring only tabs already owned by the current `OPENSTEER_NAME`; if none are still live, it creates a fresh `about:blank` tab and controls that.
 
-The daemon's `attach_first_page()` handles this by creating an `about:blank` tab when no real pages exist. If you still end up on an invisible tab, use `switch_tab()` which calls `Target.activateTarget` to bring the tab to front.
+For OpenSteer-managed cloud CDP grants, visible targets are already scoped by the runtime proxy; if exactly one controller-owned page exists, the daemon attaches to that page instead of creating a duplicate blank tab.
+
+If the user asks you to control a specific existing tab, use `list_tabs()` to find it and `switch_tab(target_id)` to explicitly attach to it. If you still end up on an invisible tab, `switch_tab()` calls `Target.activateTarget` to bring the selected tab to front.
 
 ## Startup sequence
 
 1. Check if a daemon is already running with `daemon_alive()`
 2. If stale sockets exist but daemon is dead, clean them up
-3. List open tabs with `list_tabs()` to see what's available
-4. `ensure_real_tab()` attaches to a real page
-5. `switch_tab(target_id)` both attaches AND activates (brings to front)
+3. Let the daemon attach to the current Opensteer-owned tab or create a fresh `about:blank`
+4. Navigate the owned tab with `goto_url()`
+5. Only use `list_tabs()` and `switch_tab(target_id)` when the user explicitly wants an existing tab
 
 ```python
 if not daemon_alive():
@@ -23,11 +25,7 @@ if not daemon_alive():
             os.unlink(f)
     ensure_daemon()
 
-tabs = list_tabs()
-for t in tabs:
-    print(t["url"][:60])
-
-tab = ensure_real_tab()
+goto_url("https://example.com")
 ```
 
 ## Bringing Chrome to front
@@ -41,9 +39,8 @@ subprocess.run(["osascript", "-e", 'tell application "Google Chrome" to activate
 
 ## Navigating
 
-Prefer navigating an existing tab over `new_tab()`. Tabs created via CDP's `Target.createTarget` are visible but may open behind the active tab.
+Prefer navigating the current Opensteer-owned tab. Tabs created via CDP's `Target.createTarget` are visible but may open behind the active tab.
 
 ```python
-tab = ensure_real_tab()
 goto_url("https://example.com")
 ```
