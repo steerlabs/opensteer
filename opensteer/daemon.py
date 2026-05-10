@@ -355,7 +355,12 @@ class BrowserSession:
         if not has_session_scoped_targets():
             return None
         pages = [t for t in targets if t.get("type") == "page" and t.get("targetId")]
-        return pages[0] if len(pages) == 1 else None
+        if len(pages) != 1:
+            return None
+        target = pages[0]
+        if target["targetId"] in self.broker.owned_target_ids(excluding=self):
+            return None
+        return target
 
     async def attach_target(self, target):
         target_id = target["targetId"]

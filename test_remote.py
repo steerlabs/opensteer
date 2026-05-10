@@ -607,6 +607,85 @@ def test_cloud_session_attaches_single_initial_target_without_extra_blank(tmp_pa
     ) in calls
 
 
+def test_cloud_session_creates_blank_instead_of_stealing_owned_initial_target(tmp_path):
+    calls = []
+    created = []
+
+    class NeverDoneTask:
+        def done(self):
+            return False
+
+    class EventRegistry:
+        async def handle_event(self, method, params, session_id=None):
+            return None
+
+    class FakeCDPClient:
+        def __init__(self, url):
+            self._event_registry = EventRegistry()
+            self._message_handler_task = NeverDoneTask()
+
+        async def start(self):
+            pass
+
+        async def send_raw(self, method, params=None, session_id=None):
+            calls.append((method, params, session_id))
+            if method == "Target.getTargets":
+                return {
+                    "targetInfos": [
+                        {"targetId": "cloud-root", "type": "page", "url": "about:blank"},
+                    ]
+                }
+            if method == "Target.createTarget":
+                target_id = f"created-{len(created) + 1}"
+                created.append(target_id)
+                return {"targetId": target_id}
+            if method == "Target.attachToTarget":
+                return {"sessionId": f"session-for-{params['targetId']}"}
+            return {}
+
+    def state_for(name=None, env=None):
+        return str(tmp_path / f"{name or 'default'}.json")
+
+    async def run():
+        broker = daemon.BrowserBroker()
+        await broker.start()
+        first = broker.get_session("first")
+        second = broker.get_session("second")
+        await first.attach_first_page()
+        await second.attach_first_page()
+        return first, second
+
+    with (
+        patch.dict(os.environ, {"OPENSTEER_PROVIDER": "cloud"}, clear=False),
+        patch.object(daemon, "REMOTE_ID", None),
+        patch.object(daemon, "get_ws_url", return_value="ws://test"),
+        patch.object(daemon, "CDPClient", FakeCDPClient),
+        patch.object(daemon, "session_state_path", side_effect=state_for),
+        patch.object(daemon, "log"),
+    ):
+        first, second = asyncio.run(run())
+
+    assert first.target_id == "cloud-root"
+    assert first.session == "session-for-cloud-root"
+    assert first.owned_target_ids == ["cloud-root"]
+    assert second.target_id == "created-1"
+    assert second.session == "session-for-created-1"
+    assert second.owned_target_ids == ["created-1"]
+    assert created == ["created-1"]
+    assert calls.count(
+        (
+            "Target.attachToTarget",
+            {"targetId": "cloud-root", "flatten": True},
+            None,
+        )
+    ) == 1
+    assert (
+        "Target.attachToTarget",
+        {"targetId": "created-1", "flatten": True},
+        None,
+    ) in calls
+
+
 def test_session_prefers_saved_owned_target_when_active_target_is_gone(tmp_path):
     state = tmp_path / "state.json"
     state.write_text(
