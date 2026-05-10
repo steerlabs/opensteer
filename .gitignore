@@ -1,48 +1,11 @@
-# Dependencies
-node_modules/
-.pnpm-store/
-.pnpm-debug.log*
-package-lock.json
-bun.lock
-
-# Build artifacts
-dist/
-coverage/
-.turbo/
-*.tsbuildinfo
-*.tgz
+__pycache__/
+*.pyc
 *.log
-artifacts/
-packages/opensteer/skills/
-
-# Environment and local overrides
 .env
-.env.*
-!.env.example
-*.local
-
-# Local runtime state
-.opensteer/
-**/.opensteer/
-$HOME/
-/workspace.json
-/browser/
-/live/
-/observations/
-/registry/
-/traces/
-
-# Local editor and agent state
-.codex/
-.claude/
-.agents/
-.vscode/
-.idea/
-skills-lock.json
-
-# Test artifacts
-playwright-report/
-test-results/
-
-# OS files
-.DS_Store
+.venv/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+uv.lock
+*.egg-info/

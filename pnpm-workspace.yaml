@@ -1,8 +1,0 @@
-packages:
-  - "packages/browser-core"
-  - "packages/conformance"
-  - "packages/engine-abp"
-  - "packages/engine-playwright"
-  - "packages/opensteer"
-  - "packages/protocol"
-  - "packages/runtime-core"
