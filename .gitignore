@@ -1,11 +1,40 @@
-__pycache__/
-*.pyc
-*.log
+# Local environment
 .env
+.env.*
+!.env.example
 .venv/
+venv/
+env/
+
+# Opensteer and agent runtime state
+.opensteer/
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.pyre/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+
+# Build artifacts
 build/
 dist/
-uv.lock
-*.egg-info/
+site/
+
+# JavaScript tooling leftovers
+node_modules/
+.pnpm-store/
+
+# Logs and local OS/editor files
+*.log
+dump.rdb
+.DS_Store
+.idea/
+.vscode/

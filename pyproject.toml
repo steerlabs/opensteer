@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,6 +8,22 @@ version = "0.1.0"
 description = "Global browser-control runtime and agent skills for Opensteer."
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Opensteer contributors" },
+]
+keywords = ["agents", "browser-automation", "cdp", "tools", "runtime"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+]
 dependencies = [
     "cdp-use==1.4.5",
     "fetch-use==0.4.0",
@@ -23,6 +39,11 @@ dev = [
 
 [project.scripts]
 opensteer = "opensteer.run:main"
+
+[project.urls]
+Homepage = "https://opensteer.com"
+Repository = "https://github.com/steerlabs/opensteer"
+Issues = "https://github.com/steerlabs/opensteer/issues"
 
 [tool.pytest.ini_options]
 testpaths = ["."]

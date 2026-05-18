@@ -19,6 +19,41 @@ def test_get_name_uses_only_opensteer_name():
     assert paths.get_name({}) == "default"
 
 
+def test_session_paths_include_optional_cloud_agent_scope():
+    scoped = paths.session_paths(
+        env={
+            "OPENSTEER_NAME": "linkedin",
+            "OPENSTEER_SESSION_SCOPE": "cag_agent_1",
+        }
+    )
+    other_agent = paths.session_paths(
+        env={
+            "OPENSTEER_NAME": "linkedin",
+            "OPENSTEER_SESSION_SCOPE": "cag_agent_2",
+        }
+    )
+    unscoped = paths.session_paths(env={"OPENSTEER_NAME": "linkedin"})
+    empty_scope = paths.session_paths(
+        env={"OPENSTEER_NAME": "linkedin", "OPENSTEER_SESSION_SCOPE": " "}
+    )
+
+    assert scoped != other_agent
+    assert scoped != unscoped
+    assert unscoped == (
+        "/tmp/opensteer-linkedin.sock",
+        "/tmp/opensteer-linkedin.pid",
+        "/tmp/opensteer-linkedin.log",
+    )
+    assert empty_scope == unscoped
+    assert scoped[0].endswith("-linkedin.sock")
+    assert paths.session_state_path(
+        env={
+            "OPENSTEER_NAME": "linkedin",
+            "OPENSTEER_SESSION_SCOPE": "cag_agent_1",
+        }
+    ).endswith("-linkedin.state.json")
+
+
 def test_start_remote_daemon_uses_opensteer_api_cdp_grant():
     calls = []
 
@@ -56,6 +91,47 @@ def test_start_remote_daemon_uses_opensteer_api_cdp_grant():
     assert kwargs["env"]["OPENSTEER_BROWSER_ID"] == "session-1"
     assert kwargs["env"]["OPENSTEER_CDP_WS"] == "wss://runtime.test/ws/cdp/session-1?token=secret"
     show_live_url.assert_called_once_with("https://cloud.test/browsers/session-1")
+
+
+def test_start_remote_daemon_preserves_supplied_session_scope_env():
+    calls = []
+
+    def fake_opensteer(path, method, body=None):
+        calls.append((path, method, body))
+        return {
+            "id": "session-1",
+            "cdpWsUrl": "wss://runtime.test/ws/cdp/session-1?token=secret",
+        }
+
+    with (
+        patch("opensteer.runtime.daemon_alive", return_value=False) as daemon_alive,
+        patch("opensteer.runtime._opensteer", side_effect=fake_opensteer),
+        patch("opensteer.runtime.ensure_daemon") as ensure_daemon,
+        patch("opensteer.runtime._show_live_url"),
+    ):
+        runtime.start_remote_daemon(
+            "work",
+            env={
+                "OPENSTEER_SESSION_SCOPE": "cag_agent_1",
+                runtime.OPENSTEER_CLOUD_PROFILE_ID: " bp_env ",
+            },
+        )
+
+    assert calls == [
+        (
+            "/v2/opensteer/sessions",
+            "POST",
+            {
+                "profileId": "bp_env",
+                "name": "work",
+            },
+        )
+    ]
+    assert daemon_alive.call_args.kwargs["env"]["OPENSTEER_SESSION_SCOPE"] == "cag_agent_1"
+    kwargs = ensure_daemon.call_args.kwargs
+    assert kwargs["name"] == "work"
+    assert kwargs["env"]["OPENSTEER_SESSION_SCOPE"] == "cag_agent_1"
+    assert kwargs["env"]["OPENSTEER_BROWSER_ID"] == "session-1"
 
 
 def test_start_remote_daemon_uses_default_cloud_profile_id_env():
@@ -247,6 +323,35 @@ def test_ensure_daemon_sets_opensteer_name_for_child():
     assert popen_calls[0][0][0][:3] == [sys.executable, "-m", "opensteer.daemon"]
 
 
+def test_ensure_daemon_uses_supplied_session_scope_for_path_checks():
+    popen_calls = []
+
+    class FakeProcess:
+        def poll(self):
+            return None
+
+    def fake_popen(*args, **kwargs):
+        popen_calls.append((args, kwargs))
+        return FakeProcess()
+
+    with (
+        patch("opensteer.runtime.daemon_alive", side_effect=[False, True]) as daemon_alive,
+        patch("subprocess.Popen", side_effect=fake_popen),
+    ):
+        runtime.ensure_daemon(
+            name="linkedin",
+            env={"OPENSTEER_SESSION_SCOPE": "cag_agent_1"},
+        )
+
+    assert daemon_alive.call_count == 2
+    for call in daemon_alive.call_args_list:
+        assert call.kwargs["env"]["OPENSTEER_NAME"] == "linkedin"
+        assert call.kwargs["env"]["OPENSTEER_SESSION_SCOPE"] == "cag_agent_1"
+    env = popen_calls[0][1]["env"]
+    assert env["OPENSTEER_NAME"] == "linkedin"
+    assert env["OPENSTEER_SESSION_SCOPE"] == "cag_agent_1"
+
+
 def test_ensure_daemon_auto_starts_remote_browser_when_configured():
     with (
         patch.dict(os.environ, {"OPENSTEER_AUTO_REMOTE": "1", "OPENSTEER_API_KEY": "osk_test"}, clear=False),
@@ -256,7 +361,9 @@ def test_ensure_daemon_auto_starts_remote_browser_when_configured():
     ):
         runtime.ensure_daemon(name="work")
 
-    start_remote.assert_called_once_with(name="work")
+    start_remote.assert_called_once()
+    assert start_remote.call_args.kwargs["name"] == "work"
+    assert start_remote.call_args.kwargs["env"]["OPENSTEER_AUTO_REMOTE"] == "1"
     popen.assert_not_called()
 
 
@@ -269,7 +376,9 @@ def test_ensure_daemon_auto_remote_uses_default_session_name():
     ):
         runtime.ensure_daemon()
 
-    start_remote.assert_called_once_with(name="default")
+    start_remote.assert_called_once()
+    assert start_remote.call_args.kwargs["name"] == "default"
+    assert start_remote.call_args.kwargs["env"]["OPENSTEER_AUTO_REMOTE"] == "true"
     popen.assert_not_called()
 
 
@@ -1158,8 +1267,8 @@ def test_daemon_health_reports_dead_receiver_without_sending_cdp():
 def test_ensure_daemon_reconnects_stale_daemon_before_restart():
     requests = []
 
-    def fake_daemon_request(req, name=None, timeout=3):
-        requests.append((req, name, timeout))
+    def fake_daemon_request(req, name=None, timeout=3, env=None):
+        requests.append((req, name, timeout, env))
         if req["meta"] == "health":
             return {"ok": False, "error": "WebSocket connection closed"}
         if req["meta"] == "reconnect":
@@ -1175,19 +1284,28 @@ def test_ensure_daemon_reconnects_stale_daemon_before_restart():
 
     restart.assert_not_called()
     assert requests == [
-        ({"meta": "health"}, "work", 5),
+        ({"meta": "health"}, "work", 5, requests[0][3]),
         (
             {"meta": "reconnect", "reason": "WebSocket connection closed"},
             "work",
             10,
+            requests[1][3],
         ),
     ]
+    assert requests[0][3]["OPENSTEER_NAME"] == "work"
+    assert requests[1][3]["OPENSTEER_NAME"] == "work"
 
 
 def test_ensure_daemon_surfaces_remote_reconnect_error_without_local_restart():
-    def fake_daemon_request(req, name=None, timeout=3):
+    def fake_daemon_request(req, name=None, timeout=3, env=None):
         if req["meta"] == "health":
-            return {"ok": False, "error": {"code": "CDP_RECEIVER_STOPPED", "message": "CDP receiver stopped."}}
+            return {
+                "ok": False,
+                "error": {
+                    "code": "CDP_RECEIVER_STOPPED",
+                    "message": "CDP receiver stopped.",
+                },
+            }
         if req["meta"] == "reconnect":
             return {
                 "error": {

@@ -1,17 +1,16 @@
 # Opensteer
 
-Opensteer is a global browser-control runtime for agents and harness packs.
+Opensteer is a small runtime for agent-controlled browsers and local tool execution.
 
-It provides:
+It lets agents:
 
-- CDP browser helpers
-- Local browser attach
-- Named browser sessions
-- Opensteer Cloud browser attach
-- Profile helper functions
-- Generic browser interaction skills
+- control a local or remote browser through Chrome DevTools Protocol;
+- run local Python snippets with browser helpers already imported;
+- call your local Python functions as task tools from a harness pack;
+- install generic browser interaction skills for common web mechanics.
 
-Harness packs provide domain-specific tools, selectors, workflows, databases, setup docs, and agent skills.
+Opensteer stays generic. Your project or harness pack owns domain-specific tools,
+selectors, workflows, storage, setup, and agent instructions.
 
 ## Install
 
@@ -33,31 +32,88 @@ curl -fsSL https://opensteer.com/install.sh | sh
 opensteer -c "print(page_info())"
 ```
 
+Python snippets run locally and start the daemon on demand:
+
+```bash
+opensteer -c "new_tab('https://example.com'); wait_for_load(); print(page_info())"
+```
+
+Import the same helpers from local code:
+
 ```python
 from opensteer.helpers import goto_url, js, click_at_xy, type_text, wait_for_load
 ```
 
-Named browser sessions are routed with `OPENSTEER_NAME`:
+Useful helpers include:
+
+- `goto_url(url)`
+- `page_info()`
+- `capture_screenshot(path)`
+- `click_at_xy(x, y)`
+- `type_text(text)`
+- `press_key(key)`
+- `js(expression)`
+- `cdp("Domain.method", ...)`
+- `new_tab(url)`
+- `list_tabs()`
+
+## Local Tools
+
+Opensteer can run local code that agents use as tools. Put project-specific
+functions in your own harness pack, then call Opensteer helpers from those
+functions.
+
+```python
+from opensteer.helpers import goto_url, js, wait_for_load
+
+def read_page_title(url: str) -> str:
+    goto_url(url)
+    wait_for_load()
+    return js("document.title")
+```
+
+Do not put secrets, private data, or project-specific workflows in Opensteer
+itself. Keep those in the harness pack or the user's local environment.
+
+## Sessions
+
+Route commands to named browser sessions with `OPENSTEER_NAME`:
 
 ```bash
-OPENSTEER_NAME=linkedin opensteer -c "new_tab('https://linkedin.com')"
+OPENSTEER_NAME=work opensteer -c "new_tab('https://example.com')"
 ```
 
-## Harness Packs
+Attach to an Opensteer Cloud browser when `OPENSTEER_API_KEY` is set:
 
-Harness packs depend on the installed `opensteer` package. They should not mutate Opensteer runtime files.
-
-A pack can import helpers directly:
-
-```python
-from opensteer.helpers import goto_url, js, click_at_xy
+```bash
+opensteer -c "start_remote_daemon('remote', profileId='bp_...')"
+OPENSTEER_NAME=remote opensteer -c "print(page_info())"
 ```
 
-Or provide a small local shim:
+## Agent Skills
 
-```python
-# actions/helpers.py
-from opensteer.helpers import *
+Install generic browser interaction skills:
+
+```bash
+opensteer skills install
 ```
 
-Opensteer stays generic. Pack-specific browser workflows, selectors, API clients, and tools live in the harness pack.
+These cover mechanics such as dialogs, downloads, iframes, screenshots, tabs,
+uploads, scrolling, and network requests.
+
+## Development
+
+```bash
+uv sync
+uv run pytest
+uv run ruff check .
+```
+
+## Security
+
+Do not commit browser profiles, cookies, local workspaces, `.env` files, API
+keys, or generated runtime artifacts. See [SECURITY.md](SECURITY.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE).

@@ -32,35 +32,35 @@ def _auto_remote_enabled(env=None):
     return _env_truthy(value)
 
 
-def _paths(name):
-    sock, pid, _ = session_paths(name or NAME)
+def _paths(name, env=None):
+    sock, pid, _ = session_paths(name or get_name(env) or NAME, env=env)
     return sock, pid
 
 
-def _log_tail(name):
-    _, _, p = session_paths(name or NAME)
+def _log_tail(name, env=None):
+    _, _, p = session_paths(name or get_name(env) or NAME, env=env)
     try:
         return Path(p).read_text().strip().splitlines()[-1]
     except (FileNotFoundError, IndexError):
         return None
 
 
-def daemon_alive(name=None):
+def daemon_alive(name=None, env=None):
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(1)
-        s.connect(_paths(name)[0])
+        s.connect(_paths(name, env=env)[0])
         s.close()
         return True
     except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
         return False
 
 
-def _daemon_request(req, name=None, timeout=3):
+def _daemon_request(req, name=None, timeout=3, env=None):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(timeout)
     try:
-        s.connect(_paths(name)[0])
+        s.connect(_paths(name, env=env)[0])
         s.sendall((json.dumps(req) + "\n").encode())
         data = b""
         while not data.endswith(b"\n"):
@@ -73,8 +73,8 @@ def _daemon_request(req, name=None, timeout=3):
         s.close()
 
 
-def _error_from_daemon_tail(name):
-    return error_from_log_line(_log_tail(name))
+def _error_from_daemon_tail(name, env=None):
+    return error_from_log_line(_log_tail(name, env=env))
 
 
 def _needs_browser_setup(error, msg):
@@ -96,16 +96,26 @@ def _should_surface_reconnect_error(error):
 
 def ensure_daemon(wait=60.0, name=None, env=None):
     """Start or reconnect the local session relay for a named browser session."""
-    if daemon_alive(name):
+    child_env = {
+        **os.environ,
+        **({"OPENSTEER_NAME": name} if name else {}),
+        **(env or {}),
+    }
+    effective_name = child_env.get("OPENSTEER_NAME") or name or get_name(child_env) or NAME
+    if daemon_alive(effective_name, env=child_env):
         try:
-            health = _daemon_request({"meta": "health"}, name, timeout=5)
+            health = _daemon_request({"meta": "health"}, effective_name, timeout=5, env=child_env)
             if health.get("ok"):
                 return
             health_error = health.get("error")
             healed = _daemon_request(
-                {"meta": "reconnect", "reason": error_brief(health_error) if health_error else "runtime health probe"},
-                name,
+                {
+                    "meta": "reconnect",
+                    "reason": error_brief(health_error) if health_error else "runtime health probe",
+                },
+                effective_name,
                 timeout=10,
+                env=child_env,
             )
             if healed.get("ok"):
                 return
@@ -117,16 +127,11 @@ def ensure_daemon(wait=60.0, name=None, env=None):
             raise
         except Exception:
             pass
-        restart_daemon(name)
+        restart_daemon(effective_name, env=child_env)
 
-    child_env = {
-        **os.environ,
-        **({"OPENSTEER_NAME": name} if name else {}),
-        **(env or {}),
-    }
     local = not child_env.get("OPENSTEER_CDP_WS")
     if local and _auto_remote_enabled(child_env):
-        start_remote_daemon(name=child_env.get("OPENSTEER_NAME") or name or NAME)
+        start_remote_daemon(name=effective_name, env=child_env)
         return
 
     for attempt in (0, 1):
@@ -139,20 +144,20 @@ def ensure_daemon(wait=60.0, name=None, env=None):
         )
         deadline = time.time() + wait
         while time.time() < deadline:
-            if daemon_alive(name):
+            if daemon_alive(effective_name, env=child_env):
                 return
             if process.poll() is not None:
                 break
             time.sleep(0.2)
-        msg = _log_tail(name) or ""
-        error = _error_from_daemon_tail(name)
+        msg = _log_tail(effective_name, env=child_env) or ""
+        error = error_from_log_line(msg)
         if local and attempt == 0 and _needs_browser_setup(error, msg):
             _open_chrome_inspect()
             print(
                 "opensteer: click Allow on chrome://inspect (and tick the checkbox if shown)",
                 file=sys.stderr,
             )
-            restart_daemon(name)
+            restart_daemon(effective_name, env=child_env)
             continue
         if error:
             raise error
@@ -160,7 +165,11 @@ def ensure_daemon(wait=60.0, name=None, env=None):
             "OpenSteer daemon did not come up.",
             code="OPENSTEER_DAEMON_START_FAILED",
             source="daemon",
-            details={"name": name or NAME, "log": session_paths(name or NAME)[2], "tail": msg},
+            details={
+                "name": effective_name,
+                "log": session_paths(effective_name, env=child_env)[2],
+                "tail": msg,
+            },
         )
 
 
@@ -169,11 +178,11 @@ def stop_remote_daemon(name="remote"):
     restart_daemon(name, stop_broker=True)
 
 
-def restart_daemon(name=None, stop_broker=False):
+def restart_daemon(name=None, stop_broker=False, env=None):
     """Best-effort daemon shutdown plus socket and pid cleanup."""
     import signal
 
-    sock, pid_path = _paths(name)
+    sock, pid_path = _paths(name, env=env)
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(5)
@@ -293,17 +302,21 @@ def _resolve_profile_name(profile_name):
     return matches[0]["id"]
 
 
-def _default_cloud_profile_id():
-    value = os.environ.get(OPENSTEER_CLOUD_PROFILE_ID)
+def _default_cloud_profile_id(env=None):
+    value = (env or os.environ).get(OPENSTEER_CLOUD_PROFILE_ID)
     if not value:
         return None
     value = value.strip()
     return value or None
 
 
-def start_remote_daemon(name="remote", profileName=None, **create_kwargs):
+def start_remote_daemon(name="remote", profileName=None, env=None, **create_kwargs):
     """Provision an Opensteer Cloud browser and attach a named local relay to it."""
-    if daemon_alive(name):
+    runtime_env = {
+        **os.environ,
+        **(env or {}),
+    }
+    if daemon_alive(name, env=runtime_env):
         raise OpenSteerError(
             f"daemon {name!r} is already running",
             code="OPENSTEER_DAEMON_ALREADY_RUNNING",
@@ -316,10 +329,10 @@ def start_remote_daemon(name="remote", profileName=None, **create_kwargs):
                 "pass profileName or profileId, not both",
                 code="OPENSTEER_INVALID_ARGUMENT",
                 source="runtime",
-            )
+        )
         create_kwargs["profileId"] = _resolve_profile_name(profileName)
     elif "profileId" not in create_kwargs:
-        default_profile_id = _default_cloud_profile_id()
+        default_profile_id = _default_cloud_profile_id(runtime_env)
         if default_profile_id:
             create_kwargs["profileId"] = default_profile_id
     create_kwargs.setdefault("name", name)
@@ -336,6 +349,7 @@ def start_remote_daemon(name="remote", profileName=None, **create_kwargs):
         ensure_daemon(
             name=name,
             env={
+                **runtime_env,
                 "OPENSTEER_CDP_WS": cdp_ws_url,
                 "OPENSTEER_BROWSER_ID": browser_id,
                 "OPENSTEER_API": OPENSTEER_API,

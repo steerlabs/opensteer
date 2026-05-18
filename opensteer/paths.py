@@ -44,11 +44,19 @@ def _session_key(name):
     return urllib.parse.quote(name or "default", safe="-_.@")
 
 
+def _session_scope_key(env=None):
+    env = env or os.environ
+    scope = (env.get("OPENSTEER_SESSION_SCOPE") or "").strip()
+    if not scope:
+        return ""
+    return f"{_digest(scope)}-"
+
+
 def session_paths(name=None, env=None):
-    n = _session_key(name or get_name(env))
+    n = f"{_session_scope_key(env)}{_session_key(name or get_name(env))}"
     return f"/tmp/opensteer-{n}.sock", f"/tmp/opensteer-{n}.pid", f"/tmp/opensteer-{n}.log"
 
 
 def session_state_path(name=None, env=None):
-    n = _session_key(name or get_name(env))
+    n = f"{_session_scope_key(env)}{_session_key(name or get_name(env))}"
     return f"/tmp/opensteer-{n}.state.json"
