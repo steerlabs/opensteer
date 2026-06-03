@@ -382,7 +382,22 @@ def upload_file(selector, path):
             source="cdp",
             details={"selector": selector},
         )
-    cdp("DOM.setFileInputFiles", files=[path] if isinstance(path, str) else list(path), nodeId=nid)
+    files = [path] if isinstance(path, str) else list(path)
+    staged_files = [_stage_upload_path(file_path) for file_path in files]
+    cdp("DOM.setFileInputFiles", files=staged_files, nodeId=nid)
+
+
+def _stage_upload_path(path):
+    try:
+        response = _send({"meta": "stage_upload", "path": path})
+    except OpenSteerError as error:
+        if error.code == "OPENSTEER_DAEMON_BAD_RESPONSE" or (
+            error.code == "OPENSTEER_ERROR" and error.message in {"'method'", "method"}
+        ):
+            return path
+        raise
+    staged_path = response.get("path")
+    return staged_path if isinstance(staged_path, str) and staged_path else path
 
 
 def http_get(url, headers=None, timeout=20.0):

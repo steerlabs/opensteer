@@ -15,7 +15,7 @@ from cdp_use.client import CDPClient
 
 from .env import load_env
 from .errors import OpenSteerError, error_log_line, error_to_wire, normalize_exception
-from .http_client import request_json
+from .http_client import request_file_upload, request_json
 from .paths import broker_paths, get_name, session_paths, session_state_path
 
 
@@ -149,6 +149,34 @@ def stop_remote():
         log(f"stopped remote browser {REMOTE_ID}")
     except Exception as e:
         log(f"stop_remote failed ({REMOTE_ID}): {e}")
+
+
+def stage_remote_upload(file_path):
+    if not REMOTE_ID or not API_KEY:
+        return {"path": file_path, "staged": False}
+    if not isinstance(file_path, str) or not file_path:
+        raise OpenSteerError(
+            "Upload path is required.",
+            code="OPENSTEER_INVALID_ARGUMENT",
+            source="daemon",
+        )
+    session = urllib.parse.quote(REMOTE_ID, safe="")
+    staged = request_file_upload(
+        OPENSTEER_API,
+        API_KEY,
+        f"/v2/opensteer/sessions/{session}/uploads",
+        file_path,
+        filename=os.path.basename(file_path),
+        timeout=120,
+    )
+    remote_path = staged.get("remotePath") if isinstance(staged, dict) else None
+    if not remote_path:
+        raise OpenSteerError(
+            "OpenSteer upload staging did not return a remote path.",
+            code="OPENSTEER_API_BAD_RESPONSE",
+            source="opensteer-api",
+        )
+    return {"path": remote_path, "staged": True, "upload": staged}
 
 
 def parse_surface_target_id(value):
@@ -496,6 +524,8 @@ class BrowserSession:
             return {"surface": active}
         if meta == "switch_surface":
             return await self.switch_surface(req.get("surface_id") or req.get("target_id"))
+        if meta == "stage_upload":
+            return await asyncio.to_thread(stage_remote_upload, req.get("path"))
 
         async with self._lock:
             method = req["method"]
