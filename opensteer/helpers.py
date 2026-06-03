@@ -209,12 +209,10 @@ def _mark_tab():
 
 
 def switch_tab(target_id):
-    current = _send({"meta": "session"})
-    if current.get("session_id"):
-        try:
-            cdp("Runtime.evaluate", expression=UNMARK_TAB_JS)
-        except Exception:
-            pass
+    try:
+        cdp("Runtime.evaluate", expression=UNMARK_TAB_JS)
+    except Exception:
+        pass
     cdp("Target.activateTarget", targetId=target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
     _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
