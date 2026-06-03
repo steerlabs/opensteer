@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import mimetypes
+import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -48,6 +51,57 @@ def request_json(
             details={"method": method, "path": path, "reason": reason},
             cause=exc,
         ) from exc
+
+
+def request_file_upload(
+    api_base: str,
+    api_key: str,
+    path: str,
+    file_path: str,
+    *,
+    filename: str | None = None,
+    timeout: float = 60,
+    source: str = "opensteer-api",
+) -> Any:
+    if not api_key:
+        raise OpenSteerError("OPENSTEER_API_KEY missing", code="OPENSTEER_API_KEY_MISSING", source=source)
+
+    display_name = filename or os.path.basename(file_path) or "upload.bin"
+    media_type = mimetypes.guess_type(display_name)[0] or "application/octet-stream"
+    size = os.path.getsize(file_path)
+
+    with open(file_path, "rb") as fh:
+        req = urllib.request.Request(
+            f"{api_base.rstrip('/')}{path}",
+            method="POST",
+            data=fh,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/octet-stream",
+                "Content-Length": str(size),
+                "X-OpenSteer-Filename": urllib.parse.quote(display_name, safe=""),
+                "X-OpenSteer-Media-Type": media_type,
+            },
+        )
+        try:
+            response = urllib.request.urlopen(req, timeout=timeout)
+            try:
+                return _decode_json(response.read(), source=source, method="POST", path=path)
+            finally:
+                close = getattr(response, "close", None)
+                if close:
+                    close()
+        except urllib.error.HTTPError as exc:
+            raise _http_error(exc, method="POST", path=path, source=source) from exc
+        except urllib.error.URLError as exc:
+            reason = str(getattr(exc, "reason", None) or exc)
+            raise OpenSteerError(
+                "OpenSteer API is unreachable.",
+                code="OPENSTEER_API_UNREACHABLE",
+                source=source,
+                details={"method": "POST", "path": path, "reason": reason},
+                cause=exc,
+            ) from exc
 
 
 def _decode_json(raw: bytes, *, source: str, method: str, path: str) -> Any:

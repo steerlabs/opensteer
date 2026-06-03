@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import opensteer.runtime as runtime
 import opensteer.daemon as daemon
+import opensteer.http_client as http_client
 import opensteer.paths as paths
 from opensteer.errors import OpenSteerError
 
@@ -319,6 +320,118 @@ def test_daemon_stop_remote_deletes_opensteer_session():
     assert calls == [
         ("/v2/opensteer/sessions/session%2Fwith%20spaces", "DELETE", None, 15),
     ]
+
+
+def test_daemon_stage_remote_upload_returns_browser_remote_path():
+    calls = []
+
+    def fake_upload(api_base, api_key, path, file_path, **kwargs):
+        calls.append((api_base, api_key, path, file_path, kwargs))
+        return {
+            "remotePath": "/tmp/opensteer-browser-uploads/session/upl/report.csv",
+        }
+
+    with (
+        patch.object(daemon, "REMOTE_ID", "session/with spaces"),
+        patch.object(daemon, "API_KEY", "osk_test"),
+        patch.object(daemon, "OPENSTEER_API", "https://api.test"),
+        patch.object(daemon, "request_file_upload", side_effect=fake_upload),
+    ):
+        assert daemon.stage_remote_upload("/workspace/report.csv") == {
+            "path": "/tmp/opensteer-browser-uploads/session/upl/report.csv",
+            "staged": True,
+            "upload": {
+                "remotePath": "/tmp/opensteer-browser-uploads/session/upl/report.csv",
+            },
+        }
+
+    assert calls == [
+        (
+            "https://api.test",
+            "osk_test",
+            "/v2/opensteer/sessions/session%2Fwith%20spaces/uploads",
+            "/workspace/report.csv",
+            {
+                "filename": "report.csv",
+                "timeout": 120,
+            },
+        ),
+    ]
+
+
+def test_request_file_upload_uses_binary_transport_with_media_type_metadata(tmp_path):
+    uploaded = tmp_path / "data.json"
+    uploaded.write_text('{"ok":true}')
+    captured = {}
+
+    class Response:
+        def read(self):
+            return b'{"remotePath":"/tmp/opensteer-browser-uploads/session/upl/data.json"}'
+
+        def close(self):
+            captured["closed"] = True
+
+    def fake_urlopen(req, timeout=60):
+        captured["url"] = req.full_url
+        captured["method"] = req.get_method()
+        captured["timeout"] = timeout
+        captured["headers"] = {
+            name.lower(): value for name, value in req.header_items()
+        }
+        captured["body"] = req.data.read()
+        return Response()
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        assert http_client.request_file_upload(
+            "https://api.test/",
+            "osk_test",
+            "/v2/opensteer/sessions/session-1/uploads",
+            str(uploaded),
+            timeout=12,
+        ) == {
+            "remotePath": "/tmp/opensteer-browser-uploads/session/upl/data.json",
+        }
+
+    assert captured == {
+        "url": "https://api.test/v2/opensteer/sessions/session-1/uploads",
+        "method": "POST",
+        "timeout": 12,
+        "headers": {
+            "authorization": "Bearer osk_test",
+            "content-type": "application/octet-stream",
+            "content-length": "11",
+            "x-opensteer-filename": "data.json",
+            "x-opensteer-media-type": "application/json",
+        },
+        "body": b'{"ok":true}',
+        "closed": True,
+    }
+
+
+def test_daemon_stage_remote_upload_returns_original_path_for_local_browser():
+    with (
+        patch.object(daemon, "REMOTE_ID", None),
+        patch.object(daemon, "API_KEY", ""),
+    ):
+        assert daemon.stage_remote_upload("/workspace/report.csv") == {
+            "path": "/workspace/report.csv",
+            "staged": False,
+        }
+
+
+def test_daemon_stage_remote_upload_skips_network_with_api_key_without_remote_browser():
+    def fail_upload(*_args, **_kwargs):
+        raise AssertionError("local browser uploads must not call the remote upload API")
+
+    with (
+        patch.object(daemon, "REMOTE_ID", None),
+        patch.object(daemon, "API_KEY", "osk_test"),
+        patch.object(daemon, "request_file_upload", side_effect=fail_upload),
+    ):
+        assert daemon.stage_remote_upload("/workspace/report.csv") == {
+            "path": "/workspace/report.csv",
+            "staged": False,
+        }
 
 
 def test_stop_remote_daemon_stops_shared_broker():
