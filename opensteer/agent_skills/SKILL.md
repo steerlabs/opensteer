@@ -40,6 +40,26 @@ opensteer -c "start_remote_daemon('linkedin', profileId='bp_...')"
 OPENSTEER_NAME=linkedin opensteer -c "new_tab('https://example.com')"
 ```
 
+## Browser Profiles
+
+A browser profile is a saved, logged-in browser identity (cookies, auth state)
+a cloud browser can launch with. Profile access is grant-based: the server
+tracks which profiles this agent may use, and there is no per-agent default
+profile.
+
+- `list_cloud_profiles()` lists visible profiles; each entry carries a
+  `granted` flag saying whether this agent may use it.
+- `start_remote_daemon(name)` without a profile lets the server resolve it:
+  exactly one granted profile auto-attaches, none launches a fresh signed-out
+  session, and several granted profiles is rejected with an error telling you
+  to pass `profileName` or `profileId`.
+- When several profiles are granted, pick one explicitly:
+  `start_remote_daemon('linkedin', profileName='LinkedIn work')` or
+  `start_remote_daemon('linkedin', profileId='bp_...')`. Durable scripts
+  should pin `profileId` — it survives profile renames.
+- Passing a profile that is not granted to this agent fails with a 403 whose
+  message says how to proceed (list granted profiles or request access).
+
 ## Interaction Skills
 
 Generic browser mechanics live in `interaction-skills/`:

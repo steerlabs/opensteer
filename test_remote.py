@@ -20,6 +20,41 @@ def test_get_name_uses_only_opensteer_name():
     assert paths.get_name({}) == "default"
 
 
+def test_session_paths_include_optional_cloud_agent_scope():
+    scoped = paths.session_paths(
+        env={
+            "OPENSTEER_NAME": "linkedin",
+            "OPENSTEER_SESSION_SCOPE": "cag_agent_1",
+        }
+    )
+    other_agent = paths.session_paths(
+        env={
+            "OPENSTEER_NAME": "linkedin",
+            "OPENSTEER_SESSION_SCOPE": "cag_agent_2",
+        }
+    )
+    unscoped = paths.session_paths(env={"OPENSTEER_NAME": "linkedin"})
+    empty_scope = paths.session_paths(
+        env={"OPENSTEER_NAME": "linkedin", "OPENSTEER_SESSION_SCOPE": " "}
+    )
+
+    assert scoped != other_agent
+    assert scoped != unscoped
+    assert unscoped == (
+        "/tmp/opensteer-linkedin.sock",
+        "/tmp/opensteer-linkedin.pid",
+        "/tmp/opensteer-linkedin.log",
+    )
+    assert empty_scope == unscoped
+    assert scoped[0].endswith("-linkedin.sock")
+    assert paths.session_state_path(
+        env={
+            "OPENSTEER_NAME": "linkedin",
+            "OPENSTEER_SESSION_SCOPE": "cag_agent_1",
+        }
+    ).endswith("-linkedin.state.json")
+
+
 def test_start_remote_daemon_uses_opensteer_api_cdp_grant():
     calls = []
 
@@ -32,12 +67,13 @@ def test_start_remote_daemon_uses_opensteer_api_cdp_grant():
         }
 
     with (
-        patch.dict(os.environ, {runtime.OPENSTEER_CLOUD_PROFILE_ID: ""}, clear=False),
+        patch.dict(os.environ, clear=False),
         patch("opensteer.runtime.daemon_alive", return_value=False),
         patch("opensteer.runtime._opensteer", side_effect=fake_opensteer),
         patch("opensteer.runtime.ensure_daemon") as ensure_daemon,
         patch("opensteer.runtime._show_live_url") as show_live_url,
     ):
+        os.environ.pop("OPENSTEER_CLOUD_PROFILE_ID", None)
         browser = runtime.start_remote_daemon("work", proxyCountryCode="de")
 
     assert browser["id"] == "session-1"
@@ -59,7 +95,7 @@ def test_start_remote_daemon_uses_opensteer_api_cdp_grant():
     show_live_url.assert_called_once_with("https://cloud.test/browsers/session-1")
 
 
-def test_start_remote_daemon_uses_default_cloud_profile_id_env():
+def test_start_remote_daemon_ignores_legacy_cloud_profile_id_env():
     calls = []
 
     def fake_opensteer(path, method, body=None):
@@ -70,7 +106,7 @@ def test_start_remote_daemon_uses_default_cloud_profile_id_env():
         }
 
     with (
-        patch.dict(os.environ, {runtime.OPENSTEER_CLOUD_PROFILE_ID: " bp_default "}, clear=False),
+        patch.dict(os.environ, {"OPENSTEER_CLOUD_PROFILE_ID": " bp_default "}, clear=False),
         patch("opensteer.runtime.daemon_alive", return_value=False),
         patch("opensteer.runtime._opensteer", side_effect=fake_opensteer),
         patch("opensteer.runtime.ensure_daemon"),
@@ -83,14 +119,13 @@ def test_start_remote_daemon_uses_default_cloud_profile_id_env():
             "/v2/opensteer/sessions",
             "POST",
             {
-                "profileId": "bp_default",
                 "name": "work",
             },
         )
     ]
 
 
-def test_start_remote_daemon_explicit_profile_id_overrides_default_env():
+def test_start_remote_daemon_passes_explicit_profile_id_through():
     calls = []
 
     def fake_opensteer(path, method, body=None):
@@ -101,7 +136,7 @@ def test_start_remote_daemon_explicit_profile_id_overrides_default_env():
         }
 
     with (
-        patch.dict(os.environ, {runtime.OPENSTEER_CLOUD_PROFILE_ID: "bp_default"}, clear=False),
+        patch.dict(os.environ, {"OPENSTEER_CLOUD_PROFILE_ID": "bp_default"}, clear=False),
         patch("opensteer.runtime.daemon_alive", return_value=False),
         patch("opensteer.runtime._opensteer", side_effect=fake_opensteer),
         patch("opensteer.runtime.ensure_daemon"),
@@ -121,6 +156,147 @@ def test_start_remote_daemon_explicit_profile_id_overrides_default_env():
     ]
 
 
+def test_list_cloud_profiles_prefers_grants_listing_and_includes_granted_flag():
+    calls = []
+
+    def fake_opensteer(path, method, body=None):
+        calls.append((path, method, body))
+        return {
+            "profiles": [
+                {
+                    "id": "bp_1",
+                    "profileId": "bp_1",
+                    "name": "work",
+                    "userId": "user-1",
+                    "status": "ready",
+                    "cookieDomains": ["example.com"],
+                    "cookieCount": 4,
+                    "domainCount": 1,
+                    "lastUsedAt": 1700000000000,
+                    "granted": True,
+                },
+                {
+                    "id": "bp_2",
+                    "profileId": "bp_2",
+                    "name": "personal",
+                    "userId": "user-2",
+                    "status": "ready",
+                    "cookieDomains": [],
+                    "granted": False,
+                },
+            ]
+        }
+
+    with patch("opensteer.runtime._opensteer", side_effect=fake_opensteer):
+        profiles = runtime.list_cloud_profiles()
+
+    assert calls == [("/browser-profiles", "GET", None)]
+    assert [(p["id"], p["granted"]) for p in profiles] == [("bp_1", True), ("bp_2", False)]
+    assert profiles[0]["cookieDomains"] == ["example.com"]
+
+
+def test_list_cloud_profiles_falls_back_to_legacy_listing_on_404():
+    calls = []
+
+    def fake_opensteer(path, method, body=None):
+        calls.append((path, method, body))
+        if path == "/browser-profiles":
+            raise OpenSteerError(
+                "Not found.",
+                code="OPENSTEER_API_ERROR",
+                source="opensteer-api",
+                status=404,
+            )
+        return {
+            "items": [{"id": "bp_1", "name": "work", "userId": "user-1"}],
+            "nextCursor": None,
+        }
+
+    with patch("opensteer.runtime._opensteer", side_effect=fake_opensteer):
+        profiles = runtime.list_cloud_profiles()
+
+    assert calls == [
+        ("/browser-profiles", "GET", None),
+        ("/v2/opensteer/profiles?limit=100", "GET", None),
+    ]
+    assert [p["id"] for p in profiles] == ["bp_1"]
+    assert "granted" not in profiles[0]
+
+
+def test_list_cloud_profiles_reraises_non_404_errors_without_legacy_fallback():
+    calls = []
+
+    def fake_opensteer(path, method, body=None):
+        calls.append((path, method, body))
+        raise OpenSteerError(
+            "Forbidden.",
+            code="OPENSTEER_API_ERROR",
+            source="opensteer-api",
+            status=403,
+        )
+
+    with patch("opensteer.runtime._opensteer", side_effect=fake_opensteer):
+        try:
+            runtime.list_cloud_profiles()
+        except OpenSteerError as error:
+            assert error.status == 403
+        else:
+            raise AssertionError("expected 403 to re-raise")
+
+    # No fallback request: only route-missing 404s mean "older cloud".
+    assert calls == [("/browser-profiles", "GET", None)]
+
+
+def test_list_cloud_profiles_reraises_network_errors_without_legacy_fallback():
+    calls = []
+
+    def fake_opensteer(path, method, body=None):
+        calls.append((path, method, body))
+        # Network failures carry no HTTP status (status=None) and must
+        # surface rather than silently degrade to the legacy listing.
+        raise OpenSteerError(
+            "OpenSteer API is unreachable.",
+            code="OPENSTEER_API_UNREACHABLE",
+            source="opensteer-api",
+        )
+
+    with patch("opensteer.runtime._opensteer", side_effect=fake_opensteer):
+        try:
+            runtime.list_cloud_profiles()
+        except OpenSteerError as error:
+            assert error.code == "OPENSTEER_API_UNREACHABLE"
+            assert error.status is None
+        else:
+            raise AssertionError("expected network error to re-raise")
+
+    assert calls == [("/browser-profiles", "GET", None)]
+
+
+def test_resolve_profile_name_prefers_single_granted_match():
+    profiles = [
+        {"id": "bp_granted", "name": "work", "granted": True},
+        {"id": "bp_other", "name": "work", "granted": False},
+    ]
+
+    with patch("opensteer.runtime.list_cloud_profiles", return_value=profiles):
+        assert runtime._resolve_profile_name("work") == "bp_granted"
+
+
+def test_resolve_profile_name_keeps_ambiguity_error_for_multiple_granted_matches():
+    profiles = [
+        {"id": "bp_a", "name": "work", "granted": True},
+        {"id": "bp_b", "name": "work", "granted": True},
+    ]
+
+    with patch("opensteer.runtime.list_cloud_profiles", return_value=profiles):
+        try:
+            runtime._resolve_profile_name("work")
+        except OpenSteerError as error:
+            assert error.code == "CLOUD_PROFILE_AMBIGUOUS"
+        else:
+            raise AssertionError("expected ambiguity error")
+
+
 def test_start_remote_daemon_closes_cloud_session_if_daemon_launch_fails():
     calls = []
 
@@ -135,7 +311,7 @@ def test_start_remote_daemon_closes_cloud_session_if_daemon_launch_fails():
         return {}
 
     with (
-        patch.dict(os.environ, {runtime.OPENSTEER_CLOUD_PROFILE_ID: ""}, clear=False),
+        patch.dict(os.environ, {"OPENSTEER_CLOUD_PROFILE_ID": ""}, clear=False),
         patch("opensteer.runtime.daemon_alive", return_value=False),
         patch("opensteer.runtime._opensteer", side_effect=fake_opensteer),
         patch("opensteer.runtime.ensure_daemon", side_effect=RuntimeError("daemon failed")),
@@ -427,6 +603,245 @@ def test_daemon_stage_remote_upload_skips_network_with_api_key_without_remote_br
         patch.object(daemon, "REMOTE_ID", None),
         patch.object(daemon, "API_KEY", "osk_test"),
         patch.object(daemon, "request_file_upload", side_effect=fail_upload),
+    ):
+        assert daemon.stage_remote_upload("/workspace/report.csv") == {
+            "path": "/workspace/report.csv",
+            "staged": False,
+        }
+
+
+def test_start_remote_daemon_surfaces_server_profile_steering_text():
+    steering = (
+        "Multiple browser profiles are granted to this agent. Pass profileId "
+        "(or profileName in the opensteer CLI) to choose one, or explicitly "
+        "launch without a profile for a fresh signed-out session."
+    )
+
+    def fake_urlopen(req, timeout=60):
+        body = json.dumps({"error": steering, "code": "CLOUD_INVALID_REQUEST"}).encode()
+        raise urllib.error.HTTPError(req.full_url, 409, "Conflict", {}, BytesIO(body))
+
+    with (
+        patch.dict(os.environ, {"OPENSTEER_API_KEY": "osk_test"}, clear=False),
+        patch.object(runtime, "OPENSTEER_API", "https://api.test"),
+        patch("opensteer.runtime.daemon_alive", return_value=False),
+        patch("urllib.request.urlopen", side_effect=fake_urlopen),
+    ):
+        try:
+            runtime.start_remote_daemon("work")
+        except OpenSteerError as error:
+            assert error.status == 409
+            assert error.message == steering
+            assert steering in str(error)
+        else:
+            raise AssertionError("expected steering error")
+
+
+def test_opensteer_api_is_the_only_base_url_override():
+    code = "import opensteer.runtime as r; print(r.OPENSTEER_API)"
+    env = {
+        **os.environ,
+        "OPENSTEER_BASE_URL": "https://legacy.example",
+        "OPENSTEER_API": "https://api.test/",
+    }
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert result.stdout.strip() == "https://api.test"
+
+
+def test_ensure_daemon_sets_opensteer_name_for_child():
+    popen_calls = []
+
+    class FakeProcess:
+        def poll(self):
+            return None
+
+    def fake_popen(*args, **kwargs):
+        popen_calls.append((args, kwargs))
+        return FakeProcess()
+
+    with (
+        patch("opensteer.runtime.daemon_alive", side_effect=[False, True]),
+        patch("subprocess.Popen", side_effect=fake_popen),
+    ):
+        runtime.ensure_daemon(name="work")
+
+    env = popen_calls[0][1]["env"]
+    assert env["OPENSTEER_NAME"] == "work"
+    assert popen_calls[0][0][0][:3] == [sys.executable, "-m", "opensteer.daemon"]
+
+
+def test_ensure_daemon_auto_starts_remote_browser_when_configured():
+    with (
+        patch.dict(os.environ, {"OPENSTEER_AUTO_REMOTE": "1", "OPENSTEER_API_KEY": "osk_test"}, clear=False),
+        patch("opensteer.runtime.daemon_alive", return_value=False),
+        patch("opensteer.runtime.start_remote_daemon") as start_remote,
+        patch("subprocess.Popen") as popen,
+    ):
+        runtime.ensure_daemon(name="work")
+
+    start_remote.assert_called_once_with(name="work")
+    popen.assert_not_called()
+
+
+def test_ensure_daemon_auto_remote_uses_default_session_name():
+    with (
+        patch.dict(os.environ, {"OPENSTEER_AUTO_REMOTE": "true", "OPENSTEER_API_KEY": "osk_test"}, clear=False),
+        patch("opensteer.runtime.daemon_alive", return_value=False),
+        patch("opensteer.runtime.start_remote_daemon") as start_remote,
+        patch("subprocess.Popen") as popen,
+    ):
+        runtime.ensure_daemon()
+
+    start_remote.assert_called_once_with(name="default")
+    popen.assert_not_called()
+
+
+def test_daemon_redacts_remote_cdp_token_from_logs():
+    assert (
+        daemon._redact_ws_url("wss://runtime.test/ws/cdp/session-1?token=secret")
+        == "wss://runtime.test/ws/cdp/session-1"
+    )
+
+
+def test_daemon_refreshes_remote_cdp_grant():
+    calls = []
+
+    def fake_opensteer(path, method, body=None, timeout=15):
+        calls.append((path, method, body, timeout))
+        return {
+            "cdpWsUrl": "wss://runtime.test/ws/cdp/session-1?token=fresh",
+        }
+
+    with (
+        patch.object(daemon, "REMOTE_ID", "session-1"),
+        patch.object(daemon, "API_KEY", "osk_test"),
+        patch.object(daemon, "_opensteer", side_effect=fake_opensteer),
+    ):
+        assert daemon.refresh_remote_cdp_ws_url() == "wss://runtime.test/ws/cdp/session-1?token=fresh"
+
+    assert calls == [
+        ("/v2/opensteer/sessions/session-1/cdp", "POST", None, 15),
+    ]
+
+
+def test_daemon_stop_remote_deletes_opensteer_session():
+    calls = []
+
+    def fake_opensteer(path, method, body=None, timeout=15):
+        calls.append((path, method, body, timeout))
+        return {}
+
+    with (
+        patch.object(daemon, "REMOTE_ID", "session/with spaces"),
+        patch.object(daemon, "API_KEY", "osk_test"),
+        patch.object(daemon, "_opensteer", side_effect=fake_opensteer),
+        patch.object(daemon, "log"),
+    ):
+        daemon.stop_remote()
+
+    assert calls == [
+        ("/v2/opensteer/sessions/session%2Fwith%20spaces", "DELETE", None, 15),
+    ]
+
+
+def test_daemon_stage_remote_upload_returns_browser_remote_path():
+    calls = []
+
+    def fake_upload(api_base, api_key, path, file_path, **kwargs):
+        calls.append((api_base, api_key, path, file_path, kwargs))
+        return {
+            "remotePath": "/tmp/opensteer-browser-uploads/session/upl/report.csv",
+        }
+
+    with (
+        patch.object(daemon, "REMOTE_ID", "session/with spaces"),
+        patch.object(daemon, "API_KEY", "osk_test"),
+        patch.object(daemon, "OPENSTEER_API", "https://api.test"),
+        patch.object(daemon, "request_file_upload", side_effect=fake_upload),
+    ):
+        assert daemon.stage_remote_upload("/workspace/report.csv") == {
+            "path": "/tmp/opensteer-browser-uploads/session/upl/report.csv",
+            "staged": True,
+            "upload": {
+                "remotePath": "/tmp/opensteer-browser-uploads/session/upl/report.csv",
+            },
+        }
+
+    assert calls == [
+        (
+            "https://api.test",
+            "osk_test",
+            "/v2/opensteer/sessions/session%2Fwith%20spaces/uploads",
+            "/workspace/report.csv",
+            {
+                "filename": "report.csv",
+                "timeout": 120,
+            },
+        ),
+    ]
+
+
+def test_request_file_upload_uses_binary_transport_with_media_type_metadata(tmp_path):
+    uploaded = tmp_path / "data.json"
+    uploaded.write_text('{"ok":true}')
+    captured = {}
+
+    class Response:
+        def read(self):
+            return b'{"remotePath":"/tmp/opensteer-browser-uploads/session/upl/data.json"}'
+
+        def close(self):
+            captured["closed"] = True
+
+    def fake_urlopen(req, timeout=60):
+        captured["url"] = req.full_url
+        captured["method"] = req.get_method()
+        captured["timeout"] = timeout
+        captured["headers"] = {
+            name.lower(): value for name, value in req.header_items()
+        }
+        captured["body"] = req.data.read()
+        return Response()
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        assert http_client.request_file_upload(
+            "https://api.test/",
+            "osk_test",
+            "/v2/opensteer/sessions/session-1/uploads",
+            str(uploaded),
+            timeout=12,
+        ) == {
+            "remotePath": "/tmp/opensteer-browser-uploads/session/upl/data.json",
+        }
+
+    assert captured == {
+        "url": "https://api.test/v2/opensteer/sessions/session-1/uploads",
+        "method": "POST",
+        "timeout": 12,
+        "headers": {
+            "authorization": "Bearer osk_test",
+            "content-type": "application/octet-stream",
+            "content-length": "11",
+            "x-opensteer-filename": "data.json",
+            "x-opensteer-media-type": "application/json",
+        },
+        "body": b'{"ok":true}',
+        "closed": True,
+    }
+
+
+def test_daemon_stage_remote_upload_returns_original_path_for_local_browser():
+    with (
+        patch.object(daemon, "REMOTE_ID", None),
+        patch.object(daemon, "API_KEY", ""),
     ):
         assert daemon.stage_remote_upload("/workspace/report.csv") == {
             "path": "/workspace/report.csv",
