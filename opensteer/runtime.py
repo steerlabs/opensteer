@@ -17,10 +17,10 @@ load_env()
 
 NAME = get_name()
 OPENSTEER_API = (os.environ.get("OPENSTEER_API") or "https://api.opensteer.com").rstrip("/")
-OPENSTEER_CLOUD_PROFILE_ID = "OPENSTEER_CLOUD_PROFILE_ID"
 
 SESSIONS_PATH = "/v2/opensteer/sessions"
-PROFILES_PATH = "/v2/opensteer/profiles"
+BROWSER_PROFILES_PATH = "/browser-profiles"
+LEGACY_PROFILES_PATH = "/v2/opensteer/profiles"
 
 
 def _env_truthy(value):
@@ -247,27 +247,42 @@ def _show_live_url(url):
         print(f"(could not auto-open liveUrl: {e})", file=sys.stderr)
 
 
+def _profile_summary(profile, granted=None):
+    summary = {
+        "id": profile.get("id") or profile.get("profileId"),
+        "name": profile.get("name"),
+        "userId": profile.get("userId"),
+        "cookieDomains": profile.get("cookieDomains") or [],
+        "cookieCount": profile.get("cookieCount") or 0,
+        "domainCount": profile.get("domainCount") or len(profile.get("cookieDomains") or []),
+        "lastUsedAt": profile.get("lastUsedAt"),
+    }
+    if granted is not None:
+        summary["granted"] = granted
+    return summary
+
+
 def list_cloud_profiles():
-    """List cloud profiles available to the current API key."""
+    """List cloud profiles, with a `granted` flag when the server reports per-agent grants."""
+    try:
+        listing = _opensteer(BROWSER_PROFILES_PATH, "GET")
+    except OpenSteerError as error:
+        if error.status != 404:
+            raise
+        return _list_legacy_cloud_profiles()
+    profiles = (listing.get("profiles") or []) if isinstance(listing, dict) else (listing or [])
+    return [_profile_summary(profile, granted=bool(profile.get("granted"))) for profile in profiles]
+
+
+def _list_legacy_cloud_profiles():
     out, cursor = [], None
     while True:
         suffix = f"&cursor={urllib.parse.quote(cursor, safe='')}" if cursor else ""
-        listing = _opensteer(f"{PROFILES_PATH}?limit=100{suffix}", "GET")
+        listing = _opensteer(f"{LEGACY_PROFILES_PATH}?limit=100{suffix}", "GET")
         items = (listing.get("items") or listing.get("profiles")) if isinstance(listing, dict) else listing
         if not items:
             break
-        for profile in items:
-            out.append(
-                {
-                    "id": profile.get("id") or profile.get("profileId"),
-                    "name": profile.get("name"),
-                    "userId": profile.get("userId"),
-                    "cookieDomains": profile.get("cookieDomains") or [],
-                    "cookieCount": profile.get("cookieCount") or 0,
-                    "domainCount": profile.get("domainCount") or len(profile.get("cookieDomains") or []),
-                    "lastUsedAt": profile.get("lastUsedAt"),
-                }
-            )
+        out.extend(_profile_summary(profile) for profile in items)
         cursor = listing.get("nextCursor") if isinstance(listing, dict) else None
         if not cursor:
             break
@@ -284,6 +299,11 @@ def _resolve_profile_name(profile_name):
             hint="Call list_cloud_profiles() or create/sync profiles with opensteer-cloud.",
         )
     if len(matches) > 1:
+        # Grants disambiguate: when exactly one of the same-named profiles is
+        # granted to this agent, it is the only one the server would accept.
+        granted = [p for p in matches if p.get("granted")]
+        if len(granted) == 1:
+            return granted[0]["id"]
         raise OpenSteerError(
             f"{len(matches)} cloud profiles named {profile_name!r}",
             code="CLOUD_PROFILE_AMBIGUOUS",
@@ -293,16 +313,13 @@ def _resolve_profile_name(profile_name):
     return matches[0]["id"]
 
 
-def _default_cloud_profile_id():
-    value = os.environ.get(OPENSTEER_CLOUD_PROFILE_ID)
-    if not value:
-        return None
-    value = value.strip()
-    return value or None
-
-
 def start_remote_daemon(name="remote", profileName=None, **create_kwargs):
-    """Provision an Opensteer Cloud browser and attach a named local relay to it."""
+    """Provision an Opensteer Cloud browser and attach a named local relay to it.
+
+    Without profileId/profileName the server resolves the profile: exactly one
+    granted profile auto-attaches, none launches signed out, and several is
+    rejected with an error naming the choice to make.
+    """
     if daemon_alive(name):
         raise OpenSteerError(
             f"daemon {name!r} is already running",
@@ -318,10 +335,6 @@ def start_remote_daemon(name="remote", profileName=None, **create_kwargs):
                 source="runtime",
             )
         create_kwargs["profileId"] = _resolve_profile_name(profileName)
-    elif "profileId" not in create_kwargs:
-        default_profile_id = _default_cloud_profile_id()
-        if default_profile_id:
-            create_kwargs["profileId"] = default_profile_id
     create_kwargs.setdefault("name", name)
     browser = _opensteer(SESSIONS_PATH, "POST", create_kwargs)
     cdp_ws_url = browser.get("cdpWsUrl") or browser.get("webSocketDebuggerUrl")
