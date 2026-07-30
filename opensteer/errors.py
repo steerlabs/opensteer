@@ -70,6 +70,11 @@ def hint_for(code: str | None) -> str | None:
         "OPENSTEER_DAEMON_START_FAILED": "Run `opensteer --doctor` for diagnostics.",
         "OPENSTEER_BROKER_START_FAILED": "Run `opensteer --doctor` for diagnostics.",
         "OPENSTEER_DAEMON_UNREACHABLE": "Restart the OpenSteer daemon with `opensteer --setup`.",
+        "OPENSTEER_SESSION_REQUIRED": (
+            "Call open_browser(profile='fresh') for an unprofiled browser or pass "
+            "profileId for a saved profile. Fresh does not guarantee new or signed "
+            "out when reuse is active."
+        ),
         "LOCAL_CDP_NOT_ENABLED": "Run `opensteer --setup`, then allow remote debugging in chrome://inspect.",
         "LOCAL_CDP_NOT_READY": "Choose a Chrome profile if prompted, then click Allow if shown.",
         "CDP_WS_HANDSHAKE_FAILED": "Retry after allowing browser remote debugging.",

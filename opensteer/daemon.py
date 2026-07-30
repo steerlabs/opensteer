@@ -55,6 +55,8 @@ MARK_TAB_JS = "if(!document.title.startsWith('\U0001f7e2'))document.title='\U000
 OPENSTEER_API = (os.environ.get("OPENSTEER_API") or "https://api.opensteer.com").rstrip("/")
 REMOTE_ID = os.environ.get("OPENSTEER_BROWSER_ID")
 API_KEY = os.environ.get("OPENSTEER_API_KEY")
+CONTROLLER_EXIT_BEHAVIOR = os.environ.get("OPENSTEER_CONTROLLER_EXIT_BEHAVIOR", "close")
+EXPLICIT_REMOTE_CLOSE = False
 
 
 def log(msg):
@@ -141,8 +143,11 @@ def get_ws_url():
     )
 
 
-def stop_remote():
+def stop_remote(force=False):
     if not REMOTE_ID or not API_KEY:
+        return
+    if CONTROLLER_EXIT_BEHAVIOR == "detach" and not force:
+        log(f"detached controller from durable browser {REMOTE_ID}")
         return
     try:
         _opensteer(f"/v2/opensteer/sessions/{urllib.parse.quote(REMOTE_ID, safe='')}", "DELETE")
@@ -748,8 +753,10 @@ class BrowserBroker:
         return any(n in msg for n in needles) or not self.reader_alive()
 
     async def handle(self, req):
+        global EXPLICIT_REMOTE_CLOSE
         meta = req.get("meta")
         if meta == "shutdown_broker":
+            EXPLICIT_REMOTE_CLOSE = True
             self.stop.set()
             return {"ok": True}
         session = self.get_session(req.get("name") or NAME)
@@ -888,7 +895,7 @@ if __name__ == "__main__":
         sys.exit(1)
     finally:
         if BROKER_MODE:
-            stop_remote()
+            stop_remote(force=EXPLICIT_REMOTE_CLOSE)
         try:
             os.unlink(PID)
         except FileNotFoundError:

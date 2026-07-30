@@ -10,7 +10,7 @@ Opensteer is a global browser-control runtime. It exposes small CDP primitives t
 ## Usage
 
 ```bash
-opensteer -c "print(page_info())"
+opensteer -c "open_browser(profile='fresh'); new_tab('https://example.com'); print(page_info())"
 ```
 
 Python snippets run with helpers pre-imported:
@@ -25,19 +25,50 @@ For harness code, import helpers from the installed package:
 from opensteer.helpers import goto_url, js, click_at_xy, type_text, wait_for_load
 ```
 
-## Named Sessions
+## Explicit Browser Sessions
 
-Use `OPENSTEER_NAME` to route commands to a named browser session:
+For cloud browser work, explicitly choose the browser identity. The returned
+handle is bound to exactly one platform session, and the selected browser is
+remembered for later CLI invocations in the same execution scope:
 
 ```bash
-OPENSTEER_NAME=linkedin opensteer -c "print(page_info())"
+opensteer -c "browser = open_browser(label='research', profile='fresh'); browser.new_tab('https://example.com')"
+opensteer -c "browser = open_browser(label='work', profileId='bp_...'); print(browser.page_info())"
 ```
 
-Remote browser sessions can be started from a Python snippet when `OPENSTEER_API_KEY` is set:
+Use `profile='auto'` only when you deliberately want the platform to select the
+sole granted profile (or an unprofiled browser when no grants exist).
+`mode='reuse'` is the default. Use `mode='new'` only when another independent
+logical browser is intentional. Labels are display/routing aliases, not cloud
+identity.
+
+`profile='fresh'` means no saved profile is attached. It does not guarantee a
+new, clean, or signed-out browser because `mode='reuse'` may return the run's
+existing unprofiled browser. Use a new label with
+`profile='fresh', mode='new'` when separate clean state is required.
+
+Read helpers never create a cloud browser. If no browser is active, call
+`open_browser(...)` first.
+
+List and explicitly select live browsers without creating one:
 
 ```bash
-opensteer -c "start_remote_daemon('linkedin', profileId='bp_...')"
-OPENSTEER_NAME=linkedin opensteer -c "new_tab('https://example.com')"
+opensteer -c "print(list_browsers())"
+opensteer -c "browser = use_browser('linkedin'); print(browser.page_info())"
+```
+
+`list_browsers()` is read-only. `use_browser(...)` accepts a unique label or
+the exact `sessionId` returned by the list.
+
+Browser transport is independent of agent execution placement. Use
+`location='cloud'` when a locally executing agent needs an isolated cloud
+browser, `location='inapp'` for the desktop app's embedded browser, or
+`location='local'` for the legacy machine Chromium window. Omit it (or use
+`location='auto'`) for normal automatic routing. Cloud execution supports only
+`auto` and `cloud` and rejects device-only locations:
+
+```bash
+opensteer -c "open_browser(label='research', profile='fresh', location='cloud')"
 ```
 
 ## Browser Profiles
@@ -49,16 +80,37 @@ profile.
 
 - `list_cloud_profiles()` lists visible profiles; each entry carries a
   `granted` flag saying whether this agent may use it.
-- `start_remote_daemon(name)` without a profile lets the server resolve it:
-  exactly one granted profile auto-attaches, none launches a fresh signed-out
+- `open_browser(label=name, profile='auto')` lets the server resolve it:
+  exactly one granted profile auto-attaches, none launches an unprofiled
   session, and several granted profiles is rejected with an error telling you
   to pass `profileName` or `profileId`.
 - When several profiles are granted, pick one explicitly:
-  `start_remote_daemon('linkedin', profileName='LinkedIn work')` or
-  `start_remote_daemon('linkedin', profileId='bp_...')`. Durable scripts
+  `open_browser(label='linkedin', profileName='LinkedIn work')` or
+  `open_browser(label='linkedin', profileId='bp_...')`. Durable scripts
   should pin `profileId` — it survives profile renames.
 - Passing a profile that is not granted to this agent fails with a 403 whose
   message says how to proceed (list granted profiles or request access).
+- A granted profile works with either `location='inapp'` or `location='cloud'`.
+  A provider that cannot honor the requested profile or location fails without
+  changing either one.
+
+Platform profile tools keep access requests separate from saving live state:
+
+- `request_browser_profile` asks the user to choose or grant an existing
+  profile. If a granted profile is signed out, open that exact profile, ask the
+  user to take over and sign in, and continue. There is no repair mode; normal
+  browser close-time persistence writes the refreshed login back.
+- `request_save_browser_profile` saves an already-open, unprofiled browser.
+  Offer only when future reuse is likely useful; never save automatically or
+  keep asking after a decline. A direct request to save is approval; otherwise
+  get explicit approval with `request_user_input` first. Keep the handle
+  returned by `open_browser(...)` (or recover it with `use_browser(...)`) and
+  pass its exact `browser.browser_ref`, never its label and never a guessed
+  current browser. A specialized agent omits `cloudAgentId` and receives the
+  grant itself. Chat may name a target specialized agent, or omit the target to
+  save unassigned; Chat itself never receives the grant. The durable save is a
+  point-in-time, cookie-backed auth snapshot. It does not close, rebind, or keep
+  syncing the source browser.
 
 ## Interaction Skills
 

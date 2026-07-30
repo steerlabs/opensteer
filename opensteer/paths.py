@@ -2,12 +2,13 @@
 
 import hashlib
 import os
+import tempfile
 import urllib.parse
 
 
 def get_name(env=None):
     env = env or os.environ
-    return env.get("OPENSTEER_NAME") or "default"
+    return env.get("OPENSTEER_RELAY_NAME") or "default"
 
 
 def _digest(value):
@@ -60,3 +61,14 @@ def session_paths(name=None, env=None):
 def session_state_path(name=None, env=None):
     n = f"{_session_scope_key(env)}{_session_key(name or get_name(env))}"
     return f"/tmp/opensteer-{n}.state.json"
+
+
+def session_registry_path(env=None):
+    """Per-user, per-browser-scope registry for explicit session handles."""
+    env = env or os.environ
+    uid = getattr(os, "getuid", lambda: "unknown")()
+    scope = (env.get("OPENSTEER_SESSION_SCOPE") or "default").strip() or "default"
+    return os.path.join(
+        tempfile.gettempdir(),
+        f"opensteer-{_digest(f'uid-{uid}:{scope}')}-sessions.json",
+    )
