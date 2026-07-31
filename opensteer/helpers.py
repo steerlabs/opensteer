@@ -9,22 +9,33 @@ import urllib.request
 
 from .env import load_env
 from .errors import OpenSteerError, error_from_wire
-from .paths import get_name, session_paths
+from .paths import session_paths
+from .session_registry import resolve_session_name
 
 
 load_env()
 
-NAME = get_name()
-SOCK = session_paths(NAME)[0]
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 MARK_TAB_JS = "if(!document.title.startsWith('\U0001f7e2'))document.title='\U0001f7e2 '+document.title"
 UNMARK_TAB_JS = "if(document.title.startsWith('\U0001f7e2 '))document.title=document.title.slice(2)"
 
 
-def _connect():
+def _current_session_name():
+    name = resolve_session_name()
+    if name:
+        return name
+    raise OpenSteerError(
+        "No browser session is active. Open one explicitly with "
+        "open_browser(profile='fresh') or open_browser(profileId='bp_...').",
+        code="OPENSTEER_SESSION_REQUIRED",
+        source="runtime",
+    )
+
+
+def _connect(name=None):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        s.connect(SOCK)
+        s.connect(session_paths(name or _current_session_name())[0])
     except OSError as exc:
         s.close()
         raise exc
@@ -32,15 +43,16 @@ def _connect():
 
 
 def _send(req):
+    name = _current_session_name()
     s = None
     try:
         try:
-            s = _connect()
+            s = _connect(name)
         except (FileNotFoundError, ConnectionRefusedError):
             from .runtime import ensure_daemon
 
-            ensure_daemon()
-            s = _connect()
+            ensure_daemon(name=name)
+            s = _connect(name)
         s.sendall((json.dumps(req) + "\n").encode())
         data = b""
         while not data.endswith(b"\n"):
@@ -208,14 +220,16 @@ def _mark_tab():
         pass
 
 
-def switch_tab(target_id):
+def switch_tab(target_id, activate=True):
+    """Attach to a tab, optionally without visibly activating it."""
     current = _send({"meta": "session"})
     if current.get("session_id"):
         try:
             cdp("Runtime.evaluate", expression=UNMARK_TAB_JS)
         except Exception:
             pass
-    cdp("Target.activateTarget", targetId=target_id)
+    if activate:
+        cdp("Target.activateTarget", targetId=target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
     _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
     _mark_tab()

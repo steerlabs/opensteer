@@ -66,7 +66,7 @@ def test_target_expression_detaches_after_evaluation():
     ]
 
 
-def test_cdp_lazily_starts_daemon_when_socket_is_missing():
+def test_cdp_lazily_starts_daemon_when_socket_is_missing(tmp_path):
     class FakeSocket:
         def __init__(self):
             self.sent = b""
@@ -83,12 +83,16 @@ def test_cdp_lazily_starts_daemon_when_socket_is_missing():
 
     fake_socket = FakeSocket()
     with (
+        patch(
+            "opensteer.session_registry.session_registry_path",
+            return_value=str(tmp_path / "sessions.json"),
+        ),
         patch("opensteer.helpers._connect", side_effect=[FileNotFoundError, fake_socket]),
         patch("opensteer.runtime.ensure_daemon") as ensure_daemon,
     ):
         assert helpers.cdp("Runtime.evaluate", expression="1") == {"ok": True}
 
-    ensure_daemon.assert_called_once_with()
+    ensure_daemon.assert_called_once_with(name="default")
     assert fake_socket.closed
 
 

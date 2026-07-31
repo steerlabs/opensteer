@@ -8,12 +8,15 @@ from .skill_installer import install_skills
 _version = _runtime._version
 daemon_alive = _runtime.daemon_alive
 ensure_daemon = _runtime.ensure_daemon
+list_browsers = _runtime.list_browsers
 list_cloud_profiles = _runtime.list_cloud_profiles
+open_browser = _runtime.open_browser
 restart_daemon = _runtime.restart_daemon
 run_doctor = _runtime.run_doctor
 run_setup = _runtime.run_setup
 start_remote_daemon = _runtime.start_remote_daemon
 stop_remote_daemon = _runtime.stop_remote_daemon
+use_browser = _runtime.use_browser
 
 
 HELP = """Opensteer
@@ -21,6 +24,7 @@ HELP = """Opensteer
 Global browser control via Chrome DevTools Protocol.
 
 Usage:
+  opensteer -c "open_browser(profile='fresh'); new_tab('https://example.com')"
   opensteer -c "print(page_info())"
   opensteer --setup
   opensteer --doctor

@@ -30,17 +30,38 @@ Reusable code can import the helpers directly:
 from opensteer.helpers import goto_url, js, click_at_xy, type_text, wait_for_load
 ```
 
-Named browser sessions are routed with `OPENSTEER_NAME`, which lets different agents or workflows keep separate browser state:
+Open browsers explicitly and keep the returned handle when more than one is active:
 
 ```bash
-OPENSTEER_NAME=linkedin opensteer -c "new_tab('https://linkedin.com')"
+opensteer -c "linkedin = open_browser(label='linkedin', profile='fresh'); linkedin.new_tab('https://linkedin.com')"
 ```
 
 Opensteer can also attach to a cloud browser when `OPENSTEER_API_KEY` is configured:
 
 ```bash
-opensteer -c "start_remote_daemon('research', profileId='bp_...')"
-OPENSTEER_NAME=research opensteer -c "new_tab('https://example.com')"
+opensteer -c "open_browser(label='research', profile='fresh'); new_tab('https://example.com')"
+opensteer -c "browser = open_browser(label='work', profileId='bp_...'); print(browser.page_info())"
+```
+
+`mode='reuse'` is the safe default. `mode='new'` intentionally creates another
+logical session. The label is human-readable; the cloud session id and run
+scope are platform-owned. Read helpers never provision browsers implicitly in
+strict cloud-agent environments.
+
+List and select browsers without creating a new one:
+
+```bash
+opensteer -c "print(list_browsers())"
+opensteer -c "research = use_browser('research'); research.new_tab('https://example.com')"
+```
+
+Browser transport is an explicit capability boundary. Local App execution can
+request `auto`, `inapp`, `local`, or `cloud`; Cloud execution supports `auto`
+and `cloud` and rejects device-only locations. For example, a locally executing
+agent can explicitly start a cloud browser with:
+
+```bash
+opensteer -c "open_browser(label='research', profile='fresh', location='cloud')"
 ```
 
 ## Specialized Harnesses

@@ -2,7 +2,7 @@
 
 ## The omnibox popup problem
 
-When Chrome opens fresh, the only CDP `type: "page"` targets are often `chrome://inspect` and `chrome://omnibox-popup.top-chrome/` (a 1px invisible viewport). Opensteer avoids taking over arbitrary browser pages by restoring only tabs already owned by the current `OPENSTEER_NAME`; if none are still live, it creates a fresh `about:blank` tab and controls that.
+When Chrome opens fresh, the only CDP `type: "page"` targets are often `chrome://inspect` and `chrome://omnibox-popup.top-chrome/` (a 1px invisible viewport). Opensteer avoids taking over arbitrary browser pages by restoring only tabs already owned by the selected browser handle; if none are still live, it creates a fresh `about:blank` tab and controls that.
 
 For OpenSteer-managed cloud CDP grants, visible targets are already scoped by the runtime proxy; if exactly one controller-owned page exists, the daemon attaches to that page instead of creating a duplicate blank tab.
 
@@ -10,23 +10,22 @@ If the user asks you to control a specific existing tab, use `list_tabs()` to fi
 
 ## Startup sequence
 
-1. Check if a daemon is already running with `daemon_alive()`
-2. If stale sockets exist but daemon is dead, clean them up
-3. Let the daemon attach to the current Opensteer-owned tab or create a fresh `about:blank`
-4. Navigate the owned tab with `goto_url()`
-5. Only use `list_tabs()` and `switch_tab(target_id)` when the user explicitly wants an existing tab
+1. Explicitly open or select the intended browser with `open_browser(...)` or
+   `use_browser(...)`.
+2. Keep the returned handle when more than one browser exists.
+3. Let the runtime reconnect its relay and attach to the browser's owned tab;
+   if none remains, it creates `about:blank`.
+4. Navigate that owned tab.
+5. Only use `list_tabs()` and `switch_tab(target_id)` when the user explicitly
+   wants an existing tab.
 
 ```python
-if not daemon_alive():
-    import os
-    from opensteer.paths import session_paths
-    for f in session_paths("default")[:2]:
-        if os.path.exists(f):
-            os.unlink(f)
-    ensure_daemon()
-
-goto_url("https://example.com")
+browser = open_browser(label="research", profile="fresh")
+browser.goto_url("https://example.com")
 ```
+
+Do not delete socket files to recover a browser. They are local transport
+details; select the intended browser with `use_browser(...)`.
 
 ## Bringing Chrome to front
 

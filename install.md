@@ -28,7 +28,7 @@ Browser / Opensteer Cloud -> CDP websocket -> Opensteer daemon -> opensteer -c
 ```
 
 - Protocol is one JSON line each way.
-- `OPENSTEER_NAME` namespaces local session sockets and tab ownership state.
+- `OPENSTEER_SESSION_SCOPE` isolates the browser registry and relay sockets.
 - `OPENSTEER_CDP_WS` attaches a session to a remote browser websocket.
 - `OPENSTEER_BROWSER_ID` plus `OPENSTEER_API_KEY` lets the daemon stop a cloud browser on shutdown.
 
