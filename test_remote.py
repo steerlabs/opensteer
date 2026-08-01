@@ -49,9 +49,7 @@ def test_session_paths_include_optional_cloud_agent_scope():
         }
     )
     unscoped = paths.session_paths(env={"OPENSTEER_RELAY_NAME": "linkedin"})
-    empty_scope = paths.session_paths(
-        env={"OPENSTEER_RELAY_NAME": "linkedin", "OPENSTEER_SESSION_SCOPE": " "}
-    )
+    empty_scope = paths.session_paths(env={"OPENSTEER_RELAY_NAME": "linkedin", "OPENSTEER_SESSION_SCOPE": " "})
 
     assert scoped != other_agent
     assert scoped != unscoped
@@ -234,6 +232,7 @@ def test_open_browser_uses_primary_scope_key_for_reuse_and_forces_fresh_identity
         profileMode="fresh",
         sessionMode="reuse",
         sessionKey="primary",
+        label="meeting-summary",
     )
 
 
@@ -283,7 +282,6 @@ def test_explicit_session_open_surfaces_transport_loss_without_retrying():
             "profileMode": "fresh",
             "sessionMode": "new",
             "sessionKey": "new-stable-key",
-            "name": "secondary",
         },
     )
 
@@ -347,7 +345,7 @@ def test_strict_cloud_routing_uses_the_explicitly_opened_session_and_never_creat
         request.assert_not_called()
 
 
-def test_open_browser_never_reuses_a_label_with_the_wrong_profile(tmp_path):
+def test_open_browser_does_not_treat_a_registered_label_as_profile_identity(tmp_path):
     registry_path = tmp_path / "sessions.json"
     with (
         patch.object(session_registry, "session_registry_path", return_value=str(registry_path)),
@@ -358,16 +356,20 @@ def test_open_browser_never_reuses_a_label_with_the_wrong_profile(tmp_path):
             "work",
             {"id": "session-1", "profileId": "bp_old"},
         )
-        try:
-            runtime.open_browser(label="work", profileId="bp_new")
-        except OpenSteerError as error:
-            assert error.code == "OPENSTEER_SESSION_IDENTITY_MISMATCH"
-        else:
-            raise AssertionError("expected profile mismatch to fail")
-        start_remote.assert_not_called()
+        runtime.open_browser(label="work", profileId="bp_new")
+
+    start_remote.assert_called_once_with(
+        "work",
+        profileName=None,
+        location=None,
+        profileId="bp_new",
+        sessionMode="reuse",
+        sessionKey="primary",
+        label="work",
+    )
 
 
-def test_open_browser_surfaces_an_unhealthy_registered_relay_without_replacing_it(tmp_path):
+def test_open_browser_ignores_a_legacy_label_relay_when_resolving_modern_identity(tmp_path):
     registry_path = tmp_path / "sessions.json"
     with (
         patch.object(session_registry, "session_registry_path", return_value=str(registry_path)),
@@ -386,15 +388,10 @@ def test_open_browser_surfaces_an_unhealthy_registered_relay_without_replacing_i
         patch("opensteer.runtime.start_remote_daemon") as start_remote,
     ):
         session_registry.register_session("work", {"id": "session-1"})
-        try:
-            runtime.open_browser(label="work", profile="fresh")
-        except OpenSteerError as error:
-            assert error.code == "CDP_RECEIVER_STOPPED"
-        else:
-            raise AssertionError("expected unhealthy relay state to be surfaced")
+        runtime.open_browser(label="work", profile="fresh")
 
     restart_daemon.assert_not_called()
-    start_remote.assert_not_called()
+    start_remote.assert_called_once()
 
 
 def test_reused_cloud_session_uses_one_relay_across_display_labels(tmp_path):
@@ -428,7 +425,7 @@ def test_reused_cloud_session_uses_one_relay_across_display_labels(tmp_path):
         show_live_url.assert_called_once()
 
 
-def test_new_mode_rejects_a_registered_label_even_when_its_relay_is_down(tmp_path):
+def test_new_mode_allows_a_repeated_display_label(tmp_path):
     registry_path = tmp_path / "sessions.json"
     with (
         patch.object(session_registry, "session_registry_path", return_value=str(registry_path)),
@@ -436,13 +433,11 @@ def test_new_mode_rejects_a_registered_label_even_when_its_relay_is_down(tmp_pat
         patch("opensteer.runtime.start_remote_daemon") as start_remote,
     ):
         session_registry.register_session("secondary", {"id": "session-1"})
-        try:
-            runtime.open_browser(label="secondary", profile="fresh", mode="new")
-        except OpenSteerError as error:
-            assert error.code == "OPENSTEER_DAEMON_ALREADY_RUNNING"
-        else:
-            raise AssertionError("expected a duplicate label to fail")
-        start_remote.assert_not_called()
+        runtime.open_browser(label="secondary", profile="fresh", mode="new")
+
+    start_remote.assert_called_once()
+    assert start_remote.call_args.kwargs["label"] == "secondary"
+    assert start_remote.call_args.kwargs["sessionKey"].startswith("new-")
 
 
 def test_closing_an_alias_stops_one_relay_and_removes_all_aliases(tmp_path):
@@ -631,7 +626,7 @@ def test_registered_session_without_an_exact_id_fails_closed(tmp_path):
     popen.assert_not_called()
 
 
-def test_open_browser_reconnects_a_registered_label_without_creating(tmp_path):
+def test_open_browser_uses_the_authoritative_platform_identity_not_a_registered_label(tmp_path):
     registry_path = tmp_path / "sessions.json"
     with (
         patch.object(session_registry, "session_registry_path", return_value=str(registry_path)),
@@ -640,11 +635,10 @@ def test_open_browser_reconnects_a_registered_label_without_creating(tmp_path):
         patch("opensteer.runtime.start_remote_daemon") as start_remote,
     ):
         session_registry.register_session("work", {"id": "session-1"})
-        browser = runtime.open_browser(label="work", profile="fresh")
+        runtime.open_browser(label="work", profile="fresh")
 
-    assert browser.session_id == "session-1"
-    ensure_daemon.assert_called_once_with(name="work")
-    start_remote.assert_not_called()
+    ensure_daemon.assert_not_called()
+    start_remote.assert_called_once()
 
 
 def test_start_remote_daemon_reconnects_a_registered_label_without_creating(tmp_path):
@@ -841,10 +835,7 @@ def test_use_browser_attaches_an_exact_listed_session(tmp_path):
         ("/v2/opensteer/sessions/session-1/cdp", "POST", None),
     ]
     assert ensure_daemon.call_args.kwargs["name"] == "session-session-1"
-    assert (
-        ensure_daemon.call_args.kwargs["env"]["OPENSTEER_CONTROLLER_EXIT_BEHAVIOR"]
-        == "detach"
-    )
+    assert ensure_daemon.call_args.kwargs["env"]["OPENSTEER_CONTROLLER_EXIT_BEHAVIOR"] == "detach"
 
 
 def test_use_browser_exact_id_wins_over_a_colliding_label(tmp_path):

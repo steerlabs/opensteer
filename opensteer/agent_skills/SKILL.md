@@ -27,25 +27,29 @@ from opensteer.helpers import goto_url, js, click_at_xy, type_text, wait_for_loa
 
 ## Explicit Browser Sessions
 
-For cloud browser work, explicitly choose the browser identity. The returned
-handle is bound to exactly one platform session, and the selected browser is
-remembered for later CLI invocations in the same execution scope:
+For browser work, explicitly choose the browser profile and reuse mode. The returned
+handle is bound to exactly one platform session, and its stable identity makes
+the browser reusable by later CLI invocations and later agent runs:
 
 ```bash
 opensteer -c "browser = open_browser(label='research', profile='fresh'); browser.new_tab('https://example.com')"
 opensteer -c "browser = open_browser(label='work', profileId='bp_...'); print(browser.page_info())"
+opensteer -c "browser = open_browser(profileId='bp_...'); print(browser.page_info())"
 ```
 
 Use `profile='auto'` only when you deliberately want the platform to select the
 sole granted profile (or an unprofiled browser when no grants exist).
-`mode='reuse'` is the default. Use `mode='new'` only when another independent
-logical browser is intentional. Labels are display/routing aliases, not cloud
-identity.
+`mode='reuse'` is the default. It selects the stable primary browser for this
+agent, location, and profile. `label` is optional mutable display metadata: an
+explicit different label renames that same browser in the UI; omitting it preserves
+the current label. It never selects or creates a different browser. Use
+`mode='new'` only when another independent logical browser is intentional.
 
 `profile='fresh'` means no saved profile is attached. It does not guarantee a
-new, clean, or signed-out browser because `mode='reuse'` may return the run's
-existing unprofiled browser. Use a new label with
-`profile='fresh', mode='new'` when separate clean state is required.
+new, clean, or signed-out browser because `mode='reuse'` may return a
+previously used unprofiled browser, including from an earlier run. Use
+`profile='fresh', mode='new'` when separate
+clean state is required.
 
 Read helpers never create a cloud browser. If no browser is active, call
 `open_browser(...)` first.
@@ -60,10 +64,14 @@ opensteer -c "browser = use_browser('linkedin'); print(browser.page_info())"
 `list_browsers()` is read-only. `use_browser(...)` accepts a unique label or
 the exact `sessionId` returned by the list.
 
+Browsers outlive a single agent command or run. Normal process/run shutdown
+only detaches the controller relay. Call `browser.close()` (or the matching
+close API) only when the browser itself should be destroyed.
+
 Browser transport is independent of agent execution placement. Use
 `location='cloud'` when a locally executing agent needs an isolated cloud
 browser, `location='inapp'` for the desktop app's embedded browser, or
-`location='local'` for the legacy machine Chromium window. Omit it (or use
+`location='local'` for a separate machine Chromium window. Omit it (or use
 `location='auto'`) for normal automatic routing. Cloud execution supports only
 `auto` and `cloud` and rejects device-only locations:
 
