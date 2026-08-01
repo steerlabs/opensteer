@@ -18,7 +18,6 @@ from .session_registry import (
     bound_session,
     register_session,
     read_registry,
-    registered_session,
     registered_session_by_id,
     registered_session_for_route,
     remove_sessions_for_relay,
@@ -281,10 +280,15 @@ def _opensteer(path, method, body=None):
     return request_json(OPENSTEER_API, key or "", path, method, body, timeout=60)
 
 
+def _close_cloud_session(session_id):
+    session = urllib.parse.quote(session_id, safe="")
+    return _opensteer(f"{SESSIONS_PATH}/{session}", "DELETE")
+
+
 def _stop_cloud_session(session_id):
+    """Best-effort rollback for a session whose local relay failed to start."""
     try:
-        session = urllib.parse.quote(session_id, safe="")
-        _opensteer(f"{SESSIONS_PATH}/{session}", "DELETE")
+        _close_cloud_session(session_id)
     except Exception:
         pass
 
@@ -417,11 +421,7 @@ def _decode_browser_descriptor(session):
             source="opensteer-api",
         )
     created_at = session.get("createdAt")
-    if (
-        isinstance(created_at, bool)
-        or not isinstance(created_at, (int, float))
-        or not math.isfinite(created_at)
-    ):
+    if isinstance(created_at, bool) or not isinstance(created_at, (int, float)) or not math.isfinite(created_at):
         raise OpenSteerError(
             "OpenSteer returned a browser session with an invalid createdAt.",
             code="OPENSTEER_API_BAD_RESPONSE",
@@ -432,11 +432,19 @@ def _decode_browser_descriptor(session):
         "id": required_string("id"),
         "browserRef": required_string("browserRef"),
         "sessionId": required_string("sessionId"),
-        "label": required_string("label"),
         "location": location,
         "status": status,
         "createdAt": created_at,
     }
+    label = session.get("label")
+    if label is not None:
+        if not isinstance(label, str) or not label.strip():
+            raise OpenSteerError(
+                "OpenSteer returned a browser session with an invalid label.",
+                code="OPENSTEER_API_BAD_RESPONSE",
+                source="opensteer-api",
+            )
+        descriptor["label"] = label
     profile_id = session.get("profileId")
     if profile_id is not None:
         if not isinstance(profile_id, str) or not profile_id.strip():
@@ -524,7 +532,14 @@ class BrowserHandle(dict):
         return self
 
     def close(self):
-        stop_remote_daemon(self.name)
+        # Persistent browsers outlive controller relays. An explicit handle
+        # close is the destructive user/agent intent, so close the browser
+        # first; ordinary process/run shutdown only stops the relay (detach).
+        try:
+            if self.session_id and self.get("controllerExitBehavior") == "detach":
+                _close_cloud_session(self.session_id)
+        finally:
+            stop_remote_daemon(self.name)
 
     def __getattr__(self, attribute):
         from . import helpers
@@ -646,7 +661,7 @@ def _assert_browser_identity_matches(name, existing, create_kwargs):
 
 
 def open_browser(
-    label="browser",
+    label=None,
     *,
     profile=None,
     profileId=None,
@@ -659,16 +674,20 @@ def open_browser(
 
     ``profile`` must be ``"fresh"`` or ``"auto"`` unless ``profileId`` or
     ``profileName`` selects a saved identity. ``mode="reuse"`` returns the
-    run scope's matching primary session; ``mode="new"`` intentionally creates
-    another logical session and remains idempotent for transport retries.
+    agent/location/profile primary session; ``mode="new"`` intentionally
+    creates another logical session and remains idempotent for transport
+    retries. ``label`` is optional display metadata, never identity.
     """
-    name = str(label or "").strip()
-    if not name:
+    explicit_label = str(label).strip() if label is not None else ""
+    if label is not None and not explicit_label:
         raise OpenSteerError(
-            "label must be a non-empty string",
+            "label must be a non-empty string when provided",
             code="OPENSTEER_INVALID_ARGUMENT",
             source="runtime",
         )
+    # Relay aliases are run-local controller routing only. They are never sent
+    # as persistent browser identity when the display label is omitted.
+    name = explicit_label or "browser"
     normalized_mode = mode.strip().lower() if isinstance(mode, str) else ""
     if normalized_mode not in {"reuse", "new"}:
         raise OpenSteerError(
@@ -712,52 +731,20 @@ def open_browser(
         create_kwargs["profileId"] = _resolve_profile_name(value)
         profileName = None
 
-    with session_operation_lock(f"label:{name}"):
-        existing = registered_session(name)
-        if existing:
-            if normalized_mode == "new":
-                raise OpenSteerError(
-                    f"Browser label {name!r} is already registered.",
-                    code="OPENSTEER_DAEMON_ALREADY_RUNNING",
-                    source="runtime",
-                    hint="Choose a different label for mode='new', or close this browser first.",
-                )
-            _assert_browser_identity_matches(name, existing, create_kwargs)
-
-        relay_name = existing.get("relayName", name) if existing else name
-        if daemon_alive(relay_name):
-            if normalized_mode != "reuse" or not existing:
-                raise OpenSteerError(
-                    f"Browser label {name!r} is already active.",
-                    code="OPENSTEER_DAEMON_ALREADY_RUNNING",
-                    source="runtime",
-                    hint="Reuse that label or choose a different label for mode='new'.",
-                )
-            try:
-                health = _daemon_request({"meta": "health"}, relay_name, timeout=5)
-            except Exception as error:
-                raise OpenSteerError(
-                    f"Browser relay {relay_name!r} did not answer its health check.",
-                    code="OPENSTEER_DAEMON_UNREACHABLE",
-                    source="runtime",
-                    cause=error,
-                ) from error
-            if not health.get("ok"):
-                failure = health.get("error")
-                if failure:
-                    raise error_from_wire(failure, source="daemon")
-                raise OpenSteerError(
-                    f"Browser relay {relay_name!r} is unhealthy.",
-                    code="OPENSTEER_DAEMON_UNREACHABLE",
-                    source="runtime",
-                )
-            return use_browser(name)
-        if existing:
-            ensure_daemon(name=relay_name)
-            return use_browser(name)
-
+    browser_session_key = "primary" if normalized_mode == "reuse" else f"new-{uuid.uuid4()}"
+    identity_lock = "|".join(
+        [
+            "browser",
+            str(create_kwargs.get("profileId") or create_kwargs.get("profileMode") or ""),
+            str(location or "auto"),
+            browser_session_key,
+        ]
+    )
+    with session_operation_lock(identity_lock):
         create_kwargs["sessionMode"] = normalized_mode
-        create_kwargs["sessionKey"] = "primary" if normalized_mode == "reuse" else f"new-{uuid.uuid4()}"
+        create_kwargs["sessionKey"] = browser_session_key
+        if explicit_label:
+            create_kwargs["label"] = explicit_label
         return start_remote_daemon(
             name,
             profileName=profileName,
@@ -775,9 +762,10 @@ def start_remote_daemon(name="remote", profileName=None, location=None, **create
     selects the browser transport independently of where the agent itself is
     executing.
     """
-    existing_route = registered_session_for_route(name)
+    modern_session = "sessionMode" in create_kwargs
+    existing_route = None if modern_session else registered_session_for_route(name)
     relay_name = existing_route.get("relayName", name) if existing_route else name
-    if daemon_alive(relay_name):
+    if not modern_session and daemon_alive(relay_name):
         raise OpenSteerError(
             f"daemon {name!r} is already running",
             code="OPENSTEER_DAEMON_ALREADY_RUNNING",
@@ -805,7 +793,11 @@ def start_remote_daemon(name="remote", profileName=None, location=None, **create
         _assert_browser_identity_matches(name, existing_route, create_kwargs)
         ensure_daemon(name=relay_name)
         return use_browser(existing_route["name"])
-    create_kwargs.setdefault("name", name)
+    # Legacy direct callers still use `name` as their remote session name.
+    # Modern open_browser calls carry sessionMode/sessionKey and an optional
+    # display-only `label`, so the local relay alias must stay off the wire.
+    if "sessionMode" not in create_kwargs:
+        create_kwargs.setdefault("name", name)
     browser = _opensteer(SESSIONS_PATH, "POST", create_kwargs)
     cdp_ws_url = browser.get("cdpWsUrl") or browser.get("webSocketDebuggerUrl")
     browser_id = browser.get("id") or browser.get("sessionId")
@@ -821,7 +813,14 @@ def start_remote_daemon(name="remote", profileName=None, location=None, **create
 
     with session_operation_lock(f"session:{browser_id}"):
         matching = registered_session_by_id(browser_id)
-        relay_name = matching.get("relayName", name) if matching else name
+        registry_name = browser_id if modern_session else name
+        relay_name = (
+            matching.get("relayName", registry_name)
+            if matching
+            else f"session-{browser_id}"
+            if modern_session
+            else name
+        )
         created_here = browser.get("creationMode") != "reused_existing" and not matching
         try:
             ensure_daemon(
@@ -833,7 +832,7 @@ def start_remote_daemon(name="remote", profileName=None, location=None, **create
                     "OPENSTEER_CONTROLLER_EXIT_BEHAVIOR": browser.get("controllerExitBehavior", "close"),
                 },
             )
-            register_session(name, descriptor, relay_name=relay_name)
+            register_session(registry_name, descriptor, relay_name=relay_name)
         except Exception:
             restart_daemon(relay_name)
             if created_here:
@@ -841,7 +840,7 @@ def start_remote_daemon(name="remote", profileName=None, location=None, **create
             raise
     if browser.get("creationMode") != "reused_existing":
         _show_live_url(browser.get("liveUrl"))
-    return BrowserHandle(descriptor, name, relay_name)
+    return BrowserHandle(descriptor, registry_name, relay_name)
 
 
 def _version():

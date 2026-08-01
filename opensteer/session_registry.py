@@ -121,14 +121,20 @@ def session_operation_lock(key, env=None):
 def register_session(name, descriptor, env=None, relay_name=None):
     with _registry_lock(env):
         registry = read_registry(env)
-        sessions = dict(registry["sessions"])
+        session_id = descriptor.get("id") or descriptor.get("sessionId")
+        # A label rename must replace the run-local alias for this exact
+        # browser instead of showing two aliases for one persistent session.
+        sessions = {
+            existing_name: record
+            for existing_name, record in registry["sessions"].items()
+            if existing_name == name or record.get("sessionId") != session_id
+        }
         sessions[name] = {
             "name": name,
             "relayName": relay_name or name,
-            "sessionId": descriptor.get("id") or descriptor.get("sessionId"),
-            "browserRef": descriptor.get("browserRef")
-            or descriptor.get("id")
-            or descriptor.get("sessionId"),
+            "sessionId": session_id,
+            "browserRef": descriptor.get("browserRef") or descriptor.get("id") or descriptor.get("sessionId"),
+            "label": descriptor.get("label"),
             "profileId": descriptor.get("profileId") or descriptor.get("browserProfileId"),
             "controllerExitBehavior": descriptor.get("controllerExitBehavior", "close"),
             "location": descriptor.get("location"),
@@ -166,11 +172,7 @@ def registered_session_for_route(name, env=None):
 
 def registered_session_by_id(session_id, env=None):
     return next(
-        (
-            record
-            for record in read_registry(env)["sessions"].values()
-            if record.get("sessionId") == session_id
-        ),
+        (record for record in read_registry(env)["sessions"].values() if record.get("sessionId") == session_id),
         None,
     )
 
@@ -179,9 +181,7 @@ def remove_sessions_for_relay(relay_name, env=None):
     with _registry_lock(env):
         registry = read_registry(env)
         sessions = {
-            name: record
-            for name, record in registry["sessions"].items()
-            if record.get("relayName") != relay_name
+            name: record for name, record in registry["sessions"].items() if record.get("relayName") != relay_name
         }
         active = registry["active"]
         if active not in sessions:
