@@ -22,7 +22,7 @@ it("copies only current diagnostic reports read-only and preserves originals and
     copy: (source, target) => {
       copies.set(target, originals.get(source.split("/").at(-1)!)!.content);
     },
-    chmod: (file, mode) => {
+    setMode: (file, mode) => {
       modes.set(file, mode);
     },
   };

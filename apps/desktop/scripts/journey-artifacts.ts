@@ -7,7 +7,7 @@ export interface CrashReportIO {
   stat(file: string): { isFile(): boolean; mtimeMs: number };
   mkdir(directory: string): void;
   copy(source: string, target: string): void;
-  chmod(file: string, mode: number): void | Promise<void>;
+  setMode(file: string, mode: number): void | Promise<void>;
 }
 const reportIO: CrashReportIO = {
   list: (directory) => {
@@ -23,7 +23,7 @@ const reportIO: CrashReportIO = {
     mkdirSync(directory, { recursive: true });
   },
   copy: copyFileSync,
-  chmod: setFileMode,
+  setMode: setFileMode,
 };
 
 /** Diagnostic reports are evidence only; their paths never authorize cleanup. */
@@ -44,7 +44,7 @@ export async function collectCrashReports(
     io.mkdir(target);
     const copy = path.join(target, name);
     io.copy(file, copy);
-    await io.chmod(copy, 0o444);
+    await io.setMode(copy, 0o444);
     count++;
   }
   return count;
