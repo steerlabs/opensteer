@@ -2639,7 +2639,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     // The desktop's key is.
     await world.approveOnMac(notes);
     expect((await world.requestById(notesAsk.requestId)).status).toBe("fulfilled");
-    await vi.waitFor(() => expect(world.fakeMac.waiting()).toEqual([]));
+    await world.fakeMac.untilWaiting([]);
     await world.close();
   });
 
@@ -2661,7 +2661,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     expect(first.requestId).not.toBe(second.requestId);
     const [setup] = await world.persistence.listComputerAppSetupRequests(world.owner.userId);
     if (!setup) throw new Error("Missing Notes approval");
-    await vi.waitFor(() => expect(world.fakeMac.waiting()).toEqual([setup.id]));
+    await world.fakeMac.untilWaiting([setup.id]);
 
     const forged = await world.denyOnMac(setup, generateKeyPairSync("ed25519").privateKey);
     expect(forged).toMatchObject({ kind: "refused" });
@@ -2682,7 +2682,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         `Request ${id} was declined by the user.`,
       );
     }
-    await vi.waitFor(() => expect(world.fakeMac.waiting()).toEqual([]));
+    await world.fakeMac.untilWaiting([]);
     expect(await world.appAccess()).toEqual({});
 
     const c = await world.gateway(await world.startRun("Third note"));
@@ -2692,7 +2692,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     expect(replacement.id).not.toBe(setup.id);
     expect(await world.denyOnMac(setup)).toMatchObject({ kind: "refused" });
     expect((await world.requestById(third.requestId)).status).toBe("pending");
-    expect(world.fakeMac.waiting()).toEqual([replacement.id]);
+    await world.fakeMac.untilWaiting([replacement.id]);
     await world.approveOnMac(replacement);
     expect((await world.requestById(third.requestId)).status).toBe("fulfilled");
     await world.close();
@@ -4397,6 +4397,7 @@ function text(result: ToolResult): string {
 /** One Mac as the helper answers through the Runner, with just enough of its rules. */
 class FakeMac {
   readonly #outcomes = new Map<string, (outcome: ComputerAppApprovalOutcome) => void>();
+  readonly #listWaiters: { readonly ids: string; readonly resolve: () => void }[] = [];
   /** Every approval list the Host sent this Mac, in order. */
   readonly lists: ComputerAppApprovalList[] = [];
   /** Each approval this Mac was ever told about, in the order it first appeared. */
@@ -4508,6 +4509,22 @@ class FakeMac {
     return this.lists.at(-1)?.approvals.map(({ request }) => request.id) ?? [];
   }
 
+  /** Resolves once the Host's latest list says exactly `ids` wait here; it pushes lists on its own turn. */
+  untilWaiting(ids: readonly string[]): Promise<void> {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    this.#listWaiters.push({ ids: JSON.stringify(ids), resolve });
+    this.#settleListWaiters();
+    return promise;
+  }
+
+  #settleListWaiters(): void {
+    const current = JSON.stringify(this.waiting());
+    for (const waiter of this.#listWaiters.splice(0)) {
+      if (waiter.ids === current) waiter.resolve();
+      else this.#listWaiters.push(waiter);
+    }
+  }
+
   /** The person's answer on this Mac, carried on its own stream; resolves with the Host's outcome. */
   async answer(
     setupRequestId: string,
@@ -4559,6 +4576,7 @@ class FakeMac {
       for (const { request } of message.approvals) {
         if (!this.reviews.includes(request.id)) this.reviews.push(request.id);
       }
+      this.#settleListWaiters();
       return;
     }
     if (message.type === "host.integrations.computer-app-approval-outcome") {
