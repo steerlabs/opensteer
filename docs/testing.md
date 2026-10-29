@@ -329,7 +329,7 @@ grace and duration bounds still apply.
 
 Keep transport, process and browser deadlines on real time. `BrowserService.activityClock`
 controls only agent activity timestamps and expiry scheduling; production uses
-`systemClock`. The page-chip journey in `tests/browser-sessions.integration.test.ts`
+`systemClock`. The page-chip journey in `tests/browser-sessions-context.integration.test.ts`
 advances a `ManualClock` through the same 300 ms discovery pause and 15,100 ms
 idle interval, retaining the before/after page, occupant and acting assertions.
 That clock does not advance the real 100 ms catalog-notice timer. After discovery,
