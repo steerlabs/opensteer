@@ -153,19 +153,23 @@ commands and print why. `--dry-run` prints the plan without running checks.
 Non-manifest generators and build consumers select conservative coverage.
 
 `pnpm check` always runs the full developer recipe without issuing qualification
-receipts. GitHub `Check` is the landing authority. CI runs two default-test and
-four integration shards. Every shard uploads discovery and execution inventories;
-Check requires their exact union and pairwise disjoint membership. Integration
+receipts. GitHub `Check` is the landing authority. CI uses duration-balanced
+default-test and integration shards; counts live in
+[ci-shards.json](../.github/scripts/ci-shards.json), and recorded file durations
+come from a hosted CI run. New files receive a small default weight. Every shard
+uploads discovery and execution inventories; Check requires their exact union and pairwise disjoint membership. Integration
 shards also upload enforcing lock graphs, merged through the global cycle check;
 each shard's graph must trace every file that shard ran. Tests that need Darwin
-kernel locks (`darwinOnlyTests` in
+(`darwinOnlyTests` in
 [ci-test-files.mjs](../.github/scripts/ci-test-files.mjs)) leave the Linux shards
-and run in the native-mac lane. Integration shards run `pnpm test:integration`
-with its own tmpfs PostgreSQL, as local runs do. Browser journeys that accept
-`OPENSTEER_CHROMIUM_EXECUTABLE` get the pinned Playwright Chromium there, never
-the runner image's browsers. Missing or corrupt evidence fails Check. Main runs every public
-lane and is never cancelled by a newer main push. GUI, device and account suites
-require their separate environments.
+and run in the native-mac matrix with their own discovery and execution inventory.
+The native lane separates helper builds, Swift packages, and native wire checks.
+Integration shards run `pnpm test:integration` with its own tmpfs PostgreSQL, as
+local runs do. Browser journeys that accept `OPENSTEER_CHROMIUM_EXECUTABLE` get
+the pinned Playwright Chromium there, never the runner image's browsers. Missing or
+corrupt evidence fails Check. Main runs every public lane and is never cancelled
+by a newer main push. GUI, device and account suites require their separate
+environments.
 
 Tabs profile filtering is covered by `pnpm --filter @opensteer/web
 test:tab-profile-filter` (headless Chromium and the mock Host). Its repeatable

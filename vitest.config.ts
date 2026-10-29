@@ -1,3 +1,4 @@
+import CiSequencer from "./scripts/ci-sequencer.js";
 import "./apps/desktop/vitest.config.js";
 import {
   darwinOnlyTests,
@@ -33,6 +34,7 @@ export default defineConfig({
     // other work and the agents themselves run beside them: a third of the cores keeps
     // the heaviest tests inside their budgets on a loaded machine.
     maxWorkers: Math.max(2, Math.floor(availableParallelism() / 3)),
+    sequence: { sequencer: CiSequencer },
     pool: "forks",
     restoreMocks: true,
   },
