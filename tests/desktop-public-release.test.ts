@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { parse as parseYaml } from "yaml";
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile, symlink } from "node:fs/promises";
@@ -41,29 +43,40 @@ it("restricts mirror protocols and credentials", () => {
     expect(() => downloadBase(url)).toThrow();
 });
 
-it.skipIf(process.platform !== "darwin")(
-  "prepares unchanged bytes, alpha feed/notes and refuses wrong signing/feed metadata",
-  async () => {
+it.skipIf(process.platform !== "darwin").each(["stable", "beta"] as const)(
+  "prepares %s bytes and updater metadata; refuses wrong signing/feed metadata",
+  async (channel) => {
+    const beta = channel === "beta";
+    const app = beta ? "Opensteer Beta.app" : "Opensteer.app";
+    const zipName = beta ? "Opensteer-Beta-mac-arm64.zip" : assetNames[0];
+    const metadataName = beta ? "insider-mac.yml" : "latest-mac.yml";
+    const expectedFeed = beta ? "https://github.com/steerlabs/opensteer#insider" : publicFeedURL;
+    let cache = beta ? "opensteer-beta-updater" : "opensteer-updater";
+    let host = "";
     const root = await scratch();
     const zip = path.join(root, "application.zip");
     await writeFile(zip, "frozen archive bytes");
-    let feed = publicFeedURL;
+    let feed = expectedFeed;
     let team = "B47U2LLKHW";
     let revision = sourceSha;
     const run: typeof runBounded = async (exe, args, options) => {
-      if (exe === "unzip") return "Opensteer.app/Contents/Info.plist\n";
+      if (exe === "unzip") return `${app}/Contents/Info.plist\n`;
       if (exe === "ditto") {
-        await mkdir(path.join(args[3]!, "Opensteer.app"));
+        await mkdir(path.join(args[3]!, `${app}/Contents/Resources`), { recursive: true });
+        await writeFile(
+          path.join(args[3]!, `${app}/Contents/Resources/app-update.yml`),
+          `provider: github\nowner: steerlabs\nrepo: opensteer\nupdaterCacheDirName: ${cache}\n${host}`,
+        );
         return "";
       }
       if (exe === "/usr/libexec/PlistBuddy") {
         const values: Record<string, string> = {
-          CFBundleIdentifier: "com.opensteer.opensteer",
+          CFBundleIdentifier: beta ? "com.steerlabs.opensteer.beta" : "com.opensteer.opensteer",
           CFBundleShortVersionString: version,
           CFBundleVersion: version,
           CFBundleExecutable: "Opensteer",
           OpensteerSourceRevision: revision,
-          OpensteerUpdateFeedURL: feed,
+          OpensteerUpdateFeed: feed,
         };
         return values[args[1]!.replace("Print :", "")]!;
       }
@@ -74,28 +87,59 @@ it.skipIf(process.platform !== "darwin")(
         throw new Error(`Unexpected command ${exe}`);
       return "";
     };
-    const input = { appZip: zip, version, sourceSha, out: path.join(root, "assets") };
+    const input = {
+      channel,
+      appZip: zip,
+      version,
+      sourceSha,
+      out: path.join(root, "assets"),
+    };
     const notes = path.join(root, "notes.txt");
     await writeFile(notes, "Known issue: setup is still evolving.");
     const manifest = await prepare({ ...input, notesFile: notes }, run);
-    expect(await readFile(path.join(input.out, assetNames[0]), "utf8")).toBe(
-      "frozen archive bytes",
+    expect(await readFile(path.join(input.out, zipName), "utf8")).toBe("frozen archive bytes");
+    expect(manifest.title).toBe(
+      beta ? `Opensteer Beta ${version}` : `Opensteer ${version} (Alpha)`,
     );
-    expect(manifest.title).toBe(`Opensteer ${version} (Alpha)`);
-    expect(manifest.notes).toContain("curl -fsSL");
+    expect(manifest.notes.includes("curl -fsSL")).toBe(!beta);
     expect(manifest.notes).toContain("Known issue");
-    const json = JSON.parse(await readFile(path.join(input.out, assetNames[1]), "utf8"));
-    expect(json.currentRelease).toBe(version);
-    expect(json.releases[0].updateTo.name).toBe(manifest.title);
-    expect(json.releases[0].updateTo.url).toBe(
-      `https://github.com/steerlabs/opensteer/releases/download/desktop-v${version}/${assetNames[0]}`,
+    const metadata = parseYaml(await readFile(path.join(input.out, metadataName), "utf8"));
+    const bytes = await readFile(zip);
+    expect(metadata.version).toBe(version);
+    expect(metadata.files).toEqual([
+      {
+        url: zipName,
+        sha512: createHash("sha512").update(bytes).digest("base64"),
+        size: bytes.length,
+      },
+    ]);
+    expect(metadata.path).toBe(zipName);
+    expect(metadata.sha512).toBe(metadata.files[0].sha512);
+    expect(await readFile(path.join(input.out, zipName + ".blockmap"))).not.toHaveLength(0);
+    expect(Object.keys(manifest.assets).sort()).toEqual(
+      (beta
+        ? [zipName, zipName + ".blockmap", metadataName, "SHA256SUMS"]
+        : [...assetNames]
+      ).sort(),
     );
+    const sums = await readFile(path.join(input.out, "SHA256SUMS"), "utf8");
+    expect(sums).toContain(`${await sha256File(zip)}  ${zipName}\n`);
+    expect(sums).not.toContain("release.json");
+    expect(sums).not.toContain("  SHA256SUMS");
+    cache = "wrong-cache";
+    await expect(prepare(input, run)).rejects.toThrow();
+    cache = beta ? "opensteer-beta-updater" : "opensteer-updater";
+    host = "host: private.example.com\n";
+    await expect(prepare(input, run)).rejects.toThrow("--allow-private-feed");
+    host = "";
     team = "WRONG";
     await expect(prepare(input, run)).rejects.toThrow("signing team");
     team = "B47U2LLKHW";
     revision = "b".repeat(40);
     await expect(prepare(input, run)).rejects.toThrow("revision");
     revision = sourceSha;
+    feed = expectedFeed + " ";
+    await expect(prepare(input, run)).rejects.toThrow("--allow-private-feed");
     feed = "http://localhost:8080/feed.json";
     await expect(prepare(input, run)).rejects.toThrow("--allow-private-feed");
     const privateManifest = await prepare(
@@ -108,25 +152,38 @@ it.skipIf(process.platform !== "darwin")(
       run,
     );
     expect(privateManifest.privateFeed).toBe(true);
+    expect(
+      parseYaml(await readFile(path.join(root, "private", metadataName), "utf8")).files[0].url,
+    ).toBe(zipName);
   },
 );
 
-async function releaseFixture() {
+async function releaseFixture(channel: "stable" | "beta" = "stable") {
+  const names =
+    channel === "stable"
+      ? [...assetNames]
+      : [
+          "Opensteer-Beta-mac-arm64.zip",
+          "Opensteer-Beta-mac-arm64.zip.blockmap",
+          "insider-mac.yml",
+          "SHA256SUMS",
+        ];
   const dir = await scratch();
-  for (const name of assetNames) await writeFile(path.join(dir, name), name);
+  for (const name of names) await writeFile(path.join(dir, name), name);
   const assets = Object.fromEntries(
-    await Promise.all(
-      assetNames.map(async (name) => [name, await sha256File(path.join(dir, name))]),
-    ),
+    await Promise.all(names.map(async (name) => [name, await sha256File(path.join(dir, name))])),
   );
   const manifest = manifestSchema.parse({
-    tag: `desktop-v${version}`,
-    title: `Opensteer ${version} (Alpha)`,
+    channel,
+    prerelease: channel === "beta",
+    tag: channel === "stable" ? `desktop-v${version}` : `v${version}-insider`,
+    title: channel === "stable" ? `Opensteer ${version} (Alpha)` : `Opensteer Beta ${version}`,
     notes: "Alpha notes",
     version,
     sourceSha,
     assets,
-    feedURL: publicFeedURL,
+    feedURL:
+      channel === "stable" ? publicFeedURL : "https://github.com/steerlabs/opensteer#insider",
     privateFeed: false,
   });
   await writeFile(path.join(dir, "release.json"), JSON.stringify(manifest));
@@ -135,8 +192,9 @@ async function releaseFixture() {
     draft: true,
     tag_name: manifest.tag,
     name: manifest.title,
-    body: `${manifest.notes}\n\n<!-- opensteer-release-manifest\n${JSON.stringify(manifest)}\n-->\n`,
-    assets: assetNames.map((name) => ({ name })),
+    body: manifest.notes,
+    prerelease: channel === "beta",
+    assets: [...names, "release.json"].map((name) => ({ name })),
   };
   return { dir, manifest, release };
 }
@@ -145,6 +203,7 @@ it("creates alpha drafts beside legacy releases, reuses exact assets, refuses dr
   const { dir, manifest, release } = await releaseFixture();
   let exists = false;
   let uploads = 0;
+  let remoteDrift = "";
   const run: typeof runBounded = async (exe, args) => {
     expect(exe).toBe("gh");
     if (args[0] === "api")
@@ -156,7 +215,11 @@ it("creates alpha drafts beside legacy releases, reuses exact assets, refuses dr
       expect(await readFile(args[args.indexOf("--notes-file") + 1]!, "utf8")).toBe(release.body);
     } else if (args[1] === "download") {
       const output = args[args.indexOf("--dir") + 1]!;
-      for (const name of assetNames) await writeFile(path.join(output, name), name);
+      for (const name of [...assetNames, "release.json"])
+        await writeFile(
+          path.join(output, name),
+          name === remoteDrift ? "tampered" : await readFile(path.join(dir, name)),
+        );
     } else throw new Error("Unexpected gh command");
     return "";
   };
@@ -164,6 +227,11 @@ it("creates alpha drafts beside legacy releases, reuses exact assets, refuses dr
   exists = true;
   await draft(dir, "steerlabs/opensteer", run);
   expect(uploads).toBe(1);
+  remoteDrift = "release.json";
+  await expect(draft(dir, "steerlabs/opensteer", run)).rejects.toThrow("release.json differs");
+  remoteDrift = assetNames[0];
+  await expect(draft(dir, "steerlabs/opensteer", run)).rejects.toThrow("Asset differs");
+  remoteDrift = "";
   release.body = release.body.replace("Alpha notes", "Changed notes");
   await expect(draft(dir, "steerlabs/opensteer", run)).rejects.toThrow("disagree");
   await writeFile(
@@ -177,7 +245,7 @@ it("creates alpha drafts beside legacy releases, reuses exact assets, refuses dr
 });
 
 it("publishes only verified drafts through a fake provider and rechecks anonymous asset hashes", async () => {
-  const { release, manifest } = await releaseFixture();
+  const { dir, release, manifest } = await releaseFixture();
   let tamperDraft = false;
   let tamperPublic = false;
   let patches = 0;
@@ -189,13 +257,23 @@ it("publishes only verified drafts through a fake provider and rechecks anonymou
       expect(args).toContain("make_latest=true");
     } else if (exe === "gh" && args[1] === "download") {
       const output = args[args.indexOf("--dir") + 1]!;
-      for (const name of assetNames)
-        await writeFile(path.join(output, name), tamperDraft ? "tampered" : name);
+      for (const name of [...assetNames, "release.json"])
+        await writeFile(
+          path.join(output, name),
+          tamperDraft && name !== "release.json"
+            ? "tampered"
+            : await readFile(path.join(dir, name)),
+        );
     } else if (exe === "gh") return JSON.stringify(release);
     else if (exe === "curl") {
       expect(args).not.toContain("Authorization");
       const dest = args[args.indexOf("-o") + 1]!;
-      await writeFile(dest, tamperPublic ? "tampered" : path.basename(dest));
+      await writeFile(
+        dest,
+        tamperPublic && path.basename(dest) !== "release.json"
+          ? "tampered"
+          : await readFile(path.join(dir, path.basename(dest))),
+      );
     } else throw new Error("Unexpected provider");
     return "";
   };
@@ -213,6 +291,62 @@ it("publishes only verified drafts through a fake provider and rechecks anonymou
   tamperPublic = false;
   await publish("steerlabs/opensteer", manifest.tag, run);
   expect(patches).toBe(2);
+});
+
+it("refuses an explicit draft channel mismatch before contacting GitHub", async () => {
+  const { dir } = await releaseFixture();
+  await expect(
+    draft(
+      dir,
+      "steerlabs/opensteer",
+      async () => {
+        throw new Error("must not contact GitHub");
+      },
+      "beta",
+    ),
+  ).rejects.toThrow("channel");
+});
+
+it("beta drafts and publication never mark Latest", async () => {
+  const { dir, manifest, release } = await releaseFixture("beta");
+  const run: typeof runBounded = async (exe, args) => {
+    if (args.includes("PATCH")) {
+      expect(args).toContain("prerelease=true");
+      expect(args).toContain("make_latest=false");
+    } else if (args[1] === "create") {
+      expect(args).toContain("--prerelease");
+      expect(args).toContain("--latest=false");
+      expect(args).toContain(path.join(dir, "release.json"));
+      expect(args).not.toContain(path.join(dir, "install.sh"));
+    } else if (args[1] === "download") {
+      const output = args[args.indexOf("--dir") + 1]!;
+      for (const name of [...Object.keys(manifest.assets), "release.json"])
+        await writeFile(path.join(output, name), await readFile(path.join(dir, name)));
+    } else if (exe === "curl") {
+      const dest = args[args.indexOf("-o") + 1]!;
+      await writeFile(dest, await readFile(path.join(dir, path.basename(dest))));
+    } else if (args.includes("--paginate")) return "[[]]";
+    else return JSON.stringify(release);
+    return "";
+  };
+  await draft(dir, "steerlabs/opensteer", run, "beta");
+  await publish("steerlabs/opensteer", manifest.tag, run, "beta");
+});
+
+it.skipIf(process.platform !== "darwin")("rejects a real ad-hoc-signed archive", async () => {
+  const root = await scratch();
+  const bundle = await fixtureBundle(root, "com.opensteer.opensteer", version);
+  await mkdir(path.join(bundle, "Contents/Resources"));
+  await writeFile(
+    path.join(bundle, "Contents/Resources/app-update.yml"),
+    "provider: github\nowner: steerlabs\nrepo: opensteer\nupdaterCacheDirName: opensteer-updater\n",
+  );
+  await exec("codesign", ["--sign", "-", bundle]);
+  const zip = path.join(root, "adhoc.zip");
+  await exec("ditto", ["-c", "-k", "--keepParent", bundle, zip]);
+  await expect(
+    prepare({ channel: "stable", appZip: zip, version, sourceSha, out: path.join(root, "assets") }),
+  ).rejects.toThrow(/signing team|assess|Gatekeeper/u);
 });
 
 async function fixtureBundle(root: string, id: string, bundleVersion: string) {
@@ -234,7 +368,7 @@ async function fixtureBundle(root: string, id: string, bundleVersion: string) {
 function writeFixturePlist(bundle: string, id: string, bundleVersion: string) {
   return writeFile(
     path.join(bundle, "Contents/Info.plist"),
-    `<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${id}</string><key>CFBundleVersion</key><string>${bundleVersion}</string><key>CFBundleShortVersionString</key><string>${bundleVersion}</string><key>CFBundleExecutable</key><string>Opensteer</string></dict></plist>`,
+    `<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${id}</string><key>CFBundleVersion</key><string>${bundleVersion}</string><key>CFBundleShortVersionString</key><string>${bundleVersion}</string><key>OpensteerSourceRevision</key><string>${sourceSha}</string><key>OpensteerUpdateFeed</key><string>${publicFeedURL}</string><key>CFBundleExecutable</key><string>Opensteer</string></dict></plist>`,
   );
 }
 
@@ -249,7 +383,9 @@ async function fixtureMirror(zip: string, tamper: () => boolean) {
     } else if (url.startsWith("/releases/tag/")) res.end("release");
     else if (url.endsWith("SHA256SUMS")) {
       void sha256File(zip).then((hash) =>
-        res.end(`${tamper() ? "0".repeat(64) : hash}  Opensteer-mac-arm64.zip\n`),
+        res.end(
+          `${"1".repeat(64)}  latest-mac.yml\n${tamper() ? "0".repeat(64) : hash}  Opensteer-mac-arm64.zip\n${"2".repeat(64)}  Opensteer-mac-arm64.zip.blockmap\n`,
+        ),
       );
     } else if (url.endsWith(".zip") && !url.startsWith("/objects/")) {
       res.writeHead(302, { Location: `http://localhost:${port}/objects/application.zip` });

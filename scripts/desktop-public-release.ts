@@ -14,13 +14,31 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { sha256File } from "@opensteer/shared/fileDigest";
 import { z } from "zod";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+// Match electron-builder exactly: its blockmap format is consumed by electron-updater.
+import { buildBlockMap } from "app-builder-lib/out/targets/blockmap/blockmap.js";
 import { runBounded } from "./command-runner.js";
 
-export const publicFeedURL =
-  "https://github.com/steerlabs/opensteer/releases/latest/download/opensteer-mac-arm64.json";
+export const publicFeedURL = "https://github.com/steerlabs/opensteer#latest";
 const publicDownloadBase = "https://github.com/steerlabs/opensteer/releases/download";
-const versionSchema = z.string().regex(/^\d+\.\d+\.\d+$/u);
-const tagSchema = z.string().regex(/^desktop-v\d+\.\d+\.\d+$/u);
+const channelSchema = z.enum(["stable", "beta"]);
+type Channel = z.infer<typeof channelSchema>;
+function channelConfig(channel: Channel) {
+  const beta = channel === "beta";
+  return {
+    app: beta ? "Opensteer Beta.app" : "Opensteer.app",
+    bundleId: beta ? "com.steerlabs.opensteer.beta" : "com.opensteer.opensteer",
+    zip: beta ? "Opensteer-Beta-mac-arm64.zip" : "Opensteer-mac-arm64.zip",
+    metadata: beta ? "insider-mac.yml" : "latest-mac.yml",
+    feed: beta ? "https://github.com/steerlabs/opensteer#insider" : publicFeedURL,
+    cache: beta ? "opensteer-beta-updater" : "opensteer-updater",
+    tag: (version: string) => (beta ? `v${version}-insider` : `desktop-v${version}`),
+    title: (version: string) =>
+      beta ? `Opensteer Beta ${version}` : `Opensteer ${version} (Alpha)`,
+  };
+}
+const versionSchema = z.string().regex(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u);
+const tagSchema = z.string().regex(/^(?:desktop-v\d+\.\d+\.\d+|v\d+\.\d+\.\d+-insider)$/u);
 const repoSchema = z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u);
 const absolutePath = z
   .string()
@@ -29,35 +47,53 @@ const absolutePath = z
     "Use a normalized absolute non-root path",
   );
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/u);
+function assetsFor(channel: Channel): string[] {
+  const config = channelConfig(channel);
+  return [
+    config.zip,
+    `${config.zip}.blockmap`,
+    config.metadata,
+    ...(channel === "stable" ? ["install.sh"] : []),
+    "SHA256SUMS",
+  ];
+}
 export const assetNames = [
   "Opensteer-mac-arm64.zip",
-  "opensteer-mac-arm64.json",
+  "Opensteer-mac-arm64.zip.blockmap",
+  "latest-mac.yml",
   "install.sh",
   "SHA256SUMS",
 ] as const;
 export const manifestSchema = z
   .strictObject({
+    channel: channelSchema,
+    prerelease: z.boolean(),
     tag: tagSchema,
     title: z.string(),
     notes: z.string(),
     version: versionSchema,
     sourceSha: z.string().regex(/^[a-f0-9]{40}$/u),
-    assets: z.strictObject({
-      "Opensteer-mac-arm64.zip": hashSchema,
-      "opensteer-mac-arm64.json": hashSchema,
-      "install.sh": hashSchema,
-      SHA256SUMS: hashSchema,
-    }),
+    assets: z.record(z.string(), hashSchema),
     feedURL: z.string().url(),
     privateFeed: z.boolean(),
   })
   .superRefine((manifest, ctx) => {
+    const config = channelConfig(manifest.channel);
     if (
-      manifest.tag !== `desktop-v${manifest.version}` ||
-      manifest.title !== `Opensteer ${manifest.version} (Alpha)`
+      manifest.tag !== config.tag(manifest.version) ||
+      manifest.title !== config.title(manifest.version) ||
+      manifest.prerelease !== (manifest.channel === "beta")
     )
-      ctx.addIssue({ code: "custom", message: "Manifest tag/title/version disagree" });
-    if (manifest.feedURL !== publicFeedURL && !manifest.privateFeed)
+      ctx.addIssue({
+        code: "custom",
+        message: "Manifest channel/tag/title/version/prerelease disagree",
+      });
+    if (
+      Object.keys(manifest.assets).sort().join("\n") !==
+      assetsFor(manifest.channel).sort().join("\n")
+    )
+      ctx.addIssue({ code: "custom", message: "Manifest assets disagree with channel" });
+    if (manifest.feedURL !== config.feed && !manifest.privateFeed)
       ctx.addIssue({ code: "custom", message: "Private feed must be marked private" });
   });
 type Manifest = z.infer<typeof manifestSchema>;
@@ -65,6 +101,7 @@ type Run = typeof runBounded;
 const releaseSchema = z.object({
   id: z.number().int(),
   draft: z.boolean(),
+  prerelease: z.boolean(),
   tag_name: z.string(),
   name: z
     .string()
@@ -93,6 +130,7 @@ export function downloadBase(value: string): string {
 
 export async function prepare(
   input: {
+    channel: Channel;
     appZip: string;
     version: string;
     sourceSha: string;
@@ -103,6 +141,9 @@ export async function prepare(
   },
   run: Run = runBounded,
 ): Promise<Manifest> {
+  const channel = channelSchema.parse(input.channel);
+  const config = channelConfig(channel);
+  const names = assetsFor(channel);
   const appZip = absolutePath.parse(input.appZip);
   const out = absolutePath.parse(input.out);
   const version = versionSchema.parse(input.version);
@@ -127,9 +168,9 @@ export async function prepare(
     await mkdir(extracted);
     await command("ditto", ["-x", "-k", frozen, extracted]);
     const apps = (await readdir(extracted)).filter((name) => name.endsWith(".app"));
-    if (apps.length !== 1 || apps[0] !== "Opensteer.app")
-      throw new Error("Archive must contain exactly one top-level Opensteer.app");
-    const app = path.join(extracted, "Opensteer.app");
+    if (apps.length !== 1 || apps[0] !== config.app)
+      throw new Error(`Archive must contain exactly one top-level ${config.app}`);
+    const app = path.join(extracted, config.app);
     if (!(await lstat(app)).isDirectory())
       throw new Error("App must be a directory, not a symlink");
     const plist = async (key: string) =>
@@ -139,9 +180,8 @@ export async function prepare(
           `Print :${key}`,
           path.join(app, "Contents/Info.plist"),
         ])
-      ).trim();
-    if ((await plist("CFBundleIdentifier")) !== "com.opensteer.opensteer")
-      throw new Error("Wrong bundle id");
+      ).replace(/\r?\n$/u, "");
+    if ((await plist("CFBundleIdentifier")) !== config.bundleId) throw new Error("Wrong bundle id");
     if (
       (await plist("CFBundleShortVersionString")) !== version ||
       (await plist("CFBundleVersion")) !== version
@@ -149,11 +189,25 @@ export async function prepare(
       throw new Error("Bundle versions disagree");
     if ((await plist("OpensteerSourceRevision")) !== sourceSha)
       throw new Error("Source revision disagrees");
-    const feedURL = await plist("OpensteerUpdateFeedURL");
+    const feedURL = await plist("OpensteerUpdateFeed");
     z.string().url().parse(feedURL);
-    const privateFeed = feedURL !== publicFeedURL || base !== publicDownloadBase;
+    let privateFeed = feedURL !== config.feed || base !== publicDownloadBase;
     if (privateFeed && !input.allowPrivateFeed)
       throw new Error("Private feed/download base requires --allow-private-feed");
+    const updater = z
+      .strictObject({
+        provider: z.literal("github"),
+        owner: z.literal("steerlabs"),
+        repo: z.literal("opensteer"),
+        host: z.string().min(1).optional(),
+        updaterCacheDirName: z.literal(config.cache),
+      })
+      .parse(
+        parseYaml(await readFile(path.join(app, "Contents/Resources/app-update.yml"), "utf8")),
+      );
+    if (updater.host !== undefined && !input.allowPrivateFeed)
+      throw new Error("Private updater host requires --allow-private-feed");
+    privateFeed ||= updater.host !== undefined;
     const executable = await plist("CFBundleExecutable");
     if (!executable || path.basename(executable) !== executable || [".", ".."].includes(executable))
       throw new Error("Invalid bundle executable");
@@ -172,27 +226,45 @@ export async function prepare(
       throw new Error("Wrong signing team");
     await command("xcrun", ["stapler", "validate", app]);
     await command("spctl", ["--assess", "--type", "execute", app]);
-    const tag = `desktop-v${version}`;
+    const tag = config.tag(version);
     const extraNotes = input.notesFile
       ? await readFile(absolutePath.parse(input.notesFile), "utf8")
       : "";
     const notes =
-      "This is an alpha release of Opensteer for Apple silicon Macs.\n\n```sh\ncurl -fsSL https://github.com/steerlabs/opensteer/releases/latest/download/install.sh | sh\n```" +
+      (channel === "beta"
+        ? "This is a beta release of Opensteer for Apple silicon Macs."
+        : "This is an alpha release of Opensteer for Apple silicon Macs.\n\n```sh\ncurl -fsSL https://github.com/steerlabs/opensteer/releases/latest/download/install.sh | sh\n```") +
       (extraNotes ? `\n\n${extraNotes.trim()}` : "");
     // mkdir without recursive deliberately refuses to overwrite prior release evidence.
     await mkdir(out);
-    await copyFile(frozen, path.join(out, assetNames[0]));
-    await copyFile(
-      fileURLToPath(new URL("./install.sh", import.meta.url)),
-      path.join(out, "install.sh"),
+    const zip = path.join(out, config.zip);
+    await copyFile(frozen, zip);
+    if (channel === "stable")
+      await copyFile(
+        fileURLToPath(new URL("./install.sh", import.meta.url)),
+        path.join(out, "install.sh"),
+      );
+    const { sha512, size } = await buildBlockMap(
+      zip,
+      "gzip",
+      path.join(out, `${config.zip}.blockmap`),
     );
+    // GitHubProvider prepends its release-download path, including on private hosts.
+    const url = config.zip;
     await writeFile(
-      path.join(out, assetNames[1]),
-      `${JSON.stringify({ currentRelease: version, releases: [{ version, updateTo: { version, name: `Opensteer ${version} (Alpha)`, pub_date: new Date().toISOString(), notes: "", url: `${base}/${tag}/${assetNames[0]}` } }] }, null, 2)}\n`,
+      path.join(out, config.metadata),
+      stringifyYaml({
+        version,
+        files: [{ url, sha512, size }],
+        path: url,
+        sha512,
+        releaseDate: new Date().toISOString(),
+        releaseName: config.title(version),
+      }),
     );
     const hashes = await Promise.all(
-      assetNames
-        .slice(0, 3)
+      names
+        .filter((name) => name !== "SHA256SUMS")
         .map(async (name) => [name, await sha256File(path.join(out, name))] as const),
     );
     await writeFile(
@@ -205,7 +277,9 @@ export async function prepare(
     ]);
     const manifest = manifestSchema.parse({
       tag,
-      title: `Opensteer ${version} (Alpha)`,
+      title: config.title(version),
+      channel,
+      prerelease: channel === "beta",
       notes,
       version,
       sourceSha,
@@ -221,57 +295,64 @@ export async function prepare(
 }
 
 async function verifyAssets(dir: string, manifest: Manifest) {
-  for (const name of assetNames) {
+  for (const name of Object.keys(manifest.assets)) {
     if ((await sha256File(path.join(dir, name))) !== manifest.assets[name])
       throw new Error(`Asset differs: ${name}`);
   }
 }
-function releaseBody(manifest: Manifest): string {
-  return `${manifest.notes}\n\n<!-- opensteer-release-manifest\n${JSON.stringify(manifest)}\n-->\n`;
-}
-function releaseManifest(release: z.infer<typeof releaseSchema>): Manifest {
-  const marker = "\n<!-- opensteer-release-manifest\n";
-  const start = release.body.lastIndexOf(marker);
-  if (start < 0 || !release.body.endsWith("\n-->\n")) throw new Error("Release has no manifest");
-  const manifest = manifestSchema.parse(
-    JSON.parse(release.body.slice(start + marker.length, -"\n-->\n".length)),
-  );
+function releaseManifest(release: z.infer<typeof releaseSchema>, manifest: Manifest): Manifest {
   if (
-    release.body !== releaseBody(manifest) ||
+    release.body !== manifest.notes ||
     release.tag_name !== manifest.tag ||
     release.name !== manifest.title ||
+    release.prerelease !== manifest.prerelease ||
     release.assets
       .map((asset) => asset.name)
       .sort()
-      .join("\n") !== [...assetNames].sort().join("\n")
+      .join("\n") !== [...assetsFor(manifest.channel), "release.json"].sort().join("\n")
   )
     throw new Error("Release metadata/assets disagree with manifest");
   return manifest;
+}
+function checkChannel(manifest: Manifest, channel?: string) {
+  if (channel !== undefined && channelSchema.parse(channel) !== manifest.channel)
+    throw new Error("Requested channel disagrees with release.json channel");
 }
 
 function publicGuard(repo: string, manifest: Manifest) {
   if (
     repo.toLowerCase() === "steerlabs/opensteer" &&
-    (manifest.privateFeed || manifest.feedURL !== publicFeedURL)
+    (manifest.privateFeed || manifest.feedURL !== channelConfig(manifest.channel).feed)
   )
     throw new Error("Refusing a private feed in the public repository");
 }
-async function verifyDraftAssets(repo: string, manifest: Manifest, run: Run) {
+async function verifyDraftAssets(repo: string, tag: string, run: Run, expectedBytes?: Buffer) {
   const temp = await mkdtemp(path.join(tmpdir(), "opensteer-draft-check-"));
   try {
-    await run("gh", ["release", "download", manifest.tag, "--repo", repo, "--dir", temp]);
+    await run("gh", ["release", "download", tag, "--repo", repo, "--dir", temp]);
+    const bytes = await readFile(path.join(temp, "release.json"));
+    if (expectedBytes && !bytes.equals(expectedBytes))
+      throw new Error("Existing release.json differs");
+    const manifest = manifestSchema.parse(JSON.parse(bytes.toString("utf8")));
+    if (manifest.tag !== tag) throw new Error("Manifest tag disagrees");
     await verifyAssets(temp, manifest);
+    return { manifest, bytes };
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
 }
 
-export async function draft(dirInput: string, repoInput: string, run: Run = runBounded) {
+export async function draft(
+  dirInput: string,
+  repoInput: string,
+  run: Run = runBounded,
+  channel?: string,
+) {
   const dir = absolutePath.parse(dirInput);
   const repo = repoSchema.parse(repoInput);
-  const manifest = manifestSchema.parse(
-    JSON.parse(await readFile(path.join(dir, "release.json"), "utf8")),
-  );
+  const bytes = await readFile(path.join(dir, "release.json"));
+  const manifest = manifestSchema.parse(JSON.parse(bytes.toString("utf8")));
+  checkChannel(manifest, channel);
   publicGuard(repo, manifest);
   await verifyAssets(dir, manifest);
   // A listing distinguishes absence from authentication/network failures; never create on an ambiguous error.
@@ -287,16 +368,15 @@ export async function draft(dirInput: string, repoInput: string, run: Run = runB
   );
   const existing = releases.find((release) => release.tag_name === manifest.tag);
   if (existing) {
-    const remote = releaseManifest(existing);
-    if (!existing.draft || JSON.stringify(remote) !== JSON.stringify(manifest))
-      throw new Error("Existing release differs or is already published");
-    await verifyDraftAssets(repo, manifest, run);
+    releaseManifest(existing, manifest);
+    if (!existing.draft) throw new Error("Existing release differs or is already published");
+    await verifyDraftAssets(repo, manifest.tag, run, bytes);
     return;
   }
   const notesDir = await mkdtemp(path.join(tmpdir(), "opensteer-release-notes-"));
   try {
     const notesPath = path.join(notesDir, "notes.md");
-    await writeFile(notesPath, releaseBody(manifest));
+    await writeFile(notesPath, manifest.notes);
     await run("gh", [
       "release",
       "create",
@@ -308,26 +388,33 @@ export async function draft(dirInput: string, repoInput: string, run: Run = runB
       manifest.title,
       "--notes-file",
       notesPath,
-      ...assetNames.map((name) => path.join(dir, name)),
+      ...(manifest.prerelease ? ["--prerelease", "--latest=false"] : []),
+      ...[...assetsFor(manifest.channel), "release.json"].map((name) => path.join(dir, name)),
     ]);
   } finally {
     await rm(notesDir, { recursive: true, force: true });
   }
 }
 
-export async function publish(repoInput: string, tagInput: string, run: Run = runBounded) {
+export async function publish(
+  repoInput: string,
+  tagInput: string,
+  run: Run = runBounded,
+  channel?: string,
+) {
   const repo = repoSchema.parse(repoInput);
   const tag = tagSchema.parse(tagInput);
   const release = releaseSchema.parse(
     JSON.parse(await run("gh", ["api", `repos/${repo}/releases/tags/${tag}`])),
   );
-  const manifest = releaseManifest(release);
+  const { manifest, bytes } = await verifyDraftAssets(repo, tag, run);
+  releaseManifest(release, manifest);
+  checkChannel(manifest, channel);
   publicGuard(repo, manifest);
   // Installers and updaters follow Latest immediately, so nothing becomes public
   // until the draft's stored bytes match its manifest. A rerun after publication
   // only repeats the anonymous check below.
   if (release.draft) {
-    await verifyDraftAssets(repo, manifest, run);
     await run("gh", [
       "api",
       "--method",
@@ -336,14 +423,14 @@ export async function publish(repoInput: string, tagInput: string, run: Run = ru
       "-F",
       "draft=false",
       "-F",
-      "prerelease=false",
+      `prerelease=${manifest.prerelease}`,
       "-f",
-      "make_latest=true",
+      `make_latest=${!manifest.prerelease}`,
     ]);
   }
   const temp = await mkdtemp(path.join(tmpdir(), "opensteer-published-check-"));
   try {
-    for (const name of assetNames) {
+    for (const name of [...Object.keys(manifest.assets), "release.json"]) {
       await run("curl", [
         "-q",
         "-fsSL",
@@ -362,6 +449,8 @@ export async function publish(repoInput: string, tagInput: string, run: Run = ru
       ]);
     }
     await verifyAssets(temp, manifest);
+    if (!(await readFile(path.join(temp, "release.json"))).equals(bytes))
+      throw new Error("Published release.json differs");
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
@@ -372,6 +461,7 @@ export async function main(args = process.argv.slice(2)) {
   const { values } = parseArgs({
     args: rest,
     options: {
+      channel: { type: "string" },
       "app-zip": { type: "string" },
       version: { type: "string" },
       "source-sha": { type: "string" },
@@ -387,6 +477,7 @@ export async function main(args = process.argv.slice(2)) {
   const required = (key: keyof typeof values) => z.string().min(1).parse(values[key]);
   if (subcommand === "prepare")
     await prepare({
+      channel: channelSchema.parse(required("channel")),
       appZip: required("app-zip"),
       version: required("version"),
       sourceSha: required("source-sha"),
@@ -395,8 +486,10 @@ export async function main(args = process.argv.slice(2)) {
       allowPrivateFeed: values["allow-private-feed"] ?? false,
       ...(values["notes-file"] ? { notesFile: values["notes-file"] } : {}),
     });
-  else if (subcommand === "draft") await draft(required("dir"), required("repo"));
-  else if (subcommand === "publish") await publish(required("repo"), required("tag"));
+  else if (subcommand === "draft")
+    await draft(required("dir"), required("repo"), runBounded, values.channel);
+  else if (subcommand === "publish")
+    await publish(required("repo"), required("tag"), runBounded, values.channel);
   else throw new Error("Usage: desktop:public-release prepare|draft|publish [options]");
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
