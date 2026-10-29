@@ -27,7 +27,11 @@ security key; either weaker preference leaves discoverability unknown.
 
 The SDK has no public resident-key setter for platform requests and no hybrid
 switch on security-key requests. Resident-key preferences apply to security-key
-registration. The hybrid switch applies to both platform operations. The first
+registration. The hybrid switch applies to both platform operations. Nearby phones
+are offered only through the platform request, so a `cross-platform` registration
+keeps it whenever the hybrid path is shown; that sheet can also save a local passkey,
+and the result's attachment tells the RP which one the person chose. A
+`security-key` hint, which hides the hybrid path, leaves only security keys. The first
 recognized hint controls it; attachment and assertion transports supply the default
 when there is no recognized hint. Attestation is always
 `none`. No private SPI is declared or invoked.

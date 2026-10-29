@@ -119,13 +119,6 @@ export function buildMacosPasskeyRequest(
   const credentials = descriptors
     .filter((d) => d.type === "public-key")
     .map((d) => ({ id: Buffer.from(d.id).toString("base64"), transports: d.transports ?? [] }));
-  const providers: ("platform" | "security-key")[] = [];
-  if (!get || !descriptors.length || credentials.length) {
-    if (attachment !== "cross-platform" && (!create || algorithms.includes(-7)))
-      providers.push("platform");
-    if (attachment !== "platform" && securityKeys && (!create || algorithms.length))
-      providers.push("security-key");
-  }
   // Hints override transport and attachment defaults; the first recognized hint wins.
   const hint = request.options.hints?.find((value) =>
     ["hybrid", "client-device", "security-key"].includes(value),
@@ -141,6 +134,18 @@ export function buildMacosPasskeyRequest(
             (d) =>
               d.type === "public-key" && (!d.transports?.length || d.transports.includes("hybrid")),
           ));
+  const providers: ("platform" | "security-key")[] = [];
+  if (!get || !descriptors.length || credentials.length) {
+    // Nearby phones are offered only through the platform request, so a
+    // cross-platform registration keeps it whenever it shows that path.
+    if (
+      (attachment !== "cross-platform" || shouldShowHybridTransport) &&
+      (!create || algorithms.includes(-7))
+    )
+      providers.push("platform");
+    if (attachment !== "platform" && securityKeys && (!create || algorithms.length))
+      providers.push("security-key");
+  }
   return requestSchema.parse({
     operationId: request.operationId,
     op: request.op,
