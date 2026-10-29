@@ -476,15 +476,23 @@ bash scripts/test-macos-journeys.sh --postflight --run-id "$id" --out "$HOME/ope
 The on-demand `mac-owner` selection runs `MacOwnerInputJourney/run-vm.sh` unchanged
 through the registered launcher, using its original environment, temporary app
 location and cleanup. It still requires the legacy `/Users/admin/opensteer-job`
-layout; the guest marker alone does not satisfy that script's guard. Its evidence
-is copied read-only from `~/opensteer-job/artifacts/mac-owner` into the selected
-run's `mac-owner/` directory. It is excluded from default journeys and sweeps.
+layout; the guest marker alone does not satisfy that script's guard. Files it
+wrote or changed in `~/opensteer-job/artifacts/mac-owner` during the run are
+copied read-only into the selected run's `mac-owner/` directory; evidence left
+by earlier runs or unselected engines is not. A rerun into the legacy output
+replaces its earlier copies. Stopping the run kills the script before its cleanup
+trap, so its unregistered `~/Applications/opensteer-owner-input.*` and
+`opensteer-window-groups.*` directories remain as residue that postflight
+reports and the job clone's deletion removes. It is excluded from default
+journeys and sweeps.
 
 After each journey, both invocation modes copy `.ips` and `.crash` files from
 `~/Library/Logs/DiagnosticReports` modified since that journey started into its
 `crash-reports/` directory. Copies are read-only, originals stay untouched, and
-`crashReports` in each manifest row records the count. Reports are evidence only
-and never authorize process or file cleanup.
+`crashReports` in each manifest row records the count. A report macOS removes
+during collection is skipped. Any other collection failure is recorded as the
+row's `evidenceError`; it never changes the journey's result or stops later
+journeys. Reports are evidence only and never authorize process or file cleanup.
 
 IDs have format `yyyymmddThhmmssZ-xxxxxxxx` (eight lowercase hexadecimal digits).
 Preflight returns 0 for clean, 3 for unknown residue, or 2 for invalid arguments or

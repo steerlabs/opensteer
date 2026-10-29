@@ -1,4 +1,4 @@
-import { collectCrashReports, copyJourneyEvidence } from "./journey-artifacts.js";
+import { collectJourneyEvidence } from "./journey-artifacts.js";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { bindPath, validatePathBinding } from "./journey-paths.js";
 import { stopRegisteredGroups } from "./journey-processes.js";
@@ -72,6 +72,7 @@ const results: {
   seconds: number;
   outcome: string;
   crashReports: number;
+  evidenceError?: string | undefined;
 }[] = [];
 const head = () => execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 async function record(value = registration, includeMarker = true) {
@@ -326,12 +327,13 @@ async function main() {
           path.join(out, `${name}.log`),
           env,
         );
-        if (name === "mac-owner")
-          await copyJourneyEvidence(
-            path.join(home, "opensteer-job/artifacts/mac-owner"),
-            directory,
-          );
-        const crashReports = await collectCrashReports(home, startedAt, directory);
+        const evidence = await collectJourneyEvidence(
+          home,
+          startedAt,
+          directory,
+          name === "mac-owner" ? path.join(home, "opensteer-job/artifacts/mac-owner") : undefined,
+        );
+        if (evidence.evidenceError) console.error(evidence.evidenceError);
         execFileSync(
           process.execPath,
           [
@@ -340,7 +342,8 @@ async function main() {
             name,
             String(code),
             String((performance.now() - start) / 1000),
-            String(crashReports),
+            String(evidence.crashReports),
+            ...(evidence.evidenceError ? [evidence.evidenceError] : []),
           ],
           { stdio: "inherit" },
         );
@@ -353,6 +356,7 @@ async function main() {
               seconds: z.number(),
               outcome: z.string(),
               crashReports: z.number().int().nonnegative(),
+              evidenceError: z.string().optional(),
             })
             .parse(JSON.parse(lines.at(-1)!)),
         );

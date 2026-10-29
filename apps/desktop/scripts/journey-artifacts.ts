@@ -1,72 +1,110 @@
+import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { setFileMode } from "@opensteer/shared/privateFiles";
-import { copyFileSync, lstatSync, mkdirSync, readdirSync } from "node:fs";
+import { constants, copyFileSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 
-export interface CrashReportIO {
+export interface EvidenceIO {
   list(directory: string): string[];
-  stat(file: string): { isFile(): boolean; mtimeMs: number };
+  stat(file: string): { isFile(): boolean; isDirectory(): boolean; mtimeMs: number };
   mkdir(directory: string): void;
   copy(source: string, target: string): void;
   setMode(file: string, mode: number): void | Promise<void>;
 }
-const reportIO: CrashReportIO = {
-  list: (directory) => {
-    try {
-      return readdirSync(directory);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw error;
-    }
-  },
+const evidenceIO: EvidenceIO = {
+  list: (directory) => readdirSync(directory),
   stat: lstatSync,
   mkdir: (directory) => {
     mkdirSync(directory, { recursive: true });
   },
-  copy: copyFileSync,
+  // Reruns into legacy output meet their own read-only copies; replace, never write through.
+  copy: (source, target) => {
+    rmSync(target, { force: true });
+    copyFileSync(source, target, constants.COPYFILE_EXCL);
+  },
   setMode: setFileMode,
 };
+const missing = (error: unknown) => nodeErrorCode(error) === "ENOENT";
 
-/** Diagnostic reports are evidence only; their paths never authorize cleanup. */
-export async function collectCrashReports(
-  home: string,
+/** Copy regular files modified since `startedAt` read-only; a file removed before copying is skipped. */
+async function copyCurrentFiles(
+  source: string,
+  target: string,
   startedAt: number,
-  directory: string,
-  io = reportIO,
+  io: EvidenceIO,
+  select: { recursive: boolean; name?: RegExp },
 ): Promise<number> {
-  const source = path.join(home, "Library/Logs/DiagnosticReports");
-  const target = path.join(directory, "crash-reports");
+  let names: string[];
+  try {
+    names = io.list(source);
+  } catch (error) {
+    if (missing(error)) return 0;
+    throw error;
+  }
   let count = 0;
-  for (const name of io.list(source)) {
-    if (!/\.(ips|crash)$/.test(name)) continue;
-    const file = path.join(source, name);
-    const stat = io.stat(file);
-    if (!stat.isFile() || stat.mtimeMs < startedAt) continue;
-    io.mkdir(target);
-    const copy = path.join(target, name);
-    io.copy(file, copy);
-    await io.setMode(copy, 0o444);
+  for (const name of names) {
+    const from = path.join(source, name);
+    const to = path.join(target, name);
+    try {
+      const stat = io.stat(from);
+      if (stat.isDirectory() && select.recursive)
+        count += await copyCurrentFiles(from, to, startedAt, io, select);
+      if (!stat.isFile() || stat.mtimeMs < startedAt || select.name?.test(name) === false) continue;
+      io.mkdir(target);
+      io.copy(from, to);
+    } catch (error) {
+      if (missing(error)) continue;
+      throw error;
+    }
+    await io.setMode(to, 0o444);
     count++;
   }
   return count;
 }
 
-/** Copy the legacy script's evidence without changing its files or following links. */
-export async function copyJourneyEvidence(source: string, target: string): Promise<void> {
-  let entries;
-  try {
-    entries = readdirSync(source, { withFileTypes: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw error;
-  }
-  mkdirSync(target, { recursive: true });
-  for (const entry of entries) {
-    const from = path.join(source, entry.name);
-    const to = path.join(target, entry.name);
-    if (entry.isDirectory()) await copyJourneyEvidence(from, to);
-    else if (entry.isFile()) {
-      copyFileSync(from, to);
-      await setFileMode(to, 0o444);
-    }
-  }
+/** Diagnostic reports are evidence only; their paths never authorize cleanup. */
+export function collectCrashReports(
+  home: string,
+  startedAt: number,
+  directory: string,
+  io = evidenceIO,
+): Promise<number> {
+  return copyCurrentFiles(
+    path.join(home, "Library/Logs/DiagnosticReports"),
+    path.join(directory, "crash-reports"),
+    startedAt,
+    io,
+    { recursive: false, name: /\.(ips|crash)$/ },
+  );
+}
+
+/** The legacy script keeps earlier runs' evidence beside this one's; copy only what this run wrote. */
+export async function copyJourneyEvidence(
+  source: string,
+  target: string,
+  startedAt: number,
+  io = evidenceIO,
+): Promise<void> {
+  await copyCurrentFiles(source, target, startedAt, io, { recursive: true });
+}
+
+/** Evidence failures are reported beside a finished journey's result and never replace it. */
+export async function collectJourneyEvidence(
+  home: string,
+  startedAt: number,
+  directory: string,
+  legacyEvidence?: string,
+  io = evidenceIO,
+): Promise<{ crashReports: number; evidenceError?: string }> {
+  const errors: string[] = [];
+  if (legacyEvidence)
+    await copyJourneyEvidence(legacyEvidence, directory, startedAt, io).catch((error: unknown) => {
+      errors.push(String(error));
+    });
+  const crashReports = await collectCrashReports(home, startedAt, directory, io).catch(
+    (error: unknown) => {
+      errors.push(String(error));
+      return 0;
+    },
+  );
+  return errors.length ? { crashReports, evidenceError: errors.join("; ") } : { crashReports };
 }
