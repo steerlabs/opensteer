@@ -194,6 +194,7 @@ async function releaseFixture(channel: "stable" | "beta" = "stable") {
     name: manifest.title,
     body: manifest.notes,
     prerelease: channel === "beta",
+    target_commitish: manifest.sourceSha,
     assets: [...names, "release.json"].map((name) => ({ name })),
   };
   return { dir, manifest, release };
@@ -212,6 +213,9 @@ it("creates alpha drafts beside legacy releases, reuses exact assets, refuses dr
       uploads++;
       expect(args).toContain("--draft");
       expect(args).toContain(manifest.title);
+      // A missing tag is created at --target on publication; without it GitHub would
+      // tag the default branch's current HEAD instead of the built source.
+      expect(args[args.indexOf("--target") + 1]).toBe(manifest.sourceSha);
       expect(await readFile(args[args.indexOf("--notes-file") + 1]!, "utf8")).toBe(release.body);
     } else if (args[1] === "download") {
       const output = args[args.indexOf("--dir") + 1]!;
@@ -232,6 +236,9 @@ it("creates alpha drafts beside legacy releases, reuses exact assets, refuses dr
   remoteDrift = assetNames[0];
   await expect(draft(dir, "steerlabs/opensteer", run)).rejects.toThrow("Asset differs");
   remoteDrift = "";
+  release.target_commitish = "main";
+  await expect(draft(dir, "steerlabs/opensteer", run)).rejects.toThrow("disagree");
+  release.target_commitish = manifest.sourceSha;
   release.body = release.body.replace("Alpha notes", "Changed notes");
   await expect(draft(dir, "steerlabs/opensteer", run)).rejects.toThrow("disagree");
   await writeFile(
@@ -279,6 +286,11 @@ it("publishes only verified drafts through a fake provider and rechecks anonymou
   };
   await publish("steerlabs/opensteer", manifest.tag, run);
   expect(patches).toBe(1);
+  // A draft retargeted away from the built source must not be published.
+  release.target_commitish = "main";
+  await expect(publish("steerlabs/opensteer", manifest.tag, run)).rejects.toThrow("disagree");
+  expect(patches).toBe(1);
+  release.target_commitish = manifest.sourceSha;
   // A draft whose bytes drifted must never become public or Latest.
   tamperDraft = true;
   await expect(publish("steerlabs/opensteer", manifest.tag, run)).rejects.toThrow("Asset differs");

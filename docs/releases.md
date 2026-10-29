@@ -78,7 +78,9 @@ channel's bundle identity, numeric versions, source, arm64 executable, Developer
 signature/team, notarization, Gatekeeper, `OpensteerUpdateFeed` and the embedded
 `app-update.yml` GitHub provider/cache configuration. `--notes-file <absolute-file>`
 appends human release notes. Draft/publish infer the channel from the attached
-`release.json`; an explicit mismatch is refused. Identical draft bytes are reused,
+`release.json`; an explicit mismatch is refused. A draft targets `sourceSha`, so
+publication creates a missing tag at the built commit rather than the current main;
+a draft with another target is refused. Identical draft bytes are reused,
 differing drafts refused. After maintainer approval, publish verifies every draft
 asset before changing visibility and Latest status, then checks anonymous downloads.
 A published-release rerun only verifies.
