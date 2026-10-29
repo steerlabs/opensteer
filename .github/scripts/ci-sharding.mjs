@@ -1,3 +1,6 @@
+/** Weight in ms for a file without a recorded duration; also each recorded file's startup allowance. */
+export const unknownDuration = { tests: 1_500, integration: 3_000 };
+
 /** Longest-processing-time first; stable ties make independently computed shards agree. */
 export function assignShards(files, durations, count, unknownDuration) {
   if (!Number.isInteger(count) || count < 1 || new Set(files).size !== files.length)
