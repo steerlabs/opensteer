@@ -1242,16 +1242,60 @@ integration("agent organization and durable ownership", () => {
       idempotencyKey: "personal",
     });
     expect(replay.layout.revision).toBe(movedOne.revision);
-    await Promise.all([
-      groups.group(owner.id, {
+    const regroupLocked = Promise.withResolvers<void>();
+    const releaseRegroup = Promise.withResolvers<void>();
+    const regroup = groups.group(
+      owner.id,
+      {
         tabIds: [second.tabId],
         groupId: one.groupId,
         idempotencyKey: randomUUID(),
-      }),
-      stack.host.browser.closeWorkspaceTab(owner.id, first.tabId),
-    ]);
+      },
+      async () => {
+        regroupLocked.resolve();
+        await releaseRegroup.promise;
+      },
+    );
+    await regroupLocked.promise;
+    const closing = stack.host.browser.closeWorkspaceTab(owner.id, first.tabId);
+    releaseRegroup.resolve();
+    await Promise.all([regroup, closing]);
     expect((await groups.layout(owner.id)).groups[0]?.tabIds).toEqual([second.tabId]);
     expect((await new WorkspaceTabStore(db).get(owner.id, second.tabId))?.closedAt).toBeNull();
+
+    const third = await command(stack, {
+      type: "browser.tab.open",
+      sessionId: first.sessionId,
+      idempotencyKey: randomUUID(),
+    });
+    if (third.type !== "browser.tab.open") throw new Error("Wrong tab result");
+    const closingGroup = await groups.group(owner.id, {
+      tabIds: [third.tabId],
+      title: "Closing",
+      idempotencyKey: randomUUID(),
+    });
+    const barrier = pauseAfterLock(
+      db,
+      (node) => /"name":"browser_?tab_?group_?members"/iu.test(node) && !node.includes("ForUpdate"),
+    );
+    const lateRegroup = new BrowserTabGroupStore(barrier.database).group(owner.id, {
+      tabIds: [second.tabId],
+      groupId: closingGroup.groupId,
+      idempotencyKey: randomUUID(),
+    });
+    const lateOutcome = lateRegroup.then(
+      (result) => ({ result }),
+      (error: unknown) => ({ error }),
+    );
+    try {
+      await barrier.reached;
+      await stack.host.browser.closeWorkspaceTab(owner.id, third.tabId);
+    } finally {
+      barrier.release();
+    }
+    expect(await lateOutcome).toMatchObject({ error: { code: "not_found" } });
+    expect((await groups.layout(owner.id)).groups[0]?.tabIds).toEqual([second.tabId]);
+
     const temporary = await groups.group(owner.id, {
       tabIds: [second.tabId],
       title: "Temporary",
