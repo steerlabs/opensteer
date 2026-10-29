@@ -63,3 +63,18 @@ it("refuses a missing signing file even with development trust requested", () =>
   ).toThrow();
   expect(() => readSigningMode({ OPENSTEER_DESKTOP_RELEASE: "1" })).toThrow();
 });
+
+it("accepts complete CI authority and rejects partial or mismatched signing inputs", () => {
+  const { readSigningMode } =
+    require("../../scripts/signing-input.cjs") as typeof import("../../scripts/signing-input.cjs");
+  const environment = {
+    OPENSTEER_DESKTOP_RELEASE: "1",
+    OPENSTEER_RELEASE_SIGNING_IDENTITY: fixture.identity,
+    OPENSTEER_APPLE_TEAM_ID: fixture.teamId,
+  };
+  expect(readSigningMode(environment)).toEqual({ mode: "signed", signing: fixture });
+  expect(() => readSigningMode({ ...environment, OPENSTEER_APPLE_TEAM_ID: undefined })).toThrow();
+  expect(() =>
+    readSigningMode({ ...environment, OPENSTEER_APPLE_TEAM_ID: "ZZZZZ12345" }),
+  ).toThrow();
+});

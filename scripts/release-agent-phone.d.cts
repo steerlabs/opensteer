@@ -45,3 +45,9 @@ export function verifyAgentPhoneRelease(
     buildTools?: string;
   },
 ): AgentPhoneReleaseReceipt;
+
+export function writeAgentPhoneReleaseReceipt(
+  directory: string,
+  identity: { sourceRevision: string; version: string },
+  buildTools?: string,
+): string;

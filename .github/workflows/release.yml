@@ -1,7 +1,7 @@
 name: Desktop release
 on:
   push:
-    tags: ["desktop-v[0-9]*.[0-9]*.[0-9]*"]
+    tags: ["desktop-v*.*.*", "v*.*.*-insider"]
   workflow_dispatch:
     inputs:
       ref:
@@ -15,7 +15,7 @@ on:
         options: [stable, beta]
         required: true
       version:
-        description: Exact SemVer version (including -beta.N for beta)
+        description: Exact numeric version (X.Y.Z on both channels)
         type: string
         required: true
       publish:
@@ -25,7 +25,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: release-desktop-${{ inputs.channel || (contains(github.ref_name, '-beta.') && 'beta' || 'stable') }}
+  group: release-desktop-${{ inputs.channel || (endsWith(github.ref_name, '-insider') && 'beta' || 'stable') }}
   cancel-in-progress: false
 defaults:
   run:
@@ -59,21 +59,21 @@ jobs:
           sha=$(git rev-parse --verify --end-of-options "$REF^{commit}")
           git merge-base --is-ancestor "$sha" origin/main
           if [[ "$EVENT" == push ]]; then
-            VERSION=${TAG#desktop-v}
-            CHANNEL=stable
-            [[ "$VERSION" != *-beta.* ]] || CHANNEL=beta
+            case "$TAG" in
+              desktop-v*) CHANNEL=stable; VERSION=${TAG#desktop-v} ;;
+              v*-insider) CHANNEL=beta; VERSION=${TAG#v}; VERSION=${VERSION%-insider} ;;
+              *) exit 1 ;;
+            esac
           fi
           stable='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
-          if [[ "$CHANNEL" == stable ]]; then
-            [[ "$VERSION" =~ ^$stable$ ]]
-          elif [[ "$CHANNEL" == beta ]]; then
-            [[ "$VERSION" =~ ^$stable-beta\.(0|[1-9][0-9]*)$ ]]
-          else
-            exit 1
-          fi
+          [[ "$VERSION" =~ ^$stable$ ]]
+          case "$CHANNEL" in
+            stable) tag="desktop-v$VERSION" ;;
+            beta) tag="v$VERSION-insider" ;;
+            *) exit 1 ;;
+          esac
           manifest_version=$(git show "$sha:package.json" | jq -r .version)
           [[ "$manifest_version" == "$VERSION" ]]
-          tag="desktop-v$VERSION"
           if [[ "$EVENT" == push ]]; then [[ "$TAG" == "$tag" ]]; fi
           # Never overwrite an existing tag with a different source.
           if git show-ref --verify --quiet "refs/tags/$tag"; then
@@ -120,10 +120,10 @@ jobs:
           pnpm install --frozen-lockfile
       - name: Build signed Agent Phone
         env:
-          KEYSTORE_BASE64: ${{ secrets.AGENT_PHONE_KEYSTORE_BASE64 }}
-          OPENSTEER_AGENT_PHONE_KEYSTORE_PASSWORD: ${{ secrets.AGENT_PHONE_KEYSTORE_PASSWORD }}
-          OPENSTEER_AGENT_PHONE_KEY_PASSWORD: ${{ secrets.AGENT_PHONE_KEYSTORE_PASSWORD }}
-          OPENSTEER_AGENT_PHONE_KEY_ALIAS: ${{ vars.AGENT_PHONE_KEY_ALIAS }}
+          KEYSTORE_BASE64: ${{ secrets.OPENSTEER_AGENT_PHONE_KEYSTORE_BASE64 }}
+          OPENSTEER_AGENT_PHONE_KEYSTORE_PASSWORD: ${{ secrets.OPENSTEER_AGENT_PHONE_KEYSTORE_PASSWORD }}
+          OPENSTEER_AGENT_PHONE_KEY_PASSWORD: ${{ secrets.OPENSTEER_AGENT_PHONE_KEYSTORE_PASSWORD }}
+          OPENSTEER_AGENT_PHONE_KEY_ALIAS: ${{ vars.OPENSTEER_AGENT_PHONE_KEY_ALIAS }}
           OPENSTEER_AGENT_PHONE_KEYSTORE: ${{ runner.temp }}/release-keys/phone.keystore
         run: |
           set -euo pipefail
@@ -133,31 +133,36 @@ jobs:
           pnpm build:agent-phone --release
       - name: Sign, notarize and staple desktop
         env:
-          CERTIFICATE_BASE64: ${{ secrets.MAC_CERTIFICATE_P12_BASE64 }}
-          MAC_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
-          API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          CERTIFICATE_BASE64: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          PASSWORDS_PROFILE_BASE64: ${{ secrets.MACOS_PASSWORDS_PROVISIONING_PROFILE_BASE64 }}
+          OPENSTEER_APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          OPENSTEER_PASSWORDS_PROVISIONING_PROFILE: ${{ runner.temp }}/release-keys/passwords.provisionprofile
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ runner.temp }}/release-keys/AuthKey.p8
           CSC_LINK: ${{ runner.temp }}/release-keys/certificate.p12
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
         run: |
           set -euo pipefail
           umask 077
           printf '%s' "$CERTIFICATE_BASE64" | base64 --decode > "$RUNNER_TEMP/release-keys/certificate.p12"
-          printf '%s' "$API_KEY_BASE64" | base64 --decode > "$APPLE_API_KEY"
+          printf '%s' "$APPLE_API_KEY_P8" > "$APPLE_API_KEY"
+          printf '%s' "$PASSWORDS_PROFILE_BASE64" | base64 --decode > "$OPENSTEER_PASSWORDS_PROVISIONING_PROFILE"
           # Decrypt via environment, never a password argument. Import the PEM
           # into an ephemeral keychain; its empty password is not a credential.
           openssl pkcs12 -in "$RUNNER_TEMP/release-keys/certificate.p12" -nodes \
-            -passin env:MAC_CERTIFICATE_PASSWORD -out "$RUNNER_TEMP/release-keys/signing.pem"
+            -passin env:CSC_KEY_PASSWORD -out "$RUNNER_TEMP/release-keys/signing.pem"
           keychain="$RUNNER_TEMP/release-keys/signing.keychain-db"
           security create-keychain -p '' "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p '' "$keychain"
           security import "$RUNNER_TEMP/release-keys/signing.pem" -k "$keychain" -T /usr/bin/codesign -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k '' "$keychain" >/dev/null
-          export CSC_KEYCHAIN="$keychain"
-          pnpm --dir apps/desktop package:mac
+          identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: .*\)".*/\1/p')
+          echo "::add-mask::$identity"
+          export OPENSTEER_RELEASE_SIGNING_IDENTITY="$identity" CSC_KEYCHAIN="$keychain"
+          pnpm desktop:build-release --out "$RUNNER_TEMP/macos-build"
       - name: Verify and prepare exact release bytes
         run: |
           set -euo pipefail
@@ -205,8 +210,7 @@ jobs:
           path: ${{ runner.temp }}/prepared
       - env:
           GITHUB_TOKEN: ${{ github.token }}
-          CHANNEL: ${{ needs.preflight.outputs.channel }}
-        run: pnpm desktop:public-release draft --channel "$CHANNEL" --dir "$RUNNER_TEMP/prepared" --repo steerlabs/opensteer
+        run: pnpm desktop:public-release draft --dir "$RUNNER_TEMP/prepared" --repo steerlabs/opensteer
   publish:
     needs: [preflight, draft]
     if: ${{ !cancelled() && (github.event_name == 'push' || inputs.publish) && (needs.draft.result == 'success' || needs.preflight.outputs.reuse == 'true') }}
@@ -226,6 +230,5 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - env:
           GITHUB_TOKEN: ${{ github.token }}
-          CHANNEL: ${{ needs.preflight.outputs.channel }}
           TAG: ${{ needs.preflight.outputs.tag }}
-        run: pnpm desktop:public-release publish --channel "$CHANNEL" --repo steerlabs/opensteer --tag "$TAG"
+        run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG"

@@ -1,6 +1,6 @@
 const { spawnSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
-const { lstatSync, readFileSync } = require("node:fs");
+const { lstatSync, readFileSync, writeFileSync, renameSync } = require("node:fs");
 const { homedir } = require("node:os");
 const path = require("node:path");
 const { z } = require("zod");
@@ -126,7 +126,34 @@ function verifyAgentPhoneRelease(directory, receiptPath, options = {}) {
   return receipt;
 }
 
+/** The producer binds the inspected APK and exact manifest bytes to its source. */
+function writeAgentPhoneReleaseReceipt(directory, identity, buildTools = androidBuildTools()) {
+  const apk = inspectAgentPhoneApk(
+    path.join(directory, "opensteer-agent-phone.apk"),
+    buildTools,
+    "release",
+  );
+  if (apk.versionName !== identity.version) throw Error("APK version differs from source");
+  const receipt = agentPhoneReleaseReceiptSchema.parse({
+    schemaVersion: 1,
+    sourceRevision: identity.sourceRevision,
+    version: identity.version,
+    apkSha256: apk.apkSha256,
+    apkSize: apk.apkSize,
+    manifestSha256: hash(readArtifactFile(path.join(directory, "agent-phone.json"))),
+    signingCertSha256: apk.signingCertSha256,
+  });
+  const bytes = Buffer.from(JSON.stringify(receipt, null, 2) + "\n");
+  const filename = path.join(directory, agentPhoneReceiptName);
+  writeFileSync(`${filename}.partial`, bytes, { mode: 0o600 });
+  renameSync(`${filename}.partial`, filename);
+  const receiptSha256 = hash(bytes);
+  verifyAgentPhoneRelease(directory, filename, { ...identity, receiptSha256, buildTools });
+  return receiptSha256;
+}
+
 module.exports = {
+  writeAgentPhoneReleaseReceipt,
   agentPhoneReleaseSignerSha256,
   agentPhoneBuildToolsVersion,
   agentPhoneReceiptName,

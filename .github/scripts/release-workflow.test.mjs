@@ -11,7 +11,7 @@ test("desktop release accepts only namespaced tags and opt-in manual publishing"
   assert.deepEqual(doc.errors, []);
   assert.deepEqual(doc.warnings, []);
   assert.deepEqual(Object.keys(workflow.on).sort(), ["push", "workflow_dispatch"]);
-  assert.deepEqual(workflow.on.push, { tags: ["desktop-v[0-9]*.[0-9]*.[0-9]*"] });
+  assert.deepEqual(workflow.on.push, { tags: ["desktop-v*.*.*", "v*.*.*-insider"] });
   assert.equal(workflow.on.workflow_dispatch.inputs.publish.default, false);
   assert.deepEqual(workflow.on.workflow_dispatch.inputs.channel.options, ["stable", "beta"]);
   assert.equal(workflow.concurrency["cancel-in-progress"], false);
@@ -48,9 +48,9 @@ test("preflight rejects malformed versions and cross-channel suffixes before sec
   const validation = script.slice(script.indexOf("stable="), script.indexOf("manifest_version="));
   for (const [channel, version, accepted] of [
     ["stable", "1.2.3", true],
-    ["beta", "1.2.3-beta.1", true],
+    ["beta", "1.2.3-beta.1", false],
     ["stable", "1.2.3-beta.1", false],
-    ["beta", "1.2.3", false],
+    ["beta", "1.2.3", true],
     ["beta", "1.2.3-beta.01", false],
     ["stable", "01.2.3", false],
     ["beta", "1.2.3-rc.1", false],

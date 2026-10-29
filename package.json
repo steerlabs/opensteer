@@ -48,7 +48,8 @@
     "test:vm": "tsx scripts/test-vm.ts",
     "test:vm:golden": "tsx scripts/test-vm.ts --golden",
     "eval:agent-tools": "tsx evals/agent-tools/run.ts",
-    "check:changed": "tsx scripts/check-changed.ts"
+    "check:changed": "tsx scripts/check-changed.ts",
+    "desktop:build-release": "tsx scripts/build-desktop-macos.ts"
   },
   "devDependencies": {
     "@opensteer/shared": "workspace:*",
