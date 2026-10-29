@@ -1,7 +1,7 @@
 import { readEmbeddedDesktopRelease } from "../config.js";
 import { stageDesktopUpdatePolicy } from "./desktop-update-policy.js";
 import { createRequire } from "node:module";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { finished } from "node:stream/promises";
@@ -10,10 +10,12 @@ import { createPackage } from "@electron/asar";
 
 const require = createRequire(import.meta.url);
 const {
+  allowOwnerWrites,
   readPackagedDesktopPolicy,
   verifyDesktopApplicationIdentity,
   verifyPackagedRuntimeImports,
 } = require("../../scripts/after-pack.cjs") as {
+  readonly allowOwnerWrites: (bundlePath: string) => void;
   readonly readPackagedDesktopPolicy: (archivePath: string) => unknown;
   readonly verifyDesktopApplicationIdentity: (
     desktop: unknown,
@@ -147,6 +149,33 @@ describe("Desktop release policy", () => {
     ]) {
       const invalid = await archivedPolicy(overrides);
       expect(() => readPackagedDesktopPolicy(invalid.archive)).toThrow(/manifest is invalid/u);
+    }
+  });
+
+  // Squirrel.Mac clears quarantine from every file of a downloaded update and
+  // later replaces the bundle; a read-only release input made every update fail.
+  it("leaves every packaged entry owner-writable without changing other permissions", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opensteer-desktop-modes-"));
+    temporaryDirectories.push(root);
+    const bundle = path.join(root, "Opensteer.app");
+    const resource = path.join(bundle, "Contents", "Resources", "passwords");
+    await mkdir(resource, { recursive: true });
+    const data = path.join(resource, "release.json");
+    const tool = path.join(resource, "tool");
+    await writeFile(data, "{}\n");
+    await writeFile(tool, "#!/bin/sh\n");
+    await symlink("release.json", path.join(resource, "link"));
+    await chmod(data, 0o444);
+    await chmod(tool, 0o555);
+    await chmod(resource, 0o555);
+    try {
+      allowOwnerWrites(bundle);
+      expect((await stat(data)).mode & 0o7777).toBe(0o644);
+      expect((await stat(tool)).mode & 0o7777).toBe(0o755);
+      expect((await stat(resource)).mode & 0o7777).toBe(0o755);
+      expect(await readlink(path.join(resource, "link"))).toBe("release.json");
+    } finally {
+      await chmod(resource, 0o755);
     }
   });
 

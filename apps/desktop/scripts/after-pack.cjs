@@ -1,5 +1,13 @@
 const { createHash } = require("node:crypto");
-const { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync } = require("node:fs");
+const {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+} = require("node:fs");
 const { tmpdir } = require("node:os");
 const { join, resolve, sep } = require("node:path");
 const {
@@ -67,6 +75,7 @@ async function verifyPackagedDesktopContents(context) {
       executableSha256: join("Contents", "MacOS", "Opensteer Passwords"),
       workerSha256: join("Contents", "Helpers", "Opensteer Passwords Import"),
     });
+    allowOwnerWrites(join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`));
   }
 }
 
@@ -133,6 +142,7 @@ function verifyDesktopApplicationIdentity(desktop, appInfo, protocols) {
 }
 
 module.exports = verifyPackagedDesktop;
+module.exports.allowOwnerWrites = allowOwnerWrites;
 module.exports.readPackagedDesktopPolicy = readPackagedDesktopPolicy;
 module.exports.verifyDesktopApplicationIdentity = verifyDesktopApplicationIdentity;
 module.exports.verifyPackagedRuntimeImports = verifyPackagedRuntimeImports;
@@ -294,6 +304,22 @@ function validNativeCallback(value) {
     !url.hash &&
     canonical === value
   );
+}
+
+/**
+ * Release inputs are staged read-only. Squirrel.Mac clears the quarantine
+ * attribute from every file of a downloaded update and later replaces the
+ * installed bundle, and both fail on entries their owner cannot write. Code
+ * signatures seal contents, not permission bits, so this runs before signing
+ * without touching any verified digest.
+ */
+function allowOwnerWrites(path) {
+  const metadata = lstatSync(path);
+  if (metadata.isSymbolicLink()) return;
+  if ((metadata.mode & 0o200) === 0) chmodSync(path, (metadata.mode & 0o7777) | 0o200);
+  if (metadata.isDirectory()) {
+    for (const name of readdirSync(path)) allowOwnerWrites(join(path, name));
+  }
 }
 
 function resourcesDirectory(context) {
