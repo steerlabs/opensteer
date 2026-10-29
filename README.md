@@ -1,3 +1,5 @@
+> This branch preserves Opensteer's earlier browser automation project. Active development of the self-hostable agent workspace is on [main](https://github.com/steerlabs/opensteer). The projects have different installation and configuration instructions. Existing npm releases remain available unchanged. For the exact browser code before the transition, see tag [`legacy/browser-before-workspace-2026-10-29`](https://github.com/steerlabs/opensteer/tree/legacy/browser-before-workspace-2026-10-29). This legacy branch is preserved for reference; maintenance commitments will be announced here.
+
 # Opensteer
 
 Opensteer helps AI agents control browsers and use local code as tools. It gives agents a small Python command surface for local Chrome or Edge, Opensteer Cloud browsers, and project-specific automation.
