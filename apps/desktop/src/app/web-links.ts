@@ -31,7 +31,7 @@ export class DesktopWebLinks {
       return true;
     }
     this.#recent.set(raw, now);
-    this.#pending.push({ type: "open-web-url", id: randomUUID(), url: raw });
+    this.#pending.push({ type: "open-web-url", id: randomUUID(), url: raw, receivedAt: now });
     this.#timer ??= setTimeout(() => {
       this.#timer = undefined;
       if (this.#pending.length)

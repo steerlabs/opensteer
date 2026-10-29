@@ -3,7 +3,7 @@ import {
   desktopWebLinksReady,
   openDesktopWebLink,
   receiveDesktopWebLinks,
-  preserveWebLinkSelection,
+  webLinkSelection,
   type WebLinkFailureActions,
 } from "../desktop/web-links.js";
 import { lastBrowsingChoice } from "./workspace/start-page.js";
@@ -298,9 +298,13 @@ export function AppShell({
   );
   const webLinkNavigation = useRef(nav);
   webLinkNavigation.current = nav;
-  const webLinkView = useRef({ key: location.key, revision: 0 });
+  const webLinkView = useRef({ key: location.key, revision: 0, changedAt: 0 });
   if (webLinkView.current.key !== location.key)
-    webLinkView.current = { key: location.key, revision: webLinkView.current.revision + 1 };
+    webLinkView.current = {
+      key: location.key,
+      revision: webLinkView.current.revision + 1,
+      changedAt: Date.now(),
+    };
   const [webLinkFailure, setWebLinkFailure] = useState<{
     message: string;
     actions: WebLinkFailureActions;
@@ -320,6 +324,7 @@ export function AppShell({
     const userId = snapshot.user.id;
     const bridge = suppliedDesktopBridge;
     setWebLinkFailure(null);
+    const selection = webLinkSelection(() => webLinkView.current);
     return receiveDesktopWebLinks(
       bridge,
       {
@@ -328,12 +333,15 @@ export function AppShell({
         identity: () => lastBrowsingChoice({ deploymentId, userId }) ?? { kind: "guest" },
       },
       () => {
-        const show = preserveWebLinkSelection(
-          () => String(webLinkView.current.revision),
-          webLinkNavigation.current.beginPlaceOperation(),
-        );
+        const select = selection(webLinkNavigation.current.beginPlaceOperation());
         return (link, acknowledge) =>
-          openDesktopWebLink(link, hostClient, link.request!.identity, show, acknowledge);
+          openDesktopWebLink(
+            link,
+            hostClient,
+            link.request!.identity,
+            select(link.receivedAt),
+            acknowledge,
+          );
       },
       (error, actions) => {
         if (actions) setWebLinkFailure({ message: actionErrorMessage(error), actions });

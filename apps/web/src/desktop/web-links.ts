@@ -142,13 +142,29 @@ export function desktopWebLinksReady(personal: boolean, snapshot: HostSnapshot):
   );
 }
 
-/** A link may open in the background after the person chooses another app view. */
-export function preserveWebLinkSelection(
-  currentView: () => string,
+export interface WebLinkView {
+  readonly revision: number;
+  /** Wall-clock time of the change that produced this revision. */
+  readonly changedAt: number;
+}
+
+/**
+ * Selects each link's tab unless the person chose another view after it
+ * arrived. Main hands over one waiting link at a time, so a choice seen while
+ * one link opened also covers the links that were already waiting behind it.
+ */
+export function webLinkSelection(
+  view: () => WebLinkView,
+): (
   show: (destination: WorkspaceSurfaceDestination) => void,
-): (destination: WorkspaceSurfaceDestination) => void {
-  const arrivalView = currentView();
-  return (destination) => {
-    if (currentView() === arrivalView) show(destination);
+) => (receivedAt: number | undefined) => (destination: WorkspaceSurfaceDestination) => void {
+  let leftAt = Number.NEGATIVE_INFINITY;
+  return (show) => {
+    const arrival = view().revision;
+    return (receivedAt) => (destination) => {
+      const current = view();
+      if (current.revision !== arrival) leftAt = Math.max(leftAt, current.changedAt);
+      else if (receivedAt === undefined || receivedAt >= leftAt) show(destination);
+    };
   };
 }

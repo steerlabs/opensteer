@@ -57,7 +57,8 @@ wait for Personal; after 15 seconds the app explains how to open them. The queue
 holds the first 20 links, reports overflow, and collapses exact duplicates received
 within one second. Opening a web link does not start or message an agent.
 If you navigate elsewhere in the app after a link arrives, its tab opens in the
-background and the delivery completes without changing your view.
+background and the delivery completes without changing your view; links already
+waiting behind it open in the background too.
 
 ## Open workspace tabs
 

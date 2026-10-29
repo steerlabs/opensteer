@@ -80,12 +80,13 @@ it("waits for a signed-in Personal UI and an available browser placement", () =>
 });
 
 it("opens and acknowledges without stealing a view changed after arrival", async () => {
-  const { preserveWebLinkSelection } = await import("./web-links.js");
+  const { webLinkSelection } = await import("./web-links.js");
   const client = new MockHostClient();
   const show = vi.fn();
   const ack = vi.fn(async () => undefined);
-  let view = "/";
-  const select = preserveWebLinkSelection(() => view, show);
+  let view = { revision: 0, changedAt: 0 };
+  const selection = webLinkSelection(() => view);
+  const select = selection(show)(undefined);
   let resolve: ((value: Awaited<ReturnType<typeof client.openBrowserTab>>) => void) | undefined;
   vi.spyOn(client, "openBrowserTab").mockImplementation(
     () =>
@@ -94,15 +95,46 @@ it("opens and acknowledges without stealing a view changed after arrival", async
       }),
   );
   const opening = openDesktopWebLink(link, client, { kind: "guest" }, select, ack);
-  view = "/settings";
+  view = { revision: 1, changedAt: 50 };
   resolve!({ sessionId: "session", tabId: "tab" } as Awaited<
     ReturnType<typeof client.openBrowserTab>
   >);
   await opening;
   expect(show).not.toHaveBeenCalled();
   expect(ack).toHaveBeenCalledWith(link.id);
-  const fresh = preserveWebLinkSelection(() => view, show);
-  fresh({ kind: "browser", sessionId: "session", tabId: "tab" });
+  const later = selection(show)(60);
+  later({ kind: "browser", sessionId: "session", tabId: "tab" });
   expect(show).toHaveBeenCalledOnce();
   client.dispose();
+});
+it("keeps links waiting behind one in the background after the person leaves during its open", async () => {
+  const { webLinkSelection } = await import("./web-links.js");
+  const show = vi.fn();
+  let view = { revision: 0, changedAt: 0 };
+  const selection = webLinkSelection(() => view);
+  const tab = (tabId: string) => ({ kind: "browser" as const, sessionId: "session", tabId });
+  // Both links arrived at 10 and 11; main delivers the second after the first's acknowledgement.
+  const first = selection(show)(10);
+  view = { revision: 1, changedAt: 20 };
+  first(tab("first"));
+  const second = selection(show)(11);
+  second(tab("second"));
+  expect(show).not.toHaveBeenCalled();
+  const arrivedAfterLeaving = selection(show)(30);
+  arrivedAfterLeaving(tab("third"));
+  expect(show).toHaveBeenCalledExactlyOnceWith(tab("third"));
+});
+it("selects each waiting link in turn when the person stays", async () => {
+  const { webLinkSelection } = await import("./web-links.js");
+  let view = { revision: 0, changedAt: 0 };
+  const shown: unknown[] = [];
+  const show = (destination: unknown) => {
+    shown.push(destination);
+    // Selecting the tab is a navigation of its own, seen before the next delivery starts.
+    view = { revision: view.revision + 1, changedAt: view.changedAt + 5 };
+  };
+  const selection = webLinkSelection(() => view);
+  const tab = (tabId: string) => ({ kind: "browser" as const, sessionId: "session", tabId });
+  for (const tabId of ["first", "second"]) selection(show)(1)(tab(tabId));
+  expect(shown).toEqual([tab("first"), tab("second")]);
 });

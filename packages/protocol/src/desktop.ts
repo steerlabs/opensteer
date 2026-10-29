@@ -1369,6 +1369,8 @@ export const DesktopWebLinkSchema = z.strictObject({
   url: DesktopWebUrlSchema,
   request: DesktopWebLinkRequestSchema.optional(),
   generation: z.uuid().optional(),
+  /** Main's wall-clock receipt time, so a person's later choice of view covers links still waiting. */
+  receivedAt: z.number().int().nonnegative().optional(),
 });
 export type DesktopWebLink = z.infer<typeof DesktopWebLinkSchema>;
 export const DesktopWebLinkDeliverySchema = z.strictObject({

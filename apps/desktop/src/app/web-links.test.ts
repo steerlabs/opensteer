@@ -112,3 +112,12 @@ it("keeps the first bound request across renderer reloads and rejects a differen
   expect(links.bind(first.id, { ...original, userId: createId("user") })).toBeNull();
   links.dispose();
 });
+it("stamps each link with when main received it", () => {
+  vi.useFakeTimers({ now: 1_000 });
+  const links = new DesktopWebLinks(vi.fn());
+  const delivered: unknown[] = [];
+  links.attach((link) => delivered.push(link));
+  links.accept("https://example.com/a");
+  expect(delivered).toEqual([expect.objectContaining({ receivedAt: 1_000 })]);
+  links.dispose();
+});
