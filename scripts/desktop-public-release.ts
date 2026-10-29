@@ -103,6 +103,7 @@ const releaseSchema = z.object({
   draft: z.boolean(),
   prerelease: z.boolean(),
   tag_name: z.string(),
+  target_commitish: z.string(),
   name: z
     .string()
     .nullable()
@@ -304,6 +305,8 @@ function releaseManifest(release: z.infer<typeof releaseSchema>, manifest: Manif
   if (
     release.body !== manifest.notes ||
     release.tag_name !== manifest.tag ||
+    // Publication creates a missing tag at this target, so it must be the built source.
+    release.target_commitish !== manifest.sourceSha ||
     release.name !== manifest.title ||
     release.prerelease !== manifest.prerelease ||
     release.assets
@@ -384,6 +387,8 @@ export async function draft(
       "--repo",
       repo,
       "--draft",
+      "--target",
+      manifest.sourceSha,
       "--title",
       manifest.title,
       "--notes-file",
