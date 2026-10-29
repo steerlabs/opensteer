@@ -63,7 +63,7 @@ Otherwise the key policy record (`OwnerKeyPolicy.isCurrent`) must be there,
 then `Vault.open(root:protectedStore:)` verifies the whole history from
 public data; `vault.verifyHistory()` repeats the check later. A missing or
 other policy, or any thrown `VaultError`, means the vault cannot be used;
-show it and offer a reset. There is no repair. `NotUnlockedSinceRestart`
+show it and offer a reset, except for a newer format, which requires an update and never offers reset. There is no repair. `NotUnlockedSinceRestart`
 from the protected store means nothing yet: the Mac has not been unlocked
 since it started.
 
@@ -178,9 +178,11 @@ not share the lock is refused (`headMoved`) rather than overwritten.
 All files are canonical JSON (RFC 8785; integers only, within ±(2^53−1)),
 and parsing requires exactly canonical bytes. Binary fields are base64url
 without padding; hashes and key IDs are lower-case SHA-256 hex. Every format
-has `"v":1` except the manifest, which is `"v":2` since it carries the
-grants; any other version is refused, so a version 1 manifest is never read
-as one without grants.
+has `"v":1` except the manifest (`"v":2`, with grants) and passkey-bearing
+items (`"v":2`). A version 1 manifest is never read as one without grants.
+Newer item payloads are skipped and their entries and sealed bytes preserved;
+newer manifest, commit, HEAD or checkpoint versions require an Opensteer
+update, never Start Fresh. Integrity checks still apply.
 
 ```
 <root>/HEAD                      {"hash","seq","v":1}
@@ -203,6 +205,16 @@ as one without grants.
   - Limits, in UTF-8 bytes: username ≤ 1,024; password 1–4,096; label null or
     1–200; login URL ≤ 2,048. At most 8 origins and 10,000 items.
   - Strings are kept byte for byte.
+- **Item v2:** `{"createdAt","id","label","loginURL","origins","passkeys","password","totp","updatedAt","username","v":2}`.
+  Password is null or 1–4,096 bytes; 0–8 passkeys. At least one credential
+  is required. A password with no passkeys always encodes byte-identically as v1.
+  This reader release creates no passkeys or v2 items.
+- **Passkey:** `{"algorithm":-7,"createdAt","credentialId","privateKey","rpId","userDisplayName","userHandle","userName","v":1}`.
+  ES256 only; credential ID 16–1,023 bytes, user handle 1–64 bytes, private
+  key PKCS#8 P-256 DER. Names are at most 1,024 UTF-8 bytes (empty allowed).
+  The lower-case DNS relying party follows the strict origin host rules and
+  shares a registrable domain with an item origin. Credential IDs and
+  (relying party, user handle) pairs are unique within the item.
 - **Manifest:** `{"grants":[…],"items":[{"hash","id","revision"}],"seq","v":2,"vaultId"}`,
   items sorted by ID. Unchanged items keep their object and revision; a
   change is revision + 1 with a fresh data key.

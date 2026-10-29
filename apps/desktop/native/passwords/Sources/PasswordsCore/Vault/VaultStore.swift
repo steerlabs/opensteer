@@ -38,7 +38,7 @@ private func versioned(_ bytes: Data, keys: Set<String>, context: String, corrup
   } catch {
     throw corrupt
   }
-  if let version = formatVersion(of: value), version != 1 { throw VaultError.unsupportedVersion }
+  if let version = formatVersion(of: value), version > 1 { throw VaultError.unsupportedVersion }
   do {
     let object = try StrictObject(value, keys: keys, context: context)
     guard try object.integer("v") == 1 else { throw corrupt }

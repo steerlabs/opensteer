@@ -52,7 +52,9 @@ public final class UnlockedVault {
   /// Every item, decrypted. Any object that fails to decrypt is an error.
   public func items() throws -> [Item] {
     let key = try requireOpen()
-    return try entries.map { try decrypt($0, key) }
+    return try entries.compactMap { entry in
+      do { return try decrypt(entry, key) } catch VaultError.unsupportedVersion { return nil }
+    }
   }
 
   /// Items with an origin within `site` (`Origins.isWithinSite`). Every item
@@ -61,7 +63,8 @@ public final class UnlockedVault {
     let key = try requireOpen()
     var matches: [Item] = []
     for entry in entries {
-      let item = try decrypt(entry, key)
+      let item: Item
+      do { item = try decrypt(entry, key) } catch VaultError.unsupportedVersion { continue }
       if item.origins.contains(where: { Origins.isWithinSite($0, site: site) }) {
         matches.append(item)
       }
@@ -155,6 +158,7 @@ public final class UnlockedVault {
       guard let entry = original[id] else { throw VaultError.itemNotFound(id) }
       let current = try decrypt(entry, epochKey)
       var item = apply(current)
+      item.preservePasskeys(from: current)
       item.createdAt = current.createdAt
       item.updatedAt = current.updatedAt
       try item.validate()
@@ -181,7 +185,8 @@ public final class UnlockedVault {
     }
     for id in changes.delete {
       guard touched.insert(id).inserted else { throw VaultError.invalidItem("an item is changed twice") }
-      guard original[id] != nil else { throw VaultError.itemNotFound(id) }
+      guard let entry = original[id] else { throw VaultError.itemNotFound(id) }
+      _ = try decrypt(entry, epochKey)
       next[id] = nil
       deleted.append(id)
       repointed.insert(id)

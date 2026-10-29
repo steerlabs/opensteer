@@ -34,6 +34,7 @@ public enum VaultError: Error, Equatable, Sendable {
   case headMoved
   case noChanges
   case invalidItem(String)
+  case invalidPasskeyOrigins
   case invalidGrant(String)
   case itemNotFound(String)
   case tooManyItems

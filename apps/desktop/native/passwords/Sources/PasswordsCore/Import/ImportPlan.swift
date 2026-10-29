@@ -141,7 +141,7 @@ public struct ImportPlan: Sendable {
   }
 
   private static func isSame(_ candidate: ImportCandidate, as item: Item) -> Bool {
-    candidate.password.sameBytes(as: item.password) && (candidate.totp == nil || candidate.totp == item.totp)
+    item.password.map { candidate.password.sameBytes(as: $0) } == true && (candidate.totp == nil || candidate.totp == item.totp)
   }
 
   private struct Key: Hashable {

@@ -143,7 +143,7 @@ final class ImportPlanTests: XCTestCase {
     XCTAssertEqual(updatedY.password, "pw-new")
     XCTAssertNil(updatedY.totp, "an update without a TOTP keeps the saved one")
     let updatedZ = try XCTUnwrap(changes.replace.first { $0.itemID == z })
-    XCTAssertTrue(updatedZ.password.utf8.elementsEqual("pa\u{0308}ss".utf8))
+    XCTAssertTrue(try XCTUnwrap(updatedZ.password).utf8.elementsEqual("pa\u{0308}ss".utf8))
     XCTAssertEqual(try XCTUnwrap(changes.replace.first { $0.itemID == v }).totp, totp)
     XCTAssertTrue(changes.delete.isEmpty)
 

@@ -34,7 +34,8 @@ struct SealedObject {
   static func parse(_ bytes: Data, hash: String) throws -> SealedObject {
     do {
       let value = try CanonicalJSON.parseCanonical(bytes)
-      guard formatVersion(of: value) == 1 else { throw VaultError.unsupportedVersion }
+      if let version = formatVersion(of: value), version > 1 { throw VaultError.unsupportedVersion }
+      guard formatVersion(of: value) == 1 else { throw VaultError.corruptObject(hash) }
       let object = try StrictObject(value, keys: ["ct", "keyCt", "keyNonce", "nonce", "v"], context: "object")
       let payload = AEAD.Box(nonce: try object.bytes("nonce"), ciphertext: try object.bytes("ct"))
       let wrappedKey = AEAD.Box(nonce: try object.bytes("keyNonce"), ciphertext: try object.bytes("keyCt"))
@@ -125,7 +126,8 @@ struct Manifest {
     }
     do {
       let value = try CanonicalJSON.parseCanonical(plaintext)
-      guard formatVersion(of: value) == version else { throw VaultError.unsupportedVersion }
+      if let found = formatVersion(of: value), found > version { throw VaultError.unsupportedVersion }
+      guard formatVersion(of: value) == version else { throw VaultError.corruptObject(hash) }
       let object = try StrictObject(value, keys: ["grants", "items", "seq", "v", "vaultId"], context: "manifest")
       guard try object.string("vaultId") == vaultId, try object.integer("seq") == seq else { throw VaultError.corruptObject(hash) }
       let entries = try object.array("items").map { value -> ManifestEntry in

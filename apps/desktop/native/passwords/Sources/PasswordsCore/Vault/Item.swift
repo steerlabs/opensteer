@@ -27,7 +27,8 @@ public struct Item: Sendable {
   /// Normalised (`Origins.normalizeLoginURL`); its origin is in `origins`.
   public var loginURL: String
   public var username: String
-  public var password: String
+  public var password: String?
+  public private(set) var passkeys: [Passkey] = []
   public var totp: TOTPParameters?
   /// Nil or 1–200 bytes.
   public var label: String?
@@ -51,8 +52,12 @@ public struct Item: Sendable {
     self.updatedAt = updatedAt
   }
 
+  mutating func preservePasskeys(from current: Item) { passkeys = current.passkeys }
+
   var draft: ItemDraft {
-    ItemDraft(origins: origins, loginURL: loginURL, username: username, password: password, totp: totp, label: label)
+    var draft = ItemDraft(origins: origins, loginURL: loginURL, username: username, password: password, totp: totp, label: label)
+    draft.passkeys = passkeys
+    return draft
   }
 
   /// Whether two items hold exactly the same bytes in every field.
@@ -86,26 +91,30 @@ public struct Item: Sendable {
   }
 
   var json: JSONValue {
-    .object([
+    var fields: [String: JSONValue] = [
       "createdAt": .integer(createdAt),
       "id": .string(id),
       "label": label.map(JSONValue.string) ?? .null,
       "loginURL": .string(loginURL),
       "origins": .array(origins.map(JSONValue.string)),
-      "password": .string(password),
+      "password": password.map(JSONValue.string) ?? .null,
       "totp": totp?.json ?? .null,
       "updatedAt": .integer(updatedAt),
       "username": .string(username),
-      "v": .integer(1),
-    ])
+      "v": .integer(passkeys.isEmpty && password != nil ? 1 : 2),
+    ]
+    if !passkeys.isEmpty || password == nil { fields["passkeys"] = .array(passkeys.map(\.json)) }
+    return .object(fields)
   }
 
   init(json: JSONValue, revision: Int64) throws {
-    guard formatVersion(of: json) == 1 else { throw VaultError.unsupportedVersion }
+    let version = formatVersion(of: json)
+    if let version, version > 2 { throw VaultError.unsupportedVersion }
+    guard version == 1 || version == 2 else { throw VaultError.invalidItem("invalid item version") }
     self.revision = revision
     let object = try StrictObject(
       json,
-      keys: ["createdAt", "id", "label", "loginURL", "origins", "password", "totp", "updatedAt", "username", "v"],
+      keys: Set(["createdAt", "id", "label", "loginURL", "origins", "password", "totp", "updatedAt", "username", "v"] + (version == 2 ? ["passkeys"] : [])),
       context: "item"
     )
     let origins = try object.array("origins").map { value -> String in
@@ -117,7 +126,8 @@ public struct Item: Sendable {
     self.origins = origins
     loginURL = try object.string("loginURL")
     username = try object.string("username")
-    password = try object.string("password")
+    password = version == 1 ? try object.string("password") : try object.optionalString("password")
+    if version == 2 { passkeys = try object.array("passkeys").map(Passkey.init(json:)) }
     totp = totpValue == .null ? nil : try TOTPParameters(json: totpValue)
     label = try object.optionalString("label")
     createdAt = try object.integer("createdAt")
@@ -131,11 +141,12 @@ public struct ItemDraft: Sendable {
   public var origins: [String]
   public var loginURL: String
   public var username: String
-  public var password: String
+  public var password: String?
   public var totp: TOTPParameters?
   public var label: String?
+  var passkeys: [Passkey] = []
 
-  public init(origins: [String], loginURL: String, username: String, password: String, totp: TOTPParameters? = nil, label: String? = nil) {
+  public init(origins: [String], loginURL: String, username: String, password: String?, totp: TOTPParameters? = nil, label: String? = nil) {
     self.origins = origins
     self.loginURL = loginURL
     self.username = username
@@ -169,7 +180,17 @@ public struct ItemDraft: Sendable {
     }
     guard loginURL.utf8.count <= VaultLimits.maxLoginURLBytes else { throw VaultError.invalidItem("the login URL is too long") }
     guard username.utf8.count <= VaultLimits.maxUsernameBytes else { throw VaultError.invalidItem("the username is too long") }
-    guard (1...VaultLimits.maxPasswordBytes).contains(password.utf8.count) else {
+    guard password != nil || !passkeys.isEmpty else { throw VaultError.invalidItem("a login needs a password or passkey") }
+    guard passkeys.count <= 8 else { throw VaultError.invalidItem("a login supports at most 8 passkeys") }
+    var credentials = Set<Data>()
+    var handles: [String: Set<Data>] = [:]
+    for passkey in passkeys {
+      try passkey.validate(origins: origins)
+      guard credentials.insert(passkey.credentialId).inserted,
+        handles[passkey.rpId, default: []].insert(passkey.userHandle).inserted
+      else { throw VaultError.invalidItem("passkeys repeat a credential or relying party and user handle") }
+    }
+    if let password, !(1...VaultLimits.maxPasswordBytes).contains(password.utf8.count) {
       throw VaultError.invalidItem("the password must be 1 to \(VaultLimits.maxPasswordBytes) bytes")
     }
     if let label {
