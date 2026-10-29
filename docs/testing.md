@@ -155,8 +155,11 @@ Non-manifest generators and build consumers select conservative coverage.
 receipts. GitHub `Check` is the landing authority. CI runs two default-test and
 four integration shards. Every shard uploads discovery and execution inventories;
 Check requires their exact union and pairwise disjoint membership. Integration
-shards also upload enforcing lock graphs, merged through the global cycle check.
-Missing or corrupt evidence fails Check. Main runs every public lane and is never
+shards also upload enforcing lock graphs, merged through the global cycle check;
+each shard's graph must trace every file that shard ran. Tests that need Darwin
+kernel locks (`darwinOnlyTests` in
+[ci-test-files.mjs](../.github/scripts/ci-test-files.mjs)) leave the Linux shards
+and run in the native-mac lane. Missing or corrupt evidence fails Check. Main runs every public lane and is never
 cancelled by a newer main push. GUI, device and account suites require their
 separate environments.
 

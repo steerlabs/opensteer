@@ -178,7 +178,9 @@ export function decide(files, graph, baseGraph = graph, full = false) {
       // keep their default-test coverage conservative for every workspace edit.
       tests: all || reaches("tests") || affected.size > 0,
       integration: all || reaches("integration"),
-      "native-mac": all || reaches("native-mac"),
+      // It also runs the root darwin-only tests, which can read any workspace like
+      // the root tests above.
+      "native-mac": all || reaches("native-mac") || affected.size > 0,
       android: all || androidSource || reaches("android"),
       "browser-journeys": all || reaches("browser-journeys"),
     },

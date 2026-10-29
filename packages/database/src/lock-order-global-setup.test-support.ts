@@ -48,7 +48,6 @@ export default function setup(project?: TestProject) {
   const directory = mkdtempSync(join(dirname(trace), basename(trace) + ".workers-"));
   process.env.OPENSTEER_LOCK_ORDER_TRACE = trace;
   process.env.OPENSTEER_LOCK_ORDER_TRACE_DIRECTORY = directory;
-  const expectedFiles = project?.vitest.state.getPaths();
   const mode = lockOrderMode();
   const recordOnly = mode === "record";
   const teardown = async () => {
@@ -108,7 +107,10 @@ export default function setup(project?: TestProject) {
         errors.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    for (const file of expectedFiles ?? []) {
+    // Every file this run started must leave a trace. Not every discovered path: a
+    // sharded run discovers the whole suite but runs only its shard, and CI checks that
+    // the shards together ran every file before merging their graphs (scripts/ci-check.ts).
+    for (const file of project?.vitest.state.getFilepaths() ?? []) {
       if (!files.has(file)) errors.push(`Missing lock trace for ${file}`);
     }
     const cycles = findConflictingApplicationLockCycles([...edges.values()]);

@@ -154,8 +154,8 @@ send those returned IDs back in bulk metadata requests.
 
 The Host derives an unread candidate from published incoming Messages after the
 person's durable read marker. Each state has `readSequence`, `unreadSequence`,
-`asOfSequence` and the display-only epoch-48 compatibility fields `placement`
-and `placementRevision`. Placement is null without a read marker; otherwise it
+`asOfSequence` and the display-only `placement` and `placementRevision`, which
+only pre-launch clients read. Placement is null without a read marker; otherwise it
 projects shared Done at that exact read position, with revision `asOfSequence`.
 That sequence is the Workspace event head from the same database snapshot
 (see [Host compatibility](host-boundaries.md#compatibility)).

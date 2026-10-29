@@ -1,8 +1,16 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { TestProject } from "vitest/node";
 import type { LockOrderEdge } from "./lock-order-checker.test-support.js";
 import setup from "./lock-order-global-setup.test-support.js";
 
@@ -101,6 +109,68 @@ describe("whole-suite lock graph teardown", () => {
       mode: "enforce",
       violations: 0,
     });
+  });
+
+  it("fails the process when a file the run started left no trace", async () => {
+    const started = { vitest: { state: { getFilepaths: () => ["/fixture.ts", "/silent.ts"] } } };
+    const teardown = setup(started as unknown as TestProject);
+    writeFileSync(
+      join(process.env.OPENSTEER_LOCK_ORDER_TRACE_DIRECTORY!, "worker-1.jsonl"),
+      [
+        { type: "file-start", file: "/fixture.ts", worker: "1" },
+        { type: "file-end", file: "/fixture.ts", worker: "1" },
+      ]
+        .map((line) => JSON.stringify(line))
+        .join("\n") + "\n",
+    );
+
+    await expect(teardown()).rejects.toThrow(/Missing lock trace for \/silent\.ts/u);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("holds each shard of a real Vitest run to the files it ran", { timeout: 60_000 }, () => {
+    // CI splits the integration suite across shards; each discovers every file.
+    const repository = resolve(import.meta.dirname, "../../..");
+    // Vitest reports real paths; macOS's temporary directory is behind a symlink.
+    const directory = realpathSync(mkdtempSync(join(tmpdir(), "opensteer-lock-shards-")));
+    try {
+      const files = ["first.test.ts", "second.test.ts"].map((name) => join(directory, name));
+      for (const file of files) writeFileSync(file, `it("runs", () => {});\n`);
+      const config = join(directory, "vitest.config.mts");
+      const support = (name: string) => JSON.stringify(join(import.meta.dirname, name));
+      writeFileSync(
+        config,
+        `export default { root: ${JSON.stringify(directory)}, test: { globals: true, include: ["*.test.ts"], globalSetup: [${support("lock-order-global-setup.test-support.ts")}], setupFiles: [${support("lock-order-setup.test-support.ts")}], runner: ${support("lock-order-runner.test-support.ts")} } };\n`,
+      );
+      const ran = [1, 2].map((shard) => {
+        const trace = join(directory, `shard-${shard}.jsonl`);
+        const environment: NodeJS.ProcessEnv = {
+          ...process.env,
+          OPENSTEER_LOCK_ORDER_MODE: "enforce",
+          OPENSTEER_LOCK_ORDER_TRACE: trace,
+        };
+        delete environment.OPENSTEER_LOCK_ORDER_TRACE_DIRECTORY;
+        delete environment.VITEST_MAX_WORKERS;
+        const run = spawnSync(
+          process.execPath,
+          [
+            join(repository, "node_modules/vitest/vitest.mjs"),
+            "run",
+            "--config",
+            config,
+            `--shard=${shard}/2`,
+          ],
+          { cwd: repository, env: environment, encoding: "utf8", timeout: 60_000 },
+        );
+        expect(run.status, run.stdout + run.stderr).toBe(0);
+        return JSON.parse(readFileSync(trace + ".graph.json", "utf8")).files as string[];
+      });
+
+      expect(ran.map((shard) => shard.length)).toEqual([1, 1]);
+      expect(ran.flat().sort()).toEqual(files);
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 
   it("fails the process when the teardown throws before it judges the graph", async () => {

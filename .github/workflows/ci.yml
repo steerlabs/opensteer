@@ -217,7 +217,8 @@ jobs:
             swift test --package-path apps/mobile/modules/iphone-apps/ios
             swift test --package-path apps/desktop/native/computer-use
             swift test --package-path apps/desktop/native/passwords
-            pnpm exec vitest run tests/helper-data-contracts.test.ts tests/iphone-apps-wire.test.ts packages/protocol/src/computer-use-helper-wire.test.ts packages/protocol/src/passwords-broker-wire.test.ts apps/desktop/src/computer-use apps/desktop/src/passwords
+            darwin_only=$(node .github/scripts/ci-test-files.mjs darwin-only)
+            pnpm exec vitest run tests/helper-data-contracts.test.ts tests/iphone-apps-wire.test.ts packages/protocol/src/computer-use-helper-wire.test.ts packages/protocol/src/passwords-broker-wire.test.ts apps/desktop/src/computer-use apps/desktop/src/passwords $darwin_only
           } 2>&1 | tee "$RUNNER_TEMP/evidence/native-mac.log"
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -240,7 +241,7 @@ jobs:
       - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c
         with:
           distribution: temurin
-          java-version: 21.0.10+7
+          java-version: 21.0.10+7.0.LTS
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
         with:
           cmdline-tools-version: "13114758"

@@ -137,6 +137,11 @@ is not protection against a non-browser caller holding a stolen token.
 
 ## Compatibility
 
+Compatibility starts with the first public release: "the previous release" a wire
+change must stay readable by is a public release. Pre-launch builds, including the
+0.1.181 and 0.1.207 epoch-48 clients, are not a compatibility target, and no test
+builds them. Pre-launch versions named below record why a gate or field exists.
+
 Browser editing adds no epoch or binary image header change. Its version and
 clipboard capability negotiation are specified in [Remote editing](browser-sessions.md#remote-editing).
 Watch receives no clipboard data; Host-assigned consumer identity routes clipboard results,
@@ -216,18 +221,15 @@ The old strict `thread.done.set` input always fails before mutation or idempoten
 lookup with `bad_request`, reason `shared-task-done-required`, and an instruction
 to update the device: Done now stops the task for everyone.
 
-Epoch-48 readers retain `ThreadReadState.placement` and `placementRevision`:
-placement is null without a read position, otherwise
-`{done: doneAt !== null, sequence: readSequence}`; its revision is `asOfSequence`.
-These are display-only projections, recomputed after reads, Done and Reopen.
-Actual read markers never change because a task became Done. Read tasks always
-have a placement, so old clients do not automatically settle them after 24 hours;
-unread tasks stay in front in both old and current clients. A never-read empty
-Thread can still follow the old client's age fallback. Existing task invalidations
-and read-state notices refresh affected readers, including delegated tasks.
-New clients use `doneAt` and ignore placement. Older Thread and state-event views
-strip additive `doneAt`. Requests cancelled by Done use the existing
-`thread-archived` reason, readable by 0.1.181.
+`ThreadReadState` still carries `placement` and `placementRevision`, which
+pre-launch epoch-48 clients read before shared Done: placement is null without a
+read position, otherwise `{done: doneAt !== null, sequence: readSequence}`; its
+revision is `asOfSequence`. These are display-only projections, recomputed after
+reads, Done and Reopen. Actual read markers never change because a task became
+Done. Existing task invalidations and read-state notices refresh affected readers,
+including delegated tasks. Current clients use `doneAt` and ignore placement.
+Older Thread and state-event views strip additive `doneAt`. Requests cancelled by
+Done use the existing `thread-archived` reason, readable by 0.1.181.
 
 `thread_write` is advertised only to Runners with `task-done-v1`; older Runners
 retain their supported tool inventory, and their strict Thread list summaries
