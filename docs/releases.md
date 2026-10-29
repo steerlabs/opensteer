@@ -52,6 +52,163 @@ closed. The command verifies code signatures and attempts a normal Launch
 Services launch; it does not submit to Apple or claim notarized distribution
 readiness. Diagnose any reported launch error before proceeding.
 
+## Public desktop releases
+
+[Desktop release](../.github/workflows/release.yml) builds macOS arm64 on GitHub's
+public-repository hosted `macos-15` runner. No paid runner is required. Stable is
+`Opensteer` (`com.opensteer.opensteer`); beta is `Opensteer Beta`
+(`com.steerlabs.opensteer.beta`). Stable becomes Latest; beta is a prerelease and
+never Latest. Legacy `v*` tags do not trigger this workflow.
+
+Commit the release version on main and wait for its CI evidence. The workflow
+checks that the selected source is an ancestor of main. To release, Tim runs:
+
+```sh
+# Choose one; substitute the version already committed on main.
+git tag desktop-v1.2.3-beta.1 MAIN_COMMIT_SHA
+git push public refs/tags/desktop-v1.2.3-beta.1
+# Stable:
+git tag desktop-v1.2.3 MAIN_COMMIT_SHA
+git push public refs/tags/desktop-v1.2.3
+```
+
+Approve the build's `release` environment request, inspect the draft and its
+checksums, then approve the separate publish job. Never move a release tag.
+The APK, signed and notarized app, ZIP and updater metadata must all identify
+the selected source and version. Packaging notarizes through electron-builder
+(`mac.notarize: true`), validates its staple and assesses Gatekeeper; the workflow
+also explicitly runs `stapler validate` and `spctl` before preparing assets.
+
+### Practice run and promotion
+
+`workflow_dispatch` needs this workflow on the default branch. Run it from main
+with `publish=false` (the default):
+
+```sh
+gh workflow run release.yml --repo steerlabs/opensteer --ref main \
+  -f ref=MAIN_COMMIT_SHA -f channel=beta -f version=1.2.3-beta.1 -f publish=false
+```
+
+This requires build approval and ends at a draft release. Drafts are invisible
+to anonymous users and `releases/latest`. Review the prepared artifact, SHA256SUMS
+and release.json. To promote, dispatch again with the same source, channel and
+version and `-f publish=true`. Preflight reuses the existing draft only if its
+`sourceSha`, `version` and `channel` match; it skips rebuilding and drafting.
+The publish environment approval therefore promotes those exact bytes. The
+publication tool must reverify the draft assets against release.json before
+promotion. Already published versions are rejected. Do not delete or replace
+draft assets between verification and approval.
+
+### Integration contracts and current blockers
+
+This workflow targets the public-download tooling's agreed electron-updater
+GitHub interface: `prepare`, `draft`, `publish` take `--channel stable|beta`;
+prepare emits `latest-mac.yml` or `beta-mac.yml`, ZIP, SHA256SUMS and release.json.
+The manifest must include `sourceSha`, `version` and `channel` for draft reuse.
+Draft creation must attach release.json and target `sourceSha` when creating the
+tag. Publish must verify
+assets, set stable Latest, and keep beta prerelease and never Latest.
+
+The reference branch `public-mac-download-port` at `bdef59450` still has the old
+stable-only JSON feed, no channel argument, and no channel manifest field. It
+has not been merged here. Public main also lacks `desktop:public-release`.
+These integrations must land before a hosted release can succeed:
+
+- `scripts/release-identity.cjs` reads the root package version, rejects
+  prereleases and dirty checkouts, and passes it through desktop buildVersion,
+  extraMetadata.version and both macOS version fields. The workflow supplies
+  `OPENSTEER_RELEASE_VERSION` and `OPENSTEER_SOURCE_REVISION`; it does not rewrite
+  package.json. Beta assumes the full `X.Y.Z-beta.N` identity is accepted and
+  stamped consistently. Android's Gradle version parser also currently rejects
+  prereleases; agree its numeric versionCode policy before shipping beta.
+- `package-macos.ts` requires `OPENSTEER_DESKTOP_SIGNING_FILE` with Developer ID
+  identity and teamId before using electron-builder credentials. The current
+  signing.keychain path also selects an Apple keychain notarization strategy,
+  conflicting with API-key notarization. Hosted signing must support the
+  ephemeral keychain with the API-key strategy without a login keychain profile.
+  `MAC_CERTIFICATE_PASSWORD` maps to electron-builder’s `CSC_KEY_PASSWORD`;
+  no extra secret name is needed.
+- Resource preparation requires a proven Personal runtime (including Node and
+  PostgreSQL), explicit process-supervisor binary and digest, cloudflared
+  version/binary/digest, optional PortableFS installer/digest, and runner provenance.
+  The current local release orchestrator supplies these from local configuration;
+  this workflow has no reviewed hosted provisioning contract for them. If enabled,
+  PortableFS defaults to a sibling `../portablefs/scripts/install.sh` outside
+  the checkout. Packaging fails closed when required inputs are absent.
+- Agent Phone signing needs a key alias and key password as well as the two
+  requested keystore secrets. Set the environment variable `AGENT_PHONE_KEY_ALIAS`
+  to the existing key alias. The workflow assumes its key password equals the
+  keystore password, matching the local release helper. The signer must match
+  `packages/protocol/src/agent-phone-release.json`. Desktop after-pack verifies
+  the embedded release APK. Resource preparation also requires the trusted APK
+  release receipt and its digest; `build:agent-phone --release` alone does not
+  supply the release orchestrator’s receipt contract.
+
+No installed login items, external private repository or private npm dependency
+was identified as a requirement in these entry points. This is a source review,
+not hosted-build evidence; the runtime inputs above remain blockers.
+
+## Tim's one-time setup
+
+Tim performs all commands below on his own machine. Agents must never receive,
+read or operate on key material. None of these steps are performed by the
+implementation agent. Keep the seven named secrets in the `release` environment,
+not repository or organization secrets. Both build and publish require approval.
+
+Create the environment with Tim as reviewer, allow his release approvals, disable admin
+bypass, and restrict deployment refs to main and desktop release tags:
+
+```sh
+TIM_ID=$(gh api user --jq .id)
+gh api --method PUT repos/steerlabs/opensteer/environments/release \
+  --input - <<EOF_SETUP
+{"reviewers":[{"type":"User","id":$TIM_ID}],"prevent_self_review":false,"can_admins_bypass":false,"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}
+EOF_SETUP
+gh api --method POST repos/steerlabs/opensteer/environments/release/deployment-branch-policies \
+  -f name=main -f type=branch
+gh api --method POST repos/steerlabs/opensteer/environments/release/deployment-branch-policies \
+  -f 'name=desktop-v*' -f type=tag
+```
+
+Self-review is allowed so Tim can approve his own tag pushes and dispatches.
+Inspect existing environments before applying PUT; existing ref policies need
+not be recreated.
+
+In Keychain Access, select **My Certificates**, expand the **Developer ID
+Application** identity, select the certificate and private key, then **File →
+Export Items…**, format **Personal Information Exchange (.p12)**. Save as
+`DeveloperID.p12` and choose an export password. The certificate must include its
+private key. Store the password in a local file without a trailing newline.
+
+In App Store Connect, open **Users and Access → Integrations → App Store Connect
+API → Team Keys**, create a key with the Developer role for notarization, and
+record its Key ID and Issuer ID. Download `AuthKey.p8` once and store it securely.
+This is an App Store Connect API key, not an Apple ID password. Put the two IDs
+in local files without trailing newlines.
+
+Using the existing permanent Agent Phone release keystore, prepare files and
+upload each secret (replace paths with Tim's own files):
+
+```sh
+umask 077
+base64 < DeveloperID.p12 > MAC_CERTIFICATE_P12_BASE64.txt
+base64 < AuthKey.p8 > APPLE_API_KEY_P8_BASE64.txt
+base64 < agent-phone.keystore > AGENT_PHONE_KEYSTORE_BASE64.txt
+# Create the password/ID files locally using a password manager or editor.
+gh secret set MAC_CERTIFICATE_P12_BASE64 --env release --repo steerlabs/opensteer < MAC_CERTIFICATE_P12_BASE64.txt
+gh secret set MAC_CERTIFICATE_PASSWORD --env release --repo steerlabs/opensteer < MAC_CERTIFICATE_PASSWORD.txt
+gh secret set APPLE_API_KEY_P8_BASE64 --env release --repo steerlabs/opensteer < APPLE_API_KEY_P8_BASE64.txt
+gh secret set APPLE_API_KEY_ID --env release --repo steerlabs/opensteer < APPLE_API_KEY_ID.txt
+gh secret set APPLE_API_ISSUER --env release --repo steerlabs/opensteer < APPLE_API_ISSUER.txt
+gh secret set AGENT_PHONE_KEYSTORE_BASE64 --env release --repo steerlabs/opensteer < AGENT_PHONE_KEYSTORE_BASE64.txt
+gh secret set AGENT_PHONE_KEYSTORE_PASSWORD --env release --repo steerlabs/opensteer < AGENT_PHONE_KEYSTORE_PASSWORD.txt
+gh variable set AGENT_PHONE_KEY_ALIAS --env release --repo steerlabs/opensteer --body EXISTING_KEY_ALIAS
+```
+
+Remove the temporary encoded/password files after uploading; retain the originals
+in Tim's secure backup. Never set `OPENSTEER_DESKTOP_UPDATE_FEED_URL`: the updater
+uses the GitHub provider and its channel metadata.
+
 ## Public Mac download
 
 Both channels use numeric `X.Y.Z` app and bundle versions. Stable uses
