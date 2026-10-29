@@ -26,6 +26,7 @@ const sources = new Map(
  * way to make a stray copy pass.
  */
 const helperHomes: Readonly<Record<string, string | readonly string[]>> = {
+  freePort: "packages/shared/src/loopbackPort.test-support.ts",
   assertRegularFile: "packages/shared/src/privateFiles.ts",
   /**
    * The rule that a client never chooses a native model id. The mock host

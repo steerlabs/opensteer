@@ -1,3 +1,4 @@
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { createDatabase } from "@opensteer/database";
 import { AgentControlResponseSchema } from "@opensteer/protocol";
 import { connect, createServer, type Socket } from "node:net";
@@ -779,7 +780,7 @@ integration("Machine access across a Run's authority", () => {
       const generation = run.attempt.bindingGeneration;
       const command = startShim(launch, "ssh", [alias, "sleep 60; echo late"]);
       const commandSession = await activeSessionId(host, target.runnerId);
-      const forwardPort = await freeLocalPort();
+      const forwardPort = await freePort();
       const forward = startShim(launch, "ssh", [
         "-N",
         "-L",
@@ -1190,16 +1191,6 @@ async function startEchoServer(): Promise<{ readonly port: number; close(): Prom
       }),
     port: address.port,
   };
-}
-
-async function freeLocalPort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("no free port");
-  const { port } = address;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return port;
 }
 
 async function pingThrough(port: number): Promise<"unreachable" | "ping-pong"> {

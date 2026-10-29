@@ -1,9 +1,9 @@
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { delay } from "@opensteer/shared/delay";
 import { spawn } from "node:child_process";
 import { createPrivateKey, createPublicKey, randomBytes, randomUUID, verify } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
-import { createServer } from "node:net";
 import { join } from "node:path";
 import {
   Ed25519PortableFsProductAuthorizationSigner,
@@ -776,21 +776,6 @@ async function controlRequest(
     request.once("error", reject);
     if (body) request.write(body);
     request.end();
-  });
-}
-
-async function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        reject(new Error("Could not allocate a PortableFS manager port"));
-        return;
-      }
-      server.close((error) => (error ? reject(error) : resolve(address.port)));
-    });
   });
 }
 

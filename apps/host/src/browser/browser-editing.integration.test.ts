@@ -1,5 +1,5 @@
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
-import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -666,14 +666,4 @@ function responseCookies(response: Response): string[] {
     .getSetCookie()
     .map((value) => value.split(";", 1)[0])
     .filter((value): value is string => Boolean(value));
-}
-
-async function freePort(): Promise<number> {
-  const server = createNetServer();
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("No port");
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return address.port;
 }

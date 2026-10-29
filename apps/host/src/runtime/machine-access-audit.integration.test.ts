@@ -1,8 +1,9 @@
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { startEchoTestServer as startEchoServer } from "@opensteer/shared/test-support/tcpServer";
 import { createHash, randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { connect, createServer } from "node:net";
+import { connect } from "node:net";
 import { mkdir, mkdtemp, open, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -204,7 +205,7 @@ integration("Machine access audit, transfer and realtime", () => {
       );
       expect(await runShim(launch, "sftp", ["-b", batch, alias])).toMatchObject({ code: 0 });
 
-      const forwardPort = await freeLocalPort();
+      const forwardPort = await freePort();
       const forward = startShim(launch, "ssh", [
         "-N",
         "-L",
@@ -655,16 +656,6 @@ async function relayHandshake(
       resolve({ acknowledgedAt, close: () => socket.destroy() });
     });
   });
-}
-
-async function freeLocalPort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("no free port");
-  const { port } = address;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return port;
 }
 
 async function pingThrough(port: number): Promise<"unreachable" | "ping-pong"> {
