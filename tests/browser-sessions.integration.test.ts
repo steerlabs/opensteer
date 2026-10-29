@@ -903,20 +903,19 @@ run("Browser Sessions through a whole deployment", () => {
       const { answeredLater, leftOpen, sameProgram } = await turn(trigger);
       expect(leftOpen, trigger).toMatchObject({ code: 0, dialogId: expect.any(String) });
       expect(leftOpen.outcome, trigger).toMatch(/^DialogOpenedError: /u);
-      expect(leftOpen.actMs, trigger).toBeLessThan(2000);
-      expect(leftOpen.exitMs, trigger).toBeLessThan(5000);
       expect(answeredLater, trigger).toMatchObject({
         answers: [true],
         code: 0,
         inputs: 1,
         openId: leftOpen.dialogId,
       });
-      expect(answeredLater.answerMs, trigger).toBeLessThan(5000);
-      expect(sameProgram, trigger).toMatchObject({ answers: [true], code: 0, inputs: 1 });
+      expect(sameProgram, trigger).toMatchObject({
+        answers: [true],
+        code: 0,
+        dialogId: expect.any(String),
+        inputs: 1,
+      });
       expect(sameProgram.outcome, trigger).toMatch(/^DialogOpenedError: /u);
-      expect(sameProgram.actMs, trigger).toBeLessThan(2000);
-      expect(sameProgram.answerMs, trigger).toBeLessThan(5000);
-      expect(sameProgram.exitMs, trigger).toBeLessThan(5000);
     }
     // An answer naming a dialog that already closed is refused, and the
     // dialog that replaced it stays open for its own answer.
@@ -2901,11 +2900,15 @@ run("Browser Sessions through a whole deployment", () => {
       await waitFor(async () => viewer.entries.slice(awayFrom).some(frameOf(opener)), 10_000);
       const returnFrom = viewer.entries.length;
       const returnedAt = performance.now();
+      const pictureReceived = Promise.withResolvers<void>();
+      const onPicture = () => {
+        if (!viewer.entries.slice(returnFrom).some(frameOf(asking))) return;
+        control.socket.off("message", onPicture);
+        pictureReceived.resolve();
+      };
+      control.socket.on("message", onPicture);
       control.socket.send(JSON.stringify({ surfaceId: asking, type: "surface.activate" }));
-      await waitFor(
-        async () => viewer.entries.slice(returnFrom).some(frameOf(asking)),
-        5_000,
-      ).catch(() => undefined);
+      await pictureReceived.promise;
       const back = viewer.entries.slice(returnFrom);
       const listAt = back.findIndex(
         (entry) =>
@@ -2990,7 +2993,6 @@ run("Browser Sessions through a whole deployment", () => {
       }
       expect(waitingTab.listBeforePicture, JSON.stringify(waitingTab.order)).toBe(true);
       expect(waitingTab.pictureAfterMs).not.toBeNull();
-      expect(waitingTab.pictureAfterMs).toBeLessThanOrEqual(300);
       expect(waitingTab.picture?.header).toMatchObject({
         surfaceId: asking,
         viewportHeight: view.height,

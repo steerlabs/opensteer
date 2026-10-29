@@ -15,6 +15,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { NotificationStore } from "@opensteer/database";
+import { ManualClock } from "@opensteer/shared/test-support/clock";
 import {
   HarnessRegistry,
   isolatedServiceHarnessRuntimeBoundary,
@@ -1139,6 +1140,7 @@ integration("durable Thread changes native continuation", () => {
       harnesses: fakeCodexRegistry(join(captureRoot, "codex.jsonl"), "vertical-delayed"),
       harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       runTimeoutMs: 15_000,
+      workspaceReconcileClock: new ManualClock(),
     });
     const homeId = await stack.createThread({
       home: true,
@@ -1194,6 +1196,13 @@ integration("durable Thread changes native continuation", () => {
     // is recorded, so the test can tell that path from the immediate one.
     const reconciled: string[] = [];
     const store = stack.host.store;
+    const drainReturn = store.drainAssignmentReturn.bind(store);
+    const returnedByReaction = Promise.withResolvers<AssignmentId>();
+    vi.spyOn(store, "drainAssignmentReturn").mockImplementation(async (id) => {
+      const events = await drainReturn(id);
+      returnedByReaction.resolve(id);
+      return events;
+    });
     const drainPending = store.drainPendingAssignmentReturns.bind(store);
     vi.spyOn(store, "drainPendingAssignmentReturns").mockImplementation(async (limit) => {
       const drained = await drainPending(limit);
@@ -1258,14 +1267,13 @@ integration("durable Thread changes native continuation", () => {
     const task = delegated;
 
     // No tool finishes the task: its Run ends, and that ends the task.
-    const returned = await waitFor(async () => {
-      const row = await stack!.host.store.database
-        .selectFrom("delegations")
-        .selectAll()
-        .where("id", "=", task.assignmentId)
-        .executeTakeFirstOrThrow();
-      return row.resultStatus === "delivered" ? row : undefined;
-    }, 20_000);
+    expect(await returnedByReaction.promise).toBe(task.assignmentId);
+    const returned = await stack.host.store.database
+      .selectFrom("delegations")
+      .selectAll()
+      .where("id", "=", task.assignmentId)
+      .executeTakeFirstOrThrow();
+    expect(returned.resultStatus).toBe("delivered");
     const deliveredAt = returned.completedAt?.getTime() ?? Number.NaN;
     const finishedAt = returned.finishedAt?.getTime() ?? Number.NaN;
     expect(returned).toMatchObject({
@@ -1273,11 +1281,9 @@ integration("durable Thread changes native continuation", () => {
       resultText: "Completed by Codex.",
       status: "completed",
     });
-    // The Host's reaction to the task's end delivered it, promptly; the
-    // periodic reconcile, whose first pass comes 15 to 45 s after the Host
-    // starts, did not.
+    // The periodic reconcile cannot run until its clock advances; the
+    // Host's reaction must deliver the result on its own.
     expect(reconciled).not.toContain(task.assignmentId);
-    expect(deliveredAt - finishedAt).toBeLessThan(5_000);
     const taskRun = await stack.host.store.database
       .selectFrom("runs")
       .select(["id", "status"])

@@ -1306,13 +1306,23 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
   });
 
   it("recovers accepted native latest place after immediate end and a real Host restart", async () => {
-    const host = await startMachineAccessHost(isolated.url);
+    const scheduled = new Set<() => void>();
+    const host = await startMachineAccessHost(isolated.url, {
+      browserActivityClock: {
+        now: Date.now,
+        schedule: (callback) => {
+          scheduled.add(callback);
+          return () => {
+            scheduled.delete(callback);
+          };
+        },
+      },
+    });
+    const notices = vi.spyOn(RealtimeHub.prototype, "sendToUsers");
     let restarted: Awaited<ReturnType<typeof createHostRuntime>> | null = null;
-    const activity: { ended: boolean; at: number }[] = [];
     const world = await createWorld(database, {
       ownerUserId: host.ownerId,
       onPlaceActivity: (input) => {
-        activity.push(input);
         host.runtime.browser.noteNativeActivity(input);
       },
     });
@@ -1355,7 +1365,15 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const acted = await gateway.call("computer", { code: "await w.click(1)" });
       expect(acted.isError).toBeUndefined();
       // End before the live-activity coalescer fires, before any history reads.
+      expect(scheduled.size).toBeGreaterThan(0);
+      expect(notices.mock.calls.some(([, notice]) => notice.type === "host.place-activity")).toBe(
+        false,
+      );
       world.computerUse.closeForRun(run.runId);
+      expect(
+        notices.mock.calls.some(([, notice]) => notice.type === "host.place-activity-cleared"),
+      ).toBe(true);
+      expect(scheduled.size).toBe(0);
       const persisted = await store.eventsAfter(run.workspaceId, SequenceSchema.parse("0"));
       const operationStarted = persisted.find(
         (event) => event.type === "tool.started" && event.data.tool.name === "computer.click",
@@ -1377,9 +1395,6 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         event: started,
       });
       expect(BigInt(delivered.event.sequence)).toBeGreaterThan(BigInt(completedAction.sequence));
-      const endedAt = activity.findLast((entry) => entry.ended)?.at;
-      const actedAt = activity.findLast((entry) => !entry.ended)?.at;
-      expect(endedAt! - actedAt!).toBeLessThan(100);
       const before = (await host.runtime.browser.latestPlaces(host.ownerId)).find(
         (reference) => reference.threadId === run.threadId,
       );
@@ -1462,8 +1477,9 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           JSON.stringify(
             {
               runId: run.runId,
-              activity,
-              endedWithinMs: endedAt! - actedAt!,
+              placeNotices: notices.mock.calls
+                .map(([, notice]) => notice.type)
+                .filter((type) => type.startsWith("host.place-activity")),
               before,
               recovered,
               subject,
@@ -1474,6 +1490,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         );
       }
     } finally {
+      notices.mockRestore();
       await world.close();
       await restarted?.close();
       await host.close();
@@ -3229,7 +3246,8 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
         false,
       ),
     );
-    await vi.waitFor(() => expect(world.fakeMac.actReceivedCount).toBe(1));
+    await world.fakeMac.reached("act");
+    expect(world.fakeMac.actReceivedCount).toBe(1);
     expect(world.fakeMac.frames[0]).toMatchObject({
       app: apps.notes,
       access: "read-write",
@@ -3243,7 +3261,8 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       requestedBy: world.owner.userId,
       idempotencyKey: "stop-held-mac",
     });
-    await vi.waitFor(() => expect(world.fakeMac.closeReceivedCount).toBe(1));
+    await world.fakeMac.reached("close");
+    expect(world.fakeMac.closeReceivedCount).toBe(1);
     resume();
     await expect(sent.settle()).rejects.toMatchObject({
       code: "outcome-unknown",
@@ -4398,6 +4417,7 @@ function text(result: ToolResult): string {
 class FakeMac {
   readonly #outcomes = new Map<string, (outcome: ComputerAppApprovalOutcome) => void>();
   readonly #listWaiters: { readonly ids: string; readonly resolve: () => void }[] = [];
+  readonly #arrivals = new Set<() => void>();
   /** Every approval list the Host sent this Mac, in order. */
   readonly lists: ComputerAppApprovalList[] = [];
   /** Each approval this Mac was ever told about, in the order it first appeared. */
@@ -4523,6 +4543,16 @@ class FakeMac {
       if (waiter.ids === current) waiter.resolve();
       else this.#listWaiters.push(waiter);
     }
+  }
+
+  async reached(operation: "act" | "close", count = 1): Promise<void> {
+    while ((operation === "act" ? this.actReceivedCount : this.closeReceivedCount) < count)
+      await new Promise<void>((resolve) => this.#arrivals.add(resolve));
+  }
+
+  #signalArrival(): void {
+    for (const resolve of this.#arrivals) resolve();
+    this.#arrivals.clear();
   }
 
   /** The person's answer on this Mac, carried on its own stream; resolves with the Host's outcome. */
@@ -4676,12 +4706,14 @@ class FakeMac {
     try {
       if (message.operation === "close") {
         this.closeReceivedCount += 1;
+        this.#signalArrival();
         await this.closeGate;
         if (this.closeFailureCode)
           throw new MacError(this.closeFailureCode, "The Mac did not confirm Stop.");
       }
       if (message.operation === "act" && this.partialActGate) {
         this.actReceivedCount++;
+        this.#signalArrival();
         this.completedActions++;
         await this.partialActGate;
         result = {
@@ -4694,6 +4726,7 @@ class FakeMac {
       } else {
         if (message.operation === "act") {
           this.actReceivedCount += 1;
+          this.#signalArrival();
           await this.actGate;
           if (!this.#sessions.has(message.sessionId))
             throw new MacError("no-session", "The session ended before the batch ran.");
