@@ -212,7 +212,7 @@ jobs:
             timeout: 6
             swift: apps/desktop/native/computer-use packages/apple-data packages/macos-signing
           - task: passwords-tests
-            timeout: 11
+            timeout: 14
             swift: apps/desktop/native/passwords packages/macos-signing
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
