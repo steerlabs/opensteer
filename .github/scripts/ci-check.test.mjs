@@ -68,6 +68,7 @@ test("Swift cache key generation fails when source enumeration fails", async () 
           PATH: `${bin}:${process.env.PATH}`,
           RUNNER_TEMP: directory,
           GITHUB_OUTPUT: output,
+          SWIFT_INPUTS: "packages/apple-data",
         },
         encoding: "utf8",
       });
@@ -76,7 +77,33 @@ test("Swift cache key generation fails when source enumeration fails", async () 
     writeFileSync(git, "#!/bin/sh\necho tracked-input\n", { mode: 0o755 });
     assert.equal(run().status, 0);
     assert.match(readFileSync(output, "utf8"), /^inputs=[a-f0-9]{64}$/m);
+    const empty = spawnSync("bash", ["-e", "-o", "pipefail", "-c", script], {
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        RUNNER_TEMP: directory,
+        GITHUB_OUTPUT: output,
+        SWIFT_INPUTS: "",
+      },
+      encoding: "utf8",
+    });
+    assert.notEqual(empty.status, 0);
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("every native-mac task keys its Swift cache by paths that exist", async () => {
+  const { existsSync, readFileSync } = await import("node:fs");
+  const { parse } = await import("yaml");
+  const workflow = parse(readFileSync(".github/workflows/ci.yml", "utf8"));
+  const tasks = workflow.jobs["native-mac"].strategy.matrix.include;
+  assert.ok(tasks.length > 0);
+  for (const { task, swift } of tasks) {
+    const paths = String(swift ?? "")
+      .split(/\s+/u)
+      .filter(Boolean);
+    assert.ok(paths.length > 0, `${task} names no Swift inputs`);
+    for (const path of paths) assert.ok(existsSync(path), `${task}: ${path} does not exist`);
   }
 });

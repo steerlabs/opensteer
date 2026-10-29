@@ -198,16 +198,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # swift: what the task's SwiftPM build reads, so unrelated changes keep its cache.
           - task: computer-helper
             timeout: 6
+            swift: apps/desktop/native/computer-use packages/apple-data packages/macos-signing apps/desktop/scripts/build-computer-use-helper.ts
           - task: passwords-helper
             timeout: 8
+            swift: apps/desktop/native/passwords packages/macos-signing apps/desktop/scripts/build-passwords-broker.ts
           - task: iphone
             timeout: 6
+            swift: packages/apple-data apps/mobile/modules/iphone-apps/ios
           - task: computer-tests
             timeout: 6
+            swift: apps/desktop/native/computer-use packages/apple-data packages/macos-signing
           - task: passwords-tests
             timeout: 11
+            swift: apps/desktop/native/passwords packages/macos-signing
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -215,13 +221,16 @@ jobs:
       - uses: ./.github/actions/ci-setup
       - id: swift
         shell: bash
+        env:
+          SWIFT_INPUTS: ${{ matrix.swift }}
         run: |
+          # The compiler, Xcode and SDK, not the runner image: SwiftPM revalidates a
+          # restored build, so a key only decides how warm it starts.
           swift --version > "$RUNNER_TEMP/swift-toolchain"
           xcodebuild -version >> "$RUNNER_TEMP/swift-toolchain"
           xcrun --show-sdk-version >> "$RUNNER_TEMP/swift-toolchain"
-          echo "$ImageVersion" >> "$RUNNER_TEMP/swift-toolchain"
           toolchain=$(shasum -a 256 "$RUNNER_TEMP/swift-toolchain" | cut -d' ' -f1)
-          inputs=$(git ls-tree -r HEAD -- packages apps/desktop apps/mobile/modules/iphone-apps/ios scripts patches .github/actions/ci-setup package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc .pnpmfile.cjs tsconfig.json tsconfig.base.json tsconfig.package.json tsconfig.tests.json | shasum -a 256 | cut -d' ' -f1)
+          inputs=$(git ls-tree -r HEAD -- ${SWIFT_INPUTS:?} | shasum -a 256 | cut -d' ' -f1)
           echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
           echo "inputs=$inputs" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
