@@ -20,7 +20,7 @@
     "@opensteer/protocol": "workspace:*",
     "@opensteer/runner-client": "workspace:*",
     "@opensteer/shared": "workspace:*",
-    "devtools-protocol": "0.0.1676105",
+    "devtools-protocol": "0.0.1724436",
     "playwright-core": "1.62.1",
     "ws": "catalog:",
     "zod": "catalog:"

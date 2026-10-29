@@ -15,7 +15,7 @@
   "dependencies": {
     "@opensteer/core": "workspace:*",
     "@opensteer/integration-core": "workspace:*",
-    "oauth4webapi": "3.8.5",
+    "oauth4webapi": "3.8.8",
     "zod": "catalog:"
   },
   "devDependencies": {

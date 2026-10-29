@@ -13,14 +13,14 @@
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "catalog:",
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@opensteer/agent-tools": "workspace:*",
     "@opensteer/core": "workspace:*",
     "@opensteer/harness": "workspace:*",
     "@opensteer/integration-core": "workspace:*",
     "@opensteer/protocol": "workspace:*",
     "@opensteer/shared": "workspace:*",
-    "typebox": "1.3.7",
+    "typebox": "1.4.3",
     "zod": "catalog:"
   },
   "devDependencies": {

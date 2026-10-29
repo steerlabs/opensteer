@@ -46,7 +46,7 @@
   },
   "devDependencies": {
     "@noble/curves": "2.4.0",
-    "@types/react": "19.2.18",
+    "@types/react": "19.3.0",
     "react": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

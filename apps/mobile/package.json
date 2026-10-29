@@ -22,8 +22,8 @@
     "@opensteer/shared": "workspace:*",
     "@opensteer/apple-data": "workspace:*",
     "@react-navigation/elements": "2.9.40",
-    "@react-navigation/native": "7.3.18",
-    "@react-navigation/native-stack": "7.18.10",
+    "@react-navigation/native": "7.5.1",
+    "@react-navigation/native-stack": "7.21.0",
     "expo": "58.0.19",
     "expo-application": "~58.1.2",
     "expo-clipboard": "~58.0.4",
@@ -48,13 +48,13 @@
     "react": "catalog:",
     "react-dom": "catalog:",
     "react-native": "0.88.0",
-    "react-native-gesture-handler": "~3.3.0",
+    "react-native-gesture-handler": "~3.4.0",
     "react-native-reanimated": "4.7.1",
     "react-native-reserved-regions": "0.2.0",
     "react-native-safe-area-context": "~5.10.1",
     "react-native-screens": "~4.30.0",
     "react-native-svg": "15.16.0",
-    "react-native-worklets": "0.13.0",
+    "react-native-worklets": "0.13.1",
     "zod": "catalog:"
   },
   "devDependencies": {
@@ -65,7 +65,7 @@
     "@types/react-dom": "~19.3.0",
     "babel-preset-expo": "58.0.20",
     "happy-dom": "^20.14.5",
-    "react-refresh": "0.14.2",
+    "react-refresh": "0.19.0",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

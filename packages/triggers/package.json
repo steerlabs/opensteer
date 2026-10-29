@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@opensteer/core": "workspace:*",
-    "cron-parser": "5.8.1",
+    "cron-parser": "5.10.2",
     "zod": "catalog:"
   },
   "devDependencies": {

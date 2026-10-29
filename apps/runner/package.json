@@ -26,7 +26,7 @@
     "@anthropic-ai/claude-agent-sdk": "catalog:",
     "@anthropic-ai/sdk": "0.116.0",
     "@earendil-works/pi-coding-agent": "catalog:",
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@openai/codex": "catalog:",
     "@opensteer/agent-tools": "workspace:*",
     "@opensteer/browser-profile": "workspace:*",
@@ -54,7 +54,7 @@
     "@opensteer/workspace-portablefs": "workspace:*",
     "opencode-ai": "catalog:",
     "sharp": "catalog:",
-    "typebox": "1.3.7",
+    "typebox": "1.4.3",
     "ws": "catalog:",
     "zod": "catalog:"
   },

@@ -9,7 +9,7 @@
     "test": "vitest run --root ../.. --config ../../vitest.config.ts evals/agent-tools"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@opensteer/agent-tools": "workspace:*",
     "@opensteer/core": "workspace:*",
     "@opensteer/harness": "workspace:*",
