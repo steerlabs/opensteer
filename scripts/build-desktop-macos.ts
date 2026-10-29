@@ -1,7 +1,7 @@
 /** Build all package inputs from this checkout and pinned public upstream sources. */
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
@@ -116,6 +116,8 @@ for (const directory of ["bin", "lib", "lib/postgresql"]) {
     const file = path.join(base, entry.name);
     const kind = await run("file", [file], root, true);
     if (!kind.includes("Mach-O")) continue;
+    if (entry.name.endsWith(".dylib"))
+      await run("install_name_tool", ["-id", `@loader_path/${entry.name}`, file]);
     const libraries = (await run("otool", ["-L", file], root, true)).split("\n").slice(1);
     for (const line of libraries) {
       const dependency = line.trim().split(" (", 1)[0]!;
@@ -168,7 +170,10 @@ if (unsigned) {
   await desktop("package:mac", "--unsigned");
 } else {
   const phone = path.join(root, "apps/desktop/generated-resources/agent-phone");
-  const receipt = path.join(phone, agentPhoneReceiptName);
+  // Resource staging replaces generated-resources, so the trusted producer
+  // receipt must live outside that tree through after-pack verification.
+  const receipt = path.join(out, agentPhoneReceiptName);
+  await copyFile(path.join(phone, agentPhoneReceiptName), receipt);
   const digest = await hash(receipt);
   verifyAgentPhoneRelease(phone, receipt, { sourceRevision: sha, version, receiptSha256: digest });
   Object.assign(env, {

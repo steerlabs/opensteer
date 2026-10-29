@@ -7,7 +7,8 @@ mode; runtime environment variables cannot enable it. Passwords uses its separat
 development directory and file-backed protected store. Computer use still needs
 the person's macOS permissions.
 
-Supplying `OPENSTEER_DESKTOP_SIGNING_FILE` selects that identity even for a
+Supplying `OPENSTEER_DESKTOP_SIGNING_FILE` or complete CI signing environment inputs
+selects that identity even for a
 non-release build. Distribution is an explicit mode: `package:mac` and the release
 scripts require a valid input and propagate `OPENSTEER_DESKTOP_RELEASE=1`.
 Release mode never selects development trust. The old development environment
@@ -36,6 +37,19 @@ currently requires `package:mac` and its release inputs, including a trusted
 Agent Phone release receipt; see [Signed builds](#signed-builds).
 
 ## Signed builds
+
+Hosted builds use `OPENSTEER_RELEASE_SIGNING_IDENTITY`, `OPENSTEER_APPLE_TEAM_ID`
+and optional `CSC_KEYCHAIN` (an absolute existing .keychain-db path). These use
+the same strict schema below. Inherited fields alongside a signing file must
+agree with that file. The signing keychain does not imply a notarization profile:
+`APPLE_API_KEY`, `APPLE_API_KEY_ID` and `APPLE_API_ISSUER` can notarize independently.
+The release environment and rotation procedure are documented in
+[Releases](../../docs/releases.md#tims-one-time-setup-and-rotation).
+
+`package:mac --unsigned` explicitly invokes contributor packaging; it rejects
+signing input and release mode, uses ad-hoc signatures and development trust,
+writes to release/contributor, and stamps no release build or updater metadata.
+This path cannot produce a publishable archive.
 
 Keep the signing JSON outside the checkout and set
 `OPENSTEER_DESKTOP_SIGNING_FILE` to its absolute path. Its strict shape is:
