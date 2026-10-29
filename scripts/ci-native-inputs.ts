@@ -1,8 +1,9 @@
 /**
  * Writes .github/scripts/ci-native-inputs.json: for each native-mac task that runs
- * node scripts, the repository files those scripts statically import. The `changes`
- * job stays dependency-free by reading this list; tests/ci-native-inputs.test.ts
- * fails when it is stale.
+ * node scripts, what those scripts statically import. A workspace package counts
+ * whole, manifest included, so a new module in it needs no regeneration. The
+ * `changes` job stays dependency-free by reading this list;
+ * tests/ci-native-inputs.test.ts fails when it is stale.
  *   pnpm exec tsx scripts/ci-native-inputs.ts
  */
 import { readFileSync, writeFileSync } from "node:fs";
@@ -52,7 +53,9 @@ export async function nativeInputs(): Promise<Record<string, string[]>> {
   for (const { task, scripts = [] } of config.tasks) {
     if (!scripts.length) continue;
     const files = new Set<string>();
-    for (const script of scripts) for (const file of await imports(script)) files.add(file);
+    for (const script of scripts)
+      for (const file of await imports(script))
+        files.add(/^packages\/[^/]+\//u.test(file) ? file.split("/").slice(0, 2).join("/") : file);
     inputs[task] = [...files].sort((left, right) => left.localeCompare(right, "en"));
   }
   return inputs;

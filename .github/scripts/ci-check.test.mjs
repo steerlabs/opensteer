@@ -85,6 +85,11 @@ test("Check holds the native-mac task list to the plan, and main to every task",
     () => validateResults({ ...iphone, nativeMac: [] }, needs, "pull_request"),
     /native-mac-tasks/,
   );
+  // The lane flag must agree with the task list, even when the output matches it.
+  const quiet = { ...iphone, lanes: { ...iphone.lanes, "native-mac": false } };
+  const quietNeeds = structuredClone(needs);
+  quietNeeds.changes.outputs["native-mac"] = "false";
+  assert.throws(() => validateResults(quiet, quietNeeds, "pull_request"), /native-mac-tasks/);
   const all = Object.fromEntries(lanes.map((k) => [k, true]));
   const main = structuredClone(needs);
   for (const lane of lanes) {

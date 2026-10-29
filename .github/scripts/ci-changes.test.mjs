@@ -182,8 +182,8 @@ const nativeInputs = JSON.parse(
 const swiftOnly = (plan) => plan.nativeMac.filter((task) => task !== "iphone");
 test("a file a Swift task's node script imports selects that task, and only tasks importing it", () => {
   const file = "packages/integration-catalog/src/definitions/computer-apps.ts";
-  assert.ok(nativeInputs["computer-tests"].includes(file));
-  assert.ok(!nativeInputs["passwords-helper"].includes(file));
+  assert.ok(nativeInputs["computer-tests"].includes("packages/integration-catalog"));
+  assert.ok(!nativeInputs["passwords-helper"].includes("packages/integration-catalog"));
   const plan = decide([file], realGraph);
   assert.deepEqual(swiftOnly(plan), ["computer-helper", "computer-tests"]);
   const signing = "apps/desktop/src/signed-helpers/metadata.ts";
@@ -217,11 +217,63 @@ test("Swift sources, node manifests and the CI definition select their tasks", (
     allNativeMacTasks,
   );
 });
-test("the native input list names only tracked files", () => {
-  for (const [task, files] of Object.entries(nativeInputs))
-    for (const file of files) assert.ok(realFiles.includes(file), `${task}: ${file}`);
+test("the native input list names only tracked files and packages", () => {
+  for (const [task, inputs] of Object.entries(nativeInputs))
+    for (const input of inputs)
+      assert.ok(
+        realFiles.some((file) => file === input || file.startsWith(`${input}/`)),
+        `${task}: ${input}`,
+      );
 });
-test("a root test edit selects its own lane and the test typecheck, not everything", () => {
+test("required-but-dynamic and directory-boundary inputs select exactly", () => {
+  // createRequire loads these at run time; only the `extra` directory covers them.
+  assert.deepEqual(swiftOnly(decide(["apps/desktop/scripts/signing-input.cjs"], realGraph)), [
+    "computer-helper",
+    "passwords-helper",
+  ]);
+  assert.deepEqual(
+    swiftOnly(decide(["apps/desktop/native/computer-use-x/a.swift"], realGraph)),
+    [],
+  );
+  // A workspace package counts whole, manifest included.
+  assert.ok(
+    swiftOnly(decide(["packages/protocol/package.json"], realGraph)).includes("passwords-helper"),
+  );
+  // Swift tests read these TypeScript and fixture files across the language boundary.
+  assert.deepEqual(swiftOnly(decide(["packages/client/src/host/passwords.ts"], realGraph)), [
+    "passwords-tests",
+  ]);
+  assert.ok(
+    swiftOnly(decide(["packages/protocol/fixtures/login-envelope-v1.json"], realGraph)).includes(
+      "computer-tests",
+    ),
+  );
+});
+test("workflow steps name exactly the configured native-mac tasks and their Swift tests", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { parse } = await import("yaml");
+  const config = JSON.parse(readFileSync(".github/scripts/ci-native-mac.json", "utf8"));
+  const steps = parse(readFileSync(".github/workflows/ci.yml", "utf8")).jobs["native-mac"].steps;
+  const named = new Set();
+  const swiftTests = new Map(config.tasks.map(({ task }) => [task, new Set()]));
+  for (const step of steps) {
+    const tasks = [...String(step.if ?? "").matchAll(/matrix\.task == '([^']+)'/gu)].map(
+      (m) => m[1],
+    );
+    if (String(step.if ?? "") === "matrix.darwin")
+      tasks.push(config.tasks.find((task) => task.lane).task);
+    for (const task of tasks) {
+      assert.ok(swiftTests.has(task), `step names unknown task ${task}`);
+      named.add(task);
+      for (const [, path] of String(step.run ?? "").matchAll(/swift test --package-path (\S+)/gu))
+        swiftTests.get(task).add(path);
+    }
+  }
+  assert.deepEqual([...named].sort(), allNativeMacTasks.toSorted());
+  for (const { task, tests = [] } of config.tasks)
+    assert.deepEqual([...swiftTests.get(task)].sort(), tests.toSorted(), task);
+});
+test("a root test edit selects its own lane, the test guards and typecheck, not everything", () => {
   const lanesOf = (file) =>
     Object.entries(decide([file], realGraph).lanes)
       .filter(([, on]) => on)
@@ -231,18 +283,21 @@ test("a root test edit selects its own lane and the test typecheck, not everythi
     "build-types",
     "tests",
   ]);
+  // tests/test-tiers.test.ts and the other repo-wide guards run in `tests`.
   assert.deepEqual(lanesOf("tests/browser-profiles.integration.test.ts"), [
     "lint",
     "build-types",
+    "tests",
     "integration",
   ]);
   assert.deepEqual(lanesOf("tests/browser-harness-actions.engine.test.ts"), [
     "lint",
     "build-types",
+    "tests",
   ]);
   const darwin = decide(["tests/kernel-lock.test.ts"], realGraph);
   assert.deepEqual(darwin.nativeMac, ["iphone"]);
-  assert.equal(darwin.lanes.tests, false);
+  assert.equal(darwin.lanes.integration, false);
   // Support modules and fixtures under tests/ can feed any suite.
   assert.ok(
     Object.values(decide(["tests/browser-deployment.test-support.ts"], realGraph).lanes).every(
