@@ -58,7 +58,7 @@ describe("integration database teardown", () => {
     const project = {
       config: { maxWorkers: 1, pool: "forks", isolate: true, retry: 0 },
       provide: () => {},
-      vitest: { state: { getPaths: () => [] } },
+      vitest: { state: { getFilepaths: () => [] } },
     } as unknown as TestProject;
     const teardown = await setup(project);
     // A complete, acyclic lock trace: only cleanup fails.

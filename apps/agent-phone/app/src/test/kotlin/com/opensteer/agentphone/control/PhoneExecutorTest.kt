@@ -200,7 +200,11 @@ class PhoneExecutorTest {
 
     /** Waits until both threads have worked through everything queued before now. */
     private fun drain() {
-        submit(a, PhoneRequest.Close).done()
+        // A close is answered on arrival, ahead of its cleanup's turn, so only a turn of
+        // its own shows the serial thread has caught up; the app list does that for reads.
+        val turns = CountDownLatch(1)
+        executor.acquisition { turns.countDown() }
+        assertTrue(turns.await(2, TimeUnit.SECONDS))
         submit(b, PhoneRequest.InstalledApps(InstalledAppsParams("", 1, 0))).done()
     }
 

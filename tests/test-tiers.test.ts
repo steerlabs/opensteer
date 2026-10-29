@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, matchesGlob, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { configDefaults } from "vitest/config";
+import { darwinOnlyTests } from "../.github/scripts/ci-test-files.mjs";
 import config from "../vitest.config.js";
 import integrationConfig from "../vitest.integration.config.js";
 import guiConfig from "../vitest.gui.config.js";
@@ -48,7 +49,10 @@ describe("test tiers", () => {
       const owners = suites.filter((suite) => {
         const path = relative(suite.directory, resolve(root, file));
         const include = suite.config.test?.include ?? configDefaults.include;
-        const exclude = suite.config.test?.exclude ?? configDefaults.exclude;
+        // The unit suite owns darwin-only files everywhere; off Darwin, native-mac runs them.
+        const exclude = (suite.config.test?.exclude ?? configDefaults.exclude).filter(
+          (pattern) => !darwinOnlyTests.includes(pattern),
+        );
         return (
           include.some((pattern) => matchesGlob(path, pattern)) &&
           !exclude.some((pattern) => matchesGlob(path, pattern))
