@@ -27,6 +27,7 @@ permissions:
 concurrency:
   group: release-desktop-${{ inputs.channel || (endsWith(github.ref_name, '-insider') && 'beta' || 'stable') }}
   cancel-in-progress: false
+  queue: max
 defaults:
   run:
     shell: bash
@@ -39,7 +40,6 @@ jobs:
       channel: ${{ steps.resolve.outputs.channel }}
       version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
-      reuse: ${{ steps.resolve.outputs.reuse }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -52,7 +52,6 @@ jobs:
           VERSION: ${{ inputs.version }}
           EVENT: ${{ github.event_name }}
           TAG: ${{ github.ref_name }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git fetch origin main --tags
@@ -79,20 +78,39 @@ jobs:
           if git show-ref --verify --quiet "refs/tags/$tag"; then
             [[ "$(git rev-parse "$tag^{commit}")" == "$sha" ]]
           fi
+          printf 'sha=%s\nchannel=%s\nversion=%s\ntag=%s\n' "$sha" "$CHANNEL" "$VERSION" "$tag" >> "$GITHUB_OUTPUT"
+  discover:
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    outputs:
+      reuse: ${{ steps.discover.outputs.reuse }}
+    steps:
+      - id: discover
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.preflight.outputs.sha }}
+          CHANNEL: ${{ needs.preflight.outputs.channel }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+          TAG: ${{ needs.preflight.outputs.tag }}
+        run: |
+          set -euo pipefail
           reuse=false
           gh api --paginate repos/steerlabs/opensteer/releases > "$RUNNER_TEMP/releases.json"
-          if jq -e --arg tag "$tag" '.[] | select(.tag_name == $tag)' "$RUNNER_TEMP/releases.json" > "$RUNNER_TEMP/release.json"; then
+          if jq -e --arg tag "$TAG" '.[] | select(.tag_name == $tag)' "$RUNNER_TEMP/releases.json" > "$RUNNER_TEMP/release.json"; then
             jq -e '.draft == true' "$RUNNER_TEMP/release.json"
             mkdir "$RUNNER_TEMP/existing"
-            gh release download "$tag" --repo steerlabs/opensteer --pattern release.json --dir "$RUNNER_TEMP/existing"
-            jq -e --arg sha "$sha" --arg version "$VERSION" --arg channel "$CHANNEL" \
-              '.sourceSha == $sha and .version == $version and .channel == $channel' "$RUNNER_TEMP/existing/release.json"
+            gh release download "$TAG" --repo steerlabs/opensteer --pattern release.json --dir "$RUNNER_TEMP/existing"
+            jq -e --arg sha "$SHA" --arg version "$VERSION" --arg channel "$CHANNEL" --arg tag "$TAG" \
+              '.sourceSha == $sha and .version == $version and .channel == $channel and .tag == $tag' "$RUNNER_TEMP/existing/release.json"
             reuse=true
           fi
-          printf 'sha=%s\nchannel=%s\nversion=%s\ntag=%s\nreuse=%s\n' "$sha" "$CHANNEL" "$VERSION" "$tag" "$reuse" >> "$GITHUB_OUTPUT"
+          printf 'reuse=%s\n' "$reuse" >> "$GITHUB_OUTPUT"
   build:
-    needs: preflight
-    if: needs.preflight.outputs.reuse != 'true'
+    needs: [preflight, discover]
+    if: needs.discover.outputs.reuse == 'false'
     runs-on: macos-15
     environment: release
     timeout-minutes: 90
@@ -110,6 +128,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version-file: package.json
+          cache: pnpm
       - uses: actions/setup-java@816722acf8fd27c9d1e9ae6ee6085da07e0d44c1
         with:
           distribution: temurin
@@ -203,6 +222,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version-file: package.json
+          cache: pnpm
       - run: pnpm install --frozen-lockfile
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -212,8 +232,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: pnpm desktop:public-release draft --dir "$RUNNER_TEMP/prepared" --repo steerlabs/opensteer
   publish:
-    needs: [preflight, draft]
-    if: ${{ !cancelled() && (github.event_name == 'push' || inputs.publish) && (needs.draft.result == 'success' || needs.preflight.outputs.reuse == 'true') }}
+    needs: [preflight, discover, draft]
+    if: ${{ !cancelled() && needs.discover.result == 'success' && (github.event_name == 'push' || inputs.publish) && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') }}
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -227,6 +247,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version-file: package.json
+          cache: pnpm
       - run: pnpm install --frozen-lockfile
       - env:
           GITHUB_TOKEN: ${{ github.token }}

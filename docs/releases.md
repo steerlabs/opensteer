@@ -75,10 +75,13 @@ git tag desktop-v0.1.220 MAIN_COMMIT_SHA
 git push public refs/tags/desktop-v0.1.220
 ```
 
-Approve the build's `release` environment request, inspect its complete draft,
-then approve the separate publish job. A Beta is published only after its draft
+Approve draft discovery's `release` environment request after source validation,
+then approve the build when a new artifact is needed. Inspect the complete draft
+before approving the separate publish job. A Beta is published only after its draft
 is complete. Never backfill an older Beta after a newer one: the updater picks
-the first eligible feed entry. Never move a release tag.
+the first eligible feed entry. Never move a release tag. Channel concurrency uses
+`queue: max` with `cancel-in-progress: false`, preserving queued releases through
+approval waits.
 
 ### Practice run and exact-byte promotion
 
@@ -89,13 +92,16 @@ gh workflow run release.yml --repo steerlabs/opensteer --ref main \
   -f ref=MAIN_COMMIT_SHA -f channel=beta -f version=0.1.220 -f publish=false
 ```
 
-`publish=false` is the default. After build approval, this stops at a draft,
-invisible to anonymous users and `releases/latest`. Inspect the prepared artifact,
+`publish=false` is the default. After protected discovery and build approval,
+this stops at a draft, invisible to anonymous users and `releases/latest`.
+Inspect the prepared artifact,
 SHA256SUMS and release.json. To promote, dispatch again with the same source,
-channel and version and `-f publish=true`. Preflight verifies the existing draft's
-`sourceSha`, `version` and `channel`, skips rebuilding and drafting, and requests
-publish approval. The publication tool verifies those exact draft bytes before
-promotion. Already published versions are rejected. Never replace draft assets
+channel and version and `-f publish=true`. Read-only preflight validates the
+source first. The protected discovery job uses its own `contents: write` token to see drafts,
+verifies the existing draft's `sourceSha`, `version`, `channel` and `tag`, then
+skips rebuilding and drafting and requests publish approval. The publication
+tool verifies those exact draft bytes before promotion. Already published
+versions are rejected. Never replace draft assets
 between verification and approval.
 
 ### Build inputs and local proof
@@ -106,8 +112,13 @@ cloudflared; compiles and relocates PostgreSQL; builds and signs the supervisor;
 and invokes the product's Personal runtime, Computer Use, Passwords and desktop
 packagers. The Personal runtime's source provenance, native input proofs and
 resource digests remain enforced. Script debugger maps are omitted so the
-existing 2,048-file runtime manifest limit remains intact. No sibling checkout, private infrastructure,
-login keychain item or local signing JSON is needed.
+existing 2,048-file runtime manifest limit remains intact. Node setup caches only
+the pnpm store by the lockfile; no compiled PostgreSQL cache is used. Each
+external build command has its own unchanged 15-minute deadline, including
+separate configure, make and install commands. A fresh local PostgreSQL 17.11
+build measured 27 seconds for configure, 79 seconds for make and 6 seconds for
+install; hosted-runner timing remains to be verified. No sibling checkout,
+private infrastructure, login keychain item or local signing JSON is needed.
 
 The workflow first runs `pnpm build:agent-phone --release`. With its source and
 version environment, that producer writes and verifies the trusted APK receipt.

@@ -114,7 +114,7 @@ if (process.argv.includes("--unsigned")) {
           "-c.forceCodeSigning=true",
           ...releaseMetadata.builderArguments,
           `-c.mac.extendInfo.OpensteerSourceRevision=${releaseMetadata.identity.sourceRevision}`,
-        ...(updateFeed ? [`-c.mac.extendInfo.OpensteerUpdateFeed=${updateFeed}`] : []),
+          ...(updateFeed ? [`-c.mac.extendInfo.OpensteerUpdateFeed=${updateFeed}`] : []),
           ...(deferNotarization ? ["--dir", "-c.mac.notarize=false"] : []),
           targetArchitecture.builderFlag,
         ],
